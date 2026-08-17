@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-08-17 — Responses 模型切换时适配 web-search query 字段
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | 第 22 章（LLM / Responses）；`crates/tact_llm/src/openai/responses/wire.rs`、`crates/tact_llm/src/openai/responses/convert.rs` |
+
+**现象 / 动机：** 在同一个 Responses 端点上从 OpenAI 模型切换到 DeepSeek 兼容模型后，旧的 `web_search_call` 使用 `action.query` 被回放，而目标端点要求 `action.queries`，最终返回 HTTP 400：`missing field queries`。
+
+**决策：** 保留现有 Responses 基线，只在发送边界且模型发生变化时适配 hosted web-search action：DeepSeek 目标使用 `queries: [query]`，其他目标取第一条 query 写成单数 `query`。同模型回放保持原样。
+
+**改后行为：** 模型切换不再发送上一个模型不兼容的 `query` / `queries` 字段形状，其余 opaque Responses 基线和逻辑会话保持不变。
+
+**指针：** `crates/tact_llm/src/openai/responses/wire.rs` 的 `normalize_web_search_call_query_shape_in_items`；`crates/tact_llm/src/openai/responses/convert.rs` 的 `create_response` outgoing baseline 处理；双向转换回归测试；第 22 章。
+
+---
+
 ## 1. 2026-08-17 — Pending prompt 的 `[Cancel]` 紧跟提示文案
 
 | Field | Value |

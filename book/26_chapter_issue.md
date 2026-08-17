@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-17 — Responses model switches adapt web-search query fields
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 22 (LLM / Responses); `crates/tact_llm/src/openai/responses/wire.rs`, `crates/tact_llm/src/openai/responses/convert.rs` |
+
+**Symptom / motivation:** Switching from an OpenAI model to a DeepSeek-compatible model on the same Responses endpoint replayed a prior `web_search_call` with `action.query`, while the target endpoint required `action.queries`, causing HTTP 400 `missing field queries`.
+
+**Decision:** Keep the existing Responses baseline and normalize only the hosted web-search action at the outgoing boundary when the request model changes: DeepSeek-like targets receive `queries: [query]`; other targets receive the first query as singular `query`. Same-model replay remains verbatim.
+
+**Behavior after:** Model switching no longer sends the previous model's incompatible `query` / `queries` spelling, while the rest of the opaque Responses baseline and logical conversation remain unchanged.
+
+**Pointers:** `normalize_web_search_call_query_shape_in_items` in `crates/tact_llm/src/openai/responses/wire.rs`; outgoing baseline handling in `create_response` in `crates/tact_llm/src/openai/responses/convert.rs`; regression tests for both conversion directions; Ch 22.
+
+---
+
 ## 1. 2026-08-17 — Pending prompt `[Cancel]` sits beside the hint text
 
 | Field | Value |

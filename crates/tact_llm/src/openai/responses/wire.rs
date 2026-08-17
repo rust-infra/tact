@@ -58,8 +58,9 @@ fn known_output_type(type_name: &str) -> bool {
 /// (e.g. DeepSeek Responses returns `action.search.queries`). When `query`
 /// is absent, it is filled from the first entry of `queries`; items that
 /// already carry a `query` are left untouched. This is a compatibility shim
-/// only — the raw item JSON is preserved for replay, so the provider still
-/// receives its own wire shape on follow-up turns.
+/// only — the raw item JSON is preserved for same-model replay; outgoing
+/// model-switch normalization is handled separately by
+/// `normalize_web_search_call_query_shape`.
 pub(crate) fn normalize_web_search_call_query(item: &mut Value) {
     if item.get("type").and_then(Value::as_str) != Some("web_search_call") {
         return;
@@ -83,6 +84,74 @@ pub(crate) fn normalize_web_search_call_query(item: &mut Value) {
         .and_then(|queries| queries.iter().find_map(Value::as_str))
     {
         action["query"] = Value::String(first.to_string());
+    }
+}
+
+/// Wire spelling expected by the target Responses endpoint for a web-search
+/// action's query field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WebSearchQueryShape {
+    Query,
+    Queries,
+}
+
+/// Rewrites a persisted `web_search_call` item for a different model's wire
+/// shape. This is used only on outgoing baseline replay; incoming response
+/// parsing continues to use [`normalize_web_search_call_query`] and preserves
+/// the provider's raw item JSON.
+pub(crate) fn normalize_web_search_call_query_shape(item: &mut Value, shape: WebSearchQueryShape) {
+    if item.get("type").and_then(Value::as_str) != Some("web_search_call") {
+        return;
+    }
+    let Some(action) = item.get_mut("action").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if action.get("type").and_then(Value::as_str) != Some("search") {
+        return;
+    }
+
+    let query = action
+        .get("query")
+        .and_then(Value::as_str)
+        .filter(|query| !query.is_empty())
+        .map(str::to_owned);
+    let first_query = action
+        .get("queries")
+        .and_then(Value::as_array)
+        .filter(|queries| !queries.is_empty())
+        .and_then(|queries| queries.iter().find_map(Value::as_str))
+        .filter(|query| !query.is_empty())
+        .map(str::to_owned);
+
+    match shape {
+        WebSearchQueryShape::Query => {
+            if query.is_none()
+                && let Some(first_query) = first_query
+            {
+                action.insert("query".to_string(), Value::String(first_query));
+            }
+            action.remove("queries");
+        }
+        WebSearchQueryShape::Queries => {
+            if first_query.is_none()
+                && let Some(query) = query
+            {
+                action.insert(
+                    "queries".to_string(),
+                    Value::Array(vec![Value::String(query)]),
+                );
+            }
+            action.remove("query");
+        }
+    }
+}
+
+pub(crate) fn normalize_web_search_call_query_shape_in_items(
+    items: &mut [Value],
+    shape: WebSearchQueryShape,
+) {
+    for item in items {
+        normalize_web_search_call_query_shape(item, shape);
     }
 }
 
@@ -142,7 +211,11 @@ pub(crate) fn parse_response_envelope(value: Value) -> Result<RawResponseEnvelop
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_web_search_call_query, parse_response_envelope};
+    use super::{
+        WebSearchQueryShape, normalize_web_search_call_query,
+        normalize_web_search_call_query_shape, normalize_web_search_call_query_shape_in_items,
+        parse_response_envelope,
+    };
     use async_openai_responses::types::responses::OutputItem;
 
     fn response_with_unknown_output_item() -> serde_json::Value {
@@ -246,5 +319,107 @@ mod tests {
         });
         normalize_web_search_call_query(&mut item);
         assert!(item["action"].get("query").is_none());
+    }
+
+    #[test]
+    fn query_shape_rewrites_queries_to_query() {
+        let mut item = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-1",
+            "status": "completed",
+            "action": {"type": "search", "queries": ["Tokyo weather", "ws_call_id=ws-1"]}
+        });
+        normalize_web_search_call_query_shape(&mut item, WebSearchQueryShape::Query);
+        assert_eq!(item["action"]["query"], "Tokyo weather");
+        assert!(item["action"].get("queries").is_none());
+    }
+
+    #[test]
+    fn queries_shape_rewrites_query_to_queries() {
+        let mut item = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-1",
+            "status": "completed",
+            "action": {"type": "search", "query": "Tokyo weather"}
+        });
+        normalize_web_search_call_query_shape(&mut item, WebSearchQueryShape::Queries);
+        assert_eq!(item["action"]["queries"][0], "Tokyo weather");
+        assert!(item["action"].get("query").is_none());
+    }
+
+    #[test]
+    fn query_shape_prefers_an_existing_query() {
+        let mut item = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-1",
+            "status": "completed",
+            "action": {"type": "search", "query": "Rust async", "queries": ["Rust async"]}
+        });
+        normalize_web_search_call_query_shape(&mut item, WebSearchQueryShape::Query);
+        assert_eq!(item["action"]["query"], "Rust async");
+        assert!(item["action"].get("queries").is_none());
+    }
+
+    #[test]
+    fn queries_shape_prefers_an_existing_queries_array() {
+        let mut item = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-1",
+            "status": "completed",
+            "action": {"type": "search", "query": "Rust async", "queries": ["Rust async"]}
+        });
+        normalize_web_search_call_query_shape(&mut item, WebSearchQueryShape::Queries);
+        assert_eq!(item["action"]["queries"][0], "Rust async");
+        assert!(item["action"].get("query").is_none());
+    }
+
+    #[test]
+    fn shape_rewrite_ignores_non_search_actions() {
+        let mut item = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws-1",
+            "status": "completed",
+            "action": {"type": "open_page", "url": "https://example.com"}
+        });
+        normalize_web_search_call_query_shape(&mut item, WebSearchQueryShape::Query);
+        assert!(item["action"].get("query").is_none());
+        assert!(item["action"].get("queries").is_none());
+        assert_eq!(item["action"]["type"], "open_page");
+    }
+
+    #[test]
+    fn shape_rewrite_ignores_non_web_search_items() {
+        let mut item = serde_json::json!({
+            "type": "function_call",
+            "id": "call-1",
+            "name": "bash",
+            "arguments": "{}"
+        });
+        normalize_web_search_call_query_shape(&mut item, WebSearchQueryShape::Queries);
+        assert_eq!(item["type"], "function_call");
+        assert!(item.get("action").is_none());
+    }
+
+    #[test]
+    fn shape_rewrite_in_items_applies_to_matching_items_only() {
+        let mut items = vec![
+            serde_json::json!({
+                "type": "web_search_call",
+                "id": "ws-1",
+                "status": "completed",
+                "action": {"type": "search", "query": "Tokyo weather"}
+            }),
+            serde_json::json!({
+                "type": "message",
+                "id": "msg-1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi", "annotations": []}]
+            }),
+        ];
+        normalize_web_search_call_query_shape_in_items(&mut items, WebSearchQueryShape::Queries);
+        assert_eq!(items[0]["action"]["queries"][0], "Tokyo weather");
+        assert!(items[0]["action"].get("query").is_none());
+        assert_eq!(items[1]["type"], "message");
     }
 }
