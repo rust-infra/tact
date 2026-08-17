@@ -36,10 +36,10 @@ pub(crate) fn restyle_log_line_with_skills(
         return single_span(raw, theme.success);
     }
 
-    if let LogItemKind::SystemPlain(style) = kind {
-        if style != SystemMsgStyle::Default {
-            return single_span(raw, style.color(theme));
-        }
+    if let LogItemKind::SystemPlain(style) = kind
+        && style != SystemMsgStyle::Default
+    {
+        return single_span(raw, style.color(theme));
     }
 
     if kind == LogItemKind::SystemTool {
