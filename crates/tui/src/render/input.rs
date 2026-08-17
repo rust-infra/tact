@@ -253,23 +253,27 @@ fn render_pending_block(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner_width = area.width.saturating_sub(2).max(1) as usize;
     let cancel_label = app.msgs().pending_cancel_btn;
     let cancel_width = UnicodeWidthStr::width(cancel_label) + 2; // "[label]"
-    // Hide the button on narrow terminals.
-    let cancel_area = if app.pending_messages.is_empty() || inner_width < cancel_width + 30 {
-        Rect::default()
-    } else {
-        let x = area.x + (inner_width - cancel_width) as u16;
-        Rect::new(x, area.y, cancel_width as u16, 1)
-    };
-    app.set_cancel_button_area(cancel_area);
-
+    let can_show_cancel = !app.pending_messages.is_empty() && inner_width >= cancel_width + 30;
     let hint = app.msgs().pending_submit_hint;
-    let hint_max = if cancel_area.is_empty() {
-        inner_width
-    } else {
+    let hint_max = if can_show_cancel {
         inner_width.saturating_sub(cancel_width).saturating_sub(1)
+    } else {
+        inner_width
     };
     let hint_text = truncate_to_width(hint, hint_max);
     let hint_width = UnicodeWidthStr::width(hint_text.as_str());
+    let cancel_area = if can_show_cancel {
+        Rect::new(
+            area.x + hint_width as u16 + 1,
+            area.y,
+            cancel_width as u16,
+            1,
+        )
+    } else {
+        Rect::default()
+    };
+    app.set_cancel_button_area(cancel_area);
+
     let mut lines = vec![Line::from(Span::styled(
         hint_text,
         Style::default()
@@ -277,11 +281,8 @@ fn render_pending_block(frame: &mut Frame, area: Rect, app: &mut App) {
             .bg(app.theme.input_box_bg),
     ))];
     if !cancel_area.is_empty() {
-        let gap = cancel_area
-            .x
-            .saturating_sub(area.x.saturating_add(hint_width as u16)) as usize;
         lines[0].spans.push(Span::styled(
-            " ".repeat(gap),
+            " ",
             Style::default().bg(app.theme.input_box_bg),
         ));
         lines[0].spans.push(Span::styled(
@@ -554,6 +555,15 @@ mod render_tests {
         assert!(
             text.contains("Message will be submitted after the current task"),
             "pending hint visible: {text}"
+        );
+        let hint_line = text
+            .lines()
+            .find(|line| line.contains(app.msgs().pending_submit_hint))
+            .expect("pending hint must be rendered on one line");
+        let expected_hint_with_cancel = format!("{} [Cancel]", app.msgs().pending_submit_hint);
+        assert!(
+            hint_line.contains(&expected_hint_with_cancel),
+            "Cancel must immediately follow the hint text: {hint_line:?}"
         );
         assert!(
             text.contains("↳ fix the auth bug"),
