@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-17 — Pending prompt `[Cancel]` hit area follows its rendered position
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Ch 23 (TUI); `crates/tui/src/render/input.rs`, `crates/tui/src/handlers/mouse.rs`, `crates/tui/src/widgets/state/app/pending.rs` |
+
+**Symptom / motivation:** The pending prompt block calculated `[Cancel]`'s hit rectangle as if the button were right-aligned, but rendered only one space after a short hint. The visible button could therefore sit outside its recorded hit area, so clicking it appeared to do nothing. Clearing the queue also left a stale hit rectangle until a later redraw.
+
+**Decision:** Pad the hint to the same right-aligned position used by the hit rectangle; reset `pending_cancel_btn_area` whenever the queue is cleared or the pending block is not rendered. Add a buffer-level mouse regression test that finds the visible `[Cancel]` coordinates and clicks them.
+
+**Behavior after:** The visible `[Cancel]` button is clickable at its rendered location, clears only queued prompts, leaves the running task untouched, and cannot retain a stale hit area after the queue disappears. Narrow terminals still hide the button.
+
+**Pointers:** `render_pending_block` in `crates/tui/src/render/input.rs`; `handle_mouse_down` and `pending_cancel_click_hits_the_rendered_button` in `crates/tui/src/handlers/mouse.rs`; `App::clear_pending_messages` in `widgets/state/app/pending.rs`; Ch 23.
+
+---
+
 ## 1. 2026-08-16 — Log rows carry explicit provenance instead of inferring system items from text
 
 | Field | Value |

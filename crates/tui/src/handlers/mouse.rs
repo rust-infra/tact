@@ -599,6 +599,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pending_cancel_click_hits_the_rendered_button() {
+        let mut app = crate::render::test_harness::make_app();
+        app.status = crate::widgets::state::Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+        app.queue_pending_message("regret".into(), "regret".into());
+        app.input = "a\nb\nc".into();
+        app.input_cursor = app.input.len();
+
+        let rendered = crate::render::test_harness::render_app_text(&mut app, 100, 24);
+        let (button_row, button_line) = rendered
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("[Cancel]"))
+            .expect("rendered pending block must contain Cancel");
+        let button_col = button_line.find("[Cancel]").expect("Cancel column") as u16 + 3;
+        let area = app.pending_cancel_btn_area;
+        assert!(
+            !area.is_empty(),
+            "rendered pending block must expose Cancel area"
+        );
+        assert!(
+            point_in_rect(button_col, button_row as u16, area),
+            "visible Cancel button must fall inside its recorded hit area: visible=({}, {}), area={area:?}",
+            button_col,
+            button_row
+        );
+
+        handle_mouse_event(&mut app, mouse_down(button_col, button_row as u16));
+
+        assert!(
+            app.pending_messages.is_empty(),
+            "clicking the rendered [Cancel] button must clear the queue"
+        );
+        assert!(matches!(
+            app.status,
+            crate::widgets::state::Status::Executing { .. }
+        ));
+        assert!(
+            app.pending_cancel_btn_area.is_empty(),
+            "clearing the queue must invalidate the old button hit area"
+        );
+    }
+
     fn popup_hit_row(screen_y: u16, text_x: u16, line_start: usize, text: &str) -> PopupHitRow {
         let cells = text
             .char_indices()
@@ -1020,7 +1066,7 @@ mod tests {
         let end_phys = app.visible_message_index(cb_end).unwrap();
         let expected = Some(LogSelection::new(
             TextPosition::new(start_phys, 0),
-            TextPosition::new(end_phys, app.log_items[end_phys].len()),
+            TextPosition::new(end_phys, app.log_items[end_phys].raw.len()),
         ));
         assert_eq!(app.mouse.log_selection, expected);
         assert!(
@@ -1124,8 +1170,9 @@ mod tests {
         );
         let last = app.log_items.last().expect("copy notice");
         assert!(
-            last.contains("已复制") || last.contains("Copied"),
-            "expected a copy notice, got: {last}"
+            last.raw.contains("已复制") || last.raw.contains("Copied"),
+            "expected a copy notice, got: {:?}",
+            last
         );
     }
 

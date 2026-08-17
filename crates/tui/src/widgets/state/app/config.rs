@@ -111,7 +111,7 @@ mod tests {
         assert!(
             app.log_items
                 .iter()
-                .any(|m| m.contains("theme") || m.contains("Theme")),
+                .any(|item| item.raw.contains("theme") || item.raw.contains("Theme")),
             "toggle should append theme changed message"
         );
     }

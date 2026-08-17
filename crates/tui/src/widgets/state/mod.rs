@@ -267,20 +267,6 @@ impl std::fmt::Debug for LogItem {
     }
 }
 
-impl std::fmt::Display for LogItem {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.raw)
-    }
-}
-
-impl std::ops::Deref for LogItem {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.raw
-    }
-}
-
 impl LogItem {
     pub(crate) fn new(line: Line<'static>, raw: String, kind: LogItemKind) -> Self {
         Self {

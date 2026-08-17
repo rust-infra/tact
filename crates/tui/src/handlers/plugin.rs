@@ -113,7 +113,7 @@ mod tests {
         assert!(
             app.log_items
                 .iter()
-                .any(|message| message.contains("queued"))
+                .any(|message| message.raw.contains("queued"))
         );
     }
 
@@ -128,7 +128,7 @@ mod tests {
         assert!(
             app.log_items
                 .iter()
-                .any(|message| message.starts_with("Usage: /plugin"))
+                .any(|message| message.raw.starts_with("Usage: /plugin"))
         );
     }
 
@@ -147,7 +147,7 @@ mod tests {
         assert!(
             !app.log_items
                 .iter()
-                .any(|message| message.starts_with("Usage: /plugin")),
+                .any(|message| message.raw.starts_with("Usage: /plugin")),
             "bare /plugin must not spam the log: {:?}",
             app.log_items
         );
@@ -171,7 +171,7 @@ mod tests {
         assert!(
             app.log_items
                 .iter()
-                .any(|message| message.contains("插件请求已加入队列")),
+                .any(|message| message.raw.contains("插件请求已加入队列")),
             "plugin feedback should use the selected language: {:?}",
             app.log_items
         );

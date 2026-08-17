@@ -91,6 +91,7 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
     // block paints its own background (TUI invariant: no shadow residue).
     let pending_lines = app.pending_display_lines();
     let area = if pending_lines == 0 {
+        app.set_cancel_button_area(Rect::default());
         area
     } else {
         render_pending_block(
@@ -267,15 +268,20 @@ fn render_pending_block(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         inner_width.saturating_sub(cancel_width).saturating_sub(1)
     };
+    let hint_text = truncate_to_width(hint, hint_max);
+    let hint_width = UnicodeWidthStr::width(hint_text.as_str());
     let mut lines = vec![Line::from(Span::styled(
-        truncate_to_width(hint, hint_max),
+        hint_text,
         Style::default()
             .fg(app.theme.warning)
             .bg(app.theme.input_box_bg),
     ))];
     if !cancel_area.is_empty() {
+        let gap = cancel_area
+            .x
+            .saturating_sub(area.x.saturating_add(hint_width as u16)) as usize;
         lines[0].spans.push(Span::styled(
-            " ".to_string(),
+            " ".repeat(gap),
             Style::default().bg(app.theme.input_box_bg),
         ));
         lines[0].spans.push(Span::styled(

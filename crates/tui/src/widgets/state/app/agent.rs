@@ -1366,7 +1366,7 @@ mod lifecycle_tests {
         assert!(
             app.log_items
                 .iter()
-                .any(|message| message.contains("已安装插件 demo（来自 fixture）"))
+                .any(|message| message.raw.contains("已安装插件 demo（来自 fixture）"))
         );
     }
 
@@ -1385,7 +1385,7 @@ mod lifecycle_tests {
         assert!(
             app.log_items
                 .iter()
-                .any(|message| message.contains("Installed plugin demo from fixture"))
+                .any(|message| message.raw.contains("Installed plugin demo from fixture"))
         );
     }
 
@@ -1792,7 +1792,7 @@ mod lifecycle_tests {
         assert!(
             app.log_items
                 .iter()
-                .any(|m| m.contains("Background task 018f3a2c completed")),
+                .any(|item| item.raw.contains("Background task 018f3a2c completed")),
             "missing fallback message: {:?}",
             app.log_items
         );
@@ -2221,7 +2221,9 @@ mod lifecycle_tests {
         )));
         assert!(matches!(app.status, Status::Idle));
         assert!(
-            app.log_items.iter().any(|m| m.contains("LLM unavailable")),
+            app.log_items
+                .iter()
+                .any(|item| item.raw.contains("LLM unavailable")),
             "error message should appear in log: {:?}",
             app.log_items
         );
@@ -2236,7 +2238,7 @@ mod lifecycle_tests {
         assert!(
             app.log_items
                 .last()
-                .is_some_and(|m| m.contains("Cancelling"))
+                .is_some_and(|item| item.raw.contains("Cancelling"))
         );
     }
 

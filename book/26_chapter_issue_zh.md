@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-08-17 — Pending prompt 的 `[Cancel]` 命中区域与实际渲染位置一致
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | Ch 23（TUI）；`crates/tui/src/render/input.rs`、`crates/tui/src/handlers/mouse.rs`、`crates/tui/src/widgets/state/app/pending.rs` |
+
+**现象 / 动机：** pending prompt 区域把 `[Cancel]` 的命中矩形按右对齐计算，但渲染时 hint 后只追加了一个空格。hint 较短时，屏幕上可见的按钮会落在记录的命中区域之外，点击看起来没有反应。队列清空后旧的命中矩形也会保留到下一次重绘。
+
+**决策：** 按命中矩形对应的右对齐位置补齐 hint 空格；队列清空或 pending 区不再渲染时，重置 `pending_cancel_btn_area`。新增 buffer-level 鼠标回归测试，从实际渲染文本找到 `[Cancel]` 坐标后点击。
+
+**改后行为：** 屏幕上可见的 `[Cancel]` 按钮可以在实际位置点击，只清空排队 prompt、不影响运行中的任务；队列消失后不会残留旧命中区域。窄终端仍隐藏按钮。
+
+**指针：** `crates/tui/src/render/input.rs` 的 `render_pending_block`；`crates/tui/src/handlers/mouse.rs` 的 `handle_mouse_down` 与 `pending_cancel_click_hits_the_rendered_button`；`widgets/state/app/pending.rs` 的 `App::clear_pending_messages`；Ch 23。
+
+---
+
 ## 1. 2026-08-16 — Log 行改用显式来源 metadata，不再从文本推断系统 item
 
 | Field | Value |

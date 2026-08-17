@@ -647,8 +647,7 @@ fn render_table_chunk(
     styled_lines: &mut Vec<Line<'static>>,
     raw_lines: &mut Vec<String>,
 ) {
-    let push_separator = |styled_lines: &mut Vec<Line<'static>>,
-                          raw_lines: &mut Vec<String>| {
+    let push_separator = |styled_lines: &mut Vec<Line<'static>>, raw_lines: &mut Vec<String>| {
         let sep_cells: Vec<String> = cols
             .clone()
             .map(|i| {

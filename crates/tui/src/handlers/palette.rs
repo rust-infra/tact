@@ -216,7 +216,7 @@ mod tests {
         assert!(
             !app.log_items
                 .iter()
-                .any(|m| m.contains("Usage: /plugin") || m.contains("用法")),
+                .any(|item| item.raw.contains("Usage: /plugin") || item.raw.contains("用法")),
             "must not execute bare /plugin from palette: {:?}",
             app.log_items
         );
