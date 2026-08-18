@@ -237,7 +237,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 
     // Task-stats `[copy]` button: copy this turn's log text. Only clicks that
     // land inside the button glyphs count — the rest of the row selects text.
-    if let Some(item) = app.log_items.get(phys_idx)
+    if let Some(item) = app.log.items.get(phys_idx)
         && crate::widgets::state::is_task_stats_line(&item.raw)
         && let Some((btn_start, btn_end)) =
             crate::widgets::state::find_task_stats_copy_button(&item.raw)
@@ -386,7 +386,7 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
     {
         if let Some(start_phys) = app.visible_message_index(cb_start) {
             let end_phys = app.visible_message_index(cb_end).unwrap_or(start_phys);
-            let end_len = app.log_items[end_phys].raw.len();
+            let end_len = app.log.items[end_phys].raw.len();
             app.mouse.log_selection = Some(LogSelection::new(
                 TextPosition::new(start_phys, 0),
                 TextPosition::new(end_phys, end_len),
@@ -403,7 +403,7 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
             app.mouse.dragging_log = false;
             return;
         }
-        let len = app.log_items[phys].raw.len();
+        let len = app.log.items[phys].raw.len();
         app.mouse.log_selection = Some(LogSelection::full_message(phys, len));
     }
     app.mouse.dragging_log = true;
@@ -1066,7 +1066,7 @@ mod tests {
         let end_phys = app.visible_message_index(cb_end).unwrap();
         let expected = Some(LogSelection::new(
             TextPosition::new(start_phys, 0),
-            TextPosition::new(end_phys, app.log_items[end_phys].raw.len()),
+            TextPosition::new(end_phys, app.log.items[end_phys].raw.len()),
         ));
         assert_eq!(app.mouse.log_selection, expected);
         assert!(
@@ -1162,13 +1162,13 @@ mod tests {
         // Stats row is logical 2 (visual row 2 → mouse row 3). Raw row is
         // `[copy]  Task stats:⏱ 00:05`; column 3 maps to byte 2, inside the
         // button glyphs (bytes 0..6). A successful copy appends a notice row.
-        let before = app.log_items.len();
+        let before = app.log.items.len();
         handle_mouse_event(&mut app, mouse_down(3, 3));
         assert!(
-            app.log_items.len() > before,
+            app.log.items.len() > before,
             "clicking the [copy] button should copy this turn"
         );
-        let last = app.log_items.last().expect("copy notice");
+        let last = app.log.items.last().expect("copy notice");
         assert!(
             last.raw.contains("已复制") || last.raw.contains("Copied"),
             "expected a copy notice, got: {:?}",
@@ -1187,10 +1187,10 @@ mod tests {
 
         // Column 15 maps into the "Task stats:" body (byte 11) — outside the
         // button range (0..6), so no copy notice may be appended.
-        let before = app.log_items.len();
+        let before = app.log.items.len();
         handle_mouse_event(&mut app, mouse_down(15, 3));
         assert_eq!(
-            app.log_items.len(),
+            app.log.items.len(),
             before,
             "clicking the stats body must not copy"
         );

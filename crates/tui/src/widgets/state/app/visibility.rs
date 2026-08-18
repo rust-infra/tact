@@ -34,8 +34,8 @@ impl App {
         if self.log_scroll.visual_top == usize::MAX {
             return true;
         }
-        if self.log_scroll.visible_indices_ver != self.log_items.len()
-            || self.log_scroll.visual_cache_ver != self.log_items.len()
+        if self.log_scroll.visible_indices_ver != self.log.items.len()
+            || self.log_scroll.visual_cache_ver != self.log.items.len()
             || self.log_scroll.visual_start_cache.len() < 2
         {
             return false;
@@ -46,7 +46,7 @@ impl App {
     }
 
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
-        idx < self.log_items.len()
+        idx < self.log.items.len()
     }
 
     /// Left indent columns for a physical log row.
@@ -54,7 +54,8 @@ impl App {
     /// The row kind is recorded when the item enters the TUI, so indentation
     /// never depends on raw text prefixes or a backward scan of prior rows.
     pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
-        self.log_items
+        self.log
+            .items
             .get(phys)
             .map(|item| item.kind)
             .unwrap_or(LogItemKind::AssistantMarkdown)
@@ -66,11 +67,11 @@ impl App {
     /// (meaning it's an incomplete streaming line).
     pub(crate) fn visible_message_index(&self, logical_idx: usize) -> Option<usize> {
         // Prefer the per-frame cache built by render_log_panel (O(1)).
-        if self.log_scroll.visible_indices_ver == self.log_items.len() {
+        if self.log_scroll.visible_indices_ver == self.log.items.len() {
             return self.log_scroll.visible_indices.get(logical_idx).copied();
         }
         let mut visible_count = 0;
-        for idx in 0..self.log_items.len() {
+        for idx in 0..self.log.items.len() {
             if self.is_message_visible(idx) {
                 if visible_count == logical_idx {
                     return Some(idx);
@@ -92,7 +93,7 @@ impl App {
         byte_offset: usize,
     ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
-        let text = &self.log_items.get(phys_idx)?.raw;
+        let text = &self.log.items.get(phys_idx)?.raw;
         let bytes = text.as_bytes();
         if bytes.is_empty() {
             return None;
@@ -150,7 +151,8 @@ impl App {
     /// Markdown rows never draw a text-selection overlay (their renderer
     /// skips it), so selection creation/extension must skip them too.
     pub(crate) fn is_markdown_row(&self, phys: usize) -> bool {
-        self.log_items
+        self.log
+            .items
             .get(phys)
             .is_some_and(|item| item.markdown_cell.is_some())
     }
@@ -164,7 +166,7 @@ impl App {
         col: usize,
     ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
-        let raw_text = &self.log_items.get(phys_idx)?.raw;
+        let raw_text = &self.log.items.get(phys_idx)?.raw;
         let wrap_width = self.mouse.log_area.width.saturating_sub(2) as usize;
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
@@ -260,10 +262,10 @@ impl App {
 
     /// Total logical line count of the current Log area (fixed messages + incomplete streaming lines).
     pub(crate) fn total_log_lines(&self) -> usize {
-        let visible_count = if self.log_scroll.visible_indices_ver == self.log_items.len() {
+        let visible_count = if self.log_scroll.visible_indices_ver == self.log.items.len() {
             self.log_scroll.visible_indices.len()
         } else {
-            (0..self.log_items.len())
+            (0..self.log.items.len())
                 .filter(|&idx| self.is_message_visible(idx))
                 .count()
         };
@@ -274,7 +276,7 @@ impl App {
     /// Skips collapsed/hidden physical rows so yank matches what the user sees.
     pub(crate) fn extract_selected_text(&self, start: TextPosition, end: TextPosition) -> String {
         if start.phys_idx == end.phys_idx {
-            if let Some(item) = self.log_items.get(start.phys_idx) {
+            if let Some(item) = self.log.items.get(start.phys_idx) {
                 return item.raw
                     [start.byte_offset.min(item.raw.len())..end.byte_offset.min(item.raw.len())]
                     .to_string();
@@ -286,19 +288,19 @@ impl App {
         }
         let mut parts: Vec<&str> = Vec::new();
         if self.is_message_visible(start.phys_idx)
-            && let Some(item) = self.log_items.get(start.phys_idx)
+            && let Some(item) = self.log.items.get(start.phys_idx)
         {
             parts.push(&item.raw[start.byte_offset.min(item.raw.len())..]);
         }
         for phys in (start.phys_idx + 1)..end.phys_idx {
             if self.is_message_visible(phys)
-                && let Some(item) = self.log_items.get(phys)
+                && let Some(item) = self.log.items.get(phys)
             {
                 parts.push(&item.raw);
             }
         }
         if self.is_message_visible(end.phys_idx)
-            && let Some(item) = self.log_items.get(end.phys_idx)
+            && let Some(item) = self.log.items.get(end.phys_idx)
         {
             parts.push(&item.raw[..end.byte_offset.min(item.raw.len())]);
         }
@@ -314,7 +316,7 @@ impl App {
             crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
         if active.is_blank() {
             let end = active.phys_idx.saturating_add(old_rows);
-            if active.phys_idx < self.log_items.len() && end <= self.log_items.len() {
+            if active.phys_idx < self.log.items.len() && end <= self.log.items.len() {
                 self.drain_msgs(active.phys_idx..end);
                 self.shift_phys_indices_from(end, -(old_rows as isize));
             }
@@ -380,7 +382,7 @@ impl App {
     }
 
     fn last_visible_phys_idx(&self) -> Option<usize> {
-        (0..self.log_items.len())
+        (0..self.log.items.len())
             .rev()
             .find(|&idx| self.is_message_visible(idx))
     }
@@ -412,7 +414,8 @@ impl App {
             return;
         };
         if self
-            .log_items
+            .log
+            .items
             .get(phys)
             .is_some_and(|item| item.kind.is_user())
         {
@@ -429,7 +432,8 @@ impl App {
             return;
         }
         if self
-            .log_items
+            .log
+            .items
             .get(phys)
             .is_some_and(|item| item.raw.is_empty())
         {
@@ -502,7 +506,7 @@ impl App {
     /// Returns true if a loading placeholder was removed.
     pub(crate) fn remove_loading_placeholder(&mut self) -> bool {
         if let Some(idx) = self.loading_idx.take() {
-            if idx < self.log_items.len() {
+            if idx < self.log.items.len() {
                 self.remove_msg(idx);
                 // Adjust any code_blocks / tool_blocks / thinking blocks that reference
                 // indices after the removed line
@@ -564,20 +568,16 @@ impl App {
 
     pub(crate) fn push_tool_placeholder_rows(&mut self, output: &ToolRenderOutput) -> usize {
         self.ensure_gap_before_tools();
-        let phys_idx = self.log_items.len();
         let rows = output.visual_rows(false);
-        for _ in 0..rows {
-            self.append_blank(LogItemKind::SystemTool);
-        }
-        phys_idx
+        self.log
+            .push_placeholder_rows(LogItemKind::SystemTool, rows)
     }
 
     pub(crate) fn push_thinking_placeholder_rows(&mut self, body_lines: usize) -> usize {
-        let phys_idx = self.log_items.len();
-        for _ in 0..crate::render::cells::thinking::thinking_visual_rows(body_lines) {
-            self.append_blank(LogItemKind::Thinking);
-        }
-        phys_idx
+        self.log.push_placeholder_rows(
+            LogItemKind::Thinking,
+            crate::render::cells::thinking::thinking_visual_rows(body_lines),
+        )
     }
 
     pub(crate) fn resize_thinking_placeholder_rows(
@@ -665,7 +665,7 @@ impl App {
             return;
         }
         let end = active.phys_idx.saturating_add(rows);
-        if active.phys_idx < self.log_items.len() && end <= self.log_items.len() {
+        if active.phys_idx < self.log.items.len() && end <= self.log.items.len() {
             self.drain_msgs(active.phys_idx..end);
             self.shift_phys_indices_from(end, -(rows as isize));
         }

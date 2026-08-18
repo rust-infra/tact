@@ -41,7 +41,7 @@ impl ThemeName {
         ]
     }
     /// Cycle to the next theme.
-    pub(super) fn next(&self) -> Self {
+    pub fn next(&self) -> Self {
         let all = Self::all();
         let idx = all.iter().position(|t| t == self).unwrap();
         all[(idx + 1) % all.len()]

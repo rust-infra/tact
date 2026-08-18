@@ -7,6 +7,7 @@ edition = "2024"
 test-support = []
 
 [dependencies]
+agent_tui_kit = { path = "../agent_tui_kit" }
 tact = { path = "../tact" }
 tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }

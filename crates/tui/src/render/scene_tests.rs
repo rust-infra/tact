@@ -161,7 +161,8 @@ fn full_frame_fatal_error_message() {
     assert!(
         text.contains("provider timeout")
             || app
-                .log_items
+                .log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("provider timeout")),
         "fatal error should appear in frame, got:\n{text}"
@@ -368,7 +369,8 @@ fn full_frame_skills_command_renders_list_with_separator() {
     execute_palette_command(&mut app, "skills");
 
     let title_idxs: Vec<_> = app
-        .log_items
+        .log
+        .items
         .iter()
         .enumerate()
         .filter_map(|(i, item)| item.raw.contains("Available skills").then_some(i))
@@ -376,35 +378,38 @@ fn full_frame_skills_command_renders_list_with_separator() {
     assert!(
         title_idxs.len() >= 2,
         "expected two skills titles in log, got: {:?}",
-        app.log_items
+        app.log.items
     );
-    let between = &app.log_items[title_idxs[0]..=title_idxs[1]];
+    let between = &app.log.items[title_idxs[0]..=title_idxs[1]];
     assert!(
         between.iter().any(|item| item.raw.is_empty()),
         "expected blank separator between skills blocks, messages: {between:?}"
     );
     assert!(
-        app.log_items
+        app.log
+            .items
             .iter()
             .any(|item| item.raw.contains("code-reviewer")),
         "skills content missing code-reviewer: {:?}",
-        app.log_items
+        app.log.items
     );
     assert!(
-        app.log_items
+        app.log
+            .items
             .iter()
             .any(|item| item.raw.contains("demo-test")),
         "skills content missing demo-test: {:?}",
-        app.log_items
+        app.log.items
     );
     // Each skills block is one whole-Markdown message whose raw source keeps
     // the pipe-table syntax; rendered output must not show raw pipes.
     assert!(
-        app.log_items
+        app.log
+            .items
             .iter()
             .any(|item| item.raw.contains("| Skill |")),
         "skills raw source should keep the markdown table: {:?}",
-        app.log_items
+        app.log.items
     );
 
     // Tall frame so both blocks are visible; CJK glyphs pad in TestBackend.

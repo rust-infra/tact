@@ -63,7 +63,7 @@ pub(crate) fn handle_normal_mode(
                 let total = app.total_log_lines();
                 if total > 0 && app.stream.buffer.is_empty() {
                     app.visible_message_index(total - 1)
-                        .and_then(|idx| app.log_items.get(idx).map(|item| item.raw.clone()))
+                        .and_then(|idx| app.log.items.get(idx).map(|item| item.raw.clone()))
                 } else if !app.stream.buffer.is_empty() {
                     Some(app.stream.buffer.clone())
                 } else {
@@ -340,7 +340,7 @@ mod tests {
 
         handle_normal_mode(&mut app, key(KeyCode::Char('y')), &tx);
 
-        assert!(app.log_items.iter().any(|item| item.raw.contains("world")));
+        assert!(app.log.items.iter().any(|item| item.raw.contains("world")));
     }
 
     #[test]
@@ -357,7 +357,8 @@ mod tests {
         handle_normal_mode(&mut app, key(KeyCode::Char('y')), &tx);
 
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("second line"))
         );

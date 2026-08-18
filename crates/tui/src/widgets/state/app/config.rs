@@ -109,7 +109,8 @@ mod tests {
         app.toggle_theme();
         assert_ne!(app.theme.name, ThemeName::Ink);
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("theme") || item.raw.contains("Theme")),
             "toggle should append theme changed message"

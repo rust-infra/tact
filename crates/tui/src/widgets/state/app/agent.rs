@@ -5,10 +5,9 @@ use ratatui::{
     text::{Line, Span},
     widgets::ScrollbarState,
 };
-use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{
-    AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot,
-    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolOutputBuffer, ToolOutputChunk,
+    AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason,
+    ThinkingChunk, TokenUsageInfo, ToolOutputBuffer, ToolOutputChunk,
 };
 
 use crate::{
@@ -25,71 +24,6 @@ use crate::{
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
 const STREAMING_INDICATOR: &str = " ▌";
-const MAX_PLUGIN_FAILURE_DETAIL_CHARS: usize = 512;
-
-fn sanitize_plugin_failure_detail(detail: &str) -> String {
-    let mut sanitized: String = detail
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .take(MAX_PLUGIN_FAILURE_DETAIL_CHARS + 1)
-        .collect();
-
-    if sanitized.chars().count() > MAX_PLUGIN_FAILURE_DETAIL_CHARS {
-        sanitized = sanitized
-            .chars()
-            .take(MAX_PLUGIN_FAILURE_DETAIL_CHARS)
-            .collect();
-        sanitized.push_str("...");
-    }
-
-    sanitized
-}
-
-fn replace_two(template: &str, first: &str, second: &str) -> String {
-    template.replacen("{}", first, 1).replacen("{}", second, 1)
-}
-
-fn format_plugin_result(messages: &crate::i18n::Messages, result: &PluginResult) -> String {
-    match result {
-        PluginResult::Installed {
-            plugin,
-            marketplace,
-        } => replace_two(messages.plugin_installed_tmpl, plugin, marketplace),
-        // Rendered as a titled table by `App::show_plugin_list`; plain fallback only.
-        PluginResult::ListedInstalled { .. } => messages.plugin_list_empty.to_owned(),
-        PluginResult::Reloaded { count } => messages
-            .plugin_reloaded_tmpl
-            .replace("{}", &count.to_string()),
-        PluginResult::MarketplaceAdded { marketplace } => {
-            messages.marketplace_added_tmpl.replace("{}", marketplace)
-        }
-        // Rendered as a titled table by `App::show_marketplace_list`; plain fallback only.
-        PluginResult::ListedMarketplaces { .. } => messages.marketplace_list_empty.to_owned(),
-        PluginResult::MarketplaceUpdated { marketplace, count } => replace_two(
-            messages.marketplace_updated_tmpl,
-            marketplace,
-            &count.to_string(),
-        ),
-        PluginResult::MarketplaceRemoved { marketplace } => {
-            messages.marketplace_removed_tmpl.replace("{}", marketplace)
-        }
-    }
-}
-
-fn plugin_operation_label(
-    messages: &crate::i18n::Messages,
-    operation: &PluginOperation,
-) -> &'static str {
-    match operation {
-        PluginOperation::Install { .. } => messages.plugin_operation_install,
-        PluginOperation::List => messages.plugin_operation_list,
-        PluginOperation::Reload => messages.plugin_operation_reload,
-        PluginOperation::MarketplaceAdd => messages.plugin_operation_marketplace_add,
-        PluginOperation::MarketplaceList => messages.plugin_operation_marketplace_list,
-        PluginOperation::MarketplaceUpdate { .. } => messages.plugin_operation_marketplace_update,
-        PluginOperation::MarketplaceRemove { .. } => messages.plugin_operation_marketplace_remove,
-    }
-}
 
 fn resolve_step_idx(steps: &[PlanStep], tool_id: &str, idx: usize) -> usize {
     if !tool_id.is_empty()
@@ -130,36 +64,7 @@ impl App {
 
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
-
-        // Safety net: close an open thinking region on content-producing updates
-        // that are not ThinkingChunk. Explicit ThinkingChunk::Finished is preferred;
-        // TokenUsage / ModelInfo / ToolMeta must not close the region (they can
-        // arrive mid-stream).
-        match &update {
-            AgentUpdate::ThinkingChunk(_)
-            | AgentUpdate::TokenUsage(_)
-            | AgentUpdate::ModelInfo(_)
-            | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::ToolProgress { .. } => {}
-            _ => {
-                self.flush_and_close_thinking();
-            }
-        }
-        // Remove the loading placeholder on any content-producing update.
-        // Metadata-only updates (TokenUsage, Balance, UsageQuota, ModelInfo,
-        // ToolMeta) should NOT remove the placeholder since they don't produce
-        // visible content.
-        match &update {
-            AgentUpdate::TokenUsage(_)
-            | AgentUpdate::ModelInfo(_)
-            | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::ToolProgress { .. } => {
-                // Metadata only, no content: keep the loading placeholder.
-            }
-            _ => {
-                self.remove_loading_placeholder();
-            }
-        }
+        self.coordinator_prepass(&update);
         match update {
             AgentUpdate::StepAdded(step) => self.on_step_added(step),
             AgentUpdate::StepStarted {
@@ -312,11 +217,42 @@ impl App {
                 self.on_tasks_changed(tasks, reason);
             }
         }
-        // Unified tail scroll state refresh, covering cases where helpers like
-        // flush_and_close_thinking / flush_stream_pending inserted messages without
-        // updating scroll (most arms call add_system_message independently,
-        // StreamChunk / ThinkingChunk also update separately; this redundant call is
-        // cheap and harmless).
+        self.refresh_tail_scroll();
+    }
+
+    /// Coordinator pre-pass: reconcile cross-component invariants before any
+    /// component handler sees the update.
+    ///
+    /// - Close an open thinking region on content-producing updates that are
+    ///   not `ThinkingChunk` (explicit `Finished` is preferred; TokenUsage /
+    ///   ModelInfo / ToolMeta must not close the region — they can arrive
+    ///   mid-stream).
+    /// - Remove the loading placeholder on any content-producing update
+    ///   (metadata-only updates keep it).
+    fn coordinator_prepass(&mut self, update: &AgentUpdate) {
+        match update {
+            AgentUpdate::ThinkingChunk(_)
+            | AgentUpdate::TokenUsage(_)
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolMeta { .. }
+            | AgentUpdate::ToolProgress { .. } => {}
+            _ => self.flush_and_close_thinking(),
+        }
+        match update {
+            AgentUpdate::TokenUsage(_)
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolMeta { .. }
+            | AgentUpdate::ToolProgress { .. } => {}
+            _ => {
+                self.remove_loading_placeholder();
+            }
+        }
+    }
+
+    /// Unified tail scroll refresh, covering helpers that inserted messages
+    /// without updating scroll (e.g. flush_and_close_thinking /
+    /// flush_stream_pending); redundant per-arm updates are cheap and harmless.
+    fn refresh_tail_scroll(&mut self) {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
     }
 
@@ -670,7 +606,7 @@ impl App {
                     start
                 }
                 None => {
-                    let start = self.log_items.len();
+                    let start = self.log.items.len();
                     self.extend_msgs(diagram, raw, LogItemKind::AssistantMarkdown);
                     start
                 }
@@ -759,9 +695,9 @@ impl App {
                 // Streaming: update previous line (remove indicator), append new line with indicator
                 self.stream.code_block_buffer.push(line.clone());
 
-                let prev_idx = self.log_items.len().saturating_sub(1);
+                let prev_idx = self.log.items.len().saturating_sub(1);
                 if self.stream.code_block_line_count > 1
-                    && let Some(prev_item) = self.log_items.get_mut(prev_idx)
+                    && let Some(prev_item) = self.log.items.get_mut(prev_idx)
                     && prev_item.raw.ends_with(STREAMING_INDICATOR)
                 {
                     let clean = prev_item
@@ -839,7 +775,7 @@ impl App {
                     .split_whitespace()
                     .next()
                     .is_some_and(|token| token.eq_ignore_ascii_case("mermaid"));
-                self.stream.code_block_start_idx = Some(self.log_items.len());
+                self.stream.code_block_start_idx = Some(self.log.items.len());
                 self.stream.code_block_line_count = 1;
 
                 // Container header: ╭─ lang ─────
@@ -917,166 +853,6 @@ impl App {
         self.scroll_log_to_bottom();
     }
 
-    /// Apply an account-service update (balance / usage quota).
-    ///
-    /// These updates live on a separate channel from the agent runtime so that
-    /// provider-specific account state does not leak into the agent protocol.
-    pub(crate) fn handle_account_update(&mut self, update: AccountUpdate) {
-        self.dirty = true;
-        match update {
-            AccountUpdate::Balance(info) => self.account.set_balance(info),
-            AccountUpdate::UsageQuota(info) => self.account.set_quota(info),
-            AccountUpdate::Error(err) => {
-                // Only clear on permanent unsupported; keep last-known values
-                // across transient poll / network failures.
-                if matches!(err, AccountError::NotSupported) {
-                    self.account.clear();
-                }
-                self.flash_msg = Some((err.to_string(), std::time::Instant::now()));
-            }
-        }
-    }
-
-    /// Renders `/plugin list` as a titled table block (same style as `/skills`).
-    fn show_plugin_list(&mut self, plugins: &[tact::plugin::InstalledPlugin]) {
-        self.add_new_line();
-
-        let msgs = self.msgs();
-        let title = msgs
-            .plugin_list_title_tmpl
-            .replace("{}", &plugins.len().to_string());
-        self.append_msg(
-            Line::from(Span::styled(
-                title.clone(),
-                Style::default().fg(self.theme.accent),
-            )),
-            title,
-            LogItemKind::SystemPlain(SystemMsgStyle::Accent),
-        );
-        self.add_new_line();
-
-        if plugins.is_empty() {
-            let empty = msgs.plugin_list_empty;
-            self.append_msg(
-                Line::from(Span::styled(empty, Style::default().fg(self.theme.fg))),
-                empty.to_string(),
-                LogItemKind::SystemPlain(SystemMsgStyle::Default),
-            );
-        } else {
-            let mut rows = vec![
-                msgs.plugin_list_header.to_string(),
-                "|---|---|---|".to_string(),
-            ];
-            rows.extend(plugins.iter().map(|plugin| {
-                format!(
-                    "| {} | {} | {} |",
-                    plugin.id, plugin.marketplace, plugin.skill_count
-                )
-            }));
-            let (styled, raw) =
-                format_table_lines(&rows, &self.theme, Some(self.table_layout_width()));
-            self.extend_msgs(
-                styled,
-                raw,
-                LogItemKind::SystemPlain(SystemMsgStyle::Default),
-            );
-        }
-
-        self.add_new_line();
-
-        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.scroll_log_to_bottom();
-        }
-    }
-
-    /// Renders `/plugin marketplace list` as a titled table (one row per marketplace).
-    ///
-    /// Must not go through [`Self::add_system_message`]: a single-newline list would be
-    /// Markdown-soft-broken into one crowded line.
-    fn show_marketplace_list(&mut self, marketplaces: &[tact::plugin::MarketplaceRecord]) {
-        self.add_new_line();
-
-        let msgs = self.msgs();
-        let title = msgs
-            .marketplace_list_title_tmpl
-            .replace("{}", &marketplaces.len().to_string());
-        self.append_msg(
-            Line::from(Span::styled(
-                title.clone(),
-                Style::default().fg(self.theme.accent),
-            )),
-            title,
-            LogItemKind::SystemPlain(SystemMsgStyle::Accent),
-        );
-        self.add_new_line();
-
-        if marketplaces.is_empty() {
-            let empty = msgs.marketplace_list_empty;
-            self.append_msg(
-                Line::from(Span::styled(empty, Style::default().fg(self.theme.fg))),
-                empty.to_string(),
-                LogItemKind::SystemPlain(SystemMsgStyle::Default),
-            );
-        } else {
-            let mut rows = vec![
-                msgs.marketplace_list_header.to_string(),
-                "|---|---|".to_string(),
-            ];
-            rows.extend(marketplaces.iter().map(|marketplace| {
-                format!(
-                    "| {} | {} |",
-                    marketplace.name,
-                    marketplace.source.git_url()
-                )
-            }));
-            let (styled, raw) =
-                format_table_lines(&rows, &self.theme, Some(self.table_layout_width()));
-            self.extend_msgs(
-                styled,
-                raw,
-                LogItemKind::SystemPlain(SystemMsgStyle::Default),
-            );
-        }
-
-        self.add_new_line();
-
-        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.scroll_log_to_bottom();
-        }
-    }
-
-    /// Displays a completed plugin operation from the isolated worker.
-    pub(crate) fn handle_plugin_event(&mut self, event: PluginEvent) {
-        self.dirty = true;
-        match event {
-            PluginEvent::Succeeded {
-                result,
-                refresh_skills,
-            } => {
-                match &result {
-                    PluginResult::ListedInstalled { plugins } => self.show_plugin_list(plugins),
-                    PluginResult::ListedMarketplaces { marketplaces } => {
-                        self.show_marketplace_list(marketplaces)
-                    }
-                    _ => self.add_system_message(format_plugin_result(&self.msgs(), &result)),
-                }
-                if refresh_skills && let Err(error) = crate::handlers::refresh_skills(self) {
-                    self.add_system_message(
-                        self.msgs().plugin_reload_failed_tmpl.replace("{}", &error),
-                    );
-                }
-            }
-            PluginEvent::Failed { operation, detail } => {
-                let detail = sanitize_plugin_failure_detail(&detail);
-                self.add_system_message(replace_two(
-                    self.msgs().plugin_operation_failed_tmpl,
-                    plugin_operation_label(&self.msgs(), &operation),
-                    &detail,
-                ));
-            }
-        }
-    }
-
     /// Revert `Done` → `Idle` after 2s (shared with `run_tui` main loop).
     pub(crate) fn maybe_expire_done_status(&mut self) {
         if let Status::Done = self.status
@@ -1117,7 +893,7 @@ mod lifecycle_tests {
     };
     use tokio::sync::mpsc::unbounded_channel;
 
-    use super::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
+    use crate::widgets::state::app::extensions::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
     use crate::{
         render::test_harness::render_log_panel_text,
         widgets::state::{App, Status},
@@ -1149,7 +925,7 @@ mod lifecycle_tests {
     fn tasks_changed_shows_panel_without_touching_log() {
         let mut app = make_app();
         assert!(!app.task_panel.visible);
-        let log_len_before = app.log_items.len();
+        let log_len_before = app.log.items.len();
         app.handle_agent_update(AgentUpdate::TasksChanged {
             tasks: vec![TaskSnapshot {
                 id: 1,
@@ -1174,10 +950,10 @@ mod lifecycle_tests {
             "sticky snapshot should carry the subject"
         );
         assert_eq!(
-            app.log_items.len(),
+            app.log.items.len(),
             log_len_before,
             "the task_* tool row already covers this in the Log, got:\n{:?}",
-            app.log_items
+            app.log.items
         );
     }
 
@@ -1364,7 +1140,8 @@ mod lifecycle_tests {
         });
 
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|message| message.raw.contains("已安装插件 demo（来自 fixture）"))
         );
@@ -1383,7 +1160,8 @@ mod lifecycle_tests {
         });
 
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|message| message.raw.contains("Installed plugin demo from fixture"))
         );
@@ -1407,7 +1185,8 @@ mod lifecycle_tests {
         });
 
         let joined = app
-            .log_items
+            .log
+            .items
             .iter()
             .map(|item| item.raw.as_str())
             .collect::<Vec<_>>()
@@ -1455,7 +1234,8 @@ mod lifecycle_tests {
         });
 
         let joined = app
-            .log_items
+            .log
+            .items
             .iter()
             .map(|item| item.raw.as_str())
             .collect::<Vec<_>>()
@@ -1465,13 +1245,15 @@ mod lifecycle_tests {
             "expected titled block, got:\n{joined}"
         );
         let official_line = app
-            .log_items
+            .log
+            .items
             .iter()
             .find(|item| item.raw.contains("claude-plugins-official"))
             .map(|item| item.raw.as_str())
             .expect("official marketplace row");
         let superpowers_line = app
-            .log_items
+            .log
+            .items
             .iter()
             .find(|item| item.raw.contains("superpowers-dev"))
             .map(|item| item.raw.as_str())
@@ -1500,7 +1282,8 @@ mod lifecycle_tests {
         });
 
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|message| message.raw == "安装插件失败：network timeout")
         );
@@ -1523,7 +1306,8 @@ mod lifecycle_tests {
         });
 
         let message = app
-            .log_items
+            .log
+            .items
             .iter()
             .find(|item| item.raw.starts_with("install plugin failed: "))
             .map(|item| item.raw.as_str())
@@ -1790,11 +1574,12 @@ mod lifecycle_tests {
         assert!(app.tools.active.is_empty());
         assert!(app.tools.blocks.is_empty());
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("Background task 018f3a2c completed")),
             "missing fallback message: {:?}",
-            app.log_items
+            app.log.items
         );
     }
 
@@ -2001,7 +1786,8 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
 
         let joined = app
-            .log_items
+            .log
+            .items
             .iter()
             .map(|item| item.raw.as_str())
             .collect::<Vec<_>>()
@@ -2028,7 +1814,8 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
 
         let joined = app
-            .log_items
+            .log
+            .items
             .iter()
             .map(|item| item.raw.as_str())
             .collect::<Vec<_>>()
@@ -2049,7 +1836,8 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
 
         let joined = app
-            .log_items
+            .log
+            .items
             .iter()
             .map(|item| item.raw.as_str())
             .collect::<Vec<_>>()
@@ -2089,26 +1877,28 @@ mod lifecycle_tests {
         app.add_task_stats_block();
 
         let stats_idx = app
-            .log_items
+            .log
+            .items
             .iter()
             .rposition(|item| item.raw.contains("Task stats:"))
             .expect("stats");
         app.copy_turn_ending_at_stats(stats_idx);
-        let copy_notice = app.log_items.last().expect("copy notice");
+        let copy_notice = app.log.items.last().expect("copy notice");
         assert!(copy_notice.raw.contains("已复制") || copy_notice.raw.contains("Copied"));
         assert!(!copy_notice.raw.contains("second question"));
 
         // Prefer clipboard_buffer when system clipboard is unavailable; otherwise
         // just verify the extracted range would exclude the first turn.
         let start = app
-            .log_items
+            .log
+            .items
             .iter()
             .position(|item| item.raw.contains("Task stats:"))
             .expect("first stats")
             + 1;
         let mut expected_parts = Vec::new();
         for i in start..stats_idx {
-            let line = app.log_items[i].raw.as_str();
+            let line = app.log.items[i].raw.as_str();
             if line.is_empty()
                 || crate::render::cells::separator::is_task_end_separator(line)
                 || crate::widgets::state::is_task_stats_line(line)
@@ -2221,22 +2011,24 @@ mod lifecycle_tests {
         )));
         assert!(matches!(app.status, Status::Idle));
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("LLM unavailable")),
             "error message should appear in log: {:?}",
-            app.log_items
+            app.log.items
         );
     }
 
     #[test]
     fn info_update_appends_system_message() {
         let mut app = make_app();
-        let before = app.log_items.len();
+        let before = app.log.items.len();
         app.handle_agent_update(AgentUpdate::Info("Cancelling...".into()));
-        assert!(app.log_items.len() > before);
+        assert!(app.log.items.len() > before);
         assert!(
-            app.log_items
+            app.log
+                .items
                 .last()
                 .is_some_and(|item| item.raw.contains("Cancelling"))
         );
@@ -2485,19 +2277,19 @@ mod lifecycle_tests {
     #[test]
     fn empty_started_finished_leaves_no_thinking_ui() {
         let mut app = make_app();
-        let before = app.log_items.len();
+        let before = app.log.items.len();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
         assert!(app.thinking.active.is_some());
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
         assert!(app.thinking.active.is_none());
         assert!(app.thinking.blocks.is_empty());
-        assert_eq!(app.log_items.len(), before);
+        assert_eq!(app.log.items.len(), before);
     }
 
     #[test]
     fn whitespace_only_delta_finished_leaves_no_thinking_block() {
         let mut app = make_app();
-        let before = app.log_items.len();
+        let before = app.log.items.len();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "   ".into(),
@@ -2505,7 +2297,7 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
         assert!(app.thinking.blocks.is_empty());
         assert!(app.thinking.active.is_none());
-        assert_eq!(app.log_items.len(), before);
+        assert_eq!(app.log.items.len(), before);
     }
 
     #[test]
@@ -2525,14 +2317,14 @@ mod lifecycle_tests {
     #[test]
     fn missing_thinking_started_creates_one_placeholder_not_source_rows() {
         let mut app = make_app();
-        let before = app.log_items.len();
+        let before = app.log.items.len();
 
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "first\nsecond".into(),
         )));
 
         assert_eq!(
-            app.log_items.len(),
+            app.log.items.len(),
             before + crate::render::cells::thinking::thinking_visual_rows(2)
         );
         assert_eq!(

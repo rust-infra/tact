@@ -249,9 +249,9 @@ impl App {
         self.append_blank(LogItemKind::AssistantMarkdown);
     }
 
-    /// Append one log row, keeping all row metadata together in `log_items`.
+    /// Append one log row, keeping all row metadata together in the coordinator.
     pub(crate) fn append_msg(&mut self, line: Line<'static>, raw: String, kind: LogItemKind) {
-        self.log_items.push(LogItem::new(line, raw, kind));
+        self.log.append_msg(line, raw, kind);
     }
 
     /// Append a whole-Markdown notice as a single log item.
@@ -268,12 +268,11 @@ impl App {
         content: impl Into<String>,
         kind: LogItemKind,
     ) {
-        self.log_items
-            .push(LogItem::markdown(content.into(), &self.theme, kind));
+        self.log.append_markdown(content.into(), &self.theme, kind);
     }
 
     pub(crate) fn append_blank(&mut self, kind: LogItemKind) {
-        self.append_msg(Line::from(""), String::new(), kind);
+        self.log.append_blank(kind);
     }
 
     pub(crate) fn extend_msgs(
@@ -282,10 +281,7 @@ impl App {
         raw_lines: Vec<String>,
         kind: LogItemKind,
     ) {
-        debug_assert_eq!(lines.len(), raw_lines.len());
-        for (line, raw) in lines.into_iter().zip(raw_lines) {
-            self.append_msg(line, raw, kind);
-        }
+        self.log.extend_msgs(lines, raw_lines, kind);
     }
 
     pub(crate) fn insert_msg(
@@ -295,7 +291,7 @@ impl App {
         raw: String,
         kind: LogItemKind,
     ) {
-        self.log_items.insert(idx, LogItem::new(line, raw, kind));
+        self.log.insert_msg(idx, line, raw, kind);
     }
 
     pub(crate) fn splice_msgs(
@@ -305,22 +301,15 @@ impl App {
         raw: Vec<String>,
         kind: LogItemKind,
     ) {
-        debug_assert_eq!(lines.len(), raw.len());
-        self.log_items.splice(
-            range,
-            lines
-                .into_iter()
-                .zip(raw)
-                .map(|(line, raw)| LogItem::new(line, raw, kind)),
-        );
+        self.log.splice_msgs(range, lines, raw, kind);
     }
 
     pub(crate) fn drain_msgs(&mut self, range: std::ops::Range<usize>) {
-        self.log_items.drain(range);
+        self.log.drain_msgs(range);
     }
 
     pub(crate) fn remove_msg(&mut self, idx: usize) {
-        self.log_items.remove(idx);
+        self.log.remove_msg(idx);
     }
 
     /// Sentinel row — rendered as a full-width rule with frozen elapsed label.
@@ -390,12 +379,12 @@ impl App {
         let mut block_start: Option<usize> = None;
         let mut block_end: Option<usize> = None;
         let mut result: Option<(usize, usize)> = None;
-        for phys_idx in 0..self.log_items.len() {
+        for phys_idx in 0..self.log.items.len() {
             if !self.is_message_visible(phys_idx) {
                 continue;
             }
             let is_code =
-                self.log_items[phys_idx].line.spans.iter().any(|s| {
+                self.log.items[phys_idx].line.spans.iter().any(|s| {
                     s.style.bg == Some(code_bg) || s.style.bg == Some(Color::Rgb(30, 35, 50))
                 });
             if is_code {
@@ -429,7 +418,8 @@ impl App {
     /// Returns None if no closed code block is found.
     pub(crate) fn extract_last_code_block(&self) -> Option<String> {
         let raw = self
-            .log_items
+            .log
+            .items
             .iter()
             .map(|item| item.raw.as_str())
             .collect::<Vec<_>>();

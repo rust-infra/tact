@@ -645,7 +645,7 @@ fn main_area_loading_spinner_when_executing() {
         presentation: ToolPresentationInfo::generic("bash"),
     });
     app.append_blank(LogItemKind::SystemTool);
-    app.loading_idx = Some(app.log_items.len().saturating_sub(1));
+    app.loading_idx = Some(app.log.items.len().saturating_sub(1));
 
     let text = render_main_area_text(&mut app, 100, 24);
 

@@ -154,7 +154,8 @@ mod render_tests {
         assert!(
             buffer_contains(terminal.backend().buffer(), "provider timeout")
                 || app
-                    .log_items
+                    .log
+                    .items
                     .iter()
                     .any(|item| item.raw.contains("provider timeout")),
             "error should be visible in log or buffer"

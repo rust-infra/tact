@@ -245,7 +245,7 @@ fn mermaid_popup_copy_uses_source_not_ascii() {
     app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
 
     assert_eq!(app.mermaid_blocks.len(), 1);
-    let ascii = app.log_items[app.mermaid_blocks[0].start_idx].raw.clone();
+    let ascii = app.log.items[app.mermaid_blocks[0].start_idx].raw.clone();
     assert!(
         !ascii.contains("sequenceDiagram"),
         "raw_messages should hold ASCII diagram, got: {ascii}"
@@ -302,7 +302,8 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
         "both fenced blocks should become cards"
     );
     let leaked: Vec<_> = app
-        .log_items
+        .log
+        .items
         .iter()
         .enumerate()
         .filter(|(_, item)| {

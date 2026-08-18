@@ -111,7 +111,8 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(requests.try_recv(), Ok(PluginRequest::List)));
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|message| message.raw.contains("queued"))
         );
@@ -126,7 +127,8 @@ mod tests {
 
         assert!(requests.try_recv().is_err());
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|message| message.raw.starts_with("Usage: /plugin"))
         );
@@ -145,11 +147,12 @@ mod tests {
         assert_eq!(app.input_cursor, "/plugin ".len());
         assert!(requests.try_recv().is_err());
         assert!(
-            !app.log_items
+            !app.log
+                .items
                 .iter()
                 .any(|message| message.raw.starts_with("Usage: /plugin")),
             "bare /plugin must not spam the log: {:?}",
-            app.log_items
+            app.log.items
         );
         assert!(
             app.flash_msg
@@ -169,11 +172,12 @@ mod tests {
         handle_plugin_command(&mut app);
 
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|message| message.raw.contains("插件请求已加入队列")),
             "plugin feedback should use the selected language: {:?}",
-            app.log_items
+            app.log.items
         );
     }
 }

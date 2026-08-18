@@ -1,0 +1,11 @@
+[package]
+name = "agent_tui_kit"
+version = "0.1.0"
+edition = "2024"
+description = "Reusable agent-TUI component kit: thinking/tool cards, streaming markdown log, popup family, task/plan panels. Feed an AgentUpdate stream in, receive Commands out."
+license = "MIT"
+
+[dependencies]
+tact_protocol = { path = "../protocol" }
+crossterm = { workspace = true }
+ratatui = { workspace = true }

@@ -9,7 +9,8 @@ pub enum Language {
 }
 
 impl Language {
-    pub(crate) fn all() -> &'static [Language] {
+    /// All supported languages, in cycle order.
+    pub fn all() -> &'static [Language] {
         &[Language::English, Language::Chinese]
     }
 

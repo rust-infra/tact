@@ -91,16 +91,16 @@ pub(crate) fn render_log_panel_with_borders(
     // 当前消息数量 ≠ 上次缓存时的消息数量  →  缓存过期，需要重建
     // ```
     // 这是 Phase 0 唯一的触发条件——因为只有消息增删才会改变可见索引（消息新增可能落在 thinking block 内部，需要重新判断是否可见）。消息内容变化不改变可见性，所以不用重建。
-    let indices_stale = app.log_scroll.visible_indices_ver != app.log_items.len();
+    let indices_stale = app.log_scroll.visible_indices_ver != app.log.items.len();
     if indices_stale {
         app.log_scroll.visible_indices.clear();
         app.log_scroll.phys_to_logical_cache.clear();
         app.log_scroll
             .phys_to_logical_cache
-            .resize(app.log_items.len(), None);
+            .resize(app.log.items.len(), None);
         let mut total_logical = 0;
         // 遍历所有消息，将可见的物理索引添加到 visible_indices 中，并更新缓存
-        for phys in 0..app.log_items.len() {
+        for phys in 0..app.log.items.len() {
             if app.is_message_visible(phys) {
                 app.log_scroll.visible_indices.push(phys);
                 app.log_scroll.phys_to_logical_cache[phys] = Some(total_logical);
@@ -108,7 +108,7 @@ pub(crate) fn render_log_panel_with_borders(
             }
         }
         // update visible_indices_ver to mark cache valid
-        app.log_scroll.visible_indices_ver = app.log_items.len();
+        app.log_scroll.visible_indices_ver = app.log.items.len();
     }
     // total_logical: 可见的逻辑行数量
     let mut total_logical = app.log_scroll.visible_indices.len();
@@ -133,7 +133,7 @@ pub(crate) fn render_log_panel_with_borders(
     // ```
     //
     // Rebuild when message count, panel width, or theme changes.
-    let cache_valid = app.log_scroll.visual_cache_ver == app.log_items.len()
+    let cache_valid = app.log_scroll.visual_cache_ver == app.log.items.len()
         && app.log_scroll.visual_cache_width == wrap_width as u16
         && app.log_scroll.visual_cache_theme == app.theme.name;
 
@@ -155,7 +155,8 @@ pub(crate) fn render_log_panel_with_borders(
             // cache stays consistent (same pattern as tool placeholder rows).
             if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i)
                 && let Some(cell) = app
-                    .log_items
+                    .log
+                    .items
                     .get(phys_idx)
                     .and_then(|item| item.markdown_cell.as_ref())
             {
@@ -170,7 +171,7 @@ pub(crate) fn render_log_panel_with_borders(
             }
 
             let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                let item = &app.log_items[phys_idx];
+                let item = &app.log.items[phys_idx];
                 if super::cells::separator::is_task_end_separator(&item.raw)
                     || item.line.spans.is_empty()
                 {
@@ -192,7 +193,7 @@ pub(crate) fn render_log_panel_with_borders(
                 Line::from(Span::styled(app.stream.buffer.as_str(), app.theme.fg))
             };
             let wrapped = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                if super::cells::separator::is_task_end_separator(&app.log_items[phys_idx].raw) {
+                if super::cells::separator::is_task_end_separator(&app.log.items[phys_idx].raw) {
                     vec![Line::default()]
                 } else {
                     let indent = app.nested_log_indent(phys_idx) as usize;
@@ -209,7 +210,7 @@ pub(crate) fn render_log_panel_with_borders(
                 .push(app.log_scroll.visual_cache.len());
         }
         app.log_scroll.visual_cache_width = wrap_width as u16;
-        app.log_scroll.visual_cache_ver = app.log_items.len();
+        app.log_scroll.visual_cache_ver = app.log.items.len();
         app.log_scroll.visual_cache_theme = app.theme.name;
     }
 
@@ -293,14 +294,14 @@ pub(crate) fn render_log_panel_with_borders(
         // Compute the byte-range selection for this logical row, if any.
         let selection_range = app.mouse.log_selection.and_then(|sel| {
             let phys = phys_idx?;
-            sel.byte_range_for(phys, app.log_items[phys].raw.len())
+            sel.byte_range_for(phys, app.log.items[phys].raw.len())
         });
 
         // ── Message category separator ──────────────────────────────
         // Between message groups of different types (user ↔ system ↔ assistant),
         // insert a thin decorative separator line.
         if let Some(phys) = phys_idx {
-            let kind = app.log_items[phys].kind;
+            let kind = app.log.items[phys].kind;
             let category = match kind {
                 LogItemKind::User => "user",
                 LogItemKind::AssistantMarkdown => "assistant",
@@ -438,7 +439,8 @@ pub(crate) fn render_log_panel_with_borders(
         // logical row's visual start. `vs_cache` already reserved its rows.
         if let Some(phys) = phys_idx
             && let Some(cell) = app
-                .log_items
+                .log
+                .items
                 .get(phys)
                 .and_then(|item| item.markdown_cell.as_ref())
         {
@@ -449,9 +451,9 @@ pub(crate) fn render_log_panel_with_borders(
 
         // Task-end rule: full-width line with centered elapsed label.
         if let Some(phys) = phys_idx
-            && super::cells::separator::is_task_end_separator(&app.log_items[phys].raw)
+            && super::cells::separator::is_task_end_separator(&app.log.items[phys].raw)
         {
-            let raw = &app.log_items[phys].raw;
+            let raw = &app.log.items[phys].raw;
             let msgs = app.msgs();
             let sep = match super::cells::separator::task_end_elapsed_secs(raw) {
                 Some(secs) => super::cells::separator::TaskEndSeparator::with_elapsed(
@@ -470,7 +472,7 @@ pub(crate) fn render_log_panel_with_borders(
         let cached_lines: Vec<Line<'static>> =
             app.log_scroll.visual_cache[cache_start..cache_end].to_vec();
         let raw_text = phys_idx
-            .map(|p| app.log_items[p].raw.clone())
+            .map(|p| app.log.items[p].raw.clone())
             .unwrap_or_default();
 
         let indent_cols = phys_idx

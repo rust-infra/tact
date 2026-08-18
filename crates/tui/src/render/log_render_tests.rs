@@ -97,7 +97,7 @@ fn buffer_cell_of(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<(u16
 fn log_line_selection_applies_reversed_modifier() {
     let mut app = make_app();
     app.add_system_message("select this entire line".into());
-    let raw = app.log_items[0].raw.clone();
+    let raw = app.log.items[0].raw.clone();
     app.mouse.log_selection = Some(LogSelection::full_message(0, raw.len()));
 
     let terminal = render_log_panel_terminal(&mut app, 80, 16);
@@ -473,7 +473,7 @@ fn log_loading_spinner_shows_braille_and_label() {
         total: 1,
     };
     app.append_blank(LogItemKind::SystemTool);
-    app.loading_idx = Some(app.log_items.len().saturating_sub(1));
+    app.loading_idx = Some(app.log.items.len().saturating_sub(1));
     app.spinner_frame = 3;
 
     let text = render_log_panel_text(&mut app, 80, 16);

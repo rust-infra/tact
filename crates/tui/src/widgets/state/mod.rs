@@ -15,6 +15,7 @@ pub(crate) mod account;
 pub(crate) mod app;
 mod file_picker;
 mod input_history;
+pub(crate) mod log_coordinator;
 pub(crate) mod log_messages;
 mod log_scroll;
 mod mouse_state;
@@ -33,6 +34,7 @@ mod voice;
 pub(crate) use account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
+pub(crate) use log_coordinator::LogCoordinator;
 pub(crate) use log_scroll::LogScroll;
 pub(crate) use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};
 pub(crate) use plan_panel::PlanPanel;
@@ -307,7 +309,7 @@ pub struct App {
     pub(crate) cmd_line: String,
     /// Model context window in tokens (from agent config `model_context_window`).
     pub(crate) model_context_window: usize,
-    pub(crate) log_items: Vec<LogItem>,
+    pub(crate) log: LogCoordinator,
     pub(crate) plan: PlanPanel,
     pub(crate) status: Status,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,

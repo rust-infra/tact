@@ -11,9 +11,9 @@ use crate::{
     i18n::Language,
     theme::Theme,
     widgets::state::{
-        AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogScroll,
-        MouseState, PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState, Status,
-        StatusBarState, StreamState, TaskPanelState, ThinkingState, ToolState, VoiceState,
+        AccountState, App, FilePicker, FocusedPanel, InputHistory, InputMode, LogCoordinator,
+        LogScroll, MouseState, PlanPanel, SelectKind, SelectPopup, SkillEntry, SlashCommandState,
+        Status, StatusBarState, StreamState, TaskPanelState, ThinkingState, ToolState, VoiceState,
     },
 };
 
@@ -66,7 +66,7 @@ impl App {
             pending_cancel_btn_area: ratatui::layout::Rect::default(),
             cmd_line: String::new(),
             model_context_window: 200_000,
-            log_items: Vec::new(),
+            log: LogCoordinator::default(),
             plan: PlanPanel::default(),
             status: Status::Idle,
             agent_rx,

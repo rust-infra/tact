@@ -5,10 +5,14 @@
 // submodule render/handler functions.
 
 mod handlers;
-mod i18n;
+pub(crate) mod i18n {
+    pub(crate) use agent_tui_kit::i18n::*;
+}
 mod render;
 pub(crate) mod system_prompt;
-mod theme;
+pub(crate) mod theme {
+    pub(crate) use agent_tui_kit::theme::*;
+}
 mod theme_detection;
 
 mod widgets;
@@ -309,7 +313,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 if size != last_size {
                     last_size = size;
                     app.log_scroll.state =
-                        ScrollbarState::new(app.log_items.len().saturating_sub(1));
+                        ScrollbarState::new(app.log.items.len().saturating_sub(1));
                 }
                 app.log_scroll.height = log_area.height.saturating_sub(2);
                 let chunks = Layout::default()

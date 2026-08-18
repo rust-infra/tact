@@ -214,11 +214,12 @@ mod tests {
         assert_eq!(app.input_cursor, "/plugin ".len());
         assert!(matches!(app.input_mode, InputMode::Insert));
         assert!(
-            !app.log_items
+            !app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("Usage: /plugin") || item.raw.contains("用法")),
             "must not execute bare /plugin from palette: {:?}",
-            app.log_items
+            app.log.items
         );
     }
 }

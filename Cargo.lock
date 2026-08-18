@@ -9,6 +9,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent_tui_kit"
+version = "0.1.0"
+dependencies = [
+ "crossterm 0.28.1",
+ "ratatui",
+ "tact_protocol",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5343,6 +5352,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 name = "tui"
 version = "0.1.0"
 dependencies = [
+ "agent_tui_kit",
  "anyhow",
  "arboard",
  "base64",

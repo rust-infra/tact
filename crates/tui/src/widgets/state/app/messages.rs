@@ -281,7 +281,7 @@ impl App {
     /// Range: after the previous stats line (or session start) .. `stats_phys`
     /// (exclusive). Skips blank rows, task-end separators, and other stats rows.
     pub(crate) fn copy_turn_ending_at_stats(&mut self, stats_phys: usize) {
-        let Some(item) = self.log_items.get(stats_phys) else {
+        let Some(item) = self.log.items.get(stats_phys) else {
             return;
         };
         if !is_task_stats_line(&item.raw) {
@@ -289,12 +289,12 @@ impl App {
         }
         let start = (0..stats_phys)
             .rev()
-            .find(|&i| is_task_stats_line(&self.log_items[i].raw))
+            .find(|&i| is_task_stats_line(&self.log.items[i].raw))
             .map(|i| i + 1)
             .unwrap_or(0);
         let mut parts: Vec<&str> = Vec::new();
         for i in start..stats_phys {
-            let line = self.log_items[i].raw.as_str();
+            let line = self.log.items[i].raw.as_str();
             if line.is_empty() || is_task_end_separator(line) || is_task_stats_line(line) {
                 continue;
             }
@@ -367,25 +367,25 @@ mod tests {
 
         app.add_system_message("❌ Error: boom".into());
         assert_eq!(
-            app.log_items.last().unwrap().line.spans[0].style.fg,
+            app.log.items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.error)
         );
 
         app.add_system_message("✓ Selected: x".into());
         assert_eq!(
-            app.log_items.last().unwrap().line.spans[0].style.fg,
+            app.log.items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.success)
         );
 
         app.add_system_message("  ✓ still success".into());
         assert_eq!(
-            app.log_items.last().unwrap().line.spans[0].style.fg,
+            app.log.items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.success)
         );
 
         app.add_system_message("📋 Copied: x".into());
         assert_eq!(
-            app.log_items.last().unwrap().line.spans[0].style.fg,
+            app.log.items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.accent)
         );
     }
@@ -396,16 +396,17 @@ mod tests {
         app.append_system_markdown("  **not bold**");
 
         assert!(
-            app.log_items
+            app.log
+                .items
                 .last()
                 .is_some_and(|item| item.markdown_cell.is_some())
         );
         assert_eq!(
-            app.log_items.last().map(|item| item.kind),
+            app.log.items.last().map(|item| item.kind),
             Some(LogItemKind::SystemMarkdown)
         );
         assert_eq!(
-            app.log_items.last().map(|item| item.raw.as_str()),
+            app.log.items.last().map(|item| item.raw.as_str()),
             Some("  **not bold**")
         );
     }
@@ -422,15 +423,15 @@ mod tests {
             LogItemKind::SystemTool,
         );
 
-        let line = app.log_items.last().expect("rendered system tool row");
+        let line = app.log.items.last().expect("rendered system tool row");
         assert_eq!(line.line.spans.len(), 1);
         assert_eq!(line.line.spans[0].style.fg, Some(app.theme.accent));
         assert_eq!(
-            app.log_items.last().map(|item| item.kind),
+            app.log.items.last().map(|item| item.kind),
             Some(LogItemKind::SystemTool)
         );
         assert_eq!(
-            app.log_items.last().map(|item| item.raw.as_str()),
+            app.log.items.last().map(|item| item.raw.as_str()),
             Some("  1. inspect files")
         );
     }

@@ -627,9 +627,9 @@ mod integration_tests {
             md,
         )]);
 
-        assert_eq!(app.log_items.len(), 1);
+        assert_eq!(app.log.items.len(), 1);
         assert!(
-            app.log_items[0].markdown_cell.is_some(),
+            app.log.items[0].markdown_cell.is_some(),
             "assistant history should use the width-aware MarkdownCell"
         );
 
@@ -653,12 +653,12 @@ mod integration_tests {
         assert!(text.contains("fn hi() {}"), "{text}");
         // One physical message: the markdown is a single cell.
         assert_eq!(
-            app.log_items.len(),
+            app.log.items.len(),
             1,
             "MdInfo must append exactly one message"
         );
-        assert!(app.log_items[0].markdown_cell.is_some());
-        assert_eq!(app.log_items[0].raw, md);
+        assert!(app.log.items[0].markdown_cell.is_some());
+        assert_eq!(app.log.items[0].raw, md);
     }
 
     #[test]
@@ -746,7 +746,7 @@ mod integration_tests {
             for (s, r) in styled.into_iter().zip(raw) {
                 app.append_msg(s, r, LogItemKind::AssistantMarkdown);
             }
-            let height = app.log_items.len() as u16 + 2;
+            let height = app.log.items.len() as u16 + 2;
             let terminal = render_log_panel_terminal(&mut app, width, height);
             let buf = terminal.backend().buffer();
 
