@@ -48,23 +48,7 @@ pub struct Ctx<'a> {
 
 /// Shared-log ownership + model (priority-0 component), re-exported at the
 /// crate root for the `Ctx` / prelude.
-pub use state::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle};
-
-/// Current keyboard input mode, deciding how key presses are interpreted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InputMode {
-    /// Vim-like normal mode (default).
-    #[default]
-    Normal,
-    /// Text entry.
-    Insert,
-    /// Slash-command palette.
-    Palette,
-    /// List selection popup.
-    Select,
-    /// File picker.
-    FilePicker,
-}
+pub use state::{InputMode, LogCoordinator, LogItem, LogItemKind, SystemMsgStyle};
 
 /// A message queued while the agent is busy (Codex-style submit-on-idle).
 pub struct PendingMessage(pub String);

@@ -521,7 +521,13 @@ pub(crate) fn render_log_panel_with_borders(
 
     // Code cards remain viewport-clipped overlays. Thinking cards are direct
     // cells in the Phase 3 renderer above.
-    super::cells::code::render_code_cards(frame, area, app, visual_scroll, visible_height);
+    let render_ctx = agent_tui_kit::render::ctx::RenderCtx {
+        theme: &app.theme,
+        messages: app.msgs(),
+        log_scroll: &app.log_scroll,
+        code_blocks: &app.code_blocks,
+    };
+    super::cells::code::render_code_cards(frame, area, &render_ctx, visual_scroll, visible_height);
 
     // Loading spinner overlay on the loading placeholder row (if present).
     render_loading_spinner(frame, area, app, visual_scroll, visible_height);

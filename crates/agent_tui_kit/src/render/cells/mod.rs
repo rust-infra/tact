@@ -4,6 +4,7 @@
 //! `tool`, `code` remain in `crates/tui` until their state/cluster
 //! dependencies are extracted (see the plan's Phase 3 next-slice findings).
 
+pub mod code;
 pub mod markdown;
 pub mod separator;
 pub mod text;

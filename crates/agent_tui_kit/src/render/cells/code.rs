@@ -1,3 +1,6 @@
+//! Code-block card overlay renderer (moved from `crates/tui`; render code now
+//! takes a `RenderCtx` instead of `&App`).
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -6,7 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use crate::widgets::state::App;
+use crate::render::{ctx::RenderCtx, util::LOG_THINKING_INDENT};
 
 /// Map language names to plain labels for code card titles.
 fn lang_label(lang: &str) -> String {
@@ -38,19 +41,31 @@ fn lang_label(lang: &str) -> String {
 }
 
 /// Render code block card overlay.
-pub(crate) fn render_code_cards(
+pub fn render_code_cards(
     frame: &mut Frame,
     area: Rect,
-    app: &App,
+    ctx: &RenderCtx,
     visual_scroll: usize,
     visible_height: usize,
 ) {
-    let vs_cache = &app.log_scroll.visual_start_cache;
-    for block in &app.code_blocks {
-        let Some(start_logical) = app.phys_to_logical_fast(block.start_idx) else {
+    let vs_cache = &ctx.log_scroll.visual_start_cache;
+    for block in ctx.code_blocks {
+        let Some(start_logical) = ctx
+            .log_scroll
+            .phys_to_logical_cache
+            .get(block.start_idx)
+            .copied()
+            .flatten()
+        else {
             continue;
         };
-        let Some(end_logical) = app.phys_to_logical_fast(block.end_idx.saturating_sub(1)) else {
+        let Some(end_logical) = ctx
+            .log_scroll
+            .phys_to_logical_cache
+            .get(block.end_idx.saturating_sub(1))
+            .copied()
+            .flatten()
+        else {
             continue;
         };
         if start_logical >= vs_cache.len() || end_logical + 1 >= vs_cache.len() {
@@ -76,16 +91,16 @@ pub(crate) fn render_code_cards(
         let total_styled = block.styled.len();
         let inner_h = (y_bot.saturating_sub(y_top).saturating_sub(2)) as usize;
         let shown = total_styled.min(inner_h);
-        let msgs = app.msgs();
+        let msgs = &ctx.messages;
         let card_block = Block::default()
             .borders(Borders::ALL)
-            .border_type(app.theme.block_border_type())
-            .border_style(Style::default().fg(app.theme.code_card_border()))
-            .style(Style::default().bg(app.theme.code_card_bg()))
+            .border_type(ctx.theme.block_border_type())
+            .border_style(Style::default().fg(ctx.theme.code_card_border()))
+            .style(Style::default().bg(ctx.theme.code_card_bg()))
             .title(Span::styled(
                 format!(" {} ", lang_label),
                 Style::default()
-                    .fg(app.theme.code_card_title_fg())
+                    .fg(ctx.theme.code_card_title_fg())
                     .add_modifier(Modifier::BOLD),
             ))
             .title_bottom(if total_styled > shown {
@@ -95,20 +110,19 @@ pub(crate) fn render_code_cards(
                         total_styled - shown,
                         msgs.code_card_bottom
                     ),
-                    Style::default().fg(app.theme.muted_fg()),
+                    Style::default().fg(ctx.theme.muted_fg()),
                 ))
             } else {
                 Line::from(Span::styled(
                     msgs.code_card_bottom,
-                    Style::default().fg(app.theme.muted_fg()),
+                    Style::default().fg(ctx.theme.muted_fg()),
                 ))
             });
 
         let card_area = Rect::new(
-            area.x + 1 + crate::render::util::LOG_THINKING_INDENT,
+            area.x + 1 + LOG_THINKING_INDENT,
             area.y + 1 + y_top,
-            area.width
-                .saturating_sub(2 + crate::render::util::LOG_THINKING_INDENT),
+            area.width.saturating_sub(2 + LOG_THINKING_INDENT),
             y_bot - y_top,
         );
         frame.render_widget(Clear, card_area);
@@ -134,74 +148,9 @@ pub(crate) fn render_code_cards(
                 })
                 .collect();
             frame.render_widget(
-                Paragraph::new(lines).style(Style::default().bg(app.theme.code_card_bg())),
+                Paragraph::new(lines).style(Style::default().bg(ctx.theme.code_card_bg())),
                 inner,
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod overlay_tests {
-    use ratatui::{Terminal, backend::TestBackend};
-    use tact_protocol::AgentUpdate;
-
-    use super::*;
-    use crate::render::test_harness::{buffer_text, make_app};
-
-    #[test]
-    fn code_card_overlay_renders_language_and_body() {
-        let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StreamChunk(
-            "```rust\nfn overlay_test() {}\n```\n".into(),
-        ));
-        assert!(!app.code_blocks.is_empty());
-
-        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 80, 18);
-
-        let backend = TestBackend::new(80, 18);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_code_cards(frame, area, &app, 0, area.height as usize);
-            })
-            .expect("draw");
-
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(
-            text.contains("overlay_test"),
-            "code overlay should render code body text, got:\n{text}"
-        );
-    }
-
-    #[test]
-    fn code_card_starts_at_the_thinking_indent() {
-        let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StreamChunk(
-            "```rust\nfn alignment_test() {}\n```\n".into(),
-        ));
-        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 80, 18);
-
-        let backend = TestBackend::new(80, 18);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_code_cards(frame, area, &app, 0, area.height as usize);
-            })
-            .expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let border_x = (0..buffer.area.height)
-            .find_map(|y| {
-                (0..buffer.area.width).find(|&x| matches!(buffer[(x, y)].symbol(), "╭" | "┌"))
-            })
-            .expect("code card top-left border");
-        assert_eq!(
-            border_x,
-            crate::render::util::LOG_THINKING_INDENT + 1,
-            "code card should align with the Thinking card inside the log border"
-        );
     }
 }

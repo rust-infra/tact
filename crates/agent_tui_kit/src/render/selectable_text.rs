@@ -5,13 +5,13 @@ use ratatui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::widgets::state::{PopupHitRow, PopupTextHit};
+use crate::state::{PopupHitRow, PopupTextHit};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SourceLine<'a> {
-    pub(crate) text: &'a str,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
+pub struct SourceLine<'a> {
+    pub text: &'a str,
+    pub start: usize,
+    pub end: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -22,30 +22,30 @@ struct DisplayGrapheme {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct DisplayRow {
-    pub(crate) line_start: usize,
-    pub(crate) line_end: usize,
+pub struct DisplayRow {
+    pub line_start: usize,
+    pub line_end: usize,
     graphemes: Vec<DisplayGrapheme>,
-    pub(crate) cells: Vec<PopupTextHit>,
+    pub cells: Vec<PopupTextHit>,
 }
 
 /// Wrapped-layout snapshot reused across frames while the popup content and
 /// body width are unchanged. Avoids re-wrapping the whole conversation (which
 /// can be tens of thousands of lines for a live subagent) on every render.
 #[derive(Debug, Clone)]
-pub(crate) struct PopupLayoutCache {
+pub struct PopupLayoutCache {
     /// Live output grows over time; markdown vs plain styling differs. Both are
     /// part of the key so a live→completed transition invalidates the cache.
-    pub(crate) is_live: bool,
-    pub(crate) content_len: usize,
-    pub(crate) width: u16,
-    pub(crate) raw_text: String,
-    pub(crate) display_rows: Vec<DisplayRow>,
-    pub(crate) line_count: usize,
+    pub is_live: bool,
+    pub content_len: usize,
+    pub width: u16,
+    pub raw_text: String,
+    pub display_rows: Vec<DisplayRow>,
+    pub line_count: usize,
 }
 
 impl PopupLayoutCache {
-    pub(crate) fn is_valid(&self, is_live: bool, content_len: usize, width: u16) -> bool {
+    pub fn is_valid(&self, is_live: bool, content_len: usize, width: u16) -> bool {
         self.is_live == is_live && self.content_len == content_len && self.width == width
     }
 }
@@ -55,7 +55,7 @@ fn hit_intersects(hit: PopupTextHit, selection: &std::ops::Range<usize>) -> bool
 }
 
 impl DisplayRow {
-    pub(crate) fn hit_row(&self, screen_y: u16, text_x: u16) -> PopupHitRow {
+    pub fn hit_row(&self, screen_y: u16, text_x: u16) -> PopupHitRow {
         PopupHitRow {
             screen_y,
             text_x,
@@ -65,7 +65,7 @@ impl DisplayRow {
         }
     }
 
-    pub(crate) fn spans(&self, selection: Option<&std::ops::Range<usize>>) -> Vec<Span<'static>> {
+    pub fn spans(&self, selection: Option<&std::ops::Range<usize>>) -> Vec<Span<'static>> {
         let mut spans = Vec::new();
         let mut content = String::new();
         let mut style = None;
@@ -91,7 +91,7 @@ impl DisplayRow {
     }
 }
 
-pub(crate) fn source_lines(content: &str) -> Vec<SourceLine<'_>> {
+pub fn source_lines(content: &str) -> Vec<SourceLine<'_>> {
     if content.is_empty() {
         return vec![SourceLine {
             text: "",
@@ -135,11 +135,7 @@ pub(crate) fn source_lines(content: &str) -> Vec<SourceLine<'_>> {
     lines
 }
 
-pub(crate) fn scalar_styles(
-    line: Option<&Line<'_>>,
-    fallback: Style,
-    scalar_count: usize,
-) -> Vec<Style> {
+pub fn scalar_styles(line: Option<&Line<'_>>, fallback: Style, scalar_count: usize) -> Vec<Style> {
     let Some(line) = line else {
         return vec![fallback; scalar_count];
     };
@@ -156,7 +152,7 @@ pub(crate) fn scalar_styles(
 
 /// Wrap every source line of `raw_text` into display rows, applying the styles
 /// from `styled_lines` (falling back to `fallback` where a line is missing).
-pub(crate) fn layout_all_display_rows(
+pub fn layout_all_display_rows(
     raw_text: &str,
     styled_lines: &[Line<'_>],
     fallback: Style,
@@ -180,7 +176,7 @@ pub(crate) fn layout_all_display_rows(
     display_rows
 }
 
-pub(crate) fn layout_display_rows(
+pub fn layout_display_rows(
     text: &str,
     line_start: usize,
     styles: &[Style],

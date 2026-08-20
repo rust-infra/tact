@@ -1,22 +1,22 @@
 /// Select popup state: independently manages prompt, options, selected index, and response channel.
-pub(crate) struct SelectPopup {
+pub struct SelectPopup {
     /// Popup prompt text.
-    pub(crate) prompt: String,
+    pub prompt: String,
     /// Option list.
-    pub(crate) options: Vec<String>,
+    pub options: Vec<String>,
     /// Index of the currently focused option (cursor).
-    pub(crate) selected: usize,
+    pub selected: usize,
     /// Response channel for single-select (permission / default ask_user).
-    pub(crate) respond: Option<tokio::sync::oneshot::Sender<Option<usize>>>,
+    pub respond: Option<tokio::sync::oneshot::Sender<Option<usize>>>,
     /// Response channel for multi-select (`ask_user` with `multi_select`).
-    pub(crate) respond_multi: Option<tokio::sync::oneshot::Sender<Option<Vec<usize>>>>,
+    pub respond_multi: Option<tokio::sync::oneshot::Sender<Option<Vec<usize>>>>,
     /// When true, Space toggles checkboxes; Enter submits all checked indices.
-    pub(crate) multi: bool,
+    pub multi: bool,
     /// Checkbox state per option (only used when `multi`).
-    pub(crate) checked: Vec<bool>,
+    pub checked: Vec<bool>,
     /// When false, confirming does not append a separate log line (e.g. permission
     /// choices are already shown on the tool meta row).
-    pub(crate) log_confirm: bool,
+    pub log_confirm: bool,
 }
 
 impl Default for SelectPopup {
@@ -41,7 +41,7 @@ impl SelectPopup {
     }
 
     /// Set popup content without a oneshot channel (local TUI flows like `/model`).
-    pub(crate) fn set_local(
+    pub fn set_local(
         &mut self,
         prompt: String,
         options: Vec<String>,
@@ -58,7 +58,7 @@ impl SelectPopup {
     }
 
     /// Single-select popup (permission / default ask_user). Unchanged contract.
-    pub(crate) fn set(
+    pub fn set(
         &mut self,
         prompt: String,
         options: Vec<String>,
@@ -76,7 +76,7 @@ impl SelectPopup {
     }
 
     /// Multi-select popup (`ask_user` with `multi_select: true`).
-    pub(crate) fn set_multi(
+    pub fn set_multi(
         &mut self,
         prompt: String,
         options: Vec<String>,
@@ -95,7 +95,7 @@ impl SelectPopup {
     }
 
     /// Confirm single-select: send the focused index. No-op for multi (use [`confirm_multi`]).
-    pub(crate) fn confirm(&mut self) -> Option<usize> {
+    pub fn confirm(&mut self) -> Option<usize> {
         if self.multi {
             return None;
         }
@@ -108,7 +108,7 @@ impl SelectPopup {
     }
 
     /// Confirm multi-select: send all checked indices (may be empty).
-    pub(crate) fn confirm_multi(&mut self) -> Vec<usize> {
+    pub fn confirm_multi(&mut self) -> Vec<usize> {
         let idxs: Vec<usize> = self
             .checked
             .iter()
@@ -123,7 +123,7 @@ impl SelectPopup {
     }
 
     /// Cancel selection: send None on the active channel.
-    pub(crate) fn cancel(&mut self) {
+    pub fn cancel(&mut self) {
         if let Some(tx) = self.respond.take() {
             let _ = tx.send(None);
         }
@@ -134,7 +134,7 @@ impl SelectPopup {
         self.checked.clear();
     }
 
-    pub(crate) fn toggle_checked(&mut self) {
+    pub fn toggle_checked(&mut self) {
         if !self.multi || self.options.is_empty() {
             return;
         }
@@ -145,14 +145,14 @@ impl SelectPopup {
     }
 
     /// Move selection down.
-    pub(crate) fn move_down(&mut self) {
+    pub fn move_down(&mut self) {
         if self.selected + 1 < self.options.len() {
             self.selected += 1;
         }
     }
 
     /// Move selection up.
-    pub(crate) fn move_up(&mut self) {
+    pub fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
         }

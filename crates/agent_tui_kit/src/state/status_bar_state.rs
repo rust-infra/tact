@@ -1,22 +1,22 @@
 /// Bottom status bar data: model info, token stats, etc.
-pub(crate) struct StatusBarState {
-    pub(crate) git_branch: String,
-    pub(crate) model_name: String,
-    pub(crate) model_max_tokens: u32,
-    pub(crate) model_thinking_budget: Option<u32>,
-    pub(crate) model_reasoning_effort: Option<String>,
-    pub(crate) token_prompt: u32,
-    pub(crate) token_completion: u32,
-    pub(crate) token_total: u32,
-    pub(crate) token_cache_hit: u32,
-    pub(crate) token_cache_miss: u32,
-    pub(crate) token_reasoning: u32,
+pub struct StatusBarState {
+    pub git_branch: String,
+    pub model_name: String,
+    pub model_max_tokens: u32,
+    pub model_thinking_budget: Option<u32>,
+    pub model_reasoning_effort: Option<String>,
+    pub token_prompt: u32,
+    pub token_completion: u32,
+    pub token_total: u32,
+    pub token_cache_hit: u32,
+    pub token_cache_miss: u32,
+    pub token_reasoning: u32,
     /// Active permission mode: "default" | "plan" | "auto".
-    pub(crate) permission_mode: String,
+    pub permission_mode: String,
 }
 
 impl StatusBarState {
-    pub(crate) fn new(git_branch: String) -> Self {
+    pub fn new(git_branch: String) -> Self {
         Self {
             git_branch,
             model_name: String::new(),

@@ -7,8 +7,8 @@
 
 pub use tact_protocol::agent::{
     AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, TaskSnapshot,
-    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
-    ToolPresentationInfo, ToolVisualKind,
+    TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind,
+    ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
 };
 pub use tact_protocol::tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,

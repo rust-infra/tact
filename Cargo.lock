@@ -17,6 +17,8 @@ dependencies = [
  "ratatui",
  "ratatui-markdown",
  "tact_protocol",
+ "tokio",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

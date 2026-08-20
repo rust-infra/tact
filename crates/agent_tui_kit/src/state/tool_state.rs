@@ -1,27 +1,27 @@
 use std::time::Instant;
 
+use crate::protocol::ToolOutputBuffer;
 use ratatui::text::Line;
-use tact_protocol::ToolOutputBuffer;
 
-use crate::render::popups::selectable_text::PopupLayoutCache;
+use crate::render::selectable_text::PopupLayoutCache;
 use crate::widgets::tool_widget::ToolRenderOutput;
 
 use super::PopupTextSelection;
 
 /// Tool state: active invocations, completed blocks, and diff popup preview.
 #[derive(Default)]
-pub(crate) struct ToolState {
+pub struct ToolState {
     /// Currently running tool blocks (live elapsed time in meta row).
-    pub(crate) active: Vec<ActiveToolBlock>,
+    pub active: Vec<ActiveToolBlock>,
     /// Completed tool blocks rendered as title + meta + optional detail cards.
-    pub(crate) blocks: Vec<ToolBlock>,
+    pub blocks: Vec<ToolBlock>,
     /// Popup preview state for file write/read content.
-    pub(crate) popup: Option<DiffPopup>,
+    pub popup: Option<DiffPopup>,
 }
 
 /// A tool invocation that has started but not yet finished.
 #[derive(Debug, Clone)]
-pub(crate) struct ActiveToolBlock {
+pub struct ActiveToolBlock {
     pub phys_idx: usize,
     pub tool_id: String,
     pub output: ToolRenderOutput,
@@ -31,7 +31,7 @@ pub(crate) struct ActiveToolBlock {
 
 /// A completed tool invocation's range in messages and its pre-built render output.
 #[derive(Debug, Clone)]
-pub(crate) struct ToolBlock {
+pub struct ToolBlock {
     /// Physical index of the first placeholder row in `App::log_items`.
     pub phys_idx: usize,
     pub tool_id: String,
@@ -39,14 +39,14 @@ pub(crate) struct ToolBlock {
 }
 
 impl DiffPopup {
-    pub(crate) fn copy_content(&self) -> Option<String> {
+    pub fn copy_content(&self) -> Option<String> {
         self.cached_content
             .as_deref()
             .or(self.inline_content.as_deref())
             .map(|content| self.copy_content_from(content))
     }
 
-    pub(crate) fn copy_content_from(&self, content: &str) -> String {
+    pub fn copy_content_from(&self, content: &str) -> String {
         self.selection
             .and_then(|selection| selection.normalized_non_empty(content))
             .map(|range| content[range].to_string())
@@ -56,7 +56,7 @@ impl DiffPopup {
 
 /// Popup preview state for tool detail (file content or command output).
 #[derive(Debug, Clone)]
-pub(crate) struct DiffPopup {
+pub struct DiffPopup {
     pub title: String,
     /// Read content from disk when set.
     pub file_path: Option<String>,
@@ -78,7 +78,7 @@ pub(crate) struct DiffPopup {
 
 /// Popup preview state for subagent live output / markdown summary.
 #[derive(Debug, Clone)]
-pub(crate) struct SubagentPopup {
+pub struct SubagentPopup {
     pub title: String,
     pub scroll: u16,
     /// Tool id of the spawn_subagent invocation this popup belongs to.

@@ -1,11 +1,9 @@
 use std::path::PathBuf;
 
-use ratatui::text::Line;
 use tact::{
     plugin::{PluginEvent, PluginRequest},
     skill::SharedSkillRegistry,
 };
-pub(crate) use tact_protocol::PlanStep;
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -15,53 +13,48 @@ pub(crate) mod account;
 pub(crate) mod app;
 mod file_picker;
 mod input_history;
-pub(crate) mod log_scroll;
-mod mouse_state;
-mod plan_panel;
-mod select_popup;
 mod slash_command;
-mod status_bar_state;
-mod stream_state;
 
 mod task_dag;
-pub(crate) mod task_panel;
-mod tool_state;
+pub(crate) mod task_panel {
+    pub(crate) use agent_tui_kit::state::task_panel::*;
+}
 mod voice;
 
 pub(crate) use account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
-pub(crate) use log_scroll::LogScroll;
-pub(crate) use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};
-pub(crate) use plan_panel::PlanPanel;
-pub(crate) use select_popup::SelectPopup;
 pub(crate) use slash_command::SlashCommandState;
-pub(crate) use status_bar_state::StatusBarState;
-pub(crate) use stream_state::StreamState;
 
 pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItemKind, SystemMsgStyle};
+pub(crate) use agent_tui_kit::state::log_scroll::LogScroll;
+#[allow(unused_imports)] // PopupHitRow is re-exported for tui's test code (hit-row helpers)
+pub(crate) use agent_tui_kit::state::mouse_state::{
+    LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition,
+};
+pub(crate) use agent_tui_kit::state::plan_panel::PlanPanel;
+pub(crate) use agent_tui_kit::state::select_popup::SelectPopup;
 pub(crate) use agent_tui_kit::state::selection::PopupTextSelection;
+pub(crate) use agent_tui_kit::state::status_bar_state::StatusBarState;
+pub(crate) use agent_tui_kit::state::stream_state::StreamState;
+pub(crate) use agent_tui_kit::state::task_panel::TaskPanelState;
 pub(crate) use agent_tui_kit::state::thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState,
 };
+pub(crate) use agent_tui_kit::state::tool_state::{
+    ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock, ToolState,
+};
+pub(crate) use agent_tui_kit::state::ui_types::{
+    CodeBlock, CodePopup, FocusedPanel, InputMode, MermaidBlock, MermaidPopup, Status,
+    SystemPromptPopup,
+};
+pub use agent_tui_kit::state::ui_types::{HistoryEntry, SkillEntry};
 pub(crate) use app::messages::{find_task_stats_copy_button, is_task_stats_line};
 pub(crate) use app::pending::PendingMessage;
 pub(crate) use task_dag::{DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines};
-pub(crate) use task_panel::TaskPanelState;
-pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock, ToolState};
 pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceState};
 
 // ========== Basic Types ==========
-
-/// Current keyboard input mode, determining how key presses are interpreted.
-#[derive(PartialEq)]
-pub(crate) enum InputMode {
-    Normal,
-    Insert,
-    Palette,
-    Select,
-    FilePicker,
-}
 
 /// Commands shown in the command palette (triggered by `/`).
 pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
@@ -85,20 +78,6 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("tasks-dag", "Show task dependency DAG"),
     ("background", "Check background task status"),
 ];
-
-/// A skill available in the TUI slash / palette picker.
-///
-/// Enter on a skill **invokes** immediately from the `/` popup (body wrapped
-/// in `<skill>`, with optional `$ARGUMENTS` handling). **Tab** only fills
-/// `/name ` so args can be edited first. Built-in command names take priority
-/// and exclude colliding skills from [`App::palette_commands`].
-#[derive(Debug, Clone)]
-pub struct SkillEntry {
-    pub name: String,
-    pub description: String,
-    /// Markdown body after frontmatter (from disk at load / skill-reload time).
-    pub body: String,
-}
 
 /// Why the select popup is open (agent permission vs `/model` flow).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,82 +131,6 @@ pub(crate) enum SelectKind {
         model: String,
         effort: tact_llm::OpenAiReasoningEffort,
     },
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum FocusedPanel {
-    Log,
-}
-
-#[derive(Clone)]
-pub struct HistoryEntry {
-    pub task: String,
-    pub timestamp: String,
-    pub summary: String,
-}
-
-// ========== Code Block Types ==========
-
-/// A completed LLM code block, rendered as a card overlay in the log panel.
-#[derive(Debug, Clone)]
-pub(crate) struct CodeBlock {
-    /// First placeholder line index in messages (inclusive).
-    pub start_idx: usize,
-    /// One-past-last placeholder line index in messages.
-    pub end_idx: usize,
-    pub lang: String,
-    /// Raw source lines (without ``` fences), used for copy and rendering.
-    pub content: String,
-    /// Pre-rendered styled lines for the card interior.
-    pub styled: Vec<Line<'static>>,
-}
-
-/// A successfully rendered Mermaid diagram spliced into the log as terminal art.
-///
-/// Unlike [`CodeBlock`], there is no card chrome — `start_idx..end_idx` covers
-/// the diagram rows themselves. Double-click opens [`MermaidPopup`] so the
-/// original fence body can be copied.
-#[derive(Debug, Clone)]
-pub(crate) struct MermaidBlock {
-    /// First diagram line index in messages (inclusive).
-    pub start_idx: usize,
-    /// One-past-last diagram line index in messages.
-    pub end_idx: usize,
-    /// Fence body only (no ```mermaid / closing ```).
-    pub source: String,
-}
-
-/// Code block popup state (similar to ThinkingPopup / DiffPopup).
-#[derive(Debug, Clone)]
-pub(crate) struct CodePopup {
-    pub block_idx: usize,
-    pub lang: String,
-    pub scroll: u16,
-}
-
-/// Mermaid source popup (double-click a rendered diagram in the log).
-#[derive(Debug, Clone)]
-pub(crate) struct MermaidPopup {
-    pub block_idx: usize,
-    pub scroll: u16,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SystemPromptPopup {
-    pub title: String,
-    /// Raw Markdown source; laid out width-aware at popup render time.
-    pub source: String,
-    pub scroll: u16,
-}
-
-// ========== Execution State ==========
-
-/// Current agent execution state, driving the status bar and UI feedback.
-pub(crate) enum Status {
-    Idle,
-    Planning,
-    Executing { current_step: usize, total: usize },
-    Done,
 }
 
 // ========== Main State ==========

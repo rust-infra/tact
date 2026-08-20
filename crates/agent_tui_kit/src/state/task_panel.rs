@@ -1,18 +1,18 @@
 //! Sticky task-progress panel state and pure format helpers.
 
-use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
+use crate::protocol::{TaskSnapshot, TaskStatusSnapshot};
 
 use crate::i18n::Messages;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TaskPanelState {
-    pub(crate) snapshot: Vec<TaskSnapshot>,
+pub struct TaskPanelState {
+    pub snapshot: Vec<TaskSnapshot>,
     /// Set on first [`AgentUpdate::TasksChanged`] this UI session.
-    pub(crate) session_seen: bool,
-    pub(crate) visible: bool,
-    pub(crate) expanded: bool,
-    pub(crate) scroll: usize,
-    pub(crate) max_visible: usize,
+    pub session_seen: bool,
+    pub visible: bool,
+    pub expanded: bool,
+    pub scroll: usize,
+    pub max_visible: usize,
 }
 
 impl Default for TaskPanelState {
@@ -30,11 +30,11 @@ impl Default for TaskPanelState {
 
 impl TaskPanelState {
     #[allow(dead_code)] // retained for tests / callers that still query panel-only height
-    pub(crate) fn sticky_height(&self) -> usize {
+    pub fn sticky_height(&self) -> usize {
         sticky_height(self.expanded, &self.snapshot)
     }
 
-    pub(crate) fn apply_snapshot(&mut self, tasks: Vec<TaskSnapshot>) {
+    pub fn apply_snapshot(&mut self, tasks: Vec<TaskSnapshot>) {
         self.scroll = 0;
         let was_visible = self.visible;
         self.snapshot = tasks;
@@ -51,7 +51,7 @@ impl TaskPanelState {
     }
 }
 
-pub(crate) fn has_open_items(tasks: &[TaskSnapshot]) -> bool {
+pub fn has_open_items(tasks: &[TaskSnapshot]) -> bool {
     tasks.iter().any(|t| {
         matches!(
             t.status,
@@ -60,24 +60,21 @@ pub(crate) fn has_open_items(tasks: &[TaskSnapshot]) -> bool {
     })
 }
 
-pub(crate) fn sticky_height(expanded: bool, snapshot: &[TaskSnapshot]) -> usize {
+pub fn sticky_height(expanded: bool, snapshot: &[TaskSnapshot]) -> usize {
     if !expanded {
         return 1;
     }
     2 + format_grouped_lines(snapshot, 0, 10).len().max(1)
 }
 
-pub(crate) fn completed_count(tasks: &[TaskSnapshot]) -> usize {
+pub fn completed_count(tasks: &[TaskSnapshot]) -> usize {
     tasks
         .iter()
         .filter(|t| t.status == TaskStatusSnapshot::Completed)
         .count()
 }
 
-pub(crate) fn format_duration(
-    started_at: Option<i64>,
-    completed_at: Option<i64>,
-) -> Option<String> {
+pub fn format_duration(started_at: Option<i64>, completed_at: Option<i64>) -> Option<String> {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -98,7 +95,7 @@ pub(crate) fn format_duration(
     }
 }
 
-pub(crate) fn focus_subject(tasks: &[TaskSnapshot]) -> Option<&str> {
+pub fn focus_subject(tasks: &[TaskSnapshot]) -> Option<&str> {
     tasks
         .iter()
         .find(|t| t.status == TaskStatusSnapshot::InProgress)
@@ -122,7 +119,7 @@ fn format_task_row(t: &TaskSnapshot) -> String {
 
 /// Dependency-tree-free grouped lines: In Progress, Pending, Completed.
 /// Each group is sorted by recency/duration. Supports scrolling.
-pub(crate) fn format_grouped_lines(
+pub fn format_grouped_lines(
     tasks: &[TaskSnapshot],
     scroll: usize,
     max_visible: usize,
@@ -223,11 +220,11 @@ pub(crate) fn format_grouped_lines(
 
 /// Flat checklist (legacy helper / tests).
 #[allow(dead_code)]
-pub(crate) fn format_checklist_lines(tasks: &[TaskSnapshot]) -> Vec<String> {
+pub fn format_checklist_lines(tasks: &[TaskSnapshot]) -> Vec<String> {
     tasks.iter().map(format_task_row).collect()
 }
 
-pub(crate) fn format_sticky_title_line(msgs: &Messages, tasks: &[TaskSnapshot]) -> String {
+pub fn format_sticky_title_line(msgs: &Messages, tasks: &[TaskSnapshot]) -> String {
     let done = completed_count(tasks);
     let total = tasks.len();
     let title = msgs.tasks_sticky_title;

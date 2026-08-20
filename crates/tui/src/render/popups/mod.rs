@@ -6,7 +6,9 @@ pub(crate) mod help;
 pub(crate) mod history;
 pub(crate) mod mermaid_popup;
 pub(crate) mod select;
-pub(crate) mod selectable_text;
+pub(crate) mod selectable_text {
+    pub(crate) use agent_tui_kit::render::selectable_text::*;
+}
 pub(crate) mod slash_command;
 pub(crate) mod subagent_popup;
 pub(crate) mod system_prompt_popup;

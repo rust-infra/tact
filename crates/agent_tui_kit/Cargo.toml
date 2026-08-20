@@ -11,4 +11,6 @@ crossterm = { workspace = true }
 pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
 ratatui-markdown = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }

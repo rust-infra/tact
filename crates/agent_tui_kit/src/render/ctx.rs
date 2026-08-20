@@ -1,0 +1,44 @@
+//! `RenderCtx` — the shared, read-only surface pure render functions take
+//! instead of `&App`.
+//!
+//! Built per-frame by the app from disjoint `&` borrows of `App`; the only
+//! mutation path from render code is the explicit `Vec<RenderCommand>`
+//! drained by the app after the frame.
+//!
+//! Design: `docs/superpowers/specs/2026-08-18-tui-component-library-ctx-design.md`.
+
+use ratatui::layout::Rect;
+
+use crate::{
+    i18n::Messages,
+    state::{CodeBlock, LogScroll},
+    theme::Theme,
+};
+
+/// Shared read surface for render functions.
+///
+/// Grows as more render panels migrate from `&App` (see the design doc's
+/// migration order); fields are added one panel at a time.
+pub struct RenderCtx<'a> {
+    pub theme: &'a Theme,
+    /// Owned copy (all-`&'static str`, built once per frame from the language).
+    pub messages: Messages,
+    pub log_scroll: &'a LogScroll,
+    pub code_blocks: &'a [CodeBlock],
+}
+
+/// A command emitted by render code, executed by the app after the frame.
+///
+/// `AgentUpdate` is a large protocol enum; boxed because commands are
+/// low-frequency (UI gestures), not a hot path.
+#[allow(clippy::large_enum_variant)]
+pub enum RenderCommand {
+    /// Replay an agent update from a UI gesture (double-click → copy/`MdInfo`).
+    AgentUpdate(crate::protocol::AgentUpdate),
+    /// Enqueue a pending input message.
+    QueuePending(String),
+    /// Set the pending `[Cancel]` button hit area.
+    SetCancelButtonArea(Rect),
+    /// Mark the frame dirty.
+    Repaint,
+}
