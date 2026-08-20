@@ -4,11 +4,8 @@
 use ratatui::{Terminal, backend::TestBackend};
 use tact_protocol::AgentUpdate;
 
-use crate::render::{
-    cells::code::render_code_cards,
-    test_harness::{buffer_text, make_app, render_log_panel_text},
-};
-use agent_tui_kit::render::ctx::RenderCtx;
+use crate::render::test_harness::{buffer_text, make_app, render_log_panel_text};
+use agent_tui_kit::render::{cells::code::render_code_cards, ctx::RenderCtx};
 
 fn make_ctx<'a>(app: &'a crate::widgets::state::App) -> RenderCtx<'a> {
     RenderCtx {

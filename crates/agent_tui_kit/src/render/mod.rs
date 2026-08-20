@@ -6,6 +6,7 @@
 
 pub mod cells;
 pub mod ctx;
+pub mod log;
 pub mod log_column;
 pub mod mermaid_sequence;
 pub mod pulldown;

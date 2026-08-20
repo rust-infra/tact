@@ -1,17 +1,15 @@
-pub(crate) mod code {
-    pub(crate) use agent_tui_kit::render::cells::code::*;
-}
+//! Re-exports of kit cell renderers still consumed by app-layer tui code.
+//!
+//! `code`, `text`, and `tool` moved wholesale into `agent_tui_kit::render::log`
+//! (the pure log renderer) and are no longer referenced here; only the cells
+//! that app-layer code touches directly (`separator`, `thinking`) keep a
+//! convenience re-export.
+
 pub(crate) mod separator {
     pub(crate) use agent_tui_kit::render::cells::separator::*;
 }
-pub(crate) mod text {
-    pub(crate) use agent_tui_kit::render::cells::text::*;
-}
 pub(crate) mod thinking {
     pub(crate) use agent_tui_kit::render::cells::thinking::*;
-}
-pub(crate) mod tool {
-    pub(crate) use agent_tui_kit::render::cells::tool::*;
 }
 
 #[cfg(test)]
