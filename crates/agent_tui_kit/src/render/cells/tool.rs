@@ -25,7 +25,7 @@ use crate::{
     },
 };
 
-pub(crate) struct ToolCell {
+pub struct ToolCell {
     title_line: Line<'static>,
     _title_raw: String,
     phase: ToolPhase,
@@ -61,7 +61,7 @@ pub(crate) struct ToolCell {
 
 impl ToolCell {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_output(
+    pub fn from_output(
         output: ToolRenderOutput,
         started_at: Option<Instant>,
         spinner_char: char,

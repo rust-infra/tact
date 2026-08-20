@@ -22,7 +22,10 @@
 pub mod bridge;
 pub mod i18n;
 pub mod protocol;
+pub mod render;
+pub mod state;
 pub mod theme;
+pub mod widgets;
 
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
@@ -43,14 +46,9 @@ pub struct Ctx<'a> {
     pub pending: &'a mut PendingQueue,
 }
 
-/// Placeholder for the shared-log owner (priority-0 component).
-///
-/// TODO(Phase 1): moves from `App::log_items` + placeholder/separator helpers.
-#[derive(Default)]
-pub struct LogCoordinator {
-    /// Draft placeholder rows; replaced by the real `LogItem` model in Phase 1.
-    pub rows: Vec<String>,
-}
+/// Shared-log ownership + model (priority-0 component), re-exported at the
+/// crate root for the `Ctx` / prelude.
+pub use state::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle};
 
 /// Current keyboard input mode, deciding how key presses are interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

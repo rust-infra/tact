@@ -32,7 +32,7 @@ fn render_line(line: &Line, x: u16, y: u16, width: u16, bg_color: Color, buf: &m
 
 /// Rendering unit for a single log message.
 /// Pre-cached line wrapping result, supporting mouse selections.
-pub(crate) struct TextCell {
+pub struct TextCell {
     /// Pre-wrapped visual lines (cloned directly during normal rendering).
     cached_lines: Vec<Line<'static>>,
     /// Raw text (used for selection).
@@ -50,7 +50,7 @@ pub(crate) struct TextCell {
 }
 
 impl TextCell {
-    pub(crate) fn new(
+    pub fn new(
         cached_lines: Vec<Line<'static>>,
         raw_text: String,
         selection_range: Option<(usize, usize)>,

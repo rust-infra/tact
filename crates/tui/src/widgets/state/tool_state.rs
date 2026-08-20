@@ -6,6 +6,8 @@ use tact_protocol::ToolOutputBuffer;
 use crate::render::popups::selectable_text::PopupLayoutCache;
 use crate::widgets::tool_widget::ToolRenderOutput;
 
+use super::PopupTextSelection;
+
 /// Tool state: active invocations, completed blocks, and diff popup preview.
 #[derive(Default)]
 pub(crate) struct ToolState {
@@ -34,30 +36,6 @@ pub(crate) struct ToolBlock {
     pub phys_idx: usize,
     pub tool_id: String,
     pub output: ToolRenderOutput,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PopupTextSelection {
-    pub(crate) anchor: usize,
-    pub(crate) active: usize,
-}
-
-impl PopupTextSelection {
-    pub(crate) fn new(anchor: usize, active: usize) -> Self {
-        Self { anchor, active }
-    }
-
-    pub(crate) fn normalized_non_empty(&self, content: &str) -> Option<std::ops::Range<usize>> {
-        let mut start = self.anchor.min(self.active).min(content.len());
-        let mut end = self.anchor.max(self.active).min(content.len());
-        while start > 0 && !content.is_char_boundary(start) {
-            start -= 1;
-        }
-        while end > 0 && !content.is_char_boundary(end) {
-            end -= 1;
-        }
-        (start < end).then_some(start..end)
-    }
 }
 
 impl DiffPopup {

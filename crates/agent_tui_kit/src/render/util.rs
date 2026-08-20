@@ -6,14 +6,14 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Left gutter for thinking blocks inside the log panel.
-pub(crate) const LOG_THINKING_INDENT: u16 = 2;
+pub const LOG_THINKING_INDENT: u16 = 2;
 /// Left gutter for tool invocations inside the log panel.
-pub(crate) const LOG_TOOL_INDENT: u16 = 4;
+pub const LOG_TOOL_INDENT: u16 = 4;
 /// Extra indent for rendered tool blocks (title + meta + detail card).
-pub(crate) const LOG_TOOL_BLOCK_INDENT: u16 = LOG_TOOL_INDENT + 4;
+pub const LOG_TOOL_BLOCK_INDENT: u16 = LOG_TOOL_INDENT + 4;
 
 /// Truncate by Unicode scalar count, appending `…` when over `max_chars`.
-pub(crate) fn truncate_chars_with_ellipsis(s: &str, max_chars: usize) -> String {
+pub fn truncate_chars_with_ellipsis(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
     } else {
@@ -22,7 +22,7 @@ pub(crate) fn truncate_chars_with_ellipsis(s: &str, max_chars: usize) -> String 
     }
 }
 
-pub(crate) fn indent_rect(area: Rect, cols: u16) -> Rect {
+pub fn indent_rect(area: Rect, cols: u16) -> Rect {
     if cols == 0 {
         return area;
     }
@@ -33,7 +33,7 @@ pub(crate) fn indent_rect(area: Rect, cols: u16) -> Rect {
 
 /// Split a single line of text at the specified display width, returning (prefix, remainder).
 /// The prefix display width ≤ max_width.
-pub(crate) fn split_at_display_width(text: &str, max_width: usize) -> (&str, &str) {
+pub fn split_at_display_width(text: &str, max_width: usize) -> (&str, &str) {
     if text.is_empty() || max_width == 0 {
         return ("", text);
     }
@@ -59,7 +59,7 @@ pub(crate) fn split_at_display_width(text: &str, max_width: usize) -> (&str, &st
 /// line; offsets sit on char boundaries. `wrap_line` and
 /// `visual_pos_to_byte_offset` share this so rendering and mouse hit-testing
 /// can never disagree about where a line breaks.
-pub(crate) fn wrap_break_offsets(text: &str, max_width: usize) -> Vec<usize> {
+pub fn wrap_break_offsets(text: &str, max_width: usize) -> Vec<usize> {
     let mut starts = vec![0usize];
     if max_width == 0 {
         // Degenerate width: one char per visual line (matches the old
@@ -140,7 +140,7 @@ fn styled_segment_line(
 }
 
 /// Split a styled Line by display width into multiple Lines not exceeding max_width.
-pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>> {
+pub fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>> {
     let line_style = line.style;
     let text: String = line
         .spans
@@ -212,7 +212,7 @@ pub(crate) fn wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Line<'static>>
 ///
 /// Uses the same break points as `wrap_line` (`wrap_break_offsets`), so a
 /// click on any rendered cell maps back to the byte it visually covers.
-pub(crate) fn visual_pos_to_byte_offset(
+pub fn visual_pos_to_byte_offset(
     raw_text: &str,
     wrap_width: usize,
     target_line: usize,

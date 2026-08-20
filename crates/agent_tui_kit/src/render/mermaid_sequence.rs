@@ -176,7 +176,7 @@ fn strip_activation(s: &str) -> String {
 
 /// Render a `sequenceDiagram` block as terminal lines, or `None` when the
 /// source does not parse into a diagram.
-pub(crate) fn render_sequence_diagram(
+pub fn render_sequence_diagram(
     source: &str,
     max_width: usize,
     theme: &Theme,

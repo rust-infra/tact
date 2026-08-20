@@ -3,7 +3,7 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use super::renderable::Renderable;
 
 /// Log column layout renderer: arranges and draws Renderable units by visual offset.
-pub(crate) struct LogColumnRenderer<'a> {
+pub struct LogColumnRenderer<'a> {
     /// List of (visual starting row, renderable unit), sorted by ascending visual row.
     cells: Vec<(usize, Box<dyn Renderable + 'a>)>,
     /// Viewport top visual row number.
@@ -13,22 +13,27 @@ pub(crate) struct LogColumnRenderer<'a> {
 }
 
 impl<'a> LogColumnRenderer<'a> {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         LogColumnRenderer {
             cells: Vec::new(),
             viewport_top: 0,
             viewport_height: 0,
         }
     }
-
-    pub(crate) fn with_viewport(mut self, top: usize, height: usize) -> Self {
+    pub fn with_viewport(mut self, top: usize, height: usize) -> Self {
         self.viewport_top = top;
         self.viewport_height = height;
         self
     }
 
-    pub(crate) fn push(&mut self, vis_start: usize, cell: impl Renderable + 'a) {
+    pub fn push(&mut self, vis_start: usize, cell: impl Renderable + 'a) {
         self.cells.push((vis_start, Box::new(cell)));
+    }
+}
+
+impl<'a> Default for LogColumnRenderer<'a> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

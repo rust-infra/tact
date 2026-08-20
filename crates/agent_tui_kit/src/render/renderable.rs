@@ -1,7 +1,7 @@
 use ratatui::{buffer::Buffer, layout::Rect};
 
 /// Renderable unit that knows its visual height and how to draw.
-pub(crate) trait Renderable {
+pub trait Renderable {
     /// Draw all visual lines within the specified area.
     fn render(&self, area: Rect, buf: &mut Buffer);
 

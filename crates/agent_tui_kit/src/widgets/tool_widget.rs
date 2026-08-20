@@ -16,7 +16,7 @@ const DEFAULT_PREVIEW_LINES: usize = 1;
 const ERROR_PREVIEW_LINES: usize = 5;
 const LIVE_OUTPUT_PREVIEW_LINES: usize = 3;
 const SUBAGENT_LIVE_OUTPUT_PREVIEW_LINES: usize = 8;
-pub(crate) const TOOL_HEADER_ROWS: usize = 2;
+pub const TOOL_HEADER_ROWS: usize = 2;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 pub const TOOL_RUNNING_SPINNER: &[char] = RUNNING_SPINNER;
@@ -268,13 +268,13 @@ pub struct ToolLayout {
 ///
 /// Overflow text is rendered in the bottom hint (`title_bottom`) so it does not
 /// consume an extra preview row.
-pub(crate) fn tool_card_inner_rows(preview_len: usize, total_lines: usize) -> usize {
+pub fn tool_card_inner_rows(preview_len: usize, total_lines: usize) -> usize {
     let _ = total_lines;
     preview_len
 }
 
 /// Total visual rows for a tool block in the log column.
-pub(crate) fn tool_visual_rows(
+pub fn tool_visual_rows(
     has_detail_card: bool,
     preview_len: usize,
     total_lines: usize,

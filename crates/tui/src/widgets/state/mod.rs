@@ -15,9 +15,7 @@ pub(crate) mod account;
 pub(crate) mod app;
 mod file_picker;
 mod input_history;
-pub(crate) mod log_coordinator;
-pub(crate) mod log_messages;
-mod log_scroll;
+pub(crate) mod log_scroll;
 mod mouse_state;
 mod plan_panel;
 mod select_popup;
@@ -27,14 +25,12 @@ mod stream_state;
 
 mod task_dag;
 pub(crate) mod task_panel;
-mod thinking_state;
 mod tool_state;
 mod voice;
 
 pub(crate) use account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
-pub(crate) use log_coordinator::LogCoordinator;
 pub(crate) use log_scroll::LogScroll;
 pub(crate) use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};
 pub(crate) use plan_panel::PlanPanel;
@@ -43,14 +39,16 @@ pub(crate) use slash_command::SlashCommandState;
 pub(crate) use status_bar_state::StatusBarState;
 pub(crate) use stream_state::StreamState;
 
+pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItemKind, SystemMsgStyle};
+pub(crate) use agent_tui_kit::state::selection::PopupTextSelection;
+pub(crate) use agent_tui_kit::state::thinking::{
+    ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState,
+};
 pub(crate) use app::messages::{find_task_stats_copy_button, is_task_stats_line};
 pub(crate) use app::pending::PendingMessage;
 pub(crate) use task_dag::{DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines};
 pub(crate) use task_panel::TaskPanelState;
-pub(crate) use thinking_state::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
-pub(crate) use tool_state::{
-    ActiveToolBlock, DiffPopup, PopupTextSelection, SubagentPopup, ToolBlock, ToolState,
-};
+pub(crate) use tool_state::{ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock, ToolState};
 pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceState};
 
 // ========== Basic Types ==========
@@ -230,65 +228,6 @@ pub(crate) enum Status {
     Planning,
     Executing { current_step: usize, total: usize },
     Done,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SystemMsgStyle {
-    Default,
-    Success,
-    Error,
-    Warning,
-    Accent,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LogItemKind {
-    User,
-    AssistantMarkdown,
-    SystemPlain(SystemMsgStyle),
-    SystemMarkdown,
-    SystemTool,
-    Thinking,
-}
-
-pub(crate) struct LogItem {
-    pub(crate) line: Line<'static>,
-    pub(crate) raw: String,
-    pub(crate) kind: LogItemKind,
-    pub(crate) markdown_cell: Option<crate::render::cells::markdown::MarkdownCell>,
-}
-
-impl std::fmt::Debug for LogItem {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("LogItem")
-            .field("raw", &self.raw)
-            .field("kind", &self.kind)
-            .field("has_markdown_cell", &self.markdown_cell.is_some())
-            .finish()
-    }
-}
-
-impl LogItem {
-    pub(crate) fn new(line: Line<'static>, raw: String, kind: LogItemKind) -> Self {
-        Self {
-            line,
-            raw,
-            kind,
-            markdown_cell: None,
-        }
-    }
-
-    pub(crate) fn markdown(raw: String, theme: &Theme, kind: LogItemKind) -> Self {
-        let markdown_cell = crate::render::cells::markdown::MarkdownCell::new(&raw, theme)
-            .with_indent(crate::render::util::LOG_THINKING_INDENT + 1);
-        Self {
-            line: Line::from(""),
-            raw,
-            kind,
-            markdown_cell: Some(markdown_cell),
-        }
-    }
 }
 
 // ========== Main State ==========

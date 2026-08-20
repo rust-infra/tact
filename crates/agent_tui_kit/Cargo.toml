@@ -8,4 +8,7 @@ license = "MIT"
 [dependencies]
 tact_protocol = { path = "../protocol" }
 crossterm = { workspace = true }
+pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
+ratatui-markdown = { workspace = true }
+unicode-width = { workspace = true }

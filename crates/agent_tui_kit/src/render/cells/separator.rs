@@ -11,15 +11,15 @@ use super::super::renderable::Renderable;
 
 /// Sentinel prefix stored in `LogItem::raw` for task-end rules.
 /// Optional payload: `\x07tact-task-end\x1f{secs}` encodes elapsed seconds.
-pub(crate) const TASK_END_SEPARATOR: &str = "\x07tact-task-end";
+pub const TASK_END_SEPARATOR: &str = "\x07tact-task-end";
 const TASK_END_ELAPSED_SEP: char = '\x1f';
 
-pub(crate) fn is_task_end_separator(raw: &str) -> bool {
+pub fn is_task_end_separator(raw: &str) -> bool {
     raw.starts_with(TASK_END_SEPARATOR)
 }
 
 /// Build raw sentinel with frozen elapsed seconds.
-pub(crate) fn task_end_separator_raw(elapsed_secs: i64) -> String {
+pub fn task_end_separator_raw(elapsed_secs: i64) -> String {
     format!(
         "{TASK_END_SEPARATOR}{TASK_END_ELAPSED_SEP}{}",
         elapsed_secs.max(0)
@@ -27,7 +27,7 @@ pub(crate) fn task_end_separator_raw(elapsed_secs: i64) -> String {
 }
 
 /// Parse elapsed seconds from a task-end sentinel, if present.
-pub(crate) fn task_end_elapsed_secs(raw: &str) -> Option<i64> {
+pub fn task_end_elapsed_secs(raw: &str) -> Option<i64> {
     let prefix = format!("{TASK_END_SEPARATOR}{TASK_END_ELAPSED_SEP}");
     raw.strip_prefix(&prefix)?.parse().ok()
 }
@@ -39,20 +39,20 @@ fn format_mm_ss(total_secs: i64) -> String {
 
 /// Full-width accent-colored rule appended after a completed task response.
 /// When `elapsed_label` is set (e.g. `"Elapsed 00:03"`), it is centered in the rule.
-pub(crate) struct TaskEndSeparator {
+pub struct TaskEndSeparator {
     fg: Color,
     elapsed_label: Option<String>,
 }
 
 impl TaskEndSeparator {
-    pub(crate) fn new(fg: Color) -> Self {
+    pub fn new(fg: Color) -> Self {
         Self {
             fg,
             elapsed_label: None,
         }
     }
 
-    pub(crate) fn with_elapsed(fg: Color, label: &str, elapsed_secs: i64) -> Self {
+    pub fn with_elapsed(fg: Color, label: &str, elapsed_secs: i64) -> Self {
         Self {
             fg,
             elapsed_label: Some(format!("{label} {}", format_mm_ss(elapsed_secs))),
@@ -123,13 +123,13 @@ impl Renderable for TaskEndSeparator {
 
 /// A blank line separator drawn between message groups of different
 /// categories (user ↔ system ↔ assistant).
-pub(crate) struct MessageSeparator {
+pub struct MessageSeparator {
     _label: String,
     _fg: Color,
 }
 
 impl MessageSeparator {
-    pub(crate) fn new(label: String, fg: Color) -> Self {
+    pub fn new(label: String, fg: Color) -> Self {
         Self {
             _label: label,
             _fg: fg,

@@ -1,10 +1,26 @@
-use ratatui::style::Color;
+//! Shared-log model + ownership — the priority-0 component.
+//!
+//! Owns the log rows and all primitive row operations. Cross-state helpers
+//! (gap checks, index fixups, i18n-driven messages) stay in the consuming app
+//! and delegate to these primitives.
+
+use ratatui::{style::Color, text::Line};
 
 use crate::{
+    render::cells::markdown::MarkdownCell,
     render::util::{LOG_THINKING_INDENT, LOG_TOOL_INDENT},
     theme::Theme,
-    widgets::state::{LogItemKind, SystemMsgStyle},
 };
+
+/// Visual provenance for system messages (drives semantic coloring).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemMsgStyle {
+    Default,
+    Success,
+    Error,
+    Warning,
+    Accent,
+}
 
 impl SystemMsgStyle {
     /// Detect an explicit system marker after optional leading whitespace.
@@ -12,7 +28,7 @@ impl SystemMsgStyle {
     /// This is only used to choose the visual color for a message that is
     /// already known to come from a system-message insertion path. It never
     /// decides whether arbitrary text is a system item.
-    pub(crate) fn from_marker(s: &str) -> Option<Self> {
+    pub fn from_marker(s: &str) -> Option<Self> {
         const PREFIXES: &[(&str, SystemMsgStyle)] = &[
             ("✓", SystemMsgStyle::Success),
             ("✔", SystemMsgStyle::Success),
@@ -33,7 +49,7 @@ impl SystemMsgStyle {
             .map(|(_, style)| *style)
     }
 
-    pub(crate) fn color(self, theme: &Theme) -> Color {
+    pub fn color(self, theme: &Theme) -> Color {
         match self {
             Self::Default => theme.fg,
             Self::Success => theme.success,
@@ -44,8 +60,19 @@ impl SystemMsgStyle {
     }
 }
 
+/// The kind of a shared-log row, deciding indent and rendering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogItemKind {
+    User,
+    AssistantMarkdown,
+    SystemPlain(SystemMsgStyle),
+    SystemMarkdown,
+    SystemTool,
+    Thinking,
+}
+
 impl LogItemKind {
-    pub(crate) fn log_indent(self) -> u16 {
+    pub fn log_indent(self) -> u16 {
         match self {
             Self::User => 0,
             Self::AssistantMarkdown | Self::SystemPlain(_) | Self::SystemMarkdown => {
@@ -56,15 +83,130 @@ impl LogItemKind {
         }
     }
 
-    pub(crate) fn is_user(self) -> bool {
+    pub fn is_user(self) -> bool {
         matches!(self, Self::User)
+    }
+}
+
+/// One physical shared-log row.
+pub struct LogItem {
+    pub line: Line<'static>,
+    pub raw: String,
+    pub kind: LogItemKind,
+    pub markdown_cell: Option<MarkdownCell>,
+}
+
+impl std::fmt::Debug for LogItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LogItem")
+            .field("raw", &self.raw)
+            .field("kind", &self.kind)
+            .field("has_markdown_cell", &self.markdown_cell.is_some())
+            .finish()
+    }
+}
+
+impl LogItem {
+    pub fn new(line: Line<'static>, raw: String, kind: LogItemKind) -> Self {
+        Self {
+            line,
+            raw,
+            kind,
+            markdown_cell: None,
+        }
+    }
+
+    pub fn markdown(raw: String, theme: &Theme, kind: LogItemKind) -> Self {
+        let markdown_cell = MarkdownCell::new(&raw, theme).with_indent(LOG_THINKING_INDENT + 1);
+        Self {
+            line: Line::from(""),
+            raw,
+            kind,
+            markdown_cell: Some(markdown_cell),
+        }
+    }
+}
+
+/// Owns the shared log rows and all primitive row operations.
+#[derive(Default)]
+pub struct LogCoordinator {
+    /// The physical log rows (user / assistant / system / placeholder).
+    pub items: Vec<LogItem>,
+}
+
+impl LogCoordinator {
+    /// Append one log row, keeping all row metadata together in `items`.
+    pub fn append_msg(&mut self, line: Line<'static>, raw: String, kind: LogItemKind) {
+        self.items.push(LogItem::new(line, raw, kind));
+    }
+
+    /// Append a whole-Markdown notice as a single log item.
+    pub fn append_markdown(&mut self, content: String, theme: &Theme, kind: LogItemKind) {
+        self.items.push(LogItem::markdown(content, theme, kind));
+    }
+
+    /// Append a blank row of the given kind.
+    pub fn append_blank(&mut self, kind: LogItemKind) {
+        self.append_msg(Line::from(""), String::new(), kind);
+    }
+
+    pub fn extend_msgs(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        raw_lines: Vec<String>,
+        kind: LogItemKind,
+    ) {
+        debug_assert_eq!(lines.len(), raw_lines.len());
+        for (line, raw) in lines.into_iter().zip(raw_lines) {
+            self.append_msg(line, raw, kind);
+        }
+    }
+
+    pub fn insert_msg(&mut self, idx: usize, line: Line<'static>, raw: String, kind: LogItemKind) {
+        self.items.insert(idx, LogItem::new(line, raw, kind));
+    }
+
+    pub fn splice_msgs(
+        &mut self,
+        range: std::ops::Range<usize>,
+        lines: Vec<Line<'static>>,
+        raw: Vec<String>,
+        kind: LogItemKind,
+    ) {
+        debug_assert_eq!(lines.len(), raw.len());
+        self.items.splice(
+            range,
+            lines
+                .into_iter()
+                .zip(raw)
+                .map(|(line, raw)| LogItem::new(line, raw, kind)),
+        );
+    }
+
+    pub fn drain_msgs(&mut self, range: std::ops::Range<usize>) {
+        self.items.drain(range);
+    }
+
+    pub fn remove_msg(&mut self, idx: usize) {
+        self.items.remove(idx);
+    }
+
+    /// Push `rows` blank placeholder rows of `kind`; returns the first
+    /// physical index (the anchor row for the component that owns them).
+    pub fn push_placeholder_rows(&mut self, kind: LogItemKind, rows: usize) -> usize {
+        let phys_idx = self.items.len();
+        for _ in 0..rows {
+            self.append_blank(kind);
+        }
+        phys_idx
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Theme, ThemeName};
+    use crate::theme::ThemeName;
 
     #[test]
     fn from_marker_maps_explicit_prefixes() {

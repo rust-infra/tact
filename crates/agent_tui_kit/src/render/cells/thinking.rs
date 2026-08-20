@@ -11,16 +11,16 @@ use ratatui::{
 use crate::{
     i18n::Messages,
     render::{renderable::Renderable, util::LOG_THINKING_INDENT},
+    state::{ActiveThinkingBlock, ThinkingBlock},
     theme::Theme,
-    widgets::state::{ActiveThinkingBlock, ThinkingBlock},
 };
 
-pub(crate) fn thinking_visual_rows(body_lines: usize) -> usize {
+pub fn thinking_visual_rows(body_lines: usize) -> usize {
     let card_rows = 1 + body_lines.clamp(1, 3) + 1;
     card_rows + 2
 }
 
-pub(crate) struct ThinkingCell {
+pub struct ThinkingCell {
     lines: Vec<String>,
     title: String,
     bottom: String,
@@ -31,7 +31,7 @@ pub(crate) struct ThinkingCell {
 }
 
 impl ThinkingCell {
-    pub(crate) fn active(
+    pub fn active(
         block: &ActiveThinkingBlock,
         spinner: char,
         theme: &Theme,
@@ -56,7 +56,7 @@ impl ThinkingCell {
         }
     }
 
-    pub(crate) fn completed(block: &ThinkingBlock, theme: &Theme, msgs: &Messages) -> Self {
+    pub fn completed(block: &ThinkingBlock, theme: &Theme, msgs: &Messages) -> Self {
         let total = block.content.lines().count().max(1);
         Self {
             lines: vec![block.summary.clone()],
@@ -191,7 +191,17 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
-    use crate::render::test_harness::buffer_text;
+
+    fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
 
     fn render_text(cell: &ThinkingCell) -> String {
         let backend = TestBackend::new(80, cell.height(80));

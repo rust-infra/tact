@@ -13,8 +13,11 @@ name = "agent_tui_kit"
 version = "0.1.0"
 dependencies = [
  "crossterm 0.28.1",
+ "pulldown-cmark",
  "ratatui",
+ "ratatui-markdown",
  "tact_protocol",
+ "unicode-width",
 ]
 
 [[package]]

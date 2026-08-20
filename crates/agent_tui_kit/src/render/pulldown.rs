@@ -24,7 +24,7 @@ const LIST_INDENT: &str = "    ";
 ///
 /// `available_width` is forwarded to the width-aware pipe-table layout
 /// ([`format_table`]); `None` means unlimited (the log panel wraps itself).
-pub(crate) fn render_markdown(
+pub fn render_markdown(
     text: &str,
     theme: &Theme,
     available_width: Option<usize>,

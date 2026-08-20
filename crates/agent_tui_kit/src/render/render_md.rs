@@ -98,7 +98,7 @@ impl RichTextTheme for TuiRichTextTheme<'_> {
 ///
 /// Returns `None` when the source cannot be parsed or rendered so callers can
 /// fall back to ordinary code rendering.
-pub(crate) fn render_mermaid_block(
+pub fn render_mermaid_block(
     source: &str,
     theme: &Theme,
     width: usize,
@@ -329,7 +329,7 @@ fn is_fence_closer(line: &str, opener: Fence) -> bool {
 /// Complete top-level ` ```mermaid ` fences are rendered as terminal diagrams
 /// at a nominal [`DEFAULT_RENDER_WIDTH`]; all other content keeps the plain
 /// pulldown-cmark pipeline.
-pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
+pub fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'static>>, Vec<String>) {
     route_mermaid_fences(
         text,
         theme,
@@ -344,7 +344,7 @@ pub(crate) fn render_markdown_tui(text: &str, theme: &Theme) -> (Vec<Line<'stati
 /// reconstructed fallback fence is never re-routed through the Mermaid
 /// renderer. Tables render at unlimited width: the log panel wraps lines
 /// itself via `wrap_line`.
-pub(crate) fn render_plain_markdown(
+pub fn render_plain_markdown(
     text: &str,
     theme: &Theme,
     _width: Option<usize>,
@@ -359,7 +359,7 @@ pub(crate) fn render_plain_markdown(
 /// never mistaken for table rows. Everything else (prose, headings, lists,
 /// tables, code fences, blockquotes) goes through [`super::pulldown`] with the
 /// caller's width forwarded to the pipe-table layout.
-pub(crate) fn render_markdown_with_tables(
+pub fn render_markdown_with_tables(
     text: &str,
     theme: &Theme,
     available_width: Option<usize>,
@@ -384,11 +384,7 @@ fn render_prose_and_tables(
 /// Used by popups (e.g. the `/stats` session-stats popup) where a quick
 /// default layout is enough — no width-aware pipe-table pass, no Mermaid
 /// routing. `width` bounds the renderer's max line width.
-pub(crate) fn render_markdown_ratatui(
-    text: &str,
-    theme: &Theme,
-    width: usize,
-) -> Vec<Line<'static>> {
+pub fn render_markdown_ratatui(text: &str, theme: &Theme, width: usize) -> Vec<Line<'static>> {
     let renderer = MarkdownRenderer::new(width.max(1));
     let blocks = renderer.parse(text);
     renderer.render(&blocks, &TuiRichTextTheme { theme })
@@ -449,7 +445,7 @@ fn apply_blockquote_indicator(lines: &mut Vec<Line<'static>>, theme: &Theme) {
 }
 
 /// Checks whether a line is a Markdown horizontal rule (---, ***, ___, spaces allowed).
-pub(crate) fn is_horizontal_rule(line: &str) -> bool {
+pub fn is_horizontal_rule(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.len() < 3 {
         return false;
@@ -489,7 +485,7 @@ fn pad_cell(cell: &str, width: usize) -> String {
 /// misaligns the columns. Tables that are still too wide even at the
 /// readability floor are split into contiguous column chunks (each with its
 /// own header), so every rendered row always fits the panel width.
-pub(crate) fn format_table(
+pub fn format_table(
     headers: &[String],
     rows: &[Vec<String>],
     theme: &Theme,
@@ -594,7 +590,7 @@ pub(crate) fn format_table(
 /// Used by the line-oriented streaming renderer, which buffers complete
 /// source lines before flushing. Going through pulldown (instead of re-splitting
 /// on `|`) keeps pipes inside code spans / escaped cells as data.
-pub(crate) fn format_table_lines(
+pub fn format_table_lines(
     lines: &[String],
     theme: &Theme,
     available_width: Option<usize>,
