@@ -3,8 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::selection::PopupTextSelection;
-
+use super::{log_scroll::LogScroll, selection::PopupTextSelection};
 /// Streaming thinking content anchored at one shared-log placeholder row.
 #[derive(Debug, Clone)]
 pub struct ActiveThinkingBlock {
@@ -106,6 +105,43 @@ impl ThinkingPopup {
             .map(|range| self.selection_text[range].to_string())
             .unwrap_or_else(|| full_content.to_string())
     }
+}
+
+/// Locate the thinking card (active or completed) that spans a logical line.
+///
+/// Returns `(phys_idx, logical_start, rows)` for the first card whose range
+/// contains `line_idx`.
+pub fn find_thinking_at_logical(
+    log_scroll: &LogScroll,
+    thinking: &ThinkingState,
+    line_idx: usize,
+) -> Option<(usize, usize, usize)> {
+    let find = |phys_idx: usize, rows: usize| {
+        let logical_start = log_scroll
+            .phys_to_logical_cache
+            .get(phys_idx)
+            .copied()
+            .flatten()?;
+        (line_idx >= logical_start && line_idx < logical_start + rows).then_some((
+            phys_idx,
+            logical_start,
+            rows,
+        ))
+    };
+    if let Some(active) = thinking.active.as_ref()
+        && let Some(found) = find(
+            active.phys_idx,
+            crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
+        )
+    {
+        return Some(found);
+    }
+    thinking.blocks.iter().find_map(|block| {
+        find(
+            block.phys_idx,
+            crate::render::cells::thinking::thinking_visual_rows(1),
+        )
+    })
 }
 
 #[cfg(test)]

@@ -17,6 +17,11 @@ use crate::{
     widgets::state::{App, LogItemKind},
 };
 
+use agent_tui_kit::{
+    render::{ctx::RenderCtx, log_column::LogColumnRenderer},
+    state::{LogCoordinator, LogScroll, SkillEntry, log_indent_at},
+};
+
 /// Render the Log panel: wrapping, scrolling, and mouse selection.
 ///
 /// # Pipeline overview
@@ -28,19 +33,10 @@ use crate::{
 ///       │                │                     │                  │
 ///       ▼                ▼                     ▼                  ▼
 ///  visible_indices   visual_cache         visual_scroll      LogColumnRenderer
-///  phys_to_logical   visual_start_cache   logical_start/end  thinking/diff/code
 /// ```
 ///
-/// # Three coordinate spaces
-///
-/// ```text
-///  PHYSICAL (log_items[])     LOGICAL (scroll here)        VISUAL (draw here)
-///  ┌───┬───┬───┬───┐         ┌───┬───┬───┐                ┌───┬───┬───┬───┬───┐
-///  │ 0 │ 1 │ 2 │ 3 │  hide  │ 0 │ 1 │ 2 │  wrap long     │ 0 │ 1 │ 2 │ 3 │ 4 │
-///  └───┴───┴───┴───┘  ──→    └───┴───┴───┘  ──→           └───┴───┴───┴───┴───┘
-///   every stored msg          visible only              one screen line each
-///                             + stream buffer           (may be many per logical)
-/// ```
+/// Phase 0-2 (cache rebuild) is the mutable `prepare_log_frame`; Phase 3 is the
+/// pure `render_log_panel_pure` (reads the built caches).
 pub(crate) fn render_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     render_log_panel_with_borders(frame, area, app, Borders::ALL);
 }
@@ -53,10 +49,56 @@ pub(crate) fn render_log_panel_with_borders(
     app: &mut App,
     borders: Borders,
 ) {
+    let messages = app.msgs();
+    prepare_log_frame(
+        &mut app.log_scroll,
+        &app.log,
+        &app.stream.buffer,
+        &app.skills_data,
+        &app.theme,
+        messages,
+        area,
+        borders,
+    );
+    let ctx = RenderCtx {
+        theme: &app.theme,
+        messages: app.msgs(),
+        log_scroll: &app.log_scroll,
+        log: &app.log,
+        code_blocks: &app.code_blocks,
+        mermaid_blocks: &app.mermaid_blocks,
+        tools: &app.tools,
+        thinking: &app.thinking,
+        stream: &app.stream,
+        mouse: &app.mouse,
+        skills_data: &app.skills_data,
+        loading_idx: app.loading_idx,
+        spinner_frame: app.spinner_frame,
+    };
+    render_log_panel_pure(frame, area, &ctx, borders);
+}
+
+/// Phase 0-2: rebuild the scroll/layout caches (mutable). Runs once per frame
+/// before the pure render pass.
+///
+/// Arguments mirror the disjoint `App` fields it reads; they will be grouped
+/// into a prepare-input struct once the remaining panels migrate.
+#[allow(clippy::too_many_arguments)]
+fn prepare_log_frame(
+    log_scroll: &mut LogScroll,
+    log: &LogCoordinator,
+    stream_buffer: &str,
+    skills_data: &[SkillEntry],
+    theme: &Theme,
+    messages: agent_tui_kit::i18n::Messages,
+    area: Rect,
+    borders: Borders,
+) {
     let top = u16::from(borders.contains(Borders::TOP));
     let bottom = u16::from(borders.contains(Borders::BOTTOM));
     let left = u16::from(borders.contains(Borders::LEFT));
     let right = u16::from(borders.contains(Borders::RIGHT));
+
     // 这行是算**面板内容区的实际可用高度**。
     // area.height = Border Block 的整个矩形高度
     // ┌─ Log ──────────────┐  ← area.y + 0  (上边框，占 1 行)
@@ -65,13 +107,8 @@ pub(crate) fn render_log_panel_with_borders(
     // │                     │  ← area.y + area.height - 2 (内容区最后一行)
     // └─────────────────────┘  ← area.y + area.height - 1 (下边框，占 1 行)
     // area.height.saturating_sub(top+bottom) = 内容区可用行数 = visible_height
-    // ① Phase 2 视口裁剪 —— 决定屏幕上能显示多少行
-    // let visible_height = app.log_scroll.height as usize;
-    // let end_visual = (visual_scroll + visible_height).min(total_visual);
-    // // ② 覆盖层裁剪 —— thinking/diff/code cards 也用它
-    // saturating_sub` 防的是极端情况：如果 `area.height < 2`（面板被缩到极小），不会 panic，直接归零。
-    app.log_scroll.height = area.height.saturating_sub(top + bottom);
-    let visible_height = app.log_scroll.height as usize;
+    log_scroll.height = area.height.saturating_sub(top + bottom);
+    let visible_height = log_scroll.height as usize;
     // 两行做两件事：
     // 和 `height` 同样的 `saturating_sub`：
     // area.width = 整个 Block 的列宽
@@ -84,36 +121,32 @@ pub(crate) fn render_log_panel_with_borders(
     let wrap_width = if max_width > 0 { max_width } else { 1 };
     // Remember the content width: streamed tables are laid out against this
     // width at build time so they never need post-hoc char wrapping.
-    app.log_scroll.width = wrap_width as u16;
+    log_scroll.width = wrap_width as u16;
 
     // `visible_indices_ver` is the **dirty marker**. It stores the previous `log_items.len()`; a change invalidates the cache:
-    // ```
-    // 当前消息数量 ≠ 上次缓存时的消息数量  →  缓存过期，需要重建
-    // ```
-    // 这是 Phase 0 唯一的触发条件——因为只有消息增删才会改变可见索引（消息新增可能落在 thinking block 内部，需要重新判断是否可见）。消息内容变化不改变可见性，所以不用重建。
-    let indices_stale = app.log_scroll.visible_indices_ver != app.log.items.len();
+    let indices_stale = log_scroll.visible_indices_ver != log.items.len();
     if indices_stale {
-        app.log_scroll.visible_indices.clear();
-        app.log_scroll.phys_to_logical_cache.clear();
-        app.log_scroll
+        log_scroll.visible_indices.clear();
+        log_scroll.phys_to_logical_cache.clear();
+        log_scroll
             .phys_to_logical_cache
-            .resize(app.log.items.len(), None);
+            .resize(log.items.len(), None);
         let mut total_logical = 0;
         // 遍历所有消息，将可见的物理索引添加到 visible_indices 中，并更新缓存
-        for phys in 0..app.log.items.len() {
-            if app.is_message_visible(phys) {
-                app.log_scroll.visible_indices.push(phys);
-                app.log_scroll.phys_to_logical_cache[phys] = Some(total_logical);
+        for phys in 0..log.items.len() {
+            if phys < log.items.len() {
+                log_scroll.visible_indices.push(phys);
+                log_scroll.phys_to_logical_cache[phys] = Some(total_logical);
                 total_logical += 1;
             }
         }
         // update visible_indices_ver to mark cache valid
-        app.log_scroll.visible_indices_ver = app.log.items.len();
+        log_scroll.visible_indices_ver = log.items.len();
     }
     // total_logical: 可见的逻辑行数量
-    let mut total_logical = app.log_scroll.visible_indices.len();
+    let mut total_logical = log_scroll.visible_indices.len();
     // Stream buffer occupies the last logical row while tokens are arriving.
-    if !app.stream.buffer.is_empty() {
+    if !stream_buffer.is_empty() {
         total_logical += 1;
     }
 
@@ -133,45 +166,43 @@ pub(crate) fn render_log_panel_with_borders(
     // ```
     //
     // Rebuild when message count, panel width, or theme changes.
-    let cache_valid = app.log_scroll.visual_cache_ver == app.log.items.len()
-        && app.log_scroll.visual_cache_width == wrap_width as u16
-        && app.log_scroll.visual_cache_theme == app.theme.name;
+    let cache_valid = log_scroll.visual_cache_ver == log.items.len()
+        && log_scroll.visual_cache_width == wrap_width as u16
+        && log_scroll.visual_cache_theme == theme.name;
 
     if !cache_valid {
-        app.log_scroll.visual_cache.clear();
-        app.log_scroll.visual_start_cache.clear();
-        app.log_scroll.visual_start_cache.push(0);
+        log_scroll.visual_cache.clear();
+        log_scroll.visual_start_cache.clear();
+        log_scroll.visual_start_cache.push(0);
 
         // Build once for the whole rebuild — not once per line.
-        let skill_names = super::slash_style::skill_name_set(&app.skills_data);
-        let msgs = app.msgs();
-        let user_prefix_tmpl = msgs.user_msg_prefix;
-        let user_cont_tmpl = msgs.user_msg_cont;
+        let skill_names = super::slash_style::skill_name_set(skills_data);
+        let user_prefix_tmpl = messages.user_msg_prefix;
+        let user_cont_tmpl = messages.user_msg_cont;
 
         for logical_i in 0..total_logical {
             // Whole-Markdown messages reserve one logical row; its visual
             // height comes from the cached MarkdownCell (parsed once per
             // width), and the rows are blank placeholders so the prefix-sum
             // cache stays consistent (same pattern as tool placeholder rows).
-            if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i)
-                && let Some(cell) = app
-                    .log
+            if let Some(&phys_idx) = log_scroll.visible_indices.get(logical_i)
+                && let Some(cell) = log
                     .items
                     .get(phys_idx)
                     .and_then(|item| item.markdown_cell.as_ref())
             {
                 let rows = cell.height(wrap_width as u16) as usize;
-                app.log_scroll
+                log_scroll
                     .visual_cache
                     .extend(std::iter::repeat_n(Line::default(), rows));
-                app.log_scroll
+                log_scroll
                     .visual_start_cache
-                    .push(app.log_scroll.visual_cache.len());
+                    .push(log_scroll.visual_cache.len());
                 continue;
             }
 
-            let line = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                let item = &app.log.items[phys_idx];
+            let line = if let Some(&phys_idx) = log_scroll.visible_indices.get(logical_i) {
+                let item = &log.items[phys_idx];
                 if super::cells::separator::is_task_end_separator(&item.raw)
                     || item.line.spans.is_empty()
                 {
@@ -180,7 +211,7 @@ pub(crate) fn render_log_panel_with_borders(
                     super::log_style::restyle_log_line_with_skills(
                         &item.line,
                         &item.raw,
-                        &app.theme,
+                        theme,
                         item.kind,
                         &skill_names,
                         user_prefix_tmpl,
@@ -190,13 +221,13 @@ pub(crate) fn render_log_panel_with_borders(
             } else {
                 // Last logical row: live stream text. Uses the same fg as the
                 // final flushed rows so completing a reply does not recolor it.
-                Line::from(Span::styled(app.stream.buffer.as_str(), app.theme.fg))
+                Line::from(Span::styled(stream_buffer, theme.fg))
             };
-            let wrapped = if let Some(&phys_idx) = app.log_scroll.visible_indices.get(logical_i) {
-                if super::cells::separator::is_task_end_separator(&app.log.items[phys_idx].raw) {
+            let wrapped = if let Some(&phys_idx) = log_scroll.visible_indices.get(logical_i) {
+                if super::cells::separator::is_task_end_separator(&log.items[phys_idx].raw) {
                     vec![Line::default()]
                 } else {
-                    let indent = app.nested_log_indent(phys_idx) as usize;
+                    let indent = log_indent_at(log, phys_idx) as usize;
                     wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
                 }
             } else {
@@ -204,14 +235,14 @@ pub(crate) fn render_log_panel_with_borders(
                 let indent = (super::util::LOG_THINKING_INDENT + 1) as usize;
                 wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
             };
-            app.log_scroll.visual_cache.extend(wrapped);
-            app.log_scroll
+            log_scroll.visual_cache.extend(wrapped);
+            log_scroll
                 .visual_start_cache
-                .push(app.log_scroll.visual_cache.len());
+                .push(log_scroll.visual_cache.len());
         }
-        app.log_scroll.visual_cache_width = wrap_width as u16;
-        app.log_scroll.visual_cache_ver = app.log.items.len();
-        app.log_scroll.visual_cache_theme = app.theme.name;
+        log_scroll.visual_cache_width = wrap_width as u16;
+        log_scroll.visual_cache_ver = log.items.len();
+        log_scroll.visual_cache_theme = theme.name;
     }
 
     // Phase 2: map logical scroll offset to a visual viewport.
@@ -223,32 +254,46 @@ pub(crate) fn render_log_panel_with_borders(
     //                              └──── viewport ────┘
     //  visual_scroll = visual_start_cache[15] = 180
     //  end_visual    = visual_scroll + visible_height = 200
-    //
-    //  reverse lookup (binary_search on prefix sums):
-    //    logical_start = row containing visual 180  →  15
-    //    logical_end   = row containing visual 200  →  18
     // ```
-    let total_visual = *app.log_scroll.visual_start_cache.last().unwrap_or(&0);
+    let total_visual = *log_scroll.visual_start_cache.last().unwrap_or(&0);
     let max_visual_scroll = total_visual.saturating_sub(visible_height);
     // The visual position is authoritative: clamp the bottom sentinel
     // (`usize::MAX`) and out-of-range values to the true visual bottom.
-    let visual_scroll = if app.log_scroll.visual_top == usize::MAX {
+    let visual_scroll = if log_scroll.visual_top == usize::MAX {
         max_visual_scroll
     } else {
-        app.log_scroll.visual_top.min(max_visual_scroll)
+        log_scroll.visual_top.min(max_visual_scroll)
     };
-    app.log_scroll.visual_top = visual_scroll;
-    let vs_cache = &app.log_scroll.visual_start_cache;
+    log_scroll.visual_top = visual_scroll;
+    let vs_cache = &log_scroll.visual_start_cache;
     // Derive the logical offset mirror (row containing the viewport top) for
     // read-only consumers such as mouse hit-testing and the code-card popup.
     let logical_scroll = vs_cache
         .partition_point(|&start| start <= visual_scroll)
         .saturating_sub(1)
         .min(total_logical.saturating_sub(1));
-    app.log_scroll.offset = logical_scroll.min(u16::MAX as usize) as u16;
+    log_scroll.offset = logical_scroll.min(u16::MAX as usize) as u16;
+
+    // Persist prefix-sum cache for mouse hit-testing and scroll handlers outside render.
+    log_scroll.visual_start = log_scroll.visual_start_cache.clone();
+}
+
+/// Phase 3: pure render — build cells from the caches and draw. Reads only.
+fn render_log_panel_pure(frame: &mut Frame, area: Rect, ctx: &RenderCtx, borders: Borders) {
+    let top = u16::from(borders.contains(Borders::TOP));
+    let bottom = u16::from(borders.contains(Borders::BOTTOM));
+    let left = u16::from(borders.contains(Borders::LEFT));
+    let right = u16::from(borders.contains(Borders::RIGHT));
+
+    let visual_scroll = ctx.log_scroll.visual_top;
+    let visible_height = ctx.log_scroll.height as usize;
+    let total_logical =
+        ctx.log_scroll.visible_indices.len() + usize::from(!ctx.stream.buffer.is_empty());
+    let total_visual = *ctx.log_scroll.visual_start_cache.last().unwrap_or(&0);
     let end_visual = (visual_scroll + visible_height).min(total_visual);
 
     // Reverse-map visual viewport bounds back to logical row range for cell building.
+    let vs_cache = &ctx.log_scroll.visual_start_cache;
     let logical_start = vs_cache
         .binary_search(&visual_scroll)
         .unwrap_or_else(|i| i.saturating_sub(1));
@@ -258,23 +303,9 @@ pub(crate) fn render_log_panel_with_borders(
     };
 
     // Phase 3: build TextCells for visible logical rows, then render.
-    //
-    // ```text
-    //  wrap cache (plain text)          TextCell (on demand)
-    //  ┌─────────────────────┐          ┌─────────────────────┐
-    //  │ cached_lines        │  select │ REVERSED style      │
-    //  │ no selection        │  ──→    │ overlay             │
-    //  └─────────────────────┘          └─────────────────────┘
-    //
-    //  Viewport clipping happens twice:
-    //    1. here — skip logical rows outside [logical_start, logical_end)
-    //    2. LogColumnRenderer — skip_lines inside partially visible cells
-    // ```
+    let log_fg = ctx.theme.fg;
 
-    let log_fg = app.theme.fg;
-
-    let mut renderer =
-        super::log_column::LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
+    let mut renderer = LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
 
     // Track message categories for separator insertion
     let mut prev_category: Option<&'static str> = None;
@@ -289,19 +320,19 @@ pub(crate) fn render_log_panel_with_borders(
             continue;
         }
 
-        let phys_idx = app.log_scroll.visible_indices.get(logical_i).copied();
+        let phys_idx = ctx.log_scroll.visible_indices.get(logical_i).copied();
 
         // Compute the byte-range selection for this logical row, if any.
-        let selection_range = app.mouse.log_selection.and_then(|sel| {
+        let selection_range = ctx.mouse.log_selection.and_then(|sel| {
             let phys = phys_idx?;
-            sel.byte_range_for(phys, app.log.items[phys].raw.len())
+            sel.byte_range_for(phys, ctx.log.items[phys].raw.len())
         });
 
         // ── Message category separator ──────────────────────────────
         // Between message groups of different types (user ↔ system ↔ assistant),
         // insert a thin decorative separator line.
         if let Some(phys) = phys_idx {
-            let kind = app.log.items[phys].kind;
+            let kind = ctx.log.items[phys].kind;
             let category = match kind {
                 LogItemKind::User => "user",
                 LogItemKind::AssistantMarkdown => "assistant",
@@ -316,9 +347,9 @@ pub(crate) fn render_log_panel_with_borders(
                 && prev != category
             {
                 let separator_fg = match category {
-                    "user" => app.theme.accent,
-                    "system" => app.theme.warning,
-                    _ => app.theme.border,
+                    "user" => ctx.theme.accent,
+                    "system" => ctx.theme.warning,
+                    _ => ctx.theme.border,
                 };
                 let separator_label = match category {
                     "user" => "💬 user",
@@ -336,14 +367,13 @@ pub(crate) fn render_log_panel_with_borders(
 
         // Tool block: replace the summary TextCell + placeholder rows with a
         // single ToolCell that renders both summary and detail card.
-        //
-        // Check both exact and range match: when the viewport starts in the
-        // middle of placeholder rows (user scrolled up), the summary phys_idx
-        // is no longer in the loop range, but subsequent placeholder rows
-        // still belong to the same ToolBlock.
         if let Some(phys) = phys_idx {
             if let Some((thinking_phys, _thinking_logical, thinking_rows)) =
-                app.find_thinking_at_logical(logical_i)
+                agent_tui_kit::state::find_thinking_at_logical(
+                    ctx.log_scroll,
+                    ctx.thinking,
+                    logical_i,
+                )
             {
                 let rows_before = phys.saturating_sub(thinking_phys);
                 let vis_start = if rows_before > 0 && rows_before <= logical_i {
@@ -351,11 +381,11 @@ pub(crate) fn render_log_panel_with_borders(
                 } else {
                     vs_cache[logical_i]
                 };
-                let msgs = app.msgs();
-                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER[(app.spinner_frame
+                let msgs = &ctx.messages;
+                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER[(ctx.spinner_frame
                     as usize)
                     % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
-                if let Some(active) = app
+                if let Some(active) = ctx
                     .thinking
                     .active
                     .as_ref()
@@ -363,21 +393,21 @@ pub(crate) fn render_log_panel_with_borders(
                 {
                     renderer.push(
                         vis_start,
-                        ThinkingCell::active(active, spinner, &app.theme, &msgs),
+                        ThinkingCell::active(active, spinner, ctx.theme, msgs),
                     );
-                } else if let Some(block) = app
+                } else if let Some(block) = ctx
                     .thinking
                     .blocks
                     .iter()
                     .find(|block| block.phys_idx == thinking_phys)
                 {
-                    renderer.push(vis_start, ThinkingCell::completed(block, &app.theme, &msgs));
+                    renderer.push(vis_start, ThinkingCell::completed(block, ctx.theme, msgs));
                 }
                 logical_i += thinking_rows - rows_before;
                 continue;
             }
 
-            let tool_match = app
+            let tool_match = ctx
                 .tools
                 .active
                 .iter()
@@ -393,7 +423,7 @@ pub(crate) fn render_log_panel_with_borders(
                     )
                 })
                 .or_else(|| {
-                    app.tools.blocks.iter().find_map(|b| {
+                    ctx.tools.blocks.iter().find_map(|b| {
                         if phys >= b.phys_idx
                             && phys <= b.phys_idx + b.output.message_placeholder_rows()
                         {
@@ -411,8 +441,8 @@ pub(crate) fn render_log_panel_with_borders(
                 } else {
                     vs_cache[logical_i]
                 };
-                let msgs = app.msgs();
-                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER[(app.spinner_frame
+                let msgs = &ctx.messages;
+                let spinner = crate::widgets::tool_widget::TOOL_RUNNING_SPINNER[(ctx.spinner_frame
                     as usize)
                     % crate::widgets::tool_widget::TOOL_RUNNING_SPINNER.len()];
                 let card_cell = ToolCell::from_output(
@@ -420,14 +450,14 @@ pub(crate) fn render_log_panel_with_borders(
                     started_at,
                     spinner,
                     false,
-                    app.theme.accent,
-                    app.theme.bg,
-                    app.theme.fg,
-                    app.theme.success,
-                    app.theme.warning,
-                    app.theme.error,
-                    app.theme.block_border_type(),
-                    &msgs,
+                    ctx.theme.accent,
+                    ctx.theme.bg,
+                    ctx.theme.fg,
+                    ctx.theme.success,
+                    ctx.theme.warning,
+                    ctx.theme.error,
+                    ctx.theme.block_border_type(),
+                    msgs,
                 );
                 renderer.push(vis_start, card_cell);
                 logical_i += visual_rows - rows_before;
@@ -438,7 +468,7 @@ pub(crate) fn render_log_panel_with_borders(
         // Whole-Markdown message: render the cached MarkdownCell at the
         // logical row's visual start. `vs_cache` already reserved its rows.
         if let Some(phys) = phys_idx
-            && let Some(cell) = app
+            && let Some(cell) = ctx
                 .log
                 .items
                 .get(phys)
@@ -451,17 +481,17 @@ pub(crate) fn render_log_panel_with_borders(
 
         // Task-end rule: full-width line with centered elapsed label.
         if let Some(phys) = phys_idx
-            && super::cells::separator::is_task_end_separator(&app.log.items[phys].raw)
+            && super::cells::separator::is_task_end_separator(&ctx.log.items[phys].raw)
         {
-            let raw = &app.log.items[phys].raw;
-            let msgs = app.msgs();
+            let raw = &ctx.log.items[phys].raw;
+            let msgs = &ctx.messages;
             let sep = match super::cells::separator::task_end_elapsed_secs(raw) {
                 Some(secs) => super::cells::separator::TaskEndSeparator::with_elapsed(
-                    app.theme.accent,
+                    ctx.theme.accent,
                     msgs.bottom_elapsed,
                     secs,
                 ),
-                None => super::cells::separator::TaskEndSeparator::new(app.theme.accent),
+                None => super::cells::separator::TaskEndSeparator::new(ctx.theme.accent),
             };
             renderer.push(vs_cache[logical_i], sep);
             logical_i += 1;
@@ -470,13 +500,13 @@ pub(crate) fn render_log_panel_with_borders(
 
         // Normal row: build TextCell
         let cached_lines: Vec<Line<'static>> =
-            app.log_scroll.visual_cache[cache_start..cache_end].to_vec();
+            ctx.log_scroll.visual_cache[cache_start..cache_end].to_vec();
         let raw_text = phys_idx
-            .map(|p| app.log.items[p].raw.clone())
+            .map(|p| ctx.log.items[p].raw.clone())
             .unwrap_or_default();
 
         let indent_cols = phys_idx
-            .map(|p| app.nested_log_indent(p))
+            .map(|p| log_indent_at(ctx.log, p))
             // The last row is an in-progress assistant response, not a stored
             // physical message, so apply the same reply indent directly.
             .unwrap_or(super::util::LOG_THINKING_INDENT + 1);
@@ -488,7 +518,7 @@ pub(crate) fn render_log_panel_with_borders(
             None,
             indent_cols,
             log_fg,
-            app.theme.bg,
+            ctx.theme.bg,
         );
 
         // Push at this row's visual-line offset; LogColumnRenderer does a second
@@ -497,15 +527,15 @@ pub(crate) fn render_log_panel_with_borders(
         logical_i += 1;
     }
 
-    let panel_title = app.msgs().log_title.to_string();
+    let panel_title = ctx.messages.log_title.to_string();
 
     // Render bordered log panel (bottom border may be omitted for sticky join).
     let log_block = Block::default()
         .borders(borders)
-        .border_type(app.theme.block_border_type())
-        .border_style(Style::default().fg(app.theme.border))
+        .border_type(ctx.theme.block_border_type())
+        .border_style(Style::default().fg(ctx.theme.border))
         .title(panel_title)
-        .style(Style::default().bg(app.theme.bg));
+        .style(Style::default().bg(ctx.theme.bg));
     let inner = Rect::new(
         area.x + left,
         area.y + top,
@@ -514,30 +544,19 @@ pub(crate) fn render_log_panel_with_borders(
     );
     frame.render_widget(log_block, area);
     frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(app.theme.bg)),
+        Paragraph::new("").style(Style::default().bg(ctx.theme.bg)),
         inner,
     );
     frame.render_widget(renderer, inner);
 
     // Code cards remain viewport-clipped overlays. Thinking cards are direct
     // cells in the Phase 3 renderer above.
-    let render_ctx = agent_tui_kit::render::ctx::RenderCtx {
-        theme: &app.theme,
-        messages: app.msgs(),
-        log_scroll: &app.log_scroll,
-        code_blocks: &app.code_blocks,
-    };
-    super::cells::code::render_code_cards(frame, area, &render_ctx, visual_scroll, visible_height);
+    super::cells::code::render_code_cards(frame, area, ctx, visual_scroll, visible_height);
 
     // Loading spinner overlay on the loading placeholder row (if present).
-    render_loading_spinner(frame, area, app, visual_scroll, visible_height);
+    render_loading_spinner(frame, area, ctx, visual_scroll, visible_height);
 
     // Scrollbar thumb follows visual lines, not logical offset:
-    //
-    // ```text
-    //  logical offset 15  ──may map to──▶  visual line 180
-    //  because one message can wrap to many visual lines after resize
-    // ```
     let scrollbar = Scrollbar::default()
         .orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight)
         .begin_symbol(Some("▲"))
@@ -546,10 +565,10 @@ pub(crate) fn render_log_panel_with_borders(
         // Half-block thumb: if a terminal briefly desyncs around wide emoji titles,
         // a full `█` ghost on the left chrome reads as a hard "shadow"; `▐` is quieter.
         .thumb_symbol("▐")
-        .begin_style(Style::default().fg(app.theme.border))
-        .end_style(Style::default().fg(app.theme.border))
-        .track_style(Style::default().fg(app.theme.border))
-        .thumb_style(Style::default().fg(app.theme.accent));
+        .begin_style(Style::default().fg(ctx.theme.border))
+        .end_style(Style::default().fg(ctx.theme.border))
+        .track_style(Style::default().fg(ctx.theme.border))
+        .thumb_style(Style::default().fg(ctx.theme.accent));
     let sb_position = if total_visual > visible_height {
         let range = total_visual - visible_height;
         (visual_scroll as u64 * (total_visual - 1) as u64 / range as u64) as usize
@@ -558,7 +577,7 @@ pub(crate) fn render_log_panel_with_borders(
     };
     let sb_position = sb_position.min(total_visual.saturating_sub(1));
     let mut state = ScrollbarState::new(total_visual)
-        .viewport_content_length(app.log_scroll.height as usize)
+        .viewport_content_length(ctx.log_scroll.height as usize)
         .position(sb_position);
     frame.render_stateful_widget(scrollbar, area, &mut state);
 
@@ -566,10 +585,7 @@ pub(crate) fn render_log_panel_with_borders(
     // accent scrollbar thumb (`█`) is also being painted. Ghost thumb cells then stick on the
     // left chrome because unchanged border cells are skipped by Buffer::diff. Force-emit the
     // left border every frame so those residues cannot persist.
-    restamp_log_left_border(frame.buffer_mut(), area, borders, &app.theme);
-
-    // Persist prefix-sum cache for mouse hit-testing and scroll handlers outside render.
-    app.log_scroll.visual_start = app.log_scroll.visual_start_cache.clone();
+    restamp_log_left_border(frame.buffer_mut(), area, borders, ctx.theme);
 }
 
 /// Re-assert the log panel's left vertical border and mark it `AlwaysUpdate`.
@@ -597,18 +613,18 @@ fn restamp_log_left_border(buf: &mut Buffer, area: Rect, borders: Borders, theme
 }
 
 /// Render an animated loading spinner at the loading placeholder position.
-/// Uses `app.spinner_frame` (cycled 0-9) to pick a Braille spinner character,
+/// Uses `ctx.spinner_frame` (cycled 0-9) to pick a Braille spinner character,
 /// and displays a "Thinking..." label with a subtle pulse.
 fn render_loading_spinner(
     frame: &mut Frame,
     area: Rect,
-    app: &App,
+    ctx: &RenderCtx,
     visual_scroll: usize,
     visible_height: usize,
 ) {
-    let Some(idx) = app.loading_idx else { return };
+    let Some(idx) = ctx.loading_idx else { return };
     // Find logical row for this physical index
-    let Some(logical_row) = app
+    let Some(logical_row) = ctx
         .log_scroll
         .phys_to_logical_cache
         .get(idx)
@@ -616,7 +632,7 @@ fn render_loading_spinner(
     else {
         return;
     };
-    let vs_cache = &app.log_scroll.visual_start_cache;
+    let vs_cache = &ctx.log_scroll.visual_start_cache;
     if logical_row >= vs_cache.len().saturating_sub(1) {
         return;
     }
@@ -630,13 +646,13 @@ fn render_loading_spinner(
 
     // Spinner characters (10-frame cycle)
     const SPINNERS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let spinner_char = SPINNERS[(app.spinner_frame as usize) % SPINNERS.len()];
+    let spinner_char = SPINNERS[(ctx.spinner_frame as usize) % SPINNERS.len()];
 
     let spinner_style = Style::default()
-        .fg(app.theme.warning)
+        .fg(ctx.theme.warning)
         .add_modifier(Modifier::BOLD);
     let text_style = Style::default()
-        .fg(app.theme.accent)
+        .fg(ctx.theme.accent)
         .add_modifier(Modifier::ITALIC);
 
     let spinner_line = Line::from(vec![

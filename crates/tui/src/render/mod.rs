@@ -5,9 +5,6 @@ pub(crate) mod cells;
 mod input;
 mod layout;
 mod log;
-pub(crate) mod log_column {
-    pub(crate) use agent_tui_kit::render::log_column::*;
-}
 mod log_style;
 pub(crate) mod popups;
 pub(crate) mod render_md {

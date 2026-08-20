@@ -203,6 +203,15 @@ impl LogCoordinator {
     }
 }
 
+/// Left indent columns for a physical log row (fallback: assistant markdown).
+pub fn log_indent_at(log: &LogCoordinator, phys: usize) -> u16 {
+    log.items
+        .get(phys)
+        .map(|item| item.kind)
+        .unwrap_or(LogItemKind::AssistantMarkdown)
+        .log_indent()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,7 +15,16 @@ fn make_ctx<'a>(app: &'a crate::widgets::state::App) -> RenderCtx<'a> {
         theme: &app.theme,
         messages: app.msgs(),
         log_scroll: &app.log_scroll,
+        log: &app.log,
         code_blocks: &app.code_blocks,
+        mermaid_blocks: &app.mermaid_blocks,
+        tools: &app.tools,
+        thinking: &app.thinking,
+        stream: &app.stream,
+        mouse: &app.mouse,
+        skills_data: &app.skills_data,
+        loading_idx: app.loading_idx,
+        spinner_frame: app.spinner_frame,
     }
 }
 

@@ -11,7 +11,10 @@ use ratatui::layout::Rect;
 
 use crate::{
     i18n::Messages,
-    state::{CodeBlock, LogScroll},
+    state::{
+        CodeBlock, LogCoordinator, LogScroll, MermaidBlock, MouseState, SkillEntry, StreamState,
+        ThinkingState, ToolState,
+    },
     theme::Theme,
 };
 
@@ -24,7 +27,18 @@ pub struct RenderCtx<'a> {
     /// Owned copy (all-`&'static str`, built once per frame from the language).
     pub messages: Messages,
     pub log_scroll: &'a LogScroll,
+    pub log: &'a LogCoordinator,
     pub code_blocks: &'a [CodeBlock],
+    pub mermaid_blocks: &'a [MermaidBlock],
+    pub tools: &'a ToolState,
+    pub thinking: &'a ThinkingState,
+    pub stream: &'a StreamState,
+    pub mouse: &'a MouseState,
+    pub skills_data: &'a [SkillEntry],
+    /// Loading placeholder row index, if present.
+    pub loading_idx: Option<usize>,
+    /// Spinner animation frame counter.
+    pub spinner_frame: u8,
 }
 
 /// A command emitted by render code, executed by the app after the frame.

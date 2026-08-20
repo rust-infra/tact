@@ -16,7 +16,7 @@ pub mod thinking;
 pub mod tool_state;
 pub mod ui_types;
 
-pub use log::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle};
+pub use log::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle, log_indent_at};
 pub use log_scroll::LogScroll;
 pub use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};
 pub use plan_panel::PlanPanel;
@@ -25,7 +25,9 @@ pub use selection::PopupTextSelection;
 pub use status_bar_state::StatusBarState;
 pub use stream_state::StreamState;
 pub use task_panel::TaskPanelState;
-pub use thinking::{ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState};
+pub use thinking::{
+    ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState, find_thinking_at_logical,
+};
 pub use tool_state::{ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock, ToolState};
 pub use ui_types::{
     CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, MermaidBlock, MermaidPopup,
