@@ -17,6 +17,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "ratatui-markdown",
+ "syntect",
  "tact_protocol",
  "tokio",
  "unicode-segmentation",
