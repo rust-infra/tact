@@ -14,8 +14,8 @@ use crate::{
     state::{
         AccountState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, LogCoordinator,
         LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel, SelectPopup, SkillEntry,
-        Status, StatusBarState, StreamState, SubagentPopup, SystemPromptPopup, ThinkingState,
-        ToolState,
+        Status, StatusBarState, StreamState, SubagentPopup, SystemPromptPopup, TaskPanelState,
+        ThinkingState, ToolState,
     },
     theme::Theme,
 };
@@ -77,6 +77,8 @@ pub struct RenderCtx<'a> {
     pub task_history: &'a [HistoryEntry],
     /// Selection popup state (permission / model pickers).
     pub select: &'a SelectPopup,
+    /// Persistent tasks sticky strip state.
+    pub task_panel: &'a TaskPanelState,
 }
 
 /// A command emitted by render code, executed by the app after the frame.

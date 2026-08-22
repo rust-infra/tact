@@ -111,6 +111,7 @@ impl App {
             subagent_popup: self.subagent_popup.as_ref(),
             task_history: &self.task_history,
             select: &self.select,
+            task_panel: &self.task_panel,
         }
     }
 
