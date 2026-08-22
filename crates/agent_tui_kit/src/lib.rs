@@ -51,7 +51,17 @@ pub struct Ctx<'a> {
 pub use state::{InputMode, LogCoordinator, LogItem, LogItemKind, SystemMsgStyle};
 
 /// A message queued while the agent is busy (Codex-style submit-on-idle).
-pub struct PendingMessage(pub String);
+///
+/// Carries both the text shown in the pending block (`display`) and the text
+/// dispatched to the agent (`agent_task`) so the host can distinguish
+/// display-only decorations from the real prompt.
+#[derive(Debug, Clone)]
+pub struct PendingMessage {
+    /// Text shown in the pending block and later in the user bubble.
+    pub display: String,
+    /// Text dispatched to the agent as the `SubmitTask` payload.
+    pub agent_task: String,
+}
 
 /// Messages queued while the agent is busy.
 ///

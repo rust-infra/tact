@@ -99,6 +99,12 @@ impl App {
             flash_msg: self.flash_msg.as_ref().map(|(m, _)| m.as_str()),
             account: self.account_rx.as_ref().map(|_| &self.account),
             plan: &self.plan,
+            input: &self.input,
+            input_cursor: self.input_cursor,
+            input_scroll: self.input_scroll,
+            cmd_line: &self.cmd_line,
+            pending_messages: &self.pending_messages,
+            input_voice_title: self.voice_title(),
         }
     }
 

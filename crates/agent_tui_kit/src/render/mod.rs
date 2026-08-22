@@ -7,6 +7,7 @@
 pub mod bar;
 pub mod cells;
 pub mod ctx;
+pub mod input;
 pub mod log;
 pub mod log_column;
 pub mod mermaid_sequence;
@@ -14,4 +15,5 @@ pub mod pulldown;
 pub mod render_md;
 pub mod renderable;
 pub mod selectable_text;
+pub mod slash_style;
 pub mod util;

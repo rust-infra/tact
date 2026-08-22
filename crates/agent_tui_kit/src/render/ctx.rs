@@ -7,7 +7,7 @@
 //!
 //! Design: `docs/superpowers/specs/2026-08-18-tui-component-library-ctx-design.md`.
 
-use ratatui::layout::Rect;
+use ratatui::{layout::Rect, style::Style};
 
 use crate::{
     i18n::{Language, Messages},
@@ -56,6 +56,17 @@ pub struct RenderCtx<'a> {
     /// channel (renders no `¤` segment on the bottom bar).
     pub account: Option<&'a AccountState>,
     pub plan: &'a PlanPanel,
+    // ── Input surface (migrated with `render/input.rs`) ──
+    pub input: &'a str,
+    pub input_cursor: usize,
+    /// Vertical scroll of the input box, updated by the host's prepare phase.
+    pub input_scroll: u16,
+    /// Palette-mode command line text.
+    pub cmd_line: &'a str,
+    /// Codex-style queued messages (hint rows above the input box).
+    pub pending_messages: &'a [crate::PendingMessage],
+    /// App-layer voice button title (extension slot; `None` when disabled).
+    pub input_voice_title: Option<(String, Style)>,
 }
 
 /// A command emitted by render code, executed by the app after the frame.
