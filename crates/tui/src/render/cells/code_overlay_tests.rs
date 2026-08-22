@@ -5,24 +5,10 @@ use ratatui::{Terminal, backend::TestBackend};
 use tact_protocol::AgentUpdate;
 
 use crate::render::test_harness::{buffer_text, make_app, render_log_panel_text};
-use agent_tui_kit::render::{cells::code::render_code_cards, ctx::RenderCtx};
+use agent_tui_kit::render::cells::code::render_code_cards;
 
-fn make_ctx<'a>(app: &'a crate::widgets::state::App) -> RenderCtx<'a> {
-    RenderCtx {
-        theme: &app.theme,
-        messages: app.msgs(),
-        log_scroll: &app.log_scroll,
-        log: &app.log,
-        code_blocks: &app.code_blocks,
-        mermaid_blocks: &app.mermaid_blocks,
-        tools: &app.tools,
-        thinking: &app.thinking,
-        stream: &app.stream,
-        mouse: &app.mouse,
-        skills_data: &app.skills_data,
-        loading_idx: app.loading_idx,
-        spinner_frame: app.spinner_frame,
-    }
+fn make_ctx(app: &crate::widgets::state::App) -> agent_tui_kit::render::ctx::RenderCtx<'_> {
+    app.render_ctx()
 }
 
 #[test]

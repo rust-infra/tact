@@ -12,7 +12,7 @@ use crate::{
 };
 
 use agent_tui_kit::{
-    render::{ctx::RenderCtx, log::render_log_panel_pure},
+    render::log::render_log_panel_pure,
     state::{LogCoordinator, LogScroll, SkillEntry, log_indent_at},
 };
 
@@ -55,21 +55,7 @@ pub(crate) fn render_log_panel_with_borders(
         area,
         borders,
     );
-    let ctx = RenderCtx {
-        theme: &app.theme,
-        messages: app.msgs(),
-        log_scroll: &app.log_scroll,
-        log: &app.log,
-        code_blocks: &app.code_blocks,
-        mermaid_blocks: &app.mermaid_blocks,
-        tools: &app.tools,
-        thinking: &app.thinking,
-        stream: &app.stream,
-        mouse: &app.mouse,
-        skills_data: &app.skills_data,
-        loading_idx: app.loading_idx,
-        spinner_frame: app.spinner_frame,
-    };
+    let ctx = app.render_ctx();
     render_log_panel_pure(frame, area, &ctx, borders);
 }
 

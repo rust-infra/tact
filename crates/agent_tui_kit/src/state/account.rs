@@ -1,4 +1,4 @@
-//! Cached account state for the TUI.
+//! Cached account state for the bottom bar.
 //!
 //! Balance and usage quota updates arrive on a dedicated channel separate from
 //! the agent runtime. This struct keeps the latest values in one place so the
@@ -8,7 +8,7 @@ use tact_protocol::biz::{BalanceInfo, UsageQuotaInfo};
 
 /// Latest account / subscription state fetched from the active provider.
 #[derive(Default, Clone)]
-pub(crate) struct AccountState {
+pub struct AccountState {
     /// DeepSeek / Moonshot account balance info.
     pub balance: Option<BalanceInfo>,
     /// Kimi Code subscription quota.
@@ -17,20 +17,20 @@ pub(crate) struct AccountState {
 
 impl AccountState {
     /// Replace any previous state with a balance result.
-    pub(crate) fn set_balance(&mut self, info: BalanceInfo) {
+    pub fn set_balance(&mut self, info: BalanceInfo) {
         self.balance = Some(info);
         self.quota = None;
     }
 
     /// Replace any previous state with a usage quota result.
-    pub(crate) fn set_quota(&mut self, info: UsageQuotaInfo) {
+    pub fn set_quota(&mut self, info: UsageQuotaInfo) {
         self.quota = Some(info);
         self.balance = None;
     }
 
     /// Clear cached account state, e.g. when the provider permanently does not
     /// support account queries.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.balance = None;
         self.quota = None;
     }

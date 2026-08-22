@@ -10,10 +10,11 @@
 use ratatui::layout::Rect;
 
 use crate::{
-    i18n::Messages,
+    i18n::{Language, Messages},
     state::{
-        CodeBlock, LogCoordinator, LogScroll, MermaidBlock, MouseState, SkillEntry, StreamState,
-        ThinkingState, ToolState,
+        AccountState, CodeBlock, FocusedPanel, InputMode, LogCoordinator, LogScroll, MermaidBlock,
+        MouseState, PlanPanel, SkillEntry, Status, StatusBarState, StreamState, ThinkingState,
+        ToolState,
     },
     theme::Theme,
 };
@@ -39,6 +40,22 @@ pub struct RenderCtx<'a> {
     pub loading_idx: Option<usize>,
     /// Spinner animation frame counter.
     pub spinner_frame: u8,
+    // ── Status/bottom bar surface (migrated with `render/bar.rs`) ──
+    pub status_bar: &'a StatusBarState,
+    pub status: &'a Status,
+    pub input_mode: InputMode,
+    pub focused_panel: FocusedPanel,
+    pub language: Language,
+    pub workspace_dir: &'a str,
+    pub model_context_window: usize,
+    pub process_start_time: &'a chrono::DateTime<chrono::Local>,
+    pub task_start_time: Option<&'a chrono::DateTime<chrono::Local>>,
+    /// Transient flash message text (the expiry `Instant` lives in the app).
+    pub flash_msg: Option<&'a str>,
+    /// Account balance/quota surface; `None` when the host has no account
+    /// channel (renders no `¤` segment on the bottom bar).
+    pub account: Option<&'a AccountState>,
+    pub plan: &'a PlanPanel,
 }
 
 /// A command emitted by render code, executed by the app after the frame.

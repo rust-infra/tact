@@ -9,7 +9,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{i18n::Language, theme::Theme};
 
-pub(crate) mod account;
 pub(crate) mod app;
 mod file_picker;
 mod input_history;
@@ -21,7 +20,7 @@ pub(crate) mod task_panel {
 }
 mod voice;
 
-pub(crate) use account::AccountState;
+pub(crate) use agent_tui_kit::state::account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
 pub(crate) use slash_command::SlashCommandState;

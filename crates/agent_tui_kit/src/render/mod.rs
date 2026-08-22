@@ -4,6 +4,7 @@
 //! leaf utilities first, then cells, then the App-coupled panels (which require
 //! the `Ctx` abstraction).
 
+pub mod bar;
 pub mod cells;
 pub mod ctx;
 pub mod log;
