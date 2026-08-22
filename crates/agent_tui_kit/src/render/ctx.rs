@@ -12,8 +12,9 @@ use ratatui::{layout::Rect, style::Style};
 use crate::{
     i18n::{Language, Messages},
     state::{
-        AccountState, CodeBlock, FocusedPanel, InputMode, LogCoordinator, LogScroll, MermaidBlock,
-        MouseState, PlanPanel, SkillEntry, Status, StatusBarState, StreamState, ThinkingState,
+        AccountState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, LogCoordinator,
+        LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel, SelectPopup, SkillEntry,
+        Status, StatusBarState, StreamState, SubagentPopup, SystemPromptPopup, ThinkingState,
         ToolState,
     },
     theme::Theme,
@@ -67,6 +68,15 @@ pub struct RenderCtx<'a> {
     pub pending_messages: &'a [crate::PendingMessage],
     /// App-layer voice button title (extension slot; `None` when disabled).
     pub input_voice_title: Option<(String, Style)>,
+    // ── Popup surfaces (migrated with `render/popups/*`) ──
+    pub code_popup: Option<&'a CodePopup>,
+    pub mermaid_popup: Option<&'a MermaidPopup>,
+    pub system_prompt_popup: Option<&'a SystemPromptPopup>,
+    pub subagent_popup: Option<&'a SubagentPopup>,
+    /// Task history rows for the history panel.
+    pub task_history: &'a [HistoryEntry],
+    /// Selection popup state (permission / model pickers).
+    pub select: &'a SelectPopup,
 }
 
 /// A command emitted by render code, executed by the app after the frame.

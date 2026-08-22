@@ -11,6 +11,7 @@ pub mod input;
 pub mod log;
 pub mod log_column;
 pub mod mermaid_sequence;
+pub mod popups;
 pub mod pulldown;
 pub mod render_md;
 pub mod renderable;

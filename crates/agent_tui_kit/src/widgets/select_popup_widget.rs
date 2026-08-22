@@ -7,7 +7,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::{render::util::wrap_line, widgets::state::SelectPopup};
+use crate::{render::util::wrap_line, state::SelectPopup};
 
 /// Selection popup widget: displays prompt and option list centered, supports keyboard/mouse selection.
 pub struct SelectPopupWidget<'a> {

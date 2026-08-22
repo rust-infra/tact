@@ -105,6 +105,12 @@ impl App {
             cmd_line: &self.cmd_line,
             pending_messages: &self.pending_messages,
             input_voice_title: self.voice_title(),
+            code_popup: self.code_popup.as_ref(),
+            mermaid_popup: self.mermaid_popup.as_ref(),
+            system_prompt_popup: self.system_prompt_popup.as_ref(),
+            subagent_popup: self.subagent_popup.as_ref(),
+            task_history: &self.task_history,
+            select: &self.select,
         }
     }
 
