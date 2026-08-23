@@ -46,11 +46,15 @@ pub enum ToolEvent {
     },
     /// A tool card was finalized (active → blocks). The component kept the
     /// `phys_idx` on the new `ToolBlock`; the shell resizes the placeholder
-    /// rows from `old_rows` to `new_rows`.
+    /// rows from `old_rows` to `new_rows`. `had_active` tells the shell
+    /// whether an active card existed: when `false` (a finalize arrived with
+    /// no matching active card — e.g. after a restart) the shell must
+    /// *allocate* the placeholder rows, not resize.
     Finalized {
         tool_id: String,
         old_rows: usize,
         new_rows: usize,
+        had_active: bool,
     },
     /// A tool card was cancelled (same `tool_id` restarting without a finish).
     /// The shell removes the placeholder rows at `phys_idx`.
@@ -69,9 +73,18 @@ pub struct ToolComponent {
     state: ToolState,
     theme: Theme,
     messages: Messages,
-    /// `tool_id` → plan step index (recorded from `StepAdded`, in arrival
-    /// order). Mirrors the shell's `resolve_step_idx` so card step numbers
-    /// match the plan position even when the agent's `idx` differs.
+    /// `tool_id` → plan step index, recorded from `StepAdded` in arrival
+    /// order. Mirrors the shell's `resolve_step_idx` (first plan position for
+    /// a `tool_id`) so card step numbers match the plan position even when
+    /// the agent's `idx` differs.
+    ///
+    /// **First occurrence wins** (`entry().or_insert`, never overwritten):
+    /// the shell resolves a restarted `tool_id` to its *first* plan position,
+    /// and the card keeps that number for its whole lifetime. The map is
+    /// session-bounded (one entry per distinct `tool_id` — the same growth as
+    /// the plan itself) and must **not** be pruned on finalize: pruning would
+    /// make a later restart re-record the *latest* arrival index and diverge
+    /// from the shell's first-position resolution.
     step_indices: HashMap<String, usize>,
     /// Monotonic counter for `step_indices` (StepAdded arrival order).
     step_count: usize,
@@ -124,10 +137,14 @@ impl ToolComponent {
     }
 
     /// Record a `StepAdded` mapping (arrival order = plan order).
+    ///
+    /// First occurrence wins: the shell resolves a `tool_id` to its first
+    /// plan position, so a same-`tool_id` restart (StepAdded again) must
+    /// keep the original index — overwriting would drift from the shell.
     fn on_step_added(&mut self, step: &PlanStep) {
         let idx = self.step_count;
         self.step_count += 1;
-        self.step_indices.insert(step.tool_id.clone(), idx);
+        self.step_indices.entry(step.tool_id.clone()).or_insert(idx);
     }
 
     #[allow(clippy::too_many_arguments)] // mirrors the protocol update payload
@@ -270,10 +287,13 @@ impl ToolComponent {
     ) {
         let Some(pos) = self.state.active.iter().position(|a| a.tool_id == tool_id) else {
             let msgs = &self.messages;
+            // Resolve like the card header above: the system message must
+            // agree with the plan position, not the raw agent index.
+            let step_idx = self.resolve_step_idx(tool_id, idx);
             events.push(ToolEvent::Missing {
                 message: msgs
                     .step_failed_tmpl
-                    .replacen("{}", &(idx + 1).to_string(), 1)
+                    .replacen("{}", &(step_idx + 1).to_string(), 1)
                     .replacen("{}", error, 1),
             });
             return;
@@ -343,8 +363,9 @@ impl ToolComponent {
     }
 
     /// Shared finalize tail: move active → blocks and emit `Finalized`; when
-    /// no active matched, push the completed block with `phys_idx: 0` (the
-    /// shell's fallback branch allocates real rows via `set_blocks_phys_idx`).
+    /// no active matched, push the completed block with `phys_idx: 0` and
+    /// `had_active: false` (the shell's fallback branch allocates real rows
+    /// via `set_blocks_phys_idx`).
     fn finalize_push(
         &mut self,
         tool_id: &str,
@@ -364,6 +385,7 @@ impl ToolComponent {
                 tool_id: tool_id.to_string(),
                 old_rows,
                 new_rows,
+                had_active: true,
             });
         } else {
             self.state.blocks.push(ToolBlock {
@@ -375,6 +397,7 @@ impl ToolComponent {
                 tool_id: tool_id.to_string(),
                 old_rows: 0,
                 new_rows,
+                had_active: false,
             });
         }
     }
@@ -809,6 +832,22 @@ mod tests {
     }
 
     #[test]
+    fn restart_keeps_first_step_mapping() {
+        // Same tool_id restarts: the card must keep the FIRST plan position
+        // (mirroring the shell's first-occurrence resolution), not the
+        // latest arrival index.
+        let mut c = comp();
+        step_added(&mut c, "t1");
+        step_added(&mut c, "t1"); // restart: arrival order says index 1
+        let _ = step_started(&mut c, "t1");
+        assert!(
+            c.state().active[0].output.title_raw.starts_with("1. "),
+            "card keeps first step number, got: {}",
+            c.state().active[0].output.title_raw
+        );
+    }
+
+    #[test]
     fn step_failed_without_active_emits_missing() {
         let mut c = comp();
         let (mut log, mut pending, mut events, mut tool_events) = (
@@ -829,6 +868,75 @@ mod tests {
         assert!(
             matches!(tool_events[0], ToolEvent::Missing { ref message } if message.contains("3") && message.contains("nope"))
         );
+    }
+
+    #[test]
+    fn step_failed_missing_uses_resolved_step_number() {
+        // Raw agent idx (7) differs from the plan position (0): the system
+        // message must use the resolved number like the card header.
+        let mut c = comp();
+        step_added(&mut c, "t1");
+        let (mut log, mut pending, mut events, mut tool_events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        c.on_update(
+            &AgentUpdate::StepFailed {
+                idx: 7,
+                tool_id: "t1".into(),
+                arg_summary: String::new(),
+                error: "boom".into(),
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+        );
+        assert!(
+            matches!(tool_events[0], ToolEvent::Missing { ref message } if message.contains("Step 1 failed") && message.contains("boom")),
+            "expected resolved step 1, got: {:?}",
+            tool_events[0]
+        );
+    }
+
+    #[test]
+    fn finalize_without_active_marks_had_active_false() {
+        // A finalize with no matching active card (e.g. after a restart)
+        // must tell the shell to allocate rows, not resize.
+        let mut c = comp();
+        let (mut log, mut pending, mut events, mut tool_events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let result = StepResult {
+            tool: "read_file".into(),
+            arg_summary: "main.rs".into(),
+            arg_full: None,
+            status: StepStatus::Success,
+            message: "done".into(),
+            detail: None,
+            duration_us: Some(1),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("read_file"),
+        };
+        c.on_update(
+            &AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "ghost".into(),
+                result,
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+        );
+        assert_eq!(c.state().blocks.len(), 1);
+        assert_eq!(c.state().blocks[0].phys_idx, 0);
+        assert!(matches!(
+            tool_events[0],
+            ToolEvent::Finalized {
+                had_active: false,
+                ..
+            }
+        ));
     }
 
     #[test]

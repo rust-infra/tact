@@ -29,6 +29,51 @@
 
 ---
 
+## 1. 2026-08-23 — 工具卡步骤编号统一按计划位置解析（bugfix，任务 #43 评审）
+
+| 字段 | 值 |
+|------|------|
+| **类型** | bugfix |
+| **相关** | 任务 #43（ToolEvent outbox：`crates/agent_tui_kit/src/components/tool.rs`）；`crates/agent_tui_kit/src/components/plan.rs`；`crates/tui/src/widgets/state/app/agent.rs`；下文条目（ComponentRegistry，任务 #42）；Ch 23 §1 |
+
+**症状 / 动机：** ToolEvent outbox 提取（任务 #43）之后，步骤索引出现三处
+漂移，在 tool id 乱序或重启时出错：
+1. `PlanComponent` 用 agent 的**原始** `idx` 写 `step.output`，而原始 `idx`
+   可能与计划位置不一致（`resolve_step_idx` 正是为此存在）——完成/失败更新
+   可能覆盖**错误**步骤的 output，破坏状态栏进度推导与计划面板。
+2. `ToolComponent` 内部的 `tool_id → 步骤索引` 映射用**后到覆盖**
+   （`HashMap::insert`），而 shell 解析取**首个**计划位置——同一 `tool_id`
+   重启后卡片标题（"N. tool"）与 shell 状态行不一致。
+3. `StepFailed` 系统消息（"✗ Step N failed: …"）用原始 `idx`，而卡片标题
+   用解析后的值。
+
+**决策：**
+- `PlanComponent` 增加自己的 `resolve_step_idx`（按 `tool_id` 取首个计划
+  位置，回退原始 `idx`——与 shell 完全一致），`StepFinished` / `StepFailed`
+  的写入都经它解析。shell tail 保留解析后写入；两者现在写相同值，双重写入
+  无害，外部 kit host 独立使用也不受影响。
+- `ToolComponent` 的映射改为**首到生效**（`entry().or_insert`，从不覆盖）：
+  重启的 `tool_id` 在卡片整个生命周期内保持原始步骤编号，与 shell 一致。
+  映射按会话有界（每个不同 `tool_id` 一条，增长与计划本身相同），**不得**
+  在 finalize 时清理——清理会让后续重启重新记录最新到达索引，重新引入漂移。
+- `StepFailed` 无活动卡的系统消息改用解析后的步骤编号。
+- `ToolEvent::Finalized` 携带显式 `had_active: bool`，取代脆弱的
+  `phys_idx == 0 && old_rows == 0` 哨兵来区分 allocate/resize；
+  `on_step_failed_tail` 移除未使用的 `idx`/`tool_id`/`error` 参数。
+
+**变更后行为：** 步骤 output 与所有展示的步骤编号（卡片标题、系统消息、
+计划面板、状态栏）都按该 `tool_id` 的首个计划位置一致，即使 agent 原始
+`idx` 不同（tool id 乱序、同 id 重启）。新测试：
+`step_finished_resolves_divergent_raw_idx`、`step_failed_resolves_divergent_raw_idx`、
+`restart_keeps_first_step_mapping`、`step_failed_missing_uses_resolved_step_number`、
+`finalize_without_active_marks_had_active_false`。
+
+**指针：** `crates/agent_tui_kit/src/components/{plan,tool}.rs`、
+`crates/tui/src/widgets/state/app/agent.rs`（`apply_tool_events` /
+`on_step_failed_tail`）、Ch 23 §1。
+
+---
+
 ## 1. 2026-08-23 — TUI 渲染层提取为 `agent_tui_kit`（可复用、与 Tact 解耦）
 
 | 字段 | 值 |

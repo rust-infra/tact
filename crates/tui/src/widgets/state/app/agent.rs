@@ -157,10 +157,12 @@ impl App {
                     tool_id,
                     old_rows,
                     new_rows,
+                    had_active,
                 } => {
                     // The component moved active → blocks; find the block's
-                    // phys_idx. The fallback branch (no active card existed)
-                    // pushed with phys_idx 0 + old_rows 0 → allocate rows.
+                    // phys_idx. `had_active: false` means no active card
+                    // existed (a finalize after a restart) — allocate the
+                    // placeholder rows instead of resizing.
                     if let Some(block) = self
                         .tools()
                         .blocks
@@ -168,7 +170,7 @@ impl App {
                         .rev()
                         .find(|b| b.tool_id == tool_id)
                     {
-                        if block.phys_idx == 0 && old_rows == 0 {
+                        if !had_active {
                             let phys_idx = self.push_tool_placeholder_rows(new_rows);
                             self.tools_mut().set_blocks_phys_idx(&tool_id, phys_idx);
                         } else {
@@ -214,12 +216,7 @@ impl App {
                 tool_id,
                 result,
             } => self.on_step_finished_tail(idx, tool_id, result),
-            AgentUpdate::StepFailed {
-                idx,
-                tool_id,
-                error,
-                ..
-            } => self.on_step_failed_tail(idx, tool_id, error),
+            AgentUpdate::StepFailed { .. } => self.on_step_failed_tail(),
             AgentUpdate::TaskComplete(summary) => {
                 // Task complete: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -450,11 +447,9 @@ impl App {
         }
     }
 
-    fn on_step_failed_tail(&mut self, idx: usize, tool_id: String, _error: String) {
-        let idx = resolve_step_idx(&self.plan_mut().steps, &tool_id, idx);
-        let _ = idx;
+    fn on_step_failed_tail(&mut self) {
         // The card finalization (or Missing message) happened in the
-        // component + apply_tool_events; the tail keeps status in sync.
+        // component + apply_tool_events; the tail only keeps status in sync.
         self.status = Status::Idle;
         self.freeze_last_prompt_cost();
     }

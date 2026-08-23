@@ -27,6 +27,17 @@ impl PlanComponent {
     pub fn state_mut(&mut self) -> &mut PlanPanel {
         &mut self.state
     }
+
+    /// Resolve a step index the way the shell does: prefer the first plan
+    /// position for this `tool_id` (recorded from `StepAdded` in arrival
+    /// order — restarts keep the original position), fall back to `idx`.
+    fn resolve_step_idx(&self, tool_id: &str, idx: usize) -> usize {
+        self.state
+            .steps
+            .iter()
+            .position(|s| s.tool_id == tool_id)
+            .unwrap_or(idx)
+    }
 }
 
 impl Default for PlanComponent {
@@ -67,15 +78,28 @@ impl Component for PlanComponent {
                 false
             }
             // Keep the plan's step outputs in sync on completion/failure so the
-            // status bar's progress derivation stays correct.
-            AgentUpdate::StepFinished { idx, result, .. } => {
-                if let Some(step) = self.state.steps.get_mut(*idx) {
+            // status bar's progress derivation stays correct. The agent's raw
+            // `idx` is not a reliable plan index (out-of-order/restarted tool
+            // ids), so resolve to the first plan position like the shell does.
+            AgentUpdate::StepFinished {
+                idx,
+                tool_id,
+                result,
+            } => {
+                let idx = self.resolve_step_idx(tool_id, *idx);
+                if let Some(step) = self.state.steps.get_mut(idx) {
                     step.output = Some(result.message.clone());
                 }
                 false
             }
-            AgentUpdate::StepFailed { idx, error, .. } => {
-                if let Some(step) = self.state.steps.get_mut(*idx) {
+            AgentUpdate::StepFailed {
+                idx,
+                tool_id,
+                error,
+                ..
+            } => {
+                let idx = self.resolve_step_idx(tool_id, *idx);
+                if let Some(step) = self.state.steps.get_mut(idx) {
                     step.output = Some(error.clone());
                 }
                 false
@@ -186,5 +210,76 @@ mod tests {
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(comp.state().steps[0].output.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn step_finished_resolves_divergent_raw_idx() {
+        // The agent's raw `idx` is not a reliable plan index: when it differs
+        // from the tool_id's plan position, the output must land on the
+        // RESOLVED step (first plan position), never on the raw-index slot.
+        let mut comp = PlanComponent::new();
+        let (mut log, mut pending, mut events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+        );
+        comp.on_update(
+            &AgentUpdate::StepAdded(step("t1")),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
+        );
+        comp.on_update(
+            &AgentUpdate::StepAdded(step("t2")),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
+        );
+        // Raw idx 0 would hit steps[0] (t1); resolved must be steps[1] (t2).
+        comp.on_update(
+            &AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "t2".into(),
+                result: StepResult {
+                    tool: "read_file".into(),
+                    arg_summary: "r".into(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "done2".into(),
+                    detail: None,
+                    duration_us: Some(1),
+                    permission_label: None,
+                    presentation: crate::protocol::ToolPresentationInfo::generic("read_file"),
+                },
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
+        );
+        assert_eq!(comp.state().steps[0].output.as_deref(), None, "t1 untouched");
+        assert_eq!(comp.state().steps[1].output.as_deref(), Some("done2"));
+    }
+
+    #[test]
+    fn step_failed_resolves_divergent_raw_idx() {
+        let mut comp = PlanComponent::new();
+        let (mut log, mut pending, mut events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+        );
+        comp.on_update(
+            &AgentUpdate::StepAdded(step("t1")),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
+        );
+        comp.on_update(
+            &AgentUpdate::StepAdded(step("t2")),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
+        );
+        comp.on_update(
+            &AgentUpdate::StepFailed {
+                idx: 0,
+                tool_id: "t2".into(),
+                arg_summary: String::new(),
+                error: "boom2".into(),
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
+        );
+        assert_eq!(comp.state().steps[0].output.as_deref(), None, "t1 untouched");
+        assert_eq!(comp.state().steps[1].output.as_deref(), Some("boom2"));
     }
 }

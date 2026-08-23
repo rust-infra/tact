@@ -29,6 +29,61 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-23 — Tool-card step indices resolve to the plan position (bugfix, task #43 review)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | Task #43 (ToolEvent outbox: `crates/agent_tui_kit/src/components/tool.rs`); `crates/agent_tui_kit/src/components/plan.rs`; `crates/tui/src/widgets/state/app/agent.rs`; entry below (ComponentRegistry, task #42); Ch 23 §1 |
+
+**Symptom / motivation:** after the ToolEvent-outbox extraction (task #43),
+the step index had three drift points that broke on out-of-order or
+restarted tool ids:
+1. `PlanComponent` wrote `step.output` at the agent's **raw** `idx`, which
+   can differ from the plan position (`resolve_step_idx` exists exactly for
+   this) — a finished/failed update could overwrite the *wrong* step's
+   output, corrupting the status bar's progress derivation and the plan
+   panel.
+2. `ToolComponent`'s internal `tool_id → step index` map used
+   **last-wins** (`HashMap::insert`), while the shell resolves **first**
+   plan position — a same-`tool_id` restart made the card header ("N. tool")
+   disagree with the shell's status line.
+3. The `StepFailed` system message ("✗ Step N failed: …") used the raw
+   `idx` while the card header used the resolved one.
+
+**Decision:**
+- `PlanComponent` gained its own `resolve_step_idx` (first plan position by
+  `tool_id`, fall back to raw `idx` — identical to the shell's) and both
+  `StepFinished` / `StepFailed` writes go through it. The shell tail keeps
+  its resolved write; both now write the same value, so the double-write is
+  benign and external kit hosts keep working standalone.
+- `ToolComponent`'s map is **first-wins** (`entry().or_insert`, never
+  overwritten): a restarted `tool_id` keeps the original step number for
+  the card's whole lifetime, matching the shell. The map is session-bounded
+  (one entry per distinct `tool_id`, same growth as the plan itself) and
+  must not be pruned on finalize — pruning would re-record the latest
+  arrival index and re-introduce the drift.
+- The `StepFailed` missing-card system message formats with the resolved
+  step number.
+- `ToolEvent::Finalized` carries an explicit `had_active: bool` instead of
+  the fragile `phys_idx == 0 && old_rows == 0` sentinel for the
+  allocate-vs-resize decision; `on_step_failed_tail` dropped its unused
+  `idx`/`tool_id`/`error` parameters.
+
+**Behavior after:** a step's output and every displayed step number (card
+header, system message, plan panel, status bar) agree with the first plan
+position for the `tool_id`, even when the agent's raw `idx` differs
+(out-of-order tool ids, same-id restarts). Covered by new tests:
+`step_finished_resolves_divergent_raw_idx`, `step_failed_resolves_divergent_raw_idx`,
+`restart_keeps_first_step_mapping`, `step_failed_missing_uses_resolved_step_number`,
+`finalize_without_active_marks_had_active_false`.
+
+**Pointers:** `crates/agent_tui_kit/src/components/{plan,tool}.rs`,
+`crates/tui/src/widgets/state/app/agent.rs` (`apply_tool_events` /
+`on_step_failed_tail`), Ch 23 §1.
+
+---
+
 ## 1. 2026-08-23 — TUI render layer extracted into `agent_tui_kit` (reusable, Tact-free)
 
 | Field | Value |
