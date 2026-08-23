@@ -72,10 +72,10 @@ mod render_tests {
     fn bottom_bar_shows_context_usage_meter_on_row_2() {
         let mut app = make_app();
         app.model_context_window = 200_000;
-        app.status_bar.model_name = "mock-model".into();
-        app.status_bar.token_total = 590;
-        app.status_bar.token_prompt = 400;
-        app.status_bar.token_completion = 190;
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().token_total = 590;
+        app.status_bar_mut().token_prompt = 400;
+        app.status_bar_mut().token_completion = 190;
 
         let backend = TestBackend::new(160, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -108,10 +108,10 @@ mod render_tests {
     fn bottom_bar_shows_uptime_on_row_1_without_elapsed() {
         let mut app = make_app();
         app.last_prompt_elapsed_secs = Some(65); // 01:05 — belongs on task-end separator now
-        app.status_bar.model_name = "mock-model".into();
-        app.status_bar.token_total = 42;
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().token_total = 42;
         app.workspace_dir = "/tmp/tact-ws".into();
-        app.status_bar.git_branch = "main".into();
+        app.status_bar_mut().git_branch = "main".into();
 
         let backend = TestBackend::new(140, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -152,10 +152,10 @@ mod render_tests {
     #[test]
     fn bottom_bar_shows_compact_model_with_limits() {
         let mut app = make_app();
-        app.status_bar.model_name = "mock-model".into();
-        app.status_bar.model_max_tokens = 128_000;
-        app.status_bar.model_thinking_budget = Some(32_000);
-        app.status_bar.model_reasoning_effort = Some("high".into());
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().model_max_tokens = 128_000;
+        app.status_bar_mut().model_thinking_budget = Some(32_000);
+        app.status_bar_mut().model_reasoning_effort = Some("high".into());
         let backend = TestBackend::new(120, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
@@ -175,9 +175,9 @@ mod render_tests {
     #[test]
     fn bottom_bar_shows_compact_model_when_effort_is_absent() {
         let mut app = make_app();
-        app.status_bar.model_name = "mock-model".into();
-        app.status_bar.model_max_tokens = 128_000;
-        app.status_bar.model_thinking_budget = Some(32_000);
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().model_max_tokens = 128_000;
+        app.status_bar_mut().model_thinking_budget = Some(32_000);
         let backend = TestBackend::new(120, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
@@ -195,9 +195,9 @@ mod render_tests {
     #[test]
     fn bottom_bar_subtracts_effort_share_from_max_out_tokens() {
         let mut app = make_app();
-        app.status_bar.model_name = "mock-model".into();
-        app.status_bar.model_max_tokens = 128_000;
-        app.status_bar.model_reasoning_effort = Some("high".into());
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().model_max_tokens = 128_000;
+        app.status_bar_mut().model_reasoning_effort = Some("high".into());
         // 128k × 100/175 ≈ 73.1K — the reasoning share is subtracted from the
         // shared envelope for effort-semantic models.
         let backend = TestBackend::new(120, 2);
@@ -217,13 +217,13 @@ mod render_tests {
     #[test]
     fn bottom_bar_drops_cache_before_model_on_narrow_width() {
         let mut app = make_app();
-        app.status_bar.model_name = "mock-model".into();
-        app.status_bar.model_max_tokens = 8_000;
-        app.status_bar.model_thinking_budget = Some(32_000);
-        app.status_bar.model_reasoning_effort = Some("high".into());
-        app.status_bar.token_total = 100;
-        app.status_bar.token_cache_hit = 50;
-        app.status_bar.token_cache_miss = 50;
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().model_max_tokens = 8_000;
+        app.status_bar_mut().model_thinking_budget = Some(32_000);
+        app.status_bar_mut().model_reasoning_effort = Some("high".into());
+        app.status_bar_mut().token_total = 100;
+        app.status_bar_mut().token_cache_hit = 50;
+        app.status_bar_mut().token_cache_miss = 50;
         app.model_context_window = 200_000;
 
         let backend = TestBackend::new(40, 2);

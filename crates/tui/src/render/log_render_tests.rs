@@ -369,7 +369,7 @@ fn log_stream_buffer_shows_in_progress_text() {
         "in-progress stream buffer should render in log, got:\n{text}"
     );
     assert!(
-        !app.stream.buffer.is_empty(),
+        !app.stream_mut().buffer.is_empty(),
         "stream buffer should remain until task completes"
     );
 }
@@ -431,7 +431,7 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     let mut app = make_app();
     seed_tall_bash_tool(&mut app, 25);
     let _ = render_log_panel_text(&mut app, 100, 14);
-    let block = app.tools.blocks.last().expect("tool block");
+    let block = app.tools().blocks.last().expect("tool block");
     let summary_logical = app
         .log_scroll
         .phys_to_logical_cache

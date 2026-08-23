@@ -234,17 +234,17 @@ impl App {
         let mm_ss = format!("{:02}:{:02}", secs / 60, secs % 60);
 
         let mut parts = vec![format!("⏱ {mm_ss}")];
-        if !self.status_bar.model_name.is_empty() {
-            parts.push(self.status_bar.model_name.clone());
+        if !self.status_bar_mut().model_name.is_empty() {
+            parts.push(self.status_bar_mut().model_name.clone());
         }
-        let tokens = self.status_bar.token_total;
+        let tokens = self.status_bar_mut().token_total;
         if tokens > 0 {
             let mut detail = format!("{tokens} tokens");
             let sub: Vec<String> = [
-                ("prompt", self.status_bar.token_prompt),
-                ("completion", self.status_bar.token_completion),
-                ("cache", self.status_bar.token_cache_hit),
-                ("reasoning", self.status_bar.token_reasoning),
+                ("prompt", self.status_bar_mut().token_prompt),
+                ("completion", self.status_bar_mut().token_completion),
+                ("cache", self.status_bar_mut().token_cache_hit),
+                ("reasoning", self.status_bar_mut().token_reasoning),
             ]
             .into_iter()
             .filter(|(_, v)| *v > 0)

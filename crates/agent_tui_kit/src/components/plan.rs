@@ -35,6 +35,21 @@ impl Default for PlanComponent {
     }
 }
 
+/// Transparent field access: hosts keep `app.<field>…` working after the field
+/// type becomes the component (no mechanical churn at call sites).
+impl std::ops::Deref for PlanComponent {
+    type Target = PlanPanel;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for PlanComponent {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
 impl Component for PlanComponent {
     fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
         match update {

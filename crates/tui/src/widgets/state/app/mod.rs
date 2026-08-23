@@ -5,6 +5,7 @@ pub(crate) mod extensions;
 pub(crate) mod messages;
 pub(crate) mod pending;
 pub(crate) mod popups;
+pub(crate) mod registry;
 pub(crate) mod scroll;
 pub(crate) mod visibility;
 pub(crate) mod voice;

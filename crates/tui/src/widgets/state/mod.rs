@@ -31,17 +31,13 @@ pub(crate) use agent_tui_kit::state::log_scroll::LogScroll;
 pub(crate) use agent_tui_kit::state::mouse_state::{
     LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition,
 };
-pub(crate) use agent_tui_kit::state::plan_panel::PlanPanel;
 pub(crate) use agent_tui_kit::state::select_popup::SelectPopup;
 pub(crate) use agent_tui_kit::state::selection::PopupTextSelection;
-pub(crate) use agent_tui_kit::state::status_bar_state::StatusBarState;
-pub(crate) use agent_tui_kit::state::stream_state::StreamState;
-pub(crate) use agent_tui_kit::state::task_panel::TaskPanelState;
 pub(crate) use agent_tui_kit::state::thinking::{
-    ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState,
+    ActiveThinkingBlock, ThinkingBlock, ThinkingPopup,
 };
 pub(crate) use agent_tui_kit::state::tool_state::{
-    ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock, ToolState,
+    ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock,
 };
 pub(crate) use agent_tui_kit::state::ui_types::{
     CodeBlock, CodePopup, FocusedPanel, InputMode, MermaidBlock, MermaidPopup, Status,
@@ -151,8 +147,13 @@ pub struct App {
     /// Model context window in tokens (from agent config `model_context_window`).
     pub(crate) model_context_window: usize,
     pub(crate) log: LogCoordinator,
-    pub(crate) plan: PlanPanel,
     pub(crate) status: Status,
+    /// Component registry (whole-App switch, plan step 9): owns the plan,
+    /// thinking, stream, tool, status-bar and task-panel components; the shell
+    /// reads/mutates their state via the typed accessors in `app/registry.rs`
+    /// and routes updates through `dispatch_components` (agent.rs). The shared
+    /// `LogCoordinator` stays shell-owned (decision in task #42).
+    pub(crate) registry: agent_tui_kit::components::ComponentRegistry,
     pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,
     pub(crate) account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub(crate) plugin_rx: UnboundedReceiver<PluginEvent>,
@@ -186,15 +187,11 @@ pub struct App {
     pub(crate) dirty: bool,
     /// Internal clipboard buffer (used when system clipboard is unavailable).
     pub(crate) clipboard_buffer: String,
-    // Bottom status bar
-    pub(crate) status_bar: StatusBarState,
     /// Current task start time (for bottom status bar timer).
     pub(crate) task_start_time: Option<chrono::DateTime<chrono::Local>>,
     /// Frozen elapsed seconds from the most recent submitted prompt.
     /// Kept until a new prompt is submitted.
     pub(crate) last_prompt_elapsed_secs: Option<i64>,
-    /// Persistent task progress sticky (under Log).
-    pub(crate) task_panel: TaskPanelState,
     /// Task completion time (for top status bar Done highlight timer;
     /// auto-reverts to Idle display after 2s).
     pub(crate) task_done_time: Option<chrono::DateTime<chrono::Local>>,
@@ -206,8 +203,6 @@ pub struct App {
     pub(crate) last_git_refresh: Option<std::time::Instant>,
     /// Current working directory.
     pub(crate) workspace_dir: String,
-    /// Tool invocation blocks and diff popup state.
-    pub(crate) tools: ToolState,
     /// Completed LLM code block overlays.
     pub(crate) code_blocks: Vec<CodeBlock>,
     /// Code block popup preview (fullscreen independent scroll viewer).
@@ -228,10 +223,6 @@ pub struct App {
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
     pub(crate) slash_command: SlashCommandState,
-    // Streaming output state
-    pub(crate) stream: StreamState,
-    // Thinking state
-    pub(crate) thinking: ThinkingState,
     /// Voice-to-text title-bar button and worker channels.
     pub(crate) voice: VoiceState,
     /// Keyboard shortcut to start/stop voice recording, parsed from config.

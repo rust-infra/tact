@@ -36,7 +36,7 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             handle_mouse_scroll_down(app, hit);
         }
         MouseEventKind::Down(MouseButton::Left)
-            if app.tools.popup.is_some() || app.thinking.popup.is_some() =>
+            if app.tools_mut().popup.is_some() || app.thinking_mut().popup.is_some() =>
         {
             handle_text_popup_mouse_down(app, mouse);
         }
@@ -45,8 +45,8 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             handle_mouse_down(app, mouse, hit);
         }
         MouseEventKind::Drag(MouseButton::Left)
-            if app.tools.popup.is_some()
-                || app.thinking.popup.is_some()
+            if app.tools_mut().popup.is_some()
+                || app.thinking_mut().popup.is_some()
                 || app.subagent_popup.is_some() =>
         {
             handle_text_popup_mouse_drag(app, mouse);
@@ -69,8 +69,8 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_up();
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
-        if app.task_panel.scroll > 0 {
-            app.task_panel.scroll -= 1;
+        if app.task_panel_mut().scroll > 0 {
+            app.task_panel_mut().scroll -= 1;
         }
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
@@ -84,7 +84,7 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_down();
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
-        app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
+        app.task_panel_mut().scroll = app.task_panel_mut().scroll.saturating_add(1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
         app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
@@ -92,7 +92,7 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
 }
 
 fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app) && app.task_panel.expanded
+    crate::render::task_panel::sticky_host_visible(app) && app.task_panel().expanded
 }
 
 fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
@@ -116,8 +116,8 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         app.mouse.dragging_log = false;
     }
     if hit.in_task_panel && crate::render::task_panel::sticky_host_visible(app) {
-        app.task_panel.expanded = !app.task_panel.expanded;
-        app.mouse.in_task_panel = app.task_panel.expanded;
+        app.task_panel_mut().expanded = !app.task_panel_mut().expanded;
+        app.mouse.in_task_panel = app.task_panel_mut().expanded;
         app.dirty = true;
         return;
     }
@@ -150,7 +150,7 @@ fn handle_voice_button_click(app: &mut App) {
 
 fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     app.mouse.popup_text_drag_origin = None;
-    let popup_area = if app.thinking.popup.is_some() {
+    let popup_area = if app.thinking_mut().popup.is_some() {
         app.mouse.thinking_popup_area
     } else if app.subagent_popup.is_some() {
         app.mouse.subagent_popup_area
@@ -166,10 +166,10 @@ fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     let Some(origin) = popup_text_hit(app, mouse.column, mouse.row, false) else {
         return;
     };
-    if let Some(popup) = app.thinking.popup.as_mut() {
+    if let Some(popup) = app.thinking_mut().popup.as_mut() {
         popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
         app.mouse.popup_text_drag_origin = Some(origin);
-    } else if let Some(popup) = app.tools.popup.as_mut() {
+    } else if let Some(popup) = app.tools_mut().popup.as_mut() {
         popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
         app.mouse.popup_text_drag_origin = Some(origin);
     } else if let Some(popup) = app.subagent_popup.as_mut() {
@@ -370,9 +370,9 @@ fn handle_text_popup_mouse_drag(app: &mut App, mouse: MouseEvent) {
     } else {
         PopupTextSelection::new(origin.end, current.start)
     };
-    if let Some(popup) = app.thinking.popup.as_mut() {
+    if let Some(popup) = app.thinking_mut().popup.as_mut() {
         popup.selection = Some(selection);
-    } else if let Some(popup) = app.tools.popup.as_mut() {
+    } else if let Some(popup) = app.tools_mut().popup.as_mut() {
         popup.selection = Some(selection);
     } else if let Some(popup) = app.subagent_popup.as_mut() {
         popup.selection = Some(selection);
@@ -419,13 +419,13 @@ pub(crate) fn handle_tool_block_click(
     if app.mouse.click_count == 2 && app.mouse.last_click_tool == Some(tool_idx) {
         // Subagent tools open a dedicated live/markdown popup.
         let is_subagent = app
-            .tools
+            .tools_mut()
             .active
             .iter()
             .find(|a| a.phys_idx == phys_idx)
             .map(|a| a.output.tool_name.as_str() == "spawn_subagent")
             .or_else(|| {
-                app.tools
+                app.tools_mut()
                     .blocks
                     .iter()
                     .find(|b| b.phys_idx == phys_idx)
@@ -492,10 +492,10 @@ mod tests {
         use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
 
         let mut app = make_app();
-        app.task_panel.visible = true;
-        app.task_panel.expanded = false;
-        app.task_panel.expanded = false;
-        app.task_panel.snapshot = vec![TaskSnapshot {
+        app.task_panel_mut().visible = true;
+        app.task_panel_mut().expanded = false;
+        app.task_panel_mut().expanded = false;
+        app.task_panel_mut().snapshot = vec![TaskSnapshot {
             id: 1,
             subject: "Fix auth".into(),
             status: TaskStatusSnapshot::InProgress,
@@ -511,12 +511,12 @@ mod tests {
 
         // Click outside tab strip (x>=18) toggles expand when both tabs aren't shown.
         handle_mouse_event(&mut app, mouse_down(20, 10));
-        assert!(app.task_panel.expanded);
-        assert!(app.task_panel.expanded);
+        assert!(app.task_panel_mut().expanded);
+        assert!(app.task_panel_mut().expanded);
 
         handle_mouse_event(&mut app, mouse_down(20, 10));
-        assert!(!app.task_panel.expanded);
-        assert!(!app.task_panel.expanded);
+        assert!(!app.task_panel_mut().expanded);
+        assert!(!app.task_panel_mut().expanded);
     }
 
     #[test]
@@ -671,7 +671,7 @@ mod tests {
             popup_hit_row(6, 10, 0, "alpha"),
             popup_hit_row(7, 10, 6, "omega"),
         ];
-        app.tools.popup = Some(DiffPopup {
+        app.tools_mut().popup = Some(DiffPopup {
             title: "tool output".into(),
             file_path: None,
             git_diff_path: None,
@@ -697,7 +697,7 @@ mod tests {
             popup_hit_row(6, 6, 0, "alpha"),
             popup_hit_row(7, 6, 6, "omega"),
         ];
-        app.thinking.popup = Some(ThinkingPopup {
+        app.thinking_mut().popup = Some(ThinkingPopup {
             phys_idx: 0,
             title: "thinking".into(),
             scroll: 0,
@@ -714,7 +714,7 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(6, 6));
         handle_mouse_event(&mut app, mouse_drag(10, 6));
 
-        let popup = app.thinking.popup.as_ref().expect("thinking popup");
+        let popup = app.thinking_mut().popup.as_ref().expect("thinking popup");
         assert_eq!(popup.copy_content("raw reasoning"), "alpha");
     }
 
@@ -723,11 +723,11 @@ mod tests {
         let mut app = app_with_selectable_thinking_popup();
         handle_mouse_event(&mut app, mouse_down(6, 6));
         handle_mouse_event(&mut app, mouse_drag(10, 6));
-        let selection = app.thinking.popup.as_ref().expect("popup").selection;
+        let selection = app.thinking_mut().popup.as_ref().expect("popup").selection;
 
         handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 10, 6));
 
-        let popup = app.thinking.popup.as_ref().expect("thinking popup");
+        let popup = app.thinking_mut().popup.as_ref().expect("thinking popup");
         assert_eq!(popup.scroll, 1);
         assert_eq!(popup.selection, selection);
     }
@@ -739,7 +739,7 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(10, 6));
 
         assert_eq!(
-            app.tools.popup.as_ref().unwrap().selection,
+            app.tools_mut().popup.as_ref().unwrap().selection,
             Some(PopupTextSelection::new(0, 0))
         );
         assert!(app.mouse.log_selection.is_none());
@@ -752,7 +752,7 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(9, 6));
 
         assert_eq!(
-            app.tools.popup.as_ref().unwrap().selection,
+            app.tools_mut().popup.as_ref().unwrap().selection,
             Some(PopupTextSelection::new(0, 0))
         );
         assert_eq!(
@@ -766,13 +766,13 @@ mod tests {
         for (column, row) in [(5, 6), (10, 5), (28, 6)] {
             let mut app = app_with_selectable_tool_popup();
             let selection = Some(PopupTextSelection::new(1, 4));
-            app.tools.popup.as_mut().unwrap().selection = selection;
+            app.tools_mut().popup.as_mut().unwrap().selection = selection;
             app.mouse.popup_text_drag_origin = Some(PopupTextHit::new(1, 2));
 
             handle_mouse_event(&mut app, mouse_down(column, row));
             handle_mouse_event(&mut app, mouse_drag(14, 7));
 
-            assert_eq!(app.tools.popup.as_ref().unwrap().selection, selection);
+            assert_eq!(app.tools_mut().popup.as_ref().unwrap().selection, selection);
             assert!(app.mouse.popup_text_drag_origin.is_none());
         }
     }
@@ -785,7 +785,12 @@ mod tests {
         handle_mouse_event(&mut app, mouse_drag(14, 6));
 
         assert_eq!(
-            app.tools.popup.as_ref().unwrap().copy_content().as_deref(),
+            app.tools_mut()
+                .popup
+                .as_ref()
+                .unwrap()
+                .copy_content()
+                .as_deref(),
             Some("alpha")
         );
     }
@@ -798,7 +803,12 @@ mod tests {
         handle_mouse_event(&mut app, mouse_drag(10, 6));
 
         assert_eq!(
-            app.tools.popup.as_ref().unwrap().copy_content().as_deref(),
+            app.tools_mut()
+                .popup
+                .as_ref()
+                .unwrap()
+                .copy_content()
+                .as_deref(),
             Some("alpha")
         );
     }
@@ -810,7 +820,7 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(10, 6));
         handle_mouse_event(&mut app, mouse_drag(9, 6));
 
-        let popup = app.tools.popup.as_ref().unwrap();
+        let popup = app.tools_mut().popup.as_ref().unwrap();
         assert_eq!(popup.selection, Some(PopupTextSelection::new(1, 0)));
         assert_eq!(popup.copy_content().as_deref(), Some("a"));
     }
@@ -825,7 +835,12 @@ mod tests {
         handle_mouse_event(&mut app, mouse_drag(14, 7));
 
         assert_eq!(
-            app.tools.popup.as_ref().unwrap().copy_content().as_deref(),
+            app.tools_mut()
+                .popup
+                .as_ref()
+                .unwrap()
+                .copy_content()
+                .as_deref(),
             Some("alpha")
         );
     }
@@ -835,11 +850,11 @@ mod tests {
         let mut app = app_with_selectable_tool_popup();
         handle_mouse_event(&mut app, mouse_down(10, 6));
         handle_mouse_event(&mut app, mouse_drag(14, 6));
-        let selection = app.tools.popup.as_ref().unwrap().selection;
+        let selection = app.tools_mut().popup.as_ref().unwrap().selection;
 
         handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 10, 6));
 
-        let popup = app.tools.popup.as_ref().unwrap();
+        let popup = app.tools_mut().popup.as_ref().unwrap();
         assert_eq!(popup.scroll, 1);
         assert_eq!(selection, Some(PopupTextSelection::new(0, 5)));
         assert_eq!(popup.selection, selection);
@@ -852,7 +867,7 @@ mod tests {
 
         handle_mouse_event(&mut app, mouse_drag(14, 5));
 
-        let popup = app.tools.popup.as_ref().unwrap();
+        let popup = app.tools_mut().popup.as_ref().unwrap();
         assert_eq!(popup.selection, Some(PopupTextSelection::new(11, 0)));
         assert_eq!(popup.copy_content().as_deref(), Some("alpha\nomega"));
         assert_eq!(popup.scroll, 0);
@@ -865,7 +880,7 @@ mod tests {
 
         handle_mouse_event(&mut app, mouse_drag(10, 11));
 
-        let popup = app.tools.popup.as_ref().unwrap();
+        let popup = app.tools_mut().popup.as_ref().unwrap();
         assert_eq!(popup.selection, Some(PopupTextSelection::new(0, 11)));
         assert_eq!(popup.copy_content().as_deref(), Some("alpha\nomega"));
         assert_eq!(popup.scroll, 0);
@@ -877,7 +892,7 @@ mod tests {
 
         handle_mouse_event(&mut app, mouse_down(0, 0));
 
-        assert!(app.tools.popup.is_none());
+        assert!(app.tools_mut().popup.is_none());
         assert!(app.mouse.log_selection.is_none());
     }
 
@@ -924,7 +939,7 @@ mod tests {
     #[test]
     fn scroll_in_diff_popup_increments_popup_scroll() {
         let mut app = make_app();
-        app.tools.popup = Some(DiffPopup {
+        app.tools_mut().popup = Some(DiffPopup {
             title: "t".into(),
             file_path: None,
             git_diff_path: None,
@@ -941,7 +956,7 @@ mod tests {
 
         handle_mouse_scroll_down(&mut app, MousePanelHit::default());
 
-        assert_eq!(app.tools.popup.as_ref().unwrap().scroll, 1);
+        assert_eq!(app.tools_mut().popup.as_ref().unwrap().scroll, 1);
     }
 
     #[test]
@@ -977,15 +992,15 @@ mod tests {
             },
         });
 
-        let phys_idx = app.tools.blocks.last().unwrap().phys_idx;
+        let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         app.mouse.click_count = 1;
         handle_tool_block_click(&mut app, 0, phys_idx, 0);
-        assert!(app.tools.popup.is_none());
+        assert!(app.tools_mut().popup.is_none());
 
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
         handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS);
-        assert!(app.tools.popup.is_some());
+        assert!(app.tools_mut().popup.is_some());
     }
 
     #[test]
@@ -1021,13 +1036,13 @@ mod tests {
             },
         });
 
-        let phys_idx = app.tools.blocks.last().unwrap().phys_idx;
+        let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
         handle_tool_block_click(&mut app, 0, phys_idx, 0);
-        assert!(app.tools.popup.is_none());
+        assert!(app.tools_mut().popup.is_none());
         handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS - 1);
-        assert!(app.tools.popup.is_none());
+        assert!(app.tools_mut().popup.is_none());
     }
 
     #[test]

@@ -73,6 +73,21 @@ impl Default for ToolComponent {
     }
 }
 
+/// Transparent field access: hosts keep `app.<field>…` working after the field
+/// type becomes the component (no mechanical churn at call sites).
+impl std::ops::Deref for ToolComponent {
+    type Target = ToolState;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for ToolComponent {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
 impl Component for ToolComponent {
     fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
         match update {

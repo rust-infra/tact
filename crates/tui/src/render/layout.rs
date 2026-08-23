@@ -53,10 +53,10 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
         super::task_panel::render_task_panel(frame, chunks[1], app);
     }
 
-    if app.thinking.popup.is_some() {
+    if app.thinking_mut().popup.is_some() {
         super::popups::thinking_popup::render_thinking_popup(frame, area, app);
     }
-    if app.tools.popup.is_some() {
+    if app.tools_mut().popup.is_some() {
         super::popups::diff_popup::render_diff_popup(frame, area, app);
     }
     if app.system_prompt_popup.is_some() {

@@ -11,7 +11,7 @@ use crate::widgets::state::{
 };
 
 fn seed_diff_popup(app: &mut App) {
-    app.tools.popup = Some(DiffPopup {
+    app.tools_mut().popup = Some(DiffPopup {
         title: "read_file".into(),
         file_path: None,
         git_diff_path: None,
@@ -73,14 +73,14 @@ fn seed_thinking_popup(app: &mut App) {
         "Thinking title".into(),
         LogItemKind::Thinking,
     );
-    app.thinking.blocks.push(ThinkingBlock {
+    app.thinking_mut().blocks.push(ThinkingBlock {
         phys_idx: 0,
         content: "Deep reasoning line".into(),
         summary: "Deep reasoning line".into(),
         cached_markdown: vec![Line::from("Deep reasoning line")],
         elapsed: Duration::from_millis(10),
     });
-    app.thinking.popup = Some(ThinkingPopup {
+    app.thinking_mut().popup = Some(ThinkingPopup {
         phys_idx: 0,
         title: "Thinking title".into(),
         scroll: 0,
@@ -221,7 +221,7 @@ fn main_area_diff_popup_renders_inline_content() {
 fn diff_popup_selection_reverses_source_cells_but_not_number_or_gutter() {
     let mut app = make_app();
     seed_diff_popup(&mut app);
-    let popup = app.tools.popup.as_mut().expect("popup");
+    let popup = app.tools_mut().popup.as_mut().expect("popup");
     popup.inline_content = Some("alpha\nbeta".into());
     popup.lang.clear();
     popup.use_diff_gutter = true;
@@ -252,7 +252,7 @@ fn diff_popup_selection_reverses_source_cells_but_not_number_or_gutter() {
 fn diff_popup_selection_reverses_wide_scalar_and_maps_both_columns() {
     let mut app = make_app();
     seed_diff_popup(&mut app);
-    let popup = app.tools.popup.as_mut().expect("popup");
+    let popup = app.tools_mut().popup.as_mut().expect("popup");
     popup.inline_content = Some("a界z".into());
     popup.lang.clear();
     popup.selection = Some(PopupTextSelection::new(1, 4));
@@ -284,7 +284,7 @@ fn assert_diff_popup_grapheme_selection(
 ) {
     let mut app = make_app();
     seed_diff_popup(&mut app);
-    let popup = app.tools.popup.as_mut().expect("popup");
+    let popup = app.tools_mut().popup.as_mut().expect("popup");
     popup.inline_content = Some(text.into());
     popup.lang.clear();
 
@@ -301,12 +301,12 @@ fn assert_diff_popup_grapheme_selection(
         crate::widgets::state::PopupTextHit::new(grapheme_end, following_end)
     );
 
-    app.tools.popup.as_mut().expect("popup").selection = Some(PopupTextSelection::new(
+    app.tools_mut().popup.as_mut().expect("popup").selection = Some(PopupTextSelection::new(
         grapheme_hit.start,
         grapheme_hit.end,
     ));
     assert_eq!(
-        app.tools
+        app.tools_mut()
             .popup
             .as_ref()
             .expect("popup")
@@ -341,7 +341,7 @@ fn diff_popup_selects_and_highlights_complete_zwj_emoji_grapheme() {
 fn diff_popup_selection_highlights_visible_scrolled_row() {
     let mut app = make_app();
     seed_diff_popup(&mut app);
-    let popup = app.tools.popup.as_mut().expect("popup");
+    let popup = app.tools_mut().popup.as_mut().expect("popup");
     popup.inline_content = Some("zero\none\ntwo".into());
     popup.lang.clear();
     popup.scroll = 1;
@@ -393,7 +393,7 @@ fn active_thinking_popup_uses_buffered_content() {
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
         "draft reasoning".into(),
     )));
-    let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
+    let phys_idx = app.thinking_mut().active.as_ref().unwrap().phys_idx;
     app.open_thinking_popup(phys_idx);
 
     assert_eq!(
@@ -412,7 +412,7 @@ fn active_thinking_popup_preserves_blank_lines() {
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
         "first line\n\nlast line".into(),
     )));
-    let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
+    let phys_idx = app.thinking_mut().active.as_ref().unwrap().phys_idx;
     app.open_thinking_popup(phys_idx);
 
     let text = render_thinking_popup_text(&mut app, 100, 30);
@@ -428,14 +428,14 @@ fn active_thinking_popup_preserves_blank_lines() {
 #[test]
 fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
     let mut app = make_app();
-    app.thinking.blocks.push(ThinkingBlock {
+    app.thinking_mut().blocks.push(ThinkingBlock {
         phys_idx: 0,
         content: "1. first item\n2. second item".into(),
         summary: "second item".into(),
         cached_markdown: vec![Line::from("1. first item"), Line::from("2. second item")],
         elapsed: Duration::ZERO,
     });
-    app.thinking.popup = Some(ThinkingPopup {
+    app.thinking_mut().popup = Some(ThinkingPopup {
         phys_idx: 0,
         title: "Thinking".into(),
         scroll: 0,
@@ -460,10 +460,15 @@ fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
 fn thinking_popup_selection_reverses_selected_body_text_only() {
     let mut app = make_app();
     seed_thinking_popup(&mut app);
-    let block = app.thinking.blocks.first_mut().expect("thinking block");
+    let block = app
+        .thinking_mut()
+        .blocks
+        .first_mut()
+        .expect("thinking block");
     block.content = "alpha\nbeta".into();
     block.cached_markdown = vec![Line::from("alpha"), Line::from("beta")];
-    app.thinking.popup.as_mut().expect("popup").selection = Some(PopupTextSelection::new(0, 5));
+    app.thinking_mut().popup.as_mut().expect("popup").selection =
+        Some(PopupTextSelection::new(0, 5));
 
     let terminal = render_thinking_popup_terminal(&mut app, 100, 30);
     let row = &app.mouse.popup_text_hit_rows[0];
@@ -485,7 +490,11 @@ fn thinking_popup_selection_reverses_selected_body_text_only() {
 fn thinking_popup_selection_maps_zwj_emoji_as_one_grapheme() {
     let mut app = make_app();
     seed_thinking_popup(&mut app);
-    let block = app.thinking.blocks.first_mut().expect("thinking block");
+    let block = app
+        .thinking_mut()
+        .blocks
+        .first_mut()
+        .expect("thinking block");
     block.content = "a👩‍💻b".into();
     block.cached_markdown = vec![Line::from("a👩‍💻b")];
 
@@ -501,13 +510,17 @@ fn thinking_popup_selection_maps_zwj_emoji_as_one_grapheme() {
 fn thinking_popup_selection_text_matches_visible_markdown_text() {
     let mut app = make_app();
     seed_thinking_popup(&mut app);
-    let block = app.thinking.blocks.first_mut().expect("thinking block");
+    let block = app
+        .thinking_mut()
+        .blocks
+        .first_mut()
+        .expect("thinking block");
     block.content = "**bold reasoning**".into();
     block.cached_markdown = vec![Line::from("bold reasoning")];
     let full_content = block.content.clone();
 
     let _terminal = render_thinking_popup_terminal(&mut app, 100, 30);
-    let popup = app.thinking.popup.as_mut().expect("thinking popup");
+    let popup = app.thinking_mut().popup.as_mut().expect("thinking popup");
     popup.selection = Some(PopupTextSelection::new(0, 4));
 
     assert_eq!(popup.selection_text, "bold reasoning");
@@ -720,7 +733,7 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
         },
     });
 
-    let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
+    let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
 
     let text = render_main_area_text(&mut app, 100, 30);
@@ -759,7 +772,7 @@ fn diff_popup_renders_unified_diff_markers() {
 +fn yet_another() {}
 ";
     let mut app = make_app();
-    app.tools.popup = Some(DiffPopup {
+    app.tools_mut().popup = Some(DiffPopup {
         title: "edit_file".into(),
         file_path: None,
         git_diff_path: None,
@@ -810,7 +823,7 @@ fn diff_popup_renders_unified_diff_markers() {
 #[test]
 fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
     let mut app = make_app();
-    app.tools.popup = Some(DiffPopup {
+    app.tools_mut().popup = Some(DiffPopup {
         title: "read_file".into(),
         file_path: None,
         git_diff_path: None,
@@ -912,7 +925,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
         },
     });
 
-    let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
+    let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
 
     let text = render_main_area_text(&mut app, 100, 30);
@@ -979,7 +992,7 @@ fn open_diff_popup_after_read_file_step_finish() {
         },
     });
 
-    let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
+    let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
 
     let text = render_main_area_text(&mut app, 100, 30);
@@ -996,7 +1009,7 @@ fn tasks_dag_popup_renders_mermaid_markdown() {
     use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
 
     let mut app = make_app();
-    app.task_panel.snapshot = vec![
+    app.task_panel_mut().snapshot = vec![
         TaskSnapshot {
             id: 1,
             subject: "root".into(),

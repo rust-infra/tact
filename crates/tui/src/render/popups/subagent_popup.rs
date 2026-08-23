@@ -13,9 +13,14 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
         let popup_area = agent_tui_kit::render::popups::centered_popup_area(area);
         let body_area = agent_tui_kit::render::popups::popup_inner(popup_area);
         if let Some(popup) = app.subagent_popup.as_mut() {
+            let tools_state = app
+                .registry
+                .get::<agent_tui_kit::components::ToolComponent>()
+                .expect("tool component registered")
+                .state();
             agent_tui_kit::render::popups::subagent_popup::prepare_subagent_popup(
                 popup,
-                &app.tools,
+                tools_state,
                 &app.theme,
                 body_area.width,
             );

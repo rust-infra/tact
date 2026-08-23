@@ -80,7 +80,10 @@ pub struct PendingQueue {
 ///
 /// `U` defaults to [`protocol::AgentUpdate`]; hosts that emit a different
 /// update enum implement `Component<TheirUpdate>` and map at the boundary.
-pub trait Component<U = protocol::AgentUpdate>: 'static {
+///
+/// `Send` is required so hosts can move a shell holding a `ComponentRegistry`
+/// onto a worker task (Tact's `run_tui` runs on a `tokio::spawn`).
+pub trait Component<U = protocol::AgentUpdate>: 'static + Send {
     /// Handle one protocol update. Returns `true` if the frame must repaint.
     fn on_update(&mut self, update: &U, ctx: &mut Ctx<'_>) -> bool;
 

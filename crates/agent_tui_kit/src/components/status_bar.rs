@@ -29,6 +29,22 @@ impl StatusBarComponent {
     }
 }
 
+/// Transparent field access: hosts keep `app.status_bar.token_total` /
+/// `app.status_bar.model_name = …` working after the field type becomes the
+/// component (no mechanical churn at call sites).
+impl std::ops::Deref for StatusBarComponent {
+    type Target = StatusBarState;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for StatusBarComponent {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
 impl Component for StatusBarComponent {
     fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
         match update {

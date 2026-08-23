@@ -7,7 +7,7 @@ use crate::widgets::state::App;
 pub(crate) use agent_tui_kit::render::task_panel::STICKY_BORDER_ROWS;
 
 pub(crate) fn sticky_host_visible(app: &App) -> bool {
-    app.task_panel.visible
+    app.task_panel().visible
 }
 
 /// Content rows inside the sticky (excluding border).
@@ -15,14 +15,14 @@ pub(crate) fn sticky_host_content_height(app: &App) -> usize {
     if !sticky_host_visible(app) {
         return 0;
     }
-    if !app.task_panel.expanded {
+    if !app.task_panel().expanded {
         return 1;
     }
     // title + hairline + body
     let body = crate::widgets::state::task_panel::format_grouped_lines(
-        &app.task_panel.snapshot,
-        app.task_panel.scroll,
-        app.task_panel.max_visible,
+        &app.task_panel().snapshot,
+        app.task_panel().scroll,
+        app.task_panel().max_visible,
     )
     .len()
     .max(1);
@@ -44,13 +44,13 @@ mod sticky_tests {
     #[test]
     fn expanded_tasks_sticky_puts_a_rule_between_tabs_and_body() {
         let mut app = make_app();
-        app.task_panel.apply_snapshot(vec![TaskSnapshot {
+        app.task_panel_mut().apply_snapshot(vec![TaskSnapshot {
             id: 97,
             subject: "buy bitcoin".into(),
             status: TaskStatusSnapshot::Pending,
             ..Default::default()
         }]);
-        app.task_panel.expanded = true;
+        app.task_panel_mut().expanded = true;
 
         let text = render_main_area_text(&mut app, 80, 20);
         let lines: Vec<&str> = text.lines().collect();

@@ -570,7 +570,7 @@ pub(crate) fn start_permission_picker(app: &mut App) {
         msgs.permission_option_plan.to_string(),
         msgs.permission_option_auto.to_string(),
     ];
-    let current = match app.status_bar.permission_mode.as_str() {
+    let current = match app.status_bar_mut().permission_mode.as_str() {
         "plan" => 1,
         "auto" => 2,
         _ => 0,

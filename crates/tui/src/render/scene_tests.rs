@@ -50,8 +50,12 @@ fn full_frame_executing_renders_step_tracking_and_tool() {
     let mut app = make_app();
     seed_executing_read_step(&mut app);
 
-    assert_eq!(app.plan.steps.len(), 1, "step should be tracked internally");
-    assert_eq!(app.plan.steps[0].description, "read config");
+    assert_eq!(
+        app.plan_mut().steps.len(),
+        1,
+        "step should be tracked internally"
+    );
+    assert_eq!(app.plan_mut().steps[0].description, "read config");
 
     let text = render_app_text(&mut app, 120, 30);
 
@@ -325,8 +329,8 @@ fn plan_step_added_tracks_step_description() {
         HashMap::from([("path".to_string(), "test.rs".to_string())]),
     )));
 
-    assert_eq!(app.plan.steps.len(), 1);
-    assert_eq!(app.plan.steps[0].description, "write tests");
+    assert_eq!(app.plan_mut().steps.len(), 1);
+    assert_eq!(app.plan_mut().steps[0].description, "write tests");
 }
 
 #[test]

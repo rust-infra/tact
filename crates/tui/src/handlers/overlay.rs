@@ -94,7 +94,7 @@ mod tests {
     fn yields_to_select_mode_even_with_overlay() {
         use crate::widgets::state::InputMode;
         let mut app = make_app();
-        app.thinking.popup = Some(ThinkingPopup {
+        app.thinking_mut().popup = Some(ThinkingPopup {
             phys_idx: 0,
             title: "t".into(),
             scroll: 0,
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn esc_closes_diff_popup() {
         let mut app = make_app();
-        app.tools.popup = Some(DiffPopup {
+        app.tools_mut().popup = Some(DiffPopup {
             title: "t".into(),
             file_path: None,
             git_diff_path: None,
@@ -126,13 +126,13 @@ mod tests {
             highlighted_lines: Vec::new(),
         });
         assert!(handle_overlay_key(&mut app, key(KeyCode::Esc)));
-        assert!(app.tools.popup.is_none());
+        assert!(app.tools_mut().popup.is_none());
     }
 
     #[test]
     fn j_scrolls_thinking_popup() {
         let mut app = make_app();
-        app.thinking.popup = Some(ThinkingPopup {
+        app.thinking_mut().popup = Some(ThinkingPopup {
             phys_idx: 0,
             title: "t".into(),
             scroll: 0,
@@ -140,7 +140,7 @@ mod tests {
             selection_text: String::new(),
         });
         assert!(handle_overlay_key(&mut app, key(KeyCode::Char('j'))));
-        assert_eq!(app.thinking.popup.as_ref().unwrap().scroll, 1);
+        assert_eq!(app.thinking_mut().popup.as_ref().unwrap().scroll, 1);
     }
 
     #[test]

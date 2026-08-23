@@ -7,8 +7,9 @@ use ratatui::{Frame, layout::Rect};
 use crate::widgets::state::App;
 
 pub(crate) fn render_diff_popup(frame: &mut Frame, area: Rect, app: &mut App) {
-    if let Some(popup) = app.tools.popup.as_mut() {
-        agent_tui_kit::render::popups::diff_popup::prepare_diff_popup(popup, &app.theme);
+    let theme = app.theme;
+    if let Some(popup) = app.tools_mut().popup.as_mut() {
+        agent_tui_kit::render::popups::diff_popup::prepare_diff_popup(popup, &theme);
     }
     let ctx = app.render_ctx();
     let surface = agent_tui_kit::render::popups::diff_popup::render_diff_popup(frame, area, &ctx);

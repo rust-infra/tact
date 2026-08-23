@@ -35,6 +35,21 @@ impl Default for TaskPanelComponent {
     }
 }
 
+/// Transparent field access: hosts keep `app.<field>…` working after the field
+/// type becomes the component (no mechanical churn at call sites).
+impl std::ops::Deref for TaskPanelComponent {
+    type Target = TaskPanelState;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for TaskPanelComponent {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
 impl Component for TaskPanelComponent {
     fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
         if let AgentUpdate::TasksChanged { tasks, .. } = update {

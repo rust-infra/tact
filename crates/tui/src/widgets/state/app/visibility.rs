@@ -196,7 +196,7 @@ impl App {
         &self,
         line_idx: usize,
     ) -> Option<(usize, usize, usize, usize)> {
-        for (i, active) in self.tools.active.iter().enumerate() {
+        for (i, active) in self.tools().active.iter().enumerate() {
             let Some(si) = self.phys_to_logical_fast(active.phys_idx) else {
                 continue;
             };
@@ -205,8 +205,8 @@ impl App {
                 return Some((i, active.phys_idx, si, rows));
             }
         }
-        let base = self.tools.active.len();
-        for (i, block) in self.tools.blocks.iter().enumerate() {
+        let base = self.tools().active.len();
+        for (i, block) in self.tools().blocks.iter().enumerate() {
             let Some(si) = self.phys_to_logical_fast(block.phys_idx) else {
                 continue;
             };
@@ -231,7 +231,7 @@ impl App {
                 rows,
             ))
         };
-        if let Some(active) = self.thinking.active.as_ref()
+        if let Some(active) = self.thinking().active.as_ref()
             && let Some(found) = find(
                 active.phys_idx,
                 crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
@@ -239,7 +239,7 @@ impl App {
         {
             return Some(found);
         }
-        self.thinking.blocks.iter().find_map(|block| {
+        self.thinking().blocks.iter().find_map(|block| {
             find(
                 block.phys_idx,
                 crate::render::cells::thinking::thinking_visual_rows(1),
@@ -269,7 +269,12 @@ impl App {
                 .filter(|&idx| self.is_message_visible(idx))
                 .count()
         };
-        visible_count + if self.stream.buffer.is_empty() { 0 } else { 1 }
+        visible_count
+            + if self.stream().buffer.is_empty() {
+                0
+            } else {
+                1
+            }
     }
 
     /// Extract the raw text covered by a character-level selection.
@@ -309,7 +314,7 @@ impl App {
 
     /// Finalize the active thinking card at its existing placeholder row.
     pub(crate) fn close_active_thinking_block(&mut self) {
-        let Some(active) = self.thinking.active.take() else {
+        let Some(active) = self.thinking_mut().active.take() else {
             return;
         };
         let old_rows =
@@ -333,7 +338,7 @@ impl App {
         let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
         let new_rows = crate::render::cells::thinking::thinking_visual_rows(1);
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
-        self.thinking.blocks.push(ThinkingBlock {
+        self.thinking_mut().blocks.push(ThinkingBlock {
             phys_idx: active.phys_idx,
             content: active.content,
             summary,
@@ -344,11 +349,11 @@ impl App {
 
     /// Open a new thinking card at one shared-log placeholder row.
     pub(crate) fn begin_thinking_block(&mut self) {
-        if self.thinking.active.is_some() {
+        if self.thinking_mut().active.is_some() {
             return;
         }
         let phys_idx = self.push_thinking_placeholder_rows(1);
-        self.thinking.active = Some(ActiveThinkingBlock::new(
+        self.thinking_mut().active = Some(ActiveThinkingBlock::new(
             phys_idx,
             std::time::Instant::now(),
         ));
@@ -356,7 +361,7 @@ impl App {
 
     /// Append a thinking delta without creating source rows in the shared log.
     pub(crate) fn append_thinking_delta(&mut self, text: &str) {
-        let resize = if let Some(active) = self.thinking.active.as_mut() {
+        let resize = if let Some(active) = self.thinking_mut().active.as_mut() {
             let old_rows =
                 crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
             active.push_delta(text);
@@ -376,7 +381,7 @@ impl App {
 
     /// Close active thinking on an explicit finish or compatibility fallback.
     pub(crate) fn flush_and_close_thinking(&mut self) {
-        if self.thinking.active.is_some() {
+        if self.thinking_mut().active.is_some() {
             self.close_active_thinking_block();
         }
     }
@@ -388,10 +393,10 @@ impl App {
     }
 
     fn phys_idx_in_tool_block(&self, phys: usize) -> bool {
-        self.tools.active.iter().any(|active| {
+        self.tools().active.iter().any(|active| {
             phys >= active.phys_idx
                 && phys <= active.phys_idx + active.output.message_placeholder_rows()
-        }) || self.tools.blocks.iter().any(|block| {
+        }) || self.tools().blocks.iter().any(|block| {
             phys >= block.phys_idx
                 && phys <= block.phys_idx + block.output.message_placeholder_rows()
         })
@@ -444,65 +449,65 @@ impl App {
 
     /// Flush residual content from the streaming buffer into the message list.
     pub(crate) fn flush_stream_pending(&mut self) {
-        let will_flush_llm = !self.stream.table_buffer.is_empty()
-            || self.stream.code_block
-            || !self.stream.paragraph.is_empty()
-            || !self.stream.buffer.is_empty();
+        let will_flush_llm = !self.stream().table_buffer.is_empty()
+            || self.stream().code_block
+            || !self.stream().paragraph.is_empty()
+            || !self.stream().buffer.is_empty();
         if will_flush_llm {
             self.ensure_gap_after_tools();
         }
         // Flush accumulated table
-        if !self.stream.table_buffer.is_empty() {
+        if !self.stream().table_buffer.is_empty() {
             let (lines, raw_lines) = format_table_lines(
-                &self.stream.table_buffer,
+                &self.stream().table_buffer,
                 &self.theme,
                 Some(self.table_layout_width()),
             );
             self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
-            self.stream.table_buffer.clear();
+            self.stream_mut().table_buffer.clear();
         }
         // Flush incomplete code block (interrupted stream)
-        if self.stream.code_block {
+        if self.stream().code_block {
             // Line-oriented streaming only consumes text after `\n`. A final
             // closing fence (or last content line) may still sit in `buffer`
             // without a trailing newline — fold it in before finalizing.
-            let pending = std::mem::take(&mut self.stream.buffer);
+            let pending = std::mem::take(&mut self.stream_mut().buffer);
             let pending_trim = pending.trim();
             let closed = pending_trim == "```";
             if closed {
                 // Proper close fence without `\n` — discard, do not add to
                 // content; the block is still a valid closed block.
             } else if !pending.is_empty() {
-                self.stream.code_block_buffer.push(pending);
+                self.stream_mut().code_block_buffer.push(pending);
             }
 
-            let lang = std::mem::take(&mut self.stream.code_block_lang);
-            let code_lines = std::mem::take(&mut self.stream.code_block_buffer);
-            let start_idx = self.stream.code_block_start_idx.take();
+            let lang = std::mem::take(&mut self.stream_mut().code_block_lang);
+            let code_lines = std::mem::take(&mut self.stream_mut().code_block_buffer);
+            let start_idx = self.stream_mut().code_block_start_idx.take();
             let stream_end = start_idx
-                .map(|s| s + self.stream.code_block_line_count)
+                .map(|s| s + self.stream_mut().code_block_line_count)
                 .unwrap_or(0);
-            let is_mermaid = self.stream.code_block_is_mermaid;
+            let is_mermaid = self.stream_mut().code_block_is_mermaid;
             self.finish_stream_code_block(
                 lang, code_lines, start_idx, stream_end, closed, is_mermaid,
             );
-            self.stream.code_block = false;
-            self.stream.code_block_line_count = 0;
+            self.stream_mut().code_block = false;
+            self.stream_mut().code_block_line_count = 0;
         }
         // Flush accumulated paragraph (content not yet separated by blank lines, e.g. the last paragraph at stream end)
-        if !self.stream.paragraph.is_empty() {
-            let paragraph = std::mem::take(&mut self.stream.paragraph);
+        if !self.stream().paragraph.is_empty() {
+            let paragraph = std::mem::take(&mut self.stream_mut().paragraph);
             let (lines, raw_lines) = render_markdown_tui(&paragraph, &self.theme);
             self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
         }
         self.close_active_thinking_block();
-        if self.stream.buffer.is_empty() {
+        if self.stream_mut().buffer.is_empty() {
             return;
         }
-        let display = self.stream.buffer.clone();
+        let display = self.stream_mut().buffer.clone();
         let (lines, raw_lines) = render_markdown_tui(&display, &self.theme);
         self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
-        self.stream.buffer.clear();
+        self.stream_mut().buffer.clear();
     }
 
     /// Remove the loading placeholder line if it exists.
@@ -525,27 +530,27 @@ impl App {
                         block.end_idx -= 1;
                     }
                 }
-                for block in &mut self.tools.blocks {
+                for block in &mut self.tools_mut().blocks {
                     if block.phys_idx > idx {
                         block.phys_idx -= 1;
                     }
                 }
-                for active in &mut self.tools.active {
+                for active in &mut self.tools_mut().active {
                     if active.phys_idx > idx {
                         active.phys_idx -= 1;
                     }
                 }
-                for block in &mut self.thinking.blocks {
+                for block in &mut self.thinking_mut().blocks {
                     if block.phys_idx > idx {
                         block.phys_idx -= 1;
                     }
                 }
-                if let Some(active) = self.thinking.active.as_mut()
+                if let Some(active) = self.thinking_mut().active.as_mut()
                     && active.phys_idx > idx
                 {
                     active.phys_idx -= 1;
                 }
-                if let Some(ref mut start) = self.stream.code_block_start_idx
+                if let Some(ref mut start) = self.stream_mut().code_block_start_idx
                     && *start > idx
                 {
                     *start -= 1;
@@ -564,7 +569,7 @@ impl App {
         if !matches!(self.status, Status::Executing { .. }) {
             self.status = Status::Executing {
                 current_step: 0,
-                total: self.plan.steps.len(),
+                total: self.plan_mut().steps.len(),
             };
         }
     }
@@ -622,10 +627,10 @@ impl App {
                 *idx = (*idx as isize + delta).max(0) as usize;
             }
         };
-        for block in &mut self.tools.blocks {
+        for block in &mut self.tools_mut().blocks {
             adjust(&mut block.phys_idx);
         }
-        for active in &mut self.tools.active {
+        for active in &mut self.tools_mut().active {
             adjust(&mut active.phys_idx);
         }
         for block in &mut self.code_blocks {
@@ -640,12 +645,12 @@ impl App {
                 block.end_idx = (block.end_idx as isize + delta).max(0) as usize;
             }
         }
-        for block in &mut self.thinking.blocks {
+        for block in &mut self.thinking_mut().blocks {
             if block.phys_idx >= at {
                 block.phys_idx = (block.phys_idx as isize + delta).max(0) as usize;
             }
         }
-        if let Some(active) = self.thinking.active.as_mut()
+        if let Some(active) = self.thinking_mut().active.as_mut()
             && active.phys_idx >= at
         {
             active.phys_idx = (active.phys_idx as isize + delta).max(0) as usize;
@@ -655,7 +660,7 @@ impl App {
         {
             *idx = (*idx as isize + delta).max(0) as usize;
         }
-        if let Some(ref mut start) = self.stream.code_block_start_idx
+        if let Some(ref mut start) = self.stream_mut().code_block_start_idx
             && *start >= at
         {
             *start = (*start as isize + delta).max(0) as usize;
@@ -676,10 +681,15 @@ impl App {
 
     /// Drop a running tool block and remove its placeholder rows from the log.
     pub(crate) fn cancel_active_tool(&mut self, tool_id: &str) {
-        let Some(pos) = self.tools.active.iter().position(|a| a.tool_id == tool_id) else {
+        let Some(pos) = self
+            .tools_mut()
+            .active
+            .iter()
+            .position(|a| a.tool_id == tool_id)
+        else {
             return;
         };
-        let active = self.tools.active.remove(pos);
+        let active = self.tools_mut().active.remove(pos);
         self.remove_active_tool_rows(active);
     }
 
@@ -707,19 +717,24 @@ impl App {
     }
 
     pub(crate) fn finalize_tool_block(&mut self, tool_id: &str, output: ToolRenderOutput) {
-        if let Some(pos) = self.tools.active.iter().position(|a| a.tool_id == tool_id) {
-            let active = self.tools.active.remove(pos);
+        if let Some(pos) = self
+            .tools_mut()
+            .active
+            .iter()
+            .position(|a| a.tool_id == tool_id)
+        {
+            let active = self.tools_mut().active.remove(pos);
             let old_rows = active.output.visual_rows(false);
             let new_rows = output.visual_rows(false);
             self.resize_tool_placeholder_rows(active.phys_idx, old_rows, new_rows);
-            self.tools.blocks.push(ToolBlock {
+            self.tools_mut().blocks.push(ToolBlock {
                 phys_idx: active.phys_idx,
                 tool_id: tool_id.to_string(),
                 output,
             });
         } else {
             let phys_idx = self.push_tool_placeholder_rows(&output);
-            self.tools.blocks.push(ToolBlock {
+            self.tools_mut().blocks.push(ToolBlock {
                 phys_idx,
                 tool_id: tool_id.to_string(),
                 output,

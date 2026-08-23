@@ -17,7 +17,7 @@ pub(crate) fn render_thinking_popup(frame: &mut Frame, area: Rect, app: &mut App
     // The popup's selection cache is a render-time write-back (mirrors the
     // original inline logic: any rendered thinking popup refreshes it).
     if let Some(text) = surface.thinking_selection_text
-        && let Some(popup) = app.thinking.popup.as_mut()
+        && let Some(popup) = app.thinking_mut().popup.as_mut()
     {
         popup.selection_text = text;
     }

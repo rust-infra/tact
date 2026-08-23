@@ -92,6 +92,15 @@ impl<U: 'static> ComponentRegistry<U> {
             .find_map(|(_, c)| c.as_any().downcast_ref::<T>())
     }
 
+    /// Mutably borrow a concrete component by type (downcast); the shell uses
+    /// this to mutate component state from the app layer (host-side handlers
+    /// that own rich behavior the component does not implement).
+    pub fn get_mut<T: Component<U>>(&mut self) -> Option<&mut T> {
+        self.components
+            .iter_mut()
+            .find_map(|(_, c)| c.as_any_mut().downcast_mut::<T>())
+    }
+
     pub fn len(&self) -> usize {
         self.components.len()
     }

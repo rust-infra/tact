@@ -116,19 +116,19 @@ impl App {
             }
             // Update token usage info
             AgentUpdate::TokenUsage(usage) => {
-                self.status_bar.token_prompt = usage.prompt;
-                self.status_bar.token_completion = usage.completion;
-                self.status_bar.token_total = usage.total;
-                self.status_bar.token_cache_hit = usage.prompt_cache_hit_tokens;
-                self.status_bar.token_cache_miss = usage.prompt_cache_miss_tokens;
-                self.status_bar.token_reasoning = usage.reasoning_tokens;
+                self.status_bar_mut().token_prompt = usage.prompt;
+                self.status_bar_mut().token_completion = usage.completion;
+                self.status_bar_mut().token_total = usage.total;
+                self.status_bar_mut().token_cache_hit = usage.prompt_cache_hit_tokens;
+                self.status_bar_mut().token_cache_miss = usage.prompt_cache_miss_tokens;
+                self.status_bar_mut().token_reasoning = usage.reasoning_tokens;
             }
             // Update model info
             AgentUpdate::ModelInfo(params) => {
-                self.status_bar.model_name = params.model;
-                self.status_bar.model_max_tokens = params.max_tokens;
-                self.status_bar.model_thinking_budget = params.thinking_budget;
-                self.status_bar.model_reasoning_effort = params.reasoning_effort;
+                self.status_bar_mut().model_name = params.model;
+                self.status_bar_mut().model_max_tokens = params.max_tokens;
+                self.status_bar_mut().model_thinking_budget = params.thinking_budget;
+                self.status_bar_mut().model_reasoning_effort = params.reasoning_effort;
             }
             // Add system message
             AgentUpdate::Info(msg) => {
@@ -173,7 +173,7 @@ impl App {
                     }
                     ThinkingChunk::Delta(text) => {
                         // Started may be missing on older producers — open on first delta.
-                        if self.thinking.active.is_none() {
+                        if self.thinking_mut().active.is_none() {
                             self.begin_thinking_block();
                         }
                         self.append_thinking_delta(&text);
@@ -244,10 +244,10 @@ impl App {
     /// Snapshot changes only drive the sticky panel; the Log already shows the
     /// originating `task_*` tool row, so no extra system message is appended.
     fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, _: TasksChangeReason) {
-        let was_visible = self.task_panel.visible;
-        self.task_panel.apply_snapshot(tasks);
-        if self.task_panel.visible && !was_visible {
-            self.task_panel.expanded = true;
+        let was_visible = self.task_panel_mut().visible;
+        self.task_panel_mut().apply_snapshot(tasks);
+        if self.task_panel_mut().visible && !was_visible {
+            self.task_panel_mut().expanded = true;
         }
         // Keep an open /tasks-dag popup in sync: its lines were rendered when
         // the popup opened and would otherwise never show later task changes
@@ -260,7 +260,7 @@ impl App {
                     p.render_width
                 });
             let (source, lines) =
-                render_task_dag_lines(&self.task_panel.snapshot, &self.theme, width);
+                render_task_dag_lines(&self.task_panel().snapshot, &self.theme, width);
             if let Some(p) = self.task_dag_popup.as_mut() {
                 p.lines = lines;
                 p.mermaid_source = source;
@@ -272,9 +272,9 @@ impl App {
         // Flush leftover streaming text, preventing LLM output from appearing
         // between StepAdded and StepStarted.
         self.flush_stream_pending();
-        let idx = self.plan.steps.len();
-        self.plan.steps.push(step.clone());
-        self.plan
+        let idx = self.plan_mut().steps.len();
+        self.plan_mut().steps.push(step.clone());
+        self.plan_mut()
             .steps_set
             .insert(step.tool_id.clone(), step.clone());
         // Don't change current_step or total — the step hasn't started yet.
@@ -291,7 +291,7 @@ impl App {
         arg_full: String,
         presentation: tact_protocol::ToolPresentationInfo,
     ) {
-        let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
+        let idx = resolve_step_idx(&self.plan_mut().steps, &tool_id, idx);
         self.flush_stream_pending();
         // Same tool_id restarting without a finish: drop stale placeholder rows.
         self.cancel_active_tool(&tool_id);
@@ -320,7 +320,7 @@ impl App {
             .with_duration_us(0)
             .build();
         let phys_idx = self.push_tool_placeholder_rows(&output);
-        self.tools.active.push(ActiveToolBlock {
+        self.tools_mut().active.push(ActiveToolBlock {
             phys_idx,
             tool_id,
             output,
@@ -336,7 +336,7 @@ impl App {
 
     fn on_tool_progress(&mut self, tool_id: &str, chunks: &[ToolOutputChunk]) {
         let Some(pos) = self
-            .tools
+            .tools_mut()
             .active
             .iter()
             .position(|active| active.tool_id == tool_id)
@@ -344,15 +344,19 @@ impl App {
             return;
         };
         let was_pinned = self.is_log_pinned_to_bottom();
-        self.tools.active[pos].live_output.push_chunks(chunks);
-        if self.tools.active[pos].live_output.logical_line_count() == 0 {
+        self.tools_mut().active[pos].live_output.push_chunks(chunks);
+        if self.tools_mut().active[pos]
+            .live_output
+            .logical_line_count()
+            == 0
+        {
             return;
         }
 
         let msgs = self.msgs();
-        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
+        let step_idx = resolve_step_idx(&self.plan_mut().steps, tool_id, 0);
         let (phys_idx, old_rows, output) = {
-            let active = &self.tools.active[pos];
+            let active = &self.tools().active[pos];
             // Preserve subagent metadata when rebuilding the output.
             let output = ToolWidget::new(&self.theme, &msgs)
                 .with_tool(active.output.tool_name.clone())
@@ -369,7 +373,7 @@ impl App {
         };
         let new_rows = output.visual_rows(false);
         self.resize_tool_placeholder_rows(phys_idx, old_rows, new_rows);
-        self.tools.active[pos].output = output;
+        self.tools_mut().active[pos].output = output;
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
         if was_pinned {
             self.scroll_log_to_bottom();
@@ -383,14 +387,14 @@ impl App {
         token_usage: Option<TokenUsageInfo>,
     ) {
         let Some(pos) = self
-            .tools
+            .tools_mut()
             .active
             .iter()
             .position(|active| active.tool_id == tool_id)
         else {
             return;
         };
-        let active = &mut self.tools.active[pos];
+        let active = &mut self.tools_mut().active[pos];
         if let Some(m) = model {
             active.output.subagent_model = Some(m);
         }
@@ -401,7 +405,7 @@ impl App {
     }
 
     fn on_step_finished(&mut self, idx: usize, tool_id: String, result: StepResult) {
-        let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
+        let idx = resolve_step_idx(&self.plan_mut().steps, &tool_id, idx);
         self.flush_stream_pending();
         let msgs = self.msgs();
 
@@ -411,7 +415,7 @@ impl App {
         // outcome. The plan step is still recorded as done (the invocation did
         // succeed at "started").
         if result.presentation.keep_live {
-            if let Some(step) = self.plan.steps.get_mut(idx) {
+            if let Some(step) = self.plan_mut().steps.get_mut(idx) {
                 step.output = Some(result.message);
             }
             return;
@@ -431,7 +435,11 @@ impl App {
         // Also carry over subagent metadata (model, tokens) so the completed
         // tool card header continues to show them.
         if is_subagent
-            && let Some(active) = self.tools.active.iter_mut().find(|a| a.tool_id == tool_id)
+            && let Some(active) = self
+                .tools_mut()
+                .active
+                .iter_mut()
+                .find(|a| a.tool_id == tool_id)
         {
             let full_text = active.live_output.take_full_detail();
             if !full_text.is_empty() {
@@ -444,7 +452,7 @@ impl App {
 
         self.finalize_tool_block(&tool_id, output);
 
-        if let Some(step) = self.plan.steps.get_mut(idx) {
+        if let Some(step) = self.plan_mut().steps.get_mut(idx) {
             step.output = Some(result.message);
         }
     }
@@ -460,7 +468,7 @@ impl App {
         output: &str,
     ) {
         let Some(pos) = self
-            .tools
+            .tools_mut()
             .active
             .iter()
             .position(|active| active.tool_id == tool_id)
@@ -471,12 +479,12 @@ impl App {
             self.add_system_message(format!("{prefix} {message}"));
             return;
         };
-        let active = &self.tools.active[pos];
+        let active = &self.tools_mut().active[pos];
         let elapsed_us = active.started_at.elapsed().as_micros() as u64;
         let tool_name = active.output.tool_name.clone();
         let arg_summary = active.output.arg_summary.clone();
         let arg_full = active.output.arg_full.clone();
-        let step_idx = resolve_step_idx(&self.plan.steps, tool_id, 0);
+        let step_idx = resolve_step_idx(&self.plan_mut().steps, tool_id, 0);
         let msgs = self.msgs();
         let mut widget = ToolWidget::new(&self.theme, &msgs)
             .with_tool(tool_name)
@@ -495,15 +503,20 @@ impl App {
         }
         self.finalize_tool_block(tool_id, widget.build());
 
-        if let Some(step) = self.plan.steps.get_mut(step_idx) {
+        if let Some(step) = self.plan_mut().steps.get_mut(step_idx) {
             step.output = Some(message.to_string());
         }
     }
 
     fn on_step_failed(&mut self, idx: usize, tool_id: String, arg_summary: String, error: String) {
-        let idx = resolve_step_idx(&self.plan.steps, &tool_id, idx);
+        let idx = resolve_step_idx(&self.plan_mut().steps, &tool_id, idx);
         self.flush_stream_pending();
-        if let Some(active) = self.tools.active.iter().find(|a| a.tool_id == tool_id) {
+        if let Some(active) = self
+            .tools_mut()
+            .active
+            .iter()
+            .find(|a| a.tool_id == tool_id)
+        {
             let elapsed_us = active.started_at.elapsed().as_micros() as u64;
             let tool_name = active.output.tool_name.clone();
             // Prefer the summary carried by the failure (e.g. a web-search
@@ -560,7 +573,7 @@ impl App {
         closed: bool,
         is_mermaid: bool,
     ) {
-        self.stream.code_block_is_mermaid = false;
+        self.stream_mut().code_block_is_mermaid = false;
 
         if lines.is_empty() {
             if let Some(start) = start_idx {
@@ -655,7 +668,7 @@ impl App {
         // buffering) lives in the kit; this host loop applies the events to
         // the log with app-layer rendering (markdown, tables, indicators).
         use agent_tui_kit::state::StreamEvent;
-        for event in self.stream.push_chunk(&text) {
+        for event in self.stream_mut().push_chunk(&text) {
             match event {
                 StreamEvent::MarkdownParagraph { text } => {
                     let (styled, raw) = render_markdown_tui(&text, &self.theme);
@@ -685,7 +698,7 @@ impl App {
                         lang.clone()
                     };
                     let header_text = format!("╭─ {} ", label);
-                    self.stream.code_block_start_idx = Some(self.log.items.len());
+                    self.stream_mut().code_block_start_idx = Some(self.log.items.len());
                     self.append_msg(
                         Line::from(Span::styled(
                             header_text.clone(),
@@ -698,7 +711,7 @@ impl App {
                 }
                 StreamEvent::CodeLine { text: line } => {
                     let prev_idx = self.log.items.len().saturating_sub(1);
-                    if self.stream.code_block_line_count > 1
+                    if self.stream_mut().code_block_line_count > 1
                         && let Some(prev_item) = self.log.items.get_mut(prev_idx)
                         && prev_item.raw.ends_with(STREAMING_INDICATOR)
                     {
@@ -729,7 +742,7 @@ impl App {
                     line_count,
                     is_mermaid,
                 } => {
-                    let start_idx = self.stream.code_block_start_idx.take();
+                    let start_idx = self.stream_mut().code_block_start_idx.take();
                     let stream_end = start_idx.map(|s| s + line_count).unwrap_or(0);
                     self.finish_stream_code_block(
                         lang, lines, start_idx, stream_end, true, is_mermaid,
@@ -814,7 +827,7 @@ mod lifecycle_tests {
     #[test]
     fn tasks_changed_shows_panel_without_touching_log() {
         let mut app = make_app();
-        assert!(!app.task_panel.visible);
+        assert!(!app.task_panel_mut().visible);
         let log_len_before = app.log.items.len();
         app.handle_agent_update(AgentUpdate::TasksChanged {
             tasks: vec![TaskSnapshot {
@@ -828,14 +841,17 @@ mod lifecycle_tests {
             }],
             reason: TasksChangeReason::Created,
         });
-        assert!(app.task_panel.session_seen);
-        assert!(app.task_panel.visible);
+        assert!(app.task_panel_mut().session_seen);
+        assert!(app.task_panel_mut().visible);
         assert!(
-            app.task_panel.expanded,
+            app.task_panel_mut().expanded,
             "sticky should default to expanded on first show"
         );
         assert_eq!(
-            app.task_panel.snapshot.first().map(|t| t.subject.as_str()),
+            app.task_panel_mut()
+                .snapshot
+                .first()
+                .map(|t| t.subject.as_str()),
             Some("Fix auth"),
             "sticky snapshot should carry the subject"
         );
@@ -935,9 +951,9 @@ mod lifecycle_tests {
             }],
             reason: TasksChangeReason::Updated,
         });
-        assert!(app.task_panel.session_seen);
-        assert!(!app.task_panel.visible);
-        assert!(!app.task_panel.expanded);
+        assert!(app.task_panel_mut().session_seen);
+        assert!(!app.task_panel_mut().visible);
+        assert!(!app.task_panel_mut().expanded);
     }
 
     fn write_skill(work_dir: &std::path::Path, name: &str) {
@@ -1234,33 +1250,36 @@ mod lifecycle_tests {
     fn bash_live_output_grows_to_three_rows_then_keeps_a_three_line_tail() {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
-        let initial_rows = app.tools.active[0].output.visual_rows(false);
+        let initial_rows = app.tools_mut().active[0].output.visual_rows(false);
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("one\n")],
         });
-        let one_row = app.tools.active[0].output.visual_rows(false);
+        let one_row = app.tools_mut().active[0].output.visual_rows(false);
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("two\n")],
         });
-        let two_rows = app.tools.active[0].output.visual_rows(false);
+        let two_rows = app.tools_mut().active[0].output.visual_rows(false);
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("three\n")],
         });
-        let three_rows = app.tools.active[0].output.visual_rows(false);
+        let three_rows = app.tools_mut().active[0].output.visual_rows(false);
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("four\n")],
         });
 
         assert!(initial_rows < one_row && one_row < two_rows && two_rows < three_rows);
-        assert_eq!(app.tools.active[0].output.visual_rows(false), three_rows);
-        assert_eq!(app.tools.active[0].output.detail_preview.len(), 3);
         assert_eq!(
-            app.tools.active[0]
+            app.tools_mut().active[0].output.visual_rows(false),
+            three_rows
+        );
+        assert_eq!(app.tools_mut().active[0].output.detail_preview.len(), 3);
+        assert_eq!(
+            app.tools_mut().active[0]
                 .output
                 .detail_preview
                 .iter()
@@ -1322,8 +1341,8 @@ mod lifecycle_tests {
             chunks: vec![ToolOutputChunk::stdout("ignored\n")],
         });
 
-        assert!(app.thinking.active.is_some());
-        assert_eq!(app.tools.active[0].output.visual_rows(false), 2);
+        assert!(app.thinking_mut().active.is_some());
+        assert_eq!(app.tools_mut().active[0].output.visual_rows(false), 2);
     }
 
     // ---- background_run keep-live card lifecycle ----
@@ -1373,14 +1392,14 @@ mod lifecycle_tests {
         });
 
         assert_eq!(
-            app.tools.active.len(),
+            app.tools_mut().active.len(),
             1,
             "background card must stay active after StepFinished"
         );
-        assert!(app.tools.blocks.is_empty());
+        assert!(app.tools_mut().blocks.is_empty());
         // The plan step records the started message, not a final result.
         assert_eq!(
-            app.plan.steps[0].output.as_deref(),
+            app.plan_mut().steps[0].output.as_deref(),
             Some("Background task 018f3a2c started: cargo build")
         );
     }
@@ -1394,7 +1413,7 @@ mod lifecycle_tests {
             chunks: vec![ToolOutputChunk::stdout("Compiling ...\n")],
         });
         assert!(
-            app.tools.active[0].output.visual_rows(false) > 2,
+            app.tools_mut().active[0].output.visual_rows(false) > 2,
             "live progress should grow the active card"
         );
 
@@ -1405,9 +1424,9 @@ mod lifecycle_tests {
             output: "Compiling ...\ndone".into(),
         });
 
-        assert!(app.tools.active.is_empty(), "card must be finalized");
-        assert_eq!(app.tools.blocks.len(), 1);
-        let block = &app.tools.blocks[0];
+        assert!(app.tools_mut().active.is_empty(), "card must be finalized");
+        assert_eq!(app.tools_mut().blocks.len(), 1);
+        let block = &app.tools_mut().blocks[0];
         assert_eq!(block.tool_id, "bg1");
         assert!(matches!(
             block.output.phase,
@@ -1433,8 +1452,8 @@ mod lifecycle_tests {
             output: "error: build failed".into(),
         });
 
-        assert!(app.tools.active.is_empty(), "card must be finalized");
-        let block = &app.tools.blocks[0];
+        assert!(app.tools_mut().active.is_empty(), "card must be finalized");
+        let block = &app.tools_mut().blocks[0];
         assert!(matches!(
             block.output.phase,
             crate::widgets::tool_widget::ToolPhase::Failed
@@ -1461,8 +1480,8 @@ mod lifecycle_tests {
             output: String::new(),
         });
 
-        assert!(app.tools.active.is_empty());
-        assert!(app.tools.blocks.is_empty());
+        assert!(app.tools_mut().active.is_empty());
+        assert!(app.tools_mut().blocks.is_empty());
         assert!(
             app.log
                 .items
@@ -1481,12 +1500,12 @@ mod lifecycle_tests {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("live line\n")],
         });
-        let phys_idx = app.tools.active[0].phys_idx;
+        let phys_idx = app.tools_mut().active[0].phys_idx;
 
         app.open_diff_popup(phys_idx);
 
         let content = app
-            .tools
+            .tools_mut()
             .popup
             .as_ref()
             .and_then(|popup| popup.inline_content.as_deref())
@@ -1502,7 +1521,7 @@ mod lifecycle_tests {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("one\ntwo\nthree\nfour\n")],
         });
-        let live_rows = app.tools.active[0].output.visual_rows(false);
+        let live_rows = app.tools_mut().active[0].output.visual_rows(false);
 
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
@@ -1519,16 +1538,16 @@ mod lifecycle_tests {
                 presentation: ToolPresentationInfo::generic("bash"),
             },
         });
-        let completed_rows = app.tools.blocks[0].output.visual_rows(false);
+        let completed_rows = app.tools_mut().blocks[0].output.visual_rows(false);
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("late\n")],
         });
 
         assert!(completed_rows < live_rows);
-        assert!(app.tools.active.is_empty());
+        assert!(app.tools_mut().active.is_empty());
         assert_eq!(
-            app.tools.blocks[0].output.detail_full.as_deref(),
+            app.tools_mut().blocks[0].output.detail_full.as_deref(),
             Some("$ long-command\n\nlive line\n")
         );
     }
@@ -1844,7 +1863,7 @@ mod lifecycle_tests {
             },
         });
 
-        assert_eq!(app.plan.steps[0].output.as_deref(), Some("ok"));
+        assert_eq!(app.plan_mut().steps[0].output.as_deref(), Some("ok"));
     }
 
     #[test]
@@ -1885,7 +1904,7 @@ mod lifecycle_tests {
             error: "web search failed (status: Failed, query: \"Rust async\")".into(),
         });
 
-        let block = app.tools.blocks.last().expect("failed tool block");
+        let block = app.tools_mut().blocks.last().expect("failed tool block");
         let title = &block.output.title_raw;
         assert!(
             title.contains("Rust async"),
@@ -1954,10 +1973,10 @@ mod lifecycle_tests {
             prompt_cache_miss_tokens: 90,
             reasoning_tokens: 5,
         }));
-        assert_eq!(app.status_bar.token_prompt, 100);
-        assert_eq!(app.status_bar.token_completion, 50);
-        assert_eq!(app.status_bar.token_total, 150);
-        assert_eq!(app.status_bar.token_reasoning, 5);
+        assert_eq!(app.status_bar_mut().token_prompt, 100);
+        assert_eq!(app.status_bar_mut().token_completion, 50);
+        assert_eq!(app.status_bar_mut().token_total, 150);
+        assert_eq!(app.status_bar_mut().token_reasoning, 5);
     }
 
     #[test]
@@ -1982,9 +2001,9 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "reasoning line".into(),
         )));
-        assert!(app.thinking.active.is_some());
+        assert!(app.thinking_mut().active.is_some());
         app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
-        assert!(app.thinking.active.is_none());
+        assert!(app.thinking_mut().active.is_none());
     }
 
     #[test]
@@ -1999,11 +2018,11 @@ mod lifecycle_tests {
             reasoning_effort: Some("high".into()),
             extra_body: None,
         }));
-        assert_eq!(app.status_bar.model_name, "mock-model");
-        assert_eq!(app.status_bar.model_max_tokens, 4096);
-        assert_eq!(app.status_bar.model_thinking_budget, Some(32_000));
+        assert_eq!(app.status_bar_mut().model_name, "mock-model");
+        assert_eq!(app.status_bar_mut().model_max_tokens, 4096);
+        assert_eq!(app.status_bar_mut().model_thinking_budget, Some(32_000));
         assert_eq!(
-            app.status_bar.model_reasoning_effort.as_deref(),
+            app.status_bar_mut().model_reasoning_effort.as_deref(),
             Some("high")
         );
     }
@@ -2019,7 +2038,7 @@ mod lifecycle_tests {
                 HashMap::from([("path".to_string(), path.to_string())]),
             )));
         }
-        assert_eq!(app.plan.steps.len(), 2);
+        assert_eq!(app.plan_mut().steps.len(), 2);
     }
 
     #[test]
@@ -2107,7 +2126,7 @@ mod lifecycle_tests {
             "part2".into(),
         )));
         assert!(
-            app.thinking
+            app.thinking_mut()
                 .active
                 .as_ref()
                 .unwrap()
@@ -2115,7 +2134,7 @@ mod lifecycle_tests {
                 .contains("part1")
         );
         assert!(
-            app.thinking
+            app.thinking_mut()
                 .active
                 .as_ref()
                 .unwrap()
@@ -2123,7 +2142,7 @@ mod lifecycle_tests {
                 .contains("part2")
         );
         app.handle_agent_update(AgentUpdate::Info("done thinking".into()));
-        assert!(app.thinking.active.is_none());
+        assert!(app.thinking_mut().active.is_none());
     }
 
     #[test]
@@ -2134,8 +2153,8 @@ mod lifecycle_tests {
             "done thinking\n".into(),
         )));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-        assert!(app.thinking.active.is_none());
-        assert!(!app.thinking.blocks.is_empty());
+        assert!(app.thinking_mut().active.is_none());
+        assert!(!app.thinking_mut().blocks.is_empty());
     }
 
     #[test]
@@ -2153,9 +2172,9 @@ mod lifecycle_tests {
             total: 3,
             ..Default::default()
         }));
-        assert!(app.thinking.active.is_some());
+        assert!(app.thinking_mut().active.is_some());
         assert!(
-            app.thinking
+            app.thinking_mut()
                 .active
                 .as_ref()
                 .unwrap()
@@ -2169,10 +2188,10 @@ mod lifecycle_tests {
         let mut app = make_app();
         let before = app.log.items.len();
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        assert!(app.thinking.active.is_some());
+        assert!(app.thinking_mut().active.is_some());
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-        assert!(app.thinking.active.is_none());
-        assert!(app.thinking.blocks.is_empty());
+        assert!(app.thinking_mut().active.is_none());
+        assert!(app.thinking_mut().blocks.is_empty());
         assert_eq!(app.log.items.len(), before);
     }
 
@@ -2185,8 +2204,8 @@ mod lifecycle_tests {
             "   ".into(),
         )));
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-        assert!(app.thinking.blocks.is_empty());
-        assert!(app.thinking.active.is_none());
+        assert!(app.thinking_mut().blocks.is_empty());
+        assert!(app.thinking_mut().active.is_none());
         assert_eq!(app.log.items.len(), before);
     }
 
@@ -2196,12 +2215,12 @@ mod lifecycle_tests {
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
             "done thinking\n".into(),
         )));
-        let phys_idx = app.thinking.active.as_ref().unwrap().phys_idx;
+        let phys_idx = app.thinking_mut().active.as_ref().unwrap().phys_idx;
 
         app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
 
-        assert_eq!(app.thinking.blocks[0].phys_idx, phys_idx);
-        assert!(app.thinking.active.is_none());
+        assert_eq!(app.thinking_mut().blocks[0].phys_idx, phys_idx);
+        assert!(app.thinking_mut().active.is_none());
     }
 
     #[test]
@@ -2218,7 +2237,12 @@ mod lifecycle_tests {
             before + crate::render::cells::thinking::thinking_visual_rows(2)
         );
         assert_eq!(
-            app.thinking.active.as_ref().unwrap().display_tail().len(),
+            app.thinking_mut()
+                .active
+                .as_ref()
+                .unwrap()
+                .display_tail()
+                .len(),
             2
         );
     }

@@ -45,10 +45,20 @@ pub(crate) fn render_log_panel_with_borders(
     borders: Borders,
 ) {
     let messages = app.msgs();
+    // Field-level disjoint borrows: `app.stream()` (a whole-`App` method)
+    // cannot coexist with `&mut app.log_scroll`; read the component state
+    // directly off the registry field.
+    let stream_buffer = app
+        .registry
+        .get::<agent_tui_kit::components::StreamComponent>()
+        .expect("stream component registered")
+        .state()
+        .buffer
+        .as_str();
     prepare_log_frame(
         &mut app.log_scroll,
         &app.log,
-        &app.stream.buffer,
+        stream_buffer,
         &app.skills_data,
         &app.theme,
         messages,
