@@ -12,8 +12,7 @@ use tact_protocol::{
 
 use crate::{
     render::render_md::{
-        format_table_lines, is_horizontal_rule, render_markdown_tui, render_mermaid_block,
-        render_plain_markdown,
+        format_table_lines, render_markdown_tui, render_mermaid_block, render_plain_markdown,
     },
     widgets::{
         state::*,
@@ -559,8 +558,8 @@ impl App {
         start_idx: Option<usize>,
         stream_end: usize,
         closed: bool,
+        is_mermaid: bool,
     ) {
-        let is_mermaid = self.stream.code_block_is_mermaid;
         self.stream.code_block_is_mermaid = false;
 
         if lines.is_empty() {
@@ -651,187 +650,92 @@ impl App {
         self.ensure_gap_after_user_message();
         self.ensure_gap_after_tools();
         // Thinking region is closed by the safety gate above when still open.
-        self.stream.buffer.push_str(&text);
 
-        // Line-level buffering: code blocks accumulate by complete unit,
-        // table rows accumulate by table, normal lines accumulate by paragraph
-        let mut completed = Vec::new();
-        while let Some(idx) = self.stream.buffer.find('\n') {
-            let line = self.stream.buffer[..idx].to_string();
-            self.stream.buffer = self.stream.buffer[idx + 1..].to_string();
-
-            let trimmed = line.trim();
-            let is_code_fence = trimmed.starts_with("```");
-            let is_code_fence_close = trimmed == "```" && self.stream.code_block;
-
-            if is_code_fence_close {
-                // Completed: finalize the buffered block — valid Mermaid is
-                // spliced in as diagram lines, everything else becomes a
-                // CodeBlock card (see finish_stream_code_block).
-                let lang = std::mem::take(&mut self.stream.code_block_lang);
-                let lines = std::mem::take(&mut self.stream.code_block_buffer);
-                let start_idx = self.stream.code_block_start_idx.take();
-                let stream_end = start_idx
-                    .map(|s| s + self.stream.code_block_line_count)
-                    .unwrap_or(0);
-                self.finish_stream_code_block(lang, lines, start_idx, stream_end, true);
-                self.stream.code_block = false;
-                self.stream.code_block_line_count = 0;
-            } else if self.stream.code_block {
-                // Streaming: update previous line (remove indicator), append new line with indicator
-                self.stream.code_block_buffer.push(line.clone());
-
-                let prev_idx = self.log.items.len().saturating_sub(1);
-                if self.stream.code_block_line_count > 1
-                    && let Some(prev_item) = self.log.items.get_mut(prev_idx)
-                    && prev_item.raw.ends_with(STREAMING_INDICATOR)
-                {
-                    let clean = prev_item
-                        .raw
-                        .trim_end_matches(STREAMING_INDICATOR)
-                        .to_string();
-                    prev_item.raw = clean.clone();
-                    prev_item.line = Line::from(vec![
-                        Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-                        Span::styled(clean, Style::default().fg(CODE_FG).bg(CODE_BG)),
-                    ]);
-                }
-
-                let display_line = format!("{}{}", line, STREAMING_INDICATOR);
-                self.append_msg(
-                    Line::from(vec![
-                        Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-                        Span::styled(display_line, Style::default().fg(CODE_FG).bg(CODE_BG)),
-                    ]),
-                    line,
-                    LogItemKind::AssistantMarkdown,
-                );
-                self.stream.code_block_line_count += 1;
-            } else if is_code_fence {
-                let lang = trimmed.strip_prefix("```").unwrap_or("").trim().to_string();
-
-                // If an empty-language fence appears immediately after an
-                // in-progress markdown paragraph/list, keep it in normal
-                // markdown flow instead of promoting it into a standalone code
-                // card. This avoids surprising card extraction for malformed or
-                // explanatory fence snippets embedded in prose.
-                if lang.is_empty() && !self.stream.paragraph.is_empty() {
-                    if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table_lines(
-                            &self.stream.table_buffer,
-                            &self.theme,
-                            Some(self.table_layout_width()),
-                        );
-                        completed.extend(styled.into_iter().zip(raw));
-                        self.stream.table_buffer.clear();
+        // The parse state machine (fence detection, table/paragraph/code
+        // buffering) lives in the kit; this host loop applies the events to
+        // the log with app-layer rendering (markdown, tables, indicators).
+        use agent_tui_kit::state::StreamEvent;
+        for event in self.stream.push_chunk(&text) {
+            match event {
+                StreamEvent::MarkdownParagraph { text } => {
+                    let (styled, raw) = render_markdown_tui(&text, &self.theme);
+                    for (styled_line, raw_line) in styled.into_iter().zip(raw) {
+                        self.append_msg(styled_line, raw_line, LogItemKind::AssistantMarkdown);
                     }
-                    self.stream.paragraph.push('\n');
-                    self.stream.paragraph.push_str(&line);
-                    continue;
                 }
-
-                // Open new code block: flush pending content first
-                if !self.stream.paragraph.is_empty() {
-                    let paragraph = std::mem::take(&mut self.stream.paragraph);
-                    let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
-                    completed.extend(styled.into_iter().zip(raw));
+                StreamEvent::Table { rows } => {
+                    let (styled, raw) =
+                        format_table_lines(&rows, &self.theme, Some(self.table_layout_width()));
+                    for (styled_line, raw_line) in styled.into_iter().zip(raw) {
+                        self.append_msg(styled_line, raw_line, LogItemKind::AssistantMarkdown);
+                    }
                 }
-                if !self.stream.table_buffer.is_empty() {
-                    let (styled, raw) = format_table_lines(
-                        &self.stream.table_buffer,
-                        &self.theme,
-                        Some(self.table_layout_width()),
+                StreamEvent::Blank => {
+                    self.append_msg(
+                        Line::from(""),
+                        String::new(),
+                        LogItemKind::AssistantMarkdown,
                     );
-                    completed.extend(styled.into_iter().zip(raw));
-                    self.stream.table_buffer.clear();
                 }
-
-                // Flush completed lines so start_idx is accurate
-                for (styled_line, raw_line) in completed.drain(..) {
-                    self.append_msg(styled_line, raw_line, LogItemKind::AssistantMarkdown);
-                }
-
-                self.stream.code_block = true;
-                self.stream.code_block_buffer.clear();
-                self.stream.code_block_lang = lang.clone();
-                // Match `mermaid_fence_opener`: detect Mermaid from the first
-                // whitespace-separated info token, case-insensitively, without
-                // changing the stored language metadata for ordinary code.
-                self.stream.code_block_is_mermaid = lang
-                    .split_whitespace()
-                    .next()
-                    .is_some_and(|token| token.eq_ignore_ascii_case("mermaid"));
-                self.stream.code_block_start_idx = Some(self.log.items.len());
-                self.stream.code_block_line_count = 1;
-
-                // Container header: ╭─ lang ─────
-                let label = if lang.is_empty() {
-                    "code".to_string()
-                } else {
-                    lang.clone()
-                };
-                let header_text = format!("╭─ {} ", label);
-                self.append_msg(
-                    Line::from(Span::styled(
-                        header_text.clone(),
-                        Style::default().fg(Color::DarkGray).bg(CODE_BG),
-                    )),
-                    format!("```{}", lang),
-                    LogItemKind::AssistantMarkdown,
-                );
-            } else {
-                // Regular line handling
-                let is_table_line = trimmed.starts_with('|');
-                let is_blank = trimmed.is_empty();
-                let is_hr = is_horizontal_rule(&line);
-
-                if is_table_line {
-                    if !self.stream.paragraph.is_empty() {
-                        let paragraph = std::mem::take(&mut self.stream.paragraph);
-                        let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
-                        completed.extend(styled.into_iter().zip(raw));
-                    }
-                    self.stream.table_buffer.push(line);
-                } else if is_blank || is_hr {
-                    if !self.stream.paragraph.is_empty() {
-                        let paragraph = std::mem::take(&mut self.stream.paragraph);
-                        let (styled, raw) = render_markdown_tui(&paragraph, &self.theme);
-                        completed.extend(styled.into_iter().zip(raw));
-                    }
-                    if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table_lines(
-                            &self.stream.table_buffer,
-                            &self.theme,
-                            Some(self.table_layout_width()),
-                        );
-                        completed.extend(styled.into_iter().zip(raw));
-                        self.stream.table_buffer.clear();
-                    }
-                    if is_hr {
-                        // Discard horizontal rules
+                StreamEvent::OpenCodeBlock { lang, is_mermaid } => {
+                    // Container header: ╭─ lang ─────
+                    let label = if lang.is_empty() {
+                        "code".to_string()
                     } else {
-                        completed.push((Line::from(""), String::new()));
+                        lang.clone()
+                    };
+                    let header_text = format!("╭─ {} ", label);
+                    self.stream.code_block_start_idx = Some(self.log.items.len());
+                    self.append_msg(
+                        Line::from(Span::styled(
+                            header_text.clone(),
+                            Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                        )),
+                        format!("```{}", lang),
+                        LogItemKind::AssistantMarkdown,
+                    );
+                    let _ = is_mermaid; // carried on CloseCodeBlock for finalize
+                }
+                StreamEvent::CodeLine { text: line } => {
+                    let prev_idx = self.log.items.len().saturating_sub(1);
+                    if self.stream.code_block_line_count > 1
+                        && let Some(prev_item) = self.log.items.get_mut(prev_idx)
+                        && prev_item.raw.ends_with(STREAMING_INDICATOR)
+                    {
+                        let clean = prev_item
+                            .raw
+                            .trim_end_matches(STREAMING_INDICATOR)
+                            .to_string();
+                        prev_item.raw = clean.clone();
+                        prev_item.line = Line::from(vec![
+                            Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+                            Span::styled(clean, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                        ]);
                     }
-                } else {
-                    if !self.stream.table_buffer.is_empty() {
-                        let (styled, raw) = format_table_lines(
-                            &self.stream.table_buffer,
-                            &self.theme,
-                            Some(self.table_layout_width()),
-                        );
-                        completed.extend(styled.into_iter().zip(raw));
-                        self.stream.table_buffer.clear();
-                    }
-                    if !self.stream.paragraph.is_empty() {
-                        self.stream.paragraph.push('\n');
-                    }
-                    self.stream.paragraph.push_str(&line);
+
+                    let display_line = format!("{}{}", line, STREAMING_INDICATOR);
+                    self.append_msg(
+                        Line::from(vec![
+                            Span::styled("│ ", Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+                            Span::styled(display_line, Style::default().fg(CODE_FG).bg(CODE_BG)),
+                        ]),
+                        line,
+                        LogItemKind::AssistantMarkdown,
+                    );
+                }
+                StreamEvent::CloseCodeBlock {
+                    lang,
+                    lines,
+                    line_count,
+                    is_mermaid,
+                } => {
+                    let start_idx = self.stream.code_block_start_idx.take();
+                    let stream_end = start_idx.map(|s| s + line_count).unwrap_or(0);
+                    self.finish_stream_code_block(
+                        lang, lines, start_idx, stream_end, true, is_mermaid,
+                    );
                 }
             }
-        }
-
-        for (styled_line, raw_line) in completed {
-            self.append_msg(styled_line, raw_line, LogItemKind::AssistantMarkdown);
         }
 
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));

@@ -11,6 +11,7 @@ pub mod plan_panel;
 pub mod select_popup;
 pub mod selection;
 pub mod status_bar_state;
+pub mod stream_parser;
 pub mod stream_state;
 pub mod task_panel;
 pub mod thinking;
@@ -25,6 +26,7 @@ pub use plan_panel::PlanPanel;
 pub use select_popup::SelectPopup;
 pub use selection::PopupTextSelection;
 pub use status_bar_state::StatusBarState;
+pub use stream_parser::StreamEvent;
 pub use stream_state::StreamState;
 pub use task_panel::TaskPanelState;
 pub use thinking::{

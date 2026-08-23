@@ -482,7 +482,10 @@ impl App {
             let stream_end = start_idx
                 .map(|s| s + self.stream.code_block_line_count)
                 .unwrap_or(0);
-            self.finish_stream_code_block(lang, code_lines, start_idx, stream_end, closed);
+            let is_mermaid = self.stream.code_block_is_mermaid;
+            self.finish_stream_code_block(
+                lang, code_lines, start_idx, stream_end, closed, is_mermaid,
+            );
             self.stream.code_block = false;
             self.stream.code_block_line_count = 0;
         }
