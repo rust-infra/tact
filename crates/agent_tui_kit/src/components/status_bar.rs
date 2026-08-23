@@ -92,6 +92,7 @@ impl Component for StatusBarComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::tool::ToolEvent;
     use crate::{
         InputMode, PendingQueue,
         protocol::{ModelCallParams, TokenUsageInfo},
@@ -102,12 +103,14 @@ mod tests {
         log: &'a mut LogCoordinator,
         pending: &'a mut PendingQueue,
         events: &'a mut Vec<StreamEvent>,
+        tool_events: &'a mut Vec<ToolEvent>,
     ) -> Ctx<'a> {
         Ctx {
             log,
             input_mode: InputMode::Normal,
             pending,
             stream_events: events,
+            tool_events,
         }
     }
 
@@ -129,7 +132,7 @@ mod tests {
         };
         let dirty = comp.on_update(
             &AgentUpdate::TokenUsage(usage),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(dirty);
         assert_eq!(comp.state().token_total, 590);
@@ -154,7 +157,7 @@ mod tests {
         };
         comp.on_update(
             &AgentUpdate::ModelInfo(params),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(comp.state().model_name, "mock-model");
         assert_eq!(comp.state().model_reasoning_effort.as_deref(), Some("high"));
@@ -170,7 +173,7 @@ mod tests {
         );
         let dirty = comp.on_update(
             &AgentUpdate::TaskComplete("done".into()),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(!dirty);
     }

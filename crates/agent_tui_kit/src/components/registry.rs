@@ -113,6 +113,7 @@ impl<U: 'static> ComponentRegistry<U> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::tool::ToolEvent;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -181,12 +182,14 @@ mod tests {
         log: &'a mut LogCoordinator,
         pending: &'a mut PendingQueue,
         stream_events: &'a mut Vec<crate::state::StreamEvent>,
+        tool_events: &'a mut Vec<ToolEvent>,
     ) -> Ctx<'a> {
         Ctx {
             log,
             input_mode: InputMode::Normal,
             pending,
             stream_events,
+            tool_events,
         }
     }
 
@@ -206,7 +209,7 @@ mod tests {
 
         let claimed = reg.dispatch_update(
             &AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(claimed, "thinking counter claims thinking updates");
         // Priority order: 10 (thinking) → 50 (low) → 100 (high).
@@ -224,7 +227,7 @@ mod tests {
         // Non-claiming updates reach everyone in order.
         let _ = reg.dispatch_update(
             &AgentUpdate::TaskComplete("done".into()),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(thinking_updates.load(Ordering::Relaxed), 2);
         assert_eq!(low_updates.load(Ordering::Relaxed), 1);
@@ -246,7 +249,7 @@ mod tests {
                 crossterm::event::KeyCode::Char('x'),
                 crossterm::event::KeyModifiers::NONE,
             ),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(!consumed);
         assert_eq!(a_keys.load(Ordering::Relaxed), 1);

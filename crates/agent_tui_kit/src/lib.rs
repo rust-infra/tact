@@ -48,6 +48,10 @@ pub struct Ctx<'a> {
     /// Outbox for parsed stream events: components push, the shell applies
     /// them to the log/UI after the update dispatch.
     pub stream_events: &'a mut Vec<crate::state::StreamEvent>,
+    /// Outbox for tool-lifecycle events (placeholder-row allocation/resize/
+    /// finalize): the `ToolComponent` pushes, the shell applies the log
+    /// side effects (phys_idx allocation, gap rows, scroll) after dispatch.
+    pub tool_events: &'a mut Vec<crate::components::tool::ToolEvent>,
 }
 
 /// Shared-log ownership + model (priority-0 component), re-exported at the

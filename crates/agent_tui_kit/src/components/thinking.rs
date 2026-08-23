@@ -185,17 +185,20 @@ const _: Option<(InputMode, LogCoordinator)> = None;
 mod tests {
     use super::*;
     use crate::PendingQueue;
+    use crate::components::tool::ToolEvent;
 
     fn ctx<'a>(
         log: &'a mut LogCoordinator,
         pending: &'a mut PendingQueue,
         stream_events: &'a mut Vec<crate::state::StreamEvent>,
+        tool_events: &'a mut Vec<ToolEvent>,
     ) -> Ctx<'a> {
         Ctx {
             log,
             input_mode: InputMode::Normal,
             pending,
             stream_events,
+            tool_events,
         }
     }
 
@@ -211,7 +214,7 @@ mod tests {
 
         let dirty = component.on_update(
             &AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-            &mut ctx(&mut log, &mut queue, &mut events),
+            &mut ctx(&mut log, &mut queue, &mut events, &mut Vec::new()),
         );
         assert!(dirty, "thinking lifecycle always repaints");
         let _ = component.state().active.as_ref().expect("active block");
@@ -219,7 +222,7 @@ mod tests {
 
         let dirty = component.on_update(
             &AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("reasoning text".into())),
-            &mut ctx(&mut log, &mut queue, &mut events),
+            &mut ctx(&mut log, &mut queue, &mut events, &mut Vec::new()),
         );
         assert!(dirty);
         assert_eq!(
@@ -229,7 +232,7 @@ mod tests {
 
         component.on_update(
             &AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-            &mut ctx(&mut log, &mut queue, &mut events),
+            &mut ctx(&mut log, &mut queue, &mut events, &mut Vec::new()),
         );
         assert!(component.state().active.is_none());
         assert_eq!(component.state().blocks.len(), 1);
@@ -252,7 +255,7 @@ mod tests {
                 "id",
                 std::collections::HashMap::<String, String>::new(),
             )),
-            &mut ctx(&mut log, &mut queue, &mut events),
+            &mut ctx(&mut log, &mut queue, &mut events, &mut Vec::new()),
         );
         assert!(!dirty, "thinking component ignores non-thinking updates");
     }
@@ -273,7 +276,7 @@ mod tests {
         ] {
             component.on_update(
                 &AgentUpdate::ThinkingChunk(chunk),
-                &mut ctx(&mut log, &mut queue, &mut events),
+                &mut ctx(&mut log, &mut queue, &mut events, &mut Vec::new()),
             );
         }
         let mut buf = Buffer::empty(Rect::new(0, 0, 60, 5));
@@ -283,7 +286,7 @@ mod tests {
         let used = component.render(
             Rect::new(0, 0, 60, 5),
             &mut buf,
-            &ctx(&mut log2, &mut queue2, &mut events2),
+            &ctx(&mut log2, &mut queue2, &mut events2, &mut Vec::new()),
         );
         assert!(used > 0);
         let mut text = String::new();

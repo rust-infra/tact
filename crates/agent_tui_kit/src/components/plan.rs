@@ -53,12 +53,18 @@ impl std::ops::DerefMut for PlanComponent {
 impl Component for PlanComponent {
     fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
         match update {
+            // These branches write side state (the plan snapshot) but do not
+            // *consume* the update: `ToolComponent` also handles `StepAdded` /
+            // `StepFinished` / `StepFailed` (its card lifecycle), and the
+            // registry dispatches to every component until one claims.
+            // Returning `false` lets the dispatch continue to the tool
+            // component; the plan write still happens.
             AgentUpdate::StepAdded(step) => {
                 self.state.steps.push(step.clone());
                 self.state
                     .steps_set
                     .insert(step.tool_id.clone(), step.clone());
-                true
+                false
             }
             // Keep the plan's step outputs in sync on completion/failure so the
             // status bar's progress derivation stays correct.
@@ -66,13 +72,13 @@ impl Component for PlanComponent {
                 if let Some(step) = self.state.steps.get_mut(*idx) {
                     step.output = Some(result.message.clone());
                 }
-                true
+                false
             }
             AgentUpdate::StepFailed { idx, error, .. } => {
                 if let Some(step) = self.state.steps.get_mut(*idx) {
                     step.output = Some(error.clone());
                 }
-                true
+                false
             }
             _ => false,
         }
@@ -102,6 +108,7 @@ impl Component for PlanComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::tool::ToolEvent;
     use crate::{
         InputMode, PendingQueue,
         protocol::{PlanStep, StepResult, StepStatus},
@@ -112,12 +119,14 @@ mod tests {
         log: &'a mut LogCoordinator,
         pending: &'a mut PendingQueue,
         events: &'a mut Vec<StreamEvent>,
+        tool_events: &'a mut Vec<ToolEvent>,
     ) -> Ctx<'a> {
         Ctx {
             log,
             input_mode: InputMode::Normal,
             pending,
             stream_events: events,
+            tool_events,
         }
     }
 
@@ -140,7 +149,7 @@ mod tests {
         );
         comp.on_update(
             &AgentUpdate::StepAdded(step("t1")),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(comp.state().steps.len(), 1);
         assert!(comp.state().steps_set.contains_key("t1"));
@@ -156,7 +165,7 @@ mod tests {
         );
         comp.on_update(
             &AgentUpdate::StepAdded(step("t1")),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         comp.on_update(
             &AgentUpdate::StepFinished {
@@ -174,7 +183,7 @@ mod tests {
                     presentation: crate::protocol::ToolPresentationInfo::generic("read_file"),
                 },
             },
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(comp.state().steps[0].output.as_deref(), Some("done"));
     }

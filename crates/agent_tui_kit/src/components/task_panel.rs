@@ -84,6 +84,7 @@ impl Component for TaskPanelComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::tool::ToolEvent;
     use crate::{
         InputMode, PendingQueue,
         protocol::{TaskSnapshot, TaskStatusSnapshot, TasksChangeReason},
@@ -94,12 +95,14 @@ mod tests {
         log: &'a mut LogCoordinator,
         pending: &'a mut PendingQueue,
         events: &'a mut Vec<StreamEvent>,
+        tool_events: &'a mut Vec<ToolEvent>,
     ) -> Ctx<'a> {
         Ctx {
             log,
             input_mode: InputMode::Normal,
             pending,
             stream_events: events,
+            tool_events,
         }
     }
 
@@ -125,7 +128,7 @@ mod tests {
                 tasks: vec![pending_task(1)],
                 reason: TasksChangeReason::Created,
             },
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(dirty);
         assert!(comp.state().visible);
@@ -143,7 +146,7 @@ mod tests {
         );
         let dirty = comp.on_update(
             &AgentUpdate::TaskComplete("done".into()),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(!dirty);
     }

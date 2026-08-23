@@ -114,6 +114,7 @@ const _: Option<(Color, Messages)> = None;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::tool::ToolEvent;
     use crate::{
         InputMode, PendingQueue,
         i18n::Language,
@@ -141,12 +142,14 @@ mod tests {
         log: &'a mut LogCoordinator,
         pending: &'a mut PendingQueue,
         events: &'a mut Vec<StreamEvent>,
+        tool_events: &'a mut Vec<ToolEvent>,
     ) -> Ctx<'a> {
         Ctx {
             log,
             input_mode: InputMode::Normal,
             pending,
             stream_events: events,
+            tool_events,
         }
     }
 
@@ -155,7 +158,7 @@ mod tests {
         let (mut comp, mut log, mut pending, mut events) = setup();
         let dirty = comp.on_update(
             &AgentUpdate::StreamChunk("hello\n\n".into()),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(dirty);
         assert_eq!(
@@ -175,7 +178,7 @@ mod tests {
         let (mut comp, mut log, mut pending, mut events) = setup();
         comp.on_update(
             &AgentUpdate::StreamChunk("partial".into()),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(events.is_empty());
         assert_eq!(comp.state().buffer, "partial");
@@ -184,7 +187,7 @@ mod tests {
         let used = comp.render(
             Rect::new(0, 0, 40, 1),
             &mut buf,
-            &ctx(&mut log, &mut pending, &mut events),
+            &ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(used, 1);
         let text: String = (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect();
@@ -196,7 +199,7 @@ mod tests {
         let (mut comp, mut log, mut pending, mut events) = setup();
         let dirty = comp.on_update(
             &AgentUpdate::TaskComplete("done".into()),
-            &mut ctx(&mut log, &mut pending, &mut events),
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(!dirty);
         assert!(events.is_empty());
