@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-23 — `read_image` tool: model-driven image reads, tool-result images fold into a user message
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/tool/read_image.rs`, `crates/tact/src/tool/{mod,registry}.rs`, `crates/tact/src/agent/tool_dispatch.rs` (`ToolCallResult.image` / `ExecResult`), `crates/tact_llm/src/convert.rs` (`messages_to_openai` tool-result image fold); Ch 22 § image attachments |
+
+**Symptom / motivation:** image handling was user-attach only: `@file.png` became an inline `ContentBlock::Image` and text-only models had no path to read a local image on demand. There was no model-callable image tool, so a vision model could not pull an image by path without the user re-attaching it.
+
+**Decision:** add a `read_image` tool (Harness-style): gates on the current model declaring image input, reads a PNG/JPEG/WebP/GIF, re-encodes to a bounded JPEG, and returns a `ToolCallResult` with a text envelope + an adjacent `ContentBlock::Image`. `ToolCallResult` gains an in-memory `image` field; `build_tool_results` emits the companion image block. Because Chat Completions `role:tool` content is string-only, `messages_to_openai` folds that image into a following `role:user` message (`[{text:"Attached image(s) from tool result:"}, {image_url}]`), mirroring DeepSeek Harness `serializeMessagesWithImages`. `ContentBlock::ToolResult` stays unchanged, so Responses/normalize/compact consumers are untouched.
+
+**Behavior after:** a vision model can call `read_image("path")` and receive both a stable text envelope and the image in a follow-up user message; text-only tool results keep riding `role:tool`. Non-image tools are unchanged.
+
+---
+
 ## 1. 2026-08-23 — Tool-card step indices resolve to the plan position (bugfix, task #43 review)
 
 | Field | Value |

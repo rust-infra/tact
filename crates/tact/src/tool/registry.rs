@@ -10,6 +10,7 @@ use super::{
     load_skill::LoadSkillTool,
     memory::SaveMemoryTool,
     read_file::ReadFileTool,
+    read_image::ReadImageTool,
     sleep::SleepTool,
     subagent::SpawnSubagentTool,
     task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool},
@@ -32,6 +33,7 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(BackgroundRunTool)?
         .route(CheckBackgroundTool)?
         .route(ReadFileTool)?
+        .route(ReadImageTool)?
         .route(SleepTool)?
         .route(WriteFileTool)?
         .route(EditFileTool)?

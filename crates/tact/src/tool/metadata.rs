@@ -290,6 +290,12 @@ pub enum ToolEffect {
 pub struct ToolCallResult {
     pub content: String,
     pub effects: Vec<ToolEffect>,
+    /// Optional image produced by the tool (e.g. `read_image`). When set, the
+    /// tool-dispatch layer emits a companion `ContentBlock::Image` alongside
+    /// the text `ToolResult`; the wire layer folds it into a following `user`
+    /// message (Chat Completions `role:tool` cannot carry an image).
+    #[allow(dead_code)]
+    pub image: Option<tact_llm::ImageSource>,
 }
 
 impl ToolCallResult {
@@ -297,6 +303,17 @@ impl ToolCallResult {
         Self {
             content: content.into(),
             effects: Vec::new(),
+            image: None,
+        }
+    }
+
+    /// A tool result carrying a text envelope plus an image block.
+    #[allow(dead_code)]
+    pub fn text_image(content: impl Into<String>, image: tact_llm::ImageSource) -> Self {
+        Self {
+            content: content.into(),
+            effects: Vec::new(),
+            image: Some(image),
         }
     }
 }

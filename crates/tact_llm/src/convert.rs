@@ -19,6 +19,10 @@ use crate::{
     Tool, ToolChoice, openai::compatible::CreateChatCompletionRequest,
 };
 
+/// Text prefix for a `user` image message that carries images folded out of a
+/// string-only `role:tool` result (DeepSeek Harness `serializeMessagesWithImages`).
+const TOOL_RESULT_IMAGE_PREFIX: &str = "Attached image(s) from tool result:";
+
 impl From<&Tool> for ChatCompletionTool {
     fn from(tool: &Tool) -> Self {
         Self {
@@ -153,15 +157,39 @@ pub fn messages_to_openai(
                 }
                 MessageContent::Blocks { content } => {
                     let mut parts = Vec::with_capacity(content.len());
-                    let mut tool_results = Vec::new();
+                    let mut tool_messages = Vec::new();
+                    let mut pending_tool_images: Vec<ImageSource> = Vec::new();
+                    let mut after_tool_result = false;
                     for block in content {
                         match block {
-                            ContentBlock::Text { text } => parts.push(text_content_part(text)),
-                            ContentBlock::Image { source } => parts.push(source.into()),
+                            ContentBlock::Text { text } => {
+                                if !pending_tool_images.is_empty() {
+                                    // Text following a tool-result image: keep
+                                    // it in the same user image message.
+                                    after_tool_result = true;
+                                } else {
+                                    after_tool_result = false;
+                                }
+                                parts.push(text_content_part(text));
+                            }
+                            ContentBlock::Image { source } => {
+                                if after_tool_result {
+                                    // Harness-style: an image emitted beside a
+                                    // tool result cannot ride `role:tool`; it is
+                                    // folded into a following `user` image message.
+                                    pending_tool_images.push(source.clone());
+                                } else {
+                                    after_tool_result = false;
+                                    parts.push(source.into());
+                                }
+                            }
                             ContentBlock::ToolResult {
                                 tool_use_id,
                                 content,
-                            } => tool_results.push(tool_result_message(tool_use_id, content)),
+                            } => {
+                                after_tool_result = true;
+                                tool_messages.push(tool_result_message(tool_use_id, content));
+                            }
                             // Drop thinking on the user side for now.
                             _ => {}
                         }
@@ -170,9 +198,18 @@ pub fn messages_to_openai(
                         result.push(user_parts_message(parts));
                         reasoning.push(None);
                     }
-                    reasoning.reserve(tool_results.len());
-                    for tool_result in tool_results {
-                        result.push(tool_result);
+                    reasoning.reserve(tool_messages.len());
+                    for tool_msg in tool_messages {
+                        result.push(tool_msg);
+                        reasoning.push(None);
+                    }
+                    if !pending_tool_images.is_empty() {
+                        let mut image_parts = vec![text_content_part(TOOL_RESULT_IMAGE_PREFIX)];
+                        for img in &pending_tool_images {
+                            image_parts.push(img.into());
+                        }
+                        // Emit the image as a user message with parts.
+                        result.push(user_parts_message(image_parts));
                         reasoning.push(None);
                     }
                 }
@@ -437,6 +474,50 @@ mod tests {
         assert!(
             matches!(&parts[1], ChatCompletionRequestMessageContentPart::Image(img) if img.image_url.url.starts_with("data:image/png;base64,"))
         );
+    }
+
+    #[test]
+    fn tool_result_image_folds_into_following_user_message() {
+        // Harness-style: a tool result that emits an image cannot ride
+        // `role:tool` (string-only), so it is folded into a following `user`
+        // message with a text prefix + image_url part.
+        let msg = Message::new_blocks(
+            Role::User,
+            vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "<path>pic.png</path>".to_string(),
+                },
+                ContentBlock::Image {
+                    source: ImageSource {
+                        type_: "base64".to_string(),
+                        media_type: "image/png".to_string(),
+                        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=".to_string(),
+                    },
+                },
+            ],
+        );
+
+        let (openai, _) = messages_to_openai(&[msg]);
+        // First: the string-only tool message. Second: the user image message.
+        assert_eq!(openai.len(), 2);
+        let ChatCompletionRequestMessage::Tool(tool) = &openai[0] else {
+            panic!("expected tool message");
+        };
+        assert_eq!(tool.tool_call_id, "tool-1");
+        let ChatCompletionRequestMessage::User(user) = &openai[1] else {
+            panic!("expected user image message");
+        };
+        let ChatCompletionRequestUserMessageContent::Array(parts) = &user.content else {
+            panic!("expected array content");
+        };
+        assert!(
+            matches!(&parts[0], ChatCompletionRequestMessageContentPart::Text(t) if t.text.contains("Attached image"))
+        );
+        assert!(matches!(
+            &parts[1],
+            ChatCompletionRequestMessageContentPart::Image(_)
+        ));
     }
 
     #[test]

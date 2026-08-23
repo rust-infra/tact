@@ -21,6 +21,7 @@ flate2 = { workspace = true }
 futures-util = { workspace = true }
 globset = { workspace = true }
 git2 = { workspace = true }
+image = { workspace = true }
 libc = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 reqwest-eventsource = { workspace = true }

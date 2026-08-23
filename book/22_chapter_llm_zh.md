@@ -310,6 +310,8 @@ adapter：`ProviderProfile::dialect_for(model)` 按请求选择
 
 **用户图片附件：** TUI/headless 将 `@file.png` / `![alt](path)` 转为 `ContentBlock::Image`（[Ch 23](./23_chapter_tui_zh.md)）。OpenAI 兼容请求中，`messages_to_openai` 将这些 block 映射为 `{ type: "image_url", image_url: { url: "data:<media_type>;base64,..." } }`。Anthropic 保留原生 Messages `image` + base64 `source` 形状。无 per-model vision 能力门控：纯文本 Chat Completions API（或 content-part enum 仅允许 `text` 的代理）会对 `image_url` 返回 HTTP 400。
 
+**`read_image` 工具（Harness 风格）：** agent 工具集新增 `read_image`（模型可对 `file_path` 调用的工具）。它先门控当前模型声明 image 输入（`tact_llm::supports_vision`），读取 PNG/JPEG/WebP/GIF，重编码为有界 JPEG，返回一个携带文本信封（`<path>…</path>`、媒体类型、尺寸、字节数）与相邻 `ContentBlock::Image` 的 `ToolCallResult`。由于 Chat Completions 的 `role:tool` content 仅限字符串，`messages_to_openai` 将工具结果图片折叠到紧随其后的 `role:user` 消息（`[{type:"text", text:"Attached image(s) from tool result:"}, {type:"image_url",…}]`），镜像 DeepSeek Harness `serializeMessagesWithImages`。这样文本工具结果仍走 `role:tool`，vision 模型从 user 消息消费图片，无需改写 `ContentBlock::ToolResult`。
+
 **Kimi reasoning replay：** `messages_to_openai` 返回与发出的 OpenAI 消息**一一对应**的 `reasoning` 向量（非 Anthropic 源消息）。用户 turn 拆成多条 tool-result 消息时，每条得 `None`；assistant thinking 仅附在匹配的 assistant 行。`inject_reasoning_content` 用该并行向量服务 Kimi/Moonshot。
 
 **不完整 tool calls：** 流式与非流式解析器跳过 `id` 或 `name` 为空的 tool-call 槽，避免截断 SSE 插入 phantom `ToolUse` block。

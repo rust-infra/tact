@@ -59,24 +59,33 @@ const MAX_TOOL_ARG_SUMMARY_CHARS: usize = 120;
 
 fn build_tool_results(
     prepared: Vec<PreparedTool>,
-    mut outputs: Vec<Option<String>>,
+    outputs: Vec<Option<ExecResult>>,
 ) -> Vec<ContentBlock> {
-    prepared
-        .into_iter()
-        .enumerate()
-        .map(|(idx, prep)| {
-            let content = match prep.state {
-                PreparedState::Resolved(msg) => msg,
-                PreparedState::Run => outputs[idx]
-                    .take()
-                    .unwrap_or_else(|| TOOL_CANCELLED_MSG.to_string()),
-            };
-            ContentBlock::ToolResult {
-                tool_use_id: prep.id,
-                content,
-            }
-        })
-        .collect()
+    let mut blocks = Vec::with_capacity(prepared.len());
+    for (idx, prep) in prepared.into_iter().enumerate() {
+        let content = match &prep.state {
+            PreparedState::Resolved(msg) => msg.clone(),
+            PreparedState::Run => outputs[idx]
+                .as_ref()
+                .map(|r| r.content.clone())
+                .unwrap_or_else(|| TOOL_CANCELLED_MSG.to_string()),
+        };
+        let image = match &prep.state {
+            PreparedState::Resolved(_) => None,
+            PreparedState::Run => outputs[idx].as_ref().and_then(|r| r.image.clone()),
+        };
+        blocks.push(ContentBlock::ToolResult {
+            tool_use_id: prep.id,
+            content,
+        });
+        if let Some(image) = image {
+            // Harness-style: the image cannot ride `role:tool` (string-only), so
+            // it is emitted as a companion block; `convert.rs` folds it into a
+            // following `user` message.
+            blocks.push(ContentBlock::Image { source: image });
+        }
+    }
+    blocks
 }
 
 fn truncate_tool_arg_summary(s: &str) -> String {
@@ -160,6 +169,7 @@ fn step_result_detail(
 struct ExecResult {
     content: String,
     status: StepStatus,
+    image: Option<tact_llm::ImageSource>,
 }
 
 async fn run_native_tool(
@@ -171,31 +181,35 @@ async fn run_native_tool(
     output_policy: OutputPolicy,
 ) -> ExecResult {
     let call_ctx = ctx.for_invocation(tool_use_id);
-    match tools.call(&call_ctx, name, input.clone()).await {
-        Ok(output) => {
+    match tools.call_result(&call_ctx, name, input.clone()).await {
+        Ok(result) => {
             let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
             match output_policy {
                 OutputPolicy::PersistLargeOutput => {
-                    match persist_large_output(&tact_path, tool_use_id, &output).await {
+                    match persist_large_output(&tact_path, tool_use_id, &result.content).await {
                         Ok(content) => ExecResult {
                             content,
                             status: StepStatus::Success,
+                            image: result.image,
                         },
                         Err(error) => ExecResult {
                             content: format!("Error persisting large output: {error}"),
                             status: StepStatus::Failed,
+                            image: None,
                         },
                     }
                 }
                 OutputPolicy::KeepInline => ExecResult {
-                    content: output,
+                    content: result.content,
                     status: StepStatus::Success,
+                    image: result.image,
                 },
             }
         }
         Err(e) => ExecResult {
             content: format!("Error invoking tool {}: {}", name, e),
             status: StepStatus::Failed,
+            image: None,
         },
     }
 }
@@ -214,16 +228,19 @@ async fn run_mcp_tool(
                 Ok(content) => ExecResult {
                     content,
                     status: StepStatus::Success,
+                    image: None,
                 },
                 Err(error) => ExecResult {
                     content: format!("Error persisting large MCP output: {error}"),
                     status: StepStatus::Failed,
+                    image: None,
                 },
             }
         }
         Err(e) => ExecResult {
             content: format!("Error invoking MCP tool {}: {}", name, e),
             status: StepStatus::Failed,
+            image: None,
         },
     }
 }
@@ -583,7 +600,7 @@ impl Agent {
                 .await;
         }
 
-        let mut outputs: Vec<Option<String>> = (0..prepared.len()).map(|_| None).collect();
+        let mut outputs: Vec<Option<ExecResult>> = (0..prepared.len()).map(|_| None).collect();
         let mut manual_compact = None;
 
         for wave in super::tool_schedule::waves_grouped(&resources) {
@@ -622,17 +639,12 @@ impl Agent {
                         )
                         .await
                     };
-                    (
-                        pi,
-                        exec.content,
-                        exec.status,
-                        start.elapsed().as_micros() as u64,
-                    )
+                    (pi, exec, start.elapsed().as_micros() as u64)
                 });
             }
             let mut pending_durations_us: Vec<u64> = Vec::new();
             let mut pending_recent_files: Vec<String> = Vec::new();
-            while let Some((pi, content, exec_status, duration_us)) = futures.next().await {
+            while let Some((pi, exec, duration_us)) = futures.next().await {
                 let prep = &prepared[pi];
                 let prep_id = prep.id.clone();
                 let prep_name = prep.name.clone();
@@ -645,11 +657,14 @@ impl Agent {
                     name: prep_name.clone(),
                     input: prep_input.clone(),
                 };
+                let exec_content = exec.content.clone();
+                let exec_image = exec.image.clone();
+                let exec_status = exec.status;
                 let mut tool_result = ToolResult {
                     tool_use_id: prep_id.clone(),
-                    content,
+                    content: exec_content,
                 };
-                let (exec_output, final_status) = match invoke_hooks!(
+                let (content_after_hook, final_status) = match invoke_hooks!(
                     PostToolUse,
                     self,
                     &tool_use,
@@ -666,6 +681,7 @@ impl Agent {
                         StepStatus::Failed,
                     ),
                 };
+                let exec_output = content_after_hook.clone();
                 pending_durations_us.push(duration_us);
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let task_before = prepared[pi].task_before.clone();
@@ -817,7 +833,11 @@ impl Agent {
                     .tool_timing_counts
                     .entry(prep_name.clone())
                     .or_insert(0) += 1;
-                outputs[pi] = Some(exec_output);
+                outputs[pi] = Some(ExecResult {
+                    content: exec_output,
+                    status: final_status,
+                    image: exec_image,
+                });
             }
             drop(futures);
             for duration_us in pending_durations_us {

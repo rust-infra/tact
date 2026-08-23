@@ -4724,6 +4724,7 @@ dependencies = [
  "futures-util",
  "git2",
  "globset",
+ "image",
  "libc",
  "proptest",
  "reqwest 0.12.28",

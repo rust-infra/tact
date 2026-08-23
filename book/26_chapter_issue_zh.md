@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-08-23 — `read_image` 工具：模型按需读图，工具结果图片折叠进 user 消息
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/tool/read_image.rs`, `crates/tact/src/tool/{mod,registry}.rs`, `crates/tact/src/agent/tool_dispatch.rs` (`ToolCallResult.image` / `ExecResult`), `crates/tact_llm/src/convert.rs` (`messages_to_openai` 工具结果图片折叠); Ch 22 § image attachments |
+
+**Symptom / motivation:** 图片处理只支持用户 attach：`@file.png` 变成内联 `ContentBlock::Image`，纯文本模型无法按需读取本地图片。缺少模型可调用的图片工具，vision 模型无法在不重新 attach 的情况下按路径取图。
+
+**Decision:** 新增 `read_image` 工具（Harness 风格）：先门控当前模型声明 image 输入，读取 PNG/JPEG/WebP/GIF，重编码为有界 JPEG，返回携带文本信封 + 相邻 `ContentBlock::Image` 的 `ToolCallResult`。`ToolCallResult` 新增内存 `image` 字段；`build_tool_results` 发出伴生图片块。由于 Chat Completions `role:tool` content 仅限字符串，`messages_to_openai` 将图片折叠到紧随其后的 `role:user` 消息（`[{text:"Attached image(s) from tool result:"}, {image_url}]`），镜像 DeepSeek Harness `serializeMessagesWithImages`。`ContentBlock::ToolResult` 保持不变，Responses/normalize/compact 消费方不受影响。
+
+**Behavior after:** vision 模型可调用 `read_image("path")`，同时获得稳定文本信封与紧随 user 消息中的图片；纯文本工具结果仍走 `role:tool`。非图片工具不受影响。
+
+---
+
 ## 1. 2026-08-23 — 工具卡步骤编号统一按计划位置解析（bugfix，任务 #43 评审）
 
 | 字段 | 值 |
