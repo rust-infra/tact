@@ -5,7 +5,7 @@ use crate::{
         render_md::{format_table_lines, render_markdown_tui},
         util::visual_pos_to_byte_offset,
     },
-    widgets::{state::*, tool_widget::ToolRenderOutput},
+    widgets::state::*,
 };
 
 impl App {
@@ -574,9 +574,8 @@ impl App {
         }
     }
 
-    pub(crate) fn push_tool_placeholder_rows(&mut self, output: &ToolRenderOutput) -> usize {
+    pub(crate) fn push_tool_placeholder_rows(&mut self, rows: usize) -> usize {
         self.ensure_gap_before_tools();
-        let rows = output.visual_rows(false);
         self.log
             .push_placeholder_rows(LogItemKind::SystemTool, rows)
     }
@@ -618,7 +617,7 @@ impl App {
         }
     }
 
-    fn shift_phys_indices_from(&mut self, at: usize, delta: isize) {
+    pub(crate) fn shift_phys_indices_from(&mut self, at: usize, delta: isize) {
         if delta == 0 {
             return;
         }
@@ -667,32 +666,6 @@ impl App {
         }
     }
 
-    fn remove_active_tool_rows(&mut self, active: ActiveToolBlock) {
-        let rows = active.output.visual_rows(false);
-        if rows == 0 {
-            return;
-        }
-        let end = active.phys_idx.saturating_add(rows);
-        if active.phys_idx < self.log.items.len() && end <= self.log.items.len() {
-            self.drain_msgs(active.phys_idx..end);
-            self.shift_phys_indices_from(end, -(rows as isize));
-        }
-    }
-
-    /// Drop a running tool block and remove its placeholder rows from the log.
-    pub(crate) fn cancel_active_tool(&mut self, tool_id: &str) {
-        let Some(pos) = self
-            .tools_mut()
-            .active
-            .iter()
-            .position(|a| a.tool_id == tool_id)
-        else {
-            return;
-        };
-        let active = self.tools_mut().active.remove(pos);
-        self.remove_active_tool_rows(active);
-    }
-
     pub(crate) fn resize_tool_placeholder_rows(
         &mut self,
         phys_idx: usize,
@@ -714,33 +687,6 @@ impl App {
             self.drain_msgs(phys_idx + new_rows..phys_idx + old_rows);
             self.shift_phys_indices_from(phys_idx + new_rows, -((old_rows - new_rows) as isize));
         }
-    }
-
-    pub(crate) fn finalize_tool_block(&mut self, tool_id: &str, output: ToolRenderOutput) {
-        if let Some(pos) = self
-            .tools_mut()
-            .active
-            .iter()
-            .position(|a| a.tool_id == tool_id)
-        {
-            let active = self.tools_mut().active.remove(pos);
-            let old_rows = active.output.visual_rows(false);
-            let new_rows = output.visual_rows(false);
-            self.resize_tool_placeholder_rows(active.phys_idx, old_rows, new_rows);
-            self.tools_mut().blocks.push(ToolBlock {
-                phys_idx: active.phys_idx,
-                tool_id: tool_id.to_string(),
-                output,
-            });
-        } else {
-            let phys_idx = self.push_tool_placeholder_rows(&output);
-            self.tools_mut().blocks.push(ToolBlock {
-                phys_idx,
-                tool_id: tool_id.to_string(),
-                output,
-            });
-        }
-        self.refresh_tool_log_scroll();
     }
 
     pub(crate) fn refresh_tool_log_scroll(&mut self) {

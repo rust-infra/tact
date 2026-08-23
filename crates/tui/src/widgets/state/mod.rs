@@ -36,9 +36,7 @@ pub(crate) use agent_tui_kit::state::selection::PopupTextSelection;
 pub(crate) use agent_tui_kit::state::thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup,
 };
-pub(crate) use agent_tui_kit::state::tool_state::{
-    ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock,
-};
+pub(crate) use agent_tui_kit::state::tool_state::{DiffPopup, SubagentPopup};
 pub(crate) use agent_tui_kit::state::ui_types::{
     CodeBlock, CodePopup, FocusedPanel, InputMode, MermaidBlock, MermaidPopup, Status,
     SystemPromptPopup,

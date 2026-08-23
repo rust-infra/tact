@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -7,19 +5,16 @@ use ratatui::{
 };
 use tact_protocol::{
     AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason,
-    ThinkingChunk, ToolOutputBuffer, ToolOutputChunk,
+    ThinkingChunk,
 };
 
-use agent_tui_kit::{Ctx, PendingQueue, state::StreamEvent};
+use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
 
 use crate::{
     render::render_md::{
         format_table_lines, render_markdown_tui, render_mermaid_block, render_plain_markdown,
     },
-    widgets::{
-        state::*,
-        tool_widget::{ToolPhase, ToolWidget},
-    },
+    widgets::state::*,
 };
 
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
@@ -54,36 +49,35 @@ impl App {
         self.coordinator_prepass(&update);
         // 1. Components update their own state (registry dispatch); the
         //    stream outbox carries parsed `StreamEvent`s the shell applies.
-        let stream_events = self.dispatch_components(&update);
+        let (stream_events, tool_events) = self.dispatch_components(&update);
         // 2. Apply the stream outbox to the shared log — StreamChunk only
         //    (the gap checks may append rows and must not run for other
         //    update types, mirroring the pre-dispatch `apply_stream_chunk`).
         if matches!(update, AgentUpdate::StreamChunk(_)) {
             self.apply_stream_events(stream_events);
         }
-        // 3. Shell tail: rich behavior the kit components do not implement
-        //    (log/status/scroll effects, tool-card lifecycle, select popups).
+        // 3. Apply the tool-lifecycle outbox (placeholder rows, scroll).
+        self.apply_tool_events(tool_events);
+        // 4. Shell tail: rich behavior the kit components do not implement
+        //    (log/status/scroll effects, select popups, plan writes).
         self.shell_handle(update);
         self.refresh_tail_scroll();
     }
 
     /// Route an update to the component registry (state-owner components).
     ///
-    /// Returns the `StreamEvent` outbox the shell applies afterwards.
+    /// Returns the `StreamEvent` and `ToolEvent` outboxes the shell applies
+    /// afterwards.
     ///
-    /// `ThinkingChunk` and `StepFinished`/`StepFailed` are deliberately
-    /// **not** dispatched: the shell owns the rich log-anchored thinking card
-    /// and the tool/plan lifecycle (placeholder rows, scroll caches, resolved
-    /// step indices) — dispatching them would double-process (the kit
-    /// components' simplified handlers target external hosts, not this shell).
-    fn dispatch_components(&mut self, update: &AgentUpdate) -> Vec<StreamEvent> {
-        if matches!(
-            update,
-            AgentUpdate::ThinkingChunk(_)
-                | AgentUpdate::StepFinished { .. }
-                | AgentUpdate::StepFailed { .. }
-        ) {
-            return Vec::new();
+    /// `ThinkingChunk` is deliberately **not** dispatched: the shell owns the
+    /// rich log-anchored thinking card (placeholder rows, scroll caches) —
+    /// dispatching it would double-process. Every `Step*` update **is**
+    /// dispatched now: `ToolComponent` owns the full tool-card lifecycle
+    /// (active blocks, finalization) and emits `ToolEvent`s for the shell's
+    /// log side effects.
+    fn dispatch_components(&mut self, update: &AgentUpdate) -> (Vec<StreamEvent>, Vec<ToolEvent>) {
+        if matches!(update, AgentUpdate::ThinkingChunk(_)) {
+            return (Vec::new(), Vec::new());
         }
         // Field-split borrows: `Ctx` borrows the shell-owned shared surfaces
         // (log / input mode / pending queue) while the registry mutably
@@ -96,6 +90,7 @@ impl App {
             ..
         } = self;
         let mut stream_events: Vec<StreamEvent> = Vec::new();
+        let mut tool_events: Vec<ToolEvent> = Vec::new();
         let mut pending = PendingQueue {
             items: std::mem::take(pending_messages),
         };
@@ -104,40 +99,127 @@ impl App {
             input_mode: *input_mode,
             pending: &mut pending,
             stream_events: &mut stream_events,
+            tool_events: &mut tool_events,
         };
         registry.dispatch_update(update, &mut ctx);
         *pending_messages = pending.items;
-        stream_events
+        (stream_events, tool_events)
+    }
+
+    /// Apply the `ToolEvent` outbox: the log side effects of the tool-card
+    /// lifecycle (placeholder-row allocation/resize/removal, gap rows,
+    /// scroll). The component already mutated its own `ToolState`.
+    ///
+    /// Ordering mirrors the pre-dispatch handlers: stream residue is flushed
+    /// before placeholder rows are touched (`StepStarted`/`StepFinished` /
+    /// `StepFailed` flushed first in the old code), and `Missing` messages
+    /// are appended after the flush.
+    fn apply_tool_events(&mut self, events: Vec<ToolEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        // Step* semantics: flush leftover stream text before allocating tool
+        // placeholder rows (Resize-only batches from ToolProgress never
+        // flush, matching the old `on_tool_progress`).
+        let needs_flush = events.iter().any(|e| {
+            matches!(
+                e,
+                ToolEvent::Started { .. }
+                    | ToolEvent::Cancelled { .. }
+                    | ToolEvent::Finalized { .. }
+            )
+        });
+        if needs_flush {
+            self.flush_stream_pending();
+        }
+        for event in events {
+            match event {
+                ToolEvent::Started { tool_id, rows } => {
+                    let phys_idx = self.push_tool_placeholder_rows(rows);
+                    self.tools_mut().set_phys_idx(&tool_id, phys_idx);
+                    self.refresh_tool_log_scroll();
+                }
+                ToolEvent::Resize {
+                    phys_idx,
+                    old_rows,
+                    new_rows,
+                    ..
+                } => {
+                    let was_pinned = self.is_log_pinned_to_bottom();
+                    self.resize_tool_placeholder_rows(phys_idx, old_rows, new_rows);
+                    self.log_scroll.state =
+                        ScrollbarState::new(self.total_log_lines().saturating_sub(1));
+                    if was_pinned {
+                        self.scroll_log_to_bottom();
+                    }
+                }
+                ToolEvent::Finalized {
+                    tool_id,
+                    old_rows,
+                    new_rows,
+                } => {
+                    // The component moved active → blocks; find the block's
+                    // phys_idx. The fallback branch (no active card existed)
+                    // pushed with phys_idx 0 + old_rows 0 → allocate rows.
+                    if let Some(block) = self
+                        .tools()
+                        .blocks
+                        .iter()
+                        .rev()
+                        .find(|b| b.tool_id == tool_id)
+                    {
+                        if block.phys_idx == 0 && old_rows == 0 {
+                            let phys_idx = self.push_tool_placeholder_rows(new_rows);
+                            self.tools_mut().set_blocks_phys_idx(&tool_id, phys_idx);
+                        } else {
+                            self.resize_tool_placeholder_rows(block.phys_idx, old_rows, new_rows);
+                        }
+                        self.refresh_tool_log_scroll();
+                    }
+                }
+                ToolEvent::Cancelled { phys_idx, rows, .. } => {
+                    // The component removed the active card; drop its
+                    // placeholder rows. A Started event always follows.
+                    if phys_idx < self.log.items.len()
+                        && phys_idx + rows <= self.log.items.len()
+                        && rows > 0
+                    {
+                        self.drain_msgs(phys_idx..phys_idx + rows);
+                        self.shift_phys_indices_from(phys_idx + rows, -(rows as isize));
+                    }
+                }
+                ToolEvent::Missing { message } => {
+                    self.add_system_message(message);
+                }
+            }
+        }
     }
 
     /// Shell tail for updates the components do not (fully) handle: status
-    /// and log effects, the tool-card lifecycle, select popups, and the rich
-    /// thinking card. Components claimed `TokenUsage` / `ModelInfo`
-    /// (StatusBarComponent), `ToolProgress` / `ToolMeta` (ToolComponent),
-    /// `StepAdded` (PlanComponent), `TasksChanged` (TaskPanelComponent), and
-    /// `StreamChunk` (StreamComponent, via the outbox above) during dispatch.
+    /// and log effects, select popups, the rich thinking card, and plan-step
+    /// output writes. Components claimed `TokenUsage` / `ModelInfo`
+    /// (StatusBarComponent), `ToolProgress` / `ToolMeta` / `StepStarted` /
+    /// `StepFinished` / `StepFailed` / `BackgroundTaskFinished` (ToolComponent,
+    /// via the tool-event outbox applied in `apply_tool_events`), `StepAdded`
+    /// (PlanComponent), `TasksChanged` (TaskPanelComponent), and `StreamChunk`
+    /// (StreamComponent, via the stream outbox) during dispatch.
     fn shell_handle(&mut self, update: AgentUpdate) {
         match update {
             AgentUpdate::StepAdded(step) => self.on_step_added(step),
-            AgentUpdate::StepStarted {
-                idx,
-                tool_id,
-                tool_name,
-                arg_summary,
-                arg_full,
-                presentation,
-            } => self.on_step_started(idx, tool_id, tool_name, arg_summary, arg_full, presentation),
+            AgentUpdate::StepStarted { idx, tool_id, .. } => {
+                self.on_step_started_tail(idx, tool_id);
+            }
             AgentUpdate::StepFinished {
                 idx,
                 tool_id,
                 result,
-            } => self.on_step_finished(idx, tool_id, result),
+            } => self.on_step_finished_tail(idx, tool_id, result),
             AgentUpdate::StepFailed {
                 idx,
                 tool_id,
-                arg_summary,
                 error,
-            } => self.on_step_failed(idx, tool_id, arg_summary, error),
+                ..
+            } => self.on_step_failed_tail(idx, tool_id, error),
             AgentUpdate::TaskComplete(summary) => {
                 // Task complete: flush leftover streaming lines
                 self.flush_stream_pending();
@@ -234,15 +316,11 @@ impl App {
                     }
                 }
             }
-            AgentUpdate::ToolProgress { tool_id, chunks } => {
-                self.on_tool_progress(&tool_id, &chunks)
-            }
             AgentUpdate::BackgroundTaskFinished {
-                tool_id,
-                success,
-                message,
-                output,
-            } => self.on_background_task_finished(&tool_id, success, &message, &output),
+                tool_id, message, ..
+            } => self.on_background_task_finished_tail(&tool_id, &message),
+            // ToolProgress → ToolComponent (live output + Resize event).
+            AgentUpdate::ToolProgress { .. } => {}
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed_tail(tasks, reason);
             }
@@ -328,24 +406,11 @@ impl App {
         self.ensure_executing_status(idx);
     }
 
-    fn on_step_started(
-        &mut self,
-        idx: usize,
-        tool_id: String,
-        tool_name: String,
-        arg_summary: String,
-        arg_full: String,
-        presentation: tact_protocol::ToolPresentationInfo,
-    ) {
+    fn on_step_started_tail(&mut self, idx: usize, tool_id: String) {
+        // ToolComponent (registry dispatch + apply_tool_events) already
+        // created the active card and allocated its placeholder rows; the
+        // tail only keeps status progress in sync.
         let idx = resolve_step_idx(&self.plan_mut().steps, &tool_id, idx);
-        self.flush_stream_pending();
-        // Same tool_id restarting without a finish: drop stale placeholder rows.
-        self.cancel_active_tool(&tool_id);
-        // Full live output for subagents (based on presentation metadata, not tool name).
-        let is_subagent = matches!(
-            &presentation.popup,
-            tact_protocol::ToolPopupKind::SubagentTranscript
-        );
         if let Status::Executing {
             current_step,
             total,
@@ -356,214 +421,40 @@ impl App {
                 *total = idx + 1;
             }
         }
-        let msgs = self.msgs();
-        let output = ToolWidget::new(&self.theme, &msgs)
-            .with_tool(tool_name)
-            .with_arg_summary(arg_summary)
-            .with_arg_full(arg_full)
-            .with_step_index(idx)
-            .with_phase(ToolPhase::Running)
-            .with_duration_us(0)
-            .build();
-        let phys_idx = self.push_tool_placeholder_rows(&output);
-        self.tools_mut().active.push(ActiveToolBlock {
-            phys_idx,
-            tool_id,
-            output,
-            live_output: if is_subagent {
-                ToolOutputBuffer::new_full(50_000)
-            } else {
-                ToolOutputBuffer::new(50_000)
-            },
-            started_at: Instant::now(),
-        });
-        self.refresh_tool_log_scroll();
     }
 
-    fn on_tool_progress(&mut self, tool_id: &str, _chunks: &[ToolOutputChunk]) {
-        let Some(pos) = self
-            .tools_mut()
-            .active
-            .iter()
-            .position(|active| active.tool_id == tool_id)
-        else {
-            return;
-        };
-        let was_pinned = self.is_log_pinned_to_bottom();
-        // ToolComponent (registry dispatch) already pushed the chunks into
-        // the active block's `live_output` before this tail ran.
-        if self.tools().active[pos].live_output.logical_line_count() == 0 {
-            return;
-        }
-
-        let msgs = self.msgs();
-        let step_idx = resolve_step_idx(&self.plan_mut().steps, tool_id, 0);
-        let (phys_idx, old_rows, output) = {
-            let active = &self.tools().active[pos];
-            // Preserve subagent metadata when rebuilding the output.
-            let output = ToolWidget::new(&self.theme, &msgs)
-                .with_tool(active.output.tool_name.clone())
-                .with_arg_summary(active.output.arg_summary.clone())
-                .with_arg_full(active.output.arg_full.clone())
-                .with_step_index(step_idx)
-                .with_phase(ToolPhase::Running)
-                .with_duration_us(0)
-                .with_live_output(&active.live_output)
-                .with_subagent_model(active.output.subagent_model.clone())
-                .with_subagent_tokens(active.output.subagent_tokens.clone())
-                .build();
-            (active.phys_idx, active.output.visual_rows(false), output)
-        };
-        let new_rows = output.visual_rows(false);
-        self.resize_tool_placeholder_rows(phys_idx, old_rows, new_rows);
-        self.tools_mut().active[pos].output = output;
-        self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-        if was_pinned {
-            self.scroll_log_to_bottom();
-        }
-    }
-
-    fn on_step_finished(&mut self, idx: usize, tool_id: String, result: StepResult) {
+    fn on_step_finished_tail(&mut self, idx: usize, tool_id: String, result: StepResult) {
         let idx = resolve_step_idx(&self.plan_mut().steps, &tool_id, idx);
-        self.flush_stream_pending();
-        let msgs = self.msgs();
-
         // Keep-live tools (e.g. `background_run`) return immediately but their
-        // card keeps streaming: skip finalization here; a later
-        // `AgentUpdate::BackgroundTaskFinished` closes the card with the real
-        // outcome. The plan step is still recorded as done (the invocation did
-        // succeed at "started").
+        // card keeps streaming: the component skipped finalization; the plan
+        // step is still recorded as done (the invocation did succeed at
+        // "started").
         if result.presentation.keep_live {
             if let Some(step) = self.plan_mut().steps.get_mut(idx) {
                 step.output = Some(result.message);
             }
             return;
         }
-
-        let is_subagent = matches!(
-            result.presentation.popup,
-            tact_protocol::ToolPopupKind::SubagentTranscript
-        );
-        let mut output = ToolWidget::from_step_result(&result, &self.theme, &msgs)
-            .with_step_index(idx)
-            .build();
-
-        // Subagent: live output holds the full conversation; detail_full would
-        // otherwise only keep the final summary. Take it before the active block
-        // is removed so the popup always shows the complete conversation.
-        // Also carry over subagent metadata (model, tokens) so the completed
-        // tool card header continues to show them.
-        if is_subagent
-            && let Some(active) = self
-                .tools_mut()
-                .active
-                .iter_mut()
-                .find(|a| a.tool_id == tool_id)
-        {
-            let full_text = active.live_output.take_full_detail();
-            if !full_text.is_empty() {
-                output.detail_total_lines = full_text.lines().count();
-                output.detail_full = Some(full_text);
-            }
-            output.subagent_model = active.output.subagent_model.take();
-            output.subagent_tokens = active.output.subagent_tokens.take();
-        }
-
-        self.finalize_tool_block(&tool_id, output);
-
         if let Some(step) = self.plan_mut().steps.get_mut(idx) {
             step.output = Some(result.message);
         }
     }
 
-    /// Finalize a tool card that stayed live after its invocation returned
-    /// (see [`ToolPresentationInfo::keep_live`]): the background task just
-    /// finished, so render the real ✓/✗ outcome, duration, and final output.
-    fn on_background_task_finished(
-        &mut self,
-        tool_id: &str,
-        success: bool,
-        message: &str,
-        output: &str,
-    ) {
-        let Some(pos) = self
-            .tools_mut()
-            .active
-            .iter()
-            .position(|active| active.tool_id == tool_id)
-        else {
-            // The live card is gone (e.g. a fresh process after restart);
-            // surface the outcome as a system message instead.
-            let prefix = if success { "✓" } else { "✗" };
-            self.add_system_message(format!("{prefix} {message}"));
-            return;
-        };
-        let active = &self.tools_mut().active[pos];
-        let elapsed_us = active.started_at.elapsed().as_micros() as u64;
-        let tool_name = active.output.tool_name.clone();
-        let arg_summary = active.output.arg_summary.clone();
-        let arg_full = active.output.arg_full.clone();
+    /// Plan-step write for a keep-live card closed by the background worker;
+    /// the card finalization itself happened in the component (Finalized /
+    /// Missing tool event, applied by `apply_tool_events`).
+    fn on_background_task_finished_tail(&mut self, tool_id: &str, message: &str) {
         let step_idx = resolve_step_idx(&self.plan_mut().steps, tool_id, 0);
-        let msgs = self.msgs();
-        let mut widget = ToolWidget::new(&self.theme, &msgs)
-            .with_tool(tool_name)
-            .with_arg_summary(arg_summary)
-            .with_arg_full(arg_full)
-            .with_step_index(step_idx)
-            .with_phase(if success {
-                ToolPhase::Success
-            } else {
-                ToolPhase::Failed
-            })
-            .with_duration_us(elapsed_us)
-            .with_detail(output.to_string());
-        if !success {
-            widget = widget.with_message(message.to_string());
-        }
-        self.finalize_tool_block(tool_id, widget.build());
-
         if let Some(step) = self.plan_mut().steps.get_mut(step_idx) {
             step.output = Some(message.to_string());
         }
     }
 
-    fn on_step_failed(&mut self, idx: usize, tool_id: String, arg_summary: String, error: String) {
+    fn on_step_failed_tail(&mut self, idx: usize, tool_id: String, _error: String) {
         let idx = resolve_step_idx(&self.plan_mut().steps, &tool_id, idx);
-        self.flush_stream_pending();
-        if let Some(active) = self
-            .tools_mut()
-            .active
-            .iter()
-            .find(|a| a.tool_id == tool_id)
-        {
-            let elapsed_us = active.started_at.elapsed().as_micros() as u64;
-            let tool_name = active.output.tool_name.clone();
-            // Prefer the summary carried by the failure (e.g. a web-search
-            // query that was only populated at `done`), falling back to the
-            // `StepStarted` value so regular tool failures keep their title.
-            let arg_summary = if arg_summary.is_empty() {
-                active.output.arg_summary.clone()
-            } else {
-                arg_summary
-            };
-            let msgs = self.msgs();
-            let output = ToolWidget::new(&self.theme, &msgs)
-                .with_tool(tool_name)
-                .with_arg_summary(arg_summary)
-                .with_step_index(idx)
-                .with_phase(ToolPhase::Failed)
-                .with_duration_us(elapsed_us)
-                .with_detail(error)
-                .build();
-            self.finalize_tool_block(&tool_id, output);
-        } else {
-            let msgs = self.msgs();
-            self.add_system_message(
-                msgs.step_failed_tmpl
-                    .replacen("{}", &(idx + 1).to_string(), 1)
-                    .replacen("{}", &error, 1),
-            );
-        }
+        let _ = idx;
+        // The card finalization (or Missing message) happened in the
+        // component + apply_tool_events; the tail keeps status in sync.
         self.status = Status::Idle;
         self.freeze_last_prompt_cost();
     }
