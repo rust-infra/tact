@@ -8,6 +8,8 @@
 //! compile-only trait draft with a working pattern); more components follow
 //! as the app layer migrates.
 
+pub mod registry;
 pub mod thinking;
 
+pub use registry::ComponentRegistry;
 pub use thinking::ThinkingComponent;
