@@ -14,6 +14,7 @@ pub mod status_bar;
 pub mod stream;
 pub mod task_panel;
 pub mod thinking;
+pub mod tool;
 
 pub use plan::PlanComponent;
 pub use registry::ComponentRegistry;
@@ -21,3 +22,4 @@ pub use status_bar::StatusBarComponent;
 pub use stream::StreamComponent;
 pub use task_panel::TaskPanelComponent;
 pub use thinking::ThinkingComponent;
+pub use tool::ToolComponent;
