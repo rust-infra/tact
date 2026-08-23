@@ -36,50 +36,50 @@
 
 ## Phase 0 — Baseline freeze and contract draft (no production change)
 
-- [ ] **T0.1 Baseline.** Record current test counts: `cargo test -p tui --lib` and `cargo test -p tact-ui` (env-unset). Confirm the `test-support` feature and headless harness build. Record numbers in the Phase 0 results section below.
-- [ ] **T0.2 Kit skeleton.** Create `crates/agent_tui_kit` (empty lib) with only `tact_protocol` + ratatui-family deps. Draft `Component<U, E>` trait, `Ctx`, `AgentBridge`, `BridgeExtension` signatures (compile-only, no call sites). Add to root workspace members.
-- [ ] **T0.3 Protocol audit.** Enumerate every `AgentUpdate` (19 variants) and `UserCommand` variant, its TUI consumer file/function, and classify **core** vs **extension**. Fill in the design doc's §8 appendix table.
-- [ ] **T0.4 GO/NO-GO.** Proceed only if every update path classifies cleanly (no variant needs cross-component mutation that a coordinator pre-pass cannot express). Otherwise adopt Option B and close this plan.
+- [x] **T0.1 Baseline.** Record current test counts: `cargo test -p tui --lib` and `cargo test -p tact-ui` (env-unset). Confirm the `test-support` feature and headless harness build. Record numbers in the Phase 0 results section below.
+- [x] **T0.2 Kit skeleton.** Create `crates/agent_tui_kit` (empty lib) with only `tact_protocol` + ratatui-family deps. Draft `Component<U, E>` trait, `Ctx`, `AgentBridge`, `BridgeExtension` signatures (compile-only, no call sites). Add to root workspace members.
+- [x] **T0.3 Protocol audit.** Enumerate every `AgentUpdate` (19 variants) and `UserCommand` variant, its TUI consumer file/function, and classify **core** vs **extension**. Fill in the design doc's §8 appendix table.
+- [x] **T0.4 GO/NO-GO.** Proceed only if every update path classifies cleanly (no variant needs cross-component mutation that a coordinator pre-pass cannot express). Otherwise adopt Option B and close this plan.
 
 ## Phase 1 — Extract LogCoordinator (highest-coupling node first)
 
-- [ ] **T1.1 Move log ownership.** Move `App::log_items` + placeholder/separator/system-message helpers (`add_*_separator`, `remove_loading_placeholder`, `append_system_markdown`, splice helpers) into a `LogCoordinator` struct. `App` keeps equivalent delegating methods as a compatibility layer (no call-site churn yet).
-- [ ] **T1.2 Rewire direct writes.** Change `handle_agent_update` paths that mutate `log_items` directly to go through coordinator accessors (`push_item`, `remove_placeholder`, `splice_stream_lines`, `flush`).
-- [ ] **T1.3 Gate.** Full test suite; zero test edits allowed except field-access renames inside the crate.
+- [x] **T1.1 Move log ownership.** Move `App::log_items` + placeholder/separator/system-message helpers (`add_*_separator`, `remove_loading_placeholder`, `append_system_markdown`, splice helpers) into a `LogCoordinator` struct. `App` keeps equivalent delegating methods as a compatibility layer (no call-site churn yet).
+- [x] **T1.2 Rewire direct writes.** Change `handle_agent_update` paths that mutate `log_items` directly to go through coordinator accessors (`push_item`, `remove_placeholder`, `splice_stream_lines`, `flush`).
+- [x] **T1.3 Gate.** Full test suite; zero test edits allowed except field-access renames inside the crate.
 
 ## Phase 2 — Decompose `handle_agent_update` into component dispatch
 
-- [ ] **T2.1 Registry.** Add the priority-ordered component registry (`Vec<(u8, Box<dyn Component>)>`) to the shell; `handle_agent_update` becomes: coordinator pre-pass (thinking-close safety net, placeholder removal) → sequential `on_update` dispatch.
-- [ ] **T2.2 Migrate update arms.**
+- [x] **T2.1 Registry.** Add the priority-ordered component registry (`Vec<(u8, Box<dyn Component>)>`) to the shell; `handle_agent_update` becomes: coordinator pre-pass (thinking-close safety net, placeholder removal) → sequential `on_update` dispatch.
+- [x] **T2.2 Migrate update arms.**
   - `StepAdded/StepStarted/StepFinished/StepFailed` → `ToolComponent`
   - `ThinkingChunk::{Started,Delta,Finished}` → `ThinkingComponent`
   - `StreamChunk/StreamDone` → `StreamComponent` (flush + splice via coordinator)
   - `TaskComplete/TaskCancelled/Error/Info/MdInfo` → coordinator + status transitions (Status kept in the shell for now)
   - `TokenUsage/ModelInfo` → `StatusBarComponent`
   - `TasksChanged/BackgroundTaskFinished` → `TaskPanelComponent`
-- [ ] **T2.3 Extension events.** Convert plugin/account variants into `ExtensionEvent` values, handled in the tui layer exactly where they are today (no relocation of Tact logic yet).
-- [ ] **T2.4 Gate.** Full test suite; this phase must show **zero visual diffs** in scene/render tests.
+- [x] **T2.3 Extension events.** Convert plugin/account variants into `ExtensionEvent` values, handled in the tui layer exactly where they are today (no relocation of Tact logic yet).
+- [x] **T2.4 Gate.** Full test suite; this phase must show **zero visual diffs** in scene/render tests.
 
 ## Phase 3 — Create `agent_tui_kit`: verbatim relocation
 
-- [ ] **T3.1 Move modules.** Move `theme.rs`, `i18n.rs`, `render/` (cells, markdown, mermaid_sequence, bar, input, layout, popups), component states, and widgets into the kit. Mechanical-only change: `&App` → `&Ctx`, `App`-field reads → accessor calls. No logic edits.
-- [ ] **T3.2 Move tests.** Relocate the moved modules' unit/render tests (cells, popup scenes, render gaps, mermaid, bar) into the kit unchanged (fixtures excepted where they reference App-only test helpers — then use the kit's `test_harness` equivalent).
-- [ ] **T3.3 Rewire `crates/tui`.** `tui` depends on the kit; delete duplicated code; `App` assembles the component registry and injects host data (palette command list, slash skills, model tiers); `tui` keeps `run_tui`, `theme_detection`, `system_prompt`, and the extension implementation.
-- [ ] **T3.4 Gate.** `cargo test -p tui --lib` + `cargo test -p tact-ui` (the cross-crate bridge via `test_support` must stay green); render/scene tests green with no expectation edits.
+- [x] **T3.1 Move modules.** Move `theme.rs`, `i18n.rs`, `render/` (cells, markdown, mermaid_sequence, bar, input, layout, popups), component states, and widgets into the kit. Mechanical-only change: `&App` → `&Ctx`, `App`-field reads → accessor calls. No logic edits.
+- [x] **T3.2 Move tests.** Relocate the moved modules' unit/render tests (cells, popup scenes, render gaps, mermaid, bar) into the kit unchanged (fixtures excepted where they reference App-only test helpers — then use the kit's `test_harness` equivalent).
+- [x] **T3.3 Rewire `crates/tui`.** `tui` depends on the kit; delete duplicated code; `App` assembles the component registry and injects host data (palette command list, slash skills, model tiers); `tui` keeps `run_tui`, `theme_detection`, `system_prompt`, and the extension implementation.
+- [x] **T3.4 Gate.** `cargo test -p tui --lib` + `cargo test -p tact-ui` (the cross-crate bridge via `test_support` must stay green); render/scene tests green with no expectation edits.
 
 ## Phase 4 — Cut `tact` / `tact_llm` coupling
 
-- [ ] **T4.1 Extensions.** Move plugin / voice / skill handling behind `BridgeExtension` implemented in `crates/tui` (feature-gated where sensible: `voice`, `plugins`).
-- [ ] **T4.2 Chat model.** Define kit `ChatItem` (replacing `tact_llm::content::{Message, ContentBlock, Role}` in TUI state); migrate `messages.rs`.
-- [ ] **T4.3 Model tiers.** Inject model/budget/effort tiers as `Vec<ModelChoice>`; delete `OpenAiReasoningEffort` and `ProviderKind` references from the kit.
-- [ ] **T4.4 Command split.** Keep generic `UserCommand` variants in protocol; move `QueryBalance` (and any Tact-only commands) to the extension command channel.
-- [ ] **T4.5 Dependency gate.** `cargo tree -p agent_tui_kit` must show **no** `tact` / `tact_llm`; then the full test gate.
+- [x] **T4.1 Extensions.** Move plugin / voice / skill handling behind `BridgeExtension` implemented in `crates/tui` (feature-gated where sensible: `voice`, `plugins`).
+- [x] **T4.2 Chat model.** Define kit `ChatItem` (replacing `tact_llm::content::{Message, ContentBlock, Role}` in TUI state); migrate `messages.rs`.
+- [x] **T4.3 Model tiers.** Inject model/budget/effort tiers as `Vec<ModelChoice>`; delete `OpenAiReasoningEffort` and `ProviderKind` references from the kit.
+- [x] **T4.4 Command split.** Keep generic `UserCommand` variants in protocol; move `QueryBalance` (and any Tact-only commands) to the extension command channel.
+- [x] **T4.5 Dependency gate.** `cargo tree -p agent_tui_kit` must show **no** `tact` / `tact_llm`; then the full test gate.
 
 ## Phase 5 — External-consumer validation, docs, ship
 
-- [ ] **T5.1 Mock consumer.** Write `crates/agent_tui_kit/examples/mock_agent.rs`: a mock agent emits a full `AgentUpdate` sequence (thinking → step started → tool progress → stream chunk → task complete) and receives `Command`s; run it headless end-to-end.
-- [ ] **T5.2 Book/docs sync.** `book/23_chapter_tui{,_zh}.md` (architecture: kit + app layer), `book/26_chapter_issue{,_zh}.md` newest-first entry (type `optimization`; symptom/motivation, decision + observable behavior, code/spec/plan pointers, link this plan and the design spec), kit README (contract, component inventory, mock example).
-- [ ] **T5.3 Full verification.** `cargo fmt --all`; `cargo clippy`; `env -u http_proxy -u https_proxy -u all_proxy cargo test -p tui --lib`; `cargo test -p tact-ui`; run the example; eyeball `cargo tree -p agent_tui_kit`.
+- [x] **T5.1 Mock consumer.** Write `crates/agent_tui_kit/examples/mock_agent.rs`: a mock agent emits a full `AgentUpdate` sequence (thinking → step started → tool progress → stream chunk → task complete) and receives `Command`s; run it headless end-to-end.
+- [x] **T5.2 Book/docs sync.** `book/23_chapter_tui{,_zh}.md` (architecture: kit + app layer), `book/26_chapter_issue{,_zh}.md` newest-first entry (type `optimization`; symptom/motivation, decision + observable behavior, code/spec/plan pointers, link this plan and the design spec), kit README (contract, component inventory, mock example).
+- [x] **T5.3 Full verification.** `cargo fmt --all`; `cargo clippy`; `env -u http_proxy -u https_proxy -u all_proxy cargo test -p tui --lib`; `cargo test -p tact-ui`; run the example; eyeball `cargo tree -p agent_tui_kit`.
 
 ## Acceptance criteria
 
