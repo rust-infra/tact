@@ -292,11 +292,11 @@ impl ProviderInfo {
     /// Delegates to [`ProviderKind::supports_vision`]. We also check for
     /// DeepSeek-like endpoints routed through the OpenAI provider.
     pub fn supports_vision(&self) -> bool {
-        if self.provider == ProviderKind::DeepSeek
+        let deepseekish = self.provider == ProviderKind::DeepSeek
             || self.base_url.contains("deepseek")
-            || self.model.contains("deepseek")
-        {
-            return false;
+            || self.model.contains("deepseek");
+        if deepseekish {
+            return crate::types::is_deepseek_vision_model(&self.model);
         }
         self.provider.supports_vision()
     }
@@ -630,6 +630,31 @@ mod tests {
     fn build_client_requires_api_key() {
         let p = provider_info(ProviderKind::DeepSeek, "", "", "deepseek-chat");
         assert!(p.build_client().is_err());
+    }
+
+    #[test]
+    fn supports_vision_accepts_deepseek_vision_models_only() {
+        let vision = provider_info(
+            ProviderKind::DeepSeek,
+            "",
+            "",
+            "deepseek-v4-flash-vision-exp",
+        );
+        assert!(vision.supports_vision(), "vision-exp must be image-capable");
+
+        let text = provider_info(ProviderKind::DeepSeek, "", "", "deepseek-v4-flash");
+        assert!(!text.supports_vision(), "text-only v4 must reject images");
+
+        let via_openai = provider_info(
+            ProviderKind::Custom("proxy".into()),
+            "",
+            "https://proxy.deepseek.example/v1",
+            "deepseek-v4-flash-vision-exp",
+        );
+        assert!(
+            via_openai.supports_vision(),
+            "deepseek-ish base_url + vision id is image-capable"
+        );
     }
 
     #[test]

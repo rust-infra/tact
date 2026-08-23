@@ -200,6 +200,11 @@ pub fn update_llm_model(model: String) {
     if let Some(cfg) = guard.as_mut() {
         cfg.llm.model = model.clone();
         cfg.agent.model = model;
+        // Refresh the process-global provider snapshot so tool gates that read
+        // `tact_llm::supports_vision()` (e.g. `read_image`) see the new model
+        // instead of the launch-time one. `/model` otherwise only mutates the
+        // in-memory config, leaving the static provider stale.
+        tact_llm::init_provider(cfg.llm.provider_info());
     }
 }
 
@@ -218,6 +223,7 @@ pub fn update_llm_model_and_reasoning_effort(model: String, effort: Option<OpenA
         cfg.agent.model = model;
         cfg.agent.reasoning_effort = effort;
         cfg.agent.thinking_budget = 0;
+        tact_llm::init_provider(cfg.llm.provider_info());
     }
 }
 
@@ -240,6 +246,7 @@ pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usiz
                 .unwrap_or(u32::MAX)
                 .saturating_add(1);
         }
+        tact_llm::init_provider(cfg.llm.provider_info());
     }
 }
 

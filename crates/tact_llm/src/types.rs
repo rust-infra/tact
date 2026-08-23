@@ -193,6 +193,14 @@ impl ProviderKind {
     }
 }
 
+/// Whether a DeepSeek model id is an experimental `*-vision-*` variant that
+/// accepts `image_url` parts over the OpenAI-compatible Chat Completions API
+/// (e.g. `deepseek-v4-flash-vision-exp`). The V4 text family (chat/reasoner/
+/// v4/v4-pro/v4-flash) does not, so callers use this to exempt only vision ids.
+pub fn is_deepseek_vision_model(model: &str) -> bool {
+    model.contains("deepseek") && model.contains("vision")
+}
+
 impl FromStr for ProviderKind {
     type Err = String;
 

@@ -244,4 +244,23 @@ mod tests {
         .expect_err("txt rejected");
         assert!(err.to_string().contains("not supported"));
     }
+
+    #[test]
+    fn update_llm_model_refreshes_process_global_vision_gate() {
+        ensure_config();
+        // Baseline: the ensure_config provider is OpenAi "mock-model", which
+        // supports vision. Simulate a DeepSeek text-only baseline, then a
+        // `/model` switch to the vision id, and assert the global gate follows.
+        crate::config::update_llm_model("deepseek-v4-flash".to_string());
+        assert!(
+            !tact_llm::supports_vision(),
+            "deepseek-v4-flash is text-only"
+        );
+
+        crate::config::update_llm_model("deepseek-v4-flash-vision-exp".to_string());
+        assert!(
+            tact_llm::supports_vision(),
+            "vision-exp must flip the gate on"
+        );
+    }
 }

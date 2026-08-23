@@ -155,11 +155,11 @@ impl ProviderProfile {
     /// Delegates to [`ProviderKind::supports_vision`]. We also check for
     /// DeepSeek-like endpoints routed through the OpenAI provider.
     pub fn supports_vision(&self) -> bool {
-        if self.provider == ProviderKind::DeepSeek
+        let deepseekish = self.provider == ProviderKind::DeepSeek
             || self.base_url.contains("deepseek")
-            || self.model.contains("deepseek")
-        {
-            return false;
+            || self.model.contains("deepseek");
+        if deepseekish {
+            return crate::types::is_deepseek_vision_model(&self.model);
         }
         self.provider.supports_vision()
     }
