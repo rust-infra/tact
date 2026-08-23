@@ -844,13 +844,6 @@ mod render_tests {
     }
 
     #[test]
-    #[test]
-    #[test]
-    #[test]
-    #[test]
-    #[test]
-    #[test]
-    #[test]
     fn format_model_name_empty() {
         assert_eq!(super::format_model_name(""), "-");
     }
@@ -870,7 +863,6 @@ mod render_tests {
     fn format_cache_pct_full_hit() {
         assert_eq!(super::format_cache_pct(100, 0, "cache%"), "▣ cache% 100%");
     }
-    #[test]
     #[test]
     fn format_balance_entry_renders() {
         let entry = BalanceEntry {

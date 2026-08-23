@@ -318,3 +318,178 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
     surface.hit_rows = hit_rows;
     surface
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::PopupTextHit;
+
+    fn test_hit_rows(
+        text: &str,
+        line_start: usize,
+        text_x: u16,
+        max_width: usize,
+        wrap: bool,
+    ) -> Vec<crate::state::PopupHitRow> {
+        layout_display_rows(text, line_start, &[], max_width, wrap)
+            .into_iter()
+            .enumerate()
+            .map(|(row, display)| display.hit_row(row as u16, text_x))
+            .collect()
+    }
+
+    #[test]
+    fn hit_map_resolves_ascii_cells_and_clamps_outside_text() {
+        let row = test_hit_rows("abc", 5, 7, 20, false).remove(0);
+
+        assert_eq!(row.hit(6), PopupTextHit::empty(5));
+        assert_eq!(row.hit(7), PopupTextHit::new(5, 6));
+        assert_eq!(row.hit(8), PopupTextHit::new(6, 7));
+        assert_eq!(row.hit(9), PopupTextHit::new(7, 8));
+        assert_eq!(row.hit(10), PopupTextHit::empty(8));
+    }
+
+    #[test]
+    fn hit_map_repeats_wide_scalar_span_for_each_screen_cell() {
+        let row = test_hit_rows("界x", 10, 8, 20, false).remove(0);
+
+        assert_eq!(row.hit(8), PopupTextHit::new(10, 13));
+        assert_eq!(row.hit(9), PopupTextHit::new(10, 13));
+        assert_eq!(row.hit(10), PopupTextHit::new(13, 14));
+    }
+
+    #[test]
+    fn hit_map_treats_emoji_presentation_sequence_as_one_grapheme() {
+        let text = "a⌨️b";
+        let row = test_hit_rows(text, 0, 4, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::new(0, 1));
+        assert_eq!(row.hit(5), PopupTextHit::new(1, 7));
+        assert_eq!(row.hit(6), PopupTextHit::new(1, 7));
+        assert_eq!(row.hit(7), PopupTextHit::new(7, 8));
+    }
+
+    #[test]
+    fn hit_map_treats_zwj_emoji_sequence_as_one_grapheme() {
+        let text = "a👩‍💻b";
+        let row = test_hit_rows(text, 0, 4, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::new(0, 1));
+        assert_eq!(row.hit(5), PopupTextHit::new(1, 12));
+        assert_eq!(row.hit(6), PopupTextHit::new(1, 12));
+        assert_eq!(row.hit(7), PopupTextHit::new(12, 13));
+    }
+
+    #[test]
+    fn hit_map_merges_trailing_zero_width_sequence_into_previous_cell() {
+        let text = "a\u{0301}\u{0327}界z";
+        let row = test_hit_rows(text, 4, 3, 20, false).remove(0);
+
+        assert_eq!(row.hit(3), PopupTextHit::new(4, 9));
+        assert_eq!(row.hit(4), PopupTextHit::new(9, 12));
+        assert_eq!(row.hit(5), PopupTextHit::new(9, 12));
+        assert_eq!(row.hit(6), PopupTextHit::new(12, 13));
+        for hit in &row.cells {
+            assert!(text.is_char_boundary(hit.start - 4));
+            assert!(text.is_char_boundary(hit.end - 4));
+        }
+    }
+
+    #[test]
+    fn hit_map_merges_leading_zero_width_sequence_into_first_cell() {
+        let text = "\u{0301}\u{0327}a界";
+        let row = test_hit_rows(text, 10, 5, 20, false).remove(0);
+
+        assert_eq!(row.hit(4), PopupTextHit::empty(10));
+        assert_eq!(row.hit(5), PopupTextHit::new(10, 15));
+        assert_eq!(row.hit(6), PopupTextHit::new(15, 18));
+        assert_eq!(row.hit(7), PopupTextHit::new(15, 18));
+        assert_eq!(row.hit(8), PopupTextHit::empty(18));
+        for hit in &row.cells {
+            assert!(text.is_char_boundary(hit.start - 10));
+            assert!(text.is_char_boundary(hit.end - 10));
+        }
+    }
+
+    #[test]
+    fn hit_map_empty_row_clamps_to_its_source_offset() {
+        let row = test_hit_rows("", 12, 5, 20, false).remove(0);
+
+        assert!(row.cells.is_empty());
+        assert_eq!(row.hit(4), PopupTextHit::empty(12));
+        assert_eq!(row.hit(5), PopupTextHit::empty(12));
+        assert_eq!(row.hit(50), PopupTextHit::empty(12));
+    }
+
+    #[test]
+    fn hit_map_excludes_number_and_diff_gutter() {
+        let row = test_hit_rows("界x", 10, 8, 20, false).remove(0);
+
+        assert_eq!(row.hit(7), PopupTextHit::empty(10));
+        assert_eq!(row.hit(8), PopupTextHit::new(10, 13));
+        assert_eq!(row.hit(9), PopupTextHit::new(10, 13));
+        assert_eq!(row.hit(10), PopupTextHit::new(13, 14));
+    }
+
+    #[test]
+    fn hit_map_wraps_unified_diff_rows_at_display_width() {
+        let rows = test_hit_rows("+ab界cd", 20, 2, 4, true);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].line_start, 20);
+        assert_eq!(rows[0].line_end, 23);
+        assert_eq!(rows[0].hit(4), PopupTextHit::new(22, 23));
+        assert_eq!(rows[0].hit(5), PopupTextHit::empty(23));
+        assert_eq!(rows[1].line_start, 23);
+        assert_eq!(rows[1].line_end, 28);
+        assert_eq!(rows[1].hit(2), PopupTextHit::new(23, 26));
+        assert_eq!(rows[1].hit(3), PopupTextHit::new(23, 26));
+        assert_eq!(rows[1].hit(4), PopupTextHit::new(26, 27));
+        assert_eq!(rows[1].hit(6), PopupTextHit::empty(28));
+    }
+
+    #[test]
+    fn hit_map_wraps_only_between_extended_grapheme_clusters() {
+        let rows = test_hit_rows("a👩‍💻b", 20, 2, 3, true);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].line_start, 20);
+        assert_eq!(rows[0].line_end, 32);
+        assert_eq!(rows[0].hit(2), PopupTextHit::new(20, 21));
+        assert_eq!(rows[0].hit(3), PopupTextHit::new(21, 32));
+        assert_eq!(rows[0].hit(4), PopupTextHit::new(21, 32));
+        assert_eq!(rows[1].line_start, 32);
+        assert_eq!(rows[1].hit(2), PopupTextHit::new(32, 33));
+    }
+
+    #[test]
+    fn styled_span_layout_truncates_at_aggregate_grapheme_width() {
+        let red = Style::default().fg(ratatui::style::Color::Red);
+        let blue = Style::default().fg(ratatui::style::Color::Blue);
+        let green = Style::default().fg(ratatui::style::Color::Green);
+        let line = Line::from(vec![
+            Span::styled("ab", red),
+            Span::styled("👩‍💻", blue),
+            Span::styled("c", green),
+        ]);
+        let styles = scalar_styles(Some(&line), Style::default(), 7);
+
+        let display = layout_display_rows("ab👩‍💻c", 10, &styles, 4, false).remove(0);
+        let spans = display.spans(None);
+
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "ab👩‍💻"
+        );
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].style, red);
+        assert_eq!(spans[1].style, blue);
+        assert_eq!(display.cells.len(), 4);
+        assert_eq!(display.cells[2], PopupTextHit::new(12, 23));
+        assert_eq!(display.cells[3], PopupTextHit::new(12, 23));
+        assert_eq!(display.line_end, 23);
+    }
+}

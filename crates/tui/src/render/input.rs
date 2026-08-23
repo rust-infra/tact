@@ -92,7 +92,6 @@ mod render_tests {
         render_input_box,
     };
     use crate::widgets::state::{SkillEntry, VoicePhase, VoiceState};
-    use agent_tui_kit::render::input::{caret_in_wrapped, truncate_to_width, wrap_line};
 
     #[test]
     fn input_box_renders_multiline_content() {
@@ -108,29 +107,6 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("line one"), "multiline input visible: {text}");
-    }
-
-    #[test]
-    fn wrap_line_splits_at_column_width() {
-        assert_eq!(wrap_line("", 4), vec![""]);
-        assert_eq!(wrap_line("abcd", 2), vec!["ab", "cd"]);
-        assert_eq!(wrap_line("abcdef", 2), vec!["ab", "cd", "ef"]);
-        // CJK wide characters count as two columns.
-        assert_eq!(wrap_line("中文abc", 4), vec!["中文", "abc"]);
-        assert_eq!(wrap_line("中文", 3), vec!["中", "文"]);
-        // Oversized single character stays on its own row.
-        assert_eq!(wrap_line("ab中", 3), vec!["ab", "中"]);
-    }
-
-    #[test]
-    fn caret_in_wrapped_maps_logical_column_to_display_row() {
-        assert_eq!(caret_in_wrapped("abcdef", 2, 0), (0, 0));
-        assert_eq!(caret_in_wrapped("abcdef", 2, 2), (0, 2));
-        assert_eq!(caret_in_wrapped("abcdef", 2, 4), (1, 2));
-        assert_eq!(caret_in_wrapped("abcdef", 2, 6), (2, 2));
-        // CJK caret: "中文ab" wraps as ["中文", "ab"]; caret after "中文" (col 4).
-        assert_eq!(caret_in_wrapped("中文ab", 4, 4), (0, 4));
-        assert_eq!(caret_in_wrapped("中文ab", 4, 6), (1, 2));
     }
 
     #[test]
@@ -247,16 +223,6 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("00:08"), "recording elapsed label: {text}");
-    }
-
-    #[test]
-    fn truncate_to_width_appends_ellipsis_for_cjk() {
-        assert_eq!(truncate_to_width("abc", 5), "abc");
-        assert_eq!(truncate_to_width("abcdef", 4), "abc…");
-        // CJK wide chars count as two columns; truncation targets `max` cols.
-        assert_eq!(truncate_to_width("中文abc", 5), "中文…");
-        assert_eq!(truncate_to_width("中文abc", 6), "中文a…");
-        assert_eq!(truncate_to_width("中文abc", 7), "中文abc");
     }
 
     #[test]

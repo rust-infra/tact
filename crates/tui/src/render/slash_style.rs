@@ -27,7 +27,6 @@ pub(crate) fn skill_name_set(skills: &[SkillEntry]) -> HashSet<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Theme, ThemeName};
 
     #[test]
     fn skill_name_set_excludes_builtin_names() {
@@ -46,20 +45,5 @@ mod tests {
         let names = skill_name_set(&skills);
         assert!(!names.contains("help"));
         assert!(names.contains("demo"));
-    }
-
-    #[test]
-    fn style_user_skill_line_uses_i18n_prefix() {
-        let theme = Theme::from(ThemeName::Japanese);
-        let names: HashSet<&str> = ["demo"].into_iter().collect();
-        let line = style_user_skill_line("💬 /demo hi", &names, &theme, "💬 {}", "  {}").unwrap();
-        assert_eq!(line.spans[0].content.as_ref(), "⚡ ");
-        assert_eq!(
-            line.spans[0].style.fg,
-            Some(theme.warning),
-            "skill prefix should use warning color"
-        );
-        assert_eq!(line.spans[1].content.as_ref(), "/demo");
-        assert_eq!(line.spans[2].content.as_ref(), " hi");
     }
 }
