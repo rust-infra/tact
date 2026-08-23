@@ -155,8 +155,7 @@ EOF
   chapter_entry "15" "Worktree Lanes" "15_chapter_worktree"
   emit_group_close
 
-  emit_group_open "Off-path systems (Ch 16–17)"
-  chapter_entry "16" "Cron Scheduling" "16_chapter_cron"
+  emit_group_open "Off-path (Ch 17)"
   chapter_entry "17" "Desktop Notifications" "17_chapter_notify"
   emit_group_close
 
@@ -166,15 +165,22 @@ EOF
 
   emit_group_open "Deep topics (Ch 19–20)"
   chapter_entry "19" "Persistent Task Manager" "19_chapter_persistent_tasks"
-  chapter_entry "20" "LSP Code Intelligence" "20_chapter_lsp"
+  chapter_entry "20" "Hallucination in Agent Loops" "20_chapter_hallucination"
   emit_group_close
 
-  emit_group_open "Bootstrap & UI (Ch 21–25)"
+  emit_group_open "Bootstrap & UI (Ch 21–23, 25)"
   chapter_entry "21" "Configuration" "21_chapter_config"
   chapter_entry "22" "LLM Providers" "22_chapter_llm"
   chapter_entry "23" "Terminal UI" "23_chapter_tui"
-  chapter_entry "24" "Testing Strategy" "24_chapter_testing"
   chapter_entry "25" "Agent–TUI Protocol" "25_chapter_protocol"
+  emit_group_close
+
+  emit_group_open "Quality (Ch 24)"
+  chapter_entry "24" "Testing Strategy" "24_chapter_testing"
+  emit_group_close
+
+  emit_group_open "Issue log (Ch 26)"
+  chapter_entry "26" "Engineering Issue Log" "26_chapter_issue"
   emit_group_close
 
   # Auto-discover Chinese chapter translations (*_zh.md)

@@ -174,7 +174,7 @@ Output: `book/output/chm/tact-book.chm`
 
 ### TOC structure
 
-Matches the mind map groups: Runtime order → Tool families → Off-path → Capstone → Deep topics → Bootstrap & UI.
+Matches the mind map groups: Runtime order → Tool families → Off-path → Capstone → Deep topics → Bootstrap & UI → Quality → Issue log.
 
 ### Limitations
 
