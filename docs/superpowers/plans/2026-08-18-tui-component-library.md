@@ -93,7 +93,13 @@
 - **R1 Decomposition regressions.** Mitigate: gates run the unchanged suite every phase; headless harness + tact-ui bridge tests cover the wiring.
 - **R2 Shared-log entanglement via Ctx.** Mitigate: coordinator owns insertion order; AGENTS.md render invariants carry over; accessor names encode intent.
 - **R3 Protocol split breaks agent↔TUI.** Mitigate: Phase 1 leaves `tact_protocol` untouched; only re-exports and extension events are added.
-- **R4 ratatui-markdown fork blocks external reuse.** Mitigate: workspace path dep stays; fork must be pushed to a remote before any external consumer (tracked from the 2026-08-15 migration).
+- **R4 ratatui-markdown fork blocks external reuse.** **Resolved 2026-08-16 (#69, `2e1d5c06`):** the main-area Markdown renderer moved to the kit's own
+  pulldown-cmark renderer and the dependency was switched from the local fork
+  path back to upstream `git rev 3a8bcbe` (celestia-island
+  `chore/update-ratatui-0.30`). The kit only uses upstream APIs
+  (`MarkdownRenderer` / `render_mermaid` / `RichTextTheme`); no fork-specific
+  hooks remain. ratatui-markdown is used for Mermaid + popup default layout
+  only. External consumers resolve the upstream git URL without any fork push.
 - **R5 Kit API absorbs Tact quirks.** Mitigate: `on_update` consumes protocol types only; Tact specifics live in extensions; the mock consumer in T5.1 forces the API to stand without Tact.
 - **R6 Scope creep in moved code.** Mitigate: verbatim-move rule; visual changes are separate diffs; Phase gates diff the render tests.
 
