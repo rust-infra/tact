@@ -308,7 +308,7 @@ adapter：`ProviderProfile::dialect_for(model)` 按请求选择
 
 **Tools，非 legacy functions：** 请求使用当前 `tools` / `tool_choice` API（并行 `tool_calls`、`role: "tool"` 结果）。已弃用 2023 时代的 `functions` / `function_call` 字段始终发 `None`（struct literal 要求）；仅*响应*值 `finish_reason=function_call` 仍接受并映射为 `StopReason::ToolUse`，兼容旧 OpenAI 兼容服务。
 
-**用户图片附件：** TUI/headless 将 `@file.png` / `![alt](path)` 转为 `ContentBlock::Image`（[Ch 23](./23_chapter_tui_zh.md)）。OpenAI 兼容请求中，`messages_to_openai` 将这些 block 映射为 `{ type: "image_url", image_url: { url: "data:<media_type>;base64,..." } }`。Anthropic 保留原生 Messages `image` + base64 `source` 形状。无 per-model vision 能力门控：纯文本 Chat Completions API（或 content-part enum 仅允许 `text` 的代理）会对 `image_url` 返回 HTTP 400。
+**用户图片附件（去内联）：** TUI/headless 将 `@file.png` / `![alt](path)` 当作**路径文本**保留在用户消息中，而非 base64 内联。模型按需用 `read_image` 工具（图片）或 `read_file` 工具（文本）读取该引用；见下方 `read_image` 段。此前 attach 步骤会把图片 decode 成内联 `ContentBlock::Image` 的路径已移除，使图片字节仅在模型主动请求时进入请求。若纯文本 Chat Completions API 仍收到内联 `image_url` part，会返回 HTTP 400。
 
 **`read_image` 工具（Harness 风格）：** agent 工具集新增 `read_image`（模型可对 `file_path` 调用的工具）。它先门控当前模型声明 image 输入（`tact_llm::supports_vision`），读取 PNG/JPEG/WebP/GIF，重编码为有界 JPEG，返回一个携带文本信封（`<path>…</path>`、媒体类型、尺寸、字节数）与相邻 `ContentBlock::Image` 的 `ToolCallResult`。由于 Chat Completions 的 `role:tool` content 仅限字符串，`messages_to_openai` 将工具结果图片折叠到紧随其后的 `role:user` 消息（`[{type:"text", text:"Attached image(s) from tool result:"}, {type:"image_url",…}]`），镜像 DeepSeek Harness `serializeMessagesWithImages`。这样文本工具结果仍走 `role:tool`，vision 模型从 user 消息消费图片，无需改写 `ContentBlock::ToolResult`。
 

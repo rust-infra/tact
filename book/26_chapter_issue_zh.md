@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-08-23 — 附件去内联：`@file`/`![alt]` 保留为路径文本
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-ui/src/user_message.rs` (`build_user_message`), `crates/tact-ui/src/{lib,image_attach}.rs` (移除 `image_attach`), `crates/tact-ui/Cargo.toml` (去除 `image` 依赖); Ch 22 § image attachments |
+
+**Symptom / motivation:** `build_user_message` 在 attach 时把图片文件 base64 内联为 `ContentBlock::Image`、把文本文件整体内联为 `ContentBlock::Text`。这会在模型未必需要时就把图片字节与大文件内容塞进每次请求；且纯文本模型完全无法读图。
+
+**Decision:** 去内联。`@file` 保留为 `@<path>` 文本，`![alt](path)` 保留为 `![alt](path)` 文本，使模型按需用 `read_file`（文本）/ `read_image`（图片）读取。由于 attach 路径不再解码图片，`tact-ui` 的 `image_attach` 模块及其 `image` 依赖被移除（编码逻辑现位于 `tact` 的 `read_image` 工具中）。
+
+**Behavior after:** 图片/文件字节仅在模型显式调用 `read_image`/`read_file` 时进入请求；用户消息携带路径引用而非内联 blob。文本的 `read_file`（offset/limit）不变；图片走 `read_image`。
+
+---
+
 ## 1. 2026-08-23 — `read_image` 工具：模型按需读图，工具结果图片折叠进 user 消息
 
 | Field | Value |

@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-23 — Attachments are de-inlined: `@file`/`![alt]` kept as path text
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-ui/src/user_message.rs` (`build_user_message`), `crates/tact-ui/src/{lib,image_attach}.rs` (removed `image_attach`), `crates/tact-ui/Cargo.toml` (dropped `image` dep); Ch 22 § image attachments |
+
+**Symptom / motivation:** `build_user_message` base64-inlined image files into `ContentBlock::Image` and whole-file-inlined text files into `ContentBlock::Text` at attach time. That pushed image bytes and large file contents into every request even when the model did not need them, and text-only models could not read images at all.
+
+**Decision:** de-inline attachments. `@file` keeps `@<path>` text and `![alt](path)` keeps `![alt](path)` text, so the model reads them on demand with `read_file` (text) / `read_image` (image). The `image_attach` module and its `image` dependency were removed from `tact-ui` since the attach path no longer decodes images (the encoder now lives in the `read_image` tool in `tact`).
+
+**Behavior after:** image/file bytes only enter the request when the model explicitly calls `read_image`/`read_file`. The user message carries path references, not inline blobs. Existing `read_file` (offset/limit) is unchanged for text; images go through `read_image`.
+
+---
+
 ## 1. 2026-08-23 — `read_image` tool: model-driven image reads, tool-result images fold into a user message
 
 | Field | Value |

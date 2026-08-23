@@ -4764,7 +4764,6 @@ dependencies = [
  "base64",
  "chrono",
  "console-subscriber",
- "image",
  "regex",
  "rmcp",
  "serde_json",

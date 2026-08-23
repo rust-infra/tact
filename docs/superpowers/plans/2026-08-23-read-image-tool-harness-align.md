@@ -75,9 +75,9 @@ This is the smallest change that mirrors Harness without reshaping `ContentBlock
 
 ## Phase 4 — Wire construction site: `build_user_message` leaves image paths
 
-- [ ] **T4.1** `@file.png` / `![alt](path)` no longer auto-inline to base64 `Image`; instead keep a text block that names the file and suggests `read_image`.
-- [ ] **T4.2** Keep `contentHasImage` / vision gate in driver for direct inline images (if any remain).
-- [ ] **T4.3** Tests + gate.
+- [x] **T4.1** `@file.png` / `![alt](path)` no longer auto-inline to base64 `Image`; instead keep a text block that names the file and suggests `read_image`.
+- [x] **T4.2** Keep `contentHasImage` / vision gate in driver for direct inline images (if any remain).
+- [x] **T4.3** Tests + gate.
 
 ## Phase 5 — Docs + changelog
 

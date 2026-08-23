@@ -1,16 +1,15 @@
 use std::path::Path;
 
-use base64::Engine as _;
 use regex::Regex;
-use tact::tool::safe_path;
-use tact_llm::{ContentBlock, ImageSource, Message, Role::User};
+use tact_llm::{ContentBlock, Message, Role::User};
 
 /// Parse inline markdown image references (`![alt](path.png)`) and `@` file
 /// references (`@path/to/file` or `@"path with spaces"`) in the user's task.
 ///
-/// Images are optionally downscaled and re-encoded per `[ui.vision_image]` in config
-/// (`compress = true` by default) before base64 attachment.
-pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
+/// **De-inlined:** image and file references are kept as path text so the
+/// model reads them on demand via `read_image` (image) / `read_file` (text)
+/// rather than base64-inlining or whole-file inlining at attach time.
+pub(crate) async fn build_user_message(task: &str, _work_dir: &Path) -> Message {
     static REF_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = REF_RE.get_or_init(|| {
         Regex::new(r#"(?m)(?P<prefix>^|[ \t])(?:(?P<img>!\[(?P<alt>[^\]]*)\]\((?P<img_path>[^)]+)\))|@(?:"(?P<qpath>[^"]+)"|(?P<upath>\S+)))"#).unwrap()
@@ -54,55 +53,19 @@ pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
 
         match r {
             Ref::Image { alt, path } => {
-                let resolved = match safe_path(work_dir, path) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        blocks.push(ContentBlock::Text {
-                            text: task[content_start..end].to_string(),
-                        });
-                        last_end = end;
-                        continue;
-                    }
-                };
-                match load_image_block(&resolved).await {
-                    Some(source) => {
-                        if !alt.is_empty() {
-                            blocks.push(ContentBlock::Text {
-                                text: format!("({})", alt),
-                            });
-                        }
-                        blocks.push(ContentBlock::Image { source });
-                    }
-                    None => {
-                        blocks.push(ContentBlock::Text {
-                            text: task[content_start..end].to_string(),
-                        });
-                    }
-                }
+                // Harness-style "de-inline": keep the image as a path reference
+                // instead of base64-inlining it. The model calls `read_image`
+                // on demand when it needs the pixels.
+                blocks.push(ContentBlock::Text {
+                    text: format!("![{}]({})", alt, path),
+                });
             }
             Ref::AtFile { path } => {
-                let resolved = match safe_path(work_dir, path) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        blocks.push(ContentBlock::Text {
-                            text: task[content_start..end].to_string(),
-                        });
-                        last_end = end;
-                        continue;
-                    }
-                };
-                if let Some(source) = load_image_block(&resolved).await {
-                    blocks.push(ContentBlock::Image { source });
-                } else if let Some(content) = load_text_file(&resolved).await {
-                    let header = format!("--- file: {} ---\n", resolved.display());
-                    blocks.push(ContentBlock::Text {
-                        text: format!("{}{}\n---\n", header, content),
-                    });
-                } else {
-                    blocks.push(ContentBlock::Text {
-                        text: task[content_start..end].to_string(),
-                    });
-                }
+                // De-inline: keep the file as a path reference; the model uses
+                // `read_file` (text) or `read_image` (image) on demand.
+                blocks.push(ContentBlock::Text {
+                    text: format!("@{}", path),
+                });
             }
         }
 
@@ -122,39 +85,6 @@ pub(crate) async fn build_user_message(task: &str, work_dir: &Path) -> Message {
     Message::new_blocks(User, blocks)
 }
 
-async fn load_text_file(path: &Path) -> Option<String> {
-    if !path.is_file() {
-        return None;
-    }
-    tokio::fs::read_to_string(path).await.ok()
-}
-
-async fn load_image_block(path: &Path) -> Option<ImageSource> {
-    if !path.is_file() {
-        return None;
-    }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if !crate::image_attach::is_supported_image_ext(&ext) {
-        return None;
-    }
-    let bytes = tokio::fs::read(path).await.ok()?;
-    let settings = crate::image_attach::vision_settings_from_config();
-    let prepared = tokio::task::spawn_blocking(move || {
-        crate::image_attach::prepare_image_attachment(&bytes, &ext, &settings)
-    })
-    .await
-    .ok()??;
-    Some(ImageSource {
-        type_: "base64".to_string(),
-        media_type: prepared.media_type,
-        data: base64::engine::general_purpose::STANDARD.encode(prepared.bytes),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -162,7 +92,6 @@ mod tests {
     use tact_llm::MessageContent;
 
     use super::*;
-    use crate::test_support::install_test_config;
 
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tact_tui_test_{}", std::process::id()));
@@ -212,10 +141,9 @@ mod tests {
     }
 
     #[test]
-    fn test_at_text_file_embeds_content() {
+    fn test_at_text_file_deinlined_to_path() {
         let dir = temp_dir();
-        let file_path = dir.join("hello.txt");
-        std::fs::write(&file_path, "hello world").unwrap();
+        std::fs::write(dir.join("hello.txt"), "hello world").unwrap();
 
         let msg =
             rt().block_on(async { build_user_message("review @hello.txt please", &dir).await });
@@ -223,43 +151,34 @@ mod tests {
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 3);
         assert_text_contains(blocks[0], "review ");
-        assert_text_contains(blocks[1], "--- file:");
-        assert_text_contains(blocks[1], "hello world");
+        assert_text_contains(blocks[1], "@hello.txt");
         assert_text_contains(blocks[2], "please");
     }
 
     #[test]
-    fn test_at_image_file_attaches_vision_block() {
-        install_test_config();
+    fn test_at_image_file_deinlined_to_path() {
         let dir = temp_dir();
-        let file_path = dir.join("pixel.png");
-        write_test_png(&file_path, 8, 8);
+        std::fs::write(dir.join("pixel.png"), b"not-read").unwrap();
 
         let msg = rt().block_on(async { build_user_message("look at @pixel.png", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 2);
         assert_text_contains(blocks[0], "look at ");
-        match blocks[1] {
-            ContentBlock::Image { source } => {
-                assert_eq!(source.media_type, "image/jpeg");
-            }
-            _ => panic!("expected image block"),
-        }
+        assert_text_contains(blocks[1], "@pixel.png");
     }
 
     #[test]
     fn test_at_quoted_path_with_spaces() {
         let dir = temp_dir();
-        let file_path = dir.join("my file.txt");
-        std::fs::write(&file_path, "spacy content").unwrap();
+        std::fs::write(dir.join("my file.txt"), "spacy content").unwrap();
 
         let msg =
             rt().block_on(async { build_user_message("read @\"my file.txt\" now", &dir).await });
 
         let blocks = text_blocks(&msg);
         assert_eq!(blocks.len(), 3);
-        assert_text_contains(blocks[1], "spacy content");
+        assert_text_contains(blocks[1], "@my file.txt");
         assert_text_contains(blocks[2], "now");
     }
 
@@ -276,32 +195,34 @@ mod tests {
     }
 
     #[test]
-    fn test_combined_markdown_image_and_at_file() {
-        install_test_config();
+    fn test_combined_markdown_image_and_at_file_deinlined() {
         let dir = temp_dir();
         std::fs::write(dir.join("code.rs"), "fn main() {}").unwrap();
-        write_test_png(&dir.join("shot.png"), 16, 16);
+        std::fs::write(dir.join("shot.png"), b"not-read").unwrap();
 
         let msg = rt().block_on(async {
             build_user_message("check ![shot](shot.png) and @code.rs", &dir).await
         });
 
         let blocks = text_blocks(&msg);
+        assert!(blocks.iter().any(
+            |b| matches!(b, ContentBlock::Text { text } if text.contains("![shot](shot.png)"))
+        ));
         assert!(
             blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("@code.rs")))
+        );
+        // De-inlined: no image block, no inlined file content.
+        assert!(
+            !blocks
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Image { .. }))
         );
         assert!(
-            blocks
+            !blocks
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("fn main")))
         );
-    }
-
-    fn write_test_png(path: &std::path::Path, w: u32, h: u32) {
-        use image::{ImageBuffer, Rgb, RgbImage};
-        let img: RgbImage = ImageBuffer::from_fn(w, h, |_, _| Rgb([40, 120, 200]));
-        img.save(path).expect("write test png");
     }
 }
