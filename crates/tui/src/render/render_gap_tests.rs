@@ -88,7 +88,7 @@ fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
 }
 
 fn open_last_tool_popup(app: &mut App) {
-    let phys_idx = app.tools.blocks.last().expect("tool block").phys_idx;
+    let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
 }
 
@@ -108,7 +108,10 @@ fn write_file_diff_popup_shows_gutter() {
     let _ = std::fs::remove_file(&file);
 
     assert!(
-        app.tools.popup.as_ref().is_some_and(|p| p.use_diff_gutter),
+        app.tools_mut()
+            .popup
+            .as_ref()
+            .is_some_and(|p| p.use_diff_gutter),
         "write_file popup should enable diff gutter"
     );
     assert!(
@@ -145,7 +148,7 @@ fn log_renders_collapsed_thinking_card() {
     let text = render_main_area_text(&mut app, 100, 28);
 
     assert!(
-        !app.thinking.blocks.is_empty(),
+        !app.thinking_mut().blocks.is_empty(),
         "thinking block should be closed after stream"
     );
     assert!(
@@ -245,7 +248,7 @@ fn mermaid_popup_copy_uses_source_not_ascii() {
     app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
 
     assert_eq!(app.mermaid_blocks.len(), 1);
-    let ascii = app.log_items[app.mermaid_blocks[0].start_idx].raw.clone();
+    let ascii = app.log.items[app.mermaid_blocks[0].start_idx].raw.clone();
     assert!(
         !ascii.contains("sequenceDiagram"),
         "raw_messages should hold ASCII diagram, got: {ascii}"
@@ -302,7 +305,8 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
         "both fenced blocks should become cards"
     );
     let leaked: Vec<_> = app
-        .log_items
+        .log
+        .items
         .iter()
         .enumerate()
         .filter(|(_, item)| {
@@ -510,9 +514,13 @@ fn plan_steps_track_multiple_steps_with_one_running() {
         presentation: ToolPresentationInfo::generic("read_file"),
     });
 
-    assert_eq!(app.plan.steps.len(), 2, "both steps should be tracked");
-    assert_eq!(app.plan.steps[0].description, "read first");
-    assert_eq!(app.plan.steps[1].description, "read second");
+    assert_eq!(
+        app.plan_mut().steps.len(),
+        2,
+        "both steps should be tracked"
+    );
+    assert_eq!(app.plan_mut().steps[0].description, "read first");
+    assert_eq!(app.plan_mut().steps[1].description, "read second");
 
     let text = render_app_text(&mut app, 100, 24);
     assert!(
@@ -561,7 +569,7 @@ fn diff_popup_scroll_skips_leading_lines() {
         .join("\n");
     seed_write_file_finished(&mut app, "scroll.rs", &lines);
     open_last_tool_popup(&mut app);
-    if let Some(popup) = app.tools.popup.as_mut() {
+    if let Some(popup) = app.tools_mut().popup.as_mut() {
         popup.scroll = 8;
         popup.file_path = None;
         popup.inline_content = Some(lines);
@@ -658,7 +666,7 @@ fn thinking_popup_scroll_shows_later_lines() {
         "Thinking".into(),
         crate::widgets::state::LogItemKind::Thinking,
     );
-    app.thinking.blocks.push(ThinkingBlock {
+    app.thinking_mut().blocks.push(ThinkingBlock {
         phys_idx: 0,
         content: (1..=12)
             .map(|n| format!("reason-{n}"))
@@ -668,7 +676,7 @@ fn thinking_popup_scroll_shows_later_lines() {
         cached_markdown: markdown,
         elapsed: Duration::from_millis(5),
     });
-    app.thinking.popup = Some(ThinkingPopup {
+    app.thinking_mut().popup = Some(ThinkingPopup {
         phys_idx: 0,
         title: "Thinking".into(),
         scroll: 6,

@@ -8,14 +8,7 @@
 
 use crate::widgets::state::App;
 
-/// A user message queued while the agent was busy.
-#[derive(Debug, Clone)]
-pub(crate) struct PendingMessage {
-    /// Text shown in the pending block and later in the user bubble.
-    pub display: String,
-    /// Text dispatched to the agent as the `SubmitTask` payload.
-    pub agent_task: String,
-}
+pub(crate) use agent_tui_kit::PendingMessage;
 
 impl App {
     /// Append a message typed while the agent is busy.

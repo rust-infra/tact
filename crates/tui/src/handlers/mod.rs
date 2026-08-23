@@ -291,7 +291,7 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             let path = std::env::temp_dir().join(format!("agent_log_{timestamp}.txt"));
             if let Ok(mut file) = std::fs::File::create(&path) {
                 use std::io::Write;
-                for item in &app.log_items {
+                for item in &app.log.items {
                     writeln!(file, "{}", item.raw).ok();
                 }
                 let msgs = app.msgs();
@@ -570,7 +570,7 @@ pub(crate) fn start_permission_picker(app: &mut App) {
         msgs.permission_option_plan.to_string(),
         msgs.permission_option_auto.to_string(),
     ];
-    let current = match app.status_bar.permission_mode.as_str() {
+    let current = match app.status_bar_mut().permission_mode.as_str() {
         "plan" => 1,
         "auto" => 2,
         _ => 0,
@@ -767,28 +767,29 @@ mod tests {
                 body: String::new(),
             },
         ];
-        let before = app.log_items.len();
+        let before = app.log.items.len();
         execute_palette_command(&mut app, "skills");
-        let after_first = app.log_items.len();
+        let after_first = app.log.items.len();
         assert!(after_first > before);
         assert!(
-            app.log_items.iter().any(|item| {
+            app.log.items.iter().any(|item| {
                 item.raw.contains("code-reviewer") || item.raw.contains("Available skills")
             }),
             "expected skills content, got: {:?}",
-            app.log_items
+            app.log.items
         );
         // Second invocation must not glue flush to the previous block.
         execute_palette_command(&mut app, "skills");
-        let joined = app.log_items[after_first.saturating_sub(1)..]
+        let joined = app.log.items[after_first.saturating_sub(1)..]
             .iter()
             .map(|item| item.raw.as_str())
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            app.log_items[after_first - 1].raw.is_empty()
+            app.log.items[after_first - 1].raw.is_empty()
                 || app
-                    .log_items
+                    .log
+                    .items
                     .get(after_first)
                     .is_some_and(|item| item.raw.is_empty()),
             "expected blank separator between skills blocks, around: {joined}"
@@ -805,9 +806,9 @@ mod tests {
                 body: String::new(),
             })
             .collect();
-        let before = app.log_items.len();
+        let before = app.log.items.len();
         execute_palette_command(&mut app, "skills");
-        let raw = &app.log_items[before..];
+        let raw = &app.log.items[before..];
 
         // 40 skills / 15 per page → 3 pages with numbered headings.
         for page in ["(1/3)", "(2/3)", "(3/3)"] {

@@ -40,6 +40,10 @@ sequenceDiagram
 
 `AgentUpdate`、`UserCommand` 与 `AccountUpdate` 定义在 `tact_protocol`。`PluginRequest` 与 `PluginEvent` 定义在 `tact::plugin`；`tact-ui` 启动 worker，TUI 在渲染前 drain plugin event。
 
+**分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands、task DAG）。
+
+**组件注册表（whole-App 切换，2026-08-23）：** kit 的六个组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
+
 ---
 
 ## 2. 入口点
@@ -175,7 +179,7 @@ match agent.agent_loop(Some(task_message)).await {
 
 ## 6. 渲染层
 
-渲染栈在 `crates/tui/src/render/` 下。对 agent 逻辑**只读**：handler 与 `handle_agent_update` 变更 `App`；render 函数仅读 `App` 并写 ratatui `Buffer`。
+渲染栈拆分为 `crates/agent_tui_kit/src/render/`（纯面板、状态模型、widgets）与 `crates/tui/src/render/` 应用层（入口点：每帧构建 `RenderCtx`、`prepare_*` 阶段、应用层弹窗）。对 agent 逻辑**只读**：handler 与 `handle_agent_update` 变更 `App`；render 函数读 `RenderCtx`（每帧由不相交的 `&` 借用构建一次）并写 ratatui `Buffer`。渲染代码唯一变更路径是显式 `Vec<RenderCommand>`，由 shell 在帧后 drain。
 
 ```mermaid
 flowchart TB
@@ -204,23 +208,27 @@ flowchart TB
 
 | 路径 | 角色 |
 |------|------|
-| `render/mod.rs` | Re-export 面板入口 |
-| `render/layout.rs` | 主内容路由（history、help、log + 可选 sticky tasks、popups） |
-| `render/task_panel.rs` | Log 下方持久任务 sticky 条（收起 / 展开） |
-| `render/bar.rs` | 顶栏 + 底栏统计 |
-| `render/input.rs` | 多行输入框、批准横幅、palette 命令行 |
-| `render/log.rs` | Log 面板：wrap cache、scroll、overlays、scrollbar |
-| `render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
-| `render/log_style.rs` | 共享 log 文本样式 |
-| `render/render_md.rs` | Markdown → ratatui `Line`s（`pulldown-cmark` + Mermaid 路由 + 宽度感知表格） |
-| `render/pulldown.rs` | `pulldown-cmark` 事件循环 → ratatui `Line`s（正文/标题/列表/表格/引用块） |
-| `render/renderable.rs` | `Renderable` trait |
-| `render/util.rs` | `wrap_line`、tool 缩进常量 |
-| `render/welcome.rs` | 启动 logo |
-| `render/cells/` | `text`、`thinking`、`tool`、`code`、`separator` |
-| `render/popups/` | Palette、select、file picker、slash commands、help、history、thinking/diff/code detail |
+| `render/mod.rs`（tui） | 应用层 re-export + `RenderCtx` 构造点 |
+| `render/layout.rs`（tui） | 主内容路由（history、help、log + 可选 sticky tasks、popups）——纯编排 |
+| `render/log.rs`（tui） | Log `prepare_log_frame` 缓存重建（应用层 skill 样式）；纯渲染已移入 kit |
+| `render/log_style.rs`（tui） | 共享 log 文本样式 + skill restyle |
+| `render/slash_style.rs`（tui） | 薄包装：注入 `PALETTE_COMMANDS` 内置命令集到 kit `slash_style` |
+| `render/popups/`（tui） | 应用层弹窗：palette、file picker、slash commands、task DAG、help（voice 键位）+ 应用 mouse 命中区的 wrapper |
+| `agent_tui_kit::render/bar.rs` | 顶栏 + 底栏统计（纯 `&RenderCtx`） |
+| `agent_tui_kit::render/input.rs` | 多行输入框、pending block、palette 命令行（纯） |
+| `agent_tui_kit::render/log.rs` | Log 面板纯渲染（消费 wrap cache、scroll、overlays、scrollbar） |
+| `agent_tui_kit::render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
+| `agent_tui_kit::render/task_panel.rs` | Log 下方持久任务 sticky 条（收起 / 展开） |
+| `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s（`pulldown-cmark` + Mermaid 路由 + 宽度感知表格） |
+| `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` 事件循环 → ratatui `Line`s |
+| `agent_tui_kit::render/mermaid_sequence.rs` | 本地 Mermaid `sequenceDiagram` 渲染器（alias/activation/CJK 安全） |
+| `agent_tui_kit::render/renderable.rs` | `Renderable` trait |
+| `agent_tui_kit::render/util.rs` | `wrap_line`、tool 缩进常量 |
+| `agent_tui_kit::render/cells/` | `text`、`thinking`、`tool`、`code`、`separator`、`markdown` |
+| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select + chrome helpers |
+| `agent_tui_kit::widgets/` | `ToolWidget`、`HelpWidget`、`PopupWidget`、`SelectPopupWidget` |
 
-`render/` 外支撑：`theme.rs`（颜色）、`i18n.rs`（`Messages` 字符串）、`widgets/state/`（`App`、`LogScroll`、tool state）。
+支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
 
 ### 6.2 帧管线
 
@@ -707,7 +715,9 @@ TUI 本身不对流式事件直接调用 notification API。
 | `crates/tui/src/render/cells/` | Text、tool、thinking、code cells |
 | `crates/tui/src/render/popups/` | Overlays（palette、select、detail views） |
 | `crates/tui/src/widgets/state/app/agent.rs` | `AgentUpdate` → UI 状态 |
-| `crates/tui/src/theme.rs` | 配色方案 |
+| `crates/tui/src/theme.rs` | 配色方案（从 kit re-export） |
+| `crates/agent_tui_kit` | 可复用 agent-TUI kit：纯渲染面板、状态模型、widgets、bridge 契约（设计 `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`） |
+| `crates/agent_tui_kit/examples/mock_agent.rs` | Headless 端到端示例：`AgentUpdate` 序列 → kit 状态 → 渲染帧（`cargo run -p agent_tui_kit --example mock_agent`） |
 | `tact_protocol` | `AgentUpdate`、`UserCommand`、`AccountUpdate`、`BalanceInfo`（[Ch 25](./25_chapter_protocol_zh.md)） |
 | `docs/tui_rendering.md` | 扩展渲染参考与扩展指南 |
 | `docs/tool_rendering.md` | Tool block 数据流与迁移说明 |

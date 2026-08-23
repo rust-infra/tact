@@ -5,10 +5,14 @@
 // submodule render/handler functions.
 
 mod handlers;
-mod i18n;
+pub(crate) mod i18n {
+    pub(crate) use agent_tui_kit::i18n::*;
+}
 mod render;
 pub(crate) mod system_prompt;
-mod theme;
+pub(crate) mod theme {
+    pub(crate) use agent_tui_kit::theme::*;
+}
 mod theme_detection;
 
 mod widgets;
@@ -80,7 +84,7 @@ pub fn parse_voice_keybind(raw: &str) -> Option<(KeyModifiers, KeyCode)> {
 pub(crate) fn should_repaint(app: &App) -> bool {
     app.dirty
         || matches!(app.status, Status::Done)
-        || !app.tools.active.is_empty()
+        || !app.tools().active.is_empty()
         || app.voice.is_active()
 }
 
@@ -201,13 +205,13 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.voice_parsed_keybind = voice_parsed_keybind;
     // Seed the bottom bar from config so model/token info renders at startup;
     // the first ModelInfo/TokenUsage updates will overwrite these.
-    app.status_bar.model_name = model_name;
-    app.status_bar.model_max_tokens = model_max_tokens;
-    app.status_bar.permission_mode = permission_mode;
+    app.status_bar_mut().model_name = model_name;
+    app.status_bar_mut().model_max_tokens = model_max_tokens;
+    app.status_bar_mut().permission_mode = permission_mode;
     if model_thinking_budget > 0 {
-        app.status_bar.model_thinking_budget = Some(model_thinking_budget as u32);
+        app.status_bar_mut().model_thinking_budget = Some(model_thinking_budget as u32);
     }
-    app.status_bar.model_reasoning_effort = tact::config::try_settings()
+    app.status_bar_mut().model_reasoning_effort = tact::config::try_settings()
         .and_then(|s| s.agent.reasoning_effort)
         .map(|effort| effort.as_str().to_string());
     app.add_startup_logo();
@@ -309,7 +313,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 if size != last_size {
                     last_size = size;
                     app.log_scroll.state =
-                        ScrollbarState::new(app.log_items.len().saturating_sub(1));
+                        ScrollbarState::new(app.log.items.len().saturating_sub(1));
                 }
                 app.log_scroll.height = log_area.height.saturating_sub(2);
                 let chunks = Layout::default()

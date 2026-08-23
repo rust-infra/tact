@@ -1,0 +1,386 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Tact 架构总览",
+    "output": "tact-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/rust-infra/tact.git",
+      "revision": "a3c5494f3a563015c6f4af47ab9f158e52124129"
+    },
+    "viewBox": [
+      1240,
+      620
+    ]
+  },
+  "components": [
+    {
+      "id": "terminal",
+      "type": "external",
+      "label": "终端",
+      "sublabel": "用户会话",
+      "pos": [
+        50,
+        90
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "tui",
+      "type": "frontend",
+      "label": "Tact TUI",
+      "sublabel": "ratatui · crates/tui",
+      "pos": [
+        50,
+        260
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "crates/tui/src/lib.rs",
+          "line": 240,
+          "label": "agent 任务"
+        }
+      ]
+    },
+    {
+      "id": "tact_ui",
+      "type": "backend",
+      "label": "tact-ui 会话驱动器",
+      "sublabel": "headless / interactive",
+      "pos": [
+        50,
+        550
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "独立进程",
+      "sources": [
+        {
+          "path": "crates/tact-ui/src/headless_session.rs",
+          "line": 20
+        }
+      ]
+    },
+    {
+      "id": "tact",
+      "type": "backend",
+      "label": "tact 核心",
+      "sublabel": "agent 循环 · 工具 · 压缩",
+      "pos": [
+        340,
+        170
+      ],
+      "size": [
+        200,
+        120
+      ],
+      "tag": "crates/tact",
+      "sources": [
+        {
+          "path": "crates/tact/src/agent/mod.rs",
+          "line": 91,
+          "label": "AgentRuntime"
+        }
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "cloud",
+      "label": "tact_llm",
+      "sublabel": "OpenAI · Anthropic · DeepSeek",
+      "pos": [
+        640,
+        30
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "tag": "Responses 协议",
+      "sources": [
+        {
+          "path": "crates/tact_llm/src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "SQLite 存储",
+      "sublabel": "tasks · team · worktrees",
+      "pos": [
+        640,
+        170
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "tag": "sqlx",
+      "sources": [
+        {
+          "path": "crates/tact/src/store/mod.rs",
+          "line": 33
+        }
+      ]
+    },
+    {
+      "id": "voice",
+      "type": "backend",
+      "label": "语音工作器",
+      "sublabel": "STT / TTS worker",
+      "pos": [
+        640,
+        290
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "crates/tact/src/voice/mod.rs",
+          "line": 68
+        }
+      ]
+    },
+    {
+      "id": "worktree",
+      "type": "backend",
+      "label": "Git worktree",
+      "sublabel": "任务隔离工作区",
+      "pos": [
+        270,
+        440
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "crates/tact/src/worktree/mod.rs",
+          "line": 26
+        }
+      ]
+    },
+    {
+      "id": "skills",
+      "type": "backend",
+      "label": "技能库",
+      "sublabel": "prompt skill 加载",
+      "pos": [
+        500,
+        440
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "crates/tact/src/skill/mod.rs",
+          "line": 42
+        }
+      ]
+    },
+    {
+      "id": "plugins",
+      "type": "backend",
+      "label": "插件注册表",
+      "sublabel": "工具动态注册",
+      "pos": [
+        740,
+        440
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "crates/tact/src/plugin/mod.rs",
+          "line": 110
+        }
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "external",
+      "label": "MCP 服务器",
+      "sublabel": "外部工具协议",
+      "pos": [
+        980,
+        220
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "crates/tact/src/mcp/mod.rs",
+          "line": 40
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "TUI 进程（crates/tui 内嵌 tact 库）",
+      "wraps": [
+        "tui",
+        "tact",
+        "llm",
+        "store",
+        "voice",
+        "worktree",
+        "skills",
+        "plugins"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "terminal-to-tui",
+      "from": "terminal",
+      "to": "tui",
+      "label": "输入 · 渲染",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 28
+    },
+    {
+      "id": "tui-to-tact",
+      "from": "tui",
+      "to": "tact",
+      "label": "指令 · AgentUpdate",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": 50
+    },
+    {
+      "id": "tact-to-llm",
+      "from": "tact",
+      "to": "llm",
+      "label": "模型调用",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "tact-to-store",
+      "from": "tact",
+      "to": "store",
+      "label": "SQLite 持久化",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "tact-to-voice",
+      "from": "tact",
+      "to": "voice",
+      "label": "语音事件",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "tact-to-worktree",
+      "from": "tact",
+      "to": "worktree",
+      "label": "工作区隔离",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        300,
+        436
+      ]
+    },
+    {
+      "id": "tact-to-skills",
+      "from": "tact",
+      "to": "skills",
+      "label": "技能加载",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "tact-to-plugins",
+      "from": "tact",
+      "to": "plugins",
+      "label": "插件注册",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 8
+    },
+    {
+      "id": "tact-to-mcp",
+      "from": "tact",
+      "to": "mcp",
+      "label": "MCP 工具调用",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDy": 10,
+      "labelAt": [
+        564,
+        339
+      ]
+    },
+    {
+      "id": "tact-ui-session",
+      "from": "tact_ui",
+      "to": "tact",
+      "label": "headless 会话",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "界面层",
+      "items": [
+        "ratatui 渲染日志 / 消息 / 任务面板",
+        "agent 循环与 TUI 同进程（tokio 任务）"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "核心",
+      "items": [
+        "Codex 风格压缩与排队消息",
+        "SQLite（sqlx）持久化 tasks / team / worktrees"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "模型层",
+      "items": [
+        "Responses 协议（async-openai 本地 fork）",
+        "Anthropic / DeepSeek 适配 + 托管 Web Search"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "外部",
+      "items": [
+        "MCP 服务器工具协议",
+        "Git worktree 任务隔离 + 插件/技能动态加载"
+      ]
+    }
+  ]
+}

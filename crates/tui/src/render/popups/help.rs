@@ -1,6 +1,8 @@
+//! Help panel — app-layer wrapper (voice keybind label injection).
+
 use ratatui::{Frame, layout::Rect};
 
-use crate::widgets::{help_widget::HelpWidget, state::App};
+use crate::widgets::state::App;
 
 pub(crate) fn render_help_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let msgs = app.msgs();
@@ -19,8 +21,6 @@ pub(crate) fn render_help_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         let leaked: &'static mut str = Box::leak(key_str.into_boxed_str());
         leaked as &str
     });
-    let widget = HelpWidget::new(&msgs, &theme, voice_label);
+    let widget = agent_tui_kit::widgets::help_widget::HelpWidget::new(&msgs, &theme, voice_label);
     frame.render_widget(widget, area);
 }
-
-// ── Overlay popups ──

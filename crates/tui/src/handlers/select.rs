@@ -226,7 +226,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         1 => ("plan", msgs.permission_option_plan),
                         _ => ("auto", msgs.permission_option_auto),
                     };
-                    app.status_bar.permission_mode = mode_str.to_string();
+                    app.status_bar_mut().permission_mode = mode_str.to_string();
                     app.add_system_message(msgs.permission_set_tmpl.replace("{}", display_label));
                     let _ = app
                         .user_cmd_tx
@@ -446,14 +446,15 @@ fn apply_model_and_budget_pick(app: &mut App, model: String, thinking_budget: us
     }
     let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
     tact::config::update_llm_model_and_thinking_budget(model.clone(), thinking_budget);
-    app.status_bar.model_name = model.clone();
+    app.status_bar_mut().model_name = model.clone();
     if let Some(settings) = tact::config::try_settings() {
         // Keep out/think in sync immediately; agent may still be busy so
         // SetModel / SetThinkingBudget (and their ModelInfo) can arrive later.
-        app.status_bar.model_max_tokens = settings.agent.max_tokens;
+        app.status_bar_mut().model_max_tokens = settings.agent.max_tokens;
     }
-    app.status_bar.model_thinking_budget = (thinking_budget > 0).then_some(thinking_budget as u32);
-    app.status_bar.model_reasoning_effort = None; // budget semantics: no derived effort
+    app.status_bar_mut().model_thinking_budget =
+        (thinking_budget > 0).then_some(thinking_budget as u32);
+    app.status_bar_mut().model_reasoning_effort = None; // budget semantics: no derived effort
     let budget_label = format_thinking_budget(thinking_budget);
     app.add_system_message(format_model_and_budget(
         msgs.model_switched_with_budget_tmpl,
@@ -503,12 +504,12 @@ fn apply_model_and_effort_pick(
     let msgs = app.msgs();
     let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
     tact::config::update_llm_model_and_reasoning_effort(model.clone(), Some(effort));
-    app.status_bar.model_name = model.clone();
+    app.status_bar_mut().model_name = model.clone();
     if let Some(settings) = tact::config::try_settings() {
-        app.status_bar.model_max_tokens = settings.agent.max_tokens;
+        app.status_bar_mut().model_max_tokens = settings.agent.max_tokens;
     }
-    app.status_bar.model_reasoning_effort = Some(effort.as_str().to_string());
-    app.status_bar.model_thinking_budget = None; // effort semantics: budget not shown
+    app.status_bar_mut().model_reasoning_effort = Some(effort.as_str().to_string());
+    app.status_bar_mut().model_thinking_budget = None; // effort semantics: budget not shown
     app.add_system_message(
         msgs.model_effort_switched_tmpl
             .replace("{}", &model)
@@ -1023,13 +1024,13 @@ thinking_budget = {thinking_budget}
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert_eq!(rx.try_recv(), Ok(Some(1)));
         assert!(
-            app.log_items.iter().any(|item| {
+            app.log.items.iter().any(|item| {
                 item.raw.contains("Deny")
                     || item.raw.contains("Selected")
                     || item.raw.contains("已选择")
             }),
             "log_confirm should render selection in the log: {:?}",
-            app.log_items
+            app.log.items
         );
     }
 
@@ -1058,11 +1059,12 @@ thinking_budget = {thinking_budget}
         start_model_picker(&mut app);
         assert!(!matches!(app.input_mode, InputMode::Select));
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("models") || item.raw.contains("models =")),
             "expected empty-models hint, got {:?}",
-            app.log_items
+            app.log.items
         );
 
         install_models_config(vec!["kimi-k2.5", "kimi-for-coding"], "kimi-k2.5");
@@ -1076,7 +1078,7 @@ thinking_budget = {thinking_budget}
 
         assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
         assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
-        assert_eq!(app.status_bar.model_name, "kimi-for-coding");
+        assert_eq!(app.status_bar_mut().model_name, "kimi-for-coding");
         // No config_path → skip persist popup, return to Normal.
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
@@ -1099,8 +1101,8 @@ thinking_budget = {thinking_budget}
         let _lock = MODELS_TEST_LOCK.lock().await;
         install_models_config_with_budget(vec!["kimi-k2.5", ""], "kimi-k2.5", 32_000);
         let mut app = make_app();
-        app.status_bar.model_name = "status-before".to_string();
-        app.status_bar.model_thinking_budget = Some(32_000);
+        app.status_bar_mut().model_name = "status-before".to_string();
+        app.status_bar_mut().model_thinking_budget = Some(32_000);
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Char('j')));
         handle_select_mode(&mut app, key(KeyCode::Enter));
@@ -1109,8 +1111,8 @@ thinking_budget = {thinking_budget}
         assert_eq!(tact::config::settings().llm.model, "kimi-k2.5");
         assert_eq!(tact::config::settings().agent.model, "kimi-k2.5");
         assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
-        assert_eq!(app.status_bar.model_name, "status-before");
-        assert_eq!(app.status_bar.model_thinking_budget, Some(32_000));
+        assert_eq!(app.status_bar_mut().model_name, "status-before");
+        assert_eq!(app.status_bar_mut().model_thinking_budget, Some(32_000));
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
 
@@ -1261,9 +1263,9 @@ thinking_budget = {thinking_budget}
             0,
             "effort pick must clear stale thinking budget"
         );
-        assert_eq!(app.status_bar.model_thinking_budget, None);
+        assert_eq!(app.status_bar_mut().model_thinking_budget, None);
         assert_eq!(
-            app.status_bar.model_reasoning_effort,
+            app.status_bar_mut().model_reasoning_effort,
             Some("low".to_string())
         );
     }
@@ -1287,9 +1289,9 @@ thinking_budget = {thinking_budget}
         assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
         assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
         assert!(tact::config::settings().agent.max_tokens > 64_000);
-        assert_eq!(app.status_bar.model_name, "kimi-for-coding");
-        assert_eq!(app.status_bar.model_thinking_budget, Some(64_000));
-        assert!(app.status_bar.model_max_tokens > 64_000);
+        assert_eq!(app.status_bar_mut().model_name, "kimi-for-coding");
+        assert_eq!(app.status_bar_mut().model_thinking_budget, Some(64_000));
+        assert!(app.status_bar_mut().model_max_tokens > 64_000);
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
 
@@ -1395,7 +1397,7 @@ thinking_budget = {thinking_budget}
         assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
         assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        assert!(app.log_items.iter().any(|message| {
+        assert!(app.log.items.iter().any(|message| {
             message.raw.contains(
                 "Model kimi-for-coding and thinking budget 64K apply only to this session",
             )

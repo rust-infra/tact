@@ -5,7 +5,7 @@ use crate::{
         render_md::{format_table_lines, render_markdown_tui},
         util::visual_pos_to_byte_offset,
     },
-    widgets::{state::*, tool_widget::ToolRenderOutput},
+    widgets::state::*,
 };
 
 impl App {
@@ -34,8 +34,8 @@ impl App {
         if self.log_scroll.visual_top == usize::MAX {
             return true;
         }
-        if self.log_scroll.visible_indices_ver != self.log_items.len()
-            || self.log_scroll.visual_cache_ver != self.log_items.len()
+        if self.log_scroll.visible_indices_ver != self.log.items.len()
+            || self.log_scroll.visual_cache_ver != self.log.items.len()
             || self.log_scroll.visual_start_cache.len() < 2
         {
             return false;
@@ -46,7 +46,7 @@ impl App {
     }
 
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
-        idx < self.log_items.len()
+        idx < self.log.items.len()
     }
 
     /// Left indent columns for a physical log row.
@@ -54,7 +54,8 @@ impl App {
     /// The row kind is recorded when the item enters the TUI, so indentation
     /// never depends on raw text prefixes or a backward scan of prior rows.
     pub(crate) fn nested_log_indent(&self, phys: usize) -> u16 {
-        self.log_items
+        self.log
+            .items
             .get(phys)
             .map(|item| item.kind)
             .unwrap_or(LogItemKind::AssistantMarkdown)
@@ -66,11 +67,11 @@ impl App {
     /// (meaning it's an incomplete streaming line).
     pub(crate) fn visible_message_index(&self, logical_idx: usize) -> Option<usize> {
         // Prefer the per-frame cache built by render_log_panel (O(1)).
-        if self.log_scroll.visible_indices_ver == self.log_items.len() {
+        if self.log_scroll.visible_indices_ver == self.log.items.len() {
             return self.log_scroll.visible_indices.get(logical_idx).copied();
         }
         let mut visible_count = 0;
-        for idx in 0..self.log_items.len() {
+        for idx in 0..self.log.items.len() {
             if self.is_message_visible(idx) {
                 if visible_count == logical_idx {
                     return Some(idx);
@@ -92,7 +93,7 @@ impl App {
         byte_offset: usize,
     ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
-        let text = &self.log_items.get(phys_idx)?.raw;
+        let text = &self.log.items.get(phys_idx)?.raw;
         let bytes = text.as_bytes();
         if bytes.is_empty() {
             return None;
@@ -150,7 +151,8 @@ impl App {
     /// Markdown rows never draw a text-selection overlay (their renderer
     /// skips it), so selection creation/extension must skip them too.
     pub(crate) fn is_markdown_row(&self, phys: usize) -> bool {
-        self.log_items
+        self.log
+            .items
             .get(phys)
             .is_some_and(|item| item.markdown_cell.is_some())
     }
@@ -164,7 +166,7 @@ impl App {
         col: usize,
     ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
-        let raw_text = &self.log_items.get(phys_idx)?.raw;
+        let raw_text = &self.log.items.get(phys_idx)?.raw;
         let wrap_width = self.mouse.log_area.width.saturating_sub(2) as usize;
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
@@ -194,7 +196,7 @@ impl App {
         &self,
         line_idx: usize,
     ) -> Option<(usize, usize, usize, usize)> {
-        for (i, active) in self.tools.active.iter().enumerate() {
+        for (i, active) in self.tools().active.iter().enumerate() {
             let Some(si) = self.phys_to_logical_fast(active.phys_idx) else {
                 continue;
             };
@@ -203,8 +205,8 @@ impl App {
                 return Some((i, active.phys_idx, si, rows));
             }
         }
-        let base = self.tools.active.len();
-        for (i, block) in self.tools.blocks.iter().enumerate() {
+        let base = self.tools().active.len();
+        for (i, block) in self.tools().blocks.iter().enumerate() {
             let Some(si) = self.phys_to_logical_fast(block.phys_idx) else {
                 continue;
             };
@@ -229,7 +231,7 @@ impl App {
                 rows,
             ))
         };
-        if let Some(active) = self.thinking.active.as_ref()
+        if let Some(active) = self.thinking().active.as_ref()
             && let Some(found) = find(
                 active.phys_idx,
                 crate::render::cells::thinking::thinking_visual_rows(active.body_line_count()),
@@ -237,7 +239,7 @@ impl App {
         {
             return Some(found);
         }
-        self.thinking.blocks.iter().find_map(|block| {
+        self.thinking().blocks.iter().find_map(|block| {
             find(
                 block.phys_idx,
                 crate::render::cells::thinking::thinking_visual_rows(1),
@@ -260,21 +262,26 @@ impl App {
 
     /// Total logical line count of the current Log area (fixed messages + incomplete streaming lines).
     pub(crate) fn total_log_lines(&self) -> usize {
-        let visible_count = if self.log_scroll.visible_indices_ver == self.log_items.len() {
+        let visible_count = if self.log_scroll.visible_indices_ver == self.log.items.len() {
             self.log_scroll.visible_indices.len()
         } else {
-            (0..self.log_items.len())
+            (0..self.log.items.len())
                 .filter(|&idx| self.is_message_visible(idx))
                 .count()
         };
-        visible_count + if self.stream.buffer.is_empty() { 0 } else { 1 }
+        visible_count
+            + if self.stream().buffer.is_empty() {
+                0
+            } else {
+                1
+            }
     }
 
     /// Extract the raw text covered by a character-level selection.
     /// Skips collapsed/hidden physical rows so yank matches what the user sees.
     pub(crate) fn extract_selected_text(&self, start: TextPosition, end: TextPosition) -> String {
         if start.phys_idx == end.phys_idx {
-            if let Some(item) = self.log_items.get(start.phys_idx) {
+            if let Some(item) = self.log.items.get(start.phys_idx) {
                 return item.raw
                     [start.byte_offset.min(item.raw.len())..end.byte_offset.min(item.raw.len())]
                     .to_string();
@@ -286,19 +293,19 @@ impl App {
         }
         let mut parts: Vec<&str> = Vec::new();
         if self.is_message_visible(start.phys_idx)
-            && let Some(item) = self.log_items.get(start.phys_idx)
+            && let Some(item) = self.log.items.get(start.phys_idx)
         {
             parts.push(&item.raw[start.byte_offset.min(item.raw.len())..]);
         }
         for phys in (start.phys_idx + 1)..end.phys_idx {
             if self.is_message_visible(phys)
-                && let Some(item) = self.log_items.get(phys)
+                && let Some(item) = self.log.items.get(phys)
             {
                 parts.push(&item.raw);
             }
         }
         if self.is_message_visible(end.phys_idx)
-            && let Some(item) = self.log_items.get(end.phys_idx)
+            && let Some(item) = self.log.items.get(end.phys_idx)
         {
             parts.push(&item.raw[..end.byte_offset.min(item.raw.len())]);
         }
@@ -307,14 +314,14 @@ impl App {
 
     /// Finalize the active thinking card at its existing placeholder row.
     pub(crate) fn close_active_thinking_block(&mut self) {
-        let Some(active) = self.thinking.active.take() else {
+        let Some(active) = self.thinking_mut().active.take() else {
             return;
         };
         let old_rows =
             crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
         if active.is_blank() {
             let end = active.phys_idx.saturating_add(old_rows);
-            if active.phys_idx < self.log_items.len() && end <= self.log_items.len() {
+            if active.phys_idx < self.log.items.len() && end <= self.log.items.len() {
                 self.drain_msgs(active.phys_idx..end);
                 self.shift_phys_indices_from(end, -(old_rows as isize));
             }
@@ -331,7 +338,7 @@ impl App {
         let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
         let new_rows = crate::render::cells::thinking::thinking_visual_rows(1);
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
-        self.thinking.blocks.push(ThinkingBlock {
+        self.thinking_mut().blocks.push(ThinkingBlock {
             phys_idx: active.phys_idx,
             content: active.content,
             summary,
@@ -342,11 +349,11 @@ impl App {
 
     /// Open a new thinking card at one shared-log placeholder row.
     pub(crate) fn begin_thinking_block(&mut self) {
-        if self.thinking.active.is_some() {
+        if self.thinking_mut().active.is_some() {
             return;
         }
         let phys_idx = self.push_thinking_placeholder_rows(1);
-        self.thinking.active = Some(ActiveThinkingBlock::new(
+        self.thinking_mut().active = Some(ActiveThinkingBlock::new(
             phys_idx,
             std::time::Instant::now(),
         ));
@@ -354,7 +361,7 @@ impl App {
 
     /// Append a thinking delta without creating source rows in the shared log.
     pub(crate) fn append_thinking_delta(&mut self, text: &str) {
-        let resize = if let Some(active) = self.thinking.active.as_mut() {
+        let resize = if let Some(active) = self.thinking_mut().active.as_mut() {
             let old_rows =
                 crate::render::cells::thinking::thinking_visual_rows(active.body_line_count());
             active.push_delta(text);
@@ -374,22 +381,22 @@ impl App {
 
     /// Close active thinking on an explicit finish or compatibility fallback.
     pub(crate) fn flush_and_close_thinking(&mut self) {
-        if self.thinking.active.is_some() {
+        if self.thinking_mut().active.is_some() {
             self.close_active_thinking_block();
         }
     }
 
     fn last_visible_phys_idx(&self) -> Option<usize> {
-        (0..self.log_items.len())
+        (0..self.log.items.len())
             .rev()
             .find(|&idx| self.is_message_visible(idx))
     }
 
     fn phys_idx_in_tool_block(&self, phys: usize) -> bool {
-        self.tools.active.iter().any(|active| {
+        self.tools().active.iter().any(|active| {
             phys >= active.phys_idx
                 && phys <= active.phys_idx + active.output.message_placeholder_rows()
-        }) || self.tools.blocks.iter().any(|block| {
+        }) || self.tools().blocks.iter().any(|block| {
             phys >= block.phys_idx
                 && phys <= block.phys_idx + block.output.message_placeholder_rows()
         })
@@ -412,7 +419,8 @@ impl App {
             return;
         };
         if self
-            .log_items
+            .log
+            .items
             .get(phys)
             .is_some_and(|item| item.kind.is_user())
         {
@@ -429,7 +437,8 @@ impl App {
             return;
         }
         if self
-            .log_items
+            .log
+            .items
             .get(phys)
             .is_some_and(|item| item.raw.is_empty())
         {
@@ -440,69 +449,72 @@ impl App {
 
     /// Flush residual content from the streaming buffer into the message list.
     pub(crate) fn flush_stream_pending(&mut self) {
-        let will_flush_llm = !self.stream.table_buffer.is_empty()
-            || self.stream.code_block
-            || !self.stream.paragraph.is_empty()
-            || !self.stream.buffer.is_empty();
+        let will_flush_llm = !self.stream().table_buffer.is_empty()
+            || self.stream().code_block
+            || !self.stream().paragraph.is_empty()
+            || !self.stream().buffer.is_empty();
         if will_flush_llm {
             self.ensure_gap_after_tools();
         }
         // Flush accumulated table
-        if !self.stream.table_buffer.is_empty() {
+        if !self.stream().table_buffer.is_empty() {
             let (lines, raw_lines) = format_table_lines(
-                &self.stream.table_buffer,
+                &self.stream().table_buffer,
                 &self.theme,
                 Some(self.table_layout_width()),
             );
             self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
-            self.stream.table_buffer.clear();
+            self.stream_mut().table_buffer.clear();
         }
         // Flush incomplete code block (interrupted stream)
-        if self.stream.code_block {
+        if self.stream().code_block {
             // Line-oriented streaming only consumes text after `\n`. A final
             // closing fence (or last content line) may still sit in `buffer`
             // without a trailing newline — fold it in before finalizing.
-            let pending = std::mem::take(&mut self.stream.buffer);
+            let pending = std::mem::take(&mut self.stream_mut().buffer);
             let pending_trim = pending.trim();
             let closed = pending_trim == "```";
             if closed {
                 // Proper close fence without `\n` — discard, do not add to
                 // content; the block is still a valid closed block.
             } else if !pending.is_empty() {
-                self.stream.code_block_buffer.push(pending);
+                self.stream_mut().code_block_buffer.push(pending);
             }
 
-            let lang = std::mem::take(&mut self.stream.code_block_lang);
-            let code_lines = std::mem::take(&mut self.stream.code_block_buffer);
-            let start_idx = self.stream.code_block_start_idx.take();
+            let lang = std::mem::take(&mut self.stream_mut().code_block_lang);
+            let code_lines = std::mem::take(&mut self.stream_mut().code_block_buffer);
+            let start_idx = self.stream_mut().code_block_start_idx.take();
             let stream_end = start_idx
-                .map(|s| s + self.stream.code_block_line_count)
+                .map(|s| s + self.stream_mut().code_block_line_count)
                 .unwrap_or(0);
-            self.finish_stream_code_block(lang, code_lines, start_idx, stream_end, closed);
-            self.stream.code_block = false;
-            self.stream.code_block_line_count = 0;
+            let is_mermaid = self.stream_mut().code_block_is_mermaid;
+            self.finish_stream_code_block(
+                lang, code_lines, start_idx, stream_end, closed, is_mermaid,
+            );
+            self.stream_mut().code_block = false;
+            self.stream_mut().code_block_line_count = 0;
         }
         // Flush accumulated paragraph (content not yet separated by blank lines, e.g. the last paragraph at stream end)
-        if !self.stream.paragraph.is_empty() {
-            let paragraph = std::mem::take(&mut self.stream.paragraph);
+        if !self.stream().paragraph.is_empty() {
+            let paragraph = std::mem::take(&mut self.stream_mut().paragraph);
             let (lines, raw_lines) = render_markdown_tui(&paragraph, &self.theme);
             self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
         }
         self.close_active_thinking_block();
-        if self.stream.buffer.is_empty() {
+        if self.stream_mut().buffer.is_empty() {
             return;
         }
-        let display = self.stream.buffer.clone();
+        let display = self.stream_mut().buffer.clone();
         let (lines, raw_lines) = render_markdown_tui(&display, &self.theme);
         self.extend_msgs(lines, raw_lines, LogItemKind::AssistantMarkdown);
-        self.stream.buffer.clear();
+        self.stream_mut().buffer.clear();
     }
 
     /// Remove the loading placeholder line if it exists.
     /// Returns true if a loading placeholder was removed.
     pub(crate) fn remove_loading_placeholder(&mut self) -> bool {
         if let Some(idx) = self.loading_idx.take() {
-            if idx < self.log_items.len() {
+            if idx < self.log.items.len() {
                 self.remove_msg(idx);
                 // Adjust any code_blocks / tool_blocks / thinking blocks that reference
                 // indices after the removed line
@@ -518,27 +530,27 @@ impl App {
                         block.end_idx -= 1;
                     }
                 }
-                for block in &mut self.tools.blocks {
+                for block in &mut self.tools_mut().blocks {
                     if block.phys_idx > idx {
                         block.phys_idx -= 1;
                     }
                 }
-                for active in &mut self.tools.active {
+                for active in &mut self.tools_mut().active {
                     if active.phys_idx > idx {
                         active.phys_idx -= 1;
                     }
                 }
-                for block in &mut self.thinking.blocks {
+                for block in &mut self.thinking_mut().blocks {
                     if block.phys_idx > idx {
                         block.phys_idx -= 1;
                     }
                 }
-                if let Some(active) = self.thinking.active.as_mut()
+                if let Some(active) = self.thinking_mut().active.as_mut()
                     && active.phys_idx > idx
                 {
                     active.phys_idx -= 1;
                 }
-                if let Some(ref mut start) = self.stream.code_block_start_idx
+                if let Some(ref mut start) = self.stream_mut().code_block_start_idx
                     && *start > idx
                 {
                     *start -= 1;
@@ -557,27 +569,22 @@ impl App {
         if !matches!(self.status, Status::Executing { .. }) {
             self.status = Status::Executing {
                 current_step: 0,
-                total: self.plan.steps.len(),
+                total: self.plan_mut().steps.len(),
             };
         }
     }
 
-    pub(crate) fn push_tool_placeholder_rows(&mut self, output: &ToolRenderOutput) -> usize {
+    pub(crate) fn push_tool_placeholder_rows(&mut self, rows: usize) -> usize {
         self.ensure_gap_before_tools();
-        let phys_idx = self.log_items.len();
-        let rows = output.visual_rows(false);
-        for _ in 0..rows {
-            self.append_blank(LogItemKind::SystemTool);
-        }
-        phys_idx
+        self.log
+            .push_placeholder_rows(LogItemKind::SystemTool, rows)
     }
 
     pub(crate) fn push_thinking_placeholder_rows(&mut self, body_lines: usize) -> usize {
-        let phys_idx = self.log_items.len();
-        for _ in 0..crate::render::cells::thinking::thinking_visual_rows(body_lines) {
-            self.append_blank(LogItemKind::Thinking);
-        }
-        phys_idx
+        self.log.push_placeholder_rows(
+            LogItemKind::Thinking,
+            crate::render::cells::thinking::thinking_visual_rows(body_lines),
+        )
     }
 
     pub(crate) fn resize_thinking_placeholder_rows(
@@ -610,7 +617,7 @@ impl App {
         }
     }
 
-    fn shift_phys_indices_from(&mut self, at: usize, delta: isize) {
+    pub(crate) fn shift_phys_indices_from(&mut self, at: usize, delta: isize) {
         if delta == 0 {
             return;
         }
@@ -619,10 +626,10 @@ impl App {
                 *idx = (*idx as isize + delta).max(0) as usize;
             }
         };
-        for block in &mut self.tools.blocks {
+        for block in &mut self.tools_mut().blocks {
             adjust(&mut block.phys_idx);
         }
-        for active in &mut self.tools.active {
+        for active in &mut self.tools_mut().active {
             adjust(&mut active.phys_idx);
         }
         for block in &mut self.code_blocks {
@@ -637,12 +644,12 @@ impl App {
                 block.end_idx = (block.end_idx as isize + delta).max(0) as usize;
             }
         }
-        for block in &mut self.thinking.blocks {
+        for block in &mut self.thinking_mut().blocks {
             if block.phys_idx >= at {
                 block.phys_idx = (block.phys_idx as isize + delta).max(0) as usize;
             }
         }
-        if let Some(active) = self.thinking.active.as_mut()
+        if let Some(active) = self.thinking_mut().active.as_mut()
             && active.phys_idx >= at
         {
             active.phys_idx = (active.phys_idx as isize + delta).max(0) as usize;
@@ -652,32 +659,11 @@ impl App {
         {
             *idx = (*idx as isize + delta).max(0) as usize;
         }
-        if let Some(ref mut start) = self.stream.code_block_start_idx
+        if let Some(ref mut start) = self.stream_mut().code_block_start_idx
             && *start >= at
         {
             *start = (*start as isize + delta).max(0) as usize;
         }
-    }
-
-    fn remove_active_tool_rows(&mut self, active: ActiveToolBlock) {
-        let rows = active.output.visual_rows(false);
-        if rows == 0 {
-            return;
-        }
-        let end = active.phys_idx.saturating_add(rows);
-        if active.phys_idx < self.log_items.len() && end <= self.log_items.len() {
-            self.drain_msgs(active.phys_idx..end);
-            self.shift_phys_indices_from(end, -(rows as isize));
-        }
-    }
-
-    /// Drop a running tool block and remove its placeholder rows from the log.
-    pub(crate) fn cancel_active_tool(&mut self, tool_id: &str) {
-        let Some(pos) = self.tools.active.iter().position(|a| a.tool_id == tool_id) else {
-            return;
-        };
-        let active = self.tools.active.remove(pos);
-        self.remove_active_tool_rows(active);
     }
 
     pub(crate) fn resize_tool_placeholder_rows(
@@ -701,28 +687,6 @@ impl App {
             self.drain_msgs(phys_idx + new_rows..phys_idx + old_rows);
             self.shift_phys_indices_from(phys_idx + new_rows, -((old_rows - new_rows) as isize));
         }
-    }
-
-    pub(crate) fn finalize_tool_block(&mut self, tool_id: &str, output: ToolRenderOutput) {
-        if let Some(pos) = self.tools.active.iter().position(|a| a.tool_id == tool_id) {
-            let active = self.tools.active.remove(pos);
-            let old_rows = active.output.visual_rows(false);
-            let new_rows = output.visual_rows(false);
-            self.resize_tool_placeholder_rows(active.phys_idx, old_rows, new_rows);
-            self.tools.blocks.push(ToolBlock {
-                phys_idx: active.phys_idx,
-                tool_id: tool_id.to_string(),
-                output,
-            });
-        } else {
-            let phys_idx = self.push_tool_placeholder_rows(&output);
-            self.tools.blocks.push(ToolBlock {
-                phys_idx,
-                tool_id: tool_id.to_string(),
-                output,
-            });
-        }
-        self.refresh_tool_log_scroll();
     }
 
     pub(crate) fn refresh_tool_log_scroll(&mut self) {

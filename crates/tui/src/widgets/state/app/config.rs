@@ -65,6 +65,56 @@ impl App {
         Messages::by_language(self.language)
     }
 
+    /// Build the per-frame [`RenderCtx`] from disjoint `&self` borrows.
+    ///
+    /// The kit's pure render functions take `&RenderCtx` instead of `&App`;
+    /// this is the single construction site (design doc §2.3). The only
+    /// mutation path from render code is `RenderCommand`s, drained by the
+    /// shell after the frame.
+    pub(crate) fn render_ctx(&self) -> agent_tui_kit::render::ctx::RenderCtx<'_> {
+        use agent_tui_kit::render::ctx::RenderCtx;
+        RenderCtx {
+            theme: &self.theme,
+            messages: self.msgs(),
+            log_scroll: &self.log_scroll,
+            log: &self.log,
+            code_blocks: &self.code_blocks,
+            mermaid_blocks: &self.mermaid_blocks,
+            tools: self.tools().state(),
+            thinking: self.thinking().state(),
+            stream: self.stream().state(),
+            mouse: &self.mouse,
+            skills_data: &self.skills_data,
+            loading_idx: self.loading_idx,
+            spinner_frame: self.spinner_frame,
+            status_bar: self.status_bar().state(),
+            status: &self.status,
+            input_mode: self.input_mode,
+            focused_panel: self.focused_panel,
+            language: self.language,
+            workspace_dir: self.workspace_dir.as_str(),
+            model_context_window: self.model_context_window,
+            process_start_time: &self.process_start_time,
+            task_start_time: self.task_start_time.as_ref(),
+            flash_msg: self.flash_msg.as_ref().map(|(m, _)| m.as_str()),
+            account: self.account_rx.as_ref().map(|_| &self.account),
+            plan: self.plan().state(),
+            input: &self.input,
+            input_cursor: self.input_cursor,
+            input_scroll: self.input_scroll,
+            cmd_line: &self.cmd_line,
+            pending_messages: &self.pending_messages,
+            input_voice_title: self.voice_title(),
+            code_popup: self.code_popup.as_ref(),
+            mermaid_popup: self.mermaid_popup.as_ref(),
+            system_prompt_popup: self.system_prompt_popup.as_ref(),
+            subagent_popup: self.subagent_popup.as_ref(),
+            task_history: &self.task_history,
+            select: &self.select,
+            task_panel: self.task_panel().state(),
+        }
+    }
+
     pub(crate) fn localize_cmd_desc(&self, cmd: &str) -> String {
         let msgs = self.msgs();
         match cmd {
@@ -109,7 +159,8 @@ mod tests {
         app.toggle_theme();
         assert_ne!(app.theme.name, ThemeName::Ink);
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("theme") || item.raw.contains("Theme")),
             "toggle should append theme changed message"

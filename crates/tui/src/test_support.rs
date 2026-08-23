@@ -70,19 +70,19 @@ impl TestApp {
     }
 
     pub fn open_last_tool_popup(&mut self) -> bool {
-        let Some(idx) = self.0.tools.blocks.last().map(|b| b.phys_idx) else {
+        let Some(idx) = self.0.tools().blocks.last().map(|b| b.phys_idx) else {
             return false;
         };
         self.0.open_diff_popup(idx);
-        self.0.tools.popup.is_some()
+        self.0.tools_mut().popup.is_some()
     }
 
     pub fn has_diff_popup(&self) -> bool {
-        self.0.tools.popup.is_some()
+        self.0.tools().popup.is_some()
     }
 
     pub fn diff_popup_content(&self) -> Option<String> {
-        self.0.tools.popup.as_ref().and_then(|p| {
+        self.0.tools().popup.as_ref().and_then(|p| {
             p.cached_content
                 .clone()
                 .or_else(|| {
@@ -99,7 +99,7 @@ impl TestApp {
     }
 
     pub fn tool_block_count(&self) -> usize {
-        self.0.tools.blocks.len()
+        self.0.tools().blocks.len()
     }
 
     pub fn is_help_visible(&self) -> bool {
@@ -145,11 +145,11 @@ impl TestApp {
 
     pub fn open_thinking_popup(&mut self, phys_idx: usize) -> bool {
         self.0.open_thinking_popup(phys_idx);
-        self.0.thinking.popup.is_some()
+        self.0.thinking().popup.is_some()
     }
 
     pub fn is_thinking_popup_open(&self) -> bool {
-        self.0.thinking.popup.is_some()
+        self.0.thinking().popup.is_some()
     }
 
     pub fn close_thinking_popup(&mut self) {
@@ -207,7 +207,8 @@ impl HeadlessApp {
     }
 
     pub fn is_executing(&self) -> bool {
-        matches!(self.inner.status, Status::Executing { .. }) || !self.inner.tools.active.is_empty()
+        matches!(self.inner.status, Status::Executing { .. })
+            || !self.inner.tools().active.is_empty()
     }
 
     pub fn is_select_mode(&self) -> bool {
@@ -223,11 +224,11 @@ impl HeadlessApp {
     }
 
     pub fn tool_block_count(&self) -> usize {
-        self.inner.tools.blocks.len()
+        self.inner.tools().blocks.len()
     }
 
     pub fn has_diff_popup(&self) -> bool {
-        self.inner.tools.popup.is_some()
+        self.inner.tools().popup.is_some()
     }
 
     pub fn user_cmd_tx(&self) -> UnboundedSender<tact_protocol::UserCommand> {

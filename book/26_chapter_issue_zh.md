@@ -29,6 +29,135 @@
 
 ---
 
+## 1. 2026-08-23 — 工具卡步骤编号统一按计划位置解析（bugfix，任务 #43 评审）
+
+| 字段 | 值 |
+|------|------|
+| **类型** | bugfix |
+| **相关** | 任务 #43（ToolEvent outbox：`crates/agent_tui_kit/src/components/tool.rs`）；`crates/agent_tui_kit/src/components/plan.rs`；`crates/tui/src/widgets/state/app/agent.rs`；下文条目（ComponentRegistry，任务 #42）；Ch 23 §1 |
+
+**症状 / 动机：** ToolEvent outbox 提取（任务 #43）之后，步骤索引出现三处
+漂移，在 tool id 乱序或重启时出错：
+1. `PlanComponent` 用 agent 的**原始** `idx` 写 `step.output`，而原始 `idx`
+   可能与计划位置不一致（`resolve_step_idx` 正是为此存在）——完成/失败更新
+   可能覆盖**错误**步骤的 output，破坏状态栏进度推导与计划面板。
+2. `ToolComponent` 内部的 `tool_id → 步骤索引` 映射用**后到覆盖**
+   （`HashMap::insert`），而 shell 解析取**首个**计划位置——同一 `tool_id`
+   重启后卡片标题（"N. tool"）与 shell 状态行不一致。
+3. `StepFailed` 系统消息（"✗ Step N failed: …"）用原始 `idx`，而卡片标题
+   用解析后的值。
+
+**决策：**
+- `PlanComponent` 增加自己的 `resolve_step_idx`（按 `tool_id` 取首个计划
+  位置，回退原始 `idx`——与 shell 完全一致），`StepFinished` / `StepFailed`
+  的写入都经它解析。shell tail 保留解析后写入；两者现在写相同值，双重写入
+  无害，外部 kit host 独立使用也不受影响。
+- `ToolComponent` 的映射改为**首到生效**（`entry().or_insert`，从不覆盖）：
+  重启的 `tool_id` 在卡片整个生命周期内保持原始步骤编号，与 shell 一致。
+  映射按会话有界（每个不同 `tool_id` 一条，增长与计划本身相同），**不得**
+  在 finalize 时清理——清理会让后续重启重新记录最新到达索引，重新引入漂移。
+- `StepFailed` 无活动卡的系统消息改用解析后的步骤编号。
+- `ToolEvent::Finalized` 携带显式 `had_active: bool`，取代脆弱的
+  `phys_idx == 0 && old_rows == 0` 哨兵来区分 allocate/resize；
+  `on_step_failed_tail` 移除未使用的 `idx`/`tool_id`/`error` 参数。
+
+**变更后行为：** 步骤 output 与所有展示的步骤编号（卡片标题、系统消息、
+计划面板、状态栏）都按该 `tool_id` 的首个计划位置一致，即使 agent 原始
+`idx` 不同（tool id 乱序、同 id 重启）。新测试：
+`step_finished_resolves_divergent_raw_idx`、`step_failed_resolves_divergent_raw_idx`、
+`restart_keeps_first_step_mapping`、`step_failed_missing_uses_resolved_step_number`、
+`finalize_without_active_marks_had_active_false`。
+
+**指针：** `crates/agent_tui_kit/src/components/{plan,tool}.rs`、
+`crates/tui/src/widgets/state/app/agent.rs`（`apply_tool_events` /
+`on_step_failed_tail`）、Ch 23 §1。
+
+---
+
+## 1. 2026-08-23 — TUI 渲染层提取为 `agent_tui_kit`（可复用、与 Tact 解耦）
+
+| 字段 | 值 |
+|------|------|
+| **类型** | optimization |
+| **相关** | 设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`（+ `-ctx-design.md`）；计划：`docs/superpowers/plans/2026-08-18-tui-component-library.md`；Ch 23 |
+
+**症状 / 动机：** 整个渲染栈在 `crates/tui` 单个 crate 内，与 `tact` /
+`tact_llm` 强耦合（`App` 持有所有面板状态；render 函数接收 `&App`）。其他
+agent 项目无法复用 thinking/tool 卡片、流式 markdown 日志、弹窗族、输入框
+或状态栏，除非把 Tact 的 agent 运行时一起拉进来；且 `handle_agent_update`
+是一个巨大的 match，没有组件边界可独立测试。
+
+**决策：** 提取可复用的 **agent-TUI kit**（`crates/agent_tui_kit`），只依赖
+`tact_protocol` + ratatui：
+- 纯渲染函数接收每帧 `RenderCtx`（host 构建的不相交 `&` 借用；唯一变更路径
+  是显式 `Vec<RenderCommand>`，帧后 drain）；
+- 状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、
+  `StatusBarState`、`LogScroll`、`PlanPanel`、弹窗状态、widgets）verbatim 移入
+  kit——零视觉变化，每个阶段门禁由不变的 scene/render 测试验证；
+- 进出契约为 `bridge::Command`（通用 9 变体枚举）+ `AgentBridge` +
+  `BridgeExtension`/`ExtensionEvent`；Tact-only 命令（`QueryBalance`）走
+  `ExtensionCommand`；
+- 需要应用层样式的可变 "prepare" 阶段（log 滚动缓存重建 + skill 高亮、
+  diff/subagent 懒缓存、输入光标 clamp）留在 `crates/tui`，为 kit 纯渲染供数。
+
+**变更后行为：** `cargo tree -p agent_tui_kit` 无 `tact` / `tact_llm`；
+`crates/tui` 成为 Tact 应用层（shell `App`、handlers、prepare 阶段、应用层
+弹窗、编排 `layout.rs`）。headless mock 消费者证明 kit 可独立运行：
+`cargo run -p agent_tui_kit --example mock_agent`。测试随代码迁移（tui 413 +
+kit 194 = 607 ≥ 604 基线；`tact-ui` 105；clippy 零警告）。
+
+**指针：** `crates/agent_tui_kit/src/render/*`（bar、input、log、popups、
+task_panel、render_md、cells）、`state/*`、`bridge.rs`、
+`crates/tui/src/widgets/state/app/config.rs`（`App::render_ctx`）、
+`examples/mock_agent.rs`；各阶段门禁记录在计划文档 results 段落。后续
+（步骤 9）：`Component` 注册表 + handlers 迁移仍未做。
+
+---
+
+## 1. 2026-08-23 — TUI `App` 切换到 kit 的 `ComponentRegistry`（whole-App 重构，任务 #42）
+
+| 字段 | 值 |
+|------|------|
+| **类型** | optimization |
+| **相关** | 计划：`docs/superpowers/plans/2026-08-18-tui-component-library.md`（步骤 9）；设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`；Ch 23 |
+
+**症状 / 动机：** kit 的 `Component` trait 与六个组件
+（Thinking/Stream/StatusBar/TaskPanel/Plan/Tool）已存在，但 Tact 应用仍把
+它们的状态当作裸 `App` 字段持有，`handle_agent_update` 的巨大 match 仍跑旧
+的内联 handlers——组件边界只是编译期草案；任何采用注册表的 host 都得先复刻
+整个 shell。
+
+**决策：** whole-App 切换在保持行为不变的前提下让注册表成为唯一状态持有者：
+- `App` 移除 `plan` / `thinking` / `stream` / `tools` / `task_panel` /
+  `status_bar` 字段，持有 `registry: ComponentRegistry`；共享 `LogCoordinator`
+  仍归 shell 所有（决策：coordinator 是 shell 已拥有并测试的 priority-0 面）。
+- `app/registry.rs` 类型化访问器（`plan()`/`plan_mut()`，…）访问组件；
+  组件 `Deref`/`DerefMut` 到底层状态，`app.<field>.<state>` 调用点改动最小。
+- `handle_agent_update` = `coordinator_prepass` → `dispatch_components`
+  （注册表分发；`Ctx` 经字段拆分借用 shell 拥有的 log / input mode /
+  pending queue）→ `apply_stream_events`（`StreamEvent` outbox；**仅
+  StreamChunk**——gap 检查会追加行，旧代码只在流块上执行）→
+  `shell_handle`（status/log 效果、tool 卡片生命周期、select 弹窗、
+  thinking 卡片）→ `refresh_tail_scroll`。
+- `ThinkingChunk` 与 `StepFinished`/`StepFailed` 刻意**不**分发：shell 拥有
+  log 锚定的 thinking 卡片与已解析 step 的 tool 生命周期；分发会双重处理。
+- `Component` 增加 `Send` 超类约束（持有注册表的 shell 需移入 `tact-ui`
+  的 tokio task）与 `ComponentRegistry::get_mut`（供 host 侧 handler 的类型化
+  可变 downcast）。
+
+**变更后行为：** 组件状态归注册表所有；shell 在 `shell_handle` 保留丰富行为；
+host 以 `app.plan()` / `app.tools_mut()` 替代字段访问。无用户可见变化——
+全部 scene/render 测试无需修改期望即通过（tui 413 + kit 221 = 634；
+`tact-ui` 105；clippy 零警告）。
+
+**指针：** `crates/agent_tui_kit/src/components/{registry,thinking,stream,
+status_bar,task_panel,plan,tool}.rs`、`crates/tui/src/widgets/state/app/
+{agent.rs（dispatch_components / shell_handle / apply_stream_events）、
+registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
+（prepare 的字段拆分借用）、Ch 23 §1。
+
+---
+
 ## 1. 2026-08-17 — Responses 模型切换时适配 web-search query 字段
 
 | Field | Value |

@@ -174,7 +174,7 @@ fn dispatch_user_task(app: &mut App, display_text: String, agent_task: String) -
 
     app.status = Status::Planning;
     app.add_user_message(display_text);
-    app.plan.reset();
+    app.plan_mut().reset();
     app.last_prompt_elapsed_secs = None;
     app.task_start_time = Some(chrono::Local::now());
     let _ = app.user_cmd_tx.send(UserCommand::SubmitTask(agent_task));

@@ -53,3 +53,44 @@ impl App {
         self.voice.shutdown().await;
     }
 }
+
+impl App {
+    /// Voice button title for the input box's centered block title.
+    ///
+    /// `None` when voice is disabled; the value is injected into the kit's
+    /// `RenderCtx::input_voice_title` (voice is an app-layer extension).
+    pub(crate) fn voice_title(&self) -> Option<(String, ratatui::style::Style)> {
+        use ratatui::style::{Color, Style};
+        if matches!(self.voice.phase, VoicePhase::Disabled) {
+            return None;
+        }
+        let label = self.voice_button_label();
+        if label.is_empty() {
+            return None;
+        }
+        let style = match self.voice.phase {
+            VoicePhase::Idle => Style::default().fg(self.theme.accent),
+            VoicePhase::Recording { .. } => Style::default().fg(self.theme.warning),
+            VoicePhase::Transcribing => Style::default().fg(Color::Rgb(120, 120, 140)),
+            VoicePhase::Disabled => Style::default(),
+        };
+        Some((label, style))
+    }
+
+    /// Label of the voice button in the input box title.
+    pub(crate) fn voice_button_label(&self) -> String {
+        match self.voice.phase {
+            VoicePhase::Disabled => String::new(),
+            VoicePhase::Idle => self.msgs().voice_idle.to_string(),
+            VoicePhase::Recording { started_at } => {
+                let elapsed = started_at.elapsed();
+                format!(
+                    "⏹ {:02}:{:02}",
+                    elapsed.as_secs() / 60,
+                    elapsed.as_secs() % 60
+                )
+            }
+            VoicePhase::Transcribing => self.msgs().voice_transcribing.to_string(),
+        }
+    }
+}

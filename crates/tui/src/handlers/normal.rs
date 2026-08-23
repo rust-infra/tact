@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::widgets::state::{App, InputMode, Status};
 
 fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app) && app.task_panel.expanded
+    crate::render::task_panel::sticky_host_visible(app) && app.task_panel().expanded
 }
 
 pub(crate) fn handle_normal_mode(
@@ -16,7 +16,7 @@ pub(crate) fn handle_normal_mode(
     match key.code {
         KeyCode::Char('j') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
-                app.task_panel.scroll = app.task_panel.scroll.saturating_add(1);
+                app.task_panel_mut().scroll = app.task_panel_mut().scroll.saturating_add(1);
             } else {
                 let step = crate::widgets::state::app::scroll::key_cell_step(
                     app.log_scroll.height as usize,
@@ -26,8 +26,8 @@ pub(crate) fn handle_normal_mode(
         }
         KeyCode::Char('k') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
-                if app.task_panel.scroll > 0 {
-                    app.task_panel.scroll -= 1;
+                if app.task_panel_mut().scroll > 0 {
+                    app.task_panel_mut().scroll -= 1;
                 }
             } else {
                 let step = crate::widgets::state::app::scroll::key_cell_step(
@@ -61,11 +61,11 @@ pub(crate) fn handle_normal_mode(
             } else {
                 // Last visible message
                 let total = app.total_log_lines();
-                if total > 0 && app.stream.buffer.is_empty() {
+                if total > 0 && app.stream_mut().buffer.is_empty() {
                     app.visible_message_index(total - 1)
-                        .and_then(|idx| app.log_items.get(idx).map(|item| item.raw.clone()))
-                } else if !app.stream.buffer.is_empty() {
-                    Some(app.stream.buffer.clone())
+                        .and_then(|idx| app.log.items.get(idx).map(|item| item.raw.clone()))
+                } else if !app.stream_mut().buffer.is_empty() {
+                    Some(app.stream_mut().buffer.clone())
                 } else {
                     None
                 }
@@ -113,14 +113,14 @@ pub(crate) fn handle_normal_mode(
         }
         KeyCode::Char('t') => {
             // Open the most recently visible thinking card popup
-            if app.thinking.popup.is_some() {
+            if app.thinking_mut().popup.is_some() {
                 app.close_thinking_popup();
             } else if let Some(phys_idx) = app
-                .thinking
+                .thinking_mut()
                 .active
                 .as_ref()
                 .map(|active| active.phys_idx)
-                .or_else(|| app.thinking.blocks.last().map(|block| block.phys_idx))
+                .or_else(|| app.thinking_mut().blocks.last().map(|block| block.phys_idx))
             {
                 app.open_thinking_popup(phys_idx);
             }
@@ -340,7 +340,7 @@ mod tests {
 
         handle_normal_mode(&mut app, key(KeyCode::Char('y')), &tx);
 
-        assert!(app.log_items.iter().any(|item| item.raw.contains("world")));
+        assert!(app.log.items.iter().any(|item| item.raw.contains("world")));
     }
 
     #[test]
@@ -357,7 +357,8 @@ mod tests {
         handle_normal_mode(&mut app, key(KeyCode::Char('y')), &tx);
 
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("second line"))
         );

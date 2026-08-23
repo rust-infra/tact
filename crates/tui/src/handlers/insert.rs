@@ -849,7 +849,8 @@ mod tests {
             "expected oversize input not to dispatch UserCommand"
         );
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("too long")
                     || item
@@ -1048,11 +1049,12 @@ mod tests {
         assert_eq!(app.input_cursor, "/plugin ".len());
         assert!(!app.slash_command.active);
         assert!(
-            !app.log_items
+            !app.log
+                .items
                 .iter()
                 .any(|item| item.raw.starts_with("Usage: /plugin")),
             "must not run bare /plugin yet: {:?}",
-            app.log_items
+            app.log.items
         );
         assert!(user_cmd_rx.try_recv().is_err());
     }
@@ -1127,7 +1129,7 @@ mod tests {
             other => panic!("expected SubmitTask, got {other:?}"),
         }
         assert!(
-            app.log_items.iter().any(|item| item.raw.contains("/demo")),
+            app.log.items.iter().any(|item| item.raw.contains("/demo")),
             "user bubble should show slash command"
         );
     }
@@ -1160,7 +1162,8 @@ mod tests {
             other => panic!("expected SubmitTask, got {other:?}"),
         }
         assert!(
-            app.log_items
+            app.log
+                .items
                 .iter()
                 .any(|item| item.raw.contains("/demo fix auth")),
             "user bubble should show slash + args"

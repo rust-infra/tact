@@ -5,19 +5,23 @@ pub(crate) mod cells;
 mod input;
 mod layout;
 mod log;
-mod log_column;
 mod log_style;
-mod mermaid_sequence;
 pub(crate) mod popups;
-mod pulldown;
-pub(crate) mod render_md;
-pub(crate) mod renderable;
+pub(crate) mod render_md {
+    pub(crate) use agent_tui_kit::render::render_md::*;
+}
+pub(crate) mod renderable {
+    pub(crate) use agent_tui_kit::render::renderable::*;
+}
 pub(crate) mod slash_style;
 pub(crate) mod task_panel;
-pub(crate) mod util;
+pub(crate) mod util {
+    pub(crate) use agent_tui_kit::render::util::*;
+}
 
+pub(super) use agent_tui_kit::render::input::wrap_line;
 pub(super) use bar::{render_bottom_bar, render_status_bar};
-pub(super) use input::{render_input_box, wrap_line};
+pub(super) use input::render_input_box;
 pub(super) use layout::render_main_area;
 pub(super) use popups::{
     command_palette::render_command_palette, file_picker::render_file_picker,

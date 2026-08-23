@@ -36,7 +36,7 @@ pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App
         .as_ref()
         .is_some_and(|p| p.render_width != width)
     {
-        let (source, lines) = render_task_dag_lines(&app.task_panel.snapshot, &app.theme, width);
+        let (source, lines) = render_task_dag_lines(&app.task_panel().snapshot, &app.theme, width);
         if let Some(p) = app.task_dag_popup.as_mut() {
             p.lines = lines;
             p.mermaid_source = source;

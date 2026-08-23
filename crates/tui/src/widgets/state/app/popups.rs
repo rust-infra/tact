@@ -48,8 +48,8 @@ impl App {
 
     /// True when thinking / tool-diff / code overlay popup is open.
     pub(crate) fn has_overlay_popup(&self) -> bool {
-        self.thinking.popup.is_some()
-            || self.tools.popup.is_some()
+        self.thinking().popup.is_some()
+            || self.tools().popup.is_some()
             || self.code_popup.is_some()
             || self.mermaid_popup.is_some()
             || self.task_dag_popup.is_some()
@@ -58,23 +58,30 @@ impl App {
     }
 
     fn overlay_scroll_mut(&mut self) -> Option<&mut u16> {
-        if let Some(p) = self.thinking.popup.as_mut() {
-            Some(&mut p.scroll)
-        } else if let Some(p) = self.tools.popup.as_mut() {
-            Some(&mut p.scroll)
-        } else if let Some(p) = self.code_popup.as_mut() {
-            Some(&mut p.scroll)
-        } else if let Some(p) = self.mermaid_popup.as_mut() {
-            Some(&mut p.scroll)
-        } else if let Some(p) = self.task_dag_popup.as_mut() {
-            Some(&mut p.scroll)
-        } else if let Some(p) = self.system_prompt_popup.as_mut() {
-            Some(&mut p.scroll)
-        } else if let Some(p) = self.subagent_popup.as_mut() {
-            Some(&mut p.scroll)
-        } else {
-            None
+        // Each `self.X_mut()` borrows all of `self`; the check borrows
+        // immutably (ends with the condition), the body borrows mutably.
+        if self.thinking().popup.is_some() {
+            return Some(&mut self.thinking_mut().popup.as_mut().unwrap().scroll);
         }
+        if self.tools().popup.is_some() {
+            return Some(&mut self.tools_mut().popup.as_mut().unwrap().scroll);
+        }
+        if let Some(p) = self.code_popup.as_mut() {
+            return Some(&mut p.scroll);
+        }
+        if let Some(p) = self.mermaid_popup.as_mut() {
+            return Some(&mut p.scroll);
+        }
+        if let Some(p) = self.task_dag_popup.as_mut() {
+            return Some(&mut p.scroll);
+        }
+        if let Some(p) = self.system_prompt_popup.as_mut() {
+            return Some(&mut p.scroll);
+        }
+        if let Some(p) = self.subagent_popup.as_mut() {
+            return Some(&mut p.scroll);
+        }
+        None
     }
 
     pub(crate) fn overlay_popup_scroll_up(&mut self) {
@@ -90,9 +97,9 @@ impl App {
     }
 
     pub(crate) fn close_overlay_popup(&mut self) {
-        if self.thinking.popup.is_some() {
+        if self.thinking_mut().popup.is_some() {
             self.close_thinking_popup();
-        } else if self.tools.popup.is_some() {
+        } else if self.tools_mut().popup.is_some() {
             self.close_diff_popup();
         } else if self.code_popup.is_some() {
             self.close_code_popup();
@@ -114,9 +121,9 @@ impl App {
     /// Close the active overlay if the click is outside its area.
     /// Returns `true` if an overlay was active (click is consumed).
     pub(crate) fn close_overlay_on_outside_click(&mut self, column: u16, row: u16) -> bool {
-        let area = if self.thinking.popup.is_some() {
+        let area = if self.thinking_mut().popup.is_some() {
             Some(self.mouse.thinking_popup_area)
-        } else if self.tools.popup.is_some() {
+        } else if self.tools_mut().popup.is_some() {
             Some(self.mouse.diff_popup_area)
         } else if self.code_popup.is_some() {
             Some(self.mouse.code_popup_area)
@@ -139,9 +146,9 @@ impl App {
     }
 
     pub(crate) fn copy_overlay_popup(&mut self) {
-        if self.thinking.popup.is_some() {
+        if self.thinking_mut().popup.is_some() {
             self.copy_thinking_popup();
-        } else if self.tools.popup.is_some() {
+        } else if self.tools_mut().popup.is_some() {
             self.copy_diff_popup();
         } else if self.code_popup.is_some() {
             self.copy_code_popup();
@@ -161,7 +168,7 @@ impl App {
 
     pub(crate) fn open_task_dag_popup(&mut self) {
         let (mermaid_source, lines) = render_task_dag_lines(
-            &self.task_panel.snapshot,
+            &self.task_panel().snapshot,
             &self.theme,
             DEFAULT_DAG_RENDER_WIDTH,
         );
@@ -182,13 +189,13 @@ impl App {
             _ => return,
         };
         let tool_id = self
-            .tools
+            .tools_mut()
             .active
             .iter()
             .find(|a| a.phys_idx == phys_idx)
             .map(|a| a.tool_id.clone())
             .or_else(|| {
-                self.tools
+                self.tools_mut()
                     .blocks
                     .iter()
                     .find(|b| b.phys_idx == phys_idx)
@@ -213,25 +220,31 @@ impl App {
             return;
         };
         // Prefer the text the popup actually laid out (markdown-rendered when
-        // completed) so mouse-selection byte offsets stay valid.
+        // completed) so mouse-selection byte offsets stay valid. Precompute
+        // the tool-sourced fallback before the closure (a second `&mut self`
+        // borrow cannot live inside it).
+        let tool_id = popup.tool_id.clone();
+        let (live_text, block_text) = {
+            let tools = self.tools();
+            (
+                tools
+                    .active
+                    .iter()
+                    .find(|a| a.tool_id == tool_id)
+                    .map(|a| a.live_output.full_detail_text()),
+                tools
+                    .blocks
+                    .iter()
+                    .find(|b| b.tool_id == tool_id)
+                    .and_then(|b| b.output.detail_full.clone()),
+            )
+        };
         let full_text = popup
             .layout_cache
             .as_ref()
             .map(|c| c.raw_text.clone())
-            .or_else(|| {
-                self.tools
-                    .active
-                    .iter()
-                    .find(|a| a.tool_id == popup.tool_id)
-                    .map(|a| a.live_output.full_detail_text())
-            })
-            .or_else(|| {
-                self.tools
-                    .blocks
-                    .iter()
-                    .find(|b| b.tool_id == popup.tool_id)
-                    .and_then(|b| b.output.detail_full.clone())
-            })
+            .or(live_text)
+            .or(block_text)
             .unwrap_or_default();
         if full_text.is_empty() {
             return;
@@ -249,9 +262,9 @@ impl App {
         self.append_blank(LogItemKind::AssistantMarkdown);
     }
 
-    /// Append one log row, keeping all row metadata together in `log_items`.
+    /// Append one log row, keeping all row metadata together in the coordinator.
     pub(crate) fn append_msg(&mut self, line: Line<'static>, raw: String, kind: LogItemKind) {
-        self.log_items.push(LogItem::new(line, raw, kind));
+        self.log.append_msg(line, raw, kind);
     }
 
     /// Append a whole-Markdown notice as a single log item.
@@ -268,12 +281,11 @@ impl App {
         content: impl Into<String>,
         kind: LogItemKind,
     ) {
-        self.log_items
-            .push(LogItem::markdown(content.into(), &self.theme, kind));
+        self.log.append_markdown(content.into(), &self.theme, kind);
     }
 
     pub(crate) fn append_blank(&mut self, kind: LogItemKind) {
-        self.append_msg(Line::from(""), String::new(), kind);
+        self.log.append_blank(kind);
     }
 
     pub(crate) fn extend_msgs(
@@ -282,10 +294,7 @@ impl App {
         raw_lines: Vec<String>,
         kind: LogItemKind,
     ) {
-        debug_assert_eq!(lines.len(), raw_lines.len());
-        for (line, raw) in lines.into_iter().zip(raw_lines) {
-            self.append_msg(line, raw, kind);
-        }
+        self.log.extend_msgs(lines, raw_lines, kind);
     }
 
     pub(crate) fn insert_msg(
@@ -295,7 +304,7 @@ impl App {
         raw: String,
         kind: LogItemKind,
     ) {
-        self.log_items.insert(idx, LogItem::new(line, raw, kind));
+        self.log.insert_msg(idx, line, raw, kind);
     }
 
     pub(crate) fn splice_msgs(
@@ -305,22 +314,15 @@ impl App {
         raw: Vec<String>,
         kind: LogItemKind,
     ) {
-        debug_assert_eq!(lines.len(), raw.len());
-        self.log_items.splice(
-            range,
-            lines
-                .into_iter()
-                .zip(raw)
-                .map(|(line, raw)| LogItem::new(line, raw, kind)),
-        );
+        self.log.splice_msgs(range, lines, raw, kind);
     }
 
     pub(crate) fn drain_msgs(&mut self, range: std::ops::Range<usize>) {
-        self.log_items.drain(range);
+        self.log.drain_msgs(range);
     }
 
     pub(crate) fn remove_msg(&mut self, idx: usize) {
-        self.log_items.remove(idx);
+        self.log.remove_msg(idx);
     }
 
     /// Sentinel row — rendered as a full-width rule with frozen elapsed label.
@@ -345,17 +347,17 @@ impl App {
     /// Open the thinking popup for active or completed content at `phys_idx`.
     pub(crate) fn open_thinking_popup(&mut self, phys_idx: usize) {
         let exists = self
-            .thinking
+            .thinking_mut()
             .active
             .as_ref()
             .is_some_and(|active| active.phys_idx == phys_idx)
             || self
-                .thinking
+                .thinking_mut()
                 .blocks
                 .iter()
                 .any(|block| block.phys_idx == phys_idx);
         if exists {
-            self.thinking.popup = Some(ThinkingPopup {
+            self.thinking_mut().popup = Some(ThinkingPopup {
                 phys_idx,
                 title: self.msgs().thinking_title.to_string(),
                 scroll: 0,
@@ -367,7 +369,7 @@ impl App {
 
     /// Close the thinking popup.
     pub(crate) fn close_thinking_popup(&mut self) {
-        self.thinking.popup = None;
+        self.thinking_mut().popup = None;
         self.mouse.thinking_popup_area = Rect::default();
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
@@ -390,12 +392,12 @@ impl App {
         let mut block_start: Option<usize> = None;
         let mut block_end: Option<usize> = None;
         let mut result: Option<(usize, usize)> = None;
-        for phys_idx in 0..self.log_items.len() {
+        for phys_idx in 0..self.log.items.len() {
             if !self.is_message_visible(phys_idx) {
                 continue;
             }
             let is_code =
-                self.log_items[phys_idx].line.spans.iter().any(|s| {
+                self.log.items[phys_idx].line.spans.iter().any(|s| {
                     s.style.bg == Some(code_bg) || s.style.bg == Some(Color::Rgb(30, 35, 50))
                 });
             if is_code {
@@ -429,7 +431,8 @@ impl App {
     /// Returns None if no closed code block is found.
     pub(crate) fn extract_last_code_block(&self) -> Option<String> {
         let raw = self
-            .log_items
+            .log
+            .items
             .iter()
             .map(|item| item.raw.as_str())
             .collect::<Vec<_>>();
@@ -468,7 +471,7 @@ impl App {
         let Some(full_content) = self.thinking_popup_content() else {
             return;
         };
-        let Some(popup) = self.thinking.popup.as_ref() else {
+        let Some(popup) = self.thinking_mut().popup.as_ref() else {
             return;
         };
         let text = popup.copy_content(&full_content);
@@ -476,14 +479,14 @@ impl App {
     }
 
     pub(crate) fn thinking_popup_content(&self) -> Option<String> {
-        let phys_idx = self.thinking.popup.as_ref()?.phys_idx;
-        self.thinking
+        let phys_idx = self.thinking().popup.as_ref()?.phys_idx;
+        self.thinking()
             .active
             .as_ref()
             .filter(|active| active.phys_idx == phys_idx)
             .map(|active| active.content.clone())
             .or_else(|| {
-                self.thinking
+                self.thinking()
                     .blocks
                     .iter()
                     .find(|block| block.phys_idx == phys_idx)
@@ -496,13 +499,13 @@ impl App {
         &self,
         phys_idx: usize,
     ) -> Option<&crate::widgets::tool_widget::ToolRenderOutput> {
-        self.tools
+        self.tools()
             .active
             .iter()
             .find(|a| a.phys_idx == phys_idx)
             .map(|a| &a.output)
             .or_else(|| {
-                self.tools
+                self.tools()
                     .blocks
                     .iter()
                     .find(|b| b.phys_idx == phys_idx)
@@ -647,7 +650,7 @@ impl App {
             return;
         };
         if let Some(popup) = self.popup_from_tool_output(output) {
-            self.tools.popup = Some(popup);
+            self.tools_mut().popup = Some(popup);
         }
     }
 
@@ -670,7 +673,7 @@ impl App {
 
     /// Close the file content popup.
     pub(crate) fn close_diff_popup(&mut self) {
-        self.tools.popup = None;
+        self.tools_mut().popup = None;
         self.mouse.diff_popup_area = Rect::default();
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
@@ -679,29 +682,37 @@ impl App {
 
     /// Copy the popup content to the clipboard.
     pub(crate) fn copy_diff_popup(&mut self) {
-        let popup = match &self.tools.popup {
-            Some(p) => p,
-            None => return,
-        };
-        let text = if popup.cached_content.is_some() {
-            match popup.copy_content() {
-                Some(content) => content,
+        // The popup is borrowed immutably for the whole extraction; the read
+        // error is deferred so `self` is only mutated after the borrow ends.
+        let (text, read_error) = {
+            let popup = match &self.tools().popup {
+                Some(p) => p,
                 None => return,
-            }
-        } else if let Some(path) = &popup.file_path {
-            match std::fs::read_to_string(path) {
-                Ok(content) => popup.copy_content_from(&content),
-                Err(e) => {
-                    self.add_system_message(format!("⚠️ Could not read {}: {}", path, e));
-                    return;
+            };
+            if popup.cached_content.is_some() {
+                match popup.copy_content() {
+                    Some(content) => (content, None),
+                    None => return,
+                }
+            } else if let Some(path) = &popup.file_path {
+                match std::fs::read_to_string(path) {
+                    Ok(content) => (popup.copy_content_from(&content), None),
+                    Err(e) => (
+                        String::new(),
+                        Some(format!("⚠️ Could not read {}: {}", path, e)),
+                    ),
+                }
+            } else {
+                match popup.copy_content() {
+                    Some(content) => (content, None),
+                    None => return,
                 }
             }
-        } else {
-            match popup.copy_content() {
-                Some(content) => content,
-                None => return,
-            }
         };
+        if let Some(msg) = read_error {
+            self.add_system_message(msg);
+            return;
+        }
         self.copy_text(&text);
     }
 
@@ -803,7 +814,7 @@ mod tests {
     #[test]
     fn close_diff_popup_clears_mouse_state_before_reopen() {
         let mut app = make_app();
-        app.tools.popup = Some(inline_popup("old"));
+        app.tools_mut().popup = Some(inline_popup("old"));
         app.mouse.diff_popup_area = Rect::new(5, 5, 20, 10);
         app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
         app.mouse.popup_text_hit_rows = vec![PopupHitRow {
@@ -816,13 +827,13 @@ mod tests {
         app.mouse.popup_text_drag_origin = Some(PopupTextHit::new(0, 1));
 
         app.close_diff_popup();
-        app.tools.popup = Some(inline_popup("new"));
+        app.tools_mut().popup = Some(inline_popup("new"));
 
         assert_eq!(app.mouse.diff_popup_area, Rect::default());
         assert_eq!(app.mouse.popup_text_body_area, Rect::default());
         assert!(app.mouse.popup_text_hit_rows.is_empty());
         assert!(app.mouse.popup_text_drag_origin.is_none());
-        assert!(app.tools.popup.as_ref().unwrap().selection.is_none());
+        assert!(app.tools_mut().popup.as_ref().unwrap().selection.is_none());
     }
 
     #[test]
@@ -878,7 +889,7 @@ mod tests {
     #[test]
     fn close_thinking_popup_clears_selectable_mouse_state() {
         let mut app = make_app();
-        app.thinking.popup = Some(thinking_popup(Some(PopupTextSelection::new(0, 5))));
+        app.thinking_mut().popup = Some(thinking_popup(Some(PopupTextSelection::new(0, 5))));
         app.mouse.thinking_popup_area = Rect::new(5, 5, 20, 10);
         app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
         app.mouse.popup_text_hit_rows = vec![PopupHitRow {
@@ -892,7 +903,7 @@ mod tests {
 
         app.close_thinking_popup();
 
-        assert!(app.thinking.popup.is_none());
+        assert!(app.thinking_mut().popup.is_none());
         assert_eq!(app.mouse.thinking_popup_area, Rect::default());
         assert_eq!(app.mouse.popup_text_body_area, Rect::default());
         assert!(app.mouse.popup_text_hit_rows.is_empty());
