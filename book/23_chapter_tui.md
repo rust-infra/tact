@@ -50,6 +50,21 @@ in/out contract (`bridge::Command`, `AgentBridge`, `BridgeExtension`).
 per-frame `prepare_*` phases (skill styling, scroll caches), and the
 app-layer popups (palette, file picker, slash commands, task DAG).
 
+**Component registry (whole-App switch, 2026-08-23):** the kit's six
+components own the UI state that `App` once held as bare fields. `App` now
+holds a `ComponentRegistry` (`plan` / `thinking` / `stream` / `tools` /
+`status_bar` / `task_panel` components) and reaches the state through typed
+accessors (`app.plan()` / `app.plan_mut()`, …); the shared `LogCoordinator`
+stays shell-owned. `handle_agent_update` is `coordinator_prepass` →
+`dispatch_components` (registry dispatch; the stream outbox carries parsed
+`StreamEvent`s) → `apply_stream_events` (StreamChunk only — the gap checks
+append rows) → `shell_handle` (rich shell behavior: status/log effects,
+tool-card lifecycle, select popups, thinking card) → `refresh_tail_scroll`.
+Kit components claim `TokenUsage`/`ModelInfo` (status bar), `ToolProgress`/
+`ToolMeta` (tool), `StepAdded` (plan), `TasksChanged` (task panel), and
+`StreamChunk` (parse only). `ThinkingChunk` and `StepFinished`/`StepFailed`
+stay in the shell (they are entangled with the log-anchored lifecycle).
+
 ---
 
 ## 2. Entry Points

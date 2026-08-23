@@ -69,6 +69,50 @@ task_panel、render_md、cells）、`state/*`、`bridge.rs`、
 
 ---
 
+## 1. 2026-08-23 — TUI `App` 切换到 kit 的 `ComponentRegistry`（whole-App 重构，任务 #42）
+
+| 字段 | 值 |
+|------|------|
+| **类型** | optimization |
+| **相关** | 计划：`docs/superpowers/plans/2026-08-18-tui-component-library.md`（步骤 9）；设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`；Ch 23 |
+
+**症状 / 动机：** kit 的 `Component` trait 与六个组件
+（Thinking/Stream/StatusBar/TaskPanel/Plan/Tool）已存在，但 Tact 应用仍把
+它们的状态当作裸 `App` 字段持有，`handle_agent_update` 的巨大 match 仍跑旧
+的内联 handlers——组件边界只是编译期草案；任何采用注册表的 host 都得先复刻
+整个 shell。
+
+**决策：** whole-App 切换在保持行为不变的前提下让注册表成为唯一状态持有者：
+- `App` 移除 `plan` / `thinking` / `stream` / `tools` / `task_panel` /
+  `status_bar` 字段，持有 `registry: ComponentRegistry`；共享 `LogCoordinator`
+  仍归 shell 所有（决策：coordinator 是 shell 已拥有并测试的 priority-0 面）。
+- `app/registry.rs` 类型化访问器（`plan()`/`plan_mut()`，…）访问组件；
+  组件 `Deref`/`DerefMut` 到底层状态，`app.<field>.<state>` 调用点改动最小。
+- `handle_agent_update` = `coordinator_prepass` → `dispatch_components`
+  （注册表分发；`Ctx` 经字段拆分借用 shell 拥有的 log / input mode /
+  pending queue）→ `apply_stream_events`（`StreamEvent` outbox；**仅
+  StreamChunk**——gap 检查会追加行，旧代码只在流块上执行）→
+  `shell_handle`（status/log 效果、tool 卡片生命周期、select 弹窗、
+  thinking 卡片）→ `refresh_tail_scroll`。
+- `ThinkingChunk` 与 `StepFinished`/`StepFailed` 刻意**不**分发：shell 拥有
+  log 锚定的 thinking 卡片与已解析 step 的 tool 生命周期；分发会双重处理。
+- `Component` 增加 `Send` 超类约束（持有注册表的 shell 需移入 `tact-ui`
+  的 tokio task）与 `ComponentRegistry::get_mut`（供 host 侧 handler 的类型化
+  可变 downcast）。
+
+**变更后行为：** 组件状态归注册表所有；shell 在 `shell_handle` 保留丰富行为；
+host 以 `app.plan()` / `app.tools_mut()` 替代字段访问。无用户可见变化——
+全部 scene/render 测试无需修改期望即通过（tui 413 + kit 221 = 634；
+`tact-ui` 105；clippy 零警告）。
+
+**指针：** `crates/agent_tui_kit/src/components/{registry,thinking,stream,
+status_bar,task_panel,plan,tool}.rs`、`crates/tui/src/widgets/state/app/
+{agent.rs（dispatch_components / shell_handle / apply_stream_events）、
+registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
+（prepare 的字段拆分借用）、Ch 23 §1。
+
+---
+
 ## 1. 2026-08-17 — Responses 模型切换时适配 web-search query 字段
 
 | Field | Value |

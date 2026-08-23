@@ -42,6 +42,8 @@ sequenceDiagram
 
 **分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands、task DAG）。
 
+**组件注册表（whole-App 切换，2026-08-23）：** kit 的六个组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
+
 ---
 
 ## 2. 入口点

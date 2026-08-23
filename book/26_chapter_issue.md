@@ -75,6 +75,56 @@ still TODO.
 
 ---
 
+## 1. 2026-08-23 — TUI `App` switches to the kit's `ComponentRegistry` (whole-App refactor, task #42)
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Plan: `docs/superpowers/plans/2026-08-18-tui-component-library.md` (step 9); design: `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`; Ch 23 |
+
+**Symptom / motivation:** the kit's `Component` trait and six components
+(Thinking/Stream/StatusBar/TaskPanel/Plan/Tool) existed, but the Tact app
+still held their state as bare `App` fields and `handle_agent_update`'s giant
+match ran the old inline handlers — the component boundary was compile-only,
+and any host adopting the registry had to replicate the whole shell first.
+
+**Decision:** the whole-App switch keeps behavior identical while making the
+registry the single state owner:
+- `App` drops `plan` / `thinking` / `stream` / `tools` / `task_panel` /
+  `status_bar` fields and holds `registry: ComponentRegistry`; the shared
+  `LogCoordinator` stays shell-owned (decision: the coordinator is the
+  priority-0 surface the shell already owns and tests).
+- typed accessors `app/registry.rs` (`plan()`/`plan_mut()`, …) reach the
+  components; `Deref`/`DerefMut` to the underlying state keeps
+  `app.<field>.<state>` call sites working with minimal churn.
+- `handle_agent_update` = `coordinator_prepass` → `dispatch_components`
+  (registry dispatch; `Ctx` borrows the shell-owned log / input mode /
+  pending queue via field-split borrows) → `apply_stream_events` (the
+  `StreamEvent` outbox; **StreamChunk only**, because the gap checks append
+  rows — the pre-dispatch code ran them only on stream chunks) →
+  `shell_handle` (status/log effects, tool-card lifecycle, select popups,
+  thinking card) → `refresh_tail_scroll`.
+- `ThinkingChunk` and `StepFinished`/`StepFailed` are deliberately **not**
+  dispatched: the shell owns the log-anchored thinking card and the
+  resolved-step tool lifecycle; dispatching would double-process.
+- `Component` gained a `Send` supertrait (a registry-holding shell moves
+  onto the tokio task in `tact-ui`) and `ComponentRegistry::get_mut` (typed
+  mutable downcast for host-side handlers).
+
+**Behavior after:** component state is owned by the registry; the shell
+keeps rich behavior in `shell_handle`; hosts write `app.plan()` /
+`app.tools_mut()` instead of field access. No user-visible change — all
+scene/render tests pass without expectation edits (tui 413 + kit 221 = 634;
+`tact-ui` 105; clippy zero warnings).
+
+**Pointers:** `crates/agent_tui_kit/src/components/{registry,thinking,stream,
+status_bar,task_panel,plan,tool}.rs`, `crates/tui/src/widgets/state/app/
+{agent.rs (dispatch_components / shell_handle / apply_stream_events),
+registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
+(field-split borrows into prepare), Ch 23 §1.
+
+---
+
 ## 1. 2026-08-17 — Responses model switches adapt web-search query fields
 
 | Field | Value |
