@@ -20,6 +20,7 @@
 //! below are compile-only drafts; no rendering code has moved in yet.
 
 pub mod bridge;
+pub mod components;
 pub mod i18n;
 pub mod protocol;
 pub mod render;
