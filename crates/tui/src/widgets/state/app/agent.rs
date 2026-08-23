@@ -7,8 +7,10 @@ use ratatui::{
 };
 use tact_protocol::{
     AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason,
-    ThinkingChunk, TokenUsageInfo, ToolOutputBuffer, ToolOutputChunk,
+    ThinkingChunk, ToolOutputBuffer, ToolOutputChunk,
 };
+
+use agent_tui_kit::{Ctx, PendingQueue, state::StreamEvent};
 
 use crate::{
     render::render_md::{
@@ -50,6 +52,71 @@ impl App {
     pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
         self.dirty = true;
         self.coordinator_prepass(&update);
+        // 1. Components update their own state (registry dispatch); the
+        //    stream outbox carries parsed `StreamEvent`s the shell applies.
+        let stream_events = self.dispatch_components(&update);
+        // 2. Apply the stream outbox to the shared log — StreamChunk only
+        //    (the gap checks may append rows and must not run for other
+        //    update types, mirroring the pre-dispatch `apply_stream_chunk`).
+        if matches!(update, AgentUpdate::StreamChunk(_)) {
+            self.apply_stream_events(stream_events);
+        }
+        // 3. Shell tail: rich behavior the kit components do not implement
+        //    (log/status/scroll effects, tool-card lifecycle, select popups).
+        self.shell_handle(update);
+        self.refresh_tail_scroll();
+    }
+
+    /// Route an update to the component registry (state-owner components).
+    ///
+    /// Returns the `StreamEvent` outbox the shell applies afterwards.
+    ///
+    /// `ThinkingChunk` and `StepFinished`/`StepFailed` are deliberately
+    /// **not** dispatched: the shell owns the rich log-anchored thinking card
+    /// and the tool/plan lifecycle (placeholder rows, scroll caches, resolved
+    /// step indices) — dispatching them would double-process (the kit
+    /// components' simplified handlers target external hosts, not this shell).
+    fn dispatch_components(&mut self, update: &AgentUpdate) -> Vec<StreamEvent> {
+        if matches!(
+            update,
+            AgentUpdate::ThinkingChunk(_)
+                | AgentUpdate::StepFinished { .. }
+                | AgentUpdate::StepFailed { .. }
+        ) {
+            return Vec::new();
+        }
+        // Field-split borrows: `Ctx` borrows the shell-owned shared surfaces
+        // (log / input mode / pending queue) while the registry mutably
+        // borrows the components.
+        let Self {
+            registry,
+            log,
+            input_mode,
+            pending_messages,
+            ..
+        } = self;
+        let mut stream_events: Vec<StreamEvent> = Vec::new();
+        let mut pending = PendingQueue {
+            items: std::mem::take(pending_messages),
+        };
+        let mut ctx = Ctx {
+            log,
+            input_mode: *input_mode,
+            pending: &mut pending,
+            stream_events: &mut stream_events,
+        };
+        registry.dispatch_update(update, &mut ctx);
+        *pending_messages = pending.items;
+        stream_events
+    }
+
+    /// Shell tail for updates the components do not (fully) handle: status
+    /// and log effects, the tool-card lifecycle, select popups, and the rich
+    /// thinking card. Components claimed `TokenUsage` / `ModelInfo`
+    /// (StatusBarComponent), `ToolProgress` / `ToolMeta` (ToolComponent),
+    /// `StepAdded` (PlanComponent), `TasksChanged` (TaskPanelComponent), and
+    /// `StreamChunk` (StreamComponent, via the outbox above) during dispatch.
+    fn shell_handle(&mut self, update: AgentUpdate) {
         match update {
             AgentUpdate::StepAdded(step) => self.on_step_added(step),
             AgentUpdate::StepStarted {
@@ -114,22 +181,6 @@ impl App {
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
             }
-            // Update token usage info
-            AgentUpdate::TokenUsage(usage) => {
-                self.status_bar_mut().token_prompt = usage.prompt;
-                self.status_bar_mut().token_completion = usage.completion;
-                self.status_bar_mut().token_total = usage.total;
-                self.status_bar_mut().token_cache_hit = usage.prompt_cache_hit_tokens;
-                self.status_bar_mut().token_cache_miss = usage.prompt_cache_miss_tokens;
-                self.status_bar_mut().token_reasoning = usage.reasoning_tokens;
-            }
-            // Update model info
-            AgentUpdate::ModelInfo(params) => {
-                self.status_bar_mut().model_name = params.model;
-                self.status_bar_mut().model_max_tokens = params.max_tokens;
-                self.status_bar_mut().model_thinking_budget = params.thinking_budget;
-                self.status_bar_mut().model_reasoning_effort = params.reasoning_effort;
-            }
             // Add system message
             AgentUpdate::Info(msg) => {
                 self.add_system_message(msg);
@@ -186,23 +237,23 @@ impl App {
             AgentUpdate::ToolProgress { tool_id, chunks } => {
                 self.on_tool_progress(&tool_id, &chunks)
             }
-            AgentUpdate::ToolMeta {
-                tool_id,
-                model,
-                token_usage,
-            } => self.on_tool_meta(&tool_id, model, token_usage),
             AgentUpdate::BackgroundTaskFinished {
                 tool_id,
                 success,
                 message,
                 output,
             } => self.on_background_task_finished(&tool_id, success, &message, &output),
-            AgentUpdate::StreamChunk(text) => self.apply_stream_chunk(text),
             AgentUpdate::TasksChanged { tasks, reason } => {
-                self.on_tasks_changed(tasks, reason);
+                self.on_tasks_changed_tail(tasks, reason);
             }
+            // TokenUsage / ModelInfo → StatusBarComponent (dispatch).
+            // ToolMeta → ToolComponent (dispatch).
+            // StreamChunk → StreamComponent parse + apply_stream_events.
+            AgentUpdate::TokenUsage(_)
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::ToolMeta { .. }
+            | AgentUpdate::StreamChunk(_) => {}
         }
-        self.refresh_tail_scroll();
     }
 
     /// Coordinator pre-pass: reconcile cross-component invariants before any
@@ -243,12 +294,9 @@ impl App {
 
     /// Snapshot changes only drive the sticky panel; the Log already shows the
     /// originating `task_*` tool row, so no extra system message is appended.
-    fn on_tasks_changed(&mut self, tasks: Vec<TaskSnapshot>, _: TasksChangeReason) {
-        let was_visible = self.task_panel_mut().visible;
-        self.task_panel_mut().apply_snapshot(tasks);
-        if self.task_panel_mut().visible && !was_visible {
-            self.task_panel_mut().expanded = true;
-        }
+    fn on_tasks_changed_tail(&mut self, _tasks: Vec<TaskSnapshot>, _: TasksChangeReason) {
+        // TaskPanelComponent (registry dispatch) already applied the snapshot
+        // (visibility/expand logic lives in the kit's `apply_snapshot`).
         // Keep an open /tasks-dag popup in sync: its lines were rendered when
         // the popup opened and would otherwise never show later task changes
         // (the render loop only re-renders on width changes).
@@ -268,15 +316,13 @@ impl App {
         }
     }
 
-    fn on_step_added(&mut self, step: PlanStep) {
+    fn on_step_added(&mut self, _step: PlanStep) {
         // Flush leftover streaming text, preventing LLM output from appearing
         // between StepAdded and StepStarted.
         self.flush_stream_pending();
-        let idx = self.plan_mut().steps.len();
-        self.plan_mut().steps.push(step.clone());
-        self.plan_mut()
-            .steps_set
-            .insert(step.tool_id.clone(), step.clone());
+        // PlanComponent (registry dispatch) already recorded the step in
+        // `plan.steps` / `plan.steps_set` before this tail ran.
+        let idx = self.plan().steps.len();
         // Don't change current_step or total — the step hasn't started yet.
         // Ensure there is an Executing status before StepStarted arrives.
         self.ensure_executing_status(idx);
@@ -334,7 +380,7 @@ impl App {
         self.refresh_tool_log_scroll();
     }
 
-    fn on_tool_progress(&mut self, tool_id: &str, chunks: &[ToolOutputChunk]) {
+    fn on_tool_progress(&mut self, tool_id: &str, _chunks: &[ToolOutputChunk]) {
         let Some(pos) = self
             .tools_mut()
             .active
@@ -344,12 +390,9 @@ impl App {
             return;
         };
         let was_pinned = self.is_log_pinned_to_bottom();
-        self.tools_mut().active[pos].live_output.push_chunks(chunks);
-        if self.tools_mut().active[pos]
-            .live_output
-            .logical_line_count()
-            == 0
-        {
+        // ToolComponent (registry dispatch) already pushed the chunks into
+        // the active block's `live_output` before this tail ran.
+        if self.tools().active[pos].live_output.logical_line_count() == 0 {
             return;
         }
 
@@ -378,30 +421,6 @@ impl App {
         if was_pinned {
             self.scroll_log_to_bottom();
         }
-    }
-
-    fn on_tool_meta(
-        &mut self,
-        tool_id: &str,
-        model: Option<String>,
-        token_usage: Option<TokenUsageInfo>,
-    ) {
-        let Some(pos) = self
-            .tools_mut()
-            .active
-            .iter()
-            .position(|active| active.tool_id == tool_id)
-        else {
-            return;
-        };
-        let active = &mut self.tools_mut().active[pos];
-        if let Some(m) = model {
-            active.output.subagent_model = Some(m);
-        }
-        if let Some(t) = token_usage {
-            active.output.subagent_tokens = Some(t);
-        }
-        self.dirty = true;
     }
 
     fn on_step_finished(&mut self, idx: usize, tool_id: String, result: StepResult) {
@@ -659,16 +678,19 @@ impl App {
         }
     }
 
-    fn apply_stream_chunk(&mut self, text: String) {
+    fn apply_stream_events(&mut self, events: Vec<StreamEvent>) {
+        // The gap checks run on every StreamChunk (even event-less ones — the
+        // in-flight buffer line still needs the category gap), mirroring the
+        // pre-dispatch behavior of `apply_stream_chunk`.
         self.ensure_gap_after_user_message();
         self.ensure_gap_after_tools();
         // Thinking region is closed by the safety gate above when still open.
 
-        // The parse state machine (fence detection, table/paragraph/code
-        // buffering) lives in the kit; this host loop applies the events to
-        // the log with app-layer rendering (markdown, tables, indicators).
-        use agent_tui_kit::state::StreamEvent;
-        for event in self.stream_mut().push_chunk(&text) {
+        // StreamComponent (registry dispatch) already ran the parse state
+        // machine (fence detection, table/paragraph/code buffering); this
+        // shell loop applies the events to the log with app-layer rendering
+        // (markdown, tables, indicators).
+        for event in events {
             match event {
                 StreamEvent::MarkdownParagraph { text } => {
                     let (styled, raw) = render_markdown_tui(&text, &self.theme);
