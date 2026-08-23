@@ -151,6 +151,14 @@ impl Component for ThinkingComponent {
     fn priority(&self) -> u8 {
         10
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 /// The component's `InputMode`/`LogCoordinator` imports are unused by the
@@ -163,11 +171,16 @@ mod tests {
     use super::*;
     use crate::PendingQueue;
 
-    fn ctx<'a>(log: &'a mut LogCoordinator, pending: &'a mut PendingQueue) -> Ctx<'a> {
+    fn ctx<'a>(
+        log: &'a mut LogCoordinator,
+        pending: &'a mut PendingQueue,
+        stream_events: &'a mut Vec<crate::state::StreamEvent>,
+    ) -> Ctx<'a> {
         Ctx {
             log,
             input_mode: InputMode::Normal,
             pending,
+            stream_events,
         }
     }
 
@@ -179,10 +192,11 @@ mod tests {
         );
         let mut log = LogCoordinator::default();
         let mut queue = PendingQueue::default();
+        let mut events: Vec<crate::state::StreamEvent> = Vec::new();
 
         let dirty = component.on_update(
             &AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-            &mut ctx(&mut log, &mut queue),
+            &mut ctx(&mut log, &mut queue, &mut events),
         );
         assert!(dirty, "thinking lifecycle always repaints");
         let _ = component.state().active.as_ref().expect("active block");
@@ -190,7 +204,7 @@ mod tests {
 
         let dirty = component.on_update(
             &AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("reasoning text".into())),
-            &mut ctx(&mut log, &mut queue),
+            &mut ctx(&mut log, &mut queue, &mut events),
         );
         assert!(dirty);
         assert_eq!(
@@ -200,7 +214,7 @@ mod tests {
 
         component.on_update(
             &AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-            &mut ctx(&mut log, &mut queue),
+            &mut ctx(&mut log, &mut queue, &mut events),
         );
         assert!(component.state().active.is_none());
         assert_eq!(component.state().blocks.len(), 1);
@@ -215,6 +229,7 @@ mod tests {
         );
         let mut log = LogCoordinator::default();
         let mut queue = PendingQueue::default();
+        let mut events: Vec<crate::state::StreamEvent> = Vec::new();
         let dirty = component.on_update(
             &AgentUpdate::StepAdded(crate::protocol::PlanStep::new(
                 "s",
@@ -222,7 +237,7 @@ mod tests {
                 "id",
                 std::collections::HashMap::<String, String>::new(),
             )),
-            &mut ctx(&mut log, &mut queue),
+            &mut ctx(&mut log, &mut queue, &mut events),
         );
         assert!(!dirty, "thinking component ignores non-thinking updates");
     }
@@ -235,6 +250,7 @@ mod tests {
         );
         let mut log = LogCoordinator::default();
         let mut queue = PendingQueue::default();
+        let mut events: Vec<crate::state::StreamEvent> = Vec::new();
         for chunk in [
             ThinkingChunk::Started,
             ThinkingChunk::Delta("visible summary line".into()),
@@ -242,16 +258,17 @@ mod tests {
         ] {
             component.on_update(
                 &AgentUpdate::ThinkingChunk(chunk),
-                &mut ctx(&mut log, &mut queue),
+                &mut ctx(&mut log, &mut queue, &mut events),
             );
         }
         let mut buf = Buffer::empty(Rect::new(0, 0, 60, 5));
         let mut log2 = LogCoordinator::default();
         let mut queue2 = PendingQueue::default();
+        let mut events2: Vec<crate::state::StreamEvent> = Vec::new();
         let used = component.render(
             Rect::new(0, 0, 60, 5),
             &mut buf,
-            &ctx(&mut log2, &mut queue2),
+            &ctx(&mut log2, &mut queue2, &mut events2),
         );
         assert!(used > 0);
         let mut text = String::new();

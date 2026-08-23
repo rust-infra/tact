@@ -14,17 +14,17 @@ use crate::{Component, Ctx};
 ///
 /// `U` defaults to [`crate::protocol::AgentUpdate`]; hosts that emit a
 /// different update enum parameterize the registry and map at the boundary.
-pub struct ComponentRegistry<U = crate::protocol::AgentUpdate> {
+pub struct ComponentRegistry<U: 'static = crate::protocol::AgentUpdate> {
     components: Vec<(u8, Box<dyn Component<U>>)>,
 }
 
-impl<U> Default for ComponentRegistry<U> {
+impl<U: 'static> Default for ComponentRegistry<U> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<U> ComponentRegistry<U> {
+impl<U: 'static> ComponentRegistry<U> {
     pub fn new() -> Self {
         Self {
             components: Vec::new(),
@@ -82,6 +82,14 @@ impl<U> ComponentRegistry<U> {
             used = used.saturating_add(component.render(remaining, buf, ctx));
         }
         used
+    }
+
+    /// Borrow a concrete component by type (downcast); the shell uses this
+    /// to read component state for rendering.
+    pub fn get<T: Component<U>>(&self) -> Option<&T> {
+        self.components
+            .iter()
+            .find_map(|(_, c)| c.as_any().downcast_ref::<T>())
     }
 
     pub fn len(&self) -> usize {
@@ -150,13 +158,26 @@ mod tests {
         fn priority(&self) -> u8 {
             self.priority
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
     }
 
-    fn ctx<'a>(log: &'a mut LogCoordinator, pending: &'a mut PendingQueue) -> Ctx<'a> {
+    fn ctx<'a>(
+        log: &'a mut LogCoordinator,
+        pending: &'a mut PendingQueue,
+        stream_events: &'a mut Vec<crate::state::StreamEvent>,
+    ) -> Ctx<'a> {
         Ctx {
             log,
             input_mode: InputMode::Normal,
             pending,
+            stream_events,
         }
     }
 
@@ -172,10 +193,11 @@ mod tests {
 
         let mut log = LogCoordinator::default();
         let mut pending = PendingQueue::default();
+        let mut events: Vec<crate::state::StreamEvent> = Vec::new();
 
         let claimed = reg.dispatch_update(
             &AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-            &mut ctx(&mut log, &mut pending),
+            &mut ctx(&mut log, &mut pending, &mut events),
         );
         assert!(claimed, "thinking counter claims thinking updates");
         // Priority order: 10 (thinking) → 50 (low) → 100 (high).
@@ -193,7 +215,7 @@ mod tests {
         // Non-claiming updates reach everyone in order.
         let _ = reg.dispatch_update(
             &AgentUpdate::TaskComplete("done".into()),
-            &mut ctx(&mut log, &mut pending),
+            &mut ctx(&mut log, &mut pending, &mut events),
         );
         assert_eq!(thinking_updates.load(Ordering::Relaxed), 2);
         assert_eq!(low_updates.load(Ordering::Relaxed), 1);
@@ -209,12 +231,13 @@ mod tests {
         reg.push(b);
         let mut log = LogCoordinator::default();
         let mut pending = PendingQueue::default();
+        let mut events: Vec<crate::state::StreamEvent> = Vec::new();
         let consumed = reg.dispatch_key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('x'),
                 crossterm::event::KeyModifiers::NONE,
             ),
-            &mut ctx(&mut log, &mut pending),
+            &mut ctx(&mut log, &mut pending, &mut events),
         );
         assert!(!consumed);
         assert_eq!(a_keys.load(Ordering::Relaxed), 1);

@@ -9,7 +9,9 @@
 //! as the app layer migrates.
 
 pub mod registry;
+pub mod stream;
 pub mod thinking;
 
 pub use registry::ComponentRegistry;
+pub use stream::StreamComponent;
 pub use thinking::ThinkingComponent;

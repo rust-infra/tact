@@ -45,6 +45,9 @@ pub struct Ctx<'a> {
     pub input_mode: InputMode,
     /// Messages queued while the agent is busy (submitted on idle).
     pub pending: &'a mut PendingQueue,
+    /// Outbox for parsed stream events: components push, the shell applies
+    /// them to the log/UI after the update dispatch.
+    pub stream_events: &'a mut Vec<crate::state::StreamEvent>,
 }
 
 /// Shared-log ownership + model (priority-0 component), re-exported at the
@@ -77,7 +80,7 @@ pub struct PendingQueue {
 ///
 /// `U` defaults to [`protocol::AgentUpdate`]; hosts that emit a different
 /// update enum implement `Component<TheirUpdate>` and map at the boundary.
-pub trait Component<U = protocol::AgentUpdate> {
+pub trait Component<U = protocol::AgentUpdate>: 'static {
     /// Handle one protocol update. Returns `true` if the frame must repaint.
     fn on_update(&mut self, update: &U, ctx: &mut Ctx<'_>) -> bool;
 
@@ -100,9 +103,14 @@ pub trait Component<U = protocol::AgentUpdate> {
     fn priority(&self) -> u8 {
         100
     }
+
+    /// Downcast support: the shell needs to read a component's state for
+    /// rendering (state lives in the component, render reads it).
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-impl<U> Component<U> for Box<dyn Component<U>> {
+impl<U: 'static> Component<U> for Box<dyn Component<U>> {
     fn on_update(&mut self, update: &U, ctx: &mut Ctx<'_>) -> bool {
         (**self).on_update(update, ctx)
     }
@@ -121,6 +129,14 @@ impl<U> Component<U> for Box<dyn Component<U>> {
 
     fn priority(&self) -> u8 {
         (**self).priority()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        (**self).as_any()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        (**self).as_any_mut()
     }
 }
 
