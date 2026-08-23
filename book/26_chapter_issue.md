@@ -29,6 +29,52 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-23 — TUI render layer extracted into `agent_tui_kit` (reusable, Tact-free)
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | Design: `docs/superpowers/specs/2026-08-18-tui-component-library-design.md` (+ `-ctx-design.md`); plan: `docs/superpowers/plans/2026-08-18-tui-component-library.md`; Ch 23 |
+
+**Symptom / motivation:** the whole render stack lived in `crates/tui` as one
+monolithic crate coupled to `tact` / `tact_llm` (`App` held every panel's
+state; render functions took `&App`). Another agent project could not reuse
+the thinking/tool cards, streaming markdown log, popup family, input box, or
+status bars without pulling in Tact's agent runtime, and `handle_agent_update`
+was one giant match with no component boundary to test against.
+
+**Decision:** extract a reusable **agent-TUI kit** (`crates/agent_tui_kit`)
+that depends only on `tact_protocol` + ratatui:
+- pure render functions take a per-frame `RenderCtx` (disjoint `&` borrows
+  built by the host; the only mutation path is an explicit
+  `Vec<RenderCommand>` drained after the frame);
+- state models (`LogCoordinator`, `ToolState`, `ThinkingState`,
+  `StreamState`, `StatusBarState`, `LogScroll`, `PlanPanel`, popup states,
+  widgets) moved into the kit verbatim — zero visual change, verified by the
+  unchanged scene/render tests at every phase gate;
+- the in/out contract is `bridge::Command` (generic 9-variant enum) +
+  `AgentBridge` + `BridgeExtension`/`ExtensionEvent`; Tact-only commands
+  (`QueryBalance`) ride `ExtensionCommand`.
+- mutable "prepare" phases that need app-layer styling (log scroll-cache
+  rebuild with skill highlighting, diff/subagent lazy caches, input caret
+  clamp) stay in `crates/tui` and feed the kit's pure renderers.
+
+**Behavior after:** `cargo tree -p agent_tui_kit` contains no `tact` /
+`tact_llm`; `crates/tui` is the Tact app layer (shell `App`, handlers,
+prepare phases, app-layer popups, orchestration `layout.rs`). A headless
+mock consumer proves the kit standalone: `cargo run -p agent_tui_kit
+--example mock_agent`. Test counts moved with the code (tui 413 + kit 194 =
+607 ≥ the 604 baseline; `tact-ui` 105; clippy zero warnings).
+
+**Pointers:** `crates/agent_tui_kit/src/render/*` (bar, input, log, popups,
+task_panel, render_md, cells), `state/*`, `bridge.rs`,
+`crates/tui/src/widgets/state/app/config.rs` (`App::render_ctx`),
+`examples/mock_agent.rs`; per-phase gates recorded in the plan's results
+sections. Follow-up (step 9): `Component` registry + handlers migration is
+still TODO.
+
+---
+
 ## 1. 2026-08-17 — Responses model switches adapt web-search query fields
 
 | Field | Value |

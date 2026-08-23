@@ -39,6 +39,17 @@ Five unbounded MPSC channel pairs bridge the agent task, account service, plugin
 
 `AgentUpdate`, `UserCommand`, and `AccountUpdate` are defined in `tact_protocol`. `PluginRequest` and `PluginEvent` are defined in `tact::plugin`; `tact-ui` starts the worker and the TUI drains plugin events before rendering.
 
+**Layer split (2026-08):** the reusable render surface lives in
+`crates/agent_tui_kit` (design: `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`).
+The kit depends only on `tact_protocol` + ratatui; it owns the pure render
+functions (`render::bar` / `input` / `log` / `popups` / `task_panel` /
+`render_md` / `cells` …), the state models (`LogCoordinator`, `ToolState`,
+`ThinkingState`, `StreamState`, `StatusBarState`, `LogScroll`, …), and the
+in/out contract (`bridge::Command`, `AgentBridge`, `BridgeExtension`).
+`crates/tui` is the Tact app layer: it owns `App`, the handlers, the
+per-frame `prepare_*` phases (skill styling, scroll caches), and the
+app-layer popups (palette, file picker, slash commands, task DAG).
+
 ---
 
 ## 2. Entry Points
@@ -178,7 +189,14 @@ Timed state cleanup also runs outside `draw`: `Status::Done` reverts to `Idle` a
 
 ## 6. Rendering Layer
 
-The render stack lives under `crates/tui/src/render/`. It is **read-only with respect to agent logic**: handlers and `handle_agent_update` mutate `App`; render functions only read `App` and write ratatui `Buffer`s.
+The render stack is split between `crates/agent_tui_kit/src/render/` (pure
+panels, state models, widgets) and the `crates/tui/src/render/` app layer
+(entry points that build the per-frame `RenderCtx`, `prepare_*` phases, and
+app-layer popups). It is **read-only with respect to agent logic**: handlers
+and `handle_agent_update` mutate `App`; render functions read a `RenderCtx`
+(disjoint `&` borrows built once per frame) and write ratatui `Buffer`s.
+The only mutation path from render code is the explicit
+`Vec<RenderCommand>` drained by the shell after the frame.
 
 ```mermaid
 flowchart TB
@@ -207,23 +225,32 @@ flowchart TB
 
 | Path | Role |
 |------|------|
-| `render/mod.rs` | Re-exports panel entry points |
-| `render/layout.rs` | Main content routing (history, help, log + optional sticky tasks, popups) |
-| `render/task_panel.rs` | Sticky persistent-task strip (collapsed / expand) under Log |
-| `render/bar.rs` | Top status bar + bottom stats bar |
-| `render/input.rs` | Multi-line input box, approval banner, palette command line |
-| `render/log.rs` | Log panel: wrap cache, scroll, overlays, scrollbar |
-| `render/log_column.rs` | Viewport-clipped `Renderable` compositor |
-| `render/log_style.rs` | Shared log text styles |
-| `render/render_md.rs` | Markdown → ratatui `Line`s (`pulldown-cmark` + Mermaid routing + width-aware tables) |
-| `render/pulldown.rs` | `pulldown-cmark` event loop → ratatui `Line`s (prose/headings/lists/tables/blockquotes) |
-| `render/renderable.rs` | `Renderable` trait |
-| `render/util.rs` | `wrap_line`, tool indent constants |
-| `render/welcome.rs` | Startup logo |
-| `render/cells/` | `text`, `thinking`, `tool`, `code`, `separator` |
-| `render/popups/` | Palette, select, file picker, slash commands, help, history, thinking/diff/code detail |
+| `render/mod.rs` (tui) | App-layer re-exports + `RenderCtx` construction site |
+| `render/layout.rs` (tui) | Main content routing (history, help, log + optional sticky tasks, popups) — orchestration only |
+| `render/log.rs` (tui) | Log `prepare_log_frame` cache rebuild (app-layer skill styling); pure render moved to kit |
+| `render/log_style.rs` (tui) | Shared log text styles + skill restyle |
+| `render/slash_style.rs` (tui) | Thin wrapper injecting `PALETTE_COMMANDS` builtins into kit `slash_style` |
+| `render/popups/` (tui) | App-layer popups: palette, file picker, slash commands, task DAG, help (voice keybind) + wrappers applying mouse hit areas |
+| `agent_tui_kit::render/bar.rs` | Top status bar + bottom stats bar (pure `&RenderCtx`) |
+| `agent_tui_kit::render/input.rs` | Multi-line input box, pending block, palette command line (pure) |
+| `agent_tui_kit::render/log.rs` | Log panel pure render (wrap cache consumed, scroll, overlays, scrollbar) |
+| `agent_tui_kit::render/log_column.rs` | Viewport-clipped `Renderable` compositor |
+| `agent_tui_kit::render/task_panel.rs` | Sticky persistent-task strip (collapsed / expand) under Log |
+| `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s (`pulldown-cmark` + Mermaid routing + width-aware tables) |
+| `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` event loop → ratatui `Line`s |
+| `agent_tui_kit::render/mermaid_sequence.rs` | Local Mermaid `sequenceDiagram` renderer (alias/activation/CJK-safe) |
+| `agent_tui_kit::render/renderable.rs` | `Renderable` trait |
+| `agent_tui_kit::render/util.rs` | `wrap_line`, tool indent constants |
+| `agent_tui_kit::render/cells/` | `text`, `thinking`, `tool`, `code`, `separator`, `markdown` |
+| `agent_tui_kit::render/popups/` | Pure overlays: thinking/diff/code/mermaid/system-prompt/subagent/history/select + chrome helpers |
+| `agent_tui_kit::widgets/` | `ToolWidget`, `HelpWidget`, `PopupWidget`, `SelectPopupWidget` |
 
-Supporting pieces outside `render/`: `theme.rs` (colors), `i18n.rs` (`Messages` strings), `widgets/state/` (`App`, `LogScroll`, tool state).
+Supporting pieces: `agent_tui_kit::state/` (`LogCoordinator`, `LogScroll`,
+`ToolState`, `ThinkingState`, `StreamState`, `StatusBarState`, `PlanPanel`,
+`TaskPanelState`, `MouseState`, popup states …), `agent_tui_kit::theme` /
+`i18n` (colors, `Messages` strings); `crates/tui/src/widgets/state/` holds
+`App` and the app-layer states (`AccountState`, `VoiceState`, `FilePicker`,
+`SlashCommandState`, `InputHistory`, `TaskDagPopup`, `SelectKind`).
 
 ### 6.2 Frame pipeline
 
@@ -706,7 +733,9 @@ The TUI itself does not call notification APIs directly for streaming events.
 | `crates/tui/src/render/cells/` | Text, tool, thinking, code cells |
 | `crates/tui/src/render/popups/` | Overlays (palette, select, detail views) |
 | `crates/tui/src/widgets/state/app/agent.rs` | `AgentUpdate` → UI state |
-| `crates/tui/src/theme.rs` | Color schemes |
+| `crates/tui/src/theme.rs` | Color schemes (re-exported from the kit) |
+| `crates/agent_tui_kit` | Reusable agent-TUI kit: pure render panels, state models, widgets, bridge contract (design `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`) |
+| `crates/agent_tui_kit/examples/mock_agent.rs` | Headless end-to-end example: `AgentUpdate` sequence → kit state → rendered frame (`cargo run -p agent_tui_kit --example mock_agent`) |
 | `tact_protocol` | `AgentUpdate`, `UserCommand`, `AccountUpdate`, `BalanceInfo` ([Ch 25](./25_chapter_protocol.md)) |
 | `docs/tui_rendering.md` | Extended rendering reference and extension guide |
 | `docs/tool_rendering.md` | Tool block data flow and migration notes |

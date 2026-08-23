@@ -29,6 +29,46 @@
 
 ---
 
+## 1. 2026-08-23 — TUI 渲染层提取为 `agent_tui_kit`（可复用、与 Tact 解耦）
+
+| 字段 | 值 |
+|------|------|
+| **类型** | optimization |
+| **相关** | 设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`（+ `-ctx-design.md`）；计划：`docs/superpowers/plans/2026-08-18-tui-component-library.md`；Ch 23 |
+
+**症状 / 动机：** 整个渲染栈在 `crates/tui` 单个 crate 内，与 `tact` /
+`tact_llm` 强耦合（`App` 持有所有面板状态；render 函数接收 `&App`）。其他
+agent 项目无法复用 thinking/tool 卡片、流式 markdown 日志、弹窗族、输入框
+或状态栏，除非把 Tact 的 agent 运行时一起拉进来；且 `handle_agent_update`
+是一个巨大的 match，没有组件边界可独立测试。
+
+**决策：** 提取可复用的 **agent-TUI kit**（`crates/agent_tui_kit`），只依赖
+`tact_protocol` + ratatui：
+- 纯渲染函数接收每帧 `RenderCtx`（host 构建的不相交 `&` 借用；唯一变更路径
+  是显式 `Vec<RenderCommand>`，帧后 drain）；
+- 状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、
+  `StatusBarState`、`LogScroll`、`PlanPanel`、弹窗状态、widgets）verbatim 移入
+  kit——零视觉变化，每个阶段门禁由不变的 scene/render 测试验证；
+- 进出契约为 `bridge::Command`（通用 9 变体枚举）+ `AgentBridge` +
+  `BridgeExtension`/`ExtensionEvent`；Tact-only 命令（`QueryBalance`）走
+  `ExtensionCommand`；
+- 需要应用层样式的可变 "prepare" 阶段（log 滚动缓存重建 + skill 高亮、
+  diff/subagent 懒缓存、输入光标 clamp）留在 `crates/tui`，为 kit 纯渲染供数。
+
+**变更后行为：** `cargo tree -p agent_tui_kit` 无 `tact` / `tact_llm`；
+`crates/tui` 成为 Tact 应用层（shell `App`、handlers、prepare 阶段、应用层
+弹窗、编排 `layout.rs`）。headless mock 消费者证明 kit 可独立运行：
+`cargo run -p agent_tui_kit --example mock_agent`。测试随代码迁移（tui 413 +
+kit 194 = 607 ≥ 604 基线；`tact-ui` 105；clippy 零警告）。
+
+**指针：** `crates/agent_tui_kit/src/render/*`（bar、input、log、popups、
+task_panel、render_md、cells）、`state/*`、`bridge.rs`、
+`crates/tui/src/widgets/state/app/config.rs`（`App::render_ctx`）、
+`examples/mock_agent.rs`；各阶段门禁记录在计划文档 results 段落。后续
+（步骤 9）：`Component` 注册表 + handlers 迁移仍未做。
+
+---
+
 ## 1. 2026-08-17 — Responses 模型切换时适配 web-search query 字段
 
 | Field | Value |
