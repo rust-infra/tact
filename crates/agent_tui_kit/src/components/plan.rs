@@ -250,7 +250,11 @@ mod tests {
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
-        assert_eq!(comp.state().steps[0].output.as_deref(), None, "t1 untouched");
+        assert_eq!(
+            comp.state().steps[0].output.as_deref(),
+            None,
+            "t1 untouched"
+        );
         assert_eq!(comp.state().steps[1].output.as_deref(), Some("done2"));
     }
 
@@ -279,7 +283,11 @@ mod tests {
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
-        assert_eq!(comp.state().steps[0].output.as_deref(), None, "t1 untouched");
+        assert_eq!(
+            comp.state().steps[0].output.as_deref(),
+            None,
+            "t1 untouched"
+        );
         assert_eq!(comp.state().steps[1].output.as_deref(), Some("boom2"));
     }
 }
