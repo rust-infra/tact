@@ -457,7 +457,43 @@ edits):
 
 **Task #42 is now complete.** T5.2 book/docs sync done in this commit
 (`book/23_chapter_tui{,_zh}.md` §1 registry paragraph; `book/26` newest
-entry). Remaining known deferrals: the `Step*` placeholder-row lifecycle is
-still shell code (extraction boundary noted in Step 9 progress III), and
-the ratatui-markdown fork (R4) still needs external-consumer validation
-before the kit is published for non-Tact hosts.
+entry). R4 (ratatui-markdown fork) was resolved 2026-08-16 (#69) — upstream
+git rev `3a8bcbe`, no fork push needed.
+
+# Step 9 deferral done (2026-08-23) — ToolEvent outbox (task #43)
+
+The last known deferral — the `Step*` placeholder-row lifecycle in the
+shell — is extracted, mirroring `StreamComponent`:
+
+- **`2f0d6969` (kit):** `ToolComponent` owns the full lifecycle: `StepAdded`
+  records `tool_id → plan index` (arrival order = the shell's
+  `resolve_step_idx`), `StepStarted` builds the running card + emits
+  `Started`, `ToolProgress` pushes chunks + rebuilds the live output +
+  emits `Resize` (always — the shell refreshes scroll even when rows are
+  unchanged), `StepFinished`/`StepFailed`/`BackgroundTaskFinished` finalize
+  (active → blocks) or emit `Missing` (formatted system message). New
+  `ToolEvent` enum (Started/Resize/Finalized/Cancelled/Missing) rides a new
+  `Ctx::tool_events` outbox; the shell allocates placeholder rows and
+  backfills `phys_idx` via `set_phys_idx` / `set_blocks_phys_idx`.
+  `PlanComponent`'s StepAdded/StepFinished/StepFailed branches now return
+  `false` (side-write only — the registry stops at the first claimer and
+  `ToolComponent` also handles those variants).
+- **`5c2880e8` (tui):** `handle_agent_update` = dispatch →
+  `apply_stream_events` (StreamChunk) → `apply_tool_events` → `shell_handle`
+  → `refresh_tail_scroll`. `apply_tool_events` flushes stream residue before
+  placeholder work (Started/Cancelled/Finalized batches; Resize-only never
+  flushes — matching `on_tool_progress`), allocates/resizes/drains rows,
+  re-pins bottom scroll, appends `Missing` messages. Shell `Step*` handlers
+  became tails (status progress, plan-step output writes, Idle/freeze);
+  `finalize_tool_block` / `cancel_active_tool` / `remove_active_tool_rows`
+  deleted from `visibility.rs`.
+
+**Gate:** tui --lib **413** (unchanged, zero expectation edits) + kit --lib
+**229** (+8 lifecycle tests) = 642; tact-ui **105**; clippy zero warnings;
+fmt clean; mock example runs.
+
+**Remaining deferrals after task #43:** none structural — the kit now owns
+every component state machine; the shell only applies outbox events, status
+transitions, plan writes, and app-layer popups. R4 (external consumer
+validation of the ratatui-markdown git dep) is a publishing checklist item,
+not a code change.
