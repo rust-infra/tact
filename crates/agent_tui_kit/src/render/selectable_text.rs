@@ -29,6 +29,19 @@ pub struct DisplayRow {
     pub cells: Vec<PopupTextHit>,
 }
 
+/// A display row for scrollable Markdown popups (thinking, subagent): wrapped
+/// content rows tagged by render hint.
+///
+/// `Code` rows fill their tail with the code-block background so a fence reads
+/// as one continuous band instead of per-glyph patches; `Spacer` separates
+/// adjacent ordered-list items (rendered as a blank body row).
+#[derive(Debug, Clone)]
+pub enum MarkdownDisplayRow {
+    Content(DisplayRow),
+    Code(DisplayRow),
+    Spacer,
+}
+
 /// Wrapped-layout snapshot reused across frames while the popup content and
 /// body width are unchanged. Avoids re-wrapping the whole conversation (which
 /// can be tens of thousands of lines for a live subagent) on every render.
@@ -40,7 +53,7 @@ pub struct PopupLayoutCache {
     pub content_len: usize,
     pub width: u16,
     pub raw_text: String,
-    pub display_rows: Vec<DisplayRow>,
+    pub display_rows: Vec<MarkdownDisplayRow>,
     pub line_count: usize,
 }
 
@@ -152,6 +165,10 @@ pub fn scalar_styles(line: Option<&Line<'_>>, fallback: Style, scalar_count: usi
 
 /// Wrap every source line of `raw_text` into display rows, applying the styles
 /// from `styled_lines` (falling back to `fallback` where a line is missing).
+///
+/// Popups that need per-row render hints (code tail-fill, ordered-list
+/// spacers) should use [`crate::render::popups::markdown_plan::plan_markdown_display`]
+/// instead.
 pub fn layout_all_display_rows(
     raw_text: &str,
     styled_lines: &[Line<'_>],

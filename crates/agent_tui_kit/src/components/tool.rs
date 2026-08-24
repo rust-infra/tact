@@ -261,7 +261,8 @@ impl ToolComponent {
         // Subagent: live output holds the full conversation; detail_full would
         // otherwise only keep the final summary. Take it before the active
         // block is removed so the popup always shows the complete
-        // conversation. Also carry over subagent metadata (model, tokens).
+        // conversation. Also carry over subagent metadata (model, tokens) and
+        // the structured thinking/tools/context sections.
         if is_subagent
             && let Some(active) = self.state.active.iter_mut().find(|a| a.tool_id == tool_id)
         {
@@ -270,6 +271,7 @@ impl ToolComponent {
                 output.detail_total_lines = full_text.lines().count();
                 output.detail_full = Some(full_text);
             }
+            output.detail_sections = Some(active.live_output.take_sections());
             output.subagent_model = active.output.subagent_model.take();
             output.subagent_tokens = active.output.subagent_tokens.take();
         }
@@ -623,6 +625,7 @@ mod tests {
                 chunks: vec![ToolOutputChunk {
                     stream: ToolOutputStream::Stdout,
                     text: text.into(),
+                    section: tact_protocol::SubagentSection::Context,
                 }],
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
@@ -717,6 +720,147 @@ mod tests {
         assert_eq!(c.state().blocks.len(), 1);
         assert_eq!(c.state().blocks[0].phys_idx, 7, "phys_idx preserved");
         assert!(matches!(tool_events[0], ToolEvent::Finalized { .. }));
+    }
+
+    #[test]
+    fn subagent_completion_carries_structured_sections() {
+        use crate::protocol::{SubagentSection, ToolOutputChunk, ToolPopupKind};
+        let mut c = comp();
+        step_added(&mut c, "sub-1");
+        // Start a subagent step (SubagentTranscript popup).
+        let mut presentation = ToolPresentationInfo::generic("spawn_subagent");
+        presentation.popup = ToolPopupKind::SubagentTranscript;
+        {
+            let (mut log, mut pending, mut events, mut tool_events) = (
+                LogCoordinator::default(),
+                PendingQueue::default(),
+                Vec::new(),
+                Vec::new(),
+            );
+            c.on_update(
+                &AgentUpdate::StepStarted {
+                    idx: 0,
+                    tool_id: "sub-1".into(),
+                    tool_name: "spawn_subagent".into(),
+                    arg_summary: "fix it".into(),
+                    arg_full: "fix it".into(),
+                    presentation,
+                },
+                &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+            );
+        }
+        // Live chunks: thinking + tool step.
+        c.on_update(
+            &AgentUpdate::ToolProgress {
+                tool_id: "sub-1".into(),
+                chunks: vec![
+                    ToolOutputChunk::other("\n\n🧠 Thinking\n\nplan\n\n")
+                        .with_section(SubagentSection::Thinking),
+                    ToolOutputChunk::other("\n\n→ bash ls\n\n").with_section(SubagentSection::Tool),
+                    ToolOutputChunk::other("done"),
+                ],
+            },
+            &mut ctx(
+                &mut LogCoordinator::default(),
+                &mut PendingQueue::default(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            ),
+        );
+        // Finish.
+        let mut finish_presentation = ToolPresentationInfo::generic("spawn_subagent");
+        finish_presentation.popup = ToolPopupKind::SubagentTranscript;
+        let result = StepResult {
+            tool: "spawn_subagent".into(),
+            arg_summary: "fix it".into(),
+            arg_full: None,
+            status: StepStatus::Success,
+            message: "summary".into(),
+            detail: None,
+            duration_us: Some(1),
+            permission_label: None,
+            presentation: finish_presentation,
+        };
+        c.on_update(
+            &AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "sub-1".into(),
+                result,
+            },
+            &mut ctx(
+                &mut LogCoordinator::default(),
+                &mut PendingQueue::default(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            ),
+        );
+
+        assert_eq!(c.state().blocks.len(), 1);
+        let block = &c.state().blocks[0];
+        assert_eq!(block.tool_id, "sub-1");
+        let sections = block
+            .output
+            .detail_sections
+            .as_deref()
+            .expect("sections taken");
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[0].section, SubagentSection::Thinking);
+        assert_eq!(sections[1].section, SubagentSection::Tool);
+        assert_eq!(sections[2].section, SubagentSection::Context);
+        assert_eq!(sections[2].text, "done");
+        // Flat transcript still carried to the popup fallback.
+        assert!(
+            block
+                .output
+                .detail_full
+                .as_deref()
+                .is_some_and(|t| t.contains("🧠 Thinking"))
+        );
+    }
+
+    #[test]
+    fn non_subagent_completion_has_no_sections() {
+        let mut c = comp();
+        step_added(&mut c, "t1");
+        let _ = step_started(&mut c, "t1");
+        c.on_update(
+            &AgentUpdate::ToolProgress {
+                tool_id: "t1".into(),
+                chunks: vec![ToolOutputChunk::stdout("hello\n")],
+            },
+            &mut ctx(
+                &mut LogCoordinator::default(),
+                &mut PendingQueue::default(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            ),
+        );
+        let result = StepResult {
+            tool: "bash".into(),
+            arg_summary: "echo hi".into(),
+            arg_full: None,
+            status: StepStatus::Success,
+            message: "hi".into(),
+            detail: None,
+            duration_us: Some(1),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
+        };
+        c.on_update(
+            &AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "t1".into(),
+                result,
+            },
+            &mut ctx(
+                &mut LogCoordinator::default(),
+                &mut PendingQueue::default(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            ),
+        );
+        assert_eq!(c.state().blocks.len(), 1);
+        assert!(c.state().blocks[0].output.detail_sections.is_none());
     }
 
     #[test]

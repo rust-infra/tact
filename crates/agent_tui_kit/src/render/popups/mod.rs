@@ -7,6 +7,7 @@
 pub mod code_popup;
 pub mod diff_popup;
 pub mod history;
+pub mod markdown_plan;
 pub mod mermaid_popup;
 pub mod select;
 pub mod subagent_popup;

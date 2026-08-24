@@ -335,7 +335,9 @@ impl App {
             .find(|line| !line.trim().is_empty())
             .unwrap_or_default()
             .to_string();
-        let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
+        // The popup re-renders Markdown at its own body width, so no
+        // width-unaware cache pass is needed at close time.
+        let cached_markdown = Vec::new();
         let new_rows = crate::render::cells::thinking::thinking_visual_rows(1);
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
         self.thinking_mut().blocks.push(ThinkingBlock {

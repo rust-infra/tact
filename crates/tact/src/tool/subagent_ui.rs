@@ -1,6 +1,6 @@
 //! Forward subagent `ui_tx` traffic as `ToolProgress` for the parent tool card.
 
-use tact_protocol::{AgentUpdate, ToolOutputChunk};
+use tact_protocol::{AgentUpdate, SubagentSection, THINKING_SECTION_HEADER, ToolOutputChunk};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tool::ToolProgressReporter;
@@ -48,9 +48,11 @@ fn preserve_markdown_newlines(text: &str) -> String {
 
 /// Labeled thinking block. Not a Markdown blockquote — `>` + soft-break made
 /// titles glue to the next sentence and doubled the quote gutter (`▎ >`).
+/// The `🧠 Thinking` marker is shared with the sectioned popup
+/// ([`THINKING_SECTION_HEADER`]), which strips it and renders its own header.
 fn format_thinking_block(summary: &str) -> String {
     format!(
-        "🧠 Thinking\n\n{}",
+        "{THINKING_SECTION_HEADER}\n\n{}",
         preserve_markdown_newlines(summary.trim())
     )
 }
@@ -70,6 +72,7 @@ pub fn tagged_ui_channel_with_progress(
         while let Some(update) = rx.recv().await {
             match update {
                 AgentUpdate::StreamChunk(text) => {
+                    // Default section: Context.
                     progress.report(vec![ToolOutputChunk::other(text)]);
                 }
                 AgentUpdate::ThinkingChunk(chunk) => match chunk {
@@ -83,7 +86,10 @@ pub fn tagged_ui_channel_with_progress(
                         let summary = thinking_buf.trim().to_string();
                         thinking_buf.clear();
                         if !summary.is_empty() {
-                            progress.report(vec![structural_line(format_thinking_block(&summary))]);
+                            progress.report(vec![
+                                structural_line(format_thinking_block(&summary))
+                                    .with_section(SubagentSection::Thinking),
+                            ]);
                         }
                     }
                 },
@@ -97,29 +103,33 @@ pub fn tagged_ui_channel_with_progress(
                     } else {
                         format!("→ {tool_name} {arg_summary}")
                     };
-                    progress.report(vec![structural_line(line)]);
+                    progress.report(vec![
+                        structural_line(line).with_section(SubagentSection::Tool),
+                    ]);
                 }
                 AgentUpdate::StepFinished { result, .. } => {
                     let preview = result.message;
                     if !preview.is_empty() {
                         // Multi-line tool output (e.g. `ls -la`) must keep its
                         // newlines through the completed-popup Markdown pass.
-                        progress.report(vec![structural_line(format!(
-                            "✓ {}",
-                            preserve_markdown_newlines(&preview)
-                        ))]);
+                        progress.report(vec![
+                            structural_line(format!("✓ {}", preserve_markdown_newlines(&preview)))
+                                .with_section(SubagentSection::Tool),
+                        ]);
                     }
                 }
                 AgentUpdate::StepFailed { error, .. } => {
-                    progress.report(vec![structural_stderr(format!(
-                        "✗ {}",
-                        preserve_markdown_newlines(&error)
-                    ))]);
+                    progress.report(vec![
+                        structural_stderr(format!("✗ {}", preserve_markdown_newlines(&error)))
+                            .with_section(SubagentSection::Tool),
+                    ]);
                 }
                 AgentUpdate::Info(msg) => {
+                    // Default section: Context.
                     progress.report(vec![structural_line(msg)]);
                 }
                 AgentUpdate::Error(err) => {
+                    // Default section: Context.
                     progress.report(vec![structural_stderr(format!("error: {err:?}"))]);
                 }
                 AgentUpdate::TokenUsage(usage) => {
@@ -199,6 +209,7 @@ mod tests {
                 assert_eq!(tool_id, "task-1");
                 assert_eq!(chunks.len(), 1);
                 assert_eq!(chunks[0].text, "hello world\n");
+                assert_eq!(chunks[0].section, SubagentSection::Context);
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
@@ -241,6 +252,8 @@ mod tests {
                 assert!(text.contains("reasoning line  \nsecond"), "got {text:?}");
                 assert!(text.starts_with("\n\n"), "got {text:?}");
                 assert!(text.ends_with("\n\n"), "got {text:?}");
+                // Tagged for the sectioned popup's Thinking section.
+                assert_eq!(chunks[0].section, SubagentSection::Thinking);
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
@@ -329,6 +342,7 @@ mod tests {
             AgentUpdate::ToolProgress { chunks, .. } => {
                 assert!(chunks[0].text.contains("read_file"));
                 assert!(chunks[0].text.contains("main.rs"));
+                assert_eq!(chunks[0].section, SubagentSection::Tool);
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
@@ -341,6 +355,7 @@ mod tests {
                     chunks[0].stream,
                     tact_protocol::ToolOutputStream::Stderr
                 ));
+                assert_eq!(chunks[0].section, SubagentSection::Tool);
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
@@ -380,6 +395,7 @@ mod tests {
                 assert!(chunks[0].text.contains("hi"));
                 assert!(chunks[0].text.starts_with("\n\n"));
                 assert!(chunks[0].text.ends_with("\n\n"));
+                assert_eq!(chunks[0].section, SubagentSection::Tool);
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
@@ -509,12 +525,14 @@ mod tests {
         match &got[0] {
             AgentUpdate::ToolProgress { chunks, .. } => {
                 assert_eq!(chunks[0].text, "partial");
+                assert_eq!(chunks[0].section, SubagentSection::Context);
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
         match &got[1] {
             AgentUpdate::ToolProgress { chunks, .. } => {
                 assert_eq!(chunks[0].text, "\n\n→ bash ls\n\n");
+                assert_eq!(chunks[0].section, SubagentSection::Tool);
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }

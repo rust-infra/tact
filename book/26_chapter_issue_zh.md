@@ -29,6 +29,57 @@
 
 ---
 
+## 1. 2026-08-24 — Subagent 弹窗按 Thinking / Tools / Context 分节展示
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/protocol/src/tool_output.rs`（`SubagentSection`、`SubagentSectionBlock`、`THINKING_SECTION_HEADER`）, `crates/tact/src/tool/subagent_ui.rs`（chunk 打标）, `crates/agent_tui_kit/src/components/tool.rs`（live→completed 交接）, `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`ToolRenderOutput::detail_sections`）, `crates/agent_tui_kit/src/render/popups/subagent_popup.rs`; 设计 `docs/superpowers/specs/2026-08-24-subagent-sectioned-popup-design.md`, 计划 `docs/superpowers/plans/2026-08-24-subagent-sectioned-popup.md` |
+
+**Symptom / motivation:** subagent 弹窗渲染的是单一扁平 transcript：思考摘要、工具步骤、流式上下文在传输边界（`tagged_ui_channel_with_progress` → `ToolProgress` → `ToolOutputBuffer::full_detail`）被打平成一段文本流，长 subagent 运行读起来是一整面无差别的文字墙，prompt 也只能在折叠卡片 meta 行上看到。
+
+**Decision:** 每个 `ToolOutputChunk` 增加 `SubagentSection` 标签（`Thinking` / `Tool` / `Context`，默认 `Context`）；转发器在不改变任何输出文本的前提下，把思考摘要、工具开始/结果/失败行、流式上下文分别打标。`ToolOutputBuffer` 在保持扁平流字节不变（折叠卡片预览不受影响）的同时，把 ANSI 过滤后的文本按节累积为结构化 `SubagentSectionBlock`；live→completed 交接将其持久化到 `ToolRenderOutput::detail_sections`。弹窗按规范顺序（Thinking → Tools → Context）分组，把 subagent prompt（卡片 `arg_full`）作为 `Prompt:` 标注块放在 Context 顶部，渲染为单个可滚动文档——live 为带样式标题的纯文本换行，完成后为 `##` 标题的 Markdown（走既有宽度感知管线）。仅当至少两个节非空时才显示节标题；早于分节捕获的 transcript 回退到扁平 `detail_full`，渲染与之前完全一致。
+
+**Behavior after:** subagent 弹窗按 `🧠 Thinking` / `🔧 Tools` / `📄 Context` 顺序展示节（空节省略），prompt 位于 Context 之下；Thinking 正文左侧缩进 4 列（live 用普通空格，完成态 Markdown 用不换行空格 `\u{00A0}`，避免 CommonMark 把 4 空格前缀识别为代码块）。折叠卡片预览、弹窗 chrome、选中与 `y` 复制保持不变（复制内容现在包含节标题）。只输出文本的运行保持原来的扁平外观。
+
+**Pointers:** `tool_output.rs`（`SubagentSection`、分节累积、`take_sections`）, `subagent_ui.rs`（`.with_section`）, `components/tool.rs::on_step_finished`（subagent `detail_sections`）, `subagent_popup.rs`（`group_sections`、`build_live_document`、`build_completed_markdown`、`prepare_subagent_popup`）; 测试 `completed_subagent_popup_renders_sectioned_headers_in_order`、`live_subagent_popup_renders_section_headers`、`sectioned_subagent_popup_blank_separator_carries_theme_background`。
+
+---
+
+## 1. 2026-08-24 — Subagent 弹窗与主区域共用 Markdown 渲染管线；弹窗装饰逻辑抽取为 `markdown_plan`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/popups/{subagent_popup,thinking_popup,markdown_plan}.rs`, `crates/agent_tui_kit/src/render/selectable_text.rs`（`MarkdownDisplayRow`、`PopupLayoutCache`）, `crates/tui/src/render/popup_scene_tests.rs`; Ch 23 TUI 渲染管线 |
+
+**Symptom / motivation:** subagent 弹窗的已完成分支用 `render_markdown_tui`（固定 80 列、无宽度感知）渲染并复用一次性 `cached_markdown`，宽管道表格会在更窄的弹窗正文里溢出，Mermaid 也一律按 80 列布局。同时它缺少 thinking 弹窗已具备的装饰（标题 `#` 标记、代码行尾填充、有序列表分隔行），两个对话类弹窗观感不一致，且装饰逻辑内联在 `thinking_popup.rs` 里无法复用。
+
+**Decision:** subagent 弹窗的已完成分支改为与主区域、thinking 弹窗一致的宽度感知 `render_markdown_with_tables`（几何计算提前到绘制 chrome 之前）。共享的弹窗专属装饰 pass 抽取到 `render/popups/markdown_plan.rs`（`decorate_headings`、`is_ordered_list_item`、`plan_markdown_display`、`fill_code_row_tail`）。两个弹窗都通过 `plan_markdown_display` 产出带标记的行 `MarkdownDisplayRow::{Content,Code,Spacer}`；subagent 弹窗保留布局缓存（live 对话可能上万行），把带标记的行存进 `PopupLayoutCache`。主区域渲染（`render_markdown_with_tables`、pulldown 渲染器、log 单元格）不受影响。
+
+**Behavior after:** 完成的 subagent 弹窗展示宽度自适应的表格、带 `#` 前缀的标题、整行宽的代码块、相邻有序列表项之间的空行分隔 —— 与 thinking 弹窗一致。流式（live）内容仍为纯文本换行。选中与 `y` 复制仍基于可见文本（标题的 `#` 前缀会包含在复制内容中）。
+
+**Pointers:** `markdown_plan.rs`（共享装饰/布局）, `subagent_popup.rs`（`prepare_subagent_popup` 按 `body_width` 渲染；渲染循环匹配 `MarkdownDisplayRow`）, `thinking_popup.rs`（改为消费共享 plan）, `selectable_text.rs`（`MarkdownDisplayRow`、`PopupLayoutCache`）; 测试 `completed_subagent_popup_marks_headings_with_hash_prefix`、`completed_subagent_popup_code_rows_fill_the_tail_with_code_background`、`completed_subagent_popup_separates_adjacent_ordered_list_items`、`completed_subagent_popup_wraps_wide_tables_inside_the_body`。
+
+---
+
+## 1. 2026-08-24 — Thinking 弹窗按自身宽度渲染 Markdown；标题加 `#` 标记，代码块整行铺背景
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/popups/thinking_popup.rs`, `crates/tui/src/widgets/state/app/visibility.rs` (`close_active_thinking_block`), `crates/tui/src/render/popup_scene_tests.rs`; Ch 23 TUI 渲染管线 |
+
+**Symptom / motivation:** thinking 弹窗的已完成分支复用 `ThinkingBlock.cached_markdown`，那是卡片关闭时用 `render_markdown_tui`（固定 80 列、无宽度感知）渲染一次的缓存。在更窄的弹窗里，管道表格会按内容全宽展开、长单元格不在布局内换行、外层换行把管道对齐撕碎；Mermaid 也一律按 80 列布局，与弹窗实际宽度不符。此外，标题渲染成无标记的纯彩色文字（结构感弱），围栏代码块只给每行的文字列上背景，整块看起来是一段段离散的色块而不是一整条色带。
+
+**Decision:** 弹窗对已完成内容改用宽度感知的 `render_markdown_with_tables`，按弹窗实际正文宽度重新渲染（几何计算提前到绘制 chrome 之前），表格收缩/换行、Mermaid 按真实宽度路由。新增仅弹窗生效的装饰 pass：根据 pulldown 渲染器生成的标题样式恢复级别，给标题行加 GitHub 风格 `#`/`##`/`###`/`####`/`#####` 前缀（主区域保持既定的无标记标题）。布局时标记代码行，渲染时用 `theme.code_block_bg()` 填充行尾，使代码块呈连续色带；填充是纯渲染 span，不影响选中/复制文本。关闭时的 80 列缓存渲染随之移除（`cached_markdown` 字段保留给测试）。
+
+**Behavior after:** thinking 弹窗对已完成推理内容展示宽度自适应的表格、带 `#` 前缀的标题、整行宽的代码块；流式（active）内容仍为纯文本。选中与 `y` 复制仍基于可见文本（标题的 `#` 前缀会包含在复制内容中）。
+
+**Pointers:** `markdown_plan.rs`（`heading_prefix`/`decorate_headings`/`plan_markdown_display`/`fill_code_row_tail`）, `thinking_popup.rs`（改为消费共享 plan）, `selectable_text.rs`（`MarkdownDisplayRow::Code`）, `visibility.rs`（`close_active_thinking_block` 不再渲染 80 列缓存）, 测试 `thinking_popup_marks_headings_with_hash_prefix`、`thinking_popup_code_rows_fill_the_tail_with_code_background`、`completed_thinking_popup_separates_adjacent_ordered_list_items`。
+
+---
+
 ## 1. 2026-08-23 — 附件去内联：`@file`/`![alt]` 保留为路径文本
 
 | Field | Value |

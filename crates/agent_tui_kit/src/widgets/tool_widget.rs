@@ -315,6 +315,10 @@ pub struct ToolRenderOutput {
     pub detail_total_lines: usize,
     /// Full detail text for popup display (preview may be truncated).
     pub detail_full: Option<String>,
+    /// Structured subagent transcript sections (thinking / tools / context).
+    /// Set for completed `spawn_subagent` cards; `None` for every other tool
+    /// and for legacy transcripts that predate section capture.
+    pub detail_sections: Option<Vec<tact_protocol::SubagentSectionBlock>>,
     pub card_bottom: String,
     /// Subagent model name for tool-card header display.
     pub subagent_model: Option<String>,
@@ -726,6 +730,7 @@ impl<'a> ToolWidget<'a> {
             } else {
                 None
             },
+            detail_sections: None,
             card_bottom,
             subagent_model: self.subagent_model.clone(),
             subagent_tokens: self.subagent_tokens.clone(),

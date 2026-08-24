@@ -24,11 +24,52 @@ impl ToolOutputStream {
     }
 }
 
+/// Which section of a subagent transcript a chunk belongs to.
+///
+/// The subagent forwarder tags every `ToolProgress` chunk so the sectioned
+/// popup can group thinking blocks, tool steps and streamed context into
+/// separate sections. Non-subagent chunks keep the default (`Context`);
+/// the flat card stream never reads the tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubagentSection {
+    /// Streamed assistant text, info messages, errors, and the initial prompt.
+    #[default]
+    Context,
+    /// A reasoning / thinking block.
+    Thinking,
+    /// A tool invocation: the start line, its result, or its error.
+    Tool,
+}
+
+impl SubagentSection {
+    /// Canonical display order for the sectioned subagent popup.
+    pub const ORDERED: [SubagentSection; 3] = [
+        SubagentSection::Thinking,
+        SubagentSection::Tool,
+        SubagentSection::Context,
+    ];
+}
+
+/// Marker the subagent forwarder prefixes to every thinking block in the flat
+/// card stream, and the sectioned popup strips before rendering its own single
+/// section header. Lives here so both sides read the same string.
+pub const THINKING_SECTION_HEADER: &str = "🧠 Thinking";
+
+/// One contiguous body of a subagent transcript section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentSectionBlock {
+    pub section: SubagentSection,
+    pub text: String,
+}
+
 /// One ordered text fragment in a tool-progress batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutputChunk {
     pub stream: ToolOutputStream,
     pub text: String,
+    /// Section tag consumed by the subagent popup; the flat card stream
+    /// ignores it. Non-subagent chunks keep the default (`Context`).
+    pub section: SubagentSection,
 }
 
 impl ToolOutputChunk {
@@ -36,6 +77,7 @@ impl ToolOutputChunk {
         Self {
             stream: ToolOutputStream::Stdout,
             text: text.into(),
+            section: SubagentSection::Context,
         }
     }
 
@@ -43,6 +85,7 @@ impl ToolOutputChunk {
         Self {
             stream: ToolOutputStream::Stderr,
             text: text.into(),
+            section: SubagentSection::Context,
         }
     }
 
@@ -50,7 +93,14 @@ impl ToolOutputChunk {
         Self {
             stream: ToolOutputStream::Other,
             text: text.into(),
+            section: SubagentSection::Context,
         }
+    }
+
+    /// Tag this chunk as belonging to a subagent transcript section.
+    pub fn with_section(mut self, section: SubagentSection) -> Self {
+        self.section = section;
+        self
     }
 }
 
@@ -167,6 +217,11 @@ pub struct ToolOutputBuffer {
     full_current_detail: String,
     total_committed: usize,
     ansi: [AnsiState; 3],
+    /// Structured transcript sections (subagent popup). Each chunk's
+    /// ANSI-filtered text is appended to the last block when the section
+    /// matches, otherwise a new block is opened. Non-subagent buffers keep a
+    /// single `Context` block that nobody reads.
+    sections: Vec<SubagentSectionBlock>,
 }
 
 impl ToolOutputBuffer {
@@ -198,17 +253,50 @@ impl ToolOutputBuffer {
             full_current_detail: String::new(),
             total_committed: 0,
             ansi: [AnsiState::default(); 3],
+            sections: Vec::new(),
         }
     }
 
     pub fn push_chunks(&mut self, chunks: &[ToolOutputChunk]) {
         for chunk in chunks {
+            // Filter ANSI once, then feed both the flat line buffer and the
+            // structured section transcript so their text always agrees.
+            let mut filtered = String::new();
             for ch in chunk.text.chars() {
                 if let Some(ch) = self.ansi[chunk.stream.index()].filter(ch) {
-                    self.push_char(chunk.stream, ch);
+                    filtered.push(ch);
                 }
             }
+            if !filtered.is_empty() {
+                self.append_section(chunk.section, &filtered);
+            }
+            for ch in filtered.chars() {
+                self.push_char(chunk.stream, ch);
+            }
         }
+    }
+
+    fn append_section(&mut self, section: SubagentSection, text: &str) {
+        if let Some(last) = self.sections.last_mut()
+            && last.section == section
+        {
+            last.text.push_str(text);
+            return;
+        }
+        self.sections.push(SubagentSectionBlock {
+            section,
+            text: text.to_string(),
+        });
+    }
+
+    /// Structured transcript sections (subagent popup), in arrival order.
+    pub fn sections(&self) -> &[SubagentSectionBlock] {
+        &self.sections
+    }
+
+    /// Takes the structured sections, leaving the buffer with none.
+    pub fn take_sections(&mut self) -> Vec<SubagentSectionBlock> {
+        std::mem::take(&mut self.sections)
     }
 
     pub fn preview_lines(&self, limit: usize) -> Vec<ToolOutputLine> {
@@ -510,5 +598,76 @@ mod tests {
             crate::AgentUpdate::ToolProgress { tool_id, chunks: actual }
                 if tool_id == "bash-1" && actual == chunks
         ));
+    }
+
+    #[test]
+    fn section_tag_round_trips_on_chunk() {
+        let chunk = ToolOutputChunk::other("body")
+            .with_section(SubagentSection::Thinking)
+            .with_section(SubagentSection::Tool);
+
+        assert_eq!(chunk.section, SubagentSection::Tool);
+        assert_eq!(chunk.text, "body");
+        assert_eq!(chunk.stream, ToolOutputStream::Other);
+        // Defaults are Context for all plain constructors.
+        assert_eq!(
+            ToolOutputChunk::stdout("s").section,
+            SubagentSection::Context
+        );
+        assert_eq!(
+            ToolOutputChunk::stderr("s").section,
+            SubagentSection::Context
+        );
+        assert_eq!(
+            ToolOutputChunk::other("s").section,
+            SubagentSection::Context
+        );
+    }
+
+    #[test]
+    fn sections_merge_same_section_and_open_new_blocks_on_change() {
+        let mut output = ToolOutputBuffer::new_full(50_000);
+        output.push_chunks(&[
+            ToolOutputChunk::other("stream one").with_section(SubagentSection::Context),
+            ToolOutputChunk::other("stream two").with_section(SubagentSection::Context),
+            ToolOutputChunk::other("\n\nplan\n").with_section(SubagentSection::Thinking),
+            ToolOutputChunk::other("→ bash ls\n\n").with_section(SubagentSection::Tool),
+        ]);
+
+        let sections = output.sections();
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[0].section, SubagentSection::Context);
+        assert_eq!(sections[0].text, "stream onestream two");
+        assert_eq!(sections[1].section, SubagentSection::Thinking);
+        assert_eq!(sections[1].text, "\n\nplan\n");
+        assert_eq!(sections[2].section, SubagentSection::Tool);
+        assert_eq!(sections[2].text, "→ bash ls\n\n");
+        // The flat stream stays byte-identical to the section text.
+        assert_eq!(
+            output.full_detail_text(),
+            "stream onestream two\n\nplan\n→ bash ls\n\n"
+        );
+    }
+
+    #[test]
+    fn sections_strip_ansi_like_the_flat_stream() {
+        let mut output = ToolOutputBuffer::new_full(50_000);
+        output
+            .push_chunks(&[ToolOutputChunk::other("\x1b[31merror\x1b[0m\n")
+                .with_section(SubagentSection::Context)]);
+
+        assert_eq!(output.sections()[0].text, "error\n");
+        assert_eq!(output.full_detail_text(), "error\n");
+    }
+
+    #[test]
+    fn take_sections_drains_the_buffer() {
+        let mut output = ToolOutputBuffer::new_full(50_000);
+        output.push_chunks(&[ToolOutputChunk::other("body").with_section(SubagentSection::Tool)]);
+
+        let taken = output.take_sections();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].section, SubagentSection::Tool);
+        assert!(output.sections().is_empty());
     }
 }

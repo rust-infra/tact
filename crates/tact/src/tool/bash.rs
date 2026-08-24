@@ -37,7 +37,11 @@ fn push_decoded(
     if text.is_empty() {
         return;
     }
-    let chunk = ToolOutputChunk { stream, text };
+    let chunk = ToolOutputChunk {
+        stream,
+        text,
+        section: tact_protocol::SubagentSection::Context,
+    };
     capture.push_chunks(std::slice::from_ref(&chunk));
     pending.push(chunk);
 }

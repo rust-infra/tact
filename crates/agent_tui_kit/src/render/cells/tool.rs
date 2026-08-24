@@ -528,6 +528,7 @@ mod tests {
             detail_preview: preview,
             detail_total_lines: total,
             detail_full: None,
+            detail_sections: None,
             card_bottom: " Double-click for full code ".into(),
             subagent_model: None,
             subagent_tokens: None,

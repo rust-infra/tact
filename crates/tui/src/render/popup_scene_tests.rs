@@ -4,10 +4,12 @@ use std::time::Duration;
 
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 
-use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
+use super::test_harness::{
+    buffer_contains, buffer_text, make_app, render_app_text, render_main_area_text,
+};
 use crate::widgets::state::{
     App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection,
-    ThinkingBlock, ThinkingPopup,
+    SubagentPopup, ThinkingBlock, ThinkingPopup,
 };
 
 fn seed_diff_popup(app: &mut App) {
@@ -86,6 +88,142 @@ fn seed_thinking_popup(app: &mut App) {
         scroll: 0,
         selection: None,
         selection_text: String::new(),
+    });
+}
+
+fn render_subagent_popup_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| {
+            super::popups::subagent_popup::render_subagent_popup(frame, frame.area(), app)
+        })
+        .expect("draw");
+    terminal
+}
+
+fn render_subagent_popup_text(app: &mut App, width: u16, height: u16) -> String {
+    let terminal = render_subagent_popup_terminal(app, width, height);
+    buffer_text(terminal.backend().buffer())
+}
+
+fn seed_subagent_popup(app: &mut App, content: &str) {
+    seed_subagent_popup_impl(app, Some(content.into()), None, "subagent");
+}
+
+/// Seed a completed subagent block carrying structured transcript sections.
+/// `prompt` becomes the card's `arg_full` and is rendered inside the popup's
+/// Context section.
+fn seed_subagent_popup_sections(
+    app: &mut App,
+    sections: &[agent_tui_kit::protocol::SubagentSectionBlock],
+    prompt: &str,
+) {
+    seed_subagent_popup_impl(app, None, Some(sections.to_vec()), prompt);
+}
+
+fn seed_subagent_popup_impl(
+    app: &mut App,
+    detail_full: Option<String>,
+    detail_sections: Option<Vec<agent_tui_kit::protocol::SubagentSectionBlock>>,
+    arg_full: &str,
+) {
+    use agent_tui_kit::state::ToolBlock;
+    use agent_tui_kit::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput};
+    use tact_protocol::ToolVisualKind;
+    app.tools_mut().blocks.push(ToolBlock {
+        phys_idx: 0,
+        tool_id: "sub-1".into(),
+        output: ToolRenderOutput {
+            title_line: Line::from("🤖 Subagent"),
+            title_raw: "subagent".into(),
+            phase: ToolPhase::Success,
+            permission_label: None,
+            error_message: None,
+            duration_us: Some(1),
+            size_bytes: None,
+            tool_name: "spawn_subagent".into(),
+            use_diff_gutter: false,
+            arg_summary: arg_full.into(),
+            arg_full: arg_full.into(),
+            layout: ToolLayout {
+                visual_rows: 0,
+                preview_lines: 0,
+                has_detail_card: false,
+            },
+            detail_title: None,
+            detail_preview: Vec::new(),
+            detail_total_lines: 0,
+            detail_full,
+            detail_sections,
+            card_bottom: String::new(),
+            subagent_model: None,
+            subagent_tokens: None,
+            visual_kind: ToolVisualKind::Subagent,
+        },
+    });
+    app.subagent_popup = Some(SubagentPopup {
+        title: "subagent".into(),
+        scroll: 0,
+        tool_id: "sub-1".into(),
+        cached_markdown: None,
+        selection: None,
+        layout_cache: None,
+    });
+}
+
+/// Seed an active (live) subagent block with the given tagged chunks and a
+/// prompt, then open its popup.
+fn seed_active_subagent_popup(
+    app: &mut App,
+    chunks: &[tact_protocol::ToolOutputChunk],
+    prompt: &str,
+) {
+    use agent_tui_kit::state::ActiveToolBlock;
+    use agent_tui_kit::widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput};
+    use tact_protocol::{ToolOutputBuffer, ToolVisualKind};
+    let mut live_output = ToolOutputBuffer::new_full(50_000);
+    live_output.push_chunks(chunks);
+    app.tools_mut().active.push(ActiveToolBlock {
+        phys_idx: 0,
+        tool_id: "sub-1".into(),
+        output: ToolRenderOutput {
+            title_line: Line::from("🤖 Subagent"),
+            title_raw: "subagent".into(),
+            phase: ToolPhase::Running,
+            permission_label: None,
+            error_message: None,
+            duration_us: Some(1),
+            size_bytes: None,
+            tool_name: "spawn_subagent".into(),
+            use_diff_gutter: false,
+            arg_summary: prompt.into(),
+            arg_full: prompt.into(),
+            layout: ToolLayout {
+                visual_rows: 0,
+                preview_lines: 0,
+                has_detail_card: false,
+            },
+            detail_title: None,
+            detail_preview: Vec::new(),
+            detail_total_lines: 0,
+            detail_full: None,
+            detail_sections: None,
+            card_bottom: String::new(),
+            subagent_model: None,
+            subagent_tokens: None,
+            visual_kind: ToolVisualKind::Subagent,
+        },
+        live_output,
+        started_at: std::time::Instant::now(),
+    });
+    app.subagent_popup = Some(SubagentPopup {
+        title: "subagent".into(),
+        scroll: 0,
+        tool_id: "sub-1".into(),
+        cached_markdown: None,
+        selection: None,
+        layout_cache: None,
     });
 }
 
@@ -525,6 +663,352 @@ fn thinking_popup_selection_text_matches_visible_markdown_text() {
 
     assert_eq!(popup.selection_text, "bold reasoning");
     assert_eq!(popup.copy_content(&full_content), "bold");
+}
+
+#[test]
+fn thinking_popup_marks_headings_with_hash_prefix() {
+    let mut app = make_app();
+    seed_thinking_popup(&mut app);
+    let block = app
+        .thinking_mut()
+        .blocks
+        .first_mut()
+        .expect("thinking block");
+    block.content = "# Title\n\n## Sub\n\nplain body".into();
+    block.cached_markdown = Vec::new();
+
+    let text = render_thinking_popup_text(&mut app, 100, 30);
+
+    assert!(text.contains("# Title"), "H1 needs a # prefix:\n{text}");
+    assert!(text.contains("## Sub"), "H2 needs a ## prefix:\n{text}");
+    assert!(text.contains("plain body"), "{text}");
+}
+
+#[test]
+fn thinking_popup_code_rows_fill_the_tail_with_code_background() {
+    let mut app = make_app();
+    seed_thinking_popup(&mut app);
+    let block = app
+        .thinking_mut()
+        .blocks
+        .first_mut()
+        .expect("thinking block");
+    block.content = "```rust\nfn main() {}\n```".into();
+    block.cached_markdown = Vec::new();
+
+    let terminal = render_thinking_popup_terminal(&mut app, 100, 30);
+    let buf = terminal.backend().buffer();
+    let code_bg = app.theme.code_block_bg();
+
+    // Find the row containing the code text and assert the tail cells carry
+    // the code background all the way to the popup body edge.
+    let body = app.mouse.popup_text_body_area;
+    let body_right = body.x + body.width - 1;
+    let code_row = (0..buf.area.height)
+        .find(|&y| {
+            (0..buf.area.width).any(|x| buf[(x, y)].symbol() == "m" && buf[(x, y)].bg == code_bg)
+        })
+        .expect("code row");
+
+    for x in body.x..body_right {
+        assert_eq!(
+            buf[(x, code_row)].bg,
+            code_bg,
+            "code row tail must carry the code background at x={x}"
+        );
+    }
+}
+
+#[test]
+fn completed_subagent_popup_marks_headings_with_hash_prefix() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app, "# Title\n\n## Sub\n\nplain body");
+
+    let text = render_subagent_popup_text(&mut app, 100, 30);
+
+    assert!(text.contains("# Title"), "H1 needs a # prefix:\n{text}");
+    assert!(text.contains("## Sub"), "H2 needs a ## prefix:\n{text}");
+    assert!(text.contains("plain body"), "{text}");
+}
+
+#[test]
+fn completed_subagent_popup_code_rows_fill_the_tail_with_code_background() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app, "```rust\nfn main() {}\n```");
+
+    let terminal = render_subagent_popup_terminal(&mut app, 100, 30);
+    let buf = terminal.backend().buffer();
+    let code_bg = app.theme.code_block_bg();
+
+    // Find the row containing the code text and assert the tail cells carry
+    // the code background all the way to the popup body edge.
+    let body = app.mouse.popup_text_body_area;
+    let body_right = body.x + body.width - 1;
+    let code_row = (0..buf.area.height)
+        .find(|&y| {
+            (0..buf.area.width).any(|x| buf[(x, y)].symbol() == "m" && buf[(x, y)].bg == code_bg)
+        })
+        .expect("code row");
+
+    for x in body.x..body_right {
+        assert_eq!(
+            buf[(x, code_row)].bg,
+            code_bg,
+            "code row tail must carry the code background at x={x}"
+        );
+    }
+}
+
+#[test]
+fn completed_subagent_popup_separates_adjacent_ordered_list_items() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app, "1. first item\n2. second item");
+
+    let text = render_subagent_popup_text(&mut app, 100, 30);
+    let first = text.lines().position(|line| line.contains("1. first item"));
+    let second = text
+        .lines()
+        .position(|line| line.contains("2. second item"));
+    assert!(
+        second
+            .zip(first)
+            .is_some_and(|(second, first)| second >= first + 2),
+        "ordered items should have a blank row between them, got:\n{text}"
+    );
+}
+
+#[test]
+fn completed_subagent_popup_wraps_wide_tables_inside_the_body() {
+    // A wide pipe table must shrink/wrap at the actual popup body width
+    // (width-aware pipeline) instead of rendering at the fixed 80-column
+    // card width and overflowing the popup.
+    let mut app = make_app();
+    seed_subagent_popup(
+        &mut app,
+        "| Skill | Description |\n| ----- | ----------- |\n| code-reviewer | A very long description that definitely exceeds the available width of the popup body and must wrap inside the table |",
+    );
+
+    let terminal = render_subagent_popup_terminal(&mut app, 50, 24);
+    let buf = terminal.backend().buffer();
+    let body = app.mouse.popup_text_body_area;
+    let body_right = body.x + body.width;
+
+    let mut table_rows = 0;
+    for y in body.y..body.y + body.height {
+        let row_text: String = (body.x..body_right).map(|x| buf[(x, y)].symbol()).collect();
+        let trimmed = row_text.trim_end();
+        assert!(
+            trimmed.chars().count() <= body.width as usize,
+            "table row exceeds the popup body width at y={y}:\n{row_text}"
+        );
+        if trimmed.contains('|') {
+            table_rows += 1;
+        }
+    }
+    assert!(
+        table_rows >= 3,
+        "expected the table (header + separator + wrapped rows) inside the popup, got {table_rows} table rows"
+    );
+    assert!(
+        buffer_contains(buf, "Skill") && buffer_contains(buf, "exceeds"),
+        "table content missing:\n{}",
+        buffer_text(buf)
+    );
+}
+
+#[test]
+fn completed_subagent_popup_renders_sectioned_headers_in_order() {
+    use agent_tui_kit::protocol::{SubagentSection, SubagentSectionBlock, THINKING_SECTION_HEADER};
+    let mut app = make_app();
+    seed_subagent_popup_sections(
+        &mut app,
+        &[
+            SubagentSectionBlock {
+                section: SubagentSection::Thinking,
+                text: format!("{THINKING_SECTION_HEADER}\n\nplan the answer"),
+            },
+            SubagentSectionBlock {
+                section: SubagentSection::Tool,
+                text: "→ bash ls\n\n✓ main.rs".into(),
+            },
+            SubagentSectionBlock {
+                section: SubagentSection::Context,
+                text: "I read the code".into(),
+            },
+        ],
+        "fix the bug",
+    );
+
+    let text = render_subagent_popup_text(&mut app, 100, 30);
+    // The popup's own display text (single-space emoji headers); the buffer
+    // text widens emoji cells with a continuation space.
+    let raw = app
+        .subagent_popup
+        .as_ref()
+        .and_then(|p| p.layout_cache.as_ref())
+        .map(|c| c.raw_text.clone())
+        .expect("layout cache populated");
+
+    // Headers render as `## `-prefixed Markdown headings, in canonical order.
+    let thinking = raw.find("## 🧠 Thinking").expect("thinking header");
+    let tools = raw.find("## 🔧 Tools").expect("tools header");
+    let context = raw.find("## 📄 Context").expect("context header");
+    assert!(
+        thinking < tools && tools < context,
+        "headers out of order:\n{raw}"
+    );
+
+    // Section bodies.
+    assert!(text.contains("plan the answer"), "{text}");
+    assert!(text.contains("→ bash ls"), "{text}");
+    assert!(text.contains("✓ main.rs"), "{text}");
+    assert!(text.contains("I read the code"), "{text}");
+
+    // Thinking body is indented 4 columns (non-breaking spaces in the
+    // completed Markdown pass, so CommonMark does not turn it into code).
+    assert!(
+        raw.contains("\u{00A0}\u{00A0}\u{00A0}\u{00A0}plan the answer"),
+        "thinking body must be indented 4 chars:\n{raw}"
+    );
+
+    // The forwarder's thinking marker is stripped from the body: the only
+    // occurrence is the section header itself.
+    assert_eq!(raw.matches("🧠 Thinking").count(), 1, "{raw}");
+
+    // Prompt appears (bold `Prompt:` label) inside the Context section, after
+    // its header.
+    let prompt = raw.find("Prompt:").expect("prompt label");
+    let prompt_text = raw.find("fix the bug").expect("prompt body");
+    assert!(context < prompt, "prompt must live under Context:\n{raw}");
+    assert!(
+        prompt < prompt_text,
+        "prompt text follows its label:\n{raw}"
+    );
+}
+
+#[test]
+fn completed_subagent_popup_single_section_has_no_headers() {
+    use agent_tui_kit::protocol::{SubagentSection, SubagentSectionBlock};
+    let mut app = make_app();
+    seed_subagent_popup_sections(
+        &mut app,
+        &[SubagentSectionBlock {
+            section: SubagentSection::Context,
+            text: "just streamed text".into(),
+        }],
+        "",
+    );
+
+    let text = render_subagent_popup_text(&mut app, 100, 30);
+
+    assert!(text.contains("just streamed text"), "{text}");
+    assert!(
+        !text.contains("## 🧠 Thinking")
+            && !text.contains("## 🔧 Tools")
+            && !text.contains("## 📄 Context"),
+        "single-section transcript must stay flat:\n{text}"
+    );
+    // No prompt label when the card carries no prompt.
+    assert!(!text.contains("Prompt:"), "{text}");
+}
+
+#[test]
+fn live_subagent_popup_renders_section_headers() {
+    use agent_tui_kit::protocol::{SubagentSection, THINKING_SECTION_HEADER};
+    use tact_protocol::ToolOutputChunk;
+    let mut app = make_app();
+    seed_active_subagent_popup(
+        &mut app,
+        &[
+            ToolOutputChunk::other(format!(
+                "\n\n{THINKING_SECTION_HEADER}\n\nthinking live\n\n"
+            ))
+            .with_section(SubagentSection::Thinking),
+            ToolOutputChunk::other("\n\n→ bash ls\n\n").with_section(SubagentSection::Tool),
+            ToolOutputChunk::other("streaming now"),
+        ],
+        "live prompt",
+    );
+
+    let text = render_subagent_popup_text(&mut app, 100, 30);
+    let raw = app
+        .subagent_popup
+        .as_ref()
+        .and_then(|p| p.layout_cache.as_ref())
+        .map(|c| c.raw_text.clone())
+        .expect("layout cache populated");
+
+    assert!(raw.contains("🧠 Thinking"), "live thinking header:\n{raw}");
+    assert!(raw.contains("🔧 Tools"), "live tools header:\n{raw}");
+    assert!(raw.contains("📄 Context"), "live context header:\n{raw}");
+    assert!(
+        raw.contains("    thinking live"),
+        "live thinking body must be indented 4 chars:\n{raw}"
+    );
+    assert!(raw.contains("→ bash ls"), "{raw}");
+    assert!(text.contains("streaming now"), "{text}");
+    // Live mode shows the prompt label too.
+    assert!(raw.contains("Prompt:"), "{raw}");
+    assert!(raw.contains("live prompt"), "{raw}");
+    // Only one thinking marker (the section header).
+    assert_eq!(raw.matches("🧠 Thinking").count(), 1, "{raw}");
+}
+
+#[test]
+fn live_subagent_popup_without_sections_stays_flat() {
+    use tact_protocol::ToolOutputChunk;
+    let mut app = make_app();
+    seed_active_subagent_popup(
+        &mut app,
+        &[ToolOutputChunk::other("only context")],
+        "prompt",
+    );
+
+    let text = render_subagent_popup_text(&mut app, 100, 30);
+
+    assert!(text.contains("only context"), "{text}");
+    assert!(
+        !text.contains("🧠 Thinking") && !text.contains("🔧 Tools") && !text.contains("📄 Context"),
+        "single-section live transcript must stay flat:\n{text}"
+    );
+}
+
+#[test]
+fn sectioned_subagent_popup_blank_separator_carries_theme_background() {
+    use agent_tui_kit::protocol::{SubagentSection, SubagentSectionBlock, THINKING_SECTION_HEADER};
+    let mut app = make_app();
+    seed_subagent_popup_sections(
+        &mut app,
+        &[
+            SubagentSectionBlock {
+                section: SubagentSection::Thinking,
+                text: format!("{THINKING_SECTION_HEADER}\n\nplan"),
+            },
+            SubagentSectionBlock {
+                section: SubagentSection::Context,
+                text: "stream".into(),
+            },
+        ],
+        "",
+    );
+
+    let terminal = render_subagent_popup_terminal(&mut app, 100, 30);
+    let buf = terminal.backend().buffer();
+    let body = app.mouse.popup_text_body_area;
+    let surface_bg = app.theme.bg;
+
+    // The blank separator row under the Thinking header must paint the theme
+    // background across the whole body width (no highlight band residue).
+    let header_y = (body.y..body.y + body.height)
+        .find(|&y| (0..body.width).any(|x| buf[(body.x + x, y)].symbol().contains('🧠')))
+        .expect("thinking header row");
+    for x in body.x..body.x + body.width {
+        assert_eq!(
+            buf[(x, header_y + 1)].bg,
+            surface_bg,
+            "blank separator must carry theme.bg at x={x}"
+        );
+    }
 }
 
 #[test]

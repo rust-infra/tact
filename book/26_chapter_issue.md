@@ -29,6 +29,57 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-24 — Subagent popup sections the transcript into Thinking / Tools / Context
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/protocol/src/tool_output.rs` (`SubagentSection`, `SubagentSectionBlock`, `THINKING_SECTION_HEADER`), `crates/tact/src/tool/subagent_ui.rs` (chunk tagging), `crates/agent_tui_kit/src/components/tool.rs` (live→completed handoff), `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`ToolRenderOutput::detail_sections`), `crates/agent_tui_kit/src/render/popups/subagent_popup.rs`; design `docs/superpowers/specs/2026-08-24-subagent-sectioned-popup-design.md`, plan `docs/superpowers/plans/2026-08-24-subagent-sectioned-popup.md` |
+
+**Symptom / motivation:** the subagent popup rendered one flat transcript: thinking summaries, tool steps and streamed context were flattened into a single text stream at the transport boundary (`tagged_ui_channel_with_progress` → `ToolProgress` → `ToolOutputBuffer::full_detail`), so a long subagent run read as an undifferentiated wall of text and the prompt was only visible on the collapsed card's meta row.
+
+**Decision:** every `ToolOutputChunk` now carries a `SubagentSection` tag (`Thinking` / `Tool` / `Context`, default `Context`), the forwarder tags thinking summaries, tool start/result/error lines and streamed context without changing any emitted text, and `ToolOutputBuffer` accumulates the ANSI-filtered text into structured `SubagentSectionBlock`s alongside the byte-identical flat stream (the collapsed card preview is untouched). The live→completed handoff persists them as `ToolRenderOutput::detail_sections`. The popup groups blocks in canonical order (Thinking → Tools → Context), prepends the subagent prompt (the card's `arg_full`) to Context as a labeled `Prompt:` block, and renders one scrollable document — plain wrapped lines with styled headers while live, `##`-headed Markdown through the existing width-aware pipeline after completion. Section headers are only shown when at least two sections are non-empty; transcripts predating section capture fall back to the flat `detail_full` and render exactly like before.
+
+**Behavior after:** a subagent popup shows `🧠 Thinking` / `🔧 Tools` / `📄 Context` sections (in that order, only when non-empty), with the prompt under Context; the Thinking body is indented 4 columns (plain spaces while live, non-breaking spaces in the completed Markdown pass so CommonMark does not reinterpret it as a code block). The flat card preview, popup chrome, selection and `y`-copy are unchanged (copy now includes the section headers). Runs that only streamed text keep today's flat look.
+
+**Pointers:** `tool_output.rs` (`SubagentSection`, section accumulation, `take_sections`), `subagent_ui.rs` (`.with_section`), `components/tool.rs::on_step_finished` (subagent `detail_sections`), `subagent_popup.rs` (`group_sections`, `build_live_document`, `build_completed_markdown`, `prepare_subagent_popup`); tests `completed_subagent_popup_renders_sectioned_headers_in_order`, `live_subagent_popup_renders_section_headers`, `sectioned_subagent_popup_blank_separator_carries_theme_background`.
+
+---
+
+## 1. 2026-08-24 — Subagent popup shares the main-area Markdown pipeline; popup decoration extracted to `markdown_plan`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/popups/{subagent_popup,thinking_popup,markdown_plan}.rs`, `crates/agent_tui_kit/src/render/selectable_text.rs` (`MarkdownDisplayRow`, `PopupLayoutCache`), `crates/tui/src/render/popup_scene_tests.rs`; Ch 23 TUI render pipeline |
+
+**Symptom / motivation:** the completed branch of the subagent popup rendered through `render_markdown_tui` (fixed 80 columns, no width awareness) and reused a one-shot `cached_markdown`, so wide pipe tables overflowed the narrower popup body and Mermaid was laid out at 80 columns regardless of the actual body width. It also lacked the thinking popup's decorations (heading `#` markers, code-row tail fills, ordered-list spacers), so the two transcript popups rendered differently, and the decoration logic was duplicated inline in `thinking_popup.rs`.
+
+**Decision:** the subagent popup's completed branch now re-renders through the same width-aware `render_markdown_with_tables` as the main area and the thinking popup (geometry is computed before chrome is painted). The shared popup-only decoration pass was extracted to `render/popups/markdown_plan.rs` (`decorate_headings`, `is_ordered_list_item`, `plan_markdown_display`, `fill_code_row_tail`). Both popups produce tagged rows through `plan_markdown_display` as `MarkdownDisplayRow::{Content,Code,Spacer}`; the subagent popup keeps its layout cache (live transcripts can be tens of thousands of lines) with the tagged rows stored in `PopupLayoutCache`. Main-area rendering (`render_markdown_with_tables`, the pulldown renderer, log cells) is untouched.
+
+**Behavior after:** a completed subagent popup shows width-adapted tables, `#`-prefixed headings, full-width code bands, and blank-row separation between adjacent ordered-list items — the same look as the thinking popup. Live (streaming) content stays plain wrapped text. Selection and `y`-copy still operate on the visible text (headings now include their `#` prefix in copied text).
+
+**Pointers:** `markdown_plan.rs` (shared decoration/planning), `subagent_popup.rs` (`prepare_subagent_popup` renders at `body_width`; render loop matches `MarkdownDisplayRow`), `thinking_popup.rs` (now consumes the shared plan), `selectable_text.rs` (`MarkdownDisplayRow`, `PopupLayoutCache`); tests `completed_subagent_popup_marks_headings_with_hash_prefix`, `completed_subagent_popup_code_rows_fill_the_tail_with_code_background`, `completed_subagent_popup_separates_adjacent_ordered_list_items`, `completed_subagent_popup_wraps_wide_tables_inside_the_body`.
+
+---
+
+## 1. 2026-08-24 — Thinking popup renders Markdown at its own width; headings get `#` markers, code blocks fill the row tail
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/popups/thinking_popup.rs`, `crates/tui/src/widgets/state/app/visibility.rs` (`close_active_thinking_block`), `crates/tui/src/render/popup_scene_tests.rs`; Ch 23 TUI render pipeline |
+
+**Symptom / motivation:** the completed-block branch of the thinking popup reused `ThinkingBlock.cached_markdown`, which was rendered once at close time through `render_markdown_tui` (fixed 80 columns, no width awareness). Inside a narrower popup, pipe tables expanded to their full content width, long table cells did not wrap inside the layout, and the outer wrap shredded pipe alignment; Mermaid was laid out at 80 columns regardless of the actual body width. On top of that, headings rendered as bare colored text (no structural marker) and fenced code blocks painted only the glyph columns of each line, so a block read as disconnected per-glyph patches instead of one band.
+
+**Decision:** the popup re-renders completed content with the width-aware `render_markdown_with_tables` at the actual body width (geometry is computed before chrome is painted), so tables shrink/wrap and Mermaid routes at the real width. A popup-only decoration pass adds GitHub-style `#`/`##`/`###`/`####`/`#####` markers to heading lines, recovered from the pulldown renderer's heading styles (main-area paths keep their deliberate marker-less headings). Code rows are tagged during layout and their row tail is filled with `theme.code_block_bg()` so the block reads as a continuous band; the fill is a render-only span, so selection/copy text is unaffected. The close-time 80-column cache pass was dropped (`cached_markdown` stays on the struct for tests).
+
+**Behavior after:** the thinking popup shows width-adapted tables, marker-prefixed headings, and full-width code bands for completed reasoning content; streaming (active) content stays plain text. Selection and `y`-copy still operate on the visible text (headings now include their `#` prefix in copied text).
+
+**Pointers:** `markdown_plan.rs` (`heading_prefix`/`decorate_headings`/`plan_markdown_display`/`fill_code_row_tail`), `thinking_popup.rs` (consumes the shared plan), `selectable_text.rs` (`MarkdownDisplayRow::Code`), `visibility.rs` (`close_active_thinking_block` no longer renders the 80-column cache), tests `thinking_popup_marks_headings_with_hash_prefix`, `thinking_popup_code_rows_fill_the_tail_with_code_background`, `completed_thinking_popup_separates_adjacent_ordered_list_items`.
+
+---
+
 ## 1. 2026-08-23 — Attachments are de-inlined: `@file`/`![alt]` kept as path text
 
 | Field | Value |

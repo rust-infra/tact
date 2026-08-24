@@ -31,7 +31,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream};
+use tact_protocol::{AgentUpdate, SubagentSection, ToolOutputChunk, ToolOutputStream};
 use tokio::{
     io::AsyncWriteExt,
     process::Command,
@@ -406,20 +406,32 @@ async fn run_background_process(
                         let text = decoders[stream_index(stream)].push(&bytes);
                         record.push(&text);
                         log_write(&mut log_file, &text).await;
-                        pending.push(ToolOutputChunk { stream, text });
+                        pending.push(ToolOutputChunk {
+                            stream,
+                            text,
+                            section: SubagentSection::Context,
+                        });
                     }
                     Some(PipeEvent::Closed(stream)) => {
                         let text = decoders[stream_index(stream)].finish();
                         record.push(&text);
                         log_write(&mut log_file, &text).await;
-                        pending.push(ToolOutputChunk { stream, text });
+                        pending.push(ToolOutputChunk {
+                            stream,
+                            text,
+                            section: SubagentSection::Context,
+                        });
                         closed_pipes += 1;
                     }
                     Some(PipeEvent::Failed(stream, error)) => {
                         let text = decoders[stream_index(stream)].finish();
                         record.push(&text);
                         log_write(&mut log_file, &text).await;
-                        pending.push(ToolOutputChunk { stream, text });
+                        pending.push(ToolOutputChunk {
+                            stream,
+                            text,
+                            section: SubagentSection::Context,
+                        });
                         closed_pipes += 1;
                         if failure_reason.is_none() {
                             failure_reason = Some(format!("reading {stream:?}: {error}"));
