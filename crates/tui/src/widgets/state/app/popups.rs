@@ -208,10 +208,65 @@ impl App {
             title: output.title_raw.clone(),
             scroll: 0,
             tool_id,
-            cached_markdown: None,
             selection: None,
+            follow_bottom: true,
+            live: true,
+            collapsed_blocks: std::collections::HashSet::new(),
             layout_cache: None,
+            hit_cache: None,
         });
+    }
+
+    /// Toggle bottom-following on the subagent popup (`f`). Leaving follow mode
+    /// keeps the view at the current bottom by clamping scroll there (the exact
+    /// viewport height is known only to the renderer).
+    pub(crate) fn toggle_subagent_follow(&mut self) {
+        let Some(popup) = self.subagent_popup.as_mut() else {
+            return;
+        };
+        popup.follow_bottom = !popup.follow_bottom;
+        if !popup.follow_bottom {
+            // Clamp to the bottom: the renderer's `(scroll as usize).min(max)`
+            // pins u16::MAX to the last visible row.
+            popup.scroll = u16::MAX;
+        }
+    }
+
+    /// Toggle collapse of the block under the cursor (`⏎`). The block id is read
+    /// from the row's stable `block_id` (the run's starting line index), then
+    /// the layout cache is marked stale so the next prepare rebuilds in full.
+    pub(crate) fn toggle_subagent_block(&mut self) {
+        let Some(popup) = self.subagent_popup.as_mut() else {
+            return;
+        };
+        let Some(cache) = popup.layout_cache.as_ref() else {
+            return;
+        };
+        let row = popup.scroll as usize;
+        if row >= cache.rows.len() {
+            return;
+        }
+        let row_kind = cache.rows[row].kind;
+        let block_id = cache.rows[row].block_id;
+        // Only thinking/tool runs are collapsible.
+        if matches!(
+            row_kind,
+            Some(tact_protocol::ChunkKind::Thinking)
+                | Some(tact_protocol::ChunkKind::ToolCall)
+                | Some(tact_protocol::ChunkKind::ToolResult)
+                | Some(tact_protocol::ChunkKind::ToolError)
+        ) {
+            if popup.collapsed_blocks.contains(&block_id) {
+                popup.collapsed_blocks.remove(&block_id);
+            } else {
+                popup.collapsed_blocks.insert(block_id);
+            }
+            // Force a full row rebuild on the next prepare (block row counts
+            // changed with the collapse state).
+            if let Some(cache) = popup.layout_cache.as_mut() {
+                cache.rows_built_for = usize::MAX;
+            }
+        }
     }
 
     /// Copy the visible subagent popup content to clipboard.

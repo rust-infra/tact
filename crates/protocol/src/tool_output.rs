@@ -24,10 +24,35 @@ impl ToolOutputStream {
     }
 }
 
+/// Semantic segment kind carried by a tool-output fragment.
+///
+/// `None` means "plain output" (e.g. bash stdout); subagent transcripts tag
+/// each fragment so the popup can render role-aware blocks. The enum is
+/// intentionally copyable — it rides on every span of a logical line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkKind {
+    /// User prompt (injected, not from the event stream).
+    User,
+    /// System notice (Info / session hints).
+    System,
+    /// Assistant ordinary text (StreamChunk).
+    AssistantText,
+    /// Assistant reasoning block (ThinkingChunk deltas, one span per block).
+    Thinking,
+    /// Tool invocation started (StepStarted).
+    ToolCall,
+    /// Tool invocation succeeded (StepFinished).
+    ToolResult,
+    /// Tool invocation failed (StepFailed).
+    ToolError,
+}
+
 /// One ordered text fragment in a tool-progress batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutputChunk {
     pub stream: ToolOutputStream,
+    /// Optional semantic segment kind (`None` = plain output).
+    pub kind: Option<ChunkKind>,
     pub text: String,
 }
 
@@ -35,6 +60,7 @@ impl ToolOutputChunk {
     pub fn stdout(text: impl Into<String>) -> Self {
         Self {
             stream: ToolOutputStream::Stdout,
+            kind: None,
             text: text.into(),
         }
     }
@@ -42,6 +68,7 @@ impl ToolOutputChunk {
     pub fn stderr(text: impl Into<String>) -> Self {
         Self {
             stream: ToolOutputStream::Stderr,
+            kind: None,
             text: text.into(),
         }
     }
@@ -49,8 +76,15 @@ impl ToolOutputChunk {
     pub fn other(text: impl Into<String>) -> Self {
         Self {
             stream: ToolOutputStream::Other,
+            kind: None,
             text: text.into(),
         }
+    }
+
+    /// Tag this fragment with a semantic segment kind.
+    pub fn with_kind(mut self, kind: ChunkKind) -> Self {
+        self.kind = Some(kind);
+        self
     }
 }
 
@@ -58,6 +92,8 @@ impl ToolOutputChunk {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutputSpan {
     pub stream: ToolOutputStream,
+    /// Semantic segment kind of this span (None = plain output).
+    pub kind: Option<ChunkKind>,
     pub text: String,
 }
 
@@ -72,15 +108,25 @@ impl ToolOutputLine {
         self.spans.iter().map(|span| span.text.as_str()).collect()
     }
 
-    fn push_char(&mut self, stream: ToolOutputStream, ch: char) {
+    /// The dominant segment kind of the line (first non-None span wins),
+    /// used by block renderers to decide the line's role.
+    pub fn kind(&self) -> Option<ChunkKind> {
+        self.spans
+            .iter()
+            .find_map(|span| span.kind)
+    }
+
+    fn push_char(&mut self, stream: ToolOutputStream, kind: Option<ChunkKind>, ch: char) {
         if let Some(last) = self.spans.last_mut()
             && last.stream == stream
+            && last.kind == kind
         {
             last.text.push(ch);
             return;
         }
         self.spans.push(ToolOutputSpan {
             stream,
+            kind,
             text: ch.to_string(),
         });
     }
@@ -165,6 +211,10 @@ pub struct ToolOutputBuffer {
     /// Unlimited accumulation, only populated when `full_enabled`.
     full_detail: String,
     full_current_detail: String,
+    /// Committed structured lines (spans carry `kind`) kept only when
+    /// `full_enabled`. Index-addressed so the popup can lay out incrementally
+    /// without cloning history.
+    full_lines: Vec<ToolOutputLine>,
     total_committed: usize,
     ansi: [AnsiState; 3],
 }
@@ -196,6 +246,7 @@ impl ToolOutputBuffer {
             full_enabled,
             full_detail: String::new(),
             full_current_detail: String::new(),
+            full_lines: Vec::new(),
             total_committed: 0,
             ansi: [AnsiState::default(); 3],
         }
@@ -205,7 +256,7 @@ impl ToolOutputBuffer {
         for chunk in chunks {
             for ch in chunk.text.chars() {
                 if let Some(ch) = self.ansi[chunk.stream.index()].filter(ch) {
-                    self.push_char(chunk.stream, ch);
+                    self.push_char(chunk.stream, chunk.kind, ch);
                 }
             }
         }
@@ -253,6 +304,32 @@ impl ToolOutputBuffer {
         self.full_detail.len() + self.full_current_detail.len()
     }
 
+    /// Number of committed structured lines (only meaningful when
+    /// `full_enabled`). Used as the watermark for incremental layout.
+    pub fn structured_line_count(&self) -> usize {
+        self.full_lines.len()
+    }
+
+    /// Cheap per-chunk fingerprint for live-card coalescing: (committed line
+    /// count, capped detail length, in-progress line length). Monotonic under
+    /// both capped (`new`) and full (`new_full`) buffers, so unchanged views
+    /// skip rebuilding the preview.
+    pub fn progress_fingerprint(&self) -> (usize, usize, usize) {
+        let detail_len = self.detail.len().saturating_add(self.current_detail.len());
+        let tail_len = self.current.plain_text().len();
+        (self.total_committed, detail_len, tail_len)
+    }
+
+    /// Borrow the `i`-th committed structured line (spans carry `kind`).
+    pub fn structured_line_at(&self, i: usize) -> Option<&ToolOutputLine> {
+        self.full_lines.get(i)
+    }
+
+    /// Borrow the in-progress (unterminated) line, if any.
+    pub fn current_structured_line(&self) -> Option<&ToolOutputLine> {
+        (!self.current.is_empty()).then_some(&self.current)
+    }
+
     /// Takes ownership of the unlimited full-detail buffers, leaving them empty.
     pub fn take_full_detail(&mut self) -> String {
         let mut text = std::mem::take(&mut self.full_detail);
@@ -265,19 +342,19 @@ impl ToolOutputBuffer {
         self.total_committed + usize::from(!self.current.is_empty())
     }
 
-    fn push_char(&mut self, stream: ToolOutputStream, ch: char) {
+    fn push_char(&mut self, stream: ToolOutputStream, kind: Option<ChunkKind>, ch: char) {
         match ch {
             '\r' => self.clear_current(),
             '\n' => self.commit_current(),
-            '\t' => self.push_content_char(stream, ch),
+            '\t' => self.push_content_char(stream, kind, ch),
             _ if ch.is_control() => {}
-            _ => self.push_content_char(stream, ch),
+            _ => self.push_content_char(stream, kind, ch),
         }
     }
 
-    fn push_content_char(&mut self, stream: ToolOutputStream, ch: char) {
+    fn push_content_char(&mut self, stream: ToolOutputStream, kind: Option<ChunkKind>, ch: char) {
         if self.current_chars < INLINE_LINE_LIMIT_CHARS {
-            self.current.push_char(stream, ch);
+            self.current.push_char(stream, kind, ch);
             self.current_chars += 1;
         }
         if self.full_enabled {
@@ -316,6 +393,7 @@ impl ToolOutputBuffer {
             self.full_detail.push_str(&self.full_current_detail);
             self.full_detail.push('\n');
             self.full_current_detail.clear();
+            self.full_lines.push(self.current.clone());
         }
         self.committed.push_back(std::mem::take(&mut self.current));
         self.current_chars = 0;
@@ -510,5 +588,60 @@ mod tests {
             crate::AgentUpdate::ToolProgress { tool_id, chunks: actual }
                 if tool_id == "bash-1" && actual == chunks
         ));
+    }
+
+    #[test]
+    fn kind_tags_survive_struct_layout() {
+        let mut output = ToolOutputBuffer::new_full(50_000);
+        output.push_chunks(&[
+            ToolOutputChunk::other("assistant text\n")
+                .with_kind(ChunkKind::AssistantText),
+            ToolOutputChunk::other("reasoning\n").with_kind(ChunkKind::Thinking),
+            ToolOutputChunk::other("→ bash ls\n").with_kind(ChunkKind::ToolCall),
+        ]);
+
+        assert_eq!(output.structured_line_count(), 3);
+        assert_eq!(
+            output.structured_line_at(0).unwrap().kind(),
+            Some(ChunkKind::AssistantText)
+        );
+        assert_eq!(
+            output.structured_line_at(1).unwrap().kind(),
+            Some(ChunkKind::Thinking)
+        );
+        assert_eq!(
+            output.structured_line_at(2).unwrap().kind(),
+            Some(ChunkKind::ToolCall)
+        );
+    }
+
+    #[test]
+    fn kind_mixes_within_one_line_merge_only_adjacent_same_kind() {
+        let mut output = ToolOutputBuffer::new_full(50_000);
+        output.push_chunks(&[
+            ToolOutputChunk::stdout("plain "),
+            ToolOutputChunk::stderr("warn ").with_kind(ChunkKind::ToolError),
+            ToolOutputChunk::stdout("done\n"),
+        ]);
+
+        let line = output.structured_line_at(0).unwrap();
+        assert_eq!(line.spans.len(), 3, "kind change splits spans");
+        assert_eq!(line.spans[1].kind, Some(ChunkKind::ToolError));
+        // Dominant kind: first non-None span wins.
+        assert_eq!(line.kind(), Some(ChunkKind::ToolError));
+    }
+
+    #[test]
+    fn current_structured_line_reports_unterminated_tail() {
+        let mut output = ToolOutputBuffer::new_full(50_000);
+        output.push_chunks(&[
+            ToolOutputChunk::other("one\n").with_kind(ChunkKind::System),
+        ]);
+        output.push_chunks(&[ToolOutputChunk::other("t").with_kind(ChunkKind::Thinking)]);
+
+        assert_eq!(output.structured_line_count(), 1);
+        let current = output.current_structured_line().unwrap();
+        assert_eq!(current.kind(), Some(ChunkKind::Thinking));
+        assert_eq!(current.plain_text(), "t");
     }
 }

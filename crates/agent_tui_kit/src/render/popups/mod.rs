@@ -37,6 +37,13 @@ pub struct PopupMouseSurface {
     /// Render-time cache write-back: the selection text the thinking popup
     /// computed for its active block (host applies it to the popup state).
     pub thinking_selection_text: Option<String>,
+    /// Subagent hit-table stamp write-back (host caches it on the popup so the
+    /// next frame with an unchanged view skips rebuilding the hit table).
+    pub subagent_hit_stamp: Option<u64>,
+    /// Subagent scroll write-back: the actual clamped scroll position used this
+    /// frame when not bottom-following (host stores it back on the popup so the
+    /// `u16::MAX` "stay at bottom" sentinel resolves to a concrete row).
+    pub subagent_scroll: Option<u16>,
 }
 /// A single footer hint: key + label, e.g. ("↑/↓", "scroll"), ("Esc", "close").
 pub struct FooterHint {

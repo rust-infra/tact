@@ -322,6 +322,9 @@ pub struct ToolRenderOutput {
     pub subagent_tokens: Option<TokenUsageInfo>,
     /// Tool visual kind from presentation metadata.
     pub visual_kind: tact_protocol::ToolVisualKind,
+    /// Live-preview fingerprint (streamed bytes, committed lines, current line
+    /// length). Per-frame coalescing: unchanged → skip rebuild.
+    pub live_fingerprint: (usize, usize, usize),
 }
 
 impl ToolRenderOutput {
@@ -664,6 +667,7 @@ impl<'a> ToolWidget<'a> {
                     .map(|line| ToolOutputLine {
                         spans: vec![ToolOutputSpan {
                             stream: ToolOutputStream::Other,
+                            kind: None,
                             text: line.to_string(),
                         }],
                     })
@@ -730,6 +734,7 @@ impl<'a> ToolWidget<'a> {
             subagent_model: self.subagent_model.clone(),
             subagent_tokens: self.subagent_tokens.clone(),
             visual_kind: kind_from_presentation(&self.presentation, &self.tool_name),
+            live_fingerprint: (0, 0, 0),
         }
     }
 

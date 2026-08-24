@@ -120,6 +120,17 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         subagent = subagent.with_ui_channel(tagged);
     }
 
+    // Seed the parent tool card's live transcript with the user prompt as the
+    // first User-kind segment (the prompt itself never crosses ui_tx — it is
+    // passed straight to agent_loop below).
+    let prompt = input.prompt.trim();
+    if !prompt.is_empty() {
+        ctx.progress_reporter.report(vec![
+            tact_protocol::ToolOutputChunk::other(format!("{prompt}\n"))
+                .with_kind(tact_protocol::ChunkKind::User),
+        ]);
+    }
+
     // Seed via agent_loop so the user turn is persisted (push alone skipped SQLite).
     subagent
         .agent_loop(Some(Message::new_text(Role::User, input.prompt)))

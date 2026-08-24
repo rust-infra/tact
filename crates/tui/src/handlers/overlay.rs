@@ -63,7 +63,14 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
             }
             if let Some(ref mut p) = app.subagent_popup {
                 p.scroll = 0;
+                p.follow_bottom = false;
             }
+        }
+        KeyCode::Char('f') if app.subagent_popup.is_some() => {
+            app.toggle_subagent_follow();
+        }
+        KeyCode::Enter if app.subagent_popup.is_some() => {
+            app.toggle_subagent_block();
         }
         _ => {}
     }

@@ -192,6 +192,34 @@ still prepend `$ <command>` for consistency with completed cards. stdout uses
 normal text styling and stderr spans use the theme warning color. ANSI CSI/OSC
 is removed and carriage return replaces the current logical line.
 
+### Subagent cards and the persistent live-transcript popup
+
+`spawn_subagent` cards stream the child's whole conversation into the card's
+`live_output` buffer. Chunks carry a `ChunkKind` (`User` / `System` /
+`AssistantText` / `Thinking` / `ToolCall` / `ToolResult` / `ToolError`) so the
+live preview colors spans semantically: stderr stays warning, `Thinking` uses
+accent+italic, `ToolResult`/`ToolError` use success/error. The forwarder in
+`tool/subagent_ui.rs` tags events by span (thinking deltas stream through live
+— no buffered `🧠 Thinking` block), and `spawn_subagent` seeds a `User` line
+with the prompt before the loop starts.
+
+Double-clicking a subagent card opens the **persistent live-transcript popup**
+(`render/popups/subagent_popup.rs`):
+
+- The popup stays open while the subagent runs **and after it ends** (Esc/✕
+  closes it); completion only stops the tail cursor, it never closes the view.
+- Content is a block-model transcript mirroring the main area: consecutive
+  `Thinking` lines form a purple card (`⟳ Thinking` title, ≤3 tail rows when
+  collapsed, `n 行` footer); `ToolCall`(+result) lines form an accent tool card;
+  user / system / assistant text stay linear.
+- Keys: `j/k / ↑/↓` scroll, `g/G` top/bottom, `f` toggle bottom-following
+  (default on while live), `⏎` collapse/expand the block under the cursor,
+  `y` copy (selection or whole transcript), `Esc` close.
+- Layout is incremental: committed lines are appended once (watermark) and only
+  the affected run's rows are re-emitted, so 10k-line transcripts stay within
+  the frame budget. A hit table is reused while `(watermark, width, scroll)`
+  is unchanged. (Perf guard: `ten_k_line_transcript_lays_out_within_budget`.)
+
 ---
 
 ## 6. Log panel integration

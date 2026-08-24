@@ -207,6 +207,16 @@ impl ToolComponent {
         if self.state.active[pos].live_output.logical_line_count() == 0 {
             return;
         }
+        // Per-frame coalescing: skip the full card rebuild when the visible
+        // preview is unchanged since the last build. Cheap fingerprint on the
+        // committed line count + capped detail length + tail text — subagent
+        // chunks that only grow the current line without crossing the preview
+        // window stall here instead of re-wrapping the preview every chunk.
+        let fp = self.state.active[pos].live_output.progress_fingerprint();
+        if fp == self.state.active[pos].output.live_fingerprint {
+            return;
+        }
+        self.state.active[pos].output.live_fingerprint = fp;
         let step_idx = self.resolve_step_idx(tool_id, 0);
         let (phys_idx, old_rows, output) = {
             let active = &self.state.active[pos];
@@ -622,6 +632,7 @@ mod tests {
                 tool_id: tool_id.into(),
                 chunks: vec![ToolOutputChunk {
                     stream: ToolOutputStream::Stdout,
+                    kind: None,
                     text: text.into(),
                 }],
             },

@@ -32,7 +32,10 @@ pub use task_panel::TaskPanelState;
 pub use thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState, find_thinking_at_logical,
 };
-pub use tool_state::{ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock, ToolState};
+pub use tool_state::{
+    ActiveToolBlock, DiffPopup, RowRole, SubagentLabels, SubagentLayoutCache, SubagentPopup,
+    SubagentRow, SubagentSourceLine, ToolBlock, ToolState,
+};
 pub use ui_types::{
     CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, MermaidBlock, MermaidPopup,
     SkillEntry, Status, SystemPromptPopup,

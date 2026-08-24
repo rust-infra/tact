@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Subagent 弹窗设计 · Tact TUI</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --panel-2:#1b2330; --chrome:#21262d;
+    --border:#30363d; --border-strong:#464f5b;
+    --fg:#e6edf3; --muted:#8b949e; --muted-2:#6e7681;
+    --accent:#58a6ff; --success:#3fb950; --warning:#d29922; --error:#f85149;
+    --purple:#bc8cff; --code-bg:#0b0f14;
+    --mono:"SFMono-Regular","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:var(--sans); line-height:1.55; padding:40px 24px 120px; }
+  .wrap { max-width:1000px; margin:0 auto; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  h1 .tag { color:var(--purple); }
+  .subtitle { color:var(--muted); font-size:14px; margin:0 0 30px; }
+  h2 { font-size:19px; margin:46px 0 6px; padding-top:24px; border-top:1px solid var(--border); }
+  h2 .step { color:var(--purple); font-family:var(--mono); font-size:14px; margin-right:8px; }
+  h3 { font-size:15px; margin:20px 0 8px; }
+  .lead { color:var(--muted); font-size:14px; margin:0 0 16px; max-width:880px; }
+  .lead b { color:var(--fg); }
+  .note { background:var(--panel-2); border-left:3px solid var(--purple); padding:12px 16px; border-radius:6px; font-size:13.5px; color:var(--muted); margin:10px 0 18px; }
+  .note b { color:var(--fg); }
+  .note .hl { color:var(--accent); }
+  code.inl { background:var(--panel-2); border:1px solid var(--border); border-radius:4px; padding:1px 5px; font-family:var(--mono); font-size:12px; color:var(--purple); }
+
+  /* ---------- popup chrome ---------- */
+  .stage { position:relative; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:20px 16px 16px; margin:14px 0 8px; }
+  .stage-label { position:absolute; top:-9px; left:14px; background:var(--bg); border:1px solid var(--border); color:var(--muted); font-size:11px; font-family:var(--mono); padding:1px 8px; border-radius:4px; z-index:2; }
+  .popup {
+    background:var(--panel); border:1px solid var(--border-strong); border-radius:12px;
+    box-shadow:0 18px 50px rgba(0,0,0,.55); overflow:hidden; display:flex; flex-direction:column;
+    font-size:13.5px; margin:0 auto; width:100%;
+  }
+  .popup-head { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--chrome); border-bottom:1px solid var(--border); }
+  .status-chip { font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.5px; padding:3px 9px; border-radius:999px; border:1px solid; white-space:nowrap; }
+  .status-chip.live { color:var(--accent); border-color:#1f4b8f; background:#0d2a4d; }
+  .status-chip.live .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--accent); margin-right:6px; animation:pulse 1.1s infinite; }
+  .status-chip.ended { color:var(--muted); border-color:#3a4048; background:#2a2f36; }
+  .status-chip.ended .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--muted-2); margin-right:6px; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+  .popup-title { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .popup-title .model { color:var(--muted); font-weight:500; font-family:var(--mono); font-size:12px; margin-left:8px; }
+  .head-meta { display:flex; gap:14px; font-family:var(--mono); font-size:11.5px; color:var(--muted); white-space:nowrap; }
+  .head-meta .k { color:var(--muted-2); margin-right:3px; }
+  .head-meta .tokens { color:var(--purple); }
+  .head-meta .live-timer { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .head-end { display:flex; align-items:center; gap:8px; }
+  .btn-x { font-family:var(--mono); color:var(--muted); background:transparent; border:1px solid var(--border); border-radius:5px; width:22px; height:22px; cursor:pointer; font-size:12px; line-height:1; }
+  .btn-x:hover { color:var(--fg); border-color:var(--muted); }
+
+  .popup-body { flex:1; background:var(--code-bg); overflow:hidden; display:flex; min-height:340px; max-height:560px; position:relative; }
+  .popup-scroll { flex:1; overflow:hidden; padding:12px 14px; }
+  .popup-foot { display:flex; justify-content:center; gap:16px; padding:8px 12px; background:var(--chrome); border-top:1px solid var(--border); font-family:var(--mono); font-size:11.5px; color:var(--muted); flex-wrap:wrap; }
+  .popup-foot .key { color:var(--purple); }
+  .popup-foot .sep { color:var(--muted-2); }
+  .scrollbar { width:10px; background:var(--chrome); border-left:1px solid var(--border); position:relative; border-radius:0 0 12px 0; }
+  .scrollbar .thumb { position:absolute; right:2px; width:5px; border-radius:3px; background:var(--muted-2); }
+
+  /* ================= BLOCK MODEL (main-area style) ================= */
+  .stream { font-family:var(--mono); font-size:12.5px; line-height:1.65; color:var(--fg); display:flex; flex-direction:column; gap:8px; }
+
+  /* --- plain segments (user / system / assistant text) --- */
+  .seg { padding:2px 0 2px 2px; border-left:2px solid transparent; }
+  .seg .mark { display:inline-block; width:26px; margin-right:2px; font-weight:700; user-select:none; }
+  .seg-user { border-left-color:var(--success); } .seg-user .mark { color:var(--success); } .seg-user .body { color:var(--success); }
+  .seg-sys { border-left-color:var(--muted-2); } .seg-sys .mark { color:var(--muted-2); } .seg-sys .body { color:var(--muted); font-style:italic; }
+  .seg-asst { border-left-color:var(--fg); } .seg-asst .mark { color:var(--fg); } .seg-asst .body { color:var(--fg); }
+
+  /* --- fixed blocks: thinking card (mirrors main-area ThinkingCell) --- */
+  .block {
+    border:1px solid var(--border); border-radius:7px; overflow:hidden;
+    background:var(--panel-2); flex:none;
+  }
+  .block .b-title { display:flex; align-items:center; gap:8px; padding:4px 10px; font-size:11.5px; font-weight:600; letter-spacing:.4px; border-bottom:1px solid var(--border); }
+  .block .b-body { padding:6px 10px; font-size:12px; line-height:1.6; }
+  .block .b-foot { display:flex; justify-content:space-between; gap:8px; padding:3px 10px; border-top:1px solid var(--border); font-size:10.5px; color:var(--muted-2); }
+  .block .b-foot .expand { color:var(--purple); }
+  .caret { display:inline-block; width:6px; height:12px; background:var(--purple); vertical-align:text-bottom; animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50%{opacity:0} }
+
+  /* thinking block */
+  .block-think { border-color:#4a3a75; }
+  .block-think .b-title { color:var(--purple); background:#22153a; border-bottom-color:#3a2d5f; }
+  .block-think .b-body { color:#9aa3ff; font-style:italic; }
+  .block-think .b-foot { background:#1a1228; }
+
+  /* tool block (mirrors main-area tool card: title + meta + result) */
+  .block-tool { border-color:#1f4b8f; }
+  .block-tool .b-title { color:var(--accent); background:#0d2442; border-bottom-color:#1a3a6b; }
+  .block-tool .b-title .t-icon { font-weight:400; }
+  .block-tool .b-title .arg { color:var(--muted); font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .block-tool .b-title .meta { margin-left:auto; color:var(--muted-2); font-weight:400; font-size:10.5px; }
+  .block-tool .b-body { color:var(--fg); }
+  .block-tool .b-result { padding:4px 10px; font-size:11.5px; border-top:1px dashed #1a3a6b; color:var(--muted); }
+  .block-tool .b-result.ok { color:var(--success); }
+  .block-tool .b-result.err { color:var(--error); }
+  .block-tool .b-foot { background:#0c1a30; }
+
+  table.spec { width:100%; border-collapse:collapse; font-size:13px; margin:10px 0 6px; background:var(--panel); }
+  table.spec th, table.spec td { border:1px solid var(--border); padding:8px 10px; text-align:left; vertical-align:top; }
+  table.spec th { background:var(--chrome); font-size:12.5px; }
+  table.spec td code { color:var(--purple); font-family:var(--mono); font-size:12px; background:var(--panel-2); padding:1px 5px; border-radius:4px; }
+  ul.tight { padding-left:20px; color:var(--muted); font-size:14px; }
+  ul.tight li { margin:5px 0; }
+  ul.tight b { color:var(--fg); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Subagent <span class="tag">弹窗</span>设计</h1>
+  <p class="subtitle">Tact TUI · 组件二：模态全量转录阅读器 · 与「Live Output 内联卡」分开设计（见同目录另一份）</p>
+
+  <div class="note">
+    <b>定位：</b>弹窗是<b>常驻的模态实时流观察窗</b>——打开后<b>一直保持</b>，直到用户
+    <code class="inl">Esc</code> / <code class="inl">✕</code> 主动关闭。内容是<b>实时流</b>：thinking / 工具块随
+    stream 增长、收束。没有"完成 / 失败 / 启动中"状态页——子代理结束只是<b>流停止增长</b>，
+    弹窗保持原位展示完整转录。正文参照主日志区块模型：thinking / tool 各为固定卡片块，普通文本线性排布。
+    由内联卡<b>双击</b>打开（任何阶段都可以），<code class="inl">Esc</code> 关闭。</div>
+
+  <!-- ==================== VISUAL ==================== -->
+  <h2><span class="step">01</span> 视觉规格（实时流 · 常驻）</h2>
+  <p class="lead">弹窗没有"完成 / 失败 / 启动中"之分：它是<b>一个持续的实时流视图</b>。头部常驻
+    <code class="inl">● Live</code> 徽章（运行中脉冲）；子代理结束时流停止增长、光标消失，但弹窗保持打开，内容就是
+    完整转录——不再切换到任何状态页。</p>
+
+  <div class="stage">
+    <span class="stage-label">覆盖在主区之上 · 居中 · 80% 宽 · 常驻 · 实时流</span>
+    <div class="popup" id="popup">
+      <div class="popup-head">
+        <span class="status-chip live"><span class="dot"></span>Live</span>
+        <span class="popup-title">🤖 Subagent <span class="model">model-coder·16k</span></span>
+        <div class="head-meta">
+          <span class="tokens"><span class="k">token</span>4.6k</span>
+          <span class="live-timer"><span class="k">耗时</span>0:47</span>
+          <span style="color:var(--muted);"><span class="k">跟随</span>ON</span>
+        </div>
+        <div class="head-end"><button class="btn-x" title="关闭 [Esc]">✕</button></div>
+      </div>
+      <div class="popup-body" id="popBody">
+        <div class="popup-scroll">
+          <div class="stream">
+            <div class="seg seg-user"><span class="mark">❯</span><span class="body">请重构 tool_widget.rs 的 live_detail 渲染分支。</span></div>
+            <div class="seg seg-sys"><span class="mark">·</span><span class="body">已派生子代理 #r7 · 模型 model-coder · thinking 16k</span></div>
+            <div class="block block-think">
+              <div class="b-title"><span class="caret"></span>⟳ Thinking</div>
+              <div class="b-body">定位 live_detail 判定逻辑：<br>should_show_detail → detail_card_title<br>两分支均命中 tool_widget.rs:754</div>
+              <div class="b-foot"><span>2/37 行 · 12.4s</span><span class="expand">⏎ 展开</span></div>
+            </div>
+            <div class="block block-tool">
+              <div class="b-title"><span class="t-icon">→</span><span class="name">bash</span><span class="arg">rg "live_detail" crates/agent_tui_kit/src -n</span><span class="meta">1.2s</span></div>
+              <div class="b-body">（运行中… 输出回流）</div>
+              <div class="b-result ok">✓ 19 matches · tool_widget.rs:754 · subagent_popup.rs:145</div>
+              <div class="b-foot"><span>bash 工具</span><span class="expand">⏎ 收束</span></div>
+            </div>
+            <div class="seg seg-asst"><span class="mark">▍</span><span class="body">&gt; 定位完成。下一步：抽取 ToolRenderOutput 结构体。</span></div>
+            <div class="block block-think">
+              <div class="b-title"><span class="caret"></span>⟳ Thinking</div>
+              <div class="b-body">检查 PopupLayoutCache::is_valid —— 只依赖 content_len/width，无需额外重排…</div>
+              <div class="b-foot"><span>1/12 行 · 3.1s</span><span class="expand">⏎ 展开</span></div>
+            </div>
+            <div class="block block-tool">
+              <div class="b-title"><span class="t-icon">→</span><span class="name">read_file</span><span class="arg">render/popups/subagent_popup.rs</span><span class="meta">0.4s</span></div>
+              <div class="b-body">（运行中…）</div>
+              <div class="b-result ok">✓ 215 lines loaded</div>
+              <div class="b-foot"><span>read_file 工具</span><span class="expand">⏎ 收束</span></div>
+            </div>
+            <div class="seg seg-asst"><span class="mark">▍</span><span class="body">开始抽取结构体<span class="caret" style="background:var(--fg);"></span></span></div>
+          </div>
+        </div>
+        <div class="scrollbar"><div class="thumb" style="top:4%;height:30%;"></div></div>
+      </div>
+      <div class="popup-foot">
+        <span><span class="key">y</span> 拷贝</span><span class="sep">|</span>
+        <span><span class="key">j/k</span> 滚动</span><span class="sep">|</span>
+        <span><span class="key">g/G</span> 顶/底</span><span class="sep">|</span>
+        <span><span class="key">f</span> 跟随</span><span class="sep">|</span>
+        <span><span class="key">⏎</span> 收束块</span><span class="sep">|</span>
+        <span><span class="key">Esc</span> 关闭</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== BLOCK MODEL EXPLAINED ==================== -->
+  <h2><span class="step">02</span> 块模型（参照主区域）</h2>
+  <table class="spec">
+    <tr><th style="width:26%">元素</th><th>结构（与主区域一致）</th></tr>
+    <tr><td><b>thinking 块</b></td><td>同 <code class="inl">ThinkingCell</code>：标题行 <code class="inl">⟳ Thinking</code>（Live 脉冲）· 正文最多 <b>3 行</b>尾采样 · 底栏 <code class="inl">2/37 行 · 12.4s</code>；紫色边框；<code class="inl">⏎</code> 展开全文</td></tr>
+    <tr><td><b>tool 块</b></td><td>同主区域工具卡：标题行 <code class="inl">→ tool_name arg…</code> + 右侧 meta（耗时）· 正文（运行中 stream 或结果摘要）· 结果行 <code class="inl">✓ / ✗</code>；accent 边框；<code class="inl">⏎</code> 收束为标题一行</td></tr>
+    <tr><td><b>user / 系统 / 助手文本</b></td><td>保持线性段（无边框），只在块之间穿插——避免全屏全是卡片框</td></tr>
+    <tr><td><b>块间距</b></td><td>块与块、块与文本之间统一 <b>8px</b> 垂直间距，形成清晰的"一个思考 = 一个盒子"</td></tr>
+    <tr><td><b>流结束</b></td><td>子代理完成 / 失败 = 流<b>停止增长</b>、末尾光标消失；<b>弹窗保持打开</b>展示完整转录，头部 <code class="inl">● Live</code> 徽章转为静态灰点（不新增完成/失败样式）</td></tr>
+  </table>
+
+  <!-- ==================== PERFORMANCE ==================== -->
+  <h2><span class="step">03</span> 性能预算（弹窗渲染热路径）</h2>
+  <p class="lead">弹窗是长驻实时流，且<b>每帧都在跑</b>（<code class="inl">prepare_subagent_popup</code> + <code class="inl">render_subagent_popup</code>
+    各一遍）。性能目标：<b>长子代理（万行级转录）也不掉帧</b>。
+    关键事实：live 状态下 <code class="inl">content_len</code> 每帧都在涨 → 现有指纹缓存<b>几乎恒失效</b>，
+    每帧全量重排整份转录——这是必须消除的第一位成本；其次是 render 阶段每帧的固定账本。</p>
+
+  <table class="spec">
+    <tr><th style="width:20%">阶段</th><th style="width:22%">成本点</th><th>现状</th><th>设计对策（含预算值）</th></tr>
+    <tr>
+      <td rowspan="2"><b>prepare<br/>（每帧）</b></td>
+      <td><b>① 恒失效 → 全量重排</b></td>
+      <td>live 时每帧 <code class="inl">content_len</code> 变大，<code class="inl">is_valid</code> 恒 false →
+        每帧 <code class="inl">layout_all_display_rows</code> 重排<b>全部</b>转录（万行 × 逐字形）</td>
+      <td><b>追加式布局（硬要求，非优化项）</b>：指纹改为「已布局末行的原始偏移」；
+        新 chunk 只布局增量段，<code class="inl">display_rows</code> 原地 push。live 时重排成本 O(全量) → O(增量)。
+        思路与现有 <code class="inl">PopupLayoutCache</code> 同构（追加模式），不推翻设计。</td>
+    </tr>
+    <tr>
+      <td><b>② 源串复制</b></td>
+      <td>live 分支每帧 <code class="inl">full_detail_text()</code> 全量 String 返回，
+        再 <code class="inl">source.lines().map(Line::from)</code> 把全部行克隆成 styled lines</td>
+      <td>弹窗持<b>追加式 String + 已取字节偏移</b>：增量取新文本追加；styled lines 只补新行；
+        无变化帧零复制（<code class="inl">full_detail_len()</code> 指纹已是 O(1)）。</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><b>render<br/>（每帧固定账本）</b></td>
+      <td><b>③ 视口行 hit 表克隆</b></td>
+      <td>每可见行 <code class="inl">display.hit_row()</code> → <code class="inl">PopupHitRow { cells: cells.clone() }</code>
+        每帧每行克隆整张命中表，存入 <code class="inl">surface.hit_rows</code></td>
+      <td><b>惰性命中表</b>：body 尺寸、scroll 未变时 <code class="inl">hit_rows</code> 直接复用上一帧
+        （<code class="inl">Vec</code> 缓存于 popup 状态）；仅当 scroll/宽度/行数变化时重建。若鼠标未在弹窗内，
+        可完全跳过 hit 构建（<code class="inl">surface.hit_rows</code> 留空）。</td>
+    </tr>
+    <tr>
+      <td><b>④ 每帧 spans / header 重建</b></td>
+      <td>每可见行 <code class="inl">spans()</code> 重建 <code class="inl">Vec&lt;Span&gt;</code>；
+        header 每帧 <code class="inl">format!</code> + <code class="inl">title.clone()</code>；
+        chrome / scrollbar 状态每帧重建</td>
+      <td>spans 仅视口行（已有 skip/take）；header 文本缓存（内容/宽度变化才重算）；
+        chrome 块小、scrollbar 状态 O(1)，保留每帧重建（已是最小实现）。</td>
+    </tr>
+    <tr>
+      <td><b>⑤ 跟随底部滚动推进</b></td>
+      <td>底部跟随 = 每帧 scroll 前进一行，触发全量可见行重绘（②③④联动）</td>
+      <td>跟随时的重绘本就只覆盖视口行；配合增量布局，scroll 推进只追加尾行。
+        断点：手动滚动即停跟随（<code class="inl">f</code> 切换），避免滚动不断前进时的高频全量路径。</td>
+    </tr>
+    <tr>
+      <td><b>内存</b></td>
+      <td><b>⑥ 行结构</b></td>
+      <td>每行 <code class="inl">Vec&lt;DisplayGrapheme&gt;</code>（每字一个）+ <code class="inl">cells</code> 命中表，
+        万行转录可达数十 MB</td>
+      <td>行缓冲改<b>按段（span）存储</b>，同段字符合并；命中表按「段起始 + 段宽」区间存。
+        目标：单行常驻从 ~2KB → ~200B；弹窗整体 &lt; <b>10MB</b>（万行级）。</td>
+    </tr>
+  <tr>
+      <td rowspan="2"><b>循环层</b></td>
+      <td><b>⑦ 帧节流 / chunk 合并</b></td>
+      <td>每个 <code class="inl">ToolProgress</code> chunk 立即触发重建（<code class="inl">on_tool_progress</code> 每 chunk 一次）
+      </td>
+      <td>chunk 到达只追加缓冲，<b>每帧至多一次</b> prepare+render；同帧多 chunk 合并。跟随底部时增量布局只推尾部，光标动画独立于重排（不触发布局失效）。</td>
+    </tr>
+    <tr>
+      <td><b>⑧ 块收束不重排</b></td>
+      <td>thinking/tool 块的收束状态切换会改变视口行数 → 潜在整视口重绘</td>
+      <td>收束切换时只重排<b>该块</b>的 display_rows 区间（块边界已在布局中记录），前后行不动；配合 ③ 复用 hit 表。</td>
+    </tr>
+  </table>
+
+  <p class="lead" style="margin-top:8px;">
+    <b>验收基准（基准测试守卫）：</b>万行（~1MB）转录连续流式输入时 —— 单帧布局 &lt; <b>2ms</b>（增量）、
+    弹窗常驻内存 &lt; <b>10MB</b>、滚动/选择响应 &lt; <b>16ms</b>（一帧）。新增测试用 10k 行合成转录断言
+    「增量追加 ≤ 全量重排 × 1%」与「每帧固定账本 ≤ 0.5ms」；任何回归到全量 O(n) 的路径都会被测试拦下。</p>
+
+  <!-- ==================== INTERACTION ==================== -->
+  <h2><span class="step">04</span> 交互规格</h2>
+  <table class="spec">
+    <tr><th style="width:24%">交互</th><th>行为</th></tr>
+    <tr><td>打开</td><td>内联卡双击（或聚焦卡后 <code class="inl">Enter</code>），<b>任意阶段</b>都可打开</td></tr>
+    <tr><td>常驻保持</td><td>打开后一直保持；子代理结束（<code class="inl">StepFinished / StepFailed</code>）<b>不关闭</b>——只是流停止增长，弹窗继续展示完整转录，直到用户关闭</td></tr>
+    <tr><td>滚动</td><td><code class="inl">j/k / ↑ / ↓</code> 逐行；<code class="inl">g</code> 顶、<code class="inl">G</code> 底</td></tr>
+    <tr><td>跟随</td><td>Live 默认底部跟随；<code class="inl">f</code> 切换跟随/固定；手动滚动即暂停</td></tr>
+    <tr><td>收束块</td><td>聚焦到 thinking/tool 块上时 <code class="inl">⏎</code> 切换 3 行卡 / 全文；块以光标停留为当前块</td></tr>
+    <tr><td>选择</td><td>左键拖拽选段（<code class="inl">PopupTextSelection</code>，UTF-8 安全）；块边框不参与选择</td></tr>
+    <tr><td>拷贝</td><td><code class="inl">y</code>：有选区拷选区，无选区拷全部（含块内全文）</td></tr>
+    <tr><td>关闭</td><td><code class="inl">Esc</code> / <code class="inl">✕</code>；<code class="inl">Clear</code> 覆盖 ≥ 绘制区（无残影）</td></tr>
+  </table>
+
+  <!-- ==================== IMPACT ==================== -->
+  <h2><span class="step">05</span> 数据与影响面</h2>
+  <ul class="tight">
+    <li>状态类型 <code class="inl">SubagentPopup</code>：保留 <code class="inl">tool_id / scroll / selection / layout_cache</code>；新增 <code class="inl">follow_bottom</code>、<code class="inl">duration</code>、<code class="inl">tokens</code>、块收束集合、<code class="inl">last_layered_offset</code>（增量布局水位）；一个 <code class="inl">live</code> 布尔区分"流增长中 / 已结束"（只影响光标与徽章脉冲，不是状态页）。</li>
+    <li>渲染 <code class="inl">render/popups/subagent_popup.rs</code>：单一实时流视图（live 与结束共用同一布局）；正文按「thinking 卡 / tool 卡 / 线性段」三类布局，复用主区域 <code class="inl">ThinkingCell</code> 的卡内行数算法（1+3+1）。</li>
+    <li>常驻语义：<code class="inl">on_step_finished</code> 只更新 <code class="inl">live=false</code> 让光标/脉冲停止，<b>不关闭弹窗</b>；<code class="inl">handlers/overlay.rs</code> 新增 <code class="inl">f</code>、<code class="inl">⏎</code> 分支。</li>
+    <li>性能实现：<code class="inl">selectable_text.rs</code> 的 <code class="inl">DisplayRow</code> 改为「段存储 + 区间命中表」；<code class="inl">PopupLayoutCache</code> 支持追加式增量布局（指纹含末行偏移）；<code class="inl">components/tool.rs::on_tool_progress</code> 每帧合并一次。全部配 10k 行合成转录基准测试。</li>
+    <li>数据层前置（与 stream 分段设计共享）：<code class="inl">ToolOutputChunk</code> 带段类型、<code class="inl">subagent_ui.rs</code> 按事件跨度打标（thinking 一段 = Started…Finished；工具一段 = Started…Finished/Failed）、user 段注入。</li>
+    <li>I18n &amp; 文档：<code class="inl">i18n.rs</code> 徽章/快捷键文案；同步 <code class="inl">docs/tool_rendering.md</code>、<code class="inl">book/</code> 相关章节（AGENTS.md 同步表）。</li>
+  </ul>
+</div>
+</body>
+</html>

@@ -14,7 +14,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
-use tact_protocol::{TokenUsageInfo, ToolOutputLine, ToolOutputStream};
+use tact_protocol::{ChunkKind, TokenUsageInfo, ToolOutputLine, ToolOutputStream};
 
 use crate::{
     i18n::Messages,
@@ -194,10 +194,28 @@ impl ToolCell {
                     }
                     let text: String = output_span.text.chars().take(remaining).collect();
                     remaining = remaining.saturating_sub(text.chars().count());
+                    // Role-aware preview coloring for subagent live output:
+                    // stderr stays warning-colored, kind-tagged spans get their
+                    // semantic color so the inline card preview mirrors the
+                    // popup's block palette.
                     let style = if output_span.stream == ToolOutputStream::Stderr {
                         Style::default().fg(self.warning).bg(self.bg)
                     } else {
-                        text_style
+                        match output_span.kind {
+                            Some(ChunkKind::Thinking) => {
+                                Style::default().fg(self.accent).bg(self.bg).italic()
+                            }
+                            Some(ChunkKind::ToolResult) => {
+                                Style::default().fg(self.success).bg(self.bg)
+                            }
+                            Some(ChunkKind::ToolError) => {
+                                Style::default().fg(self.error).bg(self.bg)
+                            }
+                            Some(ChunkKind::System) => {
+                                Style::default().fg(Color::Gray).bg(self.bg).italic()
+                            }
+                            _ => text_style,
+                        }
                     };
                     spans.push(Span::styled(text, style));
                 }
@@ -499,6 +517,7 @@ mod tests {
             .map(|i| ToolOutputLine {
                 spans: vec![ToolOutputSpan {
                     stream: ToolOutputStream::Other,
+                    kind: None,
                     text: format!("line-{i:02}"),
                 }],
             })
@@ -532,6 +551,7 @@ mod tests {
             subagent_model: None,
             subagent_tokens: None,
             visual_kind: tact_protocol::ToolVisualKind::FileWrite,
+            live_fingerprint: (0, 0, 0),
         }
     }
 
@@ -709,12 +729,14 @@ mod tests {
             ToolOutputLine {
                 spans: vec![ToolOutputSpan {
                     stream: ToolOutputStream::Stdout,
+                    kind: None,
                     text: "normal".into(),
                 }],
             },
             ToolOutputLine {
                 spans: vec![ToolOutputSpan {
                     stream: ToolOutputStream::Stderr,
+                    kind: None,
                     text: "warning".into(),
                 }],
             },

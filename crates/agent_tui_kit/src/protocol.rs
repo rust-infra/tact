@@ -11,5 +11,5 @@ pub use tact_protocol::agent::{
     ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
 };
 pub use tact_protocol::tool_output::{
-    ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
+    ChunkKind, ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
 };

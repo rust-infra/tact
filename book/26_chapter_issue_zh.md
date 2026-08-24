@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-08-24 — Subagent 弹窗改为常驻实时转录块视图；live output 带角色 kind
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/tool/subagent_{ui,rs}.rs`（kind 打标、thinking 实时流）、`crates/protocol/src/tool_output.rs`（`ChunkKind`、结构化行）、`crates/agent_tui_kit/src/render/popups/subagent_popup.rs`（块模型、增量布局）、`crates/agent_tui_kit/src/{components/tool.rs,widgets/tool_widget.rs,render/cells/tool.rs}`（live 卡合帧、按角色着色预览）；`docs/tool_rendering.md` § 5 |
+
+**症状 / 动机：** subagent 弹窗只是纯文本阅读器，且只在子代理运行期间存在——完成后关闭并显示 markdown 摘要，完全没有 user / 系统 / assistant（thinking / tool / 文本）的角色区分。每个 `ToolProgress` chunk 都会重建整张 live 卡，弹窗每帧全量重排整份转录，长子代理时无法扩展。
+
+**决策：** 三处联动改动。(1) 数据层：`ToolOutputChunk`/`ToolOutputSpan` 增加可选 `ChunkKind`（`User`/`System`/`AssistantText`/`Thinking`/`ToolCall`/`ToolResult`/`ToolError`）；`ToolOutputBuffer::new_full` 保留结构化已提交行（`structured_line_at` 等）供增量读取。(2) 转发器：`subagent_ui.rs` 按事件跨度打标——thinking delta 实时透传（不再缓冲 `🧠` 块）、`Step{Started,Finished,Failed}` → `ToolCall`/`ToolResult`/`ToolError`、`Info` → `System`；`spawn_subagent` 先把 prompt 作为首行 `User` 推入。(3) 弹窗：打开后保持到 `Esc`/`✕`（完成只停止末尾光标）、块模型转录（thinking 卡 / 工具卡 / 线性文本）、支持 `f` 底部跟随、`⏎` 收束块、增量布局（水位追加 + 尾部 run 重放；命中表在 `(水位, 宽度, 滚动)` 不变时复用）。live 卡按 `progress_fingerprint` 合帧，并按 span kind 着色预览。
+
+**变更后行为：** 弹窗是常驻实时流查看器，子代理完成不关闭；转录按角色呈现主区域卡样式；长转录保持在帧预算内（`ten_k_line_transcript_lays_out_within_budget` 10k 行性能守卫）；内联 subagent 卡不再每 chunk 全量重建，预览按 span kind 着色。
+
+---
+
 ## 1. 2026-08-23 — 附件去内联：`@file`/`![alt]` 保留为路径文本
 
 | Field | Value |

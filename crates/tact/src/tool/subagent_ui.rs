@@ -1,6 +1,6 @@
 //! Forward subagent `ui_tx` traffic as `ToolProgress` for the parent tool card.
 
-use tact_protocol::{AgentUpdate, ToolOutputChunk};
+use tact_protocol::{AgentUpdate, ChunkKind, ToolOutputChunk};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tool::ToolProgressReporter;
@@ -46,15 +46,6 @@ fn preserve_markdown_newlines(text: &str) -> String {
     out
 }
 
-/// Labeled thinking block. Not a Markdown blockquote — `>` + soft-break made
-/// titles glue to the next sentence and doubled the quote gutter (`▎ >`).
-fn format_thinking_block(summary: &str) -> String {
-    format!(
-        "🧠 Thinking\n\n{}",
-        preserve_markdown_newlines(summary.trim())
-    )
-}
-
 /// Spawn a forwarder that pushes subagent stream/steps/thinking as
 /// [`AgentUpdate::ToolProgress`] into the parent tool card, while passing
 /// through permission selects with a `[Subagent]` prefix.
@@ -66,26 +57,28 @@ pub fn tagged_ui_channel_with_progress(
 ) -> UnboundedSender<AgentUpdate> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
-        let mut thinking_buf = String::new();
         while let Some(update) = rx.recv().await {
             match update {
                 AgentUpdate::StreamChunk(text) => {
-                    progress.report(vec![ToolOutputChunk::other(text)]);
+                    progress.report(vec![
+                        ToolOutputChunk::other(text).with_kind(ChunkKind::AssistantText)
+                    ]);
                 }
+                // Thinking deltas stream through in real time, tagged with the
+                // Thinking kind. The block starts at the first Thinking line and
+                // ends when a different kind arrives, so the popup's block
+                // renderer groups consecutive Thinking rows into one card.
+                // `Started` / `Finished` carry no text and emit nothing — the
+                // kind sequence alone delimits the block.
                 AgentUpdate::ThinkingChunk(chunk) => match chunk {
-                    tact_protocol::ThinkingChunk::Started => {
-                        thinking_buf.clear();
+                    tact_protocol::ThinkingChunk::Delta(text) if !text.is_empty() => {
+                        progress.report(vec![
+                            ToolOutputChunk::other(text).with_kind(ChunkKind::Thinking)
+                        ]);
                     }
-                    tact_protocol::ThinkingChunk::Delta(text) => {
-                        thinking_buf.push_str(&text);
-                    }
-                    tact_protocol::ThinkingChunk::Finished => {
-                        let summary = thinking_buf.trim().to_string();
-                        thinking_buf.clear();
-                        if !summary.is_empty() {
-                            progress.report(vec![structural_line(format_thinking_block(&summary))]);
-                        }
-                    }
+                    tact_protocol::ThinkingChunk::Started
+                    | tact_protocol::ThinkingChunk::Finished
+                    | tact_protocol::ThinkingChunk::Delta(_) => {}
                 },
                 AgentUpdate::StepStarted {
                     tool_name,
@@ -97,30 +90,37 @@ pub fn tagged_ui_channel_with_progress(
                     } else {
                         format!("→ {tool_name} {arg_summary}")
                     };
-                    progress.report(vec![structural_line(line)]);
+                    progress.report(vec![
+                        structural_line(line).with_kind(ChunkKind::ToolCall)
+                    ]);
                 }
                 AgentUpdate::StepFinished { result, .. } => {
                     let preview = result.message;
                     if !preview.is_empty() {
                         // Multi-line tool output (e.g. `ls -la`) must keep its
-                        // newlines through the completed-popup Markdown pass.
+                        // newlines readable in the popup; the block renderer
+                        // wraps them instead of a Markdown pass.
                         progress.report(vec![structural_line(format!(
                             "✓ {}",
                             preserve_markdown_newlines(&preview)
-                        ))]);
+                        ))
+                        .with_kind(ChunkKind::ToolResult)]);
                     }
                 }
                 AgentUpdate::StepFailed { error, .. } => {
                     progress.report(vec![structural_stderr(format!(
                         "✗ {}",
                         preserve_markdown_newlines(&error)
-                    ))]);
+                    ))
+                    .with_kind(ChunkKind::ToolError)]);
                 }
                 AgentUpdate::Info(msg) => {
-                    progress.report(vec![structural_line(msg)]);
+                    progress.report(vec![structural_line(msg).with_kind(ChunkKind::System)]);
                 }
                 AgentUpdate::Error(err) => {
-                    progress.report(vec![structural_stderr(format!("error: {err:?}"))]);
+                    progress.report(vec![
+                        structural_stderr(format!("error: {err:?}")).with_kind(ChunkKind::System)
+                    ]);
                 }
                 AgentUpdate::TokenUsage(usage) => {
                     // Update the parent tool card header (model + token count)
@@ -177,8 +177,18 @@ pub fn tagged_ui_channel_with_progress(
 mod tests {
     use super::*;
     use tact_protocol::{
-        StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolPresentationInfo,
+        StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolOutputBuffer, ToolPresentationInfo,
     };
+
+    /// Concatenate chunk texts of a ToolProgress update (test helper).
+    fn chunks_text(update: &AgentUpdate) -> String {
+        match update {
+            AgentUpdate::ToolProgress { chunks, .. } => {
+                chunks.iter().map(|c| c.text.as_str()).collect()
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn streams_become_tool_progress() {
@@ -206,7 +216,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thinking_finished_emits_summary_with_prefix() {
+    async fn thinking_deltas_stream_live_with_thinking_kind() {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
@@ -217,8 +227,11 @@ mod tests {
             .unwrap();
         tagged
             .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-                "reasoning line\nsecond".into(),
+                "reasoning line\n".into(),
             )))
+            .unwrap();
+        tagged
+            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("second".into())))
             .unwrap();
         tagged
             .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
@@ -226,35 +239,31 @@ mod tests {
         tokio::task::yield_now().await;
 
         let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
-        assert_eq!(got.len(), 1);
-        match &got[0] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
-                let text = &chunks[0].text;
-                assert!(text.contains("🧠 Thinking"), "got {text:?}");
-                assert!(
-                    !text.contains("> 🧠"),
-                    "blockquote markers should be gone: {text:?}"
-                );
-                assert!(text.contains("reasoning line"), "got {text:?}");
-                assert!(text.contains("second"), "got {text:?}");
-                // Hard break between thinking lines (two spaces + newline).
-                assert!(text.contains("reasoning line  \nsecond"), "got {text:?}");
-                assert!(text.starts_with("\n\n"), "got {text:?}");
-                assert!(text.ends_with("\n\n"), "got {text:?}");
+        assert_eq!(got.len(), 2, "each delta reports once; Started/Finished silent: {got:?}");
+        for update in &got {
+            match update {
+                AgentUpdate::ToolProgress { chunks, .. } => {
+                    for chunk in chunks {
+                        assert_eq!(chunk.kind, Some(ChunkKind::Thinking));
+                    }
+                }
+                other => panic!("expected ToolProgress, got {other:?}"),
             }
-            other => panic!("expected ToolProgress, got {other:?}"),
         }
+        assert_eq!(chunks_text(&got[0]), "reasoning line\n");
+        assert_eq!(chunks_text(&got[1]), "second");
     }
 
     #[test]
-    fn thinking_block_is_distinct_from_assistant_stream() {
+    fn thinking_never_emits_block_prefix_markup() {
+        // The old buffered path prefixed `🧠 Thinking`; live streaming must
+        // carry raw reasoning text only — kind tags do the styling.
+        let mut out = ToolOutputBuffer::new_full(10);
+        out.push_chunks(&[ToolOutputChunk::other("plan\n").with_kind(ChunkKind::Thinking)]);
+        assert_eq!(out.structured_line_at(0).unwrap().plain_text(), "plan");
         assert_eq!(
-            format_thinking_block("plan the answer"),
-            "🧠 Thinking\n\nplan the answer"
-        );
-        assert_eq!(
-            format_thinking_block("line one\nline two"),
-            "🧠 Thinking\n\nline one  \nline two"
+            out.structured_line_at(0).unwrap().kind(),
+            Some(ChunkKind::Thinking)
         );
     }
 
@@ -329,6 +338,7 @@ mod tests {
             AgentUpdate::ToolProgress { chunks, .. } => {
                 assert!(chunks[0].text.contains("read_file"));
                 assert!(chunks[0].text.contains("main.rs"));
+                assert_eq!(chunks[0].kind, Some(ChunkKind::ToolCall));
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
@@ -337,6 +347,7 @@ mod tests {
                 assert!(chunks[0].text.contains("✗ "));
                 assert!(chunks[0].text.contains("not found"));
                 assert!(chunks[0].text.starts_with("\n\n"));
+                assert_eq!(chunks[0].kind, Some(ChunkKind::ToolError));
                 assert!(matches!(
                     chunks[0].stream,
                     tact_protocol::ToolOutputStream::Stderr
@@ -380,6 +391,7 @@ mod tests {
                 assert!(chunks[0].text.contains("hi"));
                 assert!(chunks[0].text.starts_with("\n\n"));
                 assert!(chunks[0].text.ends_with("\n\n"));
+                assert_eq!(chunks[0].kind, Some(ChunkKind::ToolResult));
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }

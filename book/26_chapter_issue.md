@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-24 — Subagent popup is a persistent live-transcript block viewer; live output carries role kinds
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/tool/subagent_{ui,rs}.rs` (kind tagging, live thinking), `crates/protocol/src/tool_output.rs` (`ChunkKind`, structured lines), `crates/agent_tui_kit/src/render/popups/subagent_popup.rs` (block model, incremental layout), `crates/agent_tui_kit/src/{components/tool.rs,widgets/tool_widget.rs,render/cells/tool.rs}` (live-card coalescing, role-colored preview); `docs/tool_rendering.md` § 5 |
+
+**Symptom / motivation:** the subagent popup was a plain wrapped-text reader that only existed while the subagent ran — it closed on completion and showed a markdown summary, with no notion of user / system / assistant (thinking / tool / text) roles. Every `ToolProgress` chunk rebuilt the whole live card, and the popup re-wrapped the entire transcript per frame, which did not scale to long subagents.
+
+**Decision:** three coupled changes. (1) Data layer: `ToolOutputChunk`/`ToolOutputSpan` gain an optional `ChunkKind` (`User`/`System`/`AssistantText`/`Thinking`/`ToolCall`/`ToolResult`/`ToolError`); `ToolOutputBuffer::new_full` keeps structured committed lines (`structured_line_at` etc.) for incremental reads. (2) Forwarder: `subagent_ui.rs` tags events by span — thinking deltas stream live (no buffered `🧠` block), `Step{Started,Finished,Failed}` become `ToolCall`/`ToolResult`/`ToolError`, `Info` becomes `System`; `spawn_subagent` seeds the first `User` line with the prompt. (3) Popup: it now stays open until Esc/✕ (completion only stops the tail cursor), renders a block-model transcript (thinking cards, tool cards, linear text), supports `f` bottom-follow, `⏎` block collapse, and lays out incrementally (watermark append + tail-run re-emit; hit table reused while `(watermark, width, scroll)` is unchanged). The live card coalesces per chunk via a `progress_fingerprint` and colors preview spans by kind.
+
+**Behavior after:** the popup is a persistent live-stream viewer that survives subagent completion; transcripts distinguish roles with main-area card chrome; long transcripts stay within the frame budget (10k-line perf guard in `ten_k_line_transcript_lays_out_within_budget`); inline subagent cards stream without per-chunk full rebuilds and color their preview by span kind.
+
+---
+
 ## 1. 2026-08-23 — Attachments are de-inlined: `@file`/`![alt]` kept as path text
 
 | Field | Value |

@@ -19,7 +19,7 @@ pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
 };
 pub use tool_output::{
-    ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
+    ChunkKind, ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
 };
 
 /// Format a byte count using human-readable units: B, KB, MB, GB.

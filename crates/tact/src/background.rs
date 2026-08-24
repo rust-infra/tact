@@ -406,20 +406,32 @@ async fn run_background_process(
                         let text = decoders[stream_index(stream)].push(&bytes);
                         record.push(&text);
                         log_write(&mut log_file, &text).await;
-                        pending.push(ToolOutputChunk { stream, text });
+                        pending.push(ToolOutputChunk {
+                            stream,
+                            kind: None,
+                            text,
+                        });
                     }
                     Some(PipeEvent::Closed(stream)) => {
                         let text = decoders[stream_index(stream)].finish();
                         record.push(&text);
                         log_write(&mut log_file, &text).await;
-                        pending.push(ToolOutputChunk { stream, text });
+                        pending.push(ToolOutputChunk {
+                            stream,
+                            kind: None,
+                            text,
+                        });
                         closed_pipes += 1;
                     }
                     Some(PipeEvent::Failed(stream, error)) => {
                         let text = decoders[stream_index(stream)].finish();
                         record.push(&text);
                         log_write(&mut log_file, &text).await;
-                        pending.push(ToolOutputChunk { stream, text });
+                        pending.push(ToolOutputChunk {
+                            stream,
+                            kind: None,
+                            text,
+                        });
                         closed_pipes += 1;
                         if failure_reason.is_none() {
                             failure_reason = Some(format!("reading {stream:?}: {error}"));
