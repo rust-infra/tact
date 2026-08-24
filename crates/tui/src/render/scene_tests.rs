@@ -215,11 +215,10 @@ fn full_frame_token_usage_in_bottom_bar() {
 #[test]
 fn full_frame_select_popup_overlays() {
     let mut app = make_app();
-    let (tx, _rx) = tokio::sync::oneshot::channel();
     app.handle_agent_update(AgentUpdate::RequestSelect {
+        request_id: 0,
         prompt: "Allow bash?".into(),
         options: vec!["Allow once".into(), "Deny".into()],
-        respond: tx,
         log_confirm: false,
     });
 
@@ -234,9 +233,9 @@ fn full_frame_select_popup_overlays() {
 #[test]
 fn full_frame_select_popup_wraps_long_prompt() {
     let mut app = make_app();
-    let (tx, _rx) = tokio::sync::oneshot::channel();
     let prompt = "📝 对比题：He went to ___ school to pick up his daughter after ___ class.";
     app.handle_agent_update(AgentUpdate::RequestSelect {
+        request_id: 0,
         prompt: prompt.into(),
         options: vec![
             "A. the ... the".into(),
@@ -244,7 +243,6 @@ fn full_frame_select_popup_wraps_long_prompt() {
             "C. the ... Ø".into(),
             "D. Ø ... the".into(),
         ],
-        respond: tx,
         log_confirm: false,
     });
 

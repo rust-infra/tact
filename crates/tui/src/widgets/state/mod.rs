@@ -75,7 +75,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
 /// Why the select popup is open (agent permission vs `/model` flow).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SelectKind {
-    /// Agent `RequestSelect` — confirm sends oneshot reply.
+    /// Agent `RequestSelect` — confirm emits a `UiResponse` on the command channel.
     Agent,
     /// `/model` first step — choose a model before applying either value.
     ModelPick,

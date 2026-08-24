@@ -220,8 +220,10 @@ async fn run_single_task_with_permission_choice_and_choices(
 
     install_test_config();
     let (agent_tx, agent_rx) = unbounded_channel();
-    let (collect_rx, prompt_count) = wire_permission_responder_with_counter(agent_rx, choices);
     let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), permission_mode);
+    let ui_responder = agent.tool_context.ui_responder.clone();
+    let (collect_rx, prompt_count) =
+        wire_permission_responder_with_counter(agent_rx, choices, ui_responder);
     setup(&work_dir);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 

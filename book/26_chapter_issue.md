@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-24 — `AgentUpdate` drops the embedded oneshot; select requests use `request_id` + `UiResponse`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/protocol/src/agent.rs`, `crates/tact/src/ui_responder.rs` (new), `crates/tact/src/tool/ask_user.rs`, `crates/tact/src/tool/subagent_ui.rs`, `crates/tact/src/agent/tool_dispatch.rs`, `crates/tact-ui/src/driver.rs`, `crates/agent_tui_kit/src/state/select_popup.rs`, `crates/tui/src/handlers/select.rs`; Ch 25 |
+
+**Symptom / motivation:** `AgentUpdate::RequestSelect` / `RequestMultiSelect` embedded a `tokio::sync::oneshot::Sender`, coupling the protocol enum to an in-process transport handle. The enum could not derive `Clone`/`Serialize`, each request had exactly one in-process responder, and every new "ask the UI" shape would need its own variant carrying a sender.
+
+**Decision:** requests carry a pure-data `request_id: u64`; the TUI answers over the reverse channel with `UserCommand::UiResponse` (`Select` / `MultiSelect`). A new shared `UiResponder` allocates globally-unique ids and routes responses to the exact waiter. Parent and subagents clone the same inner state, so a subagent request forwarded through the parent's tagged channel still resolves. The driver handles `UiResponse` without awaiting the in-flight task and calls `UiResponder::shutdown` on exit so a vanished UI unblocks any waiter.
+
+**Behavior after:** `AgentUpdate` is serializable / replayable transport data; select responses route by `request_id` across the parent and all subagents; a closed UI unblocks the agent loop instead of deadlocking it.
+
+---
+
 ## 1. 2026-08-24 — Plugin update command: `tact plugin update` / `/plugin update`
 
 | Field | Value |

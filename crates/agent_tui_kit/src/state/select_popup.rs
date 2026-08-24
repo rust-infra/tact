@@ -1,4 +1,9 @@
-/// Select popup state: independently manages prompt, options, selected index, and response channel.
+/// Select popup state: independently manages prompt, options, selected index,
+/// and the request id used to answer agent-originated requests.
+///
+/// The popup no longer holds a oneshot sender. Agent-originated selects carry a
+/// `request_id`; confirming or cancelling produces a [`tact_protocol::UiResponse`]
+/// that the caller (the TUI) sends over the reverse command channel.
 pub struct SelectPopup {
     /// Popup prompt text.
     pub prompt: String,
@@ -6,10 +11,9 @@ pub struct SelectPopup {
     pub options: Vec<String>,
     /// Index of the currently focused option (cursor).
     pub selected: usize,
-    /// Response channel for single-select (permission / default ask_user).
-    pub respond: Option<tokio::sync::oneshot::Sender<Option<usize>>>,
-    /// Response channel for multi-select (`ask_user` with `multi_select`).
-    pub respond_multi: Option<tokio::sync::oneshot::Sender<Option<Vec<usize>>>>,
+    /// Request id for agent-originated selects (`RequestSelect` /
+    /// `RequestMultiSelect`); `None` for local TUI flows like `/model`.
+    pub request_id: Option<u64>,
     /// When true, Space toggles checkboxes; Enter submits all checked indices.
     pub multi: bool,
     /// Checkbox state per option (only used when `multi`).
@@ -25,8 +29,7 @@ impl Default for SelectPopup {
             prompt: String::new(),
             options: Vec::new(),
             selected: 0,
-            respond: None,
-            respond_multi: None,
+            request_id: None,
             multi: false,
             checked: Vec::new(),
             log_confirm: true,
@@ -35,12 +38,7 @@ impl Default for SelectPopup {
 }
 
 impl SelectPopup {
-    fn clear_channels(&mut self) {
-        self.respond = None;
-        self.respond_multi = None;
-    }
-
-    /// Set popup content without a oneshot channel (local TUI flows like `/model`).
+    /// Set popup content without a request id (local TUI flows like `/model`).
     pub fn set_local(
         &mut self,
         prompt: String,
@@ -51,25 +49,24 @@ impl SelectPopup {
         self.prompt = prompt;
         self.options = options;
         self.selected = selected.min(self.options.len().saturating_sub(1));
-        self.clear_channels();
+        self.request_id = None;
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
     }
 
-    /// Single-select popup (permission / default ask_user). Unchanged contract.
+    /// Single-select popup (permission / default ask_user).
     pub fn set(
         &mut self,
         prompt: String,
         options: Vec<String>,
-        respond: tokio::sync::oneshot::Sender<Option<usize>>,
+        request_id: u64,
         log_confirm: bool,
     ) {
         self.prompt = prompt;
         self.options = options;
         self.selected = 0;
-        self.respond = Some(respond);
-        self.respond_multi = None;
+        self.request_id = Some(request_id);
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
@@ -80,58 +77,61 @@ impl SelectPopup {
         &mut self,
         prompt: String,
         options: Vec<String>,
-        respond: tokio::sync::oneshot::Sender<Option<Vec<usize>>>,
+        request_id: u64,
         log_confirm: bool,
     ) {
         let n = options.len();
         self.prompt = prompt;
         self.options = options;
         self.selected = 0;
-        self.respond = None;
-        self.respond_multi = Some(respond);
+        self.request_id = Some(request_id);
         self.multi = true;
         self.checked = vec![false; n];
         self.log_confirm = log_confirm;
     }
 
-    /// Confirm single-select: send the focused index. No-op for multi (use [`confirm_multi`]).
+    /// Consume and return the pending request id, if this was agent-originated.
+    pub fn take_request_id(&mut self) -> Option<u64> {
+        self.request_id.take()
+    }
+
+    /// Focused index for single-select (no side effects). No-op for multi.
     pub fn confirm(&mut self) -> Option<usize> {
         if self.multi {
             return None;
         }
-        let respond = self.respond.take();
-        let idx = self.selected.min(self.options.len().saturating_sub(1));
-        if let Some(tx) = respond {
-            let _ = tx.send(Some(idx));
-        }
-        Some(idx)
+        Some(self.selected.min(self.options.len().saturating_sub(1)))
     }
 
-    /// Confirm multi-select: send all checked indices (may be empty).
+    /// All checked indices for multi-select (may be empty).
     pub fn confirm_multi(&mut self) -> Vec<usize> {
-        let idxs: Vec<usize> = self
-            .checked
+        self.checked
             .iter()
             .enumerate()
             .filter_map(|(i, on)| on.then_some(i))
-            .collect();
-        if let Some(tx) = self.respond_multi.take() {
-            let _ = tx.send(Some(idxs.clone()));
-        }
-        self.respond = None;
-        idxs
+            .collect()
     }
 
-    /// Cancel selection: send None on the active channel.
-    pub fn cancel(&mut self) {
-        if let Some(tx) = self.respond.take() {
-            let _ = tx.send(None);
-        }
-        if let Some(tx) = self.respond_multi.take() {
-            let _ = tx.send(None);
-        }
+    /// Build the cancellation response for an agent-originated request, if any.
+    /// Resets multi/checked state. Returns `None` for local flows.
+    pub fn cancel(&mut self) -> Option<tact_protocol::UiResponse> {
+        let request_id = self.request_id.take();
+        let response = request_id.map(|id| {
+            if self.multi {
+                tact_protocol::UiResponse::MultiSelect {
+                    request_id: id,
+                    choices: None,
+                }
+            } else {
+                tact_protocol::UiResponse::Select {
+                    request_id: id,
+                    choice: None,
+                }
+            }
+        });
         self.multi = false;
         self.checked.clear();
+        response
     }
 
     pub fn toggle_checked(&mut self) {

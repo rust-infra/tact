@@ -750,12 +750,11 @@ fn full_frame_planning_status_renders_in_status_bar() {
 #[test]
 fn request_select_update_renders_select_popup() {
     let mut app = make_app();
-    let (tx, _rx) = tokio::sync::oneshot::channel();
 
     app.handle_agent_update(AgentUpdate::RequestSelect {
+        request_id: 0,
         prompt: "Allow edit_file on lib.rs?".into(),
         options: vec!["Allow once".into(), "Deny".into()],
-        respond: tx,
         log_confirm: false,
     });
 

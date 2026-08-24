@@ -15,16 +15,17 @@ Related chapters: [Ch 18 Agent Loop](./18_chapter_agent_loop.md), [Ch 23 TUI](./
 graph LR
     Agent[Agent runtime] -->|AgentUpdate| TUI[TUI App]
     TUI -->|UserCommand| Driver[tact-ui driver]
+    TUI -->|UiResponse| Driver
     Account[account service] -->|AccountUpdate| TUI
 ```
 
 | Channel | Type | Direction | Purpose |
 |---------|------|-----------|---------|
-| `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI | Progress, streaming, metadata |
-| `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | Submit task, cancel, balance query |
+| `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI | Progress, streaming, metadata, select requests |
+| `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | Submit task, cancel, balance query, UI responses |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account → TUI | Balance / quota (separate from agent protocol) |
 
-All three use `tokio::sync::mpsc::unbounded_channel`. `RequestSelect` embeds a `oneshot::Sender` for in-process request–response; it is not serializable and cannot be replayed from session storage.
+All channels use `tokio::sync::mpsc::unbounded_channel`. `AgentUpdate` is **pure data**: `RequestSelect` / `RequestMultiSelect` carry a `request_id` instead of an embedded `oneshot::Sender`, so the enum can be serialized / replayed. The TUI answers over the reverse channel by sending `UserCommand::UiResponse` back to the driver, which routes it through the runtime's shared [`UiResponder`] registry (`crates/tact/src/ui_responder.rs`) to the waiting caller (parent agent or subagent).
 
 ---
 
@@ -46,8 +47,8 @@ pub enum AgentUpdate {
     TokenUsage(TokenUsageInfo),
     ModelInfo(ModelCallParams),
     Info(String),
-    RequestSelect { prompt, options, respond, log_confirm }, // single; permission=`false`, ask_user=`true`
-    RequestMultiSelect { prompt, options, respond },         // multi; ask_user only (`multi_select`)
+    RequestSelect { request_id, prompt, options, log_confirm }, // single; permission=`false`, ask_user=`true`
+    RequestMultiSelect { request_id, prompt, options },          // multi; ask_user only (`multi_select`)
     StreamChunk(String),
     ThinkingChunk(ThinkingChunk),
     /// Persistent task list changed (`task_create` / `task_update`)
@@ -83,8 +84,20 @@ pub enum UserCommand {
     SubmitTask(String),
     Cancel,
     QueryBalance,
+    UiResponse(UiResponse), // answer to a RequestSelect / RequestMultiSelect
 }
 ```
+
+### `UiResponse`
+
+```rust
+pub enum UiResponse {
+    Select { request_id, choice: Option<usize> },
+    MultiSelect { request_id, choices: Option<Vec<usize>> },
+}
+```
+
+`UiResponse` is the reverse message answering a select request. It carries the request's `request_id` so the runtime can route it to the exact waiter. The driver receives it on `user_cmd_rx`, never awaits the in-flight task, and hands it to the shared `UiResponder::handle_response`, which fires the pending waiter for that id (parent or subagent).
 
 ### `PlanStep`
 
@@ -297,7 +310,7 @@ stateDiagram-v2
 
     note right of Select
         Arrives while Status = Executing.
-        respond: oneshot::Sender → tool_dispatch
+        request_id → UiResponse on the reverse command channel
     end note
 ```
 
@@ -327,7 +340,7 @@ stateDiagram-v2
 |----------|----------|------------------|
 | **Content-producing** | `StepAdded`, `StepStarted`, `StepFinished`, `StepFailed`, `StreamChunk`, `ThinkingChunk`, `Info`, `TaskComplete`, `TaskCancelled`, `Error`, `RequestSelect`, `TasksChanged` | Prefer `ThinkingChunk::Finished` to close thinking; safety-flush on other content updates; remove loading placeholder; mutate log / plan |
 | **Metadata-only** | `TokenUsage(TokenUsageInfo)`, `ModelInfo(ModelCallParams)` | Update status bar only; keep loading placeholder; **do not** close an open thinking region |
-| **Request–response** | `RequestSelect { respond }` | Blocks on user choice via oneshot channel |
+| **Request–response** | `RequestSelect { request_id }`, `RequestMultiSelect { request_id }` | Blocks on user choice via the shared `UiResponder` (reverse `UiResponse`) |
 
 Thinking lifecycle is explicit: `ThinkingChunk::Started` opens the region, `Delta` appends text, `Finished` flushes and collapses. As a safety net, content-producing non-thinking updates still call `flush_and_close_thinking()` if a region is still open. `TokenUsage` / `ModelInfo` never close thinking (they may arrive mid-stream).
 
@@ -397,10 +410,11 @@ sequenceDiagram
     Agent->>TUI: StepStarted
 
     opt permission Ask
-        Agent->>TUI: RequestSelect
+        Agent->>TUI: RequestSelect (request_id)
         TUI->>TUI: InputMode → Select
         User->>TUI: pick option
-        TUI->>Agent: oneshot response
+        TUI->>Driver: UserCommand::UiResponse
+        Driver->>Agent: UiResponder::handle_response
     end
 
     Agent->>TUI: StepFinished | StepFailed

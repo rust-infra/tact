@@ -75,14 +75,12 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
 
     if let Some(tx) = &ctx.ui_tx {
         if !options.is_empty() {
+            let responder = ctx.ui_responder.clone();
             if multi {
-                let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
-                let _ = tx.send(AgentUpdate::RequestMultiSelect {
-                    prompt: question.clone(),
-                    options: options.clone(),
-                    respond: respond_tx,
-                });
-                return match respond_rx.await {
+                return match responder
+                    .request_multi(tx, question.clone(), options.clone())
+                    .await
+                {
                     Ok(Some(idxs)) => Ok(format_multi_selection(&options, &idxs)),
                     Ok(None) => Ok("User cancelled the question.".to_string()),
                     Err(_) => Ok(
@@ -91,15 +89,10 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
                 };
             }
 
-            let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
-            let _ = tx.send(AgentUpdate::RequestSelect {
-                prompt: question.clone(),
-                options: options.clone(),
-                respond: respond_tx,
-                // Meta row already shows the choice; skip duplicate system line.
-                log_confirm: false,
-            });
-            return match respond_rx.await {
+            return match responder
+                .request_select(tx, question.clone(), options.clone(), false)
+                .await
+            {
                 Ok(Some(idx)) => {
                     let chosen = options
                         .get(idx)
@@ -156,7 +149,7 @@ fn format_headless_question(question: &str, options: &[String], multi: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use tact_protocol::AgentUpdate;
+    use tact_protocol::{AgentUpdate, UiResponse};
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::*;
@@ -204,6 +197,7 @@ mod tests {
         let mut context = test_context("ask_user_popup_returns_selected_option");
         let (tx, mut rx) = unbounded_channel();
         context.ui_tx = Some(tx);
+        let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
             run_tool(
@@ -223,7 +217,7 @@ mod tests {
             AgentUpdate::RequestSelect {
                 prompt,
                 options,
-                respond,
+                request_id,
                 log_confirm,
             } => {
                 assert_eq!(prompt, "Pick a color");
@@ -232,7 +226,10 @@ mod tests {
                     !log_confirm,
                     "selection renders on tool meta, not a system line"
                 );
-                respond.send(Some(1)).unwrap();
+                responder.handle_response(UiResponse::Select {
+                    request_id,
+                    choice: Some(1),
+                });
             }
             other => panic!("expected RequestSelect, got {other:?}"),
         }
@@ -246,6 +243,7 @@ mod tests {
         let mut context = test_context("ask_user_multi_popup_returns_several");
         let (tx, mut rx) = unbounded_channel();
         context.ui_tx = Some(tx);
+        let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
             run_tool(
@@ -265,11 +263,14 @@ mod tests {
             AgentUpdate::RequestMultiSelect {
                 prompt,
                 options,
-                respond,
+                request_id,
             } => {
                 assert_eq!(prompt, "Pick toppings");
                 assert_eq!(options.len(), 3);
-                respond.send(Some(vec![0, 2])).unwrap();
+                responder.handle_response(UiResponse::MultiSelect {
+                    request_id,
+                    choices: Some(vec![0, 2]),
+                });
             }
             other => panic!("expected RequestMultiSelect, got {other:?}"),
         }
@@ -283,6 +284,7 @@ mod tests {
         let mut context = test_context("ask_user_popup_cancel");
         let (tx, mut rx) = unbounded_channel();
         context.ui_tx = Some(tx);
+        let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
             run_tool(
@@ -298,8 +300,11 @@ mod tests {
         });
 
         match rx.recv().await.expect("RequestSelect") {
-            AgentUpdate::RequestSelect { respond, .. } => {
-                respond.send(None).unwrap();
+            AgentUpdate::RequestSelect { request_id, .. } => {
+                responder.handle_response(UiResponse::Select {
+                    request_id,
+                    choice: None,
+                });
             }
             other => panic!("expected RequestSelect, got {other:?}"),
         }

@@ -139,29 +139,29 @@ pub fn tagged_ui_channel_with_progress(
                     });
                 }
                 AgentUpdate::RequestSelect {
+                    request_id,
                     mut prompt,
                     options,
-                    respond,
                     log_confirm,
                 } => {
                     prompt = format!("[Subagent] {prompt}");
                     let _ = inner.send(AgentUpdate::RequestSelect {
+                        request_id,
                         prompt,
                         options,
-                        respond,
                         log_confirm,
                     });
                 }
                 AgentUpdate::RequestMultiSelect {
+                    request_id,
                     mut prompt,
                     options,
-                    respond,
                 } => {
                     prompt = format!("[Subagent] {prompt}");
                     let _ = inner.send(AgentUpdate::RequestMultiSelect {
+                        request_id,
                         prompt,
                         options,
-                        respond,
                     });
                 }
                 AgentUpdate::TaskComplete(_) | AgentUpdate::TaskCancelled => {}
@@ -421,12 +421,11 @@ mod tests {
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
-        let (respond, _) = tokio::sync::oneshot::channel();
         tagged
             .send(AgentUpdate::RequestSelect {
+                request_id: 42,
                 prompt: "Allow bash?".into(),
                 options: vec!["Yes".into()],
-                respond,
                 log_confirm: false,
             })
             .unwrap();
@@ -434,7 +433,13 @@ mod tests {
 
         let got = inner_rx.try_recv().unwrap();
         match got {
-            AgentUpdate::RequestSelect { prompt, .. } => {
+            AgentUpdate::RequestSelect {
+                request_id, prompt, ..
+            } => {
+                assert_eq!(
+                    request_id, 42,
+                    "request id must survive subagent forwarding"
+                );
                 assert!(prompt.starts_with("[Subagent]"));
             }
             other => panic!("expected RequestSelect, got {other:?}"),
