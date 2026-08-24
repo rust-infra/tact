@@ -26,7 +26,7 @@ graph LR
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | 提交任务、取消、余额查询、UI 响应 |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account → TUI | 余额 / 配额（与 agent 协议分离） |
 
-所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`AgentUpdate` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 可序列化 / 重放。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
+所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`AgentUpdate` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
 
 ---
 

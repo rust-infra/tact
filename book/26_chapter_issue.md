@@ -40,7 +40,7 @@ Newest entries first. Each entry should include:
 
 **Decision:** requests carry a pure-data `request_id: u64`; the TUI answers over the reverse channel with `UserCommand::UiResponse` (`Select` / `MultiSelect`). A new shared `UiResponder` allocates globally-unique ids and routes responses to the exact waiter. Parent and subagents clone the same inner state, so a subagent request forwarded through the parent's tagged channel still resolves. The driver handles `UiResponse` without awaiting the in-flight task and calls `UiResponder::shutdown` on exit so a vanished UI unblocks any waiter.
 
-**Behavior after:** `AgentUpdate` is serializable / replayable transport data; select responses route by `request_id` across the parent and all subagents; a closed UI unblocks the agent loop instead of deadlocking it.
+**Behavior after:** `AgentUpdate` is transport-agnostic data (no embedded handle; free to derive `Serialize`/`Clone` later); select responses route by `request_id` across the parent and all subagents; a closed UI unblocks the agent loop instead of deadlocking it.
 
 ---
 

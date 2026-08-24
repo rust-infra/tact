@@ -25,7 +25,7 @@ graph LR
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | Submit task, cancel, balance query, UI responses |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account → TUI | Balance / quota (separate from agent protocol) |
 
-All channels use `tokio::sync::mpsc::unbounded_channel`. `AgentUpdate` is **pure data**: `RequestSelect` / `RequestMultiSelect` carry a `request_id` instead of an embedded `oneshot::Sender`, so the enum can be serialized / replayed. The TUI answers over the reverse channel by sending `UserCommand::UiResponse` back to the driver, which routes it through the runtime's shared [`UiResponder`] registry (`crates/tact/src/ui_responder.rs`) to the waiting caller (parent agent or subagent).
+All channels use `tokio::sync::mpsc::unbounded_channel`. `AgentUpdate` is **pure data**: `RequestSelect` / `RequestMultiSelect` carry a `request_id` instead of an embedded `oneshot::Sender`, so the enum no longer carries a transport handle (and is free to derive `Serialize`/`Clone` later). The TUI answers over the reverse channel by sending `UserCommand::UiResponse` back to the driver, which routes it through the runtime's shared [`UiResponder`] registry (`crates/tact/src/ui_responder.rs`) to the waiting caller (parent agent or subagent).
 
 ---
 

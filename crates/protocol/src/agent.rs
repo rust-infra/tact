@@ -249,8 +249,8 @@ pub enum AgentUpdate {
     ///
     /// The request carries a unique `request_id`; the TUI answers over the
     /// reverse [`UserCommand::UiResponse`] channel rather than an in-message
-    /// oneshot sender, so [`AgentUpdate`] stays pure data (serializable /
-    /// replayable / transport-agnostic).
+    /// oneshot sender, so [`AgentUpdate`] no longer carries a transport handle
+    /// (pure data, transport-agnostic).
     RequestSelect {
         request_id: u64,
         prompt: String,

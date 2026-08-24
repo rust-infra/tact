@@ -18,11 +18,36 @@
 //! subagent forwarded its request through the parent's UI channel.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tact_protocol::{AgentUpdate, UiResponse};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
+
+/// Why a UI select request failed to complete.
+///
+/// Distinct from the payload types (`Option<usize>` / `Option<Vec<usize>>`),
+/// which represent a completed request that was answered or cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiRequestError {
+    /// The UI channel closed before answering (the responder was shut down or
+    /// the request could not be delivered).
+    Closed,
+    /// The response variant did not match the request kind — a protocol bug.
+    Mismatched,
+}
+
+impl fmt::Display for UiRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UiRequestError::Closed => f.write_str("UI closed before answering"),
+            UiRequestError::Mismatched => f.write_str("UI response variant mismatch"),
+        }
+    }
+}
+
+impl std::error::Error for UiRequestError {}
 
 /// Shared registry routing UI responses back to the waiting caller.
 ///
@@ -46,49 +71,64 @@ impl UiResponder {
     /// Ask the user to pick one option.
     ///
     /// Returns `Ok(Some(index))` on a selection, `Ok(None)` when the user
-    /// cancelled, or `Err` when the UI closed before answering (the shared
-    /// responder was shut down).
+    /// cancelled, or `Err` when the UI closed before answering or answered with
+    /// the wrong response kind.
     pub async fn request_select(
         &self,
         ui_tx: &UnboundedSender<AgentUpdate>,
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
-    ) -> Result<Option<usize>, oneshot::error::RecvError> {
+    ) -> Result<Option<usize>, UiRequestError> {
         let (request_id, rx) = self.register();
-        let _ = ui_tx.send(AgentUpdate::RequestSelect {
-            request_id,
-            prompt,
-            options,
-            log_confirm,
-        });
+        if ui_tx
+            .send(AgentUpdate::RequestSelect {
+                request_id,
+                prompt,
+                options,
+                log_confirm,
+            })
+            .is_err()
+        {
+            // UI already gone: drop the pending waiter so the receiver resolves
+            // immediately instead of hanging until `shutdown`.
+            self.unregister(request_id);
+            return Err(UiRequestError::Closed);
+        }
         match rx.await {
             Ok(UiResponse::Select { choice, .. }) => Ok(choice),
-            Err(err) => Err(err),
-            Ok(_) => Ok(None),
+            Ok(_) => Err(UiRequestError::Mismatched),
+            Err(_) => Err(UiRequestError::Closed),
         }
     }
 
     /// Ask the user to pick zero or more options.
     ///
     /// Returns `Ok(Some(indices))` on confirm (possibly empty), `Ok(None)` when
-    /// cancelled, or `Err` when the UI closed before answering.
+    /// cancelled, or `Err` when the UI closed before answering or answered with
+    /// the wrong response kind.
     pub async fn request_multi(
         &self,
         ui_tx: &UnboundedSender<AgentUpdate>,
         prompt: String,
         options: Vec<String>,
-    ) -> Result<Option<Vec<usize>>, oneshot::error::RecvError> {
+    ) -> Result<Option<Vec<usize>>, UiRequestError> {
         let (request_id, rx) = self.register();
-        let _ = ui_tx.send(AgentUpdate::RequestMultiSelect {
-            request_id,
-            prompt,
-            options,
-        });
+        if ui_tx
+            .send(AgentUpdate::RequestMultiSelect {
+                request_id,
+                prompt,
+                options,
+            })
+            .is_err()
+        {
+            self.unregister(request_id);
+            return Err(UiRequestError::Closed);
+        }
         match rx.await {
             Ok(UiResponse::MultiSelect { choices, .. }) => Ok(choices),
-            Err(err) => Err(err),
-            Ok(_) => Ok(None),
+            Ok(_) => Err(UiRequestError::Mismatched),
+            Err(_) => Err(UiRequestError::Closed),
         }
     }
 
@@ -109,9 +149,9 @@ impl UiResponder {
     }
 
     /// Drop every pending waiter, unblocking any in-flight `request_*` call
-    /// with `Err(RecvError)`. Invoked by the driver when the UI is gone so the
-    /// agent task can finish instead of deadlocking on an answer that never
-    /// arrives.
+    /// with `Err(UiRequestError::Closed)`. Invoked by the driver when the UI is
+    /// gone so the agent task can finish instead of deadlocking on an answer
+    /// that never arrives.
     pub fn shutdown(&self) {
         self.inner
             .pending
@@ -129,6 +169,16 @@ impl UiResponder {
             .expect("ui responder lock poisoned")
             .insert(request_id, tx);
         (request_id, rx)
+    }
+
+    /// Remove a pending waiter without delivering a response, unblocking its
+    /// receiver with `Err` (the sender is dropped).
+    fn unregister(&self, request_id: u64) {
+        self.inner
+            .pending
+            .lock()
+            .expect("ui responder lock poisoned")
+            .remove(&request_id);
     }
 }
 
@@ -212,7 +262,47 @@ mod tests {
         // No response is ever sent; shutdown must still unblock the waiter.
         tokio::task::yield_now().await;
         responder.shutdown();
-        assert!(handle.await.unwrap().is_err());
+        assert_eq!(handle.await.unwrap(), Err(UiRequestError::Closed));
+    }
+
+    #[tokio::test]
+    async fn closed_channel_fails_fast_without_hanging() {
+        let responder = UiResponder::new();
+        let (tx, rx) = unbounded_channel::<AgentUpdate>();
+        drop(rx); // close the UI channel
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            responder.request_select(&tx, "q".into(), vec!["a".into()], false),
+        )
+        .await;
+
+        assert_eq!(result, Ok(Err(UiRequestError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn mismatched_response_is_an_error_not_cancel() {
+        let responder = UiResponder::new();
+        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+
+        let handle = tokio::spawn({
+            let responder = responder.clone();
+            async move {
+                responder
+                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false)
+                    .await
+            }
+        });
+
+        let AgentUpdate::RequestSelect { request_id, .. } = rx.recv().await.unwrap() else {
+            panic!("expected RequestSelect");
+        };
+        // Wrong variant for a single-select request.
+        responder.handle_response(UiResponse::MultiSelect {
+            request_id,
+            choices: Some(vec![0]),
+        });
+        assert_eq!(handle.await.unwrap(), Err(UiRequestError::Mismatched));
     }
 
     #[tokio::test]

@@ -40,7 +40,7 @@
 
 **决策：** 请求改为携带纯数据 `request_id: u64`；TUI 通过反向通道用 `UserCommand::UiResponse`（`Select` / `MultiSelect`）作答。新增共享的 `UiResponder` 分配全局唯一 id 并把响应路由到精确的等待方；父 agent 与每个 subagent 克隆同一 inner 状态，因此 subagent 经父 tagged 通道转发的请求仍能正确路由。driver 处理 `UiResponse` 时不等待 in-flight 任务，退出时调用 `UiResponder::shutdown`，使 UI 关闭时仍能唤醒等待方。
 
-**改动后行为：** `AgentUpdate` 变为可序列化 / 可重放的传输数据；选择响应按 `request_id` 跨父 agent 与所有 subagent 路由；UI 关闭时 agent 循环被唤醒而非死锁。
+**改动后行为：** `AgentUpdate` 变为不携带传输句柄的数据（后续可自由派生 `Serialize`/`Clone`）；选择响应按 `request_id` 跨父 agent 与所有 subagent 路由；UI 关闭时 agent 循环被唤醒而非死锁。
 
 ---
 
