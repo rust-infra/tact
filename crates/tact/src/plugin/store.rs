@@ -284,9 +284,7 @@ mod tests {
         let home = tempdir().unwrap();
         let store = PluginStore::from_home(home.path());
 
-        store
-            .commit_removal(&InstalledState::default())
-            .unwrap();
+        store.commit_removal(&InstalledState::default()).unwrap();
 
         assert_eq!(store.load_installed().unwrap(), InstalledState::default());
         assert!(

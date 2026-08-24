@@ -38,7 +38,9 @@ fn build_request(command: PluginSubcommand) -> Result<(PluginRequest, bool)> {
                 false,
             ))
         }
-        PluginSubcommand::Uninstall { name } => Ok((PluginRequest::Uninstall { plugin: name }, true)),
+        PluginSubcommand::Uninstall { name } => {
+            Ok((PluginRequest::Uninstall { plugin: name }, true))
+        }
         PluginSubcommand::Update { name } => Ok((PluginRequest::Update { plugin: name }, true)),
         PluginSubcommand::Reload => Ok((PluginRequest::Reload, true)),
         PluginSubcommand::Marketplace { command } => match command {

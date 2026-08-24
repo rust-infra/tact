@@ -61,12 +61,7 @@ fn format_plugin_result(messages: &crate::i18n::Messages, result: &PluginResult)
             plugin,
             marketplace,
             revision,
-        } => replace_three(
-            messages.plugin_updated_tmpl,
-            plugin,
-            marketplace,
-            revision,
-        ),
+        } => replace_three(messages.plugin_updated_tmpl, plugin, marketplace, revision),
         PluginResult::UpToDate {
             plugin,
             marketplace,

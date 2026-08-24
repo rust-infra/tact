@@ -98,7 +98,9 @@ impl PluginInstaller {
         // previously fetched catalog when the refresh fails so the command still
         // reports the current revision instead of erroring on transient network
         // trouble.
-        let catalog = match super::block_on_async(self.marketplace_service.update_marketplace(&marketplace_id)) {
+        let catalog = match super::block_on_async(
+            self.marketplace_service.update_marketplace(&marketplace_id),
+        ) {
             Ok(catalog) => catalog,
             Err(_) => self.marketplace_service.catalog(&marketplace_id)?,
         };
@@ -797,10 +799,11 @@ mod tests {
         };
         assert_ne!(updated.revision, installed.revision);
         assert_ne!(updated.cache_path, installed.cache_path);
-        assert!(!installed.cache_path.exists(), "old revision cache must be removed");
         assert!(
-            updated.cache_path.join("skills/check/SKILL.md").is_file()
+            !installed.cache_path.exists(),
+            "old revision cache must be removed"
         );
+        assert!(updated.cache_path.join("skills/check/SKILL.md").is_file());
         let listed = fixture.installer.list().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].revision, updated.revision);
