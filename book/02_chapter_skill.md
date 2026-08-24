@@ -239,7 +239,7 @@ Discovered skills appear in the Insert-mode `/` popup and Normal-mode command pa
 
 `/skill-reload` rescans skill roots into the **shared** `Arc<Mutex<SkillRegistry>>` used by both the TUI and the agent `ToolContext`, refreshes the TUI `SkillEntry` list, and bumps visual cache. The next task’s system prompt skill summary (and `load_skill`) therefore see the new registry without restarting.
 
-Successful `/plugin install <plugin>@<marketplace>` and `/plugin reload` operations perform the same shared refresh after their worker completes. Failed operations leave the registry unchanged. Plugin-provided names may contain `:` (for example `/superpowers:brainstorming`) and remain ordinary slash skills after refresh.
+Successful `/plugin install <plugin>@<marketplace>`, `/plugin uninstall <plugin>`, `/plugin update <plugin>` and `/plugin reload` operations perform the same shared refresh after their worker completes. Failed operations leave the registry unchanged. Plugin-provided names may contain `:` (for example `/superpowers:brainstorming`) and remain ordinary slash skills after refresh.
 
 Highlighting: `/skill-name` uses accent+bold; trailing args use theme foreground (`render/slash_style.rs`), in both the input box and user log lines. Names that collide with built-in commands are omitted from highlighting (same as the palette).
 

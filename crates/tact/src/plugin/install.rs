@@ -33,6 +33,15 @@ enum ResolvedPluginSource {
     },
 }
 
+/// The outcome of an [`PluginInstaller::update`] request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginUpdateResult {
+    /// A newer revision was fetched, installed, and registered.
+    Updated { installed: InstalledPlugin },
+    /// The installed revision already matches the marketplace's latest.
+    UpToDate { installed: InstalledPlugin },
+}
+
 impl PluginInstaller {
     /// Creates an installer rooted at the provided plugin home.
     #[must_use]
@@ -68,6 +77,69 @@ impl PluginInstaller {
     /// Lists currently installed plugins in deterministic registry order.
     pub fn list(&self) -> Result<Vec<InstalledPlugin>> {
         Ok(self.store.load_installed()?.plugins.into_values().collect())
+    }
+
+    /// Updates one installed plugin to the latest revision of its marketplace
+    /// source. When the resolved revision matches the installed one the plugin
+    /// is left untouched and reported up to date.
+    pub fn update(&self, plugin_id: &str) -> Result<PluginUpdateResult> {
+        validate_plugin_id(plugin_id)?;
+        let installed = self
+            .store
+            .load_installed()?
+            .plugins
+            .values()
+            .find(|installed| installed.id == plugin_id)
+            .cloned()
+            .with_context(|| format!("plugin {plugin_id} is not installed"))?;
+        let marketplace_id = installed.marketplace.clone();
+
+        // Refreshing the marketplace is the point of `update`; fall back to the
+        // previously fetched catalog when the refresh fails so the command still
+        // reports the current revision instead of erroring on transient network
+        // trouble.
+        let catalog = match super::block_on_async(
+            self.marketplace_service.update_marketplace(&marketplace_id),
+        ) {
+            Ok(catalog) => catalog,
+            Err(_) => self.marketplace_service.catalog(&marketplace_id)?,
+        };
+        let plugin = catalog.plugins.get(plugin_id).with_context(|| {
+            format!("unknown plugin {plugin_id} in marketplace {marketplace_id}")
+        })?;
+        let (source, revision, fetched_directory) = self.resolve_source(plugin, &marketplace_id)?;
+
+        let result = if revision == installed.revision {
+            Ok(PluginUpdateResult::UpToDate { installed })
+        } else {
+            let updated = self.install_source(plugin_id, &marketplace_id, &source, &revision)?;
+            remove_cache_within_root(&installed.cache_path, &self.home.cache)?;
+            Ok(PluginUpdateResult::Updated { installed: updated })
+        };
+        if let Some(directory) = fetched_directory {
+            let _ = fs::remove_dir_all(directory);
+        }
+        result
+    }
+
+    /// Uninstalls one installed plugin: removes its registry entry and cached
+    /// content. The cache directory is deleted only when it resolves inside
+    /// the plugin cache root; legacy or escaped paths are left untouched.
+    pub fn uninstall(&self, plugin_id: &str) -> Result<()> {
+        validate_plugin_id(plugin_id)?;
+        let mut state = self.store.load_installed()?;
+        let Some((key, plugin)) = state
+            .plugins
+            .iter()
+            .find(|(_, installed)| installed.id == plugin_id)
+            .map(|(key, plugin)| (key.clone(), plugin.clone()))
+        else {
+            bail!("plugin {plugin_id} is not installed");
+        };
+
+        remove_cache_within_root(&plugin.cache_path, &self.home.cache)?;
+        state.plugins.remove(&key);
+        self.store.commit_removal(&state)
     }
 
     fn install_source(
@@ -238,6 +310,40 @@ fn validate_plugin_id(plugin_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Deletes `path` only when it resolves inside the plugin cache root.
+///
+/// Uninstall must never delete content outside the cache: legacy records with
+/// an empty `cache_path`, symlinks pointing elsewhere, and a missing cache
+/// root all make the removal a no-op while the registry entry still goes away.
+/// After deleting the plugin directory, now-empty parent directories are
+/// pruned up to (but never including) the cache root.
+fn remove_cache_within_root(path: &Path, cache_root: &Path) -> Result<()> {
+    let Ok(cache_root) = cache_root.canonicalize() else {
+        return Ok(());
+    };
+    let Ok(path) = path.canonicalize() else {
+        return Ok(());
+    };
+    if path == cache_root || !path.starts_with(&cache_root) || !path.is_dir() {
+        return Ok(());
+    }
+    fs::remove_dir_all(&path)
+        .with_context(|| format!("failed to remove plugin cache {}", path.display()))?;
+    let mut parent = path.parent();
+    while let Some(dir) = parent {
+        if dir == cache_root || !dir.starts_with(&cache_root) {
+            break;
+        }
+        // `remove_dir` only succeeds on empty directories; any error (non-empty,
+        // protected, missing) stops the prune.
+        match fs::remove_dir(dir) {
+            Ok(()) => parent = dir.parent(),
+            Err(_) => break,
+        }
+    }
+    Ok(())
+}
+
 fn installation_key(marketplace: &str, plugin: &str) -> String {
     format!("{marketplace}/{plugin}")
 }
@@ -401,14 +507,15 @@ mod tests {
     use git2::{Repository, Signature};
     use tempfile::TempDir;
 
-    use super::{PluginInstaller, validate_plugin_id};
+    use super::{PluginInstaller, PluginUpdateResult, validate_plugin_id};
     use crate::{
         consts::PluginHome,
-        plugin::{MarketplaceService, MarketplaceSource, PluginStore},
+        plugin::{InstalledPlugin, MarketplaceService, MarketplaceSource, PluginStore},
     };
 
     struct Fixture {
         _home: TempDir,
+        _repository: TempDir,
         installer: PluginInstaller,
     }
 
@@ -466,6 +573,7 @@ mod tests {
         Fixture {
             installer: PluginInstaller::new(plugin_home),
             _home: home,
+            _repository: repository,
         }
     }
 
@@ -594,6 +702,117 @@ mod tests {
     fn install_rejects_plugin_ids_with_path_separators() {
         assert!(validate_plugin_id("demo/other").is_err());
         assert!(validate_plugin_id("demo\\other").is_err());
+    }
+
+    #[test]
+    fn uninstall_removes_registry_entry_and_cached_content() {
+        let fixture = fixture_installer();
+        let installed = fixture.installer.install("demo", "fixture-market").unwrap();
+        assert!(installed.cache_path.join("skills/check/SKILL.md").is_file());
+
+        fixture.installer.uninstall("demo").unwrap();
+
+        assert!(fixture.installer.list().unwrap().is_empty());
+        assert!(!installed.cache_path.exists());
+    }
+
+    #[test]
+    fn uninstall_unknown_plugin_fails() {
+        let fixture = fixture_installer();
+
+        assert!(fixture.installer.uninstall("demo").is_err());
+    }
+
+    #[test]
+    fn uninstall_never_deletes_content_outside_the_plugin_cache() {
+        let fixture = fixture_installer();
+        fixture.installer.install("demo", "fixture-market").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("keep.txt");
+        fs::write(&outside_file, "keep").unwrap();
+        let store = PluginStore::new(fixture.installer.home.clone());
+        let mut state = store.load_installed().unwrap();
+        state.plugins.insert(
+            "acme/evil".to_owned(),
+            InstalledPlugin {
+                id: "evil".to_owned(),
+                marketplace: "acme".to_owned(),
+                revision: "abc123".to_owned(),
+                cache_path: outside.path().to_path_buf(),
+                skill_count: 0,
+            },
+        );
+        store.commit_install(&state, outside.path()).unwrap();
+
+        fixture.installer.uninstall("evil").unwrap();
+
+        assert!(outside_file.is_file());
+        let installed = fixture.installer.list().unwrap();
+        assert_eq!(installed.len(), 1, "demo must remain installed");
+        assert_eq!(installed[0].id, "demo");
+    }
+
+    #[test]
+    fn uninstall_rejects_plugin_ids_with_path_separators() {
+        let fixture = fixture_installer();
+        assert!(fixture.installer.uninstall("demo/other").is_err());
+    }
+
+    #[test]
+    fn update_unknown_plugin_fails() {
+        let fixture = fixture_installer();
+
+        assert!(fixture.installer.update("demo").is_err());
+    }
+
+    #[test]
+    fn update_reports_up_to_date_without_touching_the_cache() {
+        let fixture = fixture_installer();
+        let installed = fixture.installer.install("demo", "fixture-market").unwrap();
+
+        let outcome = fixture.installer.update("demo").unwrap();
+
+        let PluginUpdateResult::UpToDate { installed: current } = outcome else {
+            panic!("expected up-to-date outcome");
+        };
+        assert_eq!(current.cache_path, installed.cache_path);
+        assert!(current.cache_path.join("skills/check/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn update_fetches_a_new_revision_and_removes_the_old_cache() {
+        let fixture = fixture_installer();
+        let installed = fixture.installer.install("demo", "fixture-market").unwrap();
+
+        // Publish a new revision in the source repository the marketplace clones.
+        let source = fixture
+            ._repository
+            .path()
+            .join("plugins/demo/skills/check/SKILL.md");
+        fs::write(&source, "---\nname: updated-check\n---\n").unwrap();
+        commit_worktree(fixture._repository.path());
+
+        let outcome = fixture.installer.update("demo").unwrap();
+
+        let PluginUpdateResult::Updated { installed: updated } = outcome else {
+            panic!("expected updated outcome");
+        };
+        assert_ne!(updated.revision, installed.revision);
+        assert_ne!(updated.cache_path, installed.cache_path);
+        assert!(
+            !installed.cache_path.exists(),
+            "old revision cache must be removed"
+        );
+        assert!(updated.cache_path.join("skills/check/SKILL.md").is_file());
+        let listed = fixture.installer.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].revision, updated.revision);
+    }
+
+    #[test]
+    fn update_rejects_plugin_ids_with_path_separators() {
+        let fixture = fixture_installer();
+        assert!(fixture.installer.update("demo/other").is_err());
     }
 
     #[test]

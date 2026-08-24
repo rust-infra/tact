@@ -127,3 +127,77 @@ async fn reload_with_no_plugins_succeeds() {
     let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Reload).await;
     assert!(result.is_ok(), "reload should succeed: {result:?}");
 }
+
+#[tokio::test]
+async fn uninstall_unknown_plugin_fails_gracefully() {
+    let (_home, _lock) = with_temp_home().await;
+    let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Uninstall {
+        name: "not-installed".into(),
+    })
+    .await;
+    let err = result.expect_err("uninstalling a missing plugin should fail");
+    assert!(
+        err.to_string().contains("not installed"),
+        "expected not-installed error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn update_unknown_plugin_fails_gracefully() {
+    let (_home, _lock) = with_temp_home().await;
+    let result = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Update {
+        name: "not-installed".into(),
+    })
+    .await;
+    let err = result.expect_err("updating a missing plugin should fail");
+    assert!(
+        err.to_string().contains("not installed"),
+        "expected not-installed error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn install_then_uninstall_round_trip() {
+    let (home, _lock) = with_temp_home().await;
+    // Seed a local official marketplace with a relative-source plugin so the
+    // install path does not git-clone.
+    let root = home
+        .path()
+        .join(".tact")
+        .join("plugins")
+        .join("marketplaces")
+        .join("claude-plugins-official");
+    fs::create_dir_all(root.join("plugins/demo/skills/check")).unwrap();
+    fs::write(
+        root.join("plugins/demo/skills/check/SKILL.md"),
+        "---\nname: check\n---\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("marketplace.json"),
+        r#"{"name":"claude-plugins-official","plugins":[{"name":"demo","source":"./plugins/demo"}]}"#,
+    )
+    .unwrap();
+
+    let install = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Install {
+        spec: "demo@claude-plugins-official".into(),
+    })
+    .await;
+    assert!(install.is_ok(), "install should succeed: {install:?}");
+
+    let demo_dir = home
+        .path()
+        .join(".tact/plugins/cache/claude-plugins-official/demo");
+    assert!(demo_dir.is_dir(), "plugin should be cached after install");
+
+    let uninstall = tact_ui::plugin_cli::run_plugin_cli(PluginSubcommand::Uninstall {
+        name: "demo".into(),
+    })
+    .await;
+    assert!(uninstall.is_ok(), "uninstall should succeed: {uninstall:?}");
+
+    assert!(
+        !demo_dir.exists(),
+        "plugin cache dir should be removed after uninstall"
+    );
+}

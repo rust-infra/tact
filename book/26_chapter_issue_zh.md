@@ -29,6 +29,36 @@
 
 ---
 
+## 1. 2026-08-24 — 插件更新命令：`tact plugin update` / `/plugin update`
+
+| Field | Value |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/plugin/{mod,install}.rs`、`crates/tact/src/config/cli.rs`、`crates/tact-ui/src/plugin_cli.rs`、`crates/tact-ui/tests/plugin_cli_tests.rs`、`crates/tui/src/handlers/plugin.rs`、`crates/tui/src/widgets/state/app/extensions.rs`、`crates/agent_tui_kit/src/i18n.rs`；Ch 2 § 插件 skills、Ch 23 §7 |
+
+**症状 / 动机：** 已安装插件按 revision 锁定，上游 marketplace 发布新版本后只能先卸载再重装才能前移——还会隐式丢失 marketplace 来源关联。
+
+**决策：** 给 plugin worker 增加 `Update` 请求。`PluginInstaller::update` 校验插件 id、刷新所属 marketplace（刷新失败时回退到已拉取的旧 catalog）、解析最新 revision：revision 相同则报告已是最新（缓存不动）；否则安装新 revision 并清理旧 revision 的缓存目录。CLI 增加 `tact plugin update <name>`；TUI slash 命令增加 `/plugin update <name>`。更新成功与 install/uninstall/reload 一样刷新共享 skills。
+
+**改动后行为：** `tact plugin update <name>` 与 `/plugin update <name>` 把已安装插件升级到其 marketplace 的最新 revision 并删除上一 revision 的缓存；已是最新时原样保留并如实报告；插件未安装时报错。
+
+---
+
+## 1. 2026-08-24 — 插件卸载命令：`tact plugin uninstall` / `/plugin uninstall`
+
+| Field | Value |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/plugin/{mod,install,store}.rs`、`crates/tact/src/config/cli.rs`、`crates/tact-ui/src/plugin_cli.rs`、`crates/tact-ui/tests/plugin_cli_tests.rs`、`crates/tui/src/handlers/plugin.rs`、`crates/tui/src/widgets/state/app/extensions.rs`、`crates/agent_tui_kit/src/i18n.rs`；Ch 2 § 插件 skills、Ch 23 §7 |
+
+**症状 / 动机：** 插件可以安装、列出、重载，却无法卸载；卸载只能手动编辑 `installed.json` 并手动删除缓存目录。
+
+**决策：** 给 plugin worker 增加 `Uninstall` 请求。`PluginInstaller::uninstall` 校验插件 id、移除已安装注册项，并且仅在缓存内容解析到插件缓存根内部时才删除目录（遗留或越界的路径保持不动），随后把空的父目录向上清理到缓存根为止。新增 `PluginStore::commit_removal` 持久化注册表，无需候选目录（区别于 `commit_install`）。CLI 增加 `tact plugin uninstall <name>`；TUI slash 命令增加 `/plugin uninstall <name>`。卸载成功同样触发与 install/reload 相同的共享 skill 刷新，`plugin:<skill>` 条目立即从注册表消失。
+
+**改动后行为：** `tact plugin uninstall <name>` 与 `/plugin uninstall <name>` 删除插件的缓存目录与注册项；插件未安装时报错；插件缓存之外的任何内容永远不会被删除。
+
+---
+
 ## 1. 2026-08-23 — 附件去内联：`@file`/`![alt]` 保留为路径文本
 
 | Field | Value |

@@ -19,6 +19,8 @@ use crate::consts::PluginHome;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginRequest {
     Install { plugin: String, marketplace: String },
+    Uninstall { plugin: String },
+    Update { plugin: String },
     List,
     Reload,
     MarketplaceAdd { source: String },
@@ -31,6 +33,8 @@ pub enum PluginRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginOperation {
     Install { plugin: String, marketplace: String },
+    Uninstall { plugin: String },
+    Update { plugin: String },
     List,
     Reload,
     MarketplaceAdd,
@@ -48,6 +52,12 @@ impl From<&PluginRequest> for PluginOperation {
             } => Self::Install {
                 plugin: plugin.clone(),
                 marketplace: marketplace.clone(),
+            },
+            PluginRequest::Uninstall { plugin } => Self::Uninstall {
+                plugin: plugin.clone(),
+            },
+            PluginRequest::Update { plugin } => Self::Update {
+                plugin: plugin.clone(),
             },
             PluginRequest::List => Self::List,
             PluginRequest::Reload => Self::Reload,
@@ -69,6 +79,19 @@ pub enum PluginResult {
     Installed {
         plugin: String,
         marketplace: String,
+    },
+    Uninstalled {
+        plugin: String,
+    },
+    Updated {
+        plugin: String,
+        marketplace: String,
+        revision: String,
+    },
+    UpToDate {
+        plugin: String,
+        marketplace: String,
+        revision: String,
     },
     ListedInstalled {
         plugins: Vec<InstalledPlugin>,
@@ -116,7 +139,10 @@ pub fn spawn_worker(
         while let Some(request) = request_rx.recv().await {
             let refresh_skills = matches!(
                 &request,
-                PluginRequest::Install { .. } | PluginRequest::Reload
+                PluginRequest::Install { .. }
+                    | PluginRequest::Uninstall { .. }
+                    | PluginRequest::Update { .. }
+                    | PluginRequest::Reload
             );
             let operation = PluginOperation::from(&request);
             let worker_home = home.clone();
@@ -181,6 +207,22 @@ pub fn execute_request(home: PluginHome, request: PluginRequest) -> Result<Plugi
                 marketplace: installed.marketplace,
             })
         }
+        PluginRequest::Uninstall { plugin } => {
+            PluginInstaller::new(home).uninstall(&plugin)?;
+            Ok(PluginResult::Uninstalled { plugin })
+        }
+        PluginRequest::Update { plugin } => match PluginInstaller::new(home).update(&plugin)? {
+            PluginUpdateResult::Updated { installed } => Ok(PluginResult::Updated {
+                plugin: installed.id,
+                marketplace: installed.marketplace,
+                revision: installed.revision,
+            }),
+            PluginUpdateResult::UpToDate { installed } => Ok(PluginResult::UpToDate {
+                plugin: installed.id,
+                marketplace: installed.marketplace,
+                revision: installed.revision,
+            }),
+        },
         PluginRequest::List => {
             let plugins = PluginInstaller::new(home).list()?;
             Ok(PluginResult::ListedInstalled { plugins })
@@ -271,6 +313,52 @@ mod tests {
         assert!(matches!(event, PluginEvent::Failed { .. }));
         assert!(!home.root.join("installed.json").exists());
         assert!(!home.root.join("marketplaces.json").exists());
+        assert!(
+            fs::read_dir(temporary_home.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_reports_uninstall_of_missing_plugin_without_mutating_store() {
+        let temporary_home = tempdir().unwrap();
+        let home = PluginHome::from_home(temporary_home.path());
+
+        let event = run_request(
+            home.clone(),
+            PluginRequest::Uninstall {
+                plugin: "missing".into(),
+            },
+        )
+        .await;
+
+        assert!(matches!(event, PluginEvent::Failed { .. }));
+        assert!(!home.root.join("installed.json").exists());
+        assert!(
+            fs::read_dir(temporary_home.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_reports_update_of_missing_plugin_without_mutating_store() {
+        let temporary_home = tempdir().unwrap();
+        let home = PluginHome::from_home(temporary_home.path());
+
+        let event = run_request(
+            home.clone(),
+            PluginRequest::Update {
+                plugin: "missing".into(),
+            },
+        )
+        .await;
+
+        assert!(matches!(event, PluginEvent::Failed { .. }));
+        assert!(!home.root.join("installed.json").exists());
         assert!(
             fs::read_dir(temporary_home.path())
                 .unwrap()
