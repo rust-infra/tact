@@ -38,6 +38,8 @@ fn build_request(command: PluginSubcommand) -> Result<(PluginRequest, bool)> {
                 false,
             ))
         }
+        PluginSubcommand::Uninstall { name } => Ok((PluginRequest::Uninstall { plugin: name }, true)),
+        PluginSubcommand::Update { name } => Ok((PluginRequest::Update { plugin: name }, true)),
         PluginSubcommand::Reload => Ok((PluginRequest::Reload, true)),
         PluginSubcommand::Marketplace { command } => match command {
             MarketplaceSubcommand::Add { source } => {
@@ -61,6 +63,23 @@ fn print_result(result: &PluginResult) {
             marketplace,
         } => {
             println!("Installed plugin '{plugin}' from '{marketplace}'");
+        }
+        PluginResult::Uninstalled { plugin } => {
+            println!("Uninstalled plugin '{plugin}'");
+        }
+        PluginResult::Updated {
+            plugin,
+            marketplace,
+            revision,
+        } => {
+            println!("Updated plugin '{plugin}' from '{marketplace}' to {revision}");
+        }
+        PluginResult::UpToDate {
+            plugin,
+            marketplace,
+            revision,
+        } => {
+            println!("Plugin '{plugin}' is up to date ({marketplace}@{revision})");
         }
         PluginResult::ListedInstalled { plugins } if plugins.is_empty() => {
             println!("No plugins installed.");

@@ -41,12 +41,42 @@ fn replace_two(template: &str, first: &str, second: &str) -> String {
     template.replacen("{}", first, 1).replacen("{}", second, 1)
 }
 
+fn replace_three(template: &str, first: &str, second: &str, third: &str) -> String {
+    template
+        .replacen("{}", first, 1)
+        .replacen("{}", second, 1)
+        .replacen("{}", third, 1)
+}
+
 fn format_plugin_result(messages: &crate::i18n::Messages, result: &PluginResult) -> String {
     match result {
         PluginResult::Installed {
             plugin,
             marketplace,
         } => replace_two(messages.plugin_installed_tmpl, plugin, marketplace),
+        PluginResult::Uninstalled { plugin } => {
+            messages.plugin_uninstalled_tmpl.replace("{}", plugin)
+        }
+        PluginResult::Updated {
+            plugin,
+            marketplace,
+            revision,
+        } => replace_three(
+            messages.plugin_updated_tmpl,
+            plugin,
+            marketplace,
+            revision,
+        ),
+        PluginResult::UpToDate {
+            plugin,
+            marketplace,
+            revision,
+        } => replace_three(
+            messages.plugin_up_to_date_tmpl,
+            plugin,
+            marketplace,
+            revision,
+        ),
         // Rendered as a titled table by `App::show_plugin_list`; plain fallback only.
         PluginResult::ListedInstalled { .. } => messages.plugin_list_empty.to_owned(),
         PluginResult::Reloaded { count } => messages
@@ -74,6 +104,8 @@ fn plugin_operation_label(
 ) -> &'static str {
     match operation {
         PluginOperation::Install { .. } => messages.plugin_operation_install,
+        PluginOperation::Uninstall { .. } => messages.plugin_operation_uninstall,
+        PluginOperation::Update { .. } => messages.plugin_operation_update,
         PluginOperation::List => messages.plugin_operation_list,
         PluginOperation::Reload => messages.plugin_operation_reload,
         PluginOperation::MarketplaceAdd => messages.plugin_operation_marketplace_add,

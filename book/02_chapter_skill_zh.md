@@ -240,7 +240,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 `/skill-reload` 将 skill 根重新扫描到 TUI 与 agent `ToolContext` **共享**的 `Arc<Mutex<SkillRegistry>>`，刷新 TUI `SkillEntry` 列表并 bump 视觉缓存。下一任务的系统提示词 skill 摘要（及 `load_skill`）因此看到新注册表，无需重启。
 
-成功的 `/plugin install <plugin>@<marketplace>` 与 `/plugin reload` 会在 worker 完成后执行相同的共享刷新。失败操作保持 registry 不变。插件提供的名称可包含 `:`（例如 `/superpowers:brainstorming`），刷新后仍按普通 slash skill 调用。
+成功的 `/plugin install <plugin>@<marketplace>`、`/plugin uninstall <plugin>`、`/plugin update <plugin>` 与 `/plugin reload` 会在 worker 完成后执行相同的共享刷新。失败操作保持 registry 不变。插件提供的名称可包含 `:`（例如 `/superpowers:brainstorming`），刷新后仍按普通 slash skill 调用。
 
 高亮：`/skill-name` 使用 accent+bold；尾随参数使用主题前景色（`render/slash_style.rs`），输入框与用户日志行均如此。与内置命令冲突的名称不参与高亮（与面板一致）。
 

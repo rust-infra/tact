@@ -11,6 +11,12 @@ pub(crate) fn parse_plugin_command(input: &str) -> Result<PluginRequest, PluginU
     match parts.as_slice() {
         ["/plugin", "list"] => Ok(PluginRequest::List),
         ["/plugin", "reload"] => Ok(PluginRequest::Reload),
+        ["/plugin", "uninstall", name] => Ok(PluginRequest::Uninstall {
+            plugin: (*name).to_owned(),
+        }),
+        ["/plugin", "update", name] => Ok(PluginRequest::Update {
+            plugin: (*name).to_owned(),
+        }),
         ["/plugin", "marketplace", "list"] => Ok(PluginRequest::MarketplaceList),
         _ => Err(PluginUsageError),
     }
@@ -93,11 +99,53 @@ mod tests {
             Ok(PluginRequest::Reload)
         ));
         assert!(matches!(
+            parse_plugin_command("/plugin uninstall demo"),
+            Ok(PluginRequest::Uninstall { plugin }) if plugin == "demo"
+        ));
+        assert!(matches!(
+            parse_plugin_command("/plugin update demo"),
+            Ok(PluginRequest::Update { plugin }) if plugin == "demo"
+        ));
+        assert!(matches!(
             parse_plugin_command("/plugin marketplace list"),
             Ok(PluginRequest::MarketplaceList)
         ));
         assert!(parse_plugin_command("/plugin list extra").is_err());
+        assert!(parse_plugin_command("/plugin uninstall").is_err());
+        assert!(parse_plugin_command("/plugin uninstall demo extra").is_err());
+        assert!(parse_plugin_command("/plugin update").is_err());
+        assert!(parse_plugin_command("/plugin update demo extra").is_err());
         assert!(parse_plugin_command("/plugin marketplace add").is_err());
+    }
+
+    #[test]
+    fn update_plugin_command_queues_request() {
+        let (mut app, mut requests) = make_app();
+        app.input = "/plugin update demo".into();
+
+        let outcome = handle_plugin_command(&mut app);
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(PluginRequest::Update { plugin }) if plugin == "demo"
+        ));
+    }
+
+    #[test]
+    fn uninstall_plugin_command_queues_request() {
+        let (mut app, mut requests) = make_app();
+        app.input = "/plugin uninstall demo".into();
+
+        let outcome = handle_plugin_command(&mut app);
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(PluginRequest::Uninstall { plugin }) if plugin == "demo"
+        ));
     }
 
     #[test]

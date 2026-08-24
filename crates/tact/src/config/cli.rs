@@ -121,6 +121,16 @@ pub enum PluginSubcommand {
         /// Plugin spec, e.g. "my-plugin@claude-plugins-official"
         spec: String,
     },
+    /// Uninstall an installed plugin by name
+    Uninstall {
+        /// Plugin name to uninstall
+        name: String,
+    },
+    /// Update an installed plugin to the latest revision
+    Update {
+        /// Plugin name to update
+        name: String,
+    },
     /// Reload all installed plugins
     Reload,
     /// Manage marketplace sources

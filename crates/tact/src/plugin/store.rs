@@ -103,6 +103,14 @@ impl PluginStore {
         }
         write_json_atomically(&self.home.root.join(INSTALLED_FILE), state)
     }
+
+    /// Commits installed state after an uninstall.
+    ///
+    /// Unlike [`Self::commit_install`] there is no candidate directory to
+    /// validate — the cached plugin content has already been removed.
+    pub fn commit_removal(&self, state: &InstalledState) -> Result<()> {
+        write_json_atomically(&self.home.root.join(INSTALLED_FILE), state)
+    }
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -263,6 +271,24 @@ mod tests {
         store.commit_install(&state, &candidate).unwrap();
 
         assert_eq!(store.load_installed().unwrap(), state);
+        assert!(
+            !home
+                .path()
+                .join(".tact/plugins/.installed.json.tmp")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn commit_removal_persists_state_without_a_candidate_directory() {
+        let home = tempdir().unwrap();
+        let store = PluginStore::from_home(home.path());
+
+        store
+            .commit_removal(&InstalledState::default())
+            .unwrap();
+
+        assert_eq!(store.load_installed().unwrap(), InstalledState::default());
         assert!(
             !home
                 .path()

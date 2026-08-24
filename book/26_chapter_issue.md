@@ -29,6 +29,36 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-24 — Plugin update command: `tact plugin update` / `/plugin update`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/plugin/{mod,install}.rs`, `crates/tact/src/config/cli.rs`, `crates/tact-ui/src/plugin_cli.rs`, `crates/tact-ui/tests/plugin_cli_tests.rs`, `crates/tui/src/handlers/plugin.rs`, `crates/tui/src/widgets/state/app/extensions.rs`, `crates/agent_tui_kit/src/i18n.rs`; Ch 2 § plugin skills, Ch 23 §7 |
+
+**Symptom / motivation:** installed plugins are revision-locked, so after an upstream marketplace release the only way to move forward was to uninstall and reinstall — losing the marketplace source association implicitly and requiring the exact name again.
+
+**Decision:** add an `Update` request to the plugin worker. `PluginInstaller::update` validates the plugin id, refreshes the owning marketplace (falling back to the previously fetched catalog on transient refresh failure), resolves the latest revision, and either reports up to date (same revision — cache untouched) or installs the new revision and prunes the old revision's cache directory. The CLI gains `tact plugin update <name>`; the TUI slash command gains `/plugin update <name>`. Updates refresh shared skills like install/uninstall/reload.
+
+**Behavior after:** `tact plugin update <name>` and `/plugin update <name>` bring an installed plugin to its marketplace's latest revision and remove the previous revision's cache; up-to-date plugins report as such without touching the cache; missing plugins produce an error.
+
+---
+
+## 1. 2026-08-24 — Plugin uninstall command: `tact plugin uninstall` / `/plugin uninstall`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/plugin/{mod,install,store}.rs`, `crates/tact/src/config/cli.rs`, `crates/tact-ui/src/plugin_cli.rs`, `crates/tact-ui/tests/plugin_cli_tests.rs`, `crates/tui/src/handlers/plugin.rs`, `crates/tui/src/widgets/state/app/extensions.rs`, `crates/agent_tui_kit/src/i18n.rs`; Ch 2 § plugin skills, Ch 23 §7 |
+
+**Symptom / motivation:** plugins could be installed, listed, and reloaded but never removed; uninstalling required hand-editing `installed.json` and deleting the cache directory manually.
+
+**Decision:** add an `Uninstall` request to the plugin worker. `PluginInstaller::uninstall` validates the plugin id, removes the installed registry entry, and deletes the cached content only when it resolves inside the plugin cache root (legacy or escaping paths are left untouched), pruning now-empty parent directories up to the cache root. A new `PluginStore::commit_removal` persists the registry without requiring a candidate directory (unlike `commit_install`). The CLI gains `tact plugin uninstall <name>`; the TUI slash command gains `/plugin uninstall <name>`. Successful uninstalls trigger the same shared skill refresh as install/reload, so `plugin:<skill>` entries disappear from the registry immediately.
+
+**Behavior after:** `tact plugin uninstall <name>` and `/plugin uninstall <name>` remove the plugin's cache directory and registry entry; missing plugins produce an error; content outside the plugin cache is never deleted.
+
+---
+
 ## 1. 2026-08-23 — Attachments are de-inlined: `@file`/`![alt]` kept as path text
 
 | Field | Value |

@@ -194,6 +194,8 @@ available without starting the TUI:
 ```bash
 tact-ui plugin list
 tact-ui plugin install superpowers@claude-plugins-official
+tact-ui plugin uninstall superpowers
+tact-ui plugin update superpowers
 tact-ui plugin marketplace add owner/repository
 tact-ui plugin marketplace list
 tact-ui plugin reload
@@ -274,9 +276,9 @@ Tact installs skill-only plugins natively. The built-in `claude-plugins-official
 /superpowers:brainstorming
 ```
 
-Add another marketplace with `/plugin marketplace add <source>`. A source may be a GitHub shorthand such as `owner/repository`, a Git URL, or a remote `marketplace.json` URL. Tact derives the marketplace name from the source's final path component; use that name with `/plugin marketplace update <name>`, `/plugin marketplace remove <name>`, and `/plugin install <plugin>@<name>`.
+Add another marketplace with `/plugin marketplace add <source>`. A source may be a GitHub shorthand such as `owner/repository`, a Git URL, or a remote `marketplace.json` URL. Tact derives the marketplace name from the source's final path component; use that name with `/plugin marketplace update <name>`, `/plugin marketplace remove <name>`, and `/plugin install <plugin>@<name>`. Remove a plugin with `/plugin uninstall <name>` and pull the latest revision with `/plugin update <name>`.
 
-In the TUI, `/plugin list` and `/plugin marketplace list` render as titled tables (one row per plugin or marketplace). `/plugin reload` refreshes discovered plugin skills.
+In the TUI, `/plugin list` and `/plugin marketplace list` render as titled tables (one row per plugin or marketplace). `/plugin reload` refreshes discovered plugin skills, and `/plugin uninstall` / `/plugin update` refresh them too so the plugin's skills change immediately.
 
 Tact owns marketplace state, checkouts, and revision-locked plugin caches under `~/.tact/plugins/`. It loads only `skills/*/SKILL.md` from an installed plugin; plugin hooks, agents, MCP servers, commands, LSPs, monitors, and executables are not loaded or run. Installed skills use `/plugin:skill` (for example `/superpowers:brainstorming`); standalone skills keep the unprefixed `/skill` form.
 
