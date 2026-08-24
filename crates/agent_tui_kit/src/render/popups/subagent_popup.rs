@@ -40,20 +40,35 @@ const THINKING_COLLAPSED_BODY: usize = 3;
 
 fn footer(m: &Messages) -> Vec<FooterHint> {
     vec![
-        FooterHint { key: "y", label: m.subagent_popup_hint_copy },
-        FooterHint { key: "j/k", label: m.subagent_popup_hint_scroll },
-        FooterHint { key: "g/G", label: m.subagent_popup_hint_top_bottom },
-        FooterHint { key: "f", label: m.subagent_popup_hint_follow },
-        FooterHint { key: "⏎", label: m.subagent_popup_hint_collapse },
-        FooterHint { key: "Esc", label: m.subagent_popup_hint_close },
+        FooterHint {
+            key: "y",
+            label: m.subagent_popup_hint_copy,
+        },
+        FooterHint {
+            key: "j/k",
+            label: m.subagent_popup_hint_scroll,
+        },
+        FooterHint {
+            key: "g/G",
+            label: m.subagent_popup_hint_top_bottom,
+        },
+        FooterHint {
+            key: "f",
+            label: m.subagent_popup_hint_follow,
+        },
+        FooterHint {
+            key: "⏎",
+            label: m.subagent_popup_hint_collapse,
+        },
+        FooterHint {
+            key: "Esc",
+            label: m.subagent_popup_hint_close,
+        },
     ]
 }
 
 fn line_text(line: &ToolOutputLine) -> String {
-    line.spans
-        .iter()
-        .map(|span| span.text.as_str())
-        .collect()
+    line.spans.iter().map(|span| span.text.as_str()).collect()
 }
 
 /// Seed the layout cache from a completed transcript (plain text, no kinds).
@@ -132,11 +147,7 @@ pub fn prepare_subagent_popup(
     }
 
     // Live source: the active tool block's structured buffer.
-    if let Some(output) = tools
-        .active
-        .iter()
-        .find(|a| a.tool_id == *popup.tool_id)
-    {
+    if let Some(output) = tools.active.iter().find(|a| a.tool_id == *popup.tool_id) {
         let buffer = &output.live_output;
         if let Some(cache) = popup.layout_cache.as_mut() {
             let mut idx = cache.laid_out_committed;
@@ -155,11 +166,13 @@ pub fn prepare_subagent_popup(
                 cache.laid_out_committed = idx + 1;
                 idx += 1;
             }
-            cache.tail = buffer.current_structured_line().map(|l| SubagentSourceLine {
-                text: line_text(l),
-                kind: l.kind(),
-                source_start: cache.raw_text.len(),
-            });
+            cache.tail = buffer
+                .current_structured_line()
+                .map(|l| SubagentSourceLine {
+                    text: line_text(l),
+                    kind: l.kind(),
+                    source_start: cache.raw_text.len(),
+                });
         }
         if let Some(cache) = popup.layout_cache.as_mut() {
             rebuild_rows(cache, &popup.collapsed_blocks, body_width);
@@ -301,13 +314,12 @@ fn build_rows_full(
                     source_end: first.source_start + first.text.len(),
                     block_id,
                 });
-                let result_kind = if (j - i) > 1
-                    && cache.lines[j - 1].kind == Some(ChunkKind::ToolError)
-                {
-                    Some(ChunkKind::ToolError)
-                } else {
-                    Some(ChunkKind::ToolResult)
-                };
+                let result_kind =
+                    if (j - i) > 1 && cache.lines[j - 1].kind == Some(ChunkKind::ToolError) {
+                        Some(ChunkKind::ToolError)
+                    } else {
+                        Some(ChunkKind::ToolResult)
+                    };
                 for li in i + 1..j {
                     let line = &cache.lines[li];
                     rows.push(SubagentRow {
@@ -392,8 +404,13 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
     };
 
     let header = header_text(popup, cache);
-    let body_area =
-        render_popup_chrome(frame, popup_area, ctx.theme, &header, Some(&footer(&ctx.messages)));
+    let body_area = render_popup_chrome(
+        frame,
+        popup_area,
+        ctx.theme,
+        &header,
+        Some(&footer(&ctx.messages)),
+    );
 
     // Establish the body background explicitly (render invariants: no residue,
     // no flicker) before painting rows.
@@ -460,7 +477,11 @@ fn build_stamp(
         cache.laid_out_committed as u64,
         width as u64,
         scroll as u64,
-        cache.tail.as_ref().map(|t| t.text.len() as u64).unwrap_or(0),
+        cache
+            .tail
+            .as_ref()
+            .map(|t| t.text.len() as u64)
+            .unwrap_or(0),
         popup.follow_bottom as u64,
     ] {
         h ^= v;
@@ -519,7 +540,11 @@ fn header_text(popup: &SubagentPopup, cache: &SubagentLayoutCache) -> String {
     } else {
         cache.labels.done_header
     };
-    format!(" {}{} ", popup.title, tmpl.replacen("{}", &lines.to_string(), 1))
+    format!(
+        " {}{} ",
+        popup.title,
+        tmpl.replacen("{}", &lines.to_string(), 1)
+    )
 }
 
 fn style_row(row: &SubagentRow, theme: &Theme) -> Vec<Span<'static>> {
@@ -633,10 +658,26 @@ mod tests {
         let mut cache = cache_with_width(80);
         cache.raw_text = "t1\nt2\nt3\nt4".to_string();
         cache.lines = vec![
-            SubagentSourceLine { text: "t1".into(), kind: Some(ChunkKind::Thinking), source_start: 0 },
-            SubagentSourceLine { text: "t2".into(), kind: Some(ChunkKind::Thinking), source_start: 3 },
-            SubagentSourceLine { text: "t3".into(), kind: Some(ChunkKind::Thinking), source_start: 6 },
-            SubagentSourceLine { text: "t4".into(), kind: Some(ChunkKind::Thinking), source_start: 9 },
+            SubagentSourceLine {
+                text: "t1".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 0,
+            },
+            SubagentSourceLine {
+                text: "t2".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 3,
+            },
+            SubagentSourceLine {
+                text: "t3".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 6,
+            },
+            SubagentSourceLine {
+                text: "t4".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 9,
+            },
         ];
         let collapsed: HashSet<usize> = HashSet::new();
         let rows = build_rows(&cache, &collapsed, 80);
@@ -655,10 +696,26 @@ mod tests {
     fn collapsed_thinking_block_keeps_only_last_three_body_rows() {
         let mut cache = cache_with_width(80);
         cache.lines = vec![
-            SubagentSourceLine { text: "a".into(), kind: Some(ChunkKind::Thinking), source_start: 0 },
-            SubagentSourceLine { text: "b".into(), kind: Some(ChunkKind::Thinking), source_start: 2 },
-            SubagentSourceLine { text: "c".into(), kind: Some(ChunkKind::Thinking), source_start: 4 },
-            SubagentSourceLine { text: "d".into(), kind: Some(ChunkKind::Thinking), source_start: 6 },
+            SubagentSourceLine {
+                text: "a".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 0,
+            },
+            SubagentSourceLine {
+                text: "b".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 2,
+            },
+            SubagentSourceLine {
+                text: "c".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 4,
+            },
+            SubagentSourceLine {
+                text: "d".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 6,
+            },
         ];
         let collapsed = HashSet::from([0usize]);
         let rows = build_rows(&cache, &collapsed, 80);
@@ -675,8 +732,16 @@ mod tests {
     fn tool_run_gets_title_result_and_footer() {
         let mut cache = cache_with_width(80);
         cache.lines = vec![
-            SubagentSourceLine { text: "→ bash ls".into(), kind: Some(ChunkKind::ToolCall), source_start: 0 },
-            SubagentSourceLine { text: "✓ file.rs".into(), kind: Some(ChunkKind::ToolResult), source_start: 9 },
+            SubagentSourceLine {
+                text: "→ bash ls".into(),
+                kind: Some(ChunkKind::ToolCall),
+                source_start: 0,
+            },
+            SubagentSourceLine {
+                text: "✓ file.rs".into(),
+                kind: Some(ChunkKind::ToolResult),
+                source_start: 9,
+            },
         ];
         let rows = build_rows(&cache, &HashSet::new(), 80);
         assert_eq!(rows.len(), 3);
@@ -690,9 +755,21 @@ mod tests {
     fn mixed_kinds_split_into_separate_blocks_with_stable_ids() {
         let mut cache = cache_with_width(80);
         cache.lines = vec![
-            SubagentSourceLine { text: "prompt".into(), kind: Some(ChunkKind::User), source_start: 0 },
-            SubagentSourceLine { text: "think".into(), kind: Some(ChunkKind::Thinking), source_start: 7 },
-            SubagentSourceLine { text: "answered".into(), kind: Some(ChunkKind::AssistantText), source_start: 13 },
+            SubagentSourceLine {
+                text: "prompt".into(),
+                kind: Some(ChunkKind::User),
+                source_start: 0,
+            },
+            SubagentSourceLine {
+                text: "think".into(),
+                kind: Some(ChunkKind::Thinking),
+                source_start: 7,
+            },
+            SubagentSourceLine {
+                text: "answered".into(),
+                kind: Some(ChunkKind::AssistantText),
+                source_start: 13,
+            },
         ];
         let rows = build_rows(&cache, &HashSet::new(), 80);
         assert_eq!(rows.len(), 5);
@@ -727,7 +804,10 @@ mod tests {
         let cache = p.layout_cache.as_ref().unwrap();
         assert_eq!(cache.laid_out_committed, 2, "watermark advanced");
         assert_eq!(cache.lines.len(), 2);
-        assert!(cache.raw_text.starts_with(&first), "raw text appends, never rewrites");
+        assert!(
+            cache.raw_text.starts_with(&first),
+            "raw text appends, never rewrites"
+        );
         // thinking block: title + 1 body + footer appended after the user row.
         assert_eq!(cache.rows.len(), 4);
         assert_eq!(cache.rows[1].role, RowRole::Title);
@@ -743,7 +823,10 @@ mod tests {
             80,
         );
         let cache = p.layout_cache.as_ref().unwrap();
-        assert_eq!(cache.laid_out_committed, 0, "no newline → nothing committed");
+        assert_eq!(
+            cache.laid_out_committed, 0,
+            "no newline → nothing committed"
+        );
         assert!(cache.tail.is_some());
         assert_eq!(cache.rows.len(), 1, "only the tail row");
         assert_eq!(cache.rows_built_for, 0);

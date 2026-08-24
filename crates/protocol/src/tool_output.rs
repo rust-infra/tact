@@ -111,9 +111,7 @@ impl ToolOutputLine {
     /// The dominant segment kind of the line (first non-None span wins),
     /// used by block renderers to decide the line's role.
     pub fn kind(&self) -> Option<ChunkKind> {
-        self.spans
-            .iter()
-            .find_map(|span| span.kind)
+        self.spans.iter().find_map(|span| span.kind)
     }
 
     fn push_char(&mut self, stream: ToolOutputStream, kind: Option<ChunkKind>, ch: char) {
@@ -594,8 +592,7 @@ mod tests {
     fn kind_tags_survive_struct_layout() {
         let mut output = ToolOutputBuffer::new_full(50_000);
         output.push_chunks(&[
-            ToolOutputChunk::other("assistant text\n")
-                .with_kind(ChunkKind::AssistantText),
+            ToolOutputChunk::other("assistant text\n").with_kind(ChunkKind::AssistantText),
             ToolOutputChunk::other("reasoning\n").with_kind(ChunkKind::Thinking),
             ToolOutputChunk::other("→ bash ls\n").with_kind(ChunkKind::ToolCall),
         ]);
@@ -634,9 +631,7 @@ mod tests {
     #[test]
     fn current_structured_line_reports_unterminated_tail() {
         let mut output = ToolOutputBuffer::new_full(50_000);
-        output.push_chunks(&[
-            ToolOutputChunk::other("one\n").with_kind(ChunkKind::System),
-        ]);
+        output.push_chunks(&[ToolOutputChunk::other("one\n").with_kind(ChunkKind::System)]);
         output.push_chunks(&[ToolOutputChunk::other("t").with_kind(ChunkKind::Thinking)]);
 
         assert_eq!(output.structured_line_count(), 1);

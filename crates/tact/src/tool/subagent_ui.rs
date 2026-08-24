@@ -61,7 +61,7 @@ pub fn tagged_ui_channel_with_progress(
             match update {
                 AgentUpdate::StreamChunk(text) => {
                     progress.report(vec![
-                        ToolOutputChunk::other(text).with_kind(ChunkKind::AssistantText)
+                        ToolOutputChunk::other(text).with_kind(ChunkKind::AssistantText),
                     ]);
                 }
                 // Thinking deltas stream through in real time, tagged with the
@@ -73,7 +73,7 @@ pub fn tagged_ui_channel_with_progress(
                 AgentUpdate::ThinkingChunk(chunk) => match chunk {
                     tact_protocol::ThinkingChunk::Delta(text) if !text.is_empty() => {
                         progress.report(vec![
-                            ToolOutputChunk::other(text).with_kind(ChunkKind::Thinking)
+                            ToolOutputChunk::other(text).with_kind(ChunkKind::Thinking),
                         ]);
                     }
                     tact_protocol::ThinkingChunk::Started
@@ -90,9 +90,7 @@ pub fn tagged_ui_channel_with_progress(
                     } else {
                         format!("→ {tool_name} {arg_summary}")
                     };
-                    progress.report(vec![
-                        structural_line(line).with_kind(ChunkKind::ToolCall)
-                    ]);
+                    progress.report(vec![structural_line(line).with_kind(ChunkKind::ToolCall)]);
                 }
                 AgentUpdate::StepFinished { result, .. } => {
                     let preview = result.message;
@@ -100,26 +98,24 @@ pub fn tagged_ui_channel_with_progress(
                         // Multi-line tool output (e.g. `ls -la`) must keep its
                         // newlines readable in the popup; the block renderer
                         // wraps them instead of a Markdown pass.
-                        progress.report(vec![structural_line(format!(
-                            "✓ {}",
-                            preserve_markdown_newlines(&preview)
-                        ))
-                        .with_kind(ChunkKind::ToolResult)]);
+                        progress.report(vec![
+                            structural_line(format!("✓ {}", preserve_markdown_newlines(&preview)))
+                                .with_kind(ChunkKind::ToolResult),
+                        ]);
                     }
                 }
                 AgentUpdate::StepFailed { error, .. } => {
-                    progress.report(vec![structural_stderr(format!(
-                        "✗ {}",
-                        preserve_markdown_newlines(&error)
-                    ))
-                    .with_kind(ChunkKind::ToolError)]);
+                    progress.report(vec![
+                        structural_stderr(format!("✗ {}", preserve_markdown_newlines(&error)))
+                            .with_kind(ChunkKind::ToolError),
+                    ]);
                 }
                 AgentUpdate::Info(msg) => {
                     progress.report(vec![structural_line(msg).with_kind(ChunkKind::System)]);
                 }
                 AgentUpdate::Error(err) => {
                     progress.report(vec![
-                        structural_stderr(format!("error: {err:?}")).with_kind(ChunkKind::System)
+                        structural_stderr(format!("error: {err:?}")).with_kind(ChunkKind::System),
                     ]);
                 }
                 AgentUpdate::TokenUsage(usage) => {
@@ -177,7 +173,8 @@ pub fn tagged_ui_channel_with_progress(
 mod tests {
     use super::*;
     use tact_protocol::{
-        StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolOutputBuffer, ToolPresentationInfo,
+        StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolOutputBuffer,
+        ToolPresentationInfo,
     };
 
     /// Concatenate chunk texts of a ToolProgress update (test helper).
@@ -231,7 +228,9 @@ mod tests {
             )))
             .unwrap();
         tagged
-            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("second".into())))
+            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+                "second".into(),
+            )))
             .unwrap();
         tagged
             .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
@@ -239,7 +238,11 @@ mod tests {
         tokio::task::yield_now().await;
 
         let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
-        assert_eq!(got.len(), 2, "each delta reports once; Started/Finished silent: {got:?}");
+        assert_eq!(
+            got.len(),
+            2,
+            "each delta reports once; Started/Finished silent: {got:?}"
+        );
         for update in &got {
             match update {
                 AgentUpdate::ToolProgress { chunks, .. } => {
