@@ -86,6 +86,7 @@ pub fn test_context(name: &str) -> ToolContext {
             block_on(WorktreeManager::new(&db_path, root_dir)).unwrap(),
         ),
         ui_tx: None,
+        ui_responder: crate::ui_responder::UiResponder::new(),
         progress_reporter: super::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

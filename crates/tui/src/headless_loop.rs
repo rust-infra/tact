@@ -2,10 +2,10 @@
 
 use std::time::Duration;
 
-use tact_protocol::AgentUpdate;
+use tact_protocol::{AgentUpdate, UiResponse, UserCommand};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::widgets::state::{App, InputMode};
+use crate::widgets::state::{App, InputMode, SelectKind};
 
 /// Drain pending updates from `agent_rx`, optionally auto-confirm permission selects.
 pub fn drain_agent_updates(app: &mut App, auto_select: Option<usize>) {
@@ -19,23 +19,45 @@ pub fn drain_agent_updates(app: &mut App, auto_select: Option<usize>) {
     }
 }
 
-/// Confirm the current select popup programmatically (headless substitute for Enter).
-pub fn auto_confirm_select(app: &mut App, choice: usize) {
+/// Build the response for auto-confirming the current select popup.
+///
+/// Consumes the popup's request id and leaves `InputMode::Normal`. Returns the
+/// [`UiResponse`] to deliver, or `None` when the popup is a local flow (no
+/// request id) or not actually open.
+pub fn build_auto_confirm_response(app: &mut App, choice: usize) -> Option<UiResponse> {
     if !matches!(app.input_mode, InputMode::Select) || app.select.options.is_empty() {
-        return;
+        return None;
     }
     let idx = choice.min(app.select.options.len().saturating_sub(1));
     app.select.selected = idx;
-    if app.select.multi {
+    let request_id = app.select.take_request_id();
+    let response = if app.select.multi {
         if let Some(slot) = app.select.checked.get_mut(idx) {
             *slot = true;
         }
-        app.select.confirm_multi();
+        let idxs = app.select.confirm_multi();
+        request_id.map(|id| UiResponse::MultiSelect {
+            request_id: id,
+            choices: Some(idxs),
+        })
     } else {
-        app.select.confirm();
-    }
-    app.select_kind = crate::widgets::state::SelectKind::Agent;
+        let _ = app.select.confirm();
+        request_id.map(|id| UiResponse::Select {
+            request_id: id,
+            choice: Some(idx),
+        })
+    };
+    app.select_kind = SelectKind::Agent;
     app.input_mode = InputMode::Normal;
+    response
+}
+
+/// Confirm the current select popup programmatically, sending the response on
+/// the App's command channel (headless substitute for Enter).
+pub fn auto_confirm_select(app: &mut App, choice: usize) {
+    if let Some(response) = build_auto_confirm_response(app, choice) {
+        let _ = app.user_cmd_tx.send(UserCommand::UiResponse(response));
+    }
 }
 
 /// Poll until `should_continue` returns false, draining updates each tick.

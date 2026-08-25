@@ -16,16 +16,17 @@
 graph LR
     Agent[Agent runtime] -->|AgentUpdate| TUI[TUI App]
     TUI -->|UserCommand| Driver[tact-ui driver]
+    TUI -->|UiResponse| Driver
     Account[account service] -->|AccountUpdate| TUI
 ```
 
 | Channel | 类型 | 方向 | 用途 |
 |---------|------|------|------|
-| `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI | 进度、流式、元数据 |
-| `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | 提交任务、取消、余额查询 |
+| `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI | 进度、流式、元数据、选择请求 |
+| `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | 提交任务、取消、余额查询、UI 响应 |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account → TUI | 余额 / 配额（与 agent 协议分离） |
 
-三者均用 `tokio::sync::mpsc::unbounded_channel`。`RequestSelect` 嵌入 `oneshot::Sender` 做进程内请求–响应；不可序列化，无法从 session 存储重放。
+所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`AgentUpdate` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
 
 ---
 
@@ -47,8 +48,8 @@ pub enum AgentUpdate {
     TokenUsage(TokenUsageInfo),
     ModelInfo(ModelCallParams),
     Info(String),
-    RequestSelect { prompt, options, respond, log_confirm }, // 单选；permission=`false`，ask_user=`true`
-    RequestMultiSelect { prompt, options, respond },         // 多选；仅 ask_user（`multi_select`）
+    RequestSelect { request_id, prompt, options, log_confirm }, // 单选；permission=`false`，ask_user=`true`
+    RequestMultiSelect { request_id, prompt, options },          // 多选；仅 ask_user（`multi_select`）
     StreamChunk(String),
     ThinkingChunk(ThinkingChunk),
     /// 持久任务列表变更（`task_create` / `task_update`）
@@ -82,8 +83,20 @@ pub enum UserCommand {
     SubmitTask(String),
     Cancel,
     QueryBalance,
+    UiResponse(UiResponse), // 回答 RequestSelect / RequestMultiSelect
 }
 ```
+
+### `UiResponse`
+
+```rust
+pub enum UiResponse {
+    Select { request_id, choice: Option<usize> },
+    MultiSelect { request_id, choices: Option<Vec<usize>> },
+}
+```
+
+`UiResponse` 是回答选择请求的反向消息，携带请求的 `request_id`，以便运行时路由到精确的等待方。driver 在 `user_cmd_rx` 上收到它，**不**等待 in-flight 任务，直接交给共享的 `UiResponder::handle_response`，由其按 id 触发等待方（父 agent 或 subagent）。
 
 ### `PlanStep`
 
@@ -294,7 +307,7 @@ stateDiagram-v2
 
     note right of Select
         到达时 Status = Executing。
-        respond: oneshot::Sender → tool_dispatch
+        request_id → 反向命令通道上的 UiResponse
     end note
 ```
 
@@ -324,7 +337,7 @@ stateDiagram-v2
 |------|----------|------------|
 | **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`TaskCancelled`、`Error`、`RequestSelect`、`TasksChanged` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
 | **仅元数据** | `TokenUsage(TokenUsageInfo)`、`ModelInfo(ModelCallParams)` | 仅更新状态栏；保留 loading placeholder；**不**关闭已开 thinking 区域 |
-| **请求–响应** | `RequestSelect { respond }` | 经 oneshot channel 阻塞等待用户选择 |
+| **请求–响应** | `RequestSelect { request_id }`、`RequestMultiSelect { request_id }` | 经共享 `UiResponder`（反向 `UiResponse`）阻塞等待用户选择 |
 
 Thinking 生命周期显式：`ThinkingChunk::Started` 打开区域，`Delta` 追加文本，`Finished` flush 并折叠。安全网：其他内容产出非 thinking 更新仍会在区域仍开时调用 `flush_and_close_thinking()`。`TokenUsage` / `ModelInfo` 从不关闭 thinking（可能 mid-stream 到达）。
 
@@ -394,10 +407,11 @@ sequenceDiagram
     Agent->>TUI: StepStarted
 
     opt permission Ask
-        Agent->>TUI: RequestSelect
+        Agent->>TUI: RequestSelect (request_id)
         TUI->>TUI: InputMode → Select
         User->>TUI: 选择选项
-        TUI->>Agent: oneshot response
+        TUI->>Driver: UserCommand::UiResponse
+        Driver->>Agent: UiResponder::handle_response
     end
 
     Agent->>TUI: StepFinished | StepFailed

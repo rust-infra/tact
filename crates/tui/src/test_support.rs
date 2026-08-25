@@ -6,7 +6,7 @@ use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::{
-    headless_loop::{auto_confirm_select, drain_agent_updates, make_headless_app},
+    headless_loop::{build_auto_confirm_response, make_headless_app},
     render::test_harness::{make_app, render_app_text, render_main_area_text},
     widgets::state::{App, InputMode, Status},
 };
@@ -162,6 +162,9 @@ pub struct HeadlessApp {
     inner: App,
     auto_select: Option<usize>,
     capture_frames: bool,
+    /// Direct route for auto-confirmed select responses. The driver owns the
+    /// same shared registry, so `handle_response` reaches the waiting tool.
+    ui_responder: Option<tact::ui_responder::UiResponder>,
 }
 
 impl HeadlessApp {
@@ -170,11 +173,21 @@ impl HeadlessApp {
             inner: make_headless_app(agent_rx, work_dir),
             auto_select: None,
             capture_frames: false,
+            ui_responder: None,
         }
     }
 
     pub fn with_auto_select(mut self, choice: Option<usize>) -> Self {
         self.auto_select = choice;
+        self
+    }
+
+    /// Answer auto-confirmed selects through the shared [`UiResponder`] directly
+    /// instead of the (disconnected) command channel. The headless App and the
+    /// driver do not share a `user_cmd` channel, so routing responses this way
+    /// is what lets a blocked tool unblock.
+    pub fn with_ui_responder(mut self, responder: tact::ui_responder::UiResponder) -> Self {
+        self.ui_responder = Some(responder);
         self
     }
 
@@ -185,17 +198,46 @@ impl HeadlessApp {
     }
 
     pub fn poll(&mut self) {
-        drain_agent_updates(&mut self.inner, self.auto_select);
+        self.drain(true);
     }
 
     pub fn poll_without_auto_confirm(&mut self) {
+        self.drain(false);
+    }
+
+    fn drain(&mut self, auto_confirm: bool) {
         while let Ok(update) = self.inner.agent_rx.try_recv() {
             self.inner.handle_agent_update(update);
+            if auto_confirm
+                && matches!(self.inner.input_mode, InputMode::Select)
+                && let Some(choice) = self.auto_select
+            {
+                let response = build_auto_confirm_response(&mut self.inner, choice);
+                self.deliver_response(response);
+            }
         }
     }
 
     pub fn confirm_select(&mut self, choice: usize) {
-        auto_confirm_select(&mut self.inner, choice);
+        let response = build_auto_confirm_response(&mut self.inner, choice);
+        self.deliver_response(response);
+    }
+
+    /// Deliver a select response to the waiting tool: directly through the
+    /// shared responder when wired, else on the App's command channel.
+    fn deliver_response(&self, response: Option<tact_protocol::UiResponse>) {
+        let Some(response) = response else {
+            return;
+        };
+        match &self.ui_responder {
+            Some(responder) => responder.handle_response(response),
+            None => {
+                let _ = self
+                    .inner
+                    .user_cmd_tx
+                    .send(tact_protocol::UserCommand::UiResponse(response));
+            }
+        }
     }
 
     pub fn render(&mut self, width: u16, height: u16) -> String {

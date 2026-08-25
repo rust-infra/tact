@@ -41,7 +41,7 @@ use tact_protocol::ToolVisualKind;
 
 use crate::{
     ToolSpec, background::SharedBackgroundManager, memory::MemoryManager, task::SharedTaskManager,
-    team::SharedTeammateManager, worktree::SharedWorktreeManager,
+    team::SharedTeammateManager, ui_responder::UiResponder, worktree::SharedWorktreeManager,
 };
 
 mod ask_user;
@@ -110,6 +110,9 @@ pub struct ToolContext {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    /// Shared request/reply registry for `ask_user` and permission selects.
+    /// Cloned into subagents so request ids stay globally unique.
+    pub ui_responder: UiResponder,
     pub progress_reporter: ToolProgressReporter,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub bash_timeout_secs: u64,

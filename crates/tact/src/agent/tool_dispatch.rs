@@ -457,7 +457,6 @@ impl Agent {
                                 _ => crate::tool::PermissionPromptPolicy::Json,
                             };
                             let choice = if let Some(tx) = &self.runtime.ui_tx {
-                                let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
                                 let prompt = format_permission_prompt(
                                     stable_name,
                                     permit_prompt,
@@ -468,13 +467,8 @@ impl Agent {
                                     "Deny".to_string(),
                                     "Always allow this tool".to_string(),
                                 ];
-                                let _ = tx.send(AgentUpdate::RequestSelect {
-                                    prompt,
-                                    options,
-                                    respond: respond_tx,
-                                    log_confirm: false,
-                                });
-                                match respond_rx.await {
+                                let responder = self.tool_context.ui_responder.clone();
+                                match responder.request_select(tx, prompt, options, false).await {
                                     Ok(Some(0)) => Some("allow_once"),
                                     Ok(Some(2)) => Some("always_allow"),
                                     _ => Some("deny"),

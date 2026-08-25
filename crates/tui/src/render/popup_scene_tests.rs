@@ -547,9 +547,8 @@ fn full_frame_done_status_renders_in_status_bar() {
 fn full_frame_select_mode_shows_in_status_bar() {
     let mut app = make_app();
     app.input_mode = InputMode::Select;
-    let (tx, _rx) = tokio::sync::oneshot::channel();
     app.select
-        .set("Pick one".into(), vec!["A".into(), "B".into()], tx, false);
+        .set("Pick one".into(), vec!["A".into(), "B".into()], 0, false);
 
     let text = render_app_text(&mut app, 100, 24);
 

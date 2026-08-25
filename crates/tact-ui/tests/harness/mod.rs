@@ -8,7 +8,7 @@ use std::sync::{
 
 use tact::permission::PermissionMode;
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
+use tact_protocol::{AgentUpdate, TokenUsageInfo, UiResponse, UserCommand};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
@@ -79,18 +79,22 @@ pub fn sample_token_usage() -> TokenUsageInfo {
 pub fn wire_permission_responder(
     agent_rx: UnboundedReceiver<AgentUpdate>,
     choice: Option<usize>,
+    ui_responder: tact::ui_responder::UiResponder,
 ) -> UnboundedReceiver<AgentUpdate> {
     let (collect_tx, collect_rx) = unbounded_channel();
     tokio::spawn(async move {
         let mut agent_rx = agent_rx;
         while let Some(update) = agent_rx.recv().await {
             match update {
-                AgentUpdate::RequestSelect { respond, .. } => {
-                    let _ = respond.send(choice);
+                AgentUpdate::RequestSelect { request_id, .. } => {
+                    ui_responder.handle_response(UiResponse::Select { request_id, choice });
                 }
-                AgentUpdate::RequestMultiSelect { respond, .. } => {
+                AgentUpdate::RequestMultiSelect { request_id, .. } => {
                     // Map single harness choice → one-element multi selection (or cancel).
-                    let _ = respond.send(choice.map(|i| vec![i]));
+                    ui_responder.handle_response(UiResponse::MultiSelect {
+                        request_id,
+                        choices: choice.map(|i| vec![i]),
+                    });
                 }
                 other => {
                     let _ = collect_tx.send(other);
@@ -130,8 +134,9 @@ pub async fn run_single_task_with_permission_choice(
 ) -> (Vec<AgentUpdate>, std::path::PathBuf) {
     install_test_config();
     let (agent_tx, agent_rx) = unbounded_channel();
-    let collect_rx = wire_permission_responder(agent_rx, permission_choice);
     let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), permission_mode);
+    let ui_responder = agent.tool_context.ui_responder.clone();
+    let collect_rx = wire_permission_responder(agent_rx, permission_choice, ui_responder);
     setup(&work_dir);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
@@ -157,9 +162,10 @@ pub async fn run_single_task_with_mcp(
 ) -> (Vec<AgentUpdate>, std::path::PathBuf) {
     install_test_config();
     let (agent_tx, agent_rx) = unbounded_channel();
-    let collect_rx = wire_permission_responder(agent_rx, permission_choice);
     let (agent, work_dir) =
         build_test_agent_with_mcp(mock, Some(agent_tx), permission_mode, mcp_router);
+    let ui_responder = agent.tool_context.ui_responder.clone();
+    let collect_rx = wire_permission_responder(agent_rx, permission_choice, ui_responder);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
@@ -183,9 +189,10 @@ pub async fn run_single_task_with_config(
     setup: impl FnOnce(&std::path::Path),
 ) -> (Vec<AgentUpdate>, std::path::PathBuf) {
     let (agent_tx, agent_rx) = unbounded_channel();
-    let collect_rx = wire_permission_responder(agent_rx, None);
     let (agent, work_dir) =
         build_test_agent_with_config(mock, Some(agent_tx), permission_mode, &config);
+    let ui_responder = agent.tool_context.ui_responder.clone();
+    let collect_rx = wire_permission_responder(agent_rx, None, ui_responder);
     setup(&work_dir);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
@@ -225,8 +232,9 @@ where
 {
     install_test_config();
     let (agent_tx, agent_rx) = unbounded_channel();
-    let collect_rx = wire_permission_responder(agent_rx, permission_choice);
     let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), permission_mode);
+    let ui_responder = agent.tool_context.ui_responder.clone();
+    let collect_rx = wire_permission_responder(agent_rx, permission_choice, ui_responder);
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
 
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
@@ -466,6 +474,7 @@ pub fn compact_tool_use(id: &str, focus: Option<&str>) -> ContentBlock {
 pub fn wire_permission_responder_with_choices(
     agent_rx: UnboundedReceiver<AgentUpdate>,
     choices: Vec<Option<usize>>,
+    ui_responder: tact::ui_responder::UiResponder,
 ) -> UnboundedReceiver<AgentUpdate> {
     let (collect_tx, collect_rx) = unbounded_channel();
     tokio::spawn(async move {
@@ -473,13 +482,16 @@ pub fn wire_permission_responder_with_choices(
         let mut choices = choices.into_iter();
         while let Some(update) = agent_rx.recv().await {
             match update {
-                AgentUpdate::RequestSelect { respond, .. } => {
+                AgentUpdate::RequestSelect { request_id, .. } => {
                     let choice = choices.next().unwrap_or(None);
-                    let _ = respond.send(choice);
+                    ui_responder.handle_response(UiResponse::Select { request_id, choice });
                 }
-                AgentUpdate::RequestMultiSelect { respond, .. } => {
+                AgentUpdate::RequestMultiSelect { request_id, .. } => {
                     let choice = choices.next().unwrap_or(None);
-                    let _ = respond.send(choice.map(|i| vec![i]));
+                    ui_responder.handle_response(UiResponse::MultiSelect {
+                        request_id,
+                        choices: choice.map(|i| vec![i]),
+                    });
                 }
                 other => {
                     let _ = collect_tx.send(other);
@@ -583,6 +595,7 @@ pub async fn load_session_messages(
 pub fn wire_permission_responder_with_counter(
     agent_rx: UnboundedReceiver<AgentUpdate>,
     choices: Vec<Option<usize>>,
+    ui_responder: tact::ui_responder::UiResponder,
 ) -> (UnboundedReceiver<AgentUpdate>, Arc<AtomicUsize>) {
     let (collect_tx, collect_rx) = unbounded_channel();
     let counter = Arc::new(AtomicUsize::new(0));
@@ -592,15 +605,18 @@ pub fn wire_permission_responder_with_counter(
         let mut choices = choices.into_iter();
         while let Some(update) = agent_rx.recv().await {
             match update {
-                AgentUpdate::RequestSelect { respond, .. } => {
+                AgentUpdate::RequestSelect { request_id, .. } => {
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
-                    let _ = respond.send(choice);
+                    ui_responder.handle_response(UiResponse::Select { request_id, choice });
                 }
-                AgentUpdate::RequestMultiSelect { respond, .. } => {
+                AgentUpdate::RequestMultiSelect { request_id, .. } => {
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
-                    let _ = respond.send(choice.map(|i| vec![i]));
+                    ui_responder.handle_response(UiResponse::MultiSelect {
+                        request_id,
+                        choices: choice.map(|i| vec![i]),
+                    });
                 }
                 other => {
                     let _ = collect_tx.send(other);

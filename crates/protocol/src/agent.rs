@@ -9,7 +9,6 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
 
 use crate::tool_output::ToolOutputChunk;
 
@@ -247,10 +246,15 @@ pub enum AgentUpdate {
 
     /// Request user to choose **one** option; returns option index (None = cancelled).
     /// Used by permission prompts and single-choice `ask_user`.
+    ///
+    /// The request carries a unique `request_id`; the TUI answers over the
+    /// reverse [`UserCommand::UiResponse`] channel rather than an in-message
+    /// oneshot sender, so [`AgentUpdate`] no longer carries a transport handle
+    /// (pure data, transport-agnostic).
     RequestSelect {
+        request_id: u64,
         prompt: String,
         options: Vec<String>,
-        respond: oneshot::Sender<Option<usize>>,
         /// When true, TUI appends a "Selected: …" system line after confirm.
         /// Permission prompts keep this `false` (choice already shown on the tool meta row).
         log_confirm: bool,
@@ -258,9 +262,9 @@ pub enum AgentUpdate {
     /// Request user to choose **zero or more** options (Space toggles, Enter confirms).
     /// Used by `ask_user` when `multi_select` is true. Does not affect [`RequestSelect`].
     RequestMultiSelect {
+        request_id: u64,
         prompt: String,
         options: Vec<String>,
-        respond: oneshot::Sender<Option<Vec<usize>>>,
     },
     /// Streaming output text fragment (appended to Log in real time)
     StreamChunk(String),
@@ -309,6 +313,37 @@ pub enum ThinkingChunk {
     Finished,
 }
 
+/// Response to a UI request, sent from the TUI back to the agent runtime over
+/// the reverse channel ([`UserCommand::UiResponse`]).
+///
+/// Carries the [`AgentUpdate::RequestSelect`] / [`AgentUpdate::RequestMultiSelect`]
+/// `request_id` so the runtime can route it to the waiting caller. Keeping this
+/// separate from the request enum (rather than embedding a oneshot sender) is
+/// what lets [`AgentUpdate`] stay pure data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiResponse {
+    /// Answer a single-choice request; `choice` is `None` when cancelled.
+    Select {
+        request_id: u64,
+        choice: Option<usize>,
+    },
+    /// Answer a multi-choice request; `choices` is `None` when cancelled.
+    MultiSelect {
+        request_id: u64,
+        choices: Option<Vec<usize>>,
+    },
+}
+
+impl UiResponse {
+    /// The request this response answers.
+    pub fn request_id(&self) -> u64 {
+        match self {
+            UiResponse::Select { request_id, .. } => *request_id,
+            UiResponse::MultiSelect { request_id, .. } => *request_id,
+        }
+    }
+}
+
 /// User commands sent from the TUI to the Agent.
 #[derive(Debug)]
 pub enum UserCommand {
@@ -347,6 +382,9 @@ pub enum UserCommand {
     /// Set the active agent session's model (per-agent, not global).
     /// The TUI sends this after `/model` model confirmation.
     SetModel(String),
+    /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
+    /// (see [`UiResponse`]). Routed by the driver to the shared responder.
+    UiResponse(UiResponse),
 }
 
 /// A single step in the execution plan.

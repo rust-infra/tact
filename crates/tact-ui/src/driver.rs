@@ -42,6 +42,9 @@ pub async fn run_command_loop_with_account(
     // Shared stats snapshot: QueryStats can read it without awaiting the
     // in-flight task (the Agent itself is exclusively owned by that task).
     let stats = agent.runtime.stats.clone();
+    // Shared UI responder: routes TUI select responses to the waiter (parent
+    // or subagent) even while the Agent is owned by the in-flight task.
+    let ui_responder = agent.tool_context.ui_responder.clone();
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
@@ -50,6 +53,11 @@ pub async fn run_command_loop_with_account(
         reap_finished_task(&mut agent, &mut active).await;
 
         match cmd {
+            UserCommand::UiResponse(response) => {
+                // Never await the in-flight task: the agent may be blocked
+                // waiting for exactly this answer.
+                ui_responder.handle_response(response);
+            }
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
                 if let Some(tx) = &ui_tx {
@@ -94,6 +102,10 @@ pub async fn run_command_loop_with_account(
             }
         }
     }
+
+    // The UI is gone: unblock any in-flight select waiter so the task can
+    // finish instead of deadlocking on an answer that will never arrive.
+    ui_responder.shutdown();
 
     if let Some(handle) = active.take() {
         agent = Some(handle.await.expect("final task join panicked"));

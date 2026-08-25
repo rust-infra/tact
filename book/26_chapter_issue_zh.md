@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-08-24 — `AgentUpdate` 移除内嵌 oneshot；选择请求改用 `request_id` + `UiResponse`
+
+| Field | Value |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/protocol/src/agent.rs`、`crates/tact/src/ui_responder.rs`（新增）、`crates/tact/src/tool/ask_user.rs`、`crates/tact/src/tool/subagent_ui.rs`、`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact-ui/src/driver.rs`、`crates/agent_tui_kit/src/state/select_popup.rs`、`crates/tui/src/handlers/select.rs`；Ch 25 |
+
+**症状 / 动机：** `AgentUpdate::RequestSelect` / `RequestMultiSelect` 内嵌了 `tokio::sync::oneshot::Sender`，把协议 enum 耦合到了进程内传输句柄。该 enum 无法派生 `Clone`/`Serialize`，每个请求只有一个进程内响应者，且每新增一种「向 UI 提问」都需要一个携带 sender 的新变体。
+
+**决策：** 请求改为携带纯数据 `request_id: u64`；TUI 通过反向通道用 `UserCommand::UiResponse`（`Select` / `MultiSelect`）作答。新增共享的 `UiResponder` 分配全局唯一 id 并把响应路由到精确的等待方；父 agent 与每个 subagent 克隆同一 inner 状态，因此 subagent 经父 tagged 通道转发的请求仍能正确路由。driver 处理 `UiResponse` 时不等待 in-flight 任务，退出时调用 `UiResponder::shutdown`，使 UI 关闭时仍能唤醒等待方。
+
+**改动后行为：** `AgentUpdate` 变为不携带传输句柄的数据（后续可自由派生 `Serialize`/`Clone`）；选择响应按 `request_id` 跨父 agent 与所有 subagent 路由；UI 关闭时 agent 循环被唤醒而非死锁。
+
+---
+
 ## 1. 2026-08-24 — 插件更新命令：`tact plugin update` / `/plugin update`
 
 | Field | Value |

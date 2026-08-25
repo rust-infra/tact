@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use tact_protocol::UserCommand;
+use tact_protocol::{UiResponse, UserCommand};
 
 use crate::widgets::state::{App, InputMode, SelectKind};
 
@@ -107,6 +107,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
 
             if multi {
                 let idxs = app.select.confirm_multi();
+                let request_id = app.select.take_request_id();
                 let chosen: Vec<String> = idxs
                     .iter()
                     .filter_map(|&i| app.select.options.get(i).cloned())
@@ -118,6 +119,14 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                 };
                 match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                     SelectKind::Agent => {
+                        if let Some(id) = request_id {
+                            let _ = app.user_cmd_tx.send(UserCommand::UiResponse(
+                                UiResponse::MultiSelect {
+                                    request_id: id,
+                                    choices: Some(idxs),
+                                },
+                            ));
+                        }
                         if log_confirm {
                             let msgs = app.msgs();
                             app.add_system_message(msgs.selected_tmpl.replace("{}", &label));
@@ -144,6 +153,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
             }
 
             let idx = app.select.confirm().unwrap_or(0);
+            let request_id = app.select.take_request_id();
             let chosen = app
                 .select
                 .options
@@ -153,6 +163,14 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
 
             match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                 SelectKind::Agent => {
+                    if let Some(id) = request_id {
+                        let _ = app
+                            .user_cmd_tx
+                            .send(UserCommand::UiResponse(UiResponse::Select {
+                                request_id: id,
+                                choice: Some(idx),
+                            }));
+                    }
                     if log_confirm {
                         let msgs = app.msgs();
                         app.add_system_message(msgs.selected_tmpl.replace("{}", &chosen));
@@ -270,7 +288,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
             app.select.move_up();
         }
         KeyCode::Esc => {
-            app.select.cancel();
+            if let Some(response) = app.select.cancel() {
+                let _ = app.user_cmd_tx.send(UserCommand::UiResponse(response));
+            }
             let msgs = app.msgs();
             match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                 SelectKind::PersistModelAndBudget {
@@ -861,14 +881,17 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::empty())
     }
 
-    fn seed_select(app: &mut App) -> tokio::sync::oneshot::Receiver<Option<usize>> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+    fn seed_select(app: &mut App) -> tokio::sync::mpsc::UnboundedReceiver<UserCommand> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        // Swap in an observable command channel so tests can assert the
+        // UiResponse the confirm/cancel path emits.
+        app.user_cmd_tx = tx;
         app.select_kind = SelectKind::Agent;
         app.input_mode = InputMode::Select;
         app.select.set(
             "Pick one".into(),
             vec!["Allow once".into(), "Deny".into()],
-            tx,
+            1,
             true,
         );
         rx
@@ -1022,7 +1045,13 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert!(matches!(app.input_mode, InputMode::Normal));
-        assert_eq!(rx.try_recv(), Ok(Some(1)));
+        match rx.try_recv() {
+            Ok(UserCommand::UiResponse(UiResponse::Select {
+                request_id: 1,
+                choice: Some(1),
+            })) => {}
+            other => panic!("expected Select response, got {other:?}"),
+        }
         assert!(
             app.log.items.iter().any(|item| {
                 item.raw.contains("Deny")
@@ -1042,7 +1071,13 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Esc));
 
         assert!(matches!(app.input_mode, InputMode::Normal));
-        assert_eq!(rx.try_recv(), Ok(None));
+        match rx.try_recv() {
+            Ok(UserCommand::UiResponse(UiResponse::Select {
+                request_id: 1,
+                choice: None,
+            })) => {}
+            other => panic!("expected cancelled Select response, got {other:?}"),
+        }
     }
 
     /// Serialize model-picker tests that share global `CACHE` / `PROVIDER`.

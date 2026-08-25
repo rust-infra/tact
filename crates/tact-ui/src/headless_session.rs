@@ -64,7 +64,10 @@ where
     setup(&work_dir);
 
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
-    let mut app = HeadlessApp::new(agent_rx, work_dir.clone()).with_auto_select(permission_choice);
+    let ui_responder = agent.tool_context.ui_responder.clone();
+    let mut app = HeadlessApp::new(agent_rx, work_dir.clone())
+        .with_auto_select(permission_choice)
+        .with_ui_responder(ui_responder);
     if capture_frames {
         app = app.with_frame_capture();
     }
