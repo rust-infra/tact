@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-08-27 — 子代理权限继承 + 异步 `run_in_background` + 结果回注
+
+| Field | Value |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/permission/mod.rs`（`PermissionSnapshot`）、`crates/tact/src/tool/subagent.rs`、`crates/tact/src/subagent.rs`、`crates/tact/src/store/subagent_store/`、`crates/tact/src/agent/mod.rs` + `tool_dispatch.rs`、`crates/protocol/src/agent.rs`、`crates/tact-ui/src/driver.rs`、`crates/agent_tui_kit/src/components/tool.rs`、`crates/tui/src/…`；设计 `docs/superpowers/specs/2026-08-26-async-subagent-design.md`、评审 `…-design-review.md`、计划 `docs/superpowers/plans/2026-08-26-async-subagent.md`；Ch 12 |
+
+**症状 / 动机：** `spawn_subagent` 是单个同步阻塞工具，子 agent 的 `PermissionManager` 始终以 `PermissionMode::Default` 构建 —— 一个 `Plan`（只读）父级可以 spawn 一个可写文件的 `Default` 子级，逃逸只读意图。也没有后台运行、限制轮数、恢复、或重启后查询生命周期的能力。
+
+**决策：** (1) `PermissionSnapshot { mode, always_allowed_tools, settings }` + `PermissionManager::snapshot()`/`from_snapshot()`；`execute_tool_call` 在 phase-1 pre-flight 后把快照（及结果队列）stamp 到 `ToolContext`，`spawn_subagent` 据此构建子级（Claude 风格继承；`Default`→`Default`、`Plan`→`Plan`、`Auto`→`Auto`，拒绝计数归零；orphan/test context 回退 `Default`）。(2) `SubagentInput` 新增 `run_in_background` / `max_turns` / `resume`；异步 spawn 脱钩任务、返回 `async_launched { id }`，完成后转换 `subagent_runs` 行并入队 `SubagentResult`，在下一轮 LLM 调用前 drain 并注入 `<subagent-finished>` 消息。(3) `AgentUpdate::SubagentFinished` 定稿 keep-live 卡（携带 transcript）；`UserCommand::SubagentFinishedNotification` + driver 唤醒轮让空闲父级恢复；`check_subagent` 暴露持久化生命周期。`spawn_subagent` 保持 `ResourcePolicy::Barrier`（后台并行来自 `tokio::spawn`，而非 wave 调度）。
+
+**改后行为：** 子 agent 继承父级权限上下文（修复只读逃逸）；`run_in_background` 返回异步句柄并把子 summary 回注父 transcript；`max_turns` 限制失控子级；`resume` 复用已完成子 session；`check_subagent` 读取 `subagent_runs`；启动时将 orphan `running` 行修复为 `failed`。per-agent `permissionMode` override 与 worktree 隔离延后（尚无声明式 `.tact/agents/*.md`）。
+
+---
+
 ## 1. 2026-08-24 — `AgentUpdate` 移除内嵌 oneshot；选择请求改用 `request_id` + `UiResponse`
 
 | Field | Value |

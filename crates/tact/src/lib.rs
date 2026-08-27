@@ -37,6 +37,7 @@ pub(crate) mod shell;
 pub mod skill;
 pub mod stats;
 pub mod store;
+pub mod subagent;
 pub mod task;
 pub mod team;
 pub mod tool;

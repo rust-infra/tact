@@ -26,9 +26,9 @@
 //! JSON schema from an async function signature.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use anyhow::Result;
@@ -109,6 +109,7 @@ pub struct ToolContext {
     pub background_manager: SharedBackgroundManager,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
+    pub subagent_manager: crate::subagent::SharedSubagentManager,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     /// Shared request/reply registry for `ask_user` and permission selects.
     /// Cloned into subagents so request ids stay globally unique.
@@ -124,6 +125,17 @@ pub struct ToolContext {
     pub session_id: Option<String>,
     /// Shared SQLite session store from the parent agent, if any.
     pub session_store: Option<crate::store::DynSessionStore>,
+    /// Parent permission state stamped at dispatch time. `spawn_subagent`
+    /// clones it to inherit the parent's mode / allow-list / settings
+    /// (Claude-style inheritance) instead of always starting in `Default`.
+    /// `None` for orphan/test contexts that have no parent agent.
+    pub permission_snapshot: Option<crate::permission::PermissionSnapshot>,
+    /// Handle to the parent's `pending_subagent_results` queue, stamped at
+    /// dispatch time so a detached async subagent task can push its summary
+    /// back for re-injection. `None` when there is no parent agent runtime
+    /// (headless direct tool runs, orphan/test contexts) — `spawn_subagent`
+    /// rejects `run_in_background` in that case.
+    pub subagent_results: Option<Arc<Mutex<VecDeque<crate::subagent::SubagentResult>>>>,
 }
 
 impl ToolContext {

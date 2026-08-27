@@ -16,14 +16,14 @@ Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_te
 | Entry | TUI / headless `agent_loop` | Parent calls `spawn_subagent` during tool execution |
 | Conversation history | Full session context | Single user prompt only (no parent messages) |
 | System prompt | Dynamic Tera template (skills, memory, CLAUDE.md) | Fixed static string |
-| Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (6 tools) |
+| Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (5 tools) |
 | MCP tools | Loaded from config | **None** (`MCPToolRouter::new()`) |
 | Hooks | Parent's registered hooks | Empty hook list |
 | Session SQLite | Yes (when wired in `tui.rs`) | **Yes** — new child session; `sessions.ref_id` = parent id (or `''` if parent has none) |
-| Permission manager | Parent's mode | New manager, always `PermissionMode::Default` |
-| TUI channel | Parent's `ui_tx` | **Tagged** — stream/steps go to Subagent sticky; `RequestSelect*` passthrough |
+| Permission manager | Parent's mode | **Inherited** — cloned from the parent's live snapshot (mode + always-allowed list + settings) via `PermissionManager::from_snapshot` |
+| TUI channel | Parent's `ui_tx` | **Tagged** — stream/steps forwarded as `ToolProgress` (and `ToolMeta`) into the parent tool card; `RequestSelect*` passthrough (prefixed `[Subagent]`) |
 | Cancel flag | Shared on main runtime | **Separate** — user Cancel on parent does not stop an in-flight subagent |
-| Return to parent | N/A | Last assistant text block as tool result string |
+| Return to parent | N/A | Sync: last assistant text; async (`run_in_background`): `async_launched { id }` + re-injected `<subagent-finished>` |
 
 The subagent shares `ToolContext` (cloned): same `work_dir`, managers for background/team/worktree/memory/skills, etc. Those services exist in memory, but most are unreachable because the tools that expose them are not registered on the subagent router.
 
@@ -36,21 +36,21 @@ The subagent shares `ToolContext` (cloned): same `work_dir`, managers for backgr
 pub struct SubagentInput {
     pub prompt: String,
     pub description: Option<String>,
+    pub run_in_background: Option<bool>,
+    pub max_turns: Option<u32>,
+    pub resume: Option<String>,
 }
-
-#[tool(
-    name = "spawn_subagent",
-    description = "Spawn a subagent with fresh context. It shares the filesystem but not conversation history."
-)]
-pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<String>
 ```
 
 | Field | Role |
 |-------|------|
 | `prompt` | Becomes the subagent's sole user message |
 | `description` | Schema-only hint for the model; **not read by the handler** |
+| `run_in_background` | `true` returns `async_launched { id }` immediately; the child runs detached and re-injects its summary later |
+| `max_turns` | Caps the nested `agent_loop` turn count (runaway guard) |
+| `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn |
 
-Only the main agent's `toolset()` registers `SpawnSubagentTool`. Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
+Only the main agent's `toolset()` registers `SpawnSubagentTool` (and `CheckSubagentTool`). Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
 
 ---
 
@@ -66,16 +66,16 @@ sequenceDiagram
 
     Parent->>Task: ToolUse(name=task, input)
     Note over Parent,Task: PreToolUse + permission (High risk)
-    Task->>Sub: Agent::new(static prompt, subagent_toolset, empty MCP)
+    Task->>Sub: Agent::new(static prompt, subagent_toolset, empty MCP, inherited perms)
     Task->>Sub: ensure_session_row(child_id, ref_id) + with_session
     Task->>Sub: with_ui_channel(tagged) if present
     Task->>Sub: agent_loop(Some(prompt))
 
     loop until stop ≠ ToolUse
-        Sub->>LLM: stream_message + 6 tool specs
+        Sub->>LLM: stream_message + 5 tool specs
         LLM-->>Sub: assistant blocks
         alt ToolUse
-            Sub->>Tools: execute_tool_call (hooks empty, Default permissions)
+            Sub->>Tools: execute_tool_call (hooks empty, inherited permissions)
             Tools-->>Sub: ToolResult → context
         else end_turn
             Sub-->>Task: loop exits
@@ -86,9 +86,11 @@ sequenceDiagram
     Task-->>Parent: Ok(summary) as ToolResult
 ```
 
-**Blocking semantics:** `spawn_subagent` is `async` and awaits the full subagent loop. From the parent's perspective it is one tool call that may run many LLM turns internally. The parent's `agent_loop` is paused until the summary string returns.
+**Blocking semantics (sync):** `spawn_subagent` is `async` and awaits the full subagent loop. From the parent's perspective it is one tool call that may run many LLM turns internally. The parent's `agent_loop` is paused until the summary string returns.
 
-**Message seeding:** the handler calls `agent_loop(Some(user_prompt))` so the seed user turn is appended via `push_message` and persisted under the child session. Before the loop, `spawn_subagent` allocates a child session id, sets `ref_id` to the parent session id (or `''`), and calls `with_session`. UI traffic uses a tagged `ui_tx` (`with_ui_channel` also syncs `tool_context.ui_tx` so `ToolProgress` is tagged).
+**Async semantics (`run_in_background: true`):** the handler returns `async_launched { id }` immediately; the nested loop runs in a detached `tokio::spawn` task. On completion the task (a) transitions the `subagent_runs` row to `Completed`/`Failed`, (b) enqueues a `SubagentResult` into the parent's `pending_subagent_results`, and (c) emits `AgentUpdate::SubagentFinished` on the **parent** `ui_tx`. The parent's next `agent_loop` iteration drains the queue and injects a synthetic `<subagent-finished id=…>` user message via `push_message` (persisted). If the parent is idle, the TUI relays a `UserCommand::SubagentFinishedNotification` to the driver, which submits a lightweight wake-up turn.
+
+**Message seeding:** the handler calls `agent_loop(Some(user_prompt))` so the seed user turn is appended via `push_message` and persisted under the child session. Before the loop, `spawn_subagent` allocates a child session id (or reuses `resume`), sets `ref_id` to the parent session id (or `''`), and calls `with_session`. UI traffic uses a tagged `ui_tx` (`with_ui_channel` also syncs `tool_context.ui_tx` so `ToolProgress` is tagged).
 
 ---
 
@@ -110,7 +112,7 @@ Notable **omissions** compared to the main agent:
 - No team, worktree, or persistent-task management tools
 - No MCP-prefixed tools
 
-The module comment above `subagent_toolset()` still says "four tools" — the `route()` list above is authoritative (also enforced by unit test `subagent_toolset_includes_core_file_tools`).
+The module comment above `subagent_toolset()` still says "four tools" — the `route()` list above is authoritative (also enforced by unit test `subagent_toolset_has_five_tools`).
 
 ---
 
@@ -135,19 +137,23 @@ Compaction and recovery **do** still run inside the subagent loop ([Context Comp
 
 `spawn_subagent` is classified as **High** risk in `PermissionManager::classify_risk` — it always triggers Ask in Default mode, even if allowlisted, because it delegates full shell and filesystem access to a nested agent.
 
-The subagent constructs its **own** `PermissionManager::try_new(PermissionMode::Default)?`. It does not inherit the parent's Plan/Auto mode or allowlist.
+**Permission inheritance (Claude-style):** `execute_tool_call` stamps a `PermissionSnapshot` (mode + in-session always-allowed list + loaded settings) onto `ToolContext` just before the wave runs, and `spawn_subagent` builds the child's `PermissionManager::from_snapshot(...)` from it. Parent `Default` → child `Default`, `Plan` → child `Plan` (read-only), `Auto` → child `Auto` (sticky). The child's `consecutive_denials` counter resets. Orphan/test contexts without a parent agent fall back to the pre-inheritance `PermissionMode::Default` + settings loaded from disk. This also fixes the read-only-escape: a `Plan` parent can no longer spawn a `Default` child that writes.
 
-If the parent has a TUI channel, the subagent gets a **tagged** channel (`tagged_ui_channel`): stream, steps, thinking, and token usage become `AgentUpdate::Subagent` and render in the sticky **Subagent** tab. `RequestSelect` / `RequestMultiSelect` still pass through so permission popups work on the main TUI. See [Permission Model](./10_chapter_permission.md) and [TUI](./23_chapter_tui.md).
+If the parent has a TUI channel, the subagent gets a **tagged** channel (`tagged_ui_channel_with_progress`): stream, steps, thinking, and tool results become `AgentUpdate::ToolProgress` (and `ToolMeta` for the card header) in the parent tool card, which renders as a `ToolVisualKind::Subagent` card in the Log history. Clicking that card opens a `SubagentPopup` (`ToolPopupKind::SubagentTranscript`). `RequestSelect` / `RequestMultiSelect` still pass through (prefixed `[Subagent]`) so permission popups work on the main TUI; concurrent subagent permission prompts are queued and served one at a time. See [Permission Model](./10_chapter_permission.md) and [TUI](./23_chapter_tui.md).
 
 ---
 
 ## 7. Scheduling Interaction
 
-In `crates/tact/src/agent/tool_schedule.rs`, `spawn_subagent` falls through to the default `_ => ToolResources::barrier()` branch. A `spawn_subagent` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md).
+In `crates/tact/src/agent/tool_schedule.rs`, `spawn_subagent` declares `ResourcePolicy::Barrier`. A `spawn_subagent` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md). (This stays true for the first async cut: background parallelism comes from `tokio::spawn`, not from relaxing wave scheduling.)
+
+## 8. Persistence and Lifecycle
+
+Async subagents persist their run in the `subagent_runs` table (`child_id`, `status`, `summary`, `started_at`, `finished_at`), keyed by child session id — the subagent analog of `background_tasks`. `SubagentManager::new` repairs orphans on startup (any `running` row → `failed` with `"Process interrupted (agent restarted)"`). The `check_subagent` tool reads this state. The in-memory `pending_subagent_results` queue is the live fast path; the persisted row is the crash-recovery source of truth. Finished results are **not** re-delivered automatically after a restart — the injected `<subagent-finished>` message is already in the transcript, and the model decides to `resume` or re-spawn.
 
 ---
 
-## 8. Return Value
+## 9. Return Value
 
 After `agent_loop` completes, the handler scans `runtime.context` in reverse for the last `Role::Assistant` message and extracts plain text via `extract_text`:
 
@@ -173,12 +179,12 @@ That string becomes the `spawn_subagent` tool's JSON/text result and is appended
 
 ---
 
-## 9. Subagent vs Teammate
+## 10. Subagent vs Teammate
 
 | | `spawn_subagent` (subagent) | `spawn_teammate` (team) |
 |--|-------------------|-------------------------|
 | Runs LLM loop | Yes, nested `agent_loop` | No — roster entry only |
-| Isolation | Fresh context, 6 tools | N/A |
+| Isolation | Fresh context, 5 tools | N/A |
 | Persistence | Own SQLite session (`ref_id` → parent) | `.tact/team/` JSON |
 | Use case | Delegate focused coding work | Multi-agent coordination protocol |
 
@@ -186,21 +192,26 @@ See [Team Coordination](./14_chapter_team.md).
 
 ---
 
-## 10. Code Map
+## 11. Code Map
 
 | File | Role |
 |------|------|
-| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` tool handler — spawn, loop, summary extraction |
-| `crates/tact/src/tool/mod.rs` | `SpawnSubagentTool` implementation |
-| `crates/tact/src/tool/registry.rs` | `SpawnSubagentTool` in `toolset()`; `subagent_toolset()` |
-| `crates/tact/src/agent/mod.rs` | `Agent::new`, `agent_loop`, `build_system_prompt`, `ensure_session` |
-| `crates/tact/src/permission/mod.rs` | `spawn_subagent` → `CapabilityRisk::High` |
+| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` + `check_subagent` handlers — spawn, sync/async loop, summary extraction, resume, max_turns |
+| `crates/tact/src/tool/mod.rs` | `SpawnSubagentTool` / `CheckSubagentTool` implementations; `permission_snapshot` + `subagent_results` + `subagent_manager` on `ToolContext` |
+| `crates/tact/src/tool/registry.rs` | `SpawnSubagentTool` + `CheckSubagentTool` in `toolset()`; `subagent_toolset()` |
+| `crates/tact/src/agent/mod.rs` | `Agent::new`, `agent_loop` (drain + max_turns), `ensure_session`, `pending_subagent_results` |
+| `crates/tact/src/agent/tool_dispatch.rs` | stamps `permission_snapshot` + `subagent_results`; input-aware `keep_live` |
+| `crates/tact/src/permission/mod.rs` | `PermissionSnapshot`, `snapshot()`/`from_snapshot()` |
+| `crates/tact/src/subagent.rs` | `SubagentManager` / `SubagentRun` / `SubagentStatus` (orphan repair) |
+| `crates/tact/src/store/subagent_store/` | `subagent_runs` SQLite table + trait |
+| `crates/protocol/src/agent.rs` | `AgentUpdate::SubagentFinished`, `UserCommand::SubagentFinishedNotification` |
+| `crates/tact-ui/src/driver.rs` | idle wake-up turn on `SubagentFinishedNotification` |
 | `crates/tact/src/agent/tool_schedule.rs` | `spawn_subagent` as scheduling barrier |
 | `ARCHITECTURE.md` | One-line summary in tools table |
 
 ---
 
-## 11. Current Gaps
+## 12. Current Gaps
 
 | Gap | Detail |
 |-----|--------|
@@ -209,20 +220,21 @@ See [Team Coordination](./14_chapter_team.md).
 | No parent hooks | PreToolUse / PostToolUse policies do not wrap subagent tools |
 | Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
 | `description` ignored | JSON field has no runtime effect |
-| Separate cancel flag | Parent Cancel may not abort a long-running subagent |
+| Separate cancel flag | Parent Cancel may not abort a long-running subagent; the async handle is stored for a future `cancel_subagent` / `/tasks` surface |
+| No worktree isolation | Same-turn fan-out of blocking subagents deferred; async decoupling is via `tokio::spawn` |
+| No declarative agent definitions | `.tact/agents/*.md` (with per-agent `permissionMode`) deferred; inheritance is runtime-only |
 | Child sessions hidden from list | `--list-sessions` / resume only show `ref_id = ''`; delete parent cascades children |
 | Summary heuristic | Last assistant text only; tool-only endings return `(no summary)` |
-| Stale module comment | `subagent_toolset` doc says four tools; five are registered |
-| Same LLM client | `get_llm_client()` — no model override for workers |
+| Same LLM client | `get_llm_client()` — no model override for workers (except the `subagent` config block) |
 
 ---
 
-## 12. Real-World Case Study: Bottom Bar Visual Polish
+## 13. Real-World Case Study: Bottom Bar Visual Polish
 
 A 3-task SDD session on `feat/web`. Plan: `docs/superpowers/plans/2026-07-24-bottom-bar-polish.md`.
 Stats: 6 subagents (3 implementers + 2 reviewers + 1 fixer), 400 tests, 5 commits pushed.
 
-### 12.1 Task Dependency — Why Serial
+### 13.1 Task Dependency — Why Serial
 
 ```mermaid
 flowchart LR
@@ -233,7 +245,7 @@ flowchart LR
 
 All three tasks modify `crates/tui/src/render/bar.rs`. SDD prohibits parallel dispatch on shared files — enforced at the controller level.
 
-### 12.2 File-Based Handoff (not conversation history)
+### 13.2 File-Based Handoff (not conversation history)
 
 ```
 .superworks/sdd/
@@ -283,7 +295,7 @@ Each dispatch prompt is a 5-line template — the brief file is the **single sou
 
 Without file handoff, every subagent's code and report would inflate the controller's context permanently. With it, the controller reads only the SHA and status line — the rest lives on disk.
 
-### 12.3 Review Loop — Gate Per Task
+### 13.3 Review Loop — Gate Per Task
 
 ```mermaid
 flowchart LR
@@ -313,7 +325,7 @@ Two verdicts, each binary:
 | Important | Maintainability risk, test gap | Recommend fix |
 | Minor | Style, naming | Record in ledger, triage at final review |
 
-### 12.4 What Task 1's Review Caught (Critical)
+### 13.4 What Task 1's Review Caught (Critical)
 
 ```
 format_quota_window_with_pct  expects "75%"
@@ -327,7 +339,7 @@ The brief specified `WindowEntry` (doesn't exist). Implementer correctly adapted
 
 Without this gate: test fails on first CI run → developer marks flaky → never caught.
 
-### 12.5 Plan-Reality Adaptation
+### 13.5 Plan-Reality Adaptation
 
 Plan referenced `FocusedPanel::Plan` and `focus_plan` / `bottom_focus_log_plan` i18n fields. Actual code has no `Plan` variant — deleted in a previous refactor.
 
@@ -341,7 +353,7 @@ flowchart LR
 
 Implementers are not mechanical code generators — they read the real codebase, detect drift, and adapt. The controller adjudicates whether the adaptation is acceptable.
 
-### 12.6 Final Review — Branch-Level Gate
+### 13.6 Final Review — Branch-Level Gate
 
 Whole-branch diff (`git merge-base main HEAD`..`HEAD`): **5455 lines, 37 files**.
 
@@ -353,7 +365,7 @@ Whole-branch diff (`git merge-base main HEAD`..`HEAD`): **5455 lines, 37 files**
 
 Verdict: **Ready to merge**. The fixed drop-order was the most actionable; the other two are lower risk.
 
-### 12.7 Key Takeaways
+### 13.7 Key Takeaways
 
 ```mermaid
 flowchart TD

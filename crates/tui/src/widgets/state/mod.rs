@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::VecDeque, path::PathBuf};
 
 use tact::{
     plugin::{PluginEvent, PluginRequest},
@@ -126,6 +126,18 @@ pub(crate) enum SelectKind {
     },
 }
 
+/// A queued agent-originated select (`RequestSelect` / `RequestMultiSelect`)
+/// waiting behind the currently-open one. Concurrent subagents can each ask
+/// for permission; a single [`SelectPopup`] would overwrite the first waiter
+/// and hang it, so these queue up and are shown one at a time.
+pub(crate) struct AgentSelectRequest {
+    pub prompt: String,
+    pub options: Vec<String>,
+    pub request_id: u64,
+    pub multi: bool,
+    pub log_confirm: bool,
+}
+
 // ========== Main State ==========
 
 /// TUI application main state, holding all UI state, scroll positions,
@@ -218,6 +230,9 @@ pub struct App {
     pub(crate) select: SelectPopup,
     /// Distinguishes agent permission selects from `/model` UX.
     pub(crate) select_kind: SelectKind,
+    /// Agent-originated selects queued behind the currently-open one
+    /// (concurrent subagents asking for permission simultaneously).
+    pub(crate) pending_agent_selects: VecDeque<AgentSelectRequest>,
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
     pub(crate) slash_command: SlashCommandState,

@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-27 — Subagent permission inheritance + async `run_in_background` + result re-injection
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/permission/mod.rs` (`PermissionSnapshot`), `crates/tact/src/tool/subagent.rs`, `crates/tact/src/subagent.rs`, `crates/tact/src/store/subagent_store/`, `crates/tact/src/agent/mod.rs` + `tool_dispatch.rs`, `crates/protocol/src/agent.rs`, `crates/tact-ui/src/driver.rs`, `crates/agent_tui_kit/src/components/tool.rs`, `crates/tui/src/…`; design `docs/superpowers/specs/2026-08-26-async-subagent-design.md`, review `…-design-review.md`, plan `docs/superpowers/plans/2026-08-26-async-subagent.md`; Ch 12 |
+
+**Symptom / motivation:** `spawn_subagent` was a single synchronous, blocking tool that always built the child's `PermissionManager` in `PermissionMode::Default` — a `Plan` (read-only) parent could spawn a `Default` child that wrote files, escaping the read-only intent. There was no way to run a subagent in the background, cap its turns, resume it, or query its lifecycle after a restart.
+
+**Decision:** (1) `PermissionSnapshot { mode, always_allowed_tools, settings }` + `PermissionManager::snapshot()`/`from_snapshot()`; `execute_tool_call` stamps the snapshot (and the pending-results queue) onto `ToolContext` after phase-1 pre-flight, and `spawn_subagent` builds the child from it (Claude-style inheritance; `Default`→`Default`, `Plan`→`Plan`, `Auto`→`Auto`, denial counter resets; orphan/test contexts fall back to `Default`). (2) `SubagentInput` gains `run_in_background` / `max_turns` / `resume`; async spawns a detached task, returns `async_launched { id }`, and on completion transitions a `subagent_runs` row and enqueues a `SubagentResult` re-injected as a `<subagent-finished>` message drained before the next LLM call. (3) `AgentUpdate::SubagentFinished` finalizes the keep-live card (with transcript carry-over); `UserCommand::SubagentFinishedNotification` + driver wake-up turn let an idle parent resume; `check_subagent` exposes the persisted lifecycle. `spawn_subagent` stays `ResourcePolicy::Barrier` (background parallelism comes from `tokio::spawn`, not wave scheduling).
+
+**Behavior after:** subagents inherit the parent's permission context (fixing the read-only escape); `run_in_background` returns an async handle and re-injects the child summary into the parent transcript; `max_turns` bounds runaway children; `resume` reuses a finished child session; `check_subagent` reads `subagent_runs`; orphan `running` rows are repaired to `failed` on startup. Per-agent `permissionMode` override and worktree isolation are deferred (no declarative `.tact/agents/*.md` yet).
+
+---
+
 ## 1. 2026-08-24 — `AgentUpdate` drops the embedded oneshot; select requests use `request_id` + `UiResponse`
 
 | Field | Value |

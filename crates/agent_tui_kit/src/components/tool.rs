@@ -362,6 +362,66 @@ impl ToolComponent {
         self.finalize_push(tool_id, widget.build(), events);
     }
 
+    /// Finalize a subagent card after a `run_in_background` child finishes.
+    ///
+    /// Like [`Self::on_background_task_finished`] but must carry over the full
+    /// subagent transcript: keep-live finalization skips `on_step_finished`
+    /// (the only place the popup transcript is populated today), so this
+    /// handler re-does that carry-over before finalizing.
+    fn on_subagent_finished(
+        &mut self,
+        tool_id: &str,
+        child_id: &str,
+        success: bool,
+        summary: &str,
+        events: &mut Vec<ToolEvent>,
+    ) {
+        let Some(pos) = self.state.active.iter().position(|a| a.tool_id == tool_id) else {
+            // The live card is gone (e.g. a fresh process after restart);
+            // surface the outcome as a system message instead.
+            let prefix = if success { "✓" } else { "✗" };
+            events.push(ToolEvent::Missing {
+                message: format!("{prefix} Subagent {child_id} finished: {summary}"),
+            });
+            return;
+        };
+        let (tool_name, arg_summary, arg_full, elapsed_us) = {
+            let active = &self.state.active[pos];
+            (
+                active.output.tool_name.clone(),
+                active.output.arg_summary.clone(),
+                active.output.arg_full.clone(),
+                active.started_at.elapsed().as_micros() as u64,
+            )
+        };
+        let step_idx = self.resolve_step_idx(tool_id, 0);
+        let mut output = ToolWidget::new(&self.theme, &self.messages)
+            .with_tool(tool_name)
+            .with_arg_summary(arg_summary)
+            .with_arg_full(arg_full)
+            .with_step_index(step_idx)
+            .with_phase(if success {
+                ToolPhase::Success
+            } else {
+                ToolPhase::Failed
+            })
+            .with_duration_us(elapsed_us)
+            .with_detail(summary.to_string())
+            .build();
+        // Carry over the full transcript (and subagent model/token metadata)
+        // so the popup shows the complete conversation.
+        if let Some(active) = self.state.active.iter_mut().find(|a| a.tool_id == tool_id) {
+            let full_text = active.live_output.take_full_detail();
+            if !full_text.is_empty() {
+                output.detail_total_lines = full_text.lines().count();
+                output.detail_full = Some(full_text);
+            }
+            output.subagent_model = active.output.subagent_model.take();
+            output.subagent_tokens = active.output.subagent_tokens.take();
+        }
+        self.finalize_push(tool_id, output, events);
+    }
+
     /// Shared finalize tail: move active → blocks and emit `Finalized`; when
     /// no active matched, push the completed block with `phys_idx: 0` and
     /// `had_active: false` (the shell's fallback branch allocates real rows
@@ -507,6 +567,15 @@ impl Component for ToolComponent {
                     output,
                     ctx.tool_events,
                 );
+                true
+            }
+            AgentUpdate::SubagentFinished {
+                tool_id,
+                child_id,
+                success,
+                summary,
+            } => {
+                self.on_subagent_finished(tool_id, child_id, *success, summary, ctx.tool_events);
                 true
             }
             _ => false,

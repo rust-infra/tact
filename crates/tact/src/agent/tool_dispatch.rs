@@ -276,6 +276,24 @@ fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
     }
 }
 
+/// Like [`make_presentation`], but input-aware: a `spawn_subagent` call with
+/// `run_in_background: true` keeps its card live (the invocation returns
+/// `async_launched { id }` and the card is finalized later by
+/// [`AgentUpdate::SubagentFinished`]). Static metadata can't express this
+/// because `keep_live` is a per-invocation property, not a per-tool one.
+fn make_presentation_for(
+    meta: &crate::tool::ToolMetadata,
+    input: &serde_json::Value,
+) -> ToolPresentationInfo {
+    let mut presentation = make_presentation(meta);
+    if meta.name == "spawn_subagent"
+        && input.get("run_in_background").and_then(|v| v.as_bool()) == Some(true)
+    {
+        presentation.keep_live = true;
+    }
+    presentation
+}
+
 // ── Main dispatch ────────────────────────────────────────────────────────
 
 impl Agent {
@@ -397,7 +415,7 @@ impl Agent {
                 format!("{name} ({arg_summary})")
             };
             let presentation = match &resolved {
-                ResolvedTool::Native { metadata } => make_presentation(metadata),
+                ResolvedTool::Native { metadata } => make_presentation_for(metadata, input),
                 _ => ToolPresentationInfo::generic(name.clone()),
             };
 
@@ -559,6 +577,17 @@ impl Agent {
                 task_before,
             });
         }
+
+        // Phase-1 pre-flight is complete. Stamp the permission snapshot now so
+        // a `spawn_subagent` spawned in this turn inherits the parent's
+        // *current* mode / allow-list / settings — including any "always allow"
+        // granted earlier in this same turn. This must happen before the wave
+        // loop borrows `self.tool_context` below (the borrow checker rejects a
+        // later mutable access).
+        self.tool_context.permission_snapshot = Some(self.runtime.permission_manager.snapshot());
+        // Stamp the pending-results queue handle so a detached async subagent
+        // task can push its summary back for re-injection.
+        self.tool_context.subagent_results = Some(self.runtime.pending_subagent_results.clone());
 
         // Phase 2: execute in conflict-free waves
         let run_indices: Vec<usize> = prepared
@@ -751,7 +780,9 @@ impl Agent {
                 let succeeded = matches!(final_status, StepStatus::Success);
 
                 let presentation = match &prep.resolved {
-                    ResolvedTool::Native { metadata } => make_presentation(metadata),
+                    ResolvedTool::Native { metadata } => {
+                        make_presentation_for(metadata, &prep_input)
+                    }
                     _ => ToolPresentationInfo::generic(prep_name.clone()),
                 };
 

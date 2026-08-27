@@ -1,0 +1,256 @@
+//! Subagent run lifecycle (asynchronous subagent tracking).
+//!
+//! A `spawn_subagent` call that sets `run_in_background: true` returns an
+//! `async_launched { id }` handle immediately while the child keeps running in
+//! a detached task. This module persists that run's lifecycle to
+//! `<workdir>/.tact/tact.db` (the `subagent_runs` table) so a restart can tell
+//! "still running" from "finished":
+//!
+//! - [`SubagentManager`] owns the SQLite store and performs orphan repair.
+//! - [`SharedSubagentManager`] is the thread-safe wrapper used by tools.
+//! - [`SubagentRun`] captures the child session id, status, summary, and
+//!   start/finish timestamps.
+//!
+//! The persisted record is the **source of truth for crash recovery**; the
+//! in-memory `pending_subagent_results` queue in [`crate::agent::AgentRuntime`]
+//! is the live fast path for same-process re-injection.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::store::subagent_store::{SqliteSubagentStore, SubagentStore};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentRun {
+    pub child_id: String,
+    pub status: SubagentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+/// A finished background subagent's summary, queued for re-injection into the
+/// parent's conversation on its next turn.
+#[derive(Debug, Clone)]
+pub struct SubagentResult {
+    pub child_id: String,
+    pub summary: String,
+    pub success: bool,
+}
+
+pub struct SubagentManager {
+    records: Arc<dyn SubagentStore>,
+}
+
+impl std::fmt::Debug for SubagentManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubagentManager").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SharedSubagentManager {
+    inner: Arc<SubagentManager>,
+}
+
+impl SubagentManager {
+    /// Creates a manager backed by the given SQLite database file.
+    ///
+    /// Repairs orphans on startup: any record still marked `running` belongs
+    /// to a process that no longer exists, so it is rewritten as `failed`
+    /// (`"Process interrupted (agent restarted)"`). Finished results are not
+    /// re-delivered automatically — the model re-spawns or resumes as it sees
+    /// fit.
+    pub async fn new(db_path: &Path) -> Result<Self> {
+        let records: Arc<dyn SubagentStore> = Arc::new(SqliteSubagentStore::new(db_path).await?);
+        for mut record in records.list_running().await? {
+            record.status = SubagentStatus::Failed;
+            record.finished_at = Some(Utc::now());
+            record.summary = Some("Process interrupted (agent restarted)".to_string());
+            records.upsert(&record).await?;
+        }
+
+        Ok(Self { records })
+    }
+
+    /// Records the start of a child run (`status = running`).
+    pub async fn start(&self, child_id: String) -> Result<()> {
+        let record = SubagentRun {
+            child_id,
+            status: SubagentStatus::Running,
+            summary: None,
+            started_at: Utc::now(),
+            finished_at: None,
+        };
+        self.records.upsert(&record).await
+    }
+
+    /// Records the terminal outcome of a child run, preserving `started_at`.
+    pub async fn finish(&self, child_id: &str, success: bool, summary: String) -> Result<()> {
+        let mut record = self
+            .records
+            .get(child_id)
+            .await?
+            .with_context(|| format!("unknown subagent run {child_id}"))?;
+        record.status = if success {
+            SubagentStatus::Completed
+        } else {
+            SubagentStatus::Failed
+        };
+        record.summary = Some(summary);
+        record.finished_at = Some(Utc::now());
+        self.records.upsert(&record).await
+    }
+
+    /// Records a cooperative cancellation.
+    pub async fn cancel(&self, child_id: &str) -> Result<()> {
+        let mut record = self
+            .records
+            .get(child_id)
+            .await?
+            .with_context(|| format!("unknown subagent run {child_id}"))?;
+        record.status = SubagentStatus::Cancelled;
+        record.finished_at = Some(Utc::now());
+        self.records.upsert(&record).await
+    }
+
+    /// Human/LLM-facing status query, mirroring `check_background`.
+    ///
+    /// `Some(id)` returns a single run as pretty JSON; `None` lists all runs
+    /// one line per run, sorted by start time.
+    pub async fn check(&self, child_id: Option<&str>) -> Result<String> {
+        if let Some(child_id) = child_id {
+            let record = self
+                .records
+                .get(child_id)
+                .await?
+                .with_context(|| format!("Unknown subagent {child_id}"))?;
+            return serde_json::to_string_pretty(&record)
+                .context("failed to serialize subagent run");
+        }
+
+        let mut records = self.records.list().await?;
+        if records.is_empty() {
+            return Ok("No subagent runs.".to_string());
+        }
+        records.sort_by_key(|record| record.started_at);
+        Ok(records
+            .into_iter()
+            .map(|record| {
+                let summary = record.summary.as_deref().unwrap_or("(no summary)");
+                format!("{}: {:?} {summary}", record.child_id, record.status)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+}
+
+impl SharedSubagentManager {
+    pub fn new(manager: SubagentManager) -> Self {
+        Self {
+            inner: Arc::new(manager),
+        }
+    }
+
+    pub async fn start(&self, child_id: String) -> Result<()> {
+        self.inner.start(child_id).await
+    }
+
+    pub async fn finish(&self, child_id: &str, success: bool, summary: String) -> Result<()> {
+        self.inner.finish(child_id, success, summary).await
+    }
+
+    pub async fn cancel(&self, child_id: &str) -> Result<()> {
+        self.inner.cancel(child_id).await
+    }
+
+    pub async fn check(&self, child_id: Option<&str>) -> Result<String> {
+        self.inner.check(child_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::subagent_store::SqliteSubagentStore;
+
+    fn temp_db(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tact-subagent-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("tact.db")
+    }
+
+    #[tokio::test]
+    async fn marks_stale_running_subagents_on_startup() {
+        let db = temp_db("orphan_repair");
+        // Seed a Running row directly through the store (simulating a crash).
+        {
+            let store = SqliteSubagentStore::new(&db).await.unwrap();
+            store
+                .upsert(&SubagentRun {
+                    child_id: "deadbeef".to_string(),
+                    status: SubagentStatus::Running,
+                    summary: None,
+                    started_at: Utc::now(),
+                    finished_at: None,
+                })
+                .await
+                .unwrap();
+        }
+        // Rebuild the manager — orphan repair rewrites Running → Failed.
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        let output = manager.check(Some("deadbeef")).await.unwrap();
+        assert!(output.contains("failed"), "output: {output}");
+        assert!(
+            output.contains("Process interrupted (agent restarted)"),
+            "output: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_finish_check_round_trips() {
+        let db = temp_db("lifecycle");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        manager.start("child-1".to_string()).await.unwrap();
+        manager
+            .finish("child-1", true, "all done".to_string())
+            .await
+            .unwrap();
+        let output = manager.check(Some("child-1")).await.unwrap();
+        assert!(output.contains("completed"), "output: {output}");
+        assert!(output.contains("all done"), "output: {output}");
+    }
+
+    #[tokio::test]
+    async fn check_lists_empty_when_no_runs() {
+        let db = temp_db("empty");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        assert_eq!(manager.check(None).await.unwrap(), "No subagent runs.");
+    }
+
+    #[tokio::test]
+    async fn cancel_transitions_to_cancelled() {
+        let db = temp_db("cancel");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        manager.start("child-1".to_string()).await.unwrap();
+        manager.cancel("child-1").await.unwrap();
+        let output = manager.check(Some("child-1")).await.unwrap();
+        assert!(output.contains("cancelled"), "output: {output}");
+    }
+}

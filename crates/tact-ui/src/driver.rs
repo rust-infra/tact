@@ -73,6 +73,29 @@ pub async fn run_command_loop_with_account(
                     let _ = tx.send(AgentUpdate::SessionStats(stats_text));
                 }
             }
+            UserCommand::SubagentFinishedNotification { .. } => {
+                // Only wake the parent when idle. If a turn is in flight, the
+                // result is already in `pending_subagent_results` and the
+                // agent_loop drain injects it on the next iteration —
+                // submitting a wake-up here would duplicate it. The wake-up
+                // turn itself is a lightweight prompt; the actual result is
+                // injected from the queue by `agent_loop`.
+                if active.is_none() {
+                    let work_dir = image_work_dir.clone();
+                    let mut task_agent = agent.take().expect("agent available for wake-up");
+                    active = Some(tokio::spawn(async move {
+                        let prompt =
+                            "A background subagent finished. Review its result below.".to_string();
+                        handle_user_command(
+                            &mut task_agent,
+                            UserCommand::SubmitTask(prompt),
+                            &work_dir,
+                        )
+                        .await;
+                        task_agent
+                    }));
+                }
+            }
             UserCommand::SubmitTask(task) => {
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("submit task join panicked"));

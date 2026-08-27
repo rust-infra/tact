@@ -23,6 +23,7 @@ use serde::{Serialize, de::DeserializeOwned};
 pub mod background_store;
 pub mod session_store;
 pub mod sqlite;
+pub mod subagent_store;
 pub mod task_store;
 pub mod team_store;
 pub mod worktree_store;

@@ -4,8 +4,9 @@ mod tool_dispatch;
 pub(crate) mod tool_schedule;
 
 use std::{
+    collections::VecDeque,
     path::Path,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use anyhow::{Context, Result};
@@ -39,6 +40,7 @@ use crate::{
     },
     stats::SessionStats,
     store::DynSessionStore,
+    subagent::SubagentResult,
     tool::{ToolContext, ToolRouter},
 };
 
@@ -120,6 +122,12 @@ pub struct AgentRuntime {
     /// Responses protocol baseline). Loaded in [`Agent::ensure_session`],
     /// committed after every LLM response, and passed into every LLM call.
     pub provider_state: Option<ProviderConversationState>,
+    /// Results from background subagents that finished while the parent was
+    /// mid-turn. Drained before the next LLM call and re-injected as a
+    /// synthetic `<subagent-finished>` user message. `Arc<Mutex<VecDeque>>`
+    /// so detached child tasks can push into it via the stamped
+    /// `ToolContext.subagent_results` handle.
+    pub pending_subagent_results: Arc<Mutex<VecDeque<SubagentResult>>>,
 }
 
 /// How the agent builds its system prompt.
@@ -143,6 +151,11 @@ pub struct Agent {
     pub hooks: Vec<Hook>,
     pub system_prompt: AgentSystemPrompt,
     pub tool_use_counter: usize,
+    /// Optional cap on nested agent-loop turns (set by `spawn_subagent`'s
+    /// `max_turns` input to prevent runaway subagents). `None` = unbounded.
+    pub max_turns: Option<u32>,
+    /// Number of LLM turns completed in the current agent loop.
+    pub turns_taken: u32,
     /// Snapshot of agent settings at construction; avoids parallel tests racing on global config.
     agent_settings: AgentSettings,
     /// Provider kind captured at construction (or overridden via
@@ -202,6 +215,7 @@ impl Agent {
                 cached_agents_md: None,
                 last_token_total: 0,
                 provider_state: None,
+                pending_subagent_results: Arc::new(Mutex::new(VecDeque::new())),
             },
             tool_context,
             tools,
@@ -209,6 +223,8 @@ impl Agent {
             hooks: Vec::new(),
             system_prompt,
             tool_use_counter: 0,
+            max_turns: None,
+            turns_taken: 0,
             agent_settings: crate::config::settings().agent.clone(),
             provider_kind,
             cached_tool_specs,
@@ -226,6 +242,13 @@ impl Agent {
     /// Override agent-loop settings (used by integration tests with custom config).
     pub fn with_agent_settings(mut self, settings: AgentSettings) -> Self {
         self.agent_settings = settings;
+        self
+    }
+
+    /// Cap the number of LLM turns the agent loop will run (subagent runaway
+    /// guard). `None` disables the cap.
+    pub fn with_max_turns(mut self, max_turns: Option<u32>) -> Self {
+        self.max_turns = max_turns;
         self
     }
 
@@ -659,6 +682,15 @@ impl Agent {
         // so the prefix KV-cache holds across turns and tasks.
         let system_prompt = self.build_system_prompt()?;
         loop {
+            // Turn cap: bounds a runaway subagent. Count a turn per loop
+            // iteration (one LLM call) and stop once the cap is exceeded.
+            self.turns_taken += 1;
+            if let Some(max) = self.max_turns
+                && self.turns_taken > max
+            {
+                self.emit_update(AgentUpdate::Info(format!("max_turns ({max}) reached")));
+                return Ok(());
+            }
             if self
                 .runtime
                 .cancel_flag
@@ -692,6 +724,28 @@ impl Agent {
                 thinking_budget,
             ) {
                 self.emit_update(AgentUpdate::Info(msg));
+            }
+
+            // Re-inject any background subagent results that finished while we
+            // were mid-turn. Drain before building the next request so the
+            // parent LLM sees the summary in this very turn. `push_message`
+            // (not `runtime.context.push()`) persists the synthetic message so
+            // the on-disk transcript stays consistent.
+            let pending: Vec<SubagentResult> = {
+                let mut queue = self
+                    .runtime
+                    .pending_subagent_results
+                    .lock()
+                    .expect("pending_subagent_results lock poisoned");
+                queue.drain(..).collect()
+            };
+            for result in pending {
+                let text = format!(
+                    "<subagent-finished id=\"{}\" success=\"{}\">\n{}\n</subagent-finished>",
+                    result.child_id, result.success, result.summary
+                );
+                self.push_message(Message::new_text(Role::User, text))
+                    .await?;
             }
 
             // Snapshot the complete conversation after micro/auto compaction.
@@ -3554,6 +3608,118 @@ mod tests {
         assert!(
             agent.runtime.context.len() >= 2,
             "context should have at least user + assistant messages"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_respects_max_turns_cap() {
+        ensure_config();
+        let context = test_context("agent_loop_max_turns");
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("done")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_max_turns(Some(1));
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+        assert_eq!(agent.turns_taken, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_max_turns_zero_stops_immediately() {
+        ensure_config();
+        let context = test_context("agent_loop_max_turns_zero");
+        // The mock is never called: the cap fires before the first LLM call.
+        let mock = MockClient::new(vec![]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_max_turns(Some(0));
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+        assert_eq!(
+            agent.turns_taken, 1,
+            "turns_taken increments before the cap check"
+        );
+        // Only the user message is present — the cap stopped before any reply.
+        assert_eq!(agent.runtime.context.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_drains_pending_subagent_results() {
+        ensure_config();
+        let context = test_context("agent_loop_drain_subagent");
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("got it")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        agent
+            .runtime
+            .pending_subagent_results
+            .lock()
+            .unwrap()
+            .push_back(SubagentResult {
+                child_id: "child-1".to_string(),
+                summary: "found the bug".to_string(),
+                success: true,
+            });
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        let text = agent
+            .runtime
+            .context
+            .iter()
+            .map(|m| crate::extract_text(&m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("<subagent-finished id=\"child-1\" success=\"true\">"),
+            "context should contain the re-injected result: {text}"
+        );
+        assert!(
+            text.contains("found the bug"),
+            "summary should be injected: {text}"
         );
     }
 

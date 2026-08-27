@@ -10,6 +10,7 @@ use tact::{
     memory::get_memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
     store::DynSessionStore,
+    subagent::{SharedSubagentManager, SubagentManager},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     tool::{ToolContext, toolset},
@@ -94,6 +95,8 @@ async fn run_interactive_locked(
     let worktree_manager = SharedWorktreeManager::new(
         WorktreeManager::new(&tact_path.session_db_path(), work_dir.clone()).await?,
     );
+    let subagent_manager =
+        SharedSubagentManager::new(SubagentManager::new(&tact_path.session_db_path()).await?);
     let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(
         tact_path.memory_dir(),
     )?));
@@ -120,6 +123,7 @@ async fn run_interactive_locked(
         background_manager,
         teammate_manager,
         worktree_manager,
+        subagent_manager,
         ui_tx: Some(agent_tx.clone()),
         ui_responder: tact::ui_responder::UiResponder::new(),
         progress_reporter: tact::tool::ToolProgressReporter::default(),
@@ -128,6 +132,8 @@ async fn run_interactive_locked(
         bash_nice: tact::config::settings().tools.bash_nice,
         session_id: None,
         session_store: None,
+        permission_snapshot: None,
+        subagent_results: None,
     };
 
     let history_store = session_store.clone();

@@ -132,6 +132,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                             app.add_system_message(msgs.selected_tmpl.replace("{}", &label));
                         }
                         app.input_mode = InputMode::Normal;
+                        dequeue_next_agent_select(app);
                     }
                     // Multi is only opened for agent ask_user; local flows stay single-select.
                     SelectKind::ModelPick
@@ -176,6 +177,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         app.add_system_message(msgs.selected_tmpl.replace("{}", &chosen));
                     }
                     app.input_mode = InputMode::Normal;
+                    dequeue_next_agent_select(app);
                 }
                 SelectKind::ViewSystemPrompt => {
                     let content = if idx == 0 {
@@ -288,6 +290,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
             app.select.move_up();
         }
         KeyCode::Esc => {
+            let was_agent = app.select.request_id.is_some();
             if let Some(response) = app.select.cancel() {
                 let _ = app.user_cmd_tx.send(UserCommand::UiResponse(response));
             }
@@ -342,6 +345,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                 }
             }
             app.input_mode = InputMode::Normal;
+            if was_agent {
+                dequeue_next_agent_select(app);
+            }
         }
         _ => {}
     }
@@ -349,6 +355,24 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
 
 fn strip_current_marker(label: &str) -> String {
     label.strip_suffix(" *").unwrap_or(label).to_string()
+}
+
+/// Pop the next queued agent select (if any) and show it. Called after the
+/// current agent-originated select is confirmed or cancelled so concurrent
+/// subagent permission prompts are served one at a time instead of hanging.
+fn dequeue_next_agent_select(app: &mut App) {
+    let Some(req) = app.pending_agent_selects.pop_front() else {
+        return;
+    };
+    app.select_kind = SelectKind::Agent;
+    if req.multi {
+        app.select
+            .set_multi(req.prompt, req.options, req.request_id, req.log_confirm);
+    } else {
+        app.select
+            .set(req.prompt, req.options, req.request_id, req.log_confirm);
+    }
+    app.input_mode = InputMode::Select;
 }
 
 /// `/model` second step: branch by the selected model's semantics.
@@ -1078,6 +1102,47 @@ thinking_budget = {thinking_budget}
             })) => {}
             other => panic!("expected cancelled Select response, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn concurrent_agent_selects_queue_and_drain_in_order() {
+        let mut app = make_app();
+        let mut rx = seed_select(&mut app); // request_id = 1
+
+        // A second agent select arrives while the first is open → queued, not
+        // overwritten (the overwrite would hang the first subagent's waiter).
+        app.handle_agent_update(tact_protocol::AgentUpdate::RequestSelect {
+            prompt: "Second".into(),
+            options: vec!["Yes".into(), "No".into()],
+            request_id: 2,
+            log_confirm: false,
+        });
+        assert_eq!(app.select.request_id, Some(1), "first select stays open");
+        assert_eq!(app.pending_agent_selects.len(), 1, "second select queued");
+
+        // Confirm the first → emits Select(1) and dequeues the second.
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(UserCommand::UiResponse(UiResponse::Select {
+                request_id: 1,
+                choice: Some(_),
+            })) => {}
+            other => panic!("expected first Select response, got {other:?}"),
+        }
+        assert_eq!(app.select.request_id, Some(2), "second select dequeued");
+        assert!(matches!(app.input_mode, InputMode::Select));
+
+        // Confirm the second → emits Select(2) and returns to Normal.
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(UserCommand::UiResponse(UiResponse::Select {
+                request_id: 2,
+                choice: Some(_),
+            })) => {}
+            other => panic!("expected second Select response, got {other:?}"),
+        }
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app.pending_agent_selects.is_empty());
     }
 
     /// Serialize model-picker tests that share global `CACHE` / `PROVIDER`.

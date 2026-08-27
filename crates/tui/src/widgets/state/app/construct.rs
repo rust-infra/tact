@@ -1,7 +1,7 @@
 // impl App — core application logic
 // Extracted from state.rs to keep file sizes manageable.
 
-use std::path::PathBuf;
+use std::{collections::VecDeque, path::PathBuf};
 
 use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
@@ -118,6 +118,7 @@ impl App {
             workspace_dir,
             select: SelectPopup::default(),
             select_kind: SelectKind::Agent,
+            pending_agent_selects: VecDeque::new(),
             file_picker: FilePicker::new(),
             slash_command: SlashCommandState::default(),
             registry,

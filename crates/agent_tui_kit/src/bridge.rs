@@ -75,6 +75,9 @@ impl TryFrom<UserCommand> for Command {
             UserCommand::SetReasoningEffort(effort) => Ok(Self::SetReasoningEffort(effort)),
             UserCommand::SetModel(model) => Ok(Self::SetModel(model)),
             UserCommand::QueryBalance => Err(()),
+            // A wake-up signal routed from the TUI to the driver when a
+            // background subagent finishes; not a host command for the kit.
+            UserCommand::SubagentFinishedNotification { .. } => Err(()),
             // Responses to agent-originated selects flow on the reverse command
             // channel; they are not host commands and never map to `Command`.
             UserCommand::UiResponse(_) => Err(()),

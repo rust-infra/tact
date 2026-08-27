@@ -296,6 +296,22 @@ pub enum AgentUpdate {
         /// Final combined stdout+stderr output (already capped).
         output: String,
     },
+    /// Finalize a subagent tool card after a `run_in_background` child finishes.
+    /// The subagent analog of [`Self::BackgroundTaskFinished`]; the TUI reuses
+    /// the same "finalize a keep-live card" path but must also carry over the
+    /// full transcript into the popup.
+    ///
+    /// Emitted on the **parent** `ui_tx` (never the child's tagged forwarder,
+    /// which drops unknown variants).
+    SubagentFinished {
+        tool_id: String,
+        /// Child session id (the `async_launched { id }` handle).
+        child_id: String,
+        /// `true` when the child completed successfully.
+        success: bool,
+        /// One-line summary; the full transcript stays in the popup.
+        summary: String,
+    },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.
@@ -382,6 +398,14 @@ pub enum UserCommand {
     /// Set the active agent session's model (per-agent, not global).
     /// The TUI sends this after `/model` model confirmation.
     SetModel(String),
+    /// A background subagent finished while the parent may be idle. The driver
+    /// decides whether to drop it (parent is mid-turn — the result is already
+    /// in `pending_subagent_results`) or submit a synthetic wake-up turn.
+    SubagentFinishedNotification {
+        child_id: String,
+        summary: String,
+        success: bool,
+    },
     /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
     /// (see [`UiResponse`]). Routed by the driver to the shared responder.
     UiResponse(UiResponse),

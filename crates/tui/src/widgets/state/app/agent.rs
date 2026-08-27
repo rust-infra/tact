@@ -5,7 +5,7 @@ use ratatui::{
 };
 use tact_protocol::{
     AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason,
-    ThinkingChunk,
+    ThinkingChunk, UserCommand,
 };
 
 use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
@@ -283,8 +283,21 @@ impl App {
                 log_confirm,
             } => {
                 self.select_kind = SelectKind::Agent;
-                self.select.set(prompt, options, request_id, log_confirm);
-                self.input_mode = InputMode::Select;
+                if self.select.request_id.is_some() {
+                    // A prior agent select is still open — queue this one so a
+                    // concurrent subagent's permission prompt doesn't overwrite
+                    // (and hang) the first waiter.
+                    self.pending_agent_selects.push_back(AgentSelectRequest {
+                        prompt,
+                        options,
+                        request_id,
+                        multi: false,
+                        log_confirm,
+                    });
+                } else {
+                    self.select.set(prompt, options, request_id, log_confirm);
+                    self.input_mode = InputMode::Select;
+                }
             }
             AgentUpdate::RequestMultiSelect {
                 prompt,
@@ -293,8 +306,18 @@ impl App {
             } => {
                 self.select_kind = SelectKind::Agent;
                 // Choice is shown on the ask_user tool meta row; no duplicate log line.
-                self.select.set_multi(prompt, options, request_id, false);
-                self.input_mode = InputMode::Select;
+                if self.select.request_id.is_some() {
+                    self.pending_agent_selects.push_back(AgentSelectRequest {
+                        prompt,
+                        options,
+                        request_id,
+                        multi: true,
+                        log_confirm: false,
+                    });
+                } else {
+                    self.select.set_multi(prompt, options, request_id, false);
+                    self.input_mode = InputMode::Select;
+                }
             }
             AgentUpdate::ThinkingChunk(chunk) => {
                 match chunk {
@@ -316,6 +339,12 @@ impl App {
             AgentUpdate::BackgroundTaskFinished {
                 tool_id, message, ..
             } => self.on_background_task_finished_tail(&tool_id, &message),
+            AgentUpdate::SubagentFinished {
+                tool_id,
+                child_id,
+                success,
+                summary,
+            } => self.on_subagent_finished_tail(&tool_id, &child_id, success, &summary),
             // ToolProgress → ToolComponent (live output + Resize event).
             AgentUpdate::ToolProgress { .. } => {}
             AgentUpdate::TasksChanged { tasks, reason } => {
@@ -445,6 +474,29 @@ impl App {
         if let Some(step) = self.plan_mut().steps.get_mut(step_idx) {
             step.output = Some(message.to_string());
         }
+    }
+
+    /// Plan-step write for a keep-live subagent card closed by the detached
+    /// child, plus a wake-up relay to the driver so an idle parent resumes to
+    /// consume the re-injected result (the parent `ui_tx` has no driver path).
+    fn on_subagent_finished_tail(
+        &mut self,
+        tool_id: &str,
+        child_id: &str,
+        success: bool,
+        summary: &str,
+    ) {
+        let step_idx = resolve_step_idx(&self.plan_mut().steps, tool_id, 0);
+        if let Some(step) = self.plan_mut().steps.get_mut(step_idx) {
+            step.output = Some(summary.to_string());
+        }
+        let _ = self
+            .user_cmd_tx
+            .send(UserCommand::SubagentFinishedNotification {
+                child_id: child_id.to_string(),
+                summary: summary.to_string(),
+                success,
+            });
     }
 
     fn on_step_failed_tail(&mut self) {
