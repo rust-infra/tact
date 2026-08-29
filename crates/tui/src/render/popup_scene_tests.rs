@@ -188,6 +188,249 @@ fn full_frame_slash_command_no_match_shows_hint() {
     );
 }
 
+/// Seed a long slash list: the built-in commands plus `count` skill entries.
+fn seed_slash_skills(app: &mut App, count: usize) {
+    use crate::widgets::state::SkillEntry;
+    app.skills_data = (0..count)
+        .map(|i| SkillEntry {
+            name: format!("skill-{i:02}"),
+            description: format!("Skill number {i} description"),
+            body: String::new(),
+        })
+        .collect();
+}
+
+fn open_slash_popup(app: &mut App) {
+    app.input_mode = InputMode::Insert;
+    app.input = "/".into();
+    app.input_cursor = 1;
+    app.slash_command.active = true;
+    app.slash_command.start_pos = 0;
+    app.slash_command.selected = 0;
+}
+
+#[test]
+fn slash_popup_long_list_scrolls_selected_into_view() {
+    let mut app = make_app();
+    open_slash_popup(&mut app);
+    seed_slash_skills(&mut app, 40);
+
+    // The filtered list is 18 builtins + 40 skills; skill-30 sits at index 48.
+    app.slash_command.selected = 48;
+    let text = render_app_text(&mut app, 100, 30);
+
+    assert!(
+        text.contains("/skill-30"),
+        "deep selection must be visible after scrolling, got:\n{text}"
+    );
+    assert!(
+        !text.contains("/theme"),
+        "the top of the list must have scrolled out of view, got:\n{text}"
+    );
+}
+
+#[test]
+fn slash_popup_long_list_keeps_selected_visible_on_short_terminal() {
+    let mut app = make_app();
+    open_slash_popup(&mut app);
+    seed_slash_skills(&mut app, 40);
+
+    // Main area is only 7 rows tall on a 13-row terminal; the popup window is
+    // clamped to what actually fits, so the selected row must never land
+    // below the popup border (previously the anchor was off-screen and the
+    // list appeared frozen / "did not scroll").
+    app.slash_command.selected = 48;
+    let text = render_app_text(&mut app, 100, 13);
+
+    assert!(
+        text.contains("/skill-30"),
+        "selected row must stay visible on a short terminal, got:\n{text}"
+    );
+
+    // The very last item must also be reachable on a short terminal.
+    app.slash_command.selected = 57;
+    let text = render_app_text(&mut app, 100, 13);
+    assert!(
+        text.contains("/skill-39"),
+        "last item must be reachable on a short terminal, got:\n{text}"
+    );
+}
+
+#[test]
+fn slash_popup_scroll_window_moves_with_selection() {
+    let mut app = make_app();
+    open_slash_popup(&mut app);
+    seed_slash_skills(&mut app, 40);
+
+    let top = render_app_text(&mut app, 100, 30);
+    assert!(
+        top.contains("/theme"),
+        "top of list shows the first command, got:\n{top}"
+    );
+
+    app.slash_command.selected = 48;
+    let deep = render_app_text(&mut app, 100, 30);
+    assert!(
+        deep.contains("/skill-30") && !deep.contains("/theme"),
+        "moving the selection deep into the list must scroll the window, got:\n{deep}"
+    );
+}
+
+#[test]
+fn slash_popup_records_and_clears_mouse_area() {
+    let mut app = make_app();
+    open_slash_popup(&mut app);
+    seed_slash_skills(&mut app, 5);
+
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        !app.mouse.slash_popup_area.is_empty(),
+        "active slash popup must record its area for mouse-wheel routing"
+    );
+
+    app.slash_command.active = false;
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        app.mouse.slash_popup_area.is_empty(),
+        "closed slash popup must clear its mouse area"
+    );
+}
+
+/// Seed the select popup (model picker) with `count` options.
+fn open_select_popup(app: &mut App, count: usize) {
+    use crate::widgets::state::SelectKind;
+    app.input_mode = InputMode::Select;
+    app.select_kind = SelectKind::ModelPick;
+    app.select.set_local(
+        "Select model".into(),
+        (0..count).map(|i| format!("model-{i:02}")).collect(),
+        0,
+        false,
+    );
+}
+
+#[test]
+fn select_popup_long_list_scrolls_selected_into_view() {
+    let mut app = make_app();
+    open_select_popup(&mut app, 30);
+    app.select.selected = 25;
+
+    let text = render_app_text(&mut app, 100, 30);
+
+    assert!(
+        text.contains("▶ model-25"),
+        "deep selection must be visible after scrolling, got:\n{text}"
+    );
+    assert!(
+        !text.contains("model-00"),
+        "the top of the list must have scrolled out of view, got:\n{text}"
+    );
+}
+
+#[test]
+fn select_popup_long_list_keeps_selected_visible_on_short_terminal() {
+    let mut app = make_app();
+    open_select_popup(&mut app, 30);
+    app.select.selected = 25;
+
+    let text = render_app_text(&mut app, 100, 13);
+
+    assert!(
+        text.contains("▶ model-25"),
+        "selected row must stay visible on a short terminal, got:\n{text}"
+    );
+
+    // The very last item must also be reachable on a short terminal.
+    app.select.selected = 29;
+    let text = render_app_text(&mut app, 100, 13);
+    assert!(
+        text.contains("▶ model-29"),
+        "last item must be reachable on a short terminal, got:\n{text}"
+    );
+}
+
+#[test]
+fn select_popup_window_moves_with_selection() {
+    let mut app = make_app();
+    open_select_popup(&mut app, 30);
+
+    let top = render_app_text(&mut app, 100, 30);
+    assert!(
+        top.contains("▶ model-00"),
+        "top of list shows the first option, got:\n{top}"
+    );
+
+    app.select.selected = 25;
+    let deep = render_app_text(&mut app, 100, 30);
+    assert!(
+        deep.contains("▶ model-25") && !deep.contains("model-00"),
+        "moving the selection deep into the list must scroll the window, got:\n{deep}"
+    );
+}
+
+#[test]
+fn select_popup_records_and_clears_mouse_area() {
+    let mut app = make_app();
+    open_select_popup(&mut app, 5);
+
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        !app.mouse.select_popup_area.is_empty(),
+        "active select popup must record its area for mouse-wheel routing"
+    );
+
+    app.input_mode = InputMode::Normal;
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        app.mouse.select_popup_area.is_empty(),
+        "closed select popup must clear its mouse area"
+    );
+}
+
+#[test]
+fn select_popup_shows_navigation_footer_hint() {
+    let mut app = make_app();
+    open_select_popup(&mut app, 5);
+
+    let text = render_app_text(&mut app, 100, 30);
+
+    assert!(
+        text.contains("↑↓/j/k"),
+        "select popup must show the j/k navigation hint in its footer, got:\n{text}"
+    );
+    assert!(
+        text.contains("Enter") && text.contains("Esc"),
+        "select popup footer must list Enter/Esc, got:\n{text}"
+    );
+    assert!(
+        text.contains("Confirm") || text.contains("确认"),
+        "select popup footer must label the confirm action, got:\n{text}"
+    );
+}
+
+#[test]
+fn select_popup_multi_shows_toggle_footer_hint() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select.set_multi(
+        "Pick options".into(),
+        (0..3).map(|i| format!("opt-{i}")).collect(),
+        1,
+        false,
+    );
+
+    let text = render_app_text(&mut app, 100, 30);
+
+    assert!(
+        text.contains("Space") && (text.contains("Toggle") || text.contains("勾选")),
+        "multi select footer must list the Space toggle, got:\n{text}"
+    );
+    assert!(
+        text.contains("↑↓/j/k"),
+        "multi select footer must still show navigation, got:\n{text}"
+    );
+}
+
 #[test]
 fn full_frame_file_picker_lists_options() {
     let mut app = make_app();
@@ -622,6 +865,18 @@ fn session_stats_popup_renders_gfm_table() {
     );
     assert!(text.contains("Metric"), "header missing:\n{text}");
     assert!(text.contains("Elapsed"), "row missing:\n{text}");
+
+    // The session-stats popup reuses the system-prompt popup chrome, which
+    // must show the bottom-border navigation hint like other scrollable
+    // popups (code/mermaid).
+    assert!(
+        text.contains("j/k") && text.contains("scroll"),
+        "session stats popup footer must show the j/k scroll hint, got:\n{text}"
+    );
+    assert!(
+        text.contains("Esc") && text.contains("close"),
+        "session stats popup footer must show Esc close, got:\n{text}"
+    );
 
     let metric_pos = text.find("Metric").expect("Metric");
     let elapsed_pos = text.find("Elapsed").expect("Elapsed");

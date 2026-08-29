@@ -122,7 +122,7 @@ impl WorktreeManager {
     }
 
     pub async fn status(&self, name: &str) -> Result<String> {
-        let record = self.find(name).await?;
+        let record = self.get(name).await?;
         let output = Command::new("git")
             .current_dir(&record.path)
             .arg("status")
@@ -132,7 +132,7 @@ impl WorktreeManager {
     }
 
     pub async fn run(&self, name: &str, command: &str) -> Result<String> {
-        let record = self.find(name).await?;
+        let record = self.get(name).await?;
         let output = Command::new("sh")
             .current_dir(&record.path)
             .arg("-c")
@@ -150,7 +150,8 @@ impl WorktreeManager {
         Ok(self.store.recent_events(limit).await?.join("\n"))
     }
 
-    async fn find(&self, name: &str) -> Result<WorktreeRecord> {
+    /// Looks up a tracked worktree by name.
+    pub async fn get(&self, name: &str) -> Result<WorktreeRecord> {
         self.store
             .find_worktree(name)
             .await?
@@ -189,5 +190,9 @@ impl SharedWorktreeManager {
 
     pub async fn events(&self, limit: usize) -> Result<String> {
         self.inner.events(limit).await
+    }
+
+    pub async fn get(&self, name: &str) -> Result<WorktreeRecord> {
+        self.inner.get(name).await
     }
 }

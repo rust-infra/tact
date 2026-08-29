@@ -3,7 +3,7 @@ use crate::tool::{
     PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
     ToolPresentation,
 };
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use schemars::JsonSchema;
@@ -21,6 +21,7 @@ use crate::{
     store::{SessionLock, open_sqlite_session_store},
     subagent::SubagentResult,
     tool::{ToolContext, subagent_toolset},
+    worktree::WorktreeRecord,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -44,11 +45,66 @@ pub struct SubagentInput {
     #[schemars(description = "Resume an existing subagent session by id.")]
     #[serde(default)]
     pub resume: Option<String>,
+    /// When true, the subagent runs inside a fresh git worktree lane
+    /// (`subagent-<child_id>`) instead of the shared workspace, so parallel
+    /// subagents / same-turn edits do not race the parent tree. Requires the
+    /// work_dir to be a git repository.
+    #[schemars(description = "Run the subagent inside an isolated git worktree.")]
+    #[serde(default)]
+    pub worktree: Option<bool>,
+}
+
+/// Worktree lane name prefix for isolated subagents.
+const SUBAGENT_WORKTREE_PREFIX: &str = "subagent";
+
+/// Creates (or, on `resume`, reuses) the isolation worktree for a child.
+///
+/// Returns `Ok(None)` when the caller did not request worktree isolation.
+/// Runs synchronously inside the handler so creation failures surface
+/// immediately instead of inside a detached background task.
+async fn ensure_subagent_worktree(
+    ctx: &ToolContext,
+    child_id: &str,
+    resume: bool,
+) -> Result<Option<WorktreeRecord>> {
+    let name = format!("{SUBAGENT_WORKTREE_PREFIX}-{child_id}");
+    if resume {
+        // Reuse the lane from the original run when it exists; otherwise fall
+        // through and create one (the original run may not have used
+        // isolation).
+        if let Ok(record) = ctx.worktree_manager.get(&name).await {
+            return Ok(Some(record));
+        }
+    }
+    ctx.worktree_manager
+        .create(name.clone(), None, "HEAD".to_string(), child_id.to_string())
+        .await
+        .with_context(|| {
+            format!(
+                "failed to create isolation worktree for subagent {child_id} \
+                 (worktree isolation requires a git repository at {})",
+                ctx.work_dir.display()
+            )
+        })?;
+    ctx.worktree_manager
+        .get(&name)
+        .await
+        .context("failed to read created worktree")
+        .map(Some)
+}
+
+/// Appends a structured worktree note to a subagent summary so the parent LLM
+/// knows where the isolated work landed.
+fn with_worktree_note(summary: String, worktree: Option<&WorktreeRecord>) -> String {
+    match worktree {
+        Some(wt) => format!("{summary}\n\n(worktree: {} at {})", wt.name, wt.path),
+        None => summary,
+    }
 }
 
 pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "spawn_subagent",
-    description: "Spawn a subagent with fresh context. It shares the filesystem but not conversation history.",
+    description: "Spawn a subagent with fresh context. By default the call blocks until the subagent finishes and returns its summary. Set run_in_background: true to return immediately and have the summary re-injected later — use this to run several independent subagents in parallel. Set worktree: true to isolate the subagent in its own git worktree (safe for parallel edits).",
     permission: PermissionPolicy::High,
     permission_prompt: PermissionPromptPolicy::Json,
     resources: ResourcePolicy::Barrier,
@@ -92,7 +148,7 @@ fn extract_summary(subagent: &Agent, max_turns_reached: bool) -> String {
 /// - The session store cannot be opened.
 /// - `run_in_background` is requested without a parent agent runtime.
 /// - The subagent agent loop encounters an error.
-pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<String> {
+pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Result<String> {
     let settings = crate::config::settings();
 
     let (client, agent_overrides) = if let Some(sa) = &settings.agent.subagent {
@@ -112,10 +168,6 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         (client, settings.agent.clone())
     };
 
-    let system_prompt = format!(
-        "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
-        ctx.work_dir.display()
-    );
     // Inherit the parent's permission context (Claude-style). The snapshot is
     // stamped by `execute_tool_call` just before this tool runs, so it carries
     // the parent's *current* mode / allow-list / settings. Orphan/test
@@ -134,19 +186,41 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         Some(id) => id,
         None => uuid::Uuid::new_v4().to_string(),
     };
-    let ref_id = ctx.session_id.as_deref().unwrap_or("");
+    let resume = input.resume.is_some();
+
+    // The child's session identity belongs to the main workspace, not the
+    // isolation lane — capture it before `work_dir` may be overridden below.
+    let ref_id = ctx.session_id.as_deref().unwrap_or("").to_string();
     let root_dir = ctx.work_dir.display().to_string();
+    let fallback_db = TactPath::new(&ctx.work_dir).session_db_path();
+
+    // Optional worktree isolation: create/reuse the lane synchronously so
+    // failures surface immediately, then point the child at the lane.
+    let worktree = if input.worktree == Some(true) {
+        ensure_subagent_worktree(&ctx, &child_id, resume).await?
+    } else {
+        None
+    };
+    if let Some(wt) = worktree.as_ref() {
+        ctx.work_dir = PathBuf::from(&wt.path);
+    }
+
+    // The child's system prompt is built after the work_dir override so a
+    // worktree-isolated subagent is told exactly where it is working.
+    let system_prompt = format!(
+        "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
+        ctx.work_dir.display()
+    );
 
     let store = if let Some(store) = &ctx.session_store {
         store.clone()
     } else {
-        let db_path = TactPath::new(&ctx.work_dir).session_db_path();
-        open_sqlite_session_store(&db_path)
+        open_sqlite_session_store(&fallback_db)
             .await
-            .with_context(|| format!("failed to open session store at {}", db_path.display()))?
+            .with_context(|| format!("failed to open session store at {}", fallback_db.display()))?
     };
     store
-        .ensure_session_row(&child_id, &root_dir, ref_id)
+        .ensure_session_row(&child_id, &root_dir, &ref_id)
         .await?;
 
     let mut subagent = Agent::new(
@@ -190,6 +264,7 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         let ui_tx = ctx.ui_tx.clone();
         let tool_id = ctx.progress_reporter.tool_id().to_string();
         let prompt = input.prompt;
+        let worktree_for_task = worktree.clone();
         manager.start(child_id.clone()).await?;
         let launched = format!("async_launched {{ {child_id} }}");
         tokio::spawn(async move {
@@ -198,7 +273,10 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
                 .await;
             let success = result.is_ok();
             let max_turns_reached = subagent.max_turns.is_some_and(|m| subagent.turns_taken > m);
-            let summary = extract_summary(&subagent, max_turns_reached);
+            let summary = with_worktree_note(
+                extract_summary(&subagent, max_turns_reached),
+                worktree_for_task.as_ref(),
+            );
             if let Some(lock) = lock {
                 let _ = lock.release().await;
             }
@@ -236,7 +314,7 @@ pub async fn spawn_subagent(ctx: ToolContext, input: SubagentInput) -> Result<St
         if let Some(lock) = lock {
             lock.release().await?;
         }
-        Ok(summary)
+        Ok(with_worktree_note(summary, worktree.as_ref()))
     }
 }
 
@@ -366,5 +444,107 @@ mod tests {
         let listed = store.list_sessions(None).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, child_id);
+    }
+
+    #[test]
+    fn subagent_input_worktree_field() {
+        let json = serde_json::json!({ "prompt": "p", "worktree": true });
+        let input: SubagentInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.worktree, Some(true));
+
+        let json = serde_json::json!({ "prompt": "p" });
+        let input: SubagentInput = serde_json::from_value(json).unwrap();
+        assert_eq!(input.worktree, None);
+    }
+
+    #[test]
+    fn worktree_note_appended_to_summary() {
+        let wt = WorktreeRecord {
+            name: "subagent-child-1".into(),
+            path: "/tmp/.worktrees/subagent-child-1".into(),
+            branch: "wt/subagent-child-1".into(),
+            task_id: None,
+            status: "active".into(),
+        };
+        assert_eq!(
+            with_worktree_note("done".to_string(), Some(&wt)),
+            "done\n\n(worktree: subagent-child-1 at /tmp/.worktrees/subagent-child-1)"
+        );
+        assert_eq!(with_worktree_note("done".to_string(), None), "done");
+    }
+
+    /// Runs a git command in `dir`, asserting success.
+    async fn git_run(dir: &std::path::Path, args: &[&str]) {
+        let out = tokio::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .await
+            .expect("git command should run");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Initialises a git repo with one commit so `git worktree add` has a HEAD.
+    async fn init_git_repo(dir: &std::path::Path) {
+        git_run(dir, &["init", "-q"]).await;
+        std::fs::write(dir.join("README.md"), "hello\n").unwrap();
+        git_run(dir, &["add", "."]).await;
+        git_run(
+            dir,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=tact-test",
+                "commit",
+                "-m",
+                "init",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn ensure_subagent_worktree_creates_and_reuses_lane() {
+        let context = test_context("subagent-worktree-create");
+        init_git_repo(&context.work_dir).await;
+
+        let created = ensure_subagent_worktree(&context, "child-abc", false)
+            .await
+            .unwrap()
+            .expect("worktree requested");
+        assert_eq!(created.name, "subagent-child-abc");
+        assert_eq!(created.branch, "wt/subagent-child-abc");
+        let lane_dir = std::path::PathBuf::from(&created.path);
+        assert!(lane_dir.is_dir(), "lane dir should exist");
+        assert!(
+            lane_dir.join("README.md").exists(),
+            "lane should have the commit checked out"
+        );
+
+        // Resume reuses the existing lane instead of failing on the unique name.
+        let reused = ensure_subagent_worktree(&context, "child-abc", true)
+            .await
+            .unwrap()
+            .expect("worktree requested");
+        assert_eq!(reused.path, created.path);
+
+        // Non-resume on the same id errors (unique worktree name).
+        let dup = ensure_subagent_worktree(&context, "child-abc", false).await;
+        assert!(dup.is_err(), "duplicate lane should error");
+    }
+
+    #[tokio::test]
+    async fn ensure_subagent_worktree_requires_git_repo() {
+        let context = test_context("subagent-worktree-no-git");
+        let err = ensure_subagent_worktree(&context, "child-xyz", false)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("git repository"), "unexpected error: {msg}");
     }
 }

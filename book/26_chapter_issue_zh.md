@@ -29,7 +29,36 @@
 
 ---
 
-## 1. 2026-08-27 — 子代理权限继承 + 异步 `run_in_background` + 结果回注
+## 1. 2026-08-29 — slash / select 弹窗长列表滚动（选中项始终可见 + 鼠标滚轮）
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tui/src/render/popups/slash_command.rs`（滚动窗口 / offset）、`crates/tui/src/widgets/state/slash_command.rs`（`step_slash_selection`）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（`select_popup_layout`、footer）、`crates/agent_tui_kit/src/render/popups/select.rs`、`crates/agent_tui_kit/src/render/popups/system_prompt_popup.rs`（session-stats footer）、`crates/agent_tui_kit/src/i18n.rs`（footer 文案）、`crates/tui/src/render/popups/select.rs`（鼠标区域）、`crates/tui/src/handlers/mouse.rs`（滚轮路由）、`crates/tui/src/handlers/insert.rs`（↑/↓ 复用）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`slash_popup_area`、`select_popup_area`）；Ch 23 |
+
+**Symptom / motivation:** 列表过长时弹窗看起来没有滚动效果。slash 弹窗滚动窗口固定按 `max_visible + 2` 计算，没有考虑弹窗真实内容高度（`area.height - 2`）；在矮终端上 `List` 组件会裁掉底部行，而选中项锚定在窗口索引 `max_visible - 1` —— 落在可见内容之外，按 ↑/↓ 时高亮跑到屏幕外、可见行看起来像冻结。select 弹窗（`/model`、permission、ask_user）有同样问题：其 List 区块按 `Constraint::Length(option_count)`（完整选项数）分配，即使弹窗高度已被上限截断，选中项落到弹窗边框之外、列表从不滚动。鼠标滚轮在两类弹窗上同样无效：它们都不属于 overlay 弹窗，滚轮事件落到背后的日志面板。
+
+**Decision:** (1) 两个弹窗的滚动窗口都改为按实际可用高度计算（slash：`min(rows, max_visible + 2, area.height - 2)`；select：共享 `select_popup_layout(state, area, fg)` 助手），窗口与弹窗高度始终一致、不再裁切；offset 保证选中项始终落在窗口内（列表溢出后固定在大约倒数第 2 行，保留正常尺寸下的原有锚点），任何终端高度下高亮都可见。(2) `render_slash_command_popup` 与 select 包装函数改为接收 `&mut App`，每帧渲染并把自身矩形记录到 `MouseState::slash_popup_area` / `select_popup_area`（弹窗关闭时清空）；`handle_mouse_event` 把落在这些矩形内的 `ScrollUp`/`ScrollDown` 路由到选中项。(3) slash 的 ↑/↓ 与滚轮共用同一个 `App::step_slash_selection(delta)` 助手；select 复用 `SelectPopup::move_up`/`move_down`。(4) select 弹窗新增底部边框导航提示（与 code/mermaid 弹窗同款样式：按键用 accent、说明用 muted，居中渲染在 `title_bottom`）——`↑↓/j/k` 选择、`Enter` 确认、`Esc` 取消，多选再加 `Space` 勾选；弹窗宽度自动加宽以容纳提示，替代原来硬编码在内容区的 "Space toggle · Enter confirm" 行（顺带为选项多腾出一行内容高度）。(5) `/stats` 会话统计弹窗（复用 `/view-system-prompt` 的 `SystemPromptPopup`）也加上同样的底部边框提示（`j/k` 滚动 · `Esc` 关闭），与其他所有可滚动弹窗一致。
+
+**Behavior after:** 任意终端高度下选中命令/选项始终可见；slash 或 select 长列表可用 ↑/↓ 或鼠标滚轮平滑滚动（弹窗上的滚轮移动选中项，不再滚动背后日志）；弹窗关闭后清空记录的鼠标区域；select 弹窗底部边框显示导航按键提示；`/stats` 会话统计弹窗同样显示 `j/k 滚动 · Esc 关闭` 底部提示。
+
+---
+## 2. 2026-08-27 — 子代理 worktree 隔离（`worktree: true`）+ 隔离子 spawn 的同 wave fan-out
+
+| Field | Value |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/tool/subagent.rs`（`SubagentInput.worktree`、`ensure_subagent_worktree`）、`crates/tact/src/agent/tool_dispatch.rs`（`tool_resources_for`）、`crates/tact/src/worktree/mod.rs`（`get`）、`crates/tact/src/tool/mod.rs`（再导出）；计划 `docs/superpowers/plans/2026-08-27-subagent-worktree-isolation.md`；Ch 12 |
+
+**症状 / 动机：** `spawn_subagent` 始终共享父级 `work_dir` 且保持 `ResourcePolicy::Barrier`，多子 agent fan-out 要么串行（同步），要么只能靠 `run_in_background` + `tokio::spawn` 并行。2026-08-26 异步子 agent 设计评审点名了后续项：一旦每个子 agent 拥有作用域化文件系统，阻塞型子 agent 的同一 wave fan-out 就安全了。工具描述（"shares the filesystem"）也没给模型任何请求隔离的方式。
+
+**决策：** (1) `SubagentInput` 新增 `worktree: Option<bool>`；为 `true` 时，handler 同步创建（或 `resume` 时复用）git worktree 泳道 `subagent-<child_id>`（分支 `wt/subagent-<child_id>`）—— 失败立即暴露 —— 并把子级 `ToolContext.work_dir` 指向该泳道。同步与异步返回值都追加 `(worktree: <name> at <path>)` 说明。(2) `execute_tool_call` 按调用解析资源（`tool_resources_for`）：worktree 隔离的 `spawn_subagent` 映射为 `ToolResources::independent()` 而非静态 `Barrier`，隔离子 spawn 可同 wave fan-out；非隔离 spawn 保持 `Barrier`。(3) `WorktreeManager`/`SharedWorktreeManager` 暴露 `get(name)` 供 resume 复用。工具描述重写，明确同步/异步/worktree 策略。
+
+**改后行为：** `spawn_subagent` 带 `worktree: true` 时运行在基于仓库根 `HEAD` 的隔离泳道；子级 `bash`/`read_file`/`write_file`/`edit_file` 都相对于泳道解析；泳道在子 agent 完成后保留（用 `worktree_status`/`worktree_run` 检查，用 `git worktree remove` 删除）。非 git 的 `work_dir` 会让 spawn 明确报错。worktree 是组织边界而非 OS 沙箱 —— `bash` 仍可访问泳道之外。声明式 per-agent 定义（`.tact/agents/*.md`）与 worktree 删除工具仍延后。
+
+---
+
+## 3. 2026-08-27 — 子代理权限继承 + 异步 `run_in_background` + 结果回注
 
 | Field | Value |
 |-------|-------|
@@ -40,11 +69,11 @@
 
 **决策：** (1) `PermissionSnapshot { mode, always_allowed_tools, settings }` + `PermissionManager::snapshot()`/`from_snapshot()`；`execute_tool_call` 在 phase-1 pre-flight 后把快照（及结果队列）stamp 到 `ToolContext`，`spawn_subagent` 据此构建子级（Claude 风格继承；`Default`→`Default`、`Plan`→`Plan`、`Auto`→`Auto`，拒绝计数归零；orphan/test context 回退 `Default`）。(2) `SubagentInput` 新增 `run_in_background` / `max_turns` / `resume`；异步 spawn 脱钩任务、返回 `async_launched { id }`，完成后转换 `subagent_runs` 行并入队 `SubagentResult`，在下一轮 LLM 调用前 drain 并注入 `<subagent-finished>` 消息。(3) `AgentUpdate::SubagentFinished` 定稿 keep-live 卡（携带 transcript）；`UserCommand::SubagentFinishedNotification` + driver 唤醒轮让空闲父级恢复；`check_subagent` 暴露持久化生命周期。`spawn_subagent` 保持 `ResourcePolicy::Barrier`（后台并行来自 `tokio::spawn`，而非 wave 调度）。
 
-**改后行为：** 子 agent 继承父级权限上下文（修复只读逃逸）；`run_in_background` 返回异步句柄并把子 summary 回注父 transcript；`max_turns` 限制失控子级；`resume` 复用已完成子 session；`check_subagent` 读取 `subagent_runs`；启动时将 orphan `running` 行修复为 `failed`。per-agent `permissionMode` override 与 worktree 隔离延后（尚无声明式 `.tact/agents/*.md`）。
+**改后行为：** 子 agent 继承父级权限上下文（修复只读逃逸）；`run_in_background` 返回异步句柄并把子 summary 回注父 transcript；`max_turns` 限制失控子级；`resume` 复用已完成子 session；`check_subagent` 读取 `subagent_runs`；启动时将 orphan `running` 行修复为 `failed`。per-agent `permissionMode` override 仍延后（尚无声明式 `.tact/agents/*.md`）；worktree 隔离已单独落地（见上文条目）。
 
 ---
 
-## 1. 2026-08-24 — `AgentUpdate` 移除内嵌 oneshot；选择请求改用 `request_id` + `UiResponse`
+## 2. 2026-08-24 — `AgentUpdate` 移除内嵌 oneshot；选择请求改用 `request_id` + `UiResponse`
 
 | Field | Value |
 |-------|-------|
@@ -59,7 +88,7 @@
 
 ---
 
-## 1. 2026-08-24 — 插件更新命令：`tact plugin update` / `/plugin update`
+## 2. 2026-08-24 — 插件更新命令：`tact plugin update` / `/plugin update`
 
 | Field | Value |
 |-------|-------|
@@ -74,7 +103,7 @@
 
 ---
 
-## 1. 2026-08-24 — 插件卸载命令：`tact plugin uninstall` / `/plugin uninstall`
+## 2. 2026-08-24 — 插件卸载命令：`tact plugin uninstall` / `/plugin uninstall`
 
 | Field | Value |
 |-------|-------|
@@ -89,7 +118,7 @@
 
 ---
 
-## 1. 2026-08-23 — 附件去内联：`@file`/`![alt]` 保留为路径文本
+## 2. 2026-08-23 — 附件去内联：`@file`/`![alt]` 保留为路径文本
 
 | Field | Value |
 |-------|-------|
@@ -104,7 +133,7 @@
 
 ---
 
-## 1. 2026-08-23 — `read_image` 工具：模型按需读图，工具结果图片折叠进 user 消息
+## 2. 2026-08-23 — `read_image` 工具：模型按需读图，工具结果图片折叠进 user 消息
 
 | Field | Value |
 |-------|-------|
@@ -119,7 +148,7 @@
 
 ---
 
-## 1. 2026-08-23 — 工具卡步骤编号统一按计划位置解析（bugfix，任务 #43 评审）
+## 2. 2026-08-23 — 工具卡步骤编号统一按计划位置解析（bugfix，任务 #43 评审）
 
 | 字段 | 值 |
 |------|------|
@@ -164,7 +193,7 @@
 
 ---
 
-## 1. 2026-08-23 — TUI 渲染层提取为 `agent_tui_kit`（可复用、与 Tact 解耦）
+## 2. 2026-08-23 — TUI 渲染层提取为 `agent_tui_kit`（可复用、与 Tact 解耦）
 
 | 字段 | 值 |
 |------|------|
@@ -204,7 +233,7 @@ task_panel、render_md、cells）、`state/*`、`bridge.rs`、
 
 ---
 
-## 1. 2026-08-23 — TUI `App` 切换到 kit 的 `ComponentRegistry`（whole-App 重构，任务 #42）
+## 2. 2026-08-23 — TUI `App` 切换到 kit 的 `ComponentRegistry`（whole-App 重构，任务 #42）
 
 | 字段 | 值 |
 |------|------|
@@ -248,7 +277,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-17 — Responses 模型切换时适配 web-search query 字段
+## 2. 2026-08-17 — Responses 模型切换时适配 web-search query 字段
 
 | Field | Value |
 |-------|-------|
@@ -265,7 +294,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-17 — Pending prompt 的 `[Cancel]` 紧跟提示文案
+## 2. 2026-08-17 — Pending prompt 的 `[Cancel]` 紧跟提示文案
 
 | Field | Value |
 |-------|-------|
@@ -282,7 +311,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Log 行改用显式来源 metadata，不再从文本推断系统 item
+## 2. 2026-08-16 — Log 行改用显式来源 metadata，不再从文本推断系统 item
 
 | Field | Value |
 |-------|-------|
@@ -299,7 +328,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 嵌套 Markdown 列表项不再与父项粘在同一行
+## 2. 2026-08-16 — 嵌套 Markdown 列表项不再与父项粘在同一行
 
 | Field | Value |
 |-------|-------|
@@ -316,7 +345,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 表格数据行之间渲染水平分隔线
+## 2. 2026-08-16 — 表格数据行之间渲染水平分隔线
 
 | Field | Value |
 |-------|-------|
@@ -333,7 +362,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 超宽表格在紧凑布局能放下时保持完整显示（拆块是最后手段）
+## 2. 2026-08-16 — 超宽表格在紧凑布局能放下时保持完整显示（拆块是最后手段）
 
 | Field | Value |
 |-------|-------|
@@ -350,7 +379,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 流式表格行不再因回复缩进裁掉最右管道
+## 2. 2026-08-16 — 流式表格行不再因回复缩进裁掉最右管道
 
 | Field | Value |
 |-------|-------|
@@ -367,7 +396,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 单元格内包含 `|` 的表格不再裂成幻影列
+## 2. 2026-08-16 — 单元格内包含 `|` 的表格不再裂成幻影列
 
 | Field | Value |
 |-------|-------|
@@ -384,7 +413,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 超宽表格拆分为可放下的列块（不再出现被折断的管道行）
+## 2. 2026-08-16 — 超宽表格拆分为可放下的列块（不再出现被折断的管道行）
 
 | Field | Value |
 |-------|-------|
@@ -401,7 +430,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — `/stats` 通过共享 stats 快照立即响应（不再等待运行中的任务）
+## 2. 2026-08-16 — `/stats` 通过共享 stats 快照立即响应（不再等待运行中的任务）
 
 | Field | Value |
 |-------|-------|
@@ -418,7 +447,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Codex 风格排队消息：agent 忙时提交"当前任务结束后自动提交"
+## 2. 2026-08-16 — Codex 风格排队消息：agent 忙时提交"当前任务结束后自动提交"
 
 | Field | Value |
 |-------|-------|
@@ -435,7 +464,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 行内代码改用强调色文字，不再绘制背景补丁
+## 2. 2026-08-16 — 行内代码改用强调色文字，不再绘制背景补丁
 
 | 字段 | 内容 |
 |-------|-------|
@@ -452,7 +481,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 含行内代码的正文/列表行不再整行绘制代码背景块
+## 2. 2026-08-16 — 含行内代码的正文/列表行不再整行绘制代码背景块
 
 | 字段 | 内容 |
 |-------|-------|
@@ -469,7 +498,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 任务统计行支持多语言，并去掉过宽的 📊 图标
+## 2. 2026-08-16 — 任务统计行支持多语言，并去掉过宽的 📊 图标
 
 | 字段 | 内容 |
 |-------|-------|
@@ -486,7 +515,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — `install.sh` 不再报 `tmp: unbound variable`，也不再泄漏克隆目录
+## 2. 2026-08-16 — `install.sh` 不再报 `tmp: unbound variable`，也不再泄漏克隆目录
 
 | 字段 | 内容 |
 |-------|-------|
@@ -503,7 +532,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — `plugin install` 不再 panic，并支持官方 `url` 类型的插件源
+## 2. 2026-08-16 — `plugin install` 不再 panic，并支持官方 `url` 类型的插件源
 
 | 字段 | 内容 |
 |-------|-------|
@@ -520,7 +549,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 覆盖式列表弹窗限定在主区域内
+## 2. 2026-08-16 — 覆盖式列表弹窗限定在主区域内
 
 | 字段 | 内容 |
 |-------|-------|
@@ -537,7 +566,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — 主区域标题不再绘制高亮色块
+## 2. 2026-08-16 — 主区域标题不再绘制高亮色块
 
 | 字段 | 内容 |
 |-------|-------|
@@ -554,7 +583,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — `/stats` 弹窗直接用 ratatui-markdown 渲染
+## 2. 2026-08-15 — `/stats` 弹窗直接用 ratatui-markdown 渲染
 
 | 字段 | 内容 |
 |-------|-------|
@@ -566,7 +595,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — 自动压缩的摘要调用不再开启 thinking
+## 2. 2026-08-15 — 自动压缩的摘要调用不再开启 thinking
 
 | 字段 | 内容 |
 |-------|-------|
@@ -578,7 +607,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — 底栏 `out` 更名为 `max_out_token`，显示真实输出额度
+## 2. 2026-08-15 — 底栏 `out` 更名为 `max_out_token`，显示真实输出额度
 
 | 字段 | 内容 |
 |-------|-------|
@@ -590,7 +619,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — 模型→上下文窗口映射覆盖手工 `model_context_window` 配置
+## 2. 2026-08-15 — 模型→上下文窗口映射覆盖手工 `model_context_window` 配置
 
 | 字段 | 内容 |
 |-------|-------|
@@ -602,7 +631,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — Markdown 正文迁移到 pulldown-cmark；ratatui-markdown 仅保留 Mermaid
+## 2. 2026-08-15 — Markdown 正文迁移到 pulldown-cmark；ratatui-markdown 仅保留 Mermaid
 
 | Field | Value |
 |-------|-------|
@@ -615,7 +644,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — 主区域 Markdown 渲染统一到 ratatui-markdown
+## 2. 2026-08-15 — 主区域 Markdown 渲染统一到 ratatui-markdown
 
 | 字段 | 内容 |
 |-------|-------|
@@ -628,7 +657,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — Thinking、命令输出与 Read 卡片顶部移除重复行数，统一由底部栏承载
+## 2. 2026-08-15 — Thinking、命令输出与 Read 卡片顶部移除重复行数，统一由底部栏承载
 
 | 字段 | 内容 |
 |------|------|
@@ -638,7 +667,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | Thinking 卡片显示 `🧠 Thinking` / `🧠 思考中`；运行中的 bash 卡片显示 `Live output` / `实时输出`；完成的命令卡片显示 `Command output`；Read 卡片显示 `Read <路径>`。所有行数都在卡片底部栏。Popup 标题不变（本就用命令文本或裸 `Command output`）。 |
 | 指针 | `crates/tui/src/i18n.rs`、`crates/tui/src/render/cells/thinking.rs`、`crates/tui/src/widgets/tool_widget.rs`（`detail_card_title`）、`crates/tui/src/render/cells/tool.rs`（`card_bottom_text`）；测试 `live_output_total_excludes_command_prefix_but_popup_keeps_it`、`log_tool_card_renders_when_scrolled_into_placeholder_rows`；[Ch 23](./23_chapter_tui.md) §render pipeline。 |
 
-## 1. 2026-08-15 — Log 按词边界折行；文字选择交互对称化
+## 2. 2026-08-15 — Log 按词边界折行；文字选择交互对称化
 
 | Field | Value |
 |-------|-------|
@@ -648,7 +677,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Behavior after | 单词不再从中间断开（URL/路径/CJK 保持完整直到确实超宽）；选择高亮在每条续行都可见；双击可选中整段中文；Markdown 卡片不再被"静默选中"；误点击清除过期选择而非保留；缩进行上的点击映射到正确字节。 |
 | Pointers | `crates/tui/src/render/util.rs`（`wrap_break_offsets`、`wrap_line`、`visual_pos_to_byte_offset`、`col_to_byte_offset`）、`crates/tui/src/widgets/state/app/visibility.rs`（`find_word_bounds`、`is_markdown_row`、`byte_offset_from_log_position`）、`crates/tui/src/handlers/mouse.rs`（点击/拖拽/三击守卫与面板外点击清除）、`crates/tui/src/render/cells/text.rs`；测试 `wrap_break_offsets_prefers_word_boundaries`、`wrap_line_keeps_word_intact_and_preserves_span_styles`、`wrap_break_offsets_agree_with_byte_offset_hit_testing`、`partial_selection_reverses_target_span_across_wrapped_lines`、`double_click_selects_cjk_run`、`click_below_last_message_clears_selection`、`click_on_markdown_row_does_not_create_invisible_selection`、`drag_into_markdown_row_does_not_extend_selection`、`click_outside_log_clears_selection`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
 
-## 1. 2026-08-15 — Log 滚动改为视觉行；`/skills` 分页
+## 2. 2026-08-15 — Log 滚动改为视觉行；`/skills` 分页
 
 | Field | Value |
 |-------|-------|
@@ -658,7 +687,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Behavior after | 任何高于 viewport 的 cell（长表格、展开的工具卡片）都可用 `j`/`k`/滚轮双向完整遍历；`g`/`G` 仍跳转顶/底，自动跟随流式输出保持可用（`is_log_pinned_to_bottom` 改为比较视觉位置）。`/skills` 每页渲染 15 个 skill 并带页码标题。 |
 | Pointers | `crates/tui/src/widgets/state/app/scroll.rs`（步进函数与滚动 API）、`crates/tui/src/widgets/state/log_scroll.rs`（`visual_top`）、`crates/tui/src/render/log.rs`（视觉钳制与镜像派生）、`crates/tui/src/handlers/{normal,mouse,mod}.rs`（按键、滚轮、`/skills` 分页）、`crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs`（钉底辅助）；回归测试 `tall_markdown_cell_is_fully_traversable`、`skills_command_paginates_long_lists`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
 
-## 1. 2026-08-15 — 主区域渲染打磨：Markdown 缩进、主题化链接、代码背景、隐藏标记
+## 2. 2026-08-15 — 主区域渲染打磨：Markdown 缩进、主题化链接、代码背景、隐藏标记
 
 | Field | Value |
 |-------|-------|
@@ -668,7 +697,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Behavior after | 流式回复中的代码块有背景；H1 保留 highlight 色带；引用渲染为 `▎ text`；标题不带 `## `；链接随主题适配；长粘贴不再触发平方级回退扫描；`/skills` 等 Markdown 通知与回复对齐。 |
 | Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`、`crates/tui/src/render/cells/{text.rs,markdown.rs}`、`crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`；测试 `span_backgrounds_survive_rendering`、`heading_keeps_no_background`、`user_line_mask_matches_the_per_row_walk`、`hardcoded_blue_links_remap_to_theme_heading`、`render_markdown_fenced_code_block`、`render_markdown_heading_markers_are_stripped`、`indented_cell_shifts_content_right`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
 
-## 1. 2026-08-14 — 移除 cron 调度功能
+## 2. 2026-08-14 — 移除 cron 调度功能
 
 | 字段 | 内容 |
 |------|------|
@@ -678,7 +707,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 不再有 `cron_*` 工具；模型无法再创建定时提示。存量 `cron_tasks` 行与遗留 `.tact/cron/` 文件保留在磁盘上不动（死数据，可手动清理）。 |
 | 指针 | 已删除：`crates/tact/src/cron/*`、`crates/tact/src/store/cron_store/*`、`crates/tact/src/tool/cron.rs`、`book/16_chapter_cron*.md`；已编辑：`crates/tact/src/lib.rs`、`crates/tact/src/tool/{mod,registry}.rs`、`crates/tact/src/tool/test_support.rs`、`crates/tact/src/store/mod.rs`、`crates/tact-ui/src/{headless,interactive}.rs`、`crates/tact-ui/tests/{subsystem_tools.rs,harness/mod.rs}`、`crates/tui/src/widgets/tool_widget.rs`、`book/01_chapter_store*`；[Ch 1](./01_chapter_store_zh.md)、[Ch 7](./07_chapter_tool_zh.md)。 |
 
-## 1. 2026-08-14 — 后台输出改为混合存储：全量日志文件 + 记录上的 `output_path`
+## 2. 2026-08-14 — 后台输出改为混合存储：全量日志文件 + 记录上的 `output_path`
 
 | 字段 | 内容 |
 |------|------|
@@ -688,7 +717,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 轮询 JSON 带 `output_path`；agent 可用 `bash tail <path>` / `grep error <path>` 深挖全量日志，而非吞下 50k blob。日志文件从任务启动即存在（spawn 前记录已写入路径），长任务可实时查看。 |
 | 指针 | `crates/tact/src/background.rs`（`BackgroundTaskRecord.output_path`、`open_log_file`、`log_write`、`run_background_process`）、`crates/tact/src/store/background_store/sqlite.rs`（schema + 迁移 + upsert/读取）、`crates/tact/src/tool/background_run.rs`（列表）；测试 `run_writes_full_output_to_log_file_and_truncates_db_record`、`migrates_legacy_table_without_output_path`；[Ch 13](./13_chapter_background_zh.md) §2、§3、§6、§8；[Ch 1](./01_chapter_store_zh.md)。 |
 
-## 1. 2026-08-13 — Plan mode 只读 shell 分类加固：拒绝换行符命令分隔
+## 2. 2026-08-13 — Plan mode 只读 shell 分类加固：拒绝换行符命令分隔
 
 | 字段 | 内容 |
 |------|------|
@@ -698,7 +727,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | `ls\nrm file`、`echo hi\nrm -f x`、CRLF 变体及行首/行尾裸换行一律归为 **Write**（plan mode 下提示/拒绝）；`echo "line1\nline2"`、`cat "file\nname"`（引号内字面换行）仍为 Read。 |
 | 指针 | `crates/tact/src/tool/readonly_shell.rs`（`split_plain_command`、`GIT_GLOBAL_OPTIONS`、`find_git_global_option`、`git_has_unsafe_global_option`）；同文件回归测试；[Ch 10](./10_chapter_permission_zh.md) §7。 |
 
-## 1. 2026-08-13 — OpenAI 兼容 Chat Completions 将传输失败以 `LlmError::Request` 呈现
+## 2. 2026-08-13 — OpenAI 兼容 Chat Completions 将传输失败以 `LlmError::Request` 呈现
 
 | 字段 | 内容 |
 |------|------|
@@ -708,7 +737,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 端点不可达/连接断开时显示 `request error: …` 而非 `unsupported: …`；超限 token 数饱和而非回绕；非法工具参数可在 debug 日志中看到。 |
 | 指针 | `crates/tact_llm/src/error.rs`（`LlmError::Request`）、`crates/tact_llm/src/openai/compatible/mod.rs`（`OpenAiAdapter` chat/流式路径、`u32_token_count`、`tool_use_block_from_parts`）；[Ch 22](./22_chapter_llm_zh.md)。 |
 
-## 1. 2026-08-13 — TUI 输入框长行软换行，光标随折行后的显示行定位
+## 2. 2026-08-13 — TUI 输入框长行软换行，光标随折行后的显示行定位
 
 | 字段 | 内容 |
 |------|------|
@@ -718,7 +747,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 长行在框内折行而非溢出；高度随折行自动扩展（1–3 显示行 + border）；光标与滚动跟随折行行。提交文本不变。 |
 | 指针 | `crates/tui/src/render/input.rs`（`wrap_line`、`caret_in_wrapped`）；`crates/tui/src/lib.rs`（输入框高度）；测试见 `input.rs`（`wrap_line_splits_at_column_width`、`caret_in_wrapped_maps_logical_column_to_display_row`、`input_box_soft_wraps_overlong_line`、`input_box_scrolls_to_caret_on_wrapped_line`）；[第 23 章](./23_chapter_tui_zh.md) §6.2、§6.6。 |
 
-## 1. 2026-08-13 — Plan mode 可运行可证明只读的 shell 命令（`ls`、`grep` 等）
+## 2. 2026-08-13 — Plan mode 可运行可证明只读的 shell 命令（`ls`、`grep` 等）
 
 | 字段 | 内容 |
 |------|------|
@@ -728,7 +757,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | Plan mode 下 `ls -la`、`grep -rn x .`、`git status` 无需提示即可运行；`cargo test`、管道、重定向、未知程序与不安全选项（`find -delete`、`git push` 等）仍被拒绝。`bash` 与 `background_run` 共用同一分类，因此只读命令在 Default 模式下也会自动放行。 |
 | 指针 | `crates/tact/src/tool/readonly_shell.rs`；`crates/tact/src/tool/metadata.rs`（`ShellCommand::resolve`）；测试见 `crates/tact/src/tool/readonly_shell.rs` 与 `crates/tact/src/permission/mod.rs`（`plan_mode_allows_readonly_shell_commands_and_denies_others`）；[Ch 10](./10_chapter_permission_zh.md) §2、§4、§7。 |
 
-## 1. 2026-08-12 — async-openai 从 `vendor/async-openai` 切换到本地维护的 fork `../async-openai`
+## 2. 2026-08-12 — async-openai 从 `vendor/async-openai` 切换到本地维护的 fork `../async-openai`
 
 | 字段 | 值 |
 |------|-----|
@@ -738,7 +767,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 无用户可见变化：配置阈值时 wire body 仍携带 `context_management`。维护移到仓库外：直接改本地 fork（`/Users/rg/Projects/async-openai`，分支 `feat/tact`），不再 re-vendor。 |
 | 指针 | `/Users/rg/Projects/async-openai`（fork，`feat/tact` 上提交 `7de8bb4` / `5e22785` / `12488eb`）；`Cargo.toml` 的 `async-openai-responses` 依赖；`crates/tact_llm/src/openai/responses/convert.rs`（`create_response` builder 注入）；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
 
-## 1. 2026-08-12 — Worktree 存储从 JSON 文件迁移到 SQLite（`WorktreeStore`）
+## 2. 2026-08-12 — Worktree 存储从 JSON 文件迁移到 SQLite（`WorktreeStore`）
 
 | 字段 | 值 |
 |------|-----|
@@ -748,7 +777,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 泳道与事件持久化在 `tact.db`（旧 `worktrees/index.json` 条目若不手动导出则丢失）；`worktree_*` 表面不变；`session_id` 出现在 worktree 记录中。 |
 | 指针 | `crates/tact/src/store/worktree_store/{mod,sqlite}.rs`、`crates/tact/src/worktree/mod.rs`、`crates/tact/src/tool/worktree.rs`、`crates/tact-ui/src/{headless,interactive}.rs`；[Ch 1](./01_chapter_store_zh.md) §5–6、[Ch 15](./15_chapter_worktree_zh.md) §2–5。 |
 
-## 1. 2026-08-12 — Team 存储从 JSON 文件迁移到 SQLite（`TeamStore`）
+## 2. 2026-08-12 — Team 存储从 JSON 文件迁移到 SQLite（`TeamStore`）
 
 | 字段 | 值 |
 |------|-----|
@@ -758,7 +787,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | roster 与 inbox 持久化在 `tact.db`（旧 `team/` JSON 条目若不手动导出则丢失）；`spawn_teammate` / `broadcast` / `read_inbox` / `plan_approval` / `shutdown_*` 表面不变；跨进程 inbox 写入不再在文件追加上竞态。 |
 | 指针 | `crates/tact/src/store/team_store/{mod,sqlite}.rs`、`crates/tact/src/team.rs`、`crates/tact/src/tool/team.rs`、`crates/tact-ui/src/{headless,interactive}.rs`；[Ch 1](./01_chapter_store_zh.md) §5–6、[Ch 14](./14_chapter_team_zh.md) §3–5。 |
 
-## 1. 2026-08-12 — Cron 与后台任务从 JSON 文件迁移到 SQLite（`CronStore` / `BackgroundStore`）
+## 2. 2026-08-12 — Cron 与后台任务从 JSON 文件迁移到 SQLite（`CronStore` / `BackgroundStore`）
 
 | 字段 | 值 |
 |------|-----|
@@ -768,7 +797,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | cron id 从 `00000001` 重新开始（旧条目若不从 `.tact/cron/` 手动导出则丢失）；`cron_*` / `background_*` / `/background` 表面不变；启动孤儿修复（`running` → `error`）改为扫表；`session_id` 出现在 cron JSON 与后台记录中。 |
 | 指针 | `crates/tact/src/store/cron_store/{mod,sqlite}.rs`、`crates/tact/src/store/background_store/{mod,sqlite}.rs`、`crates/tact/src/cron/mod.rs`、`crates/tact/src/background.rs`、`crates/tact/src/tool/{cron,background_run}.rs`、`crates/tact-ui/src/{headless,interactive,driver}.rs`；[Ch 1](./01_chapter_store_zh.md) §5–6、[Ch 13](./13_chapter_background_zh.md) §2–5。（Ch 16 已于 2026-08-14 随 cron 功能一并删除。） |
 
-## 1. 2026-08-11 — 任务存储从 JSON 文件迁移到 SQLite（`TaskStore`）
+## 2. 2026-08-11 — 任务存储从 JSON 文件迁移到 SQLite（`TaskStore`）
 
 | 字段 | 值 |
 |------|-----|
@@ -778,7 +807,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 新任务 ID 从 1 开始（旧的 1–233 条记录若不从 `.tact/tasks/` 手动导出则丢失）；依赖更新原子化；`task_*` 工具表面不变（`session_id` 出现在任务 JSON / 快照中）。 |
 | 指针 | `crates/tact/src/store/task_store/{mod,sqlite}.rs`、`crates/tact/src/task/mod.rs`、`crates/tact/src/tool/task.rs`；[Ch 1](./01_chapter_store_zh.md) §6、[Ch 19](./19_chapter_persistent_tasks_zh.md) §2–3。 |
 
-## 1. 2026-08-11 — 摘要器 thinking budget 限制在 `max_tokens` 之下；Kimi K3 默认 reasoning 预留
+## 2. 2026-08-11 — 摘要器 thinking budget 限制在 `max_tokens` 之下；Kimi K3 默认 reasoning 预留
 
 | 字段 | 值 |
 |------|-----|
@@ -788,7 +817,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 使用大 thinking budget 的 Anthropic 压缩会发送 `budget_tokens = max_tokens - 1` 而非以 400 失败；本来就放得下的 budget 原样透传。未显式配置 effort 的 Kimi K3 获得与 DeepSeek 相同的 75% reasoning 预留。 |
 | 指针 | `crates/tact/src/agent/mod.rs` 中 `compact_summary_thinking` 与 `compact_summary_reasoning_reserve_percent`（`compact_history_local_with_mode`）；测试 `compact_summary_thinking_clamps_below_max_tokens`、`local_compact_clamps_thinking_budget_below_summary_max_tokens`、`compact_summary_reasoning_reserve_percent_tiers`；[Ch 5](./05_chapter_compact_zh.md) §5 步骤 3。 |
 
-## 1. 2026-08-10 — 本地 vendor async-openai 为 `async-openai-local`，获得类型化 `context_management`
+## 2. 2026-08-10 — 本地 vendor async-openai 为 `async-openai-local`，获得类型化 `context_management`
 
 | 字段 | 值 |
 |------|-----|
@@ -798,7 +827,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 无用户可见变化：配置阈值时 wire body 仍携带 `context_management`。维护改为本地化：新的 Responses 字段可以直接加到 vendor，不必等待上游 Rust crate。 |
 | 指针 | `vendor/async-openai/`（`README.fork.md`、`src/types/responses/response.rs`）；`Cargo.toml` 的 `async-openai-responses` 依赖；`crates/tact_llm/src/openai/responses/convert.rs`（`create_response` builder 注入）；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
 
-## 1. 2026-08-10 — Responses 端点未实现 `/responses/compact` 时给出明确报错
+## 2. 2026-08-10 — Responses 端点未实现 `/responses/compact` 时给出明确报错
 
 | 字段 | 值 |
 |------|-----|
@@ -808,7 +837,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 在未实现 `/responses/compact` 的端点上触发压缩时，会立即显示点名缺失端点和 base URL 的明确错误（无 HTML 倾倒、无重试）；会话状态保持不变。 |
 | 指针 | `crates/tact_llm/src/openai/responses/mod.rs` 的 `compact()`；测试 `compact_reports_missing_endpoint_clearly`；[Ch 22](./22_chapter_llm_zh.md) §6.2、[Ch 5](./05_chapter_compact_zh.md)。 |
 
-## 1. 2026-08-10 — Responses 适配器在兼容端点无终态事件关闭流时恢复
+## 2. 2026-08-10 — Responses 适配器在兼容端点无终态事件关闭流时恢复
 
 | 字段 | 值 |
 |------|-----|
@@ -818,7 +847,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 之前因 "stream ended without a terminal event" 直接失败的回合，现在在响应已完整交付时从 done 序列/流式文本正常完成；真正空流或 compaction 不完整的流仍会大声失败。 |
 | 指针 | `crates/tact_llm/src/openai/responses/stream.rs` 的 `finish()`；测试 `no_terminal_event_recovers_from_complete_done_sequence`、`no_terminal_event_recovers_visible_text`、`no_terminal_event_empty_stream_is_error`、`no_terminal_event_with_pending_compaction_is_error`；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
 
-## 1. 2026-08-10 — 本地压缩为 reasoning / thinking token 预留输出预算
+## 2. 2026-08-10 — 本地压缩为 reasoning / thinking token 预留输出预算
 
 | 字段 | 值 |
 |------|-----|
@@ -828,7 +857,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 配置了 reasoning effort（或在 DeepSeek 上）的压缩摘要会获得更大的 wire `max_tokens`（例如 128k 窗口 + high effort → 2,000 + 1,500 = 3,500），而文本部分仍拿到完整经典预算；摘要请求携带与主循环相同的 thinking 配置；输入预留同时计入 reasoning 与 thinking 余量，当窗口在扣除这些预留后放不下提示词时，仍以原有的 "too small" 错误提前失败。 |
 | 指针 | `compact_summary_reasoning_reserve_percent` 与 `crates/tact/src/agent/mod.rs` 中 `compact_history_local_with_mode` 的预算计算；测试 `compact_summary_reasoning_reserve_percent_tiers`、`local_compact_reserves_reasoning_budget_and_forwards_thinking`、`local_compact_input_reservation_subtracts_thinking_budget`；[Ch 5](./05_chapter_compact_zh.md) §5 步骤 3。 |
 
-## 1. 2026-08-10 — `background_run` 实时输出到工具卡片（类 bash）
+## 2. 2026-08-10 — `background_run` 实时输出到工具卡片（类 bash）
 
 | 字段 | 值 |
 |------|-----|
@@ -838,7 +867,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | `background_run cargo build` 在 TUI 卡片中显示 spinner + 实时构建输出，进程退出时以 ✓/✗ 与耗时收尾 —— 即使 agent 那一轮早已结束。模型仍无完成 push，须轮询 `check_background`。 |
 | 指针 | `crates/tact/src/background.rs`（`BackgroundProgressSink`、`run_background_process`）；`crates/tact/src/tool/background_run.rs`；`crates/tact/src/tool/metadata.rs` 的 `LiveOutputPolicy::Background`；`crates/protocol/src/agent.rs` 的 `AgentUpdate::BackgroundTaskFinished`；TUI `on_step_finished` / `on_background_task_finished`（`crates/tui/src/widgets/state/app/agent.rs`）；[Ch 13](./13_chapter_background_zh.md)、[Ch 25](./25_chapter_protocol_zh.md)。 |
 
-## 1. 2026-08-10 — `/background` slash 命令查看后台任务状态
+## 2. 2026-08-10 — `/background` slash 命令查看后台任务状态
 
 | 字段 | 值 |
 |------|-----|
@@ -848,7 +877,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | `/background` 每行输出一个任务（id、状态、命令）；`/background <id>` 输出该任务 pretty JSON；未知 id 显示错误。不新增状态、不做完成推送 —— 命令只读取持久化/内存中的记录。 |
 | 指针 | `crates/protocol/src/agent.rs` 中的 `UserCommand::QueryBackground`；`crates/tact-ui/src/driver.rs` 的 driver 分支；`crates/tui/src/widgets/state/mod.rs` 的 `PALETTE_COMMANDS`；`crates/tui/src/handlers/mod.rs` 的 `execute_palette_command`；[Ch 13](./13_chapter_background_zh.md)、[Ch 23](./23_chapter_tui_zh.md) §3。 |
 
-## 1. 2026-08-09 — OpenAI Responses 托管 web search（`protocol = "responses"`）
+## 2. 2026-08-09 — OpenAI Responses 托管 web search（`protocol = "responses"`）
 
 | 字段 | 值 |
 |------|-----|
@@ -859,7 +888,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | 任意 `protocol = "responses"` 会话——OpenAI、DeepSeek 或 custom OpenAI-compatible——都自动获得托管 web search；TUI 显示 `🔍 Web Search` 卡片，标题为 query，sources 为可展开详情；失败携带 status/query/action 诊断。 |
 | 指针 | `crates/tact_llm/src/openai/responses/{convert,stream,wire,mod}.rs`、`crates/tact_llm/src/provider.rs`（`build_openai_responses`）、`crates/tui/src/widgets/tool_widget.rs`、AGENTS.md "Hosted tools (Provider-executed) — design invariants"、[Ch 22 §6.2.1.1](./22_chapter_llm_zh.md)。 |
 
-## 1. 2026-08-09 — 任务统计行 `[copy]` 复制最近一轮
+## 2. 2026-08-09 — 任务统计行 `[copy]` 复制最近一轮
 
 | 字段 | 值 |
 |------|-----|
@@ -869,7 +898,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | 点击统计行的 `[copy]` → 剪贴板为本轮用户/助手内容；不包含更早回合。 |
 | 指针 | `messages.rs` 的 `add_task_stats_block` / `copy_turn_ending_at_stats`；`handlers/mouse.rs` 命中；回归测试 `copy_turn_ending_at_stats_copies_last_turn_only`。 |
 
-## 1. 2026-08-09 — Mermaid 图双击弹窗复制源码
+## 2. 2026-08-09 — Mermaid 图双击弹窗复制源码
 
 | 字段 | 值 |
 |------|-----|
@@ -879,7 +908,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | 双击任意 diagram 行 → 源码弹窗（`y` / `j/k` / `Esc`）；失败 Mermaid 仍走 code-card 路径。 |
 | 指针 | Spec `docs/superpowers/specs/2026-08-09-mermaid-diagram-copy-popup-design.md`；`finish_stream_code_block`；`popups/mermaid_popup.rs`；回归测试 `log_renders_streamed_mermaid_without_code_card`、`mermaid_popup_copy_uses_source_not_ascii`。 |
 
-## 1. 2026-08-09 — Mermaid 时序图自消息改为 U 形回环
+## 2. 2026-08-09 — Mermaid 时序图自消息改为 U 形回环
 
 | 字段 | 值 |
 |------|-----|
@@ -889,7 +918,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | 自调用在生命线上呈现清晰的 U 形折返；末列自消息向左回环，避免画出图外。 |
 | 指针 | `crates/tui/src/render/mermaid_sequence.rs`（`self_loop_rows`）；回归测试 `self_message_draws_u_shaped_loop`、`self_message_on_last_participant_loops_left`。 |
 
-## 1. 2026-08-09 — Mermaid 时序图标签不再掉字或错位
+## 2. 2026-08-09 — Mermaid 时序图标签不再掉字或错位
 
 | 字段 | 值 |
 |------|-----|
@@ -899,7 +928,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | 长 ASCII / CJK 箭头标签保留全部字符（必要时在 `│` 两侧拆开），各行显示宽度一致，生命线保持纵向对齐。 |
 | 指针 | `crates/tui/src/render/mermaid_sequence.rs`（`label_row`）；回归测试 `cjk_label_keeps_same_display_width_as_lifeline_row`、`long_ascii_label_is_not_eaten_by_lifelines`、`self_message_keeps_lifeline_intact`。 |
 
-## 1. 2026-08-08 — TUI 使用自有渲染器绘制 Mermaid 时序图
+## 2. 2026-08-08 — TUI 使用自有渲染器绘制 Mermaid 时序图
 
 | 字段 | 值 |
 |------|-----|
@@ -909,7 +938,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | 只有声明的参与者渲染为列；`A->>+B` 指向参与者 `B`；CJK 标签在生命线之间居中，且不会覆盖 `│`。无法解析的源码仍回退到普通代码渲染。 |
 | 指针 | `crates/tui/src/render/mermaid_sequence.rs`；路由：`crates/tui/src/render/render_md.rs`（`render_mermaid_block`）；回归测试位于 `mermaid_sequence.rs`。 |
 
-## 1. 2026-08-08 — Subagent 模型选择器使用自身 provider
+## 2. 2026-08-08 — Subagent 模型选择器使用自身 provider
 
 | 字段 | 值 |
 |------|-----|
@@ -919,7 +948,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | Subagent 选择器只显示属于 subagent provider 的配置模型和 API 发现模型；主 agent 的 `/model` 选择器仍使用主 provider。 |
 | 指针 | `crates/tact_llm/src/models.rs`、`crates/tui/src/handlers/select.rs`；回归测试 `explicit_provider_model_query_uses_subagent_credentials`；设计：`docs/superpowers/specs/2026-08-08-subagent-model-picker-provider-design.md`；计划：`docs/superpowers/plans/2026-08-08-subagent-model-picker-provider.md`。 |
 
-## 1. 2026-08-08 — DeepSeek 与 Kimi Responses 保持配置门控
+## 2. 2026-08-08 — DeepSeek 与 Kimi Responses 保持配置门控
 
 | 字段 | 值 |
 |------|-----|
@@ -930,7 +959,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 指针 | `crates/tact/src/config/resolve.rs`；provider 构造：`crates/tact_llm/src/provider.rs`；相关设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；压缩行为：第 5 章。 |
 
 
-## 1. 2026-08-08 — OpenAI Responses 保留未知 wire item
+## 2. 2026-08-08 — OpenAI Responses 保留未知 wire item
 
 | 字段 | 值 |
 |------|-----|
@@ -941,7 +970,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 指针 | `crates/tact_llm/src/openai/responses/wire.rs`、`request_options.rs`、`stream.rs`、`provider.rs`；设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；计划：`docs/superpowers/plans/2026-08-08-responses-compatibility-foundation.md`；压缩：第 5 章与 `docs/compaction.md`。 |
 
 
-## 1. 2026-08-08 — 主区域 Markdown 将完整 Mermaid fence 渲染为终端图
+## 2. 2026-08-08 — 主区域 Markdown 将完整 Mermaid fence 渲染为终端图
 
 | 字段 | 值 |
 |------|-----|
@@ -955,7 +984,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 ---
 
 
-## 1. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
+## 2. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
 
 | 字段 | 值 |
 |------|-----|
@@ -989,7 +1018,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — 恢复重试消息附带底层错误
+## 2. 2026-08-06 — 恢复重试消息附带底层错误
 
 | Field | Value |
 |-------|-------|
@@ -1002,7 +1031,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — 未知 provider 名称放行为自定义 OpenAI 兼容 provider
+## 2. 2026-08-06 — 未知 provider 名称放行为自定义 OpenAI 兼容 provider
 
 | 字段 | 值 |
 |------|-----|
@@ -1015,7 +1044,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — 账户轮询每次故障只提示一次，而非每个退避周期都提示
+## 2. 2026-08-06 — 账户轮询每次故障只提示一次，而非每个退避周期都提示
 
 | 字段 | 值 |
 |------|-----|
@@ -1028,7 +1057,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Kimi Code 用量查询仅限官方 `https://api.kimi.com/coding` 端点
+## 2. 2026-08-06 — Kimi Code 用量查询仅限官方 `https://api.kimi.com/coding` 端点
 
 | 字段 | 值 |
 |------|-----|
@@ -1041,7 +1070,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — DeepSeek 余额查询仅限官方 `https://api.deepseek.com` 端点
+## 2. 2026-08-06 — DeepSeek 余额查询仅限官方 `https://api.deepseek.com` 端点
 
 | 字段 | 值 |
 |------|-----|
@@ -1054,7 +1083,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — `/tasks-dag` 弹窗打开期间新建的任务不显示
+## 2. 2026-08-06 — `/tasks-dag` 弹窗打开期间新建的任务不显示
 
 | 字段 | 值 |
 |------|-----|
@@ -1067,7 +1096,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — `/tasks-dag` 依赖边缺失（任务存储不对称）
+## 2. 2026-08-06 — `/tasks-dag` 依赖边缺失（任务存储不对称）
 
 | 字段 | 值 |
 |------|-----|
@@ -1080,7 +1109,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — 任务完成后显示统计块（耗时 · 模型 · tokens）
+## 2. 2026-08-06 — 任务完成后显示统计块（耗时 · 模型 · tokens）
 
 | 字段 | 值 |
 |------|-----|
@@ -1093,7 +1122,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — `/tasks-dag` 改用 ratatui-markdown 渲染 Mermaid（替换 meraid）
+## 2. 2026-08-06 — `/tasks-dag` 改用 ratatui-markdown 渲染 Mermaid（替换 meraid）
 
 | 字段 | 值 |
 |------|-----|
@@ -1106,7 +1135,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — 压缩摘要 MaxTokens 截断后自动续写
+## 2. 2026-08-06 — 压缩摘要 MaxTokens 截断后自动续写
 
 | 字段 | 值 |
 |------|-----|
@@ -1119,7 +1148,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — 首次运行自动生成默认配置 ~/.tact/config.toml
+## 2. 2026-08-06 — 首次运行自动生成默认配置 ~/.tact/config.toml
 
 | 字段 | 值 |
 |------|-----|
@@ -1132,7 +1161,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Session 统计新增 RTK 输出过滤器指标
+## 2. 2026-08-06 — Session 统计新增 RTK 输出过滤器指标
 
 | 字段 | 值 |
 |------|-----|
@@ -1145,7 +1174,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-05 — 统一工具族卡片文案（background + team）
+## 2. 2026-08-05 — 统一工具族卡片文案（background + team）
 
 | 字段 | 值 |
 |------|-----|
@@ -1158,7 +1187,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-05 — `/model` 按 provider 分流 budget/effort + model→档位映射 + effort/model per-agent
+## 2. 2026-08-05 — `/model` 按 provider 分流 budget/effort + model→档位映射 + effort/model per-agent
 
 | 字段 | 值 |
 |------|-----|
@@ -1171,7 +1200,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 2. 2026-08-04 — `tact upgrade` 自升级命令
+## 3. 2026-08-04 — `tact upgrade` 自升级命令
 
 | 字段 | 值 |
 |------|------|
@@ -1184,7 +1213,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-04 — Google 语音转写遵循标准代理环境变量
+## 2. 2026-08-04 — Google 语音转写遵循标准代理环境变量
 
 | 字段 | 值 |
 |------|------|
@@ -1197,7 +1226,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-02 — pre-push 钩子不再把 `GIT_DIR` / `GIT_WORK_TREE` 泄漏给 `cargo test`
+## 2. 2026-08-02 — pre-push 钩子不再把 `GIT_DIR` / `GIT_WORK_TREE` 泄漏给 `cargo test`
 
 | 字段 | 值 |
 |------|------|
@@ -1210,7 +1239,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-02 — Google Cloud API key 语音转文字 provider
+## 2. 2026-08-02 — Google Cloud API key 语音转文字 provider
 
 | 字段 | 值 |
 |------|------|
@@ -1223,7 +1252,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-02 — 压缩交接摘要改为类型化消息 cell
+## 2. 2026-08-02 — 压缩交接摘要改为类型化消息 cell
 
 | 字段 | 值 |
 |------|------|
@@ -1234,7 +1263,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | `build_compacted_history` / `compacted_context` 产出带包裹、带类型标记的 cell：`<context-handoff>\nThis conversation was compacted…\n\n{summary}\n</context-handoff>`。`collect_user_messages` 按类型跳过它；重载会话按内容重新识别。普通消息的 wire 格式不变；Anthropic 永远看不到 `kind`。 |
 | 指针 | `crates/tact_llm/src/content.rs`（`MessageKind`、`Message::with_kind/is_summary`）；`crates/tact/src/compact/mod.rs`（`summary_message`、`is_summary_message`、`build_compacted_history`、`compacted_context`）；`crates/tact/src/store/session_store/sqlite.rs`（`load_session`）；`book/05_chapter_compact_zh.md` |
 
-## 1. 2026-08-02 — DeepSeek 现在可以使用 OpenAI Responses 协议
+## 2. 2026-08-02 — DeepSeek 现在可以使用 OpenAI Responses 协议
 
 | 字段 | 值 |
 |------|------|
@@ -1245,7 +1274,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | DeepSeek 条目可设置 `protocol = "responses"`；请求发往 `{base_url}/responses`，具备自动压缩与 reasoning 语义。显式 `POST /responses/compact` 在 DeepSeek 端点未实现（2026-08-02 实测），因此 DeepSeek + Responses 走本地摘要压缩并清掉失效基线；OpenAI Responses 仍保持严格"不回退"契约。默认仍为 `chat_completions`。 |
 | 指针 | `crates/tact/src/config/resolve.rs`（`resolve_llm` 校验）；`crates/tact_llm/src/provider.rs`（`build_client`）；`docs/superpowers/specs/2026-08-02-deepseek-responses-design.md`；`docs/superpowers/plans/2026-08-02-deepseek-responses.md`；第 21 章（配置）、第 5 章（压缩） |
 
-## 1. 2026-08-01 — Responses 压缩阈值现在会进入普通 `/responses` 请求（原生 `context_management`）
+## 2. 2026-08-01 — Responses 压缩阈值现在会进入普通 `/responses` 请求（原生 `context_management`）
 
 | 字段 | 值 |
 |------|------|
@@ -1258,7 +1287,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-01 — Markdown 列表后的空 fenced block 不再把尾行劫持进代码卡片
+## 2. 2026-08-01 — Markdown 列表后的空 fenced block 不再把尾行劫持进代码卡片
 
 | 字段 | 值 |
 |------|------|
@@ -1269,7 +1298,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 改后行为 | markdown 列表后出现的空 fence 片段，不会再把后续尾行渲染成 `Click for full code` 卡片内容。真正带语言标签的流式代码块仍保持 code card 渲染。 |
 | 指针 | `crates/tui/src/widgets/state/app/agent.rs`（stream fence promotion guard）；`crates/tui/src/render/render_gap_tests.rs`（`log_markdown_list_then_empty_fence_stays_in_markdown_flow`）；`crates/tui/src/render/render_md.rs`（`render_markdown_list_then_fenced_code_then_list_tail`）；第 23、24 章 |
 
-## 1. 2026-07-28 — 主题检测回退使用了错误主题（Ink 而非 Retro）
+## 2. 2026-07-28 — 主题检测回退使用了错误主题（Ink 而非 Retro）
 
 | 字段 | 值 |
 |------|------|
@@ -1282,7 +1311,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Log 左边框滚动条残影
+## 2. 2026-07-28 — Log 左边框滚动条残影
 
 | 字段 | 值 |
 |------|------|
@@ -1295,7 +1324,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — CRUD 类工具族卡片标签按动作区分
+## 2. 2026-07-28 — CRUD 类工具族卡片标签按动作区分
 
 | 字段 | 值 |
 |------|------|
@@ -1308,7 +1337,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Bash 工具卡片标签恢复为 `$ Bash`
+## 2. 2026-07-28 — Bash 工具卡片标签恢复为 `$ Bash`
 
 | 字段 | 值 |
 |------|------|
@@ -1321,7 +1350,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — 语音快捷键吞掉全部键盘输入
+## 2. 2026-07-28 — 语音快捷键吞掉全部键盘输入
 
 | 字段 | 值 |
 |------|------|
@@ -1334,7 +1363,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — 输入框顶边恢复；语音按钮居中
+## 2. 2026-07-28 — 输入框顶边恢复；语音按钮居中
 
 | 字段 | 值 |
 |------|------|
@@ -1347,7 +1376,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — 可配置语音录制快捷键
+## 2. 2026-07-28 — 可配置语音录制快捷键
 
 | 字段 | 值 |
 |------|------|
@@ -1359,7 +1388,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — 权限：shell 标为 Write、High 尊重 settings allow、headless ask 默认
+## 2. 2026-07-28 — 权限：shell 标为 Write、High 尊重 settings allow、headless ask 默认
 
 | 字段 | 值 |
 |------|-----|
@@ -1376,7 +1405,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — `/model` 思考预算未同步到状态栏
+## 2. 2026-07-28 — `/model` 思考预算未同步到状态栏
 
 | 字段 | 值 |
 |------|-----|
@@ -1393,7 +1422,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — 可点击的语音转文字输入（标题栏）
+## 2. 2026-07-28 — 可点击的语音转文字输入（标题栏）
 
 | 字段 | 值 |
 |------|-----|
@@ -1410,7 +1439,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — 子 agent 元数据显示在工具卡片头部
+## 2. 2026-07-28 — 子 agent 元数据显示在工具卡片头部
 
 | 字段 | 值 |
 |------|-----|
@@ -1427,7 +1456,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-27 — 权限设置持久化（基于 JSON 的动态规则）
+## 2. 2026-07-27 — 权限设置持久化（基于 JSON 的动态规则）
 
 | 字段 | 值 |
 |------|-----|
@@ -1442,7 +1471,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **指针：** `crates/tact/src/permission/settings.rs`、`crates/tact/src/permission/mod.rs`、`crates/tact/src/consts.rs`、`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact/src/tool/subagent.rs`、`crates/tact-ui/src/interactive.rs`、`crates/tact-ui/src/headless.rs`；`docs/superpowers/specs/2026-07-27-permission-settings-design.md`；`docs/superpowers/plans/2026-07-27-permission-settings.md`；`docs/state_machines.md §5`；`config.example.toml`；第 7、21 章。
 
-## 1. 2026-07-27 — 日志滚动恢复主题背景
+## 2. 2026-07-27 — 日志滚动恢复主题背景
 
 | 字段 | 值 |
 |------|-----|
@@ -1459,7 +1488,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-27 — 子 agent 弹窗显示所用模型
+## 2. 2026-07-27 — 子 agent 弹窗显示所用模型
 
 | 字段 | 值 |
 |------|-----|
@@ -1476,8 +1505,8 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-27 — Ink 主题 + 统一弹窗外框
-## 1. 2026-07-27 — Ink 主题 + 统一弹出层 Chrome
+## 2. 2026-07-27 — Ink 主题 + 统一弹窗外框
+## 2. 2026-07-27 — Ink 主题 + 统一弹出层 Chrome
 
 | 字段 | 值 |
 |------|-----|
@@ -1494,7 +1523,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-26 — 子 agent 工具改名 `task` → `spawn_subagent`
+## 2. 2026-07-26 — 子 agent 工具改名 `task` → `spawn_subagent`
 
 | 字段 | 值 |
 |------|-----|
@@ -1511,7 +1540,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-26 — `TasksChanged` 不再追加 Log 卡片
+## 2. 2026-07-26 — `TasksChanged` 不再追加 Log 卡片
 
 | 字段 | 值 |
 |------|-----|
@@ -1528,7 +1557,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-26 — sticky 主机分隔 tab 与正文
+## 2. 2026-07-26 — sticky 主机分隔 tab 与正文
 
 | 字段 | 值 |
 |------|-----|
@@ -1545,7 +1574,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-26 — Bash 非 0 退出记为 Failed
+## 2. 2026-07-26 — Bash 非 0 退出记为 Failed
 
 | 字段 | 值 |
 |------|-----|
@@ -1562,7 +1591,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — Subagent sticky tab（主 Log 保持干净）
+## 2. 2026-07-25 — Subagent sticky tab（主 Log 保持干净）
 
 | 字段 | 值 |
 |------|-----|
@@ -1579,7 +1608,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — 子 agent session 经 `ref_id` 关联
+## 2. 2026-07-25 — 子 agent session 经 `ref_id` 关联
 
 | 字段 | 值 |
 |------|-----|
@@ -1596,7 +1625,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — 低占用时 ctx 进度条可见
+## 2. 2026-07-25 — 低占用时 ctx 进度条可见
 
 | 字段 | 值 |
 |------|-----|
@@ -1613,7 +1642,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — Task 工具标题、Log 短卡、sticky 树、`/tasks-dag`
+## 2. 2026-07-25 — Task 工具标题、Log 短卡、sticky 树、`/tasks-dag`
 
 | 字段 | 值 |
 |------|-----|
@@ -1630,7 +1659,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — 任务清单完整渲染（去掉 `… +N`）
+## 2. 2026-07-25 — 任务清单完整渲染（去掉 `… +N`）
 
 | 字段 | 值 |
 |------|-----|
@@ -1647,7 +1676,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — 同一 turn 内串行持久化 `task_*` 工具
+## 2. 2026-07-25 — 同一 turn 内串行持久化 `task_*` 工具
 
 | 字段 | 值 |
 |------|-----|
@@ -1664,7 +1693,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-24 — 持久任务 sticky 进度 + Log 详情卡
+## 2. 2026-07-24 — 持久任务 sticky 进度 + Log 详情卡
 
 | 字段 | 值 |
 |------|-----|
@@ -1685,7 +1714,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-24 — 底栏去掉冗余 `[Log]`
+## 2. 2026-07-24 — 底栏去掉冗余 `[Log]`
 
 | 字段 | 值 |
 |------|-----|
@@ -1703,7 +1732,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 代码 | `crates/tui/src/render/bar.rs` |
 
 ---
-## 2. 2026-07-24 — Slash 弹窗 Esc 提示 + 优先于 overlay
+## 3. 2026-07-24 — Slash 弹窗 Esc 提示 + 优先于 overlay
 
 | 字段 | 值 |
 |------|-----|
@@ -1724,7 +1753,7 @@ Insert + slash 活跃时，按键路由优先于 `handle_overlay_key`，保证 E
 | 代码 | `crates/tui/src/render/popups/slash_command.rs`、`crates/tui/src/lib.rs` |
 
 ---
-## 3. 2026-07-24 — 空闲底栏 `Up` 低开销走秒
+## 4. 2026-07-24 — 空闲底栏 `Up` 低开销走秒
 
 | 字段 | 值 |
 |------|-----|
@@ -1744,7 +1773,7 @@ spinner dirty；轮询间隔不变。Done 继续靠 `should_repaint` 强制重�
 | 代码 | `crates/tui/src/lib.rs`（`on_poll_timeout`） |
 
 ---
-## 4. 2026-07-24 — 任务耗时挪到 task-end 分隔线
+## 5. 2026-07-24 — 任务耗时挪到 task-end 分隔线
 
 | 字段 | 值 |
 |------|-----|
@@ -1766,7 +1795,7 @@ spinner dirty；轮询间隔不变。Done 继续靠 `should_repaint` 强制重�
 
 ---
 
-## 5. 2026-07-24 — 底栏可读性回补
+## 6. 2026-07-24 — 底栏可读性回补
 
 | 字段 | 值 |
 |------|-----|
@@ -1791,7 +1820,7 @@ ctx 进度条填充改用中线高度 `■` / `·`，避免溢出 `[]`。
 
 ---
 
-## 6. 2026-07-24 — Slash 弹出：Tab 补全，Enter 运行 skill
+## 7. 2026-07-24 — Slash 弹出：Tab 补全，Enter 运行 skill
 
 | 字段 | 值 |
 |------|-----|
@@ -1811,7 +1840,7 @@ Enter 仍预填 Insert（便于 undo）。
 
 ---
 
-## 7. 2026-07-24 — 移除 TUI 左侧 Execution Plan 面板
+## 8. 2026-07-24 — 移除 TUI 左侧 Execution Plan 面板
 
 | Field | Value |
 |-------|-------|
@@ -1841,7 +1870,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 
 ---
 
-## 8. 2026-07-24 — 项目配置文件 `tact.toml` → `config.toml`
+## 9. 2026-07-24 — 项目配置文件 `tact.toml` → `config.toml`
 
 | 字段 | 值 |
 |------|-----|
@@ -1862,7 +1891,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 
 ---
 
-## 9. 2026-07-24 — Session Stats GFM 单元格填充以对齐纯文本
+## 10. 2026-07-24 — Session Stats GFM 单元格填充以对齐纯文本
 
 | 字段 | 值 |
 |------|-----|
@@ -1883,7 +1912,7 @@ tui-markdown 框线表。
 
 ---
 
-## 10. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
+## 11. 2026-07-24 — 额外 `skill_dirs` + 项目本地 `.tact/skills`
 
 | 字段 | 值 |
 |------|-----|
@@ -1906,7 +1935,7 @@ tui-markdown 框线表。
 
 ---
 
-## 11. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
+## 12. 2026-07-24 — `/skills` 列表改用 tui-markdown（不用 pipe 表）
 
 | 字段 | 值 |
 |------|-----|
@@ -1927,7 +1956,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 12. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
+## 13. 2026-07-24 — Session Stats 用 GFM 表格 + tui-markdown 渲染
 
 | 字段 | 值 |
 |------|-----|
@@ -1950,7 +1979,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 13. 2026-07-24 — Session Stats 用 comfy-table 排版
+## 14. 2026-07-24 — Session Stats 用 comfy-table 排版
 
 | 字段 | 值 |
 |------|-----|
@@ -1969,7 +1998,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 14. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
+## 15. 2026-07-24 — `/model` 从 `/v1/models` 补充配置
 
 | 字段 | 值 |
 |------|-----|
@@ -1987,7 +2016,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ---
 
-## 15. 2026-07-24 — `read_file` 分页与删除 `batch_read`
+## 16. 2026-07-24 — `read_file` 分页与删除 `batch_read`
 
 | 字段 | 值 |
 |------|-----|
@@ -2052,7 +2081,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 
 ---
 
-## 16. 2026-07-24 — 底部栏视觉优化
+## 17. 2026-07-24 — 底部栏视觉优化
 
 | 字段 | 值 |
 |------|-----|

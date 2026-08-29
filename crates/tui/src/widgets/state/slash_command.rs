@@ -135,3 +135,93 @@ pub(crate) fn fuzzy_score(target: &str, query: &str) -> i32 {
     // Must match all query chars
     if q_idx < query_chars.len() { 0 } else { score }
 }
+
+impl super::App {
+    /// Move the slash popup selection by `delta` items (negative = up),
+    /// clamped to the current match list. No-op when the popup is inactive or
+    /// nothing matches. Shared by the Up/Down key handler and mouse-wheel
+    /// scrolling.
+    pub(crate) fn step_slash_selection(&mut self, delta: i32) {
+        if !self.slash_command.active {
+            return;
+        }
+        let cmds = self.palette_commands();
+        let commands: Vec<(&str, &str)> =
+            cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
+        let skill_names = crate::render::slash_style::skill_name_set(&self.skills_data);
+        let n = self
+            .slash_command
+            .matched_commands(&self.input, self.input_cursor, &commands, &skill_names)
+            .len();
+        if n == 0 {
+            return;
+        }
+        if delta < 0 {
+            self.slash_command.selected = self.slash_command.selected.saturating_sub(1);
+        } else {
+            let max = n.saturating_sub(1);
+            self.slash_command.selected = (self.slash_command.selected + 1).min(max);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::render::test_harness::make_app;
+    use crate::widgets::state::{App, InputMode, SkillEntry};
+
+    fn open_app_with_skills(count: usize) -> App {
+        let mut app = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "/".into();
+        app.input_cursor = 1;
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+        app.skills_data = (0..count)
+            .map(|i| SkillEntry {
+                name: format!("skill-{i:02}"),
+                description: format!("Skill number {i} description"),
+                body: String::new(),
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn step_slash_selection_moves_and_clamps() {
+        let mut app = open_app_with_skills(40);
+        // 18 builtins + 40 skills = 58 selectable items (index 0..57).
+
+        app.step_slash_selection(1);
+        assert_eq!(app.slash_command.selected, 1);
+        app.step_slash_selection(-1);
+        assert_eq!(app.slash_command.selected, 0);
+
+        // Clamp at the bottom.
+        app.slash_command.selected = 57;
+        app.step_slash_selection(1);
+        assert_eq!(app.slash_command.selected, 57);
+        app.step_slash_selection(-1);
+        assert_eq!(app.slash_command.selected, 56);
+    }
+
+    #[test]
+    fn step_slash_selection_noop_when_inactive_or_no_match() {
+        let mut app = open_app_with_skills(40);
+        app.slash_command.active = false;
+        app.slash_command.selected = 5;
+        app.step_slash_selection(1);
+        assert_eq!(
+            app.slash_command.selected, 5,
+            "inactive popup must not move"
+        );
+
+        let mut app = open_app_with_skills(40);
+        app.input = "/zzz-no-match".into();
+        app.input_cursor = app.input.len();
+        app.slash_command.selected = 5;
+        app.step_slash_selection(1);
+        assert_eq!(app.slash_command.selected, 5, "no match must not move");
+    }
+}

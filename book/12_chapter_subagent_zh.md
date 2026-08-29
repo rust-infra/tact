@@ -2,7 +2,7 @@
 
 > 语言：[中文](./12_chapter_subagent_zh.md) · [English](./12_chapter_subagent.md)
 
-本章说明 Tact 如何通过 `spawn_subagent` 工具 spawn **隔离的工作 agent**：全新对话循环、受限工具集、共享文件系统与 `ToolContext` 服务，但无父级历史、hook 或 MCP 工具。每个子 agent 有自己的 SQLite session 行，经 `sessions.ref_id` 挂到父会话。
+本章说明 Tact 如何通过 `spawn_subagent` 工具 spawn **隔离的工作 agent**：全新对话循环、受限工具集、`ToolContext` 服务，以及——除非 `worktree: true` 请求隔离的 git 泳道——共享文件系统，但无父级历史、hook 或 MCP 工具。每个子 agent 有自己的 SQLite session 行，经 `sessions.ref_id` 挂到父会话。
 
 实现：`crates/tact/src/tool/subagent.rs`。工具集装配：`subagent_toolset()` 在 `crates/tact/src/tool/registry.rs`。
 
@@ -40,6 +40,7 @@ pub struct SubagentInput {
     pub run_in_background: Option<bool>,
     pub max_turns: Option<u32>,
     pub resume: Option<String>,
+    pub worktree: Option<bool>,
 }
 ```
 
@@ -50,6 +51,7 @@ pub struct SubagentInput {
 | `run_in_background` | `true` 立即返回 `async_launched { id }`；子 agent 脱钩运行，稍后回注 summary |
 | `max_turns` | 上限嵌套 `agent_loop` 轮数（防止失控） |
 | `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮 |
+| `worktree` | `true` 让子 agent 运行在隔离的 git worktree 泳道（`subagent-<child_id>`，分支 `wt/subagent-<child_id>`）；要求 `work_dir` 是 git 仓库。`resume` 时复用已有泳道。泳道在 handler 内同步创建（失败立即暴露），完成后保留供 `worktree_status` / `worktree_run` 检查。 |
 
 仅主 agent 的 `toolset()` 注册 `SpawnSubagentTool`（与 `CheckSubagentTool`）。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `spawn_subagent`。
 
@@ -146,7 +148,11 @@ let system_prompt = format!(
 
 ## 7. 调度交互
 
-在 `crates/tact/src/agent/tool_schedule.rs` 中，`spawn_subagent` 声明 `ResourcePolicy::Barrier`。`spawn_subagent` 调用 never 与同一 wave 中任何其他工具并行 —— 见 [任务与工具调度](./11_chapter_task_zh.md)。（第一版异步保持此不变：后台并行来自 `tokio::spawn`，而非放宽 wave 调度。）
+在 `crates/tact/src/agent/tool_schedule.rs` 中，`spawn_subagent` 声明 `ResourcePolicy::Barrier`。普通的（共享文件系统）`spawn_subagent` 调用绝不与同一 wave 中任何其他工具并行 —— 见 [任务与工具调度](./11_chapter_task_zh.md)。该场景的后台并行来自 `tokio::spawn`（`run_in_background`），而非放宽 wave 调度。
+
+**worktree 隔离的 spawn 是例外。** `execute_tool_call` 按调用解析资源（`crates/tact/src/agent/tool_dispatch.rs` 的 `tool_resources_for`）：`worktree: true` 的 `spawn_subagent` 映射为 `ToolResources::independent()` —— 其文件影响被限定在泳道内，因此可与同一 wave 中其他工具（包括其他隔离子 agent）并行 fan-out，而不会与主树竞争。这正是 2026-08-26 异步子 agent 设计评审中的 "worktree follow-up"：一旦每个子 agent 拥有作用域化文件系统，阻塞型子 agent 的同一 wave fan-out 就安全了。注意：worktree 是**组织边界**，**不是** OS 沙箱 —— 子 agent 的 `bash` 仍可访问泳道之外；隔离只是防止*常规*路径冲突编辑互相碰撞。
+
+泳道创建在 handler 内同步执行（在同步循环前，或在返回 `async_launched { id }` 前），因此非 git 的 `work_dir` 会让 spawn 明确报错，而不是静默共享文件系统。泳道基于仓库根 `HEAD`，子 agent 完成后保留；可用 `git worktree remove <path>` 手动删除（尚无工具入口）。
 
 ## 8. 持久化与生命周期
 
@@ -222,7 +228,8 @@ let summary = subagent
 | 仅静态 prompt | 无 skills/memory/CLAUDE.md，除非父级复制进 `prompt` |
 | `description` 被忽略 | JSON 字段无运行时效果 |
 | 独立 cancel 标志 | 父级 Cancel 可能无法中止长时间运行的子 agent；异步句柄已存，供未来 `cancel_subagent` / `/tasks` |
-| 无 worktree 隔离 | 阻塞子 agent 的同轮 fan-out 延后；异步解耦靠 `tokio::spawn` |
+| 无 worktree 删除 | 隔离泳道在子 agent 结束后保留；需手动 `git worktree remove`（尚无工具入口） |
+| worktree 基准为仓库 HEAD | 从另一 worktree 内 spawn 的子 agent 仍基于主仓库 HEAD 分支，而非父泳道 |
 | 无声明式 agent 定义 | `.tact/agents/*.md`（含 per-agent `permissionMode`）延后；继承为纯运行时 |
 | 列表隐藏子会话 | `--list-sessions` / resume 只显示 `ref_id = ''`；删父会级联删子 |
 | Summary 启发式 | 仅最后 assistant 文本；纯 tool 结尾返回 `(no summary)` |

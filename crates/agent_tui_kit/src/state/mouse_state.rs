@@ -129,6 +129,12 @@ pub struct MouseState {
     pub diff_popup_area: Rect,
     /// subagent popup area (used to determine if click is inside the popup).
     pub subagent_popup_area: Rect,
+    /// slash-command popup area (used to route mouse-wheel scrolls to the
+    /// popup's selection list instead of the log behind it).
+    pub slash_popup_area: Rect,
+    /// selection popup area (used to route mouse-wheel scrolls to the popup's
+    /// option list instead of the log behind it).
+    pub select_popup_area: Rect,
     /// Selectable body area inside the active text popup border.
     pub popup_text_body_area: Rect,
     /// Hit maps for rows currently visible in the active text popup body.

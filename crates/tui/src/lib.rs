@@ -332,15 +332,17 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 if app.input_mode == InputMode::Palette {
                     render_command_palette(f, chunks[1], &app);
                 }
-                if app.input_mode == InputMode::Select {
-                    render_select_popup(f, chunks[1], &app);
-                }
+                // Rendered every frame: the function itself no-ops when the
+                // popup is inactive and is responsible for clearing the mouse
+                // hit area it records while active.
+                render_select_popup(f, chunks[1], &mut app);
                 if app.input_mode == InputMode::FilePicker {
                     render_file_picker(f, chunks[1], &app);
                 }
-                if app.slash_command.active {
-                    render_slash_command_popup(f, chunks[1], &app);
-                }
+                // Rendered every frame: the function itself no-ops when the
+                // popup is inactive and is responsible for clearing the mouse
+                // hit area it records while active.
+                render_slash_command_popup(f, chunks[1], &mut app);
             })?;
             // Clear dirty flag after painting; next frame only repaints when state changes.
             app.dirty = false;

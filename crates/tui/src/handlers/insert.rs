@@ -158,31 +158,10 @@ pub(crate) fn handle_insert_mode(
     match key.code {
         // --- Slash command popup shortcuts (only when active) ---
         KeyCode::Up if app.slash_command.active => {
-            let cmds = app.palette_commands();
-            let commands: Vec<(&str, &str)> =
-                cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
-            let skill_names = skill_name_set(app);
-            let n = app
-                .slash_command
-                .matched_commands(&app.input, app.input_cursor, &commands, &skill_names)
-                .len();
-            if n > 0 {
-                app.slash_command.selected = app.slash_command.selected.saturating_sub(1);
-            }
+            app.step_slash_selection(-1);
         }
         KeyCode::Down if app.slash_command.active => {
-            let cmds = app.palette_commands();
-            let commands: Vec<(&str, &str)> =
-                cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
-            let skill_names = skill_name_set(app);
-            let n = app
-                .slash_command
-                .matched_commands(&app.input, app.input_cursor, &commands, &skill_names)
-                .len();
-            if n > 0 {
-                let max = n.saturating_sub(1);
-                app.slash_command.selected = (app.slash_command.selected + 1).min(max);
-            }
+            app.step_slash_selection(1);
         }
         KeyCode::Tab if app.slash_command.active => {
             apply_selected_slash_command(app);

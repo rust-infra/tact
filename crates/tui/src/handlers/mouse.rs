@@ -28,10 +28,34 @@ fn point_in_rect(column: u16, row: u16, area: ratatui::layout::Rect) -> bool {
 pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
+            if app.input_mode == crate::widgets::state::InputMode::Select
+                && point_in_rect(mouse.column, mouse.row, app.mouse.select_popup_area)
+            {
+                app.select.move_up();
+                return;
+            }
+            if app.slash_command.active
+                && point_in_rect(mouse.column, mouse.row, app.mouse.slash_popup_area)
+            {
+                app.step_slash_selection(-1);
+                return;
+            }
             let hit = panel_hit(app, mouse.column, mouse.row);
             handle_mouse_scroll_up(app, hit);
         }
         MouseEventKind::ScrollDown => {
+            if app.input_mode == crate::widgets::state::InputMode::Select
+                && point_in_rect(mouse.column, mouse.row, app.mouse.select_popup_area)
+            {
+                app.select.move_down();
+                return;
+            }
+            if app.slash_command.active
+                && point_in_rect(mouse.column, mouse.row, app.mouse.slash_popup_area)
+            {
+                app.step_slash_selection(1);
+                return;
+            }
             let hit = panel_hit(app, mouse.column, mouse.row);
             handle_mouse_scroll_down(app, hit);
         }
@@ -894,6 +918,75 @@ mod tests {
 
         assert!(app.tools_mut().popup.is_none());
         assert!(app.mouse.log_selection.is_none());
+    }
+
+    #[test]
+    fn mouse_wheel_over_slash_popup_steps_selection() {
+        use crate::widgets::state::{InputMode, SkillEntry};
+
+        let mut app = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "/".into();
+        app.input_cursor = 1;
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+        app.skills_data = (0..40)
+            .map(|i| SkillEntry {
+                name: format!("skill-{i:02}"),
+                description: format!("Skill number {i} description"),
+                body: String::new(),
+            })
+            .collect();
+        app.mouse.slash_popup_area = Rect::new(20, 5, 60, 14);
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
+        assert_eq!(
+            app.slash_command.selected, 1,
+            "wheel down must advance selection"
+        );
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollUp, 30, 8));
+        assert_eq!(
+            app.slash_command.selected, 0,
+            "wheel up must move selection back"
+        );
+
+        // Wheel outside the recorded popup rect must not move the selection.
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 1, 20));
+        assert_eq!(
+            app.slash_command.selected, 0,
+            "wheel outside the slash popup must not move selection"
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_over_select_popup_steps_selection() {
+        use crate::widgets::state::SelectKind;
+
+        let mut app = make_app();
+        app.input_mode = crate::widgets::state::InputMode::Select;
+        app.select_kind = SelectKind::ModelPick;
+        app.select.set_local(
+            "Select model".into(),
+            (0..30).map(|i| format!("model-{i:02}")).collect(),
+            0,
+            false,
+        );
+        app.mouse.select_popup_area = Rect::new(20, 5, 60, 14);
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
+        assert_eq!(app.select.selected, 1, "wheel down must advance selection");
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollUp, 30, 8));
+        assert_eq!(app.select.selected, 0, "wheel up must move selection back");
+
+        // Wheel outside the recorded popup rect must not move the selection.
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 1, 20));
+        assert_eq!(
+            app.select.selected, 0,
+            "wheel outside the select popup must not move selection"
+        );
     }
 
     #[test]

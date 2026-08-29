@@ -1,7 +1,7 @@
 # Subagents
 > Language: [English](./12_chapter_subagent.md) · [中文](./12_chapter_subagent_zh.md)
 
-This chapter explains how Tact spawns **isolated worker agents** through the `spawn_subagent` tool: a fresh conversation loop with a restricted tool set, shared filesystem and `ToolContext` services, but no parent history, hooks, or MCP tools. Each subagent gets its own SQLite session row linked via `sessions.ref_id`.
+This chapter explains how Tact spawns **isolated worker agents** through the `spawn_subagent` tool: a fresh conversation loop with a restricted tool set, `ToolContext` services, and — unless `worktree: true` requests an isolated git lane — the shared filesystem, but no parent history, hooks, or MCP tools. Each subagent gets its own SQLite session row linked via `sessions.ref_id`.
 
 Implementation: `crates/tact/src/tool/subagent.rs`. Tool-set wiring: `subagent_toolset()` in `crates/tact/src/tool/registry.rs`.
 
@@ -39,6 +39,7 @@ pub struct SubagentInput {
     pub run_in_background: Option<bool>,
     pub max_turns: Option<u32>,
     pub resume: Option<String>,
+    pub worktree: Option<bool>,
 }
 ```
 
@@ -49,6 +50,7 @@ pub struct SubagentInput {
 | `run_in_background` | `true` returns `async_launched { id }` immediately; the child runs detached and re-injects its summary later |
 | `max_turns` | Caps the nested `agent_loop` turn count (runaway guard) |
 | `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn |
+| `worktree` | `true` runs the child inside an isolated git worktree lane (`subagent-<child_id>`, branch `wt/subagent-<child_id>`); requires a git repo at `work_dir`. On `resume` the existing lane is reused. The lane is created synchronously (failures surface immediately) and kept after completion for inspection via `worktree_status` / `worktree_run`. |
 
 Only the main agent's `toolset()` registers `SpawnSubagentTool` (and `CheckSubagentTool`). Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
 
@@ -145,7 +147,11 @@ If the parent has a TUI channel, the subagent gets a **tagged** channel (`tagged
 
 ## 7. Scheduling Interaction
 
-In `crates/tact/src/agent/tool_schedule.rs`, `spawn_subagent` declares `ResourcePolicy::Barrier`. A `spawn_subagent` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md). (This stays true for the first async cut: background parallelism comes from `tokio::spawn`, not from relaxing wave scheduling.)
+In `crates/tact/src/agent/tool_schedule.rs`, `spawn_subagent` declares `ResourcePolicy::Barrier`. A plain (shared-filesystem) `spawn_subagent` call never runs in parallel with any other tool in the same wave — see [Tasks and Tool Scheduling](./11_chapter_task.md). Background parallelism for that case comes from `tokio::spawn` (`run_in_background`), not from wave scheduling.
+
+**Worktree-isolated spawns are the exception.** `execute_tool_call` resolves resources **per invocation** (`tool_resources_for` in `crates/tact/src/agent/tool_dispatch.rs`): a `spawn_subagent` call with `worktree: true` maps to `ToolResources::independent()` — its file effects are scoped to the lane, so it may fan out in the same wave as other tools (including other isolated subagents) without racing the main tree. This is the "worktree follow-up" from the 2026-08-26 async-subagent design review, which noted that same-wave fan-out of blocking subagents becomes safe once each subagent has a scoped filesystem. Note: a worktree is an organizational boundary, **not** an OS sandbox — a subagent's `bash` can still reach outside the lane; the isolation prevents *ordinary* path-conflicting edits from colliding.
+
+Worktree lane creation runs synchronously inside the handler (before the sync loop, or before `async_launched { id }` returns), so a non-git `work_dir` fails the spawn with a clear error rather than silently sharing the filesystem. The lane is based on the repo-root `HEAD` and persists after the child finishes; remove it manually with `git worktree remove <path>` (no tool surface yet).
 
 ## 8. Persistence and Lifecycle
 
@@ -221,7 +227,8 @@ See [Team Coordination](./14_chapter_team.md).
 | Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
 | `description` ignored | JSON field has no runtime effect |
 | Separate cancel flag | Parent Cancel may not abort a long-running subagent; the async handle is stored for a future `cancel_subagent` / `/tasks` surface |
-| No worktree isolation | Same-turn fan-out of blocking subagents deferred; async decoupling is via `tokio::spawn` |
+| No worktree removal | Isolated lanes persist after the child finishes; remove manually via `git worktree remove` (no tool surface yet) |
+| Worktree base = repo HEAD | A subagent spawned *from* another worktree still branches from the main repo HEAD, not the parent lane |
 | No declarative agent definitions | `.tact/agents/*.md` (with per-agent `permissionMode`) deferred; inheritance is runtime-only |
 | Child sessions hidden from list | `--list-sessions` / resume only show `ref_id = ''`; delete parent cascades children |
 | Summary heuristic | Last assistant text only; tool-only endings return `(no summary)` |

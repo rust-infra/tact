@@ -84,8 +84,12 @@ use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset};
+// Re-exported so `crate::agent::tool_dispatch` can do per-invocation resource
+// resolution for worktree-isolated `spawn_subagent` calls without naming the
+// private `subagent` module.
 #[cfg(test)]
 use sleep::SleepTool;
+pub(crate) use subagent::SPAWN_SUBAGENT_METADATA;
 #[cfg(test)]
 use task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool};
 #[cfg(test)]
