@@ -214,6 +214,56 @@ pub struct InstalledPlugin {
     pub cache_path: std::path::PathBuf,
     #[serde(default)]
     pub skill_count: usize,
+    /// Number of `commands/*.md` slash commands shipped by the plugin.
+    #[serde(default)]
+    pub command_count: usize,
+    /// Number of `agents/*.md` declarative subagent definitions.
+    #[serde(default)]
+    pub agent_count: usize,
+    /// Whether the plugin declares lifecycle hooks (plugin.json `hooks`).
+    #[serde(default)]
+    pub has_hooks: bool,
+    /// Whether the plugin ships MCP servers (`.mcp.json` or `mcpServers`).
+    #[serde(default)]
+    pub has_mcp: bool,
+}
+
+/// The feature surface of one installed plugin, computed at install time.
+///
+/// At least one field must be non-empty for a plugin to be installable; this
+/// replaces the old hard requirement for a `skills/` directory so command-only,
+/// agent-only, hook-only, and MCP-only marketplace plugins can be installed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginFeatures {
+    pub skill_count: usize,
+    pub command_count: usize,
+    pub agent_count: usize,
+    pub has_hooks: bool,
+    pub has_mcp: bool,
+}
+
+impl PluginFeatures {
+    /// True when the plugin contributes no supported feature at all.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.skill_count == 0
+            && self.command_count == 0
+            && self.agent_count == 0
+            && !self.has_hooks
+            && !self.has_mcp
+    }
+}
+
+impl From<&InstalledPlugin> for PluginFeatures {
+    fn from(plugin: &InstalledPlugin) -> Self {
+        Self {
+            skill_count: plugin.skill_count,
+            command_count: plugin.command_count,
+            agent_count: plugin.agent_count,
+            has_hooks: plugin.has_hooks,
+            has_mcp: plugin.has_mcp,
+        }
+    }
 }
 
 /// The persisted installed-plugin registry.

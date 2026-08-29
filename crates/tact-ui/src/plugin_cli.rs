@@ -89,7 +89,26 @@ fn print_result(result: &PluginResult) {
         PluginResult::ListedInstalled { plugins } => {
             println!("Installed plugins:");
             for p in plugins {
-                println!("  {}:{} rev={}", p.marketplace, p.id, p.revision);
+                let mut features = vec![format!("skills={}", p.skill_count)];
+                if p.command_count > 0 {
+                    features.push(format!("commands={}", p.command_count));
+                }
+                if p.agent_count > 0 {
+                    features.push(format!("agents={}", p.agent_count));
+                }
+                if p.has_hooks {
+                    features.push("hooks".into());
+                }
+                if p.has_mcp {
+                    features.push("mcp".into());
+                }
+                println!(
+                    "  {}:{} rev={} [{}]",
+                    p.marketplace,
+                    p.id,
+                    p.revision,
+                    features.join(" ")
+                );
             }
         }
         PluginResult::Reloaded { count } => {

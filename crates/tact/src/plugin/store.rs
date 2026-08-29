@@ -19,6 +19,14 @@ pub struct PluginSkillRoot {
     pub skills_dir: PathBuf,
 }
 
+/// The cache root of one installed plugin, used to load every supported
+/// feature (skills, commands, agents, hooks, MCP) from the cached content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginRoot {
+    pub plugin_id: String,
+    pub root: PathBuf,
+}
+
 /// Persistent storage for plugin marketplace and installation state.
 #[derive(Clone, Debug)]
 pub struct PluginStore {
@@ -67,8 +75,9 @@ impl PluginStore {
         read_json(&path)
     }
 
-    /// Returns skill roots for installed plugins whose cached content remains valid.
-    pub fn installed_skill_roots(&self) -> Result<Vec<PluginSkillRoot>> {
+    /// Returns the cache root of every installed plugin whose cached content
+    /// remains valid (resolves inside the plugin cache and is a directory).
+    pub fn installed_plugin_roots(&self) -> Result<Vec<PluginRoot>> {
         let cache = match self.home.cache.canonicalize() {
             Ok(cache) => cache,
             Err(_) => return Ok(Vec::new()),
@@ -80,13 +89,26 @@ impl PluginStore {
             .into_values()
             .filter_map(|plugin| {
                 let plugin_root = plugin.cache_path.canonicalize().ok()?;
-                if !plugin_root.starts_with(&cache) {
+                if !plugin_root.starts_with(&cache) || !plugin_root.is_dir() {
                     return None;
                 }
-
-                let skills_dir = plugin_root.join("skills");
-                skills_dir.is_dir().then_some(PluginSkillRoot {
+                Some(PluginRoot {
                     plugin_id: plugin.id,
+                    root: plugin_root,
+                })
+            })
+            .collect())
+    }
+
+    /// Returns skill roots for installed plugins whose cached content remains valid.
+    pub fn installed_skill_roots(&self) -> Result<Vec<PluginSkillRoot>> {
+        Ok(self
+            .installed_plugin_roots()?
+            .into_iter()
+            .filter_map(|root| {
+                let skills_dir = root.root.join("skills");
+                skills_dir.is_dir().then_some(PluginSkillRoot {
+                    plugin_id: root.plugin_id,
                     skills_dir,
                 })
             })
@@ -264,6 +286,10 @@ mod tests {
                     revision: "0123456789abcdef0123456789abcdef01234567".to_owned(),
                     cache_path: candidate.clone(),
                     skill_count: 1,
+                    command_count: 0,
+                    agent_count: 0,
+                    has_hooks: false,
+                    has_mcp: false,
                 },
             )]),
         };
@@ -338,6 +364,10 @@ mod tests {
                     revision: "abc123".to_owned(),
                     cache_path: plugin_root.clone(),
                     skill_count: 1,
+                    command_count: 0,
+                    agent_count: 0,
+                    has_hooks: false,
+                    has_mcp: false,
                 },
             )]),
         };

@@ -11,10 +11,10 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use super::{
-    CatalogPlugin, InstalledPlugin, MarketplaceService, PluginSource, PluginStore,
+    CatalogPlugin, InstalledPlugin, MarketplaceService, PluginFeatures, PluginSource, PluginStore,
     validate_marketplace_name,
 };
-use crate::consts::PluginHome;
+use crate::{consts::PluginHome, mcp::McpServerConfig};
 
 /// Installs marketplace plugins into a revision-locked local cache.
 #[derive(Clone, Debug)]
@@ -183,7 +183,7 @@ impl PluginInstaller {
                 )
             })?;
             copy_source(source, &candidate)?;
-            let skill_count = validate_plugin_candidate(&candidate, plugin_id)?;
+            let features = validate_plugin_candidate(&candidate, plugin_id)?;
             if !destination.exists() {
                 fs::rename(&candidate, &destination).with_context(|| {
                     format!("failed to activate plugin cache {}", destination.display())
@@ -202,7 +202,11 @@ impl PluginInstaller {
                 marketplace: marketplace_id.to_owned(),
                 revision: revision.to_owned(),
                 cache_path: destination,
-                skill_count,
+                skill_count: features.skill_count,
+                command_count: features.command_count,
+                agent_count: features.agent_count,
+                has_hooks: features.has_hooks,
+                has_mcp: features.has_mcp,
             };
             let mut state = state;
             state.plugins.insert(
@@ -423,46 +427,119 @@ fn copy_git_tree_entries(
     Ok(())
 }
 
-fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<usize> {
-    let manifest = candidate.join(".claude-plugin/plugin.json");
-    if manifest.exists() {
-        let manifest: CompatibilityManifest =
-            serde_json::from_reader(fs::File::open(&manifest).with_context(|| {
-                format!("failed to read plugin manifest {}", manifest.display())
-            })?)
-            .with_context(|| format!("failed to parse plugin manifest {}", manifest.display()))?;
-        if let Some(name) = manifest.name
-            && name != plugin_id
-        {
-            bail!("plugin manifest name {name} conflicts with catalog id {plugin_id}");
-        }
+/// Validates a staged plugin candidate and returns its feature surface.
+///
+/// A plugin is installable when it contributes at least one supported feature:
+/// `skills/*/SKILL.md`, `commands/*.md`, `agents/*.md`, declared hooks, or an
+/// MCP server configuration (`.mcp.json` or plugin.json `mcpServers`). This
+/// deliberately replaces the old hard requirement for a `skills/` directory,
+/// which blocked command-only / agent-only / hook-only / MCP-only plugins from
+/// the official Claude marketplace.
+fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<PluginFeatures> {
+    let manifest = read_compatibility_manifest(candidate)?;
+    if let Some(name) = manifest.name
+        && name != plugin_id
+    {
+        bail!("plugin manifest name {name} conflicts with catalog id {plugin_id}");
     }
+
+    let mut features = PluginFeatures::default();
 
     let skills = candidate.join("skills");
-    let entries = fs::read_dir(&skills).with_context(|| {
-        format!(
-            "plugin has no readable skills directory {}",
-            skills.display()
-        )
-    })?;
-    let mut count = 0;
-    for entry in entries {
-        let entry = entry?;
-        let skill = entry.path().join("SKILL.md");
-        if skill.is_file() && fs::File::open(&skill).is_ok() {
-            count += 1;
+    if let Ok(entries) = fs::read_dir(&skills) {
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            if entry.path().join("SKILL.md").is_file()
+                && fs::File::open(entry.path().join("SKILL.md")).is_ok()
+            {
+                features.skill_count += 1;
+            }
         }
     }
-    if count == 0 {
-        bail!("plugin {plugin_id} contains no readable skills/*/SKILL.md files");
+
+    let commands = candidate.join("commands");
+    if let Ok(entries) = fs::read_dir(&commands) {
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && entry.path().extension().is_some_and(|e| e == "md")
+            {
+                features.command_count += 1;
+            }
+        }
     }
-    Ok(count)
+
+    let agents = candidate.join("agents");
+    if let Ok(entries) = fs::read_dir(&agents) {
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && entry.path().extension().is_some_and(|e| e == "md")
+            {
+                features.agent_count += 1;
+            }
+        }
+    }
+
+    features.has_hooks = manifest
+        .hooks
+        .as_ref()
+        .is_some_and(|hooks| candidate.join(hooks).is_file());
+
+    features.has_mcp = manifest.mcp_servers.is_some_and(|servers| !servers.is_empty())
+        || candidate.join(".mcp.json").is_file();
+
+    if features.is_empty() {
+        bail!(
+            "plugin {plugin_id} contains no supported feature \
+             (expected skills/, commands/, agents/, hooks, or an MCP configuration)"
+        );
+    }
+
+    Ok(features)
 }
 
-#[derive(Deserialize)]
-struct CompatibilityManifest {
+/// Reads the Claude-compatible plugin manifest (`.claude-plugin/plugin.json`).
+///
+/// The manifest is optional; a missing or empty file yields a default manifest
+/// so legacy / minimal plugins still install as long as they ship a supported
+/// feature on disk.
+fn read_compatibility_manifest(candidate: &Path) -> Result<PluginManifest> {
+    let manifest = candidate.join(".claude-plugin").join("plugin.json");
+    if !manifest.is_file() {
+        return Ok(PluginManifest::default());
+    }
+    serde_json::from_reader(fs::File::open(&manifest).with_context(|| {
+        format!("failed to read plugin manifest {}", manifest.display())
+    })?)
+    .with_context(|| format!("failed to parse plugin manifest {}", manifest.display()))
+}
+
+/// Claude-compatible plugin manifest, parsed for install-time validation.
+///
+/// `hooks` is a repository-relative path to a Claude hooks JSON file; it is
+/// only validated for existence here — hook execution happens at runtime (see
+/// `crates/tact/src/plugin/hooks.rs`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginManifest {
     #[serde(default)]
     name: Option<String>,
+    // Parsed for install-time schema validation and future display; not read
+    // by the installer itself.
+    #[serde(default)]
+    #[allow(dead_code)]
+    description: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    version: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    author: Option<serde_json::Value>,
+    #[serde(default)]
+    hooks: Option<String>,
+    #[serde(default)]
+    mcp_servers: Option<std::collections::HashMap<String, McpServerConfig>>,
 }
 
 fn git_revision(repository_root: &Path) -> Result<String> {
@@ -525,13 +602,22 @@ mod tests {
         let repo = Repository::init(repository.path()).unwrap();
         fs::create_dir_all(repository.path().join("plugins/demo/skills/check")).unwrap();
         fs::create_dir_all(repository.path().join("plugins/broken")).unwrap();
+        fs::create_dir_all(repository.path().join("plugins/cmds/commands")).unwrap();
+        fs::create_dir_all(repository.path().join("plugins/agents/agents")).unwrap();
+        fs::create_dir_all(repository.path().join("plugins/hooked/hooks")).unwrap();
+        fs::create_dir_all(repository.path().join("plugins/hooked/.claude-plugin")).unwrap();
+        fs::create_dir_all(repository.path().join("plugins/served/.claude-plugin")).unwrap();
         fs::write(
             repository.path().join("marketplace.json"),
             r#"{
                 "name": "fixture-market",
                 "plugins": [
                     { "name": "demo", "source": "./plugins/demo" },
-                    { "name": "broken", "source": "./plugins/broken" }
+                    { "name": "broken", "source": "./plugins/broken" },
+                    { "name": "cmds", "source": "./plugins/cmds" },
+                    { "name": "agents", "source": "./plugins/agents" },
+                    { "name": "hooked", "source": "./plugins/hooked" },
+                    { "name": "served", "source": "./plugins/served" }
                 ]
             }"#,
         )
@@ -543,7 +629,32 @@ mod tests {
         .unwrap();
         fs::write(
             repository.path().join("plugins/broken/README.md"),
-            "no skills",
+            "no features",
+        )
+        .unwrap();
+        fs::write(
+            repository.path().join("plugins/cmds/commands/commit.md"),
+            "---\ndescription: Commit helper\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            repository.path().join("plugins/agents/agents/reviewer.md"),
+            "---\nname: reviewer\ndescription: Reviews code\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            repository.path().join("plugins/hooked/hooks/hooks.json"),
+            r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        )
+        .unwrap();
+        fs::write(
+            repository.path().join("plugins/hooked/.claude-plugin/plugin.json"),
+            r#"{ "name": "hooked", "hooks": "./hooks/hooks.json" }"#,
+        )
+        .unwrap();
+        fs::write(
+            repository.path().join("plugins/served/.claude-plugin/plugin.json"),
+            r#"{ "name": "served", "mcpServers": { "echo": { "command": "echo", "args": [] } } }"#,
         )
         .unwrap();
         let mut index = repo.index().unwrap();
@@ -670,6 +781,80 @@ mod tests {
     }
 
     #[test]
+    fn install_accepts_command_only_plugin() {
+        let fixture = fixture_installer();
+
+        let installed = fixture.installer.install("cmds", "fixture-market").unwrap();
+
+        assert_eq!(installed.skill_count, 0);
+        assert_eq!(installed.command_count, 1);
+        assert!(!installed.has_hooks);
+        assert!(!installed.has_mcp);
+        assert!(installed.cache_path.join("commands/commit.md").is_file());
+    }
+
+    #[test]
+    fn install_accepts_agent_only_plugin() {
+        let fixture = fixture_installer();
+
+        let installed = fixture.installer.install("agents", "fixture-market").unwrap();
+
+        assert_eq!(installed.agent_count, 1);
+        assert_eq!(installed.skill_count, 0);
+        assert!(installed.cache_path.join("agents/reviewer.md").is_file());
+    }
+
+    #[test]
+    fn install_accepts_hooks_only_plugin() {
+        let fixture = fixture_installer();
+
+        let installed = fixture.installer.install("hooked", "fixture-market").unwrap();
+
+        assert!(installed.has_hooks);
+        assert_eq!(installed.skill_count, 0);
+        assert_eq!(installed.command_count, 0);
+    }
+
+    #[test]
+    fn install_accepts_mcp_only_plugin() {
+        let fixture = fixture_installer();
+
+        let installed = fixture.installer.install("served", "fixture-market").unwrap();
+
+        assert!(installed.has_mcp);
+        assert_eq!(installed.skill_count, 0);
+    }
+
+    #[test]
+    fn install_records_feature_counts() {
+        let fixture = fixture_installer();
+
+        let installed = fixture.installer.install("demo", "fixture-market").unwrap();
+
+        assert_eq!(installed.skill_count, 1);
+        assert_eq!(installed.command_count, 0);
+        assert_eq!(installed.agent_count, 0);
+        assert!(!installed.has_hooks);
+        assert!(!installed.has_mcp);
+    }
+
+    #[test]
+    fn install_rejects_plugin_with_no_supported_feature() {
+        let fixture = fixture_installer();
+
+        let error = fixture
+            .installer
+            .install("broken", "fixture-market")
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("no supported feature"),
+            "expected feature error, got: {error}"
+        );
+    }
+
+    #[test]
     fn install_rejects_conflicting_compatibility_manifest_name() {
         let fixture = fixture_installer();
         let root = fixture.installer.marketplace_root("fixture-market");
@@ -740,6 +925,10 @@ mod tests {
                 revision: "abc123".to_owned(),
                 cache_path: outside.path().to_path_buf(),
                 skill_count: 0,
+                command_count: 0,
+                agent_count: 0,
+                has_hooks: false,
+                has_mcp: false,
             },
         );
         store.commit_install(&state, outside.path()).unwrap();
@@ -807,6 +996,31 @@ mod tests {
         let listed = fixture.installer.list().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].revision, updated.revision);
+    }
+
+    #[test]
+    fn update_recomputes_feature_counts_for_the_new_revision() {
+        let fixture = fixture_installer();
+        let installed = fixture.installer.install("cmds", "fixture-market").unwrap();
+        assert_eq!(installed.command_count, 1);
+
+        // Publish a second command in the source repository.
+        fs::write(
+            fixture
+                ._repository
+                .path()
+                .join("plugins/cmds/commands/extra.md"),
+            "---\ndescription: Extra command\n---\n",
+        )
+        .unwrap();
+        commit_worktree(fixture._repository.path());
+
+        let outcome = fixture.installer.update("cmds").unwrap();
+        let PluginUpdateResult::Updated { installed: updated } = outcome else {
+            panic!("expected updated outcome");
+        };
+        assert_eq!(updated.command_count, 2);
+        assert_eq!(updated.skill_count, 0);
     }
 
     #[test]

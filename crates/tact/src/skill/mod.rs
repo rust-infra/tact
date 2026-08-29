@@ -43,6 +43,12 @@ pub struct SkillManifest {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    /// Claude Code `argument-hint` frontmatter, if present.
+    pub argument_hint: Option<String>,
+    /// Claude Code `allowed-tools` frontmatter, if present (not yet enforced).
+    pub allowed_tools: Option<String>,
+    /// Claude Code `model` frontmatter, if present (not yet enforced).
+    pub model: Option<String>,
 }
 
 pub struct SkillDocument {
@@ -85,8 +91,14 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
     let mut registry = SkillRegistry::new(dirs);
     registry.load_skills()?;
     if let Some(plugin_home) = PluginHome::from_environment() {
-        let plugin_roots = PluginStore::new(plugin_home).installed_skill_roots()?;
+        let store = PluginStore::new(plugin_home);
+        let plugin_roots = store.installed_skill_roots()?;
         registry.load_plugin_skills(&plugin_roots)?;
+        // Legacy `commands/*.md` slash commands load after skills so a
+        // same-named command wins over the skill (Claude Code precedence).
+        for root in store.installed_plugin_roots()? {
+            registry.load_plugin_commands(&root.root.join("commands"), &root.plugin_id)?;
+        }
     }
     Ok(registry)
 }
@@ -238,11 +250,75 @@ impl SkillRegistry {
                 name: name.clone(),
                 description,
                 path: path.to_path_buf(),
+                argument_hint: meta.argument_hint,
+                allowed_tools: meta.allowed_tools,
+                model: meta.model,
             },
             body,
         };
 
         self.skills.insert(name, document);
+    }
+
+    /// Loads legacy Claude Code `commands/*.md` slash commands from one
+    /// installed plugin as `plugin:<filename-stem>` skills.
+    ///
+    /// Claude Code treats `commands/*.md` and `skills/<name>/SKILL.md`
+    /// identically (only the file layout differs), so both land in the same
+    /// registry. Loading commands after skills makes a same-named command win
+    /// over the skill, matching Claude's command-over-skill precedence.
+    fn load_plugin_commands(&mut self, commands_dir: &Path, plugin_id: &str) -> Result<()> {
+        if !commands_dir.is_dir() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(commands_dir)? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    warn!("skipping plugin command dir entry: {error}");
+                    continue;
+                }
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let content = match std::fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(error) => {
+                    warn!("can't read plugin command {}: {error}", path.display());
+                    continue;
+                }
+            };
+            let (meta, body) = parse_frontmatter(&content);
+            let name = format!("{plugin_id}:{stem}");
+            let document = SkillDocument {
+                manifest: SkillManifest {
+                    name: name.clone(),
+                    description: meta
+                        .description
+                        .unwrap_or_else(|| "No description".to_string()),
+                    path,
+                    argument_hint: meta.argument_hint,
+                    allowed_tools: meta.allowed_tools,
+                    model: meta.model,
+                },
+                body,
+            };
+            self.skills.insert(name, document);
+        }
+
+        Ok(())
     }
 
     /// List available skills with name + description (metadata only).
@@ -309,6 +385,15 @@ impl SkillRegistry {
 struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    /// Claude Code `argument-hint` (shows in /help); parsed for display.
+    #[serde(default, rename = "argument-hint")]
+    argument_hint: Option<String>,
+    /// Claude Code `allowed-tools` (comma list); parsed but not enforced yet.
+    #[serde(default, rename = "allowed-tools")]
+    allowed_tools: Option<String>,
+    /// Claude Code `model` override; parsed but not enforced yet.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 fn parse_frontmatter(text: &str) -> (SkillFrontmatter, String) {
@@ -329,6 +414,8 @@ fn parse_frontmatter(text: &str) -> (SkillFrontmatter, String) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::tempdir;
 
     use super::*;
@@ -529,6 +616,106 @@ mod tests {
         registry.load_skills().unwrap();
         assert!(registry.load_full_text("shared").contains("EXTRA"));
         assert!(!registry.load_full_text("shared").contains("BASE"));
+    }
+
+    #[test]
+    fn plugin_commands_load_as_namespaced_slash_commands() {
+        let dir = tempdir().unwrap();
+        let plugin_root = dir.path().join("plugin");
+        fs::create_dir_all(plugin_root.join("commands")).unwrap();
+        fs::write(
+            plugin_root.join("commands/commit.md"),
+            "---\ndescription: Commit helper\n---\n\nRun git commit.",
+        )
+        .unwrap();
+        let mut registry = SkillRegistry::new([]);
+
+        registry
+            .load_plugin_commands(&plugin_root.join("commands"), "plugin")
+            .unwrap();
+
+        let doc = registry.skills().get("plugin:commit").expect("command loaded");
+        assert_eq!(doc.manifest.description, "Commit helper");
+        assert!(doc.body.contains("git commit"));
+    }
+
+    #[test]
+    fn plugin_command_overrides_same_name_skill() {
+        let dir = tempdir().unwrap();
+        let plugin_root = dir.path().join("plugin");
+        fs::create_dir_all(plugin_root.join("commands")).unwrap();
+        fs::create_dir_all(plugin_root.join("skills/review")).unwrap();
+        fs::write(
+            plugin_root.join("commands/review.md"),
+            "---\ndescription: Command review\n---\n\nCOMMAND BODY",
+        )
+        .unwrap();
+        fs::write(
+            plugin_root.join("skills/review/SKILL.md"),
+            "---\nname: review\ndescription: Skill review\n---\n\nSKILL BODY",
+        )
+        .unwrap();
+        let mut registry = SkillRegistry::new([]);
+
+        // Load skills first, then commands — the command must win.
+        registry
+            .load_plugin_skills(&[PluginSkillRoot {
+                plugin_id: "plugin".into(),
+                skills_dir: plugin_root.join("skills"),
+            }])
+            .unwrap();
+        registry
+            .load_plugin_commands(&plugin_root.join("commands"), "plugin")
+            .unwrap();
+
+        let doc = registry.skills().get("plugin:review").expect("review present");
+        assert!(
+            doc.body.contains("COMMAND BODY"),
+            "command must override the same-named skill"
+        );
+    }
+
+    #[test]
+    fn command_frontmatter_extends_manifest() {
+        let dir = tempdir().unwrap();
+        let commands_dir = dir.path().join("commands");
+        fs::create_dir_all(&commands_dir).unwrap();
+        fs::write(
+            commands_dir.join("build.md"),
+            "---\ndescription: Build\nargument-hint: <target>\nallowed-tools: Bash, Read\nmodel: sonnet\n---\n\nbody",
+        )
+        .unwrap();
+        let mut registry = SkillRegistry::new([]);
+
+        registry
+            .load_plugin_commands(&commands_dir, "plugin")
+            .unwrap();
+
+        let doc = registry.skills().get("plugin:build").expect("loaded");
+        assert_eq!(doc.manifest.argument_hint.as_deref(), Some("<target>"));
+        assert_eq!(
+            doc.manifest.allowed_tools.as_deref(),
+            Some("Bash, Read")
+        );
+        assert_eq!(doc.manifest.model.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn plugin_commands_ignore_non_markdown_files() {
+        let dir = tempdir().unwrap();
+        let commands_dir = dir.path().join("commands");
+        fs::create_dir_all(&commands_dir).unwrap();
+        fs::write(commands_dir.join("run.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(commands_dir.join("note.md"), "---\ndescription: Note\n---\n").unwrap();
+        let mut registry = SkillRegistry::new([]);
+
+        registry
+            .load_plugin_commands(&commands_dir, "plugin")
+            .unwrap();
+
+        assert!(registry.skills().contains_key("plugin:note"));
+        assert!(!registry.skills().contains_key("plugin:run.sh"));
+        assert!(!registry.skills().contains_key("plugin:run"));
     }
 
     #[test]
