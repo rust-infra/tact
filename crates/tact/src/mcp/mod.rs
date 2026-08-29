@@ -33,7 +33,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::process::Command;
 
-use crate::{ToolSpec, tool::copy_tool_spec};
+use crate::{
+    ToolSpec, consts::PluginHome, plugin::{PluginRoot, PluginStore}, tool::copy_tool_spec,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +102,94 @@ impl PluginLoader {
         }
         servers
     }
+}
+
+/// Claude project-level MCP configuration (`.mcp.json`) entry.
+///
+/// Tact only connects stdio servers today; `http` / `url` entries are skipped
+/// with a warning (the client has no remote transport yet).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProjectConfig {
+    #[serde(rename = "type")]
+    pub server_type: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl McpProjectConfig {
+    /// Converts a stdio-style entry to the internal server config; returns
+    /// `None` for remote (`http`/`url`) or malformed entries.
+    #[must_use]
+    pub fn to_stdio(&self) -> Option<McpServerConfig> {
+        if matches!(self.server_type.as_deref(), Some("http") | Some("sse"))
+            || self.url.is_some()
+        {
+            return None;
+        }
+        Some(McpServerConfig {
+            command: self.command.clone()?,
+            args: self.args.clone(),
+            env: self.env.clone(),
+        })
+    }
+}
+
+/// Scans the installed-plugin cache for MCP servers declared by plugins:
+/// `.claude-plugin/plugin.json` `mcpServers` and a project-style `.mcp.json`
+/// at the plugin root. Returns `(server_name, config)` pairs where
+/// `server_name = "plugin__<plugin_id>__<server>"` — the same prefix scheme as
+/// the cwd [`PluginLoader`].
+pub fn installed_plugin_mcp_servers(home: &PluginHome) -> Result<Vec<(String, McpServerConfig)>> {
+    let store = PluginStore::new(home.clone());
+    let mut servers = Vec::new();
+    for root in store.installed_plugin_roots()? {
+        collect_plugin_mcp_servers(&root, &mut servers)?;
+    }
+    Ok(servers)
+}
+
+fn collect_plugin_mcp_servers(
+    root: &PluginRoot,
+    servers: &mut Vec<(String, McpServerConfig)>,
+) -> Result<()> {
+    let prefix = |name: &str| format!("plugin__{}__{}", root.plugin_id, name);
+
+    let manifest_path = root.root.join(".claude-plugin").join("plugin.json");
+    if manifest_path.is_file() {
+        let raw = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+        if let Ok(manifest) = serde_json::from_str::<PluginManifest>(&raw) {
+            for (name, config) in manifest.mcp_servers {
+                servers.push((prefix(&name), config));
+            }
+        }
+    }
+
+    let mcp_path = root.root.join(".mcp.json");
+    if mcp_path.is_file() {
+        let raw = fs::read_to_string(&mcp_path)
+            .with_context(|| format!("failed to read {}", mcp_path.display()))?;
+        let configs: HashMap<String, McpProjectConfig> = serde_json::from_str(&raw)?;
+        for (name, config) in configs {
+            match config.to_stdio() {
+                Some(server) => servers.push((prefix(&name), server)),
+                None => tracing::warn!(
+                    "plugin {} MCP server {} uses an unsupported transport (http/url); skipped",
+                    root.plugin_id,
+                    name
+                ),
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Low-level interface exposed by an MCP transport, used so tests can swap in
@@ -466,9 +556,17 @@ pub async fn load_mcp_router() -> Result<MCPToolRouter> {
     let mut loader = PluginLoader::new(vec![cwd]);
     let _ = loader.scan()?;
 
+    let mut server_configs: Vec<(String, McpServerConfig)> = loader
+        .mcp_servers()
+        .into_iter()
+        .collect();
+    if let Some(home) = PluginHome::from_environment() {
+        server_configs.extend(installed_plugin_mcp_servers(&home)?);
+    }
+
     let mut router = MCPToolRouter::new();
     let mut connections = FuturesUnordered::new();
-    for (server_name, config) in loader.mcp_servers() {
+    for (server_name, config) in server_configs {
         connections.push(async move {
             let result = McpClient::try_new(server_name.clone(), config).await;
             (server_name, result)
@@ -511,7 +609,7 @@ fn join_mcp_content(content: &[rmcp::model::Content]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Cow, sync::Arc};
+    use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
     use rmcp::{
         ErrorData as McpError, ServerHandler, ServiceExt,
@@ -523,8 +621,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MCPToolRouter, McpClient, McpServerConfig, McpToolName, MockMcpService, PluginLoader,
-        PluginManifest, RealMcpService,
+        MCPToolRouter, McpClient, McpProjectConfig, McpServerConfig, McpToolName, MockMcpService,
+        PluginLoader, PluginManifest, RealMcpService, installed_plugin_mcp_servers,
+    };
+    use crate::{
+        consts::PluginHome,
+        plugin::{InstalledPlugin, InstalledState, PluginStore},
     };
 
     #[test]
@@ -628,6 +730,93 @@ mod tests {
         assert_eq!(servers.len(), 1);
         assert!(servers.contains_key("demo__echo"));
         assert_eq!(servers["demo__echo"].command, "cat");
+    }
+
+    #[test]
+    fn parses_project_mcp_config_stdio_and_http() {
+        let raw = r#"{
+            "local": { "type": "stdio", "command": "node", "args": ["srv.js"] },
+            "remote": { "type": "http", "url": "https://mcp.example.com/api" }
+        }"#;
+        let configs: std::collections::HashMap<String, McpProjectConfig> =
+            serde_json::from_str(raw).unwrap();
+
+        let local = configs["local"].to_stdio().expect("stdio server");
+        assert_eq!(local.command, "node");
+        assert_eq!(local.args, vec!["srv.js"]);
+        assert!(configs["remote"].to_stdio().is_none(), "http must be skipped");
+    }
+
+    #[test]
+    fn installed_plugin_mcp_servers_scans_cache_roots() {
+        let home = tempfile::tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+        let plugin_root = plugin_home.cache.join("acme/demo/abc123");
+        std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        std::fs::write(
+            plugin_root.join(".claude-plugin/plugin.json"),
+            r#"{ "name": "demo", "mcpServers": { "fromManifest": { "command": "cat" } } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join(".mcp.json"),
+            r#"{
+                "fromDotMcp": { "type": "stdio", "command": "node", "args": ["srv.js"] },
+                "remote": { "type": "http", "url": "https://mcp.example.com/api" }
+            }"#,
+        )
+        .unwrap();
+        let store = PluginStore::new(plugin_home.clone());
+        store
+            .commit_install(
+                &InstalledState {
+                    plugins: BTreeMap::from([(
+                        "acme/demo".to_owned(),
+                        InstalledPlugin {
+                            id: "demo".to_owned(),
+                            marketplace: "acme".to_owned(),
+                            revision: "abc123".to_owned(),
+                            cache_path: plugin_root.clone(),
+                            skill_count: 0,
+                            command_count: 0,
+                            agent_count: 0,
+                            has_hooks: false,
+                            has_mcp: true,
+                        },
+                    )]),
+                },
+                &plugin_root,
+            )
+            .unwrap();
+
+        let servers = installed_plugin_mcp_servers(&plugin_home).unwrap();
+
+        let names: Vec<_> = servers.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(names.contains(&"plugin__demo__fromManifest"));
+        assert!(names.contains(&"plugin__demo__fromDotMcp"));
+        assert!(
+            !names.contains(&"plugin__demo__remote"),
+            "http server must be skipped"
+        );
+        let (_, from_manifest) = servers
+            .iter()
+            .find(|(name, _)| name == "plugin__demo__fromManifest")
+            .unwrap();
+        assert_eq!(from_manifest.command, "cat");
+        let (_, from_dot_mcp) = servers
+            .iter()
+            .find(|(name, _)| name == "plugin__demo__fromDotMcp")
+            .unwrap();
+        assert_eq!(from_dot_mcp.command, "node");
+        assert_eq!(from_dot_mcp.args, vec!["srv.js"]);
+    }
+
+    #[test]
+    fn installed_plugin_mcp_servers_returns_empty_without_plugins() {
+        let home = tempfile::tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+
+        assert!(installed_plugin_mcp_servers(&plugin_home).unwrap().is_empty());
     }
 
     fn upper_tool() -> McpTool {
