@@ -96,6 +96,7 @@ async fn run_headless_locked(
     let tools = toolset();
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
+        agent_registry: tact::agent_def::shared_agent_definition_registry(tact_path.workdir())?,
         memory_manager,
         work_dir: work_dir.clone(),
         task_manager,

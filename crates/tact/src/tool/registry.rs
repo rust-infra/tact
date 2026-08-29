@@ -78,3 +78,65 @@ fn try_subagent_toolset() -> anyhow::Result<ToolRouter> {
 pub fn subagent_toolset() -> ToolRouter {
     try_subagent_toolset().expect("subagent tool metadata must be valid")
 }
+
+/// Builds the restricted subagent toolset, optionally keeping only the tools
+/// named by a declarative agent definition's `tools:` frontmatter (Claude Code
+/// naming: Read/Glob/Grep → `read_file`, Bash → `bash`, Edit → `edit_file`,
+/// Write → `write_file`, Sleep → `sleep`). Unknown names are ignored; an empty
+/// allowed set (or `None`) keeps the default five-tool set.
+pub fn subagent_toolset_for(keep: Option<&[String]>) -> ToolRouter {
+    let Some(keep) = keep else {
+        return subagent_toolset();
+    };
+    let allowed = allowed_tool_names(keep);
+    if allowed.is_empty() {
+        return subagent_toolset();
+    }
+    try_subagent_toolset_filtered(&allowed).expect("subagent tool metadata must be valid")
+}
+
+/// Maps Claude Code tool names to the Tact tool names available to subagents.
+fn allowed_tool_names(keep: &[String]) -> std::collections::HashSet<&'static str> {
+    let mut allowed = std::collections::HashSet::new();
+    for name in keep {
+        match name.to_ascii_lowercase().as_str() {
+            "bash" => {
+                allowed.insert("bash");
+            }
+            "read" | "glob" | "grep" => {
+                allowed.insert("read_file");
+            }
+            "write" => {
+                allowed.insert("write_file");
+            }
+            "edit" => {
+                allowed.insert("edit_file");
+            }
+            "sleep" => {
+                allowed.insert("sleep");
+            }
+            _ => {}
+        }
+    }
+    allowed
+}
+
+fn try_subagent_toolset_filtered(allowed: &std::collections::HashSet<&'static str>) -> anyhow::Result<ToolRouter> {
+    let mut router = ToolRouter::new();
+    if allowed.contains("bash") {
+        router = router.route(BashTool)?;
+    }
+    if allowed.contains("read_file") {
+        router = router.route(ReadFileTool)?;
+    }
+    if allowed.contains("sleep") {
+        router = router.route(SleepTool)?;
+    }
+    if allowed.contains("write_file") {
+        router = router.route(WriteFileTool)?;
+    }
+    if allowed.contains("edit_file") {
+        router = router.route(EditFileTool)?;
+    }
+    Ok(router)
+}

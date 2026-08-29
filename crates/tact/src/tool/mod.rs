@@ -107,6 +107,9 @@ pub struct ToolContext {
     /// Shared with the TUI in interactive mode so `/skill-reload` updates
     /// `load_skill` / system-prompt skill summaries without restarting.
     pub skill_registry: crate::skill::SharedSkillRegistry,
+    /// Declarative subagent definitions (`.tact/agents/*.md` + installed
+    /// plugin `agents/*.md`), referenced by `spawn_subagent`'s `agent` field.
+    pub agent_registry: crate::agent_def::SharedAgentDefinitionRegistry,
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,

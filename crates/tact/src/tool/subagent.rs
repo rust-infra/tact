@@ -20,7 +20,7 @@ use crate::{
     permission::{PermissionManager, PermissionMode, settings::PermissionSettings},
     store::{SessionLock, open_sqlite_session_store},
     subagent::SubagentResult,
-    tool::{ToolContext, subagent_toolset},
+    tool::ToolContext,
     worktree::WorktreeRecord,
 };
 
@@ -52,6 +52,13 @@ pub struct SubagentInput {
     #[schemars(description = "Run the subagent inside an isolated git worktree.")]
     #[serde(default)]
     pub worktree: Option<bool>,
+    /// Reference a declarative subagent definition by name (`plugin:<name>`
+    /// for plugin agents, or a unique local name). The definition body
+    /// becomes the subagent's system prompt, and its `tools` / `model` /
+    /// `permissionMode` frontmatter override the defaults.
+    #[schemars(description = "Name of a declarative agent definition to run.")]
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 /// Worktree lane name prefix for isolated subagents.
@@ -104,7 +111,7 @@ fn with_worktree_note(summary: String, worktree: Option<&WorktreeRecord>) -> Str
 
 pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "spawn_subagent",
-    description: "Spawn a subagent with fresh context. By default the call blocks until the subagent finishes and returns its summary. Set run_in_background: true to return immediately and have the summary re-injected later — use this to run several independent subagents in parallel. Set worktree: true to isolate the subagent in its own git worktree (safe for parallel edits).",
+    description: "Spawn a subagent with fresh context. By default the call blocks until the subagent finishes and returns its summary. Set run_in_background: true to return immediately and have the summary re-injected later — use this to run several independent subagents in parallel. Set worktree: true to isolate the subagent in its own git worktree (safe for parallel edits). Set agent: <name> to run a declarative agent definition from .tact/agents/*.md or an installed plugin (plugin:<name>); its body becomes the system prompt and its tools/model/permissionMode frontmatter apply.",
     permission: PermissionPolicy::High,
     permission_prompt: PermissionPromptPolicy::Json,
     resources: ResourcePolicy::Barrier,
@@ -206,11 +213,48 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     }
 
     // The child's system prompt is built after the work_dir override so a
-    // worktree-isolated subagent is told exactly where it is working.
-    let system_prompt = format!(
-        "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
-        ctx.work_dir.display()
-    );
+    // worktree-isolated subagent is told exactly where it is working. A
+    // declarative agent definition replaces the default generic prompt with
+    // its own body; the caller's `prompt` becomes the user task.
+    let mut pm = pm;
+    let agent_definition = match input.agent.as_deref() {
+        Some(name) => {
+            let registry = crate::agent_def::lock_agent_definitions(&ctx.agent_registry);
+            Some(
+                registry
+                    .get(name)
+                    .cloned()
+                    .with_context(|| {
+                        format!(
+                            "unknown declarative agent '{name}'; available:\n{}",
+                            registry.describe_available()
+                        )
+                    })?,
+            )
+        }
+        None => None,
+    };
+    if let Some(definition) = agent_definition.as_ref() {
+        if let Some(mode) = definition.permission_mode {
+            // Auto stays sticky; other inherited modes may be overridden.
+            if pm.mode() != PermissionMode::Auto {
+                pm.set_mode(mode);
+            }
+        }
+    }
+    let system_prompt = match agent_definition.as_ref() {
+        Some(definition) => {
+            format!(
+                "{}\n\nUser task:\n{}",
+                definition.body.trim(),
+                input.prompt.trim()
+            )
+        }
+        None => format!(
+            "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
+            ctx.work_dir.display()
+        ),
+    };
 
     let store = if let Some(store) = &ctx.session_store {
         store.clone()
@@ -223,10 +267,17 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         .ensure_session_row(&child_id, &root_dir, &ref_id)
         .await?;
 
+    let mut agent_overrides = agent_overrides;
+    if let Some(definition) = agent_definition.as_ref()
+        && let Some(model) = definition.model.as_ref()
+    {
+        agent_overrides.model = model.clone();
+    }
+
     let mut subagent = Agent::new(
         client,
         ctx.clone(),
-        subagent_toolset(),
+        crate::tool::registry::subagent_toolset_for(agent_definition.as_ref().and_then(|d| d.tools.as_deref())),
         MCPToolRouter::new(),
         pm,
         AgentSystemPrompt::Static(system_prompt),
@@ -360,7 +411,7 @@ mod tests {
 
     #[test]
     fn subagent_toolset_has_five_tools() {
-        let router = subagent_toolset();
+        let router = crate::tool::registry::subagent_toolset();
         let specs = router.tool_specs();
         assert_eq!(specs.len(), 5, "subagent should have exactly 5 tools");
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
@@ -369,6 +420,41 @@ mod tests {
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"edit_file"));
         assert!(names.contains(&"sleep"));
+    }
+
+    #[test]
+    fn subagent_toolset_for_filters_by_claude_tool_names() {
+        let router = crate::tool::registry::subagent_toolset_for(Some(&[
+            "Read".to_string(),
+            "Bash".to_string(),
+        ]));
+        let specs = router.tool_specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read_file"));
+
+        // Edit / Write map to edit_file / write_file; Sleep is Tact-specific.
+        let router = crate::tool::registry::subagent_toolset_for(Some(&[
+            "Edit".to_string(),
+            "Write".to_string(),
+            "Sleep".to_string(),
+        ]));
+        let specs = router.tool_specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"sleep"));
+    }
+
+    #[test]
+    fn subagent_toolset_for_unknown_names_falls_back_to_default() {
+        let router = crate::tool::registry::subagent_toolset_for(Some(&["NotATool".to_string()]));
+        let specs = router.tool_specs();
+        assert_eq!(specs.len(), 5, "unknown names must keep the default set");
+
+        let router = crate::tool::registry::subagent_toolset_for(None);
+        assert_eq!(router.tool_specs().len(), 5);
     }
 
     #[test]
@@ -383,6 +469,23 @@ mod tests {
         assert_eq!(input.run_in_background, None);
         assert_eq!(input.max_turns, None);
         assert_eq!(input.resume, None);
+        assert_eq!(input.worktree, None);
+        assert_eq!(input.agent, None);
+    }
+
+    #[test]
+    fn subagent_input_deserializes_agent_field() {
+        let json = serde_json::json!({
+            "prompt": "Review the diff",
+            "agent": "claude-security:code-reviewer",
+            "worktree": true
+        });
+        let input: SubagentInput = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            input.agent.as_deref(),
+            Some("claude-security:code-reviewer")
+        );
+        assert_eq!(input.worktree, Some(true));
     }
 
     #[test]

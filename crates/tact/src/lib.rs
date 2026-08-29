@@ -20,6 +20,7 @@
 //! - Module [`notifications`] sends macOS desktop notifications for task lifecycle events.
 
 pub mod agent;
+pub mod agent_def;
 pub mod background;
 pub mod compact;
 pub mod config;
