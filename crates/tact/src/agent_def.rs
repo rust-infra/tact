@@ -69,11 +69,15 @@ pub fn get_agent_definition_registry(workdir: impl AsRef<Path>) -> Result<AgentD
 pub fn shared_agent_definition_registry(
     workdir: impl AsRef<Path>,
 ) -> Result<SharedAgentDefinitionRegistry> {
-    Ok(Arc::new(Mutex::new(get_agent_definition_registry(workdir)?)))
+    Ok(Arc::new(Mutex::new(get_agent_definition_registry(
+        workdir,
+    )?)))
 }
 
 /// Lock the shared agent-definition registry (recovers from poison).
-pub fn lock_agent_definitions(reg: &SharedAgentDefinitionRegistry) -> std::sync::MutexGuard<'_, AgentDefinitionRegistry> {
+pub fn lock_agent_definitions(
+    reg: &SharedAgentDefinitionRegistry,
+) -> std::sync::MutexGuard<'_, AgentDefinitionRegistry> {
     reg.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -193,9 +197,9 @@ impl AgentDefinitionRegistry {
         names
             .into_iter()
             .filter_map(|name| {
-                self.definitions.get(&name).map(|d| {
-                    format!("- {}: {}", d.name, d.description)
-                })
+                self.definitions
+                    .get(&name)
+                    .map(|d| format!("- {}: {}", d.name, d.description))
             })
             .collect::<Vec<_>>()
             .join("\n")

@@ -40,19 +40,50 @@ pub struct SubagentInput {
     pub max_turns: Option<u32>,
     pub resume: Option<String>,
     pub worktree: Option<bool>,
+    pub agent: Option<String>,
 }
 ```
 
 | Field | Role |
 |-------|------|
-| `prompt` | Becomes the subagent's sole user message |
+| `prompt` | Becomes the subagent's sole user message (the task) |
 | `description` | Schema-only hint for the model; **not read by the handler** |
 | `run_in_background` | `true` returns `async_launched { id }` immediately; the child runs detached and re-injects its summary later |
 | `max_turns` | Caps the nested `agent_loop` turn count (runaway guard) |
 | `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn |
 | `worktree` | `true` runs the child inside an isolated git worktree lane (`subagent-<child_id>`, branch `wt/subagent-<child_id>`); requires a git repo at `work_dir`. On `resume` the existing lane is reused. The lane is created synchronously (failures surface immediately) and kept after completion for inspection via `worktree_status` / `worktree_run`. |
+| `agent` | Runs a **declarative agent definition** by name — `plugin:<name>` for installed plugin `agents/*.md`, or a unique local name from `.tact/agents/*.md`. The definition body becomes the system prompt; its `tools` / `model` / `permissionMode` frontmatter apply (see §2.1). |
 
 Only the main agent's `toolset()` registers `SpawnSubagentTool` (and `CheckSubagentTool`). Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
+
+---
+
+## 2.1 Declarative agent definitions
+
+Tact loads reusable subagent definitions from two roots (later wins on name clash):
+
+- `<workdir>/.tact/agents/*.md` — project-local, plain names (`architect`);
+- installed plugins `<cache>/agents/*.md` — namespaced `plugin:<name>` (e.g. `claude-security:code-reviewer`).
+
+Frontmatter (Claude Code compatible):
+
+```markdown
+---
+name: reviewer
+description: Reviews code with an adversarial lens
+tools: Read, Glob, Grep, Bash
+model: sonnet
+permissionMode: plan
+---
+
+You are a principal reviewer. …
+```
+
+- `tools` restricts the subagent toolset (Claude names map to Tact tools: Read/Glob/Grep → `read_file`, Bash → `bash`, Edit → `edit_file`, Write → `write_file`, Sleep → `sleep`; unknown names are ignored; an empty set keeps the default five tools).
+- `model` overrides the child model (layered on top of the `[agent.subagent]` config).
+- `permissionMode` overrides the inherited permission mode unless the parent is in `Auto` (Auto stays sticky).
+
+Registry: `crates/tact/src/agent_def.rs` (`AgentDefinitionRegistry`, shared on `ToolContext.agent_registry`). `spawn_subagent` with an unknown `agent` name fails with the list of available definitions.
 
 ---
 
@@ -229,10 +260,9 @@ See [Team Coordination](./14_chapter_team.md).
 | Separate cancel flag | Parent Cancel may not abort a long-running subagent; the async handle is stored for a future `cancel_subagent` / `/tasks` surface |
 | No worktree removal | Isolated lanes persist after the child finishes; remove manually via `git worktree remove` (no tool surface yet) |
 | Worktree base = repo HEAD | A subagent spawned *from* another worktree still branches from the main repo HEAD, not the parent lane |
-| No declarative agent definitions | `.tact/agents/*.md` (with per-agent `permissionMode`) deferred; inheritance is runtime-only |
 | Child sessions hidden from list | `--list-sessions` / resume only show `ref_id = ''`; delete parent cascades children |
 | Summary heuristic | Last assistant text only; tool-only endings return `(no summary)` |
-| Same LLM client | `get_llm_client()` — no model override for workers (except the `subagent` config block) |
+| Same LLM client | `get_llm_client()` — no model override for workers (except the `subagent` config block and declarative `model` frontmatter) |
 
 ---
 

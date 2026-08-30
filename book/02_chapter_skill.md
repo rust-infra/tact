@@ -80,8 +80,11 @@ Discovery roots:
 | Project (Claude) | `<workdir>/.claude/skills/` | Team / repo skills (Claude-compatible) |
 | Config extras | `[agent].skill_dirs` | Extra roots from TOML (relative to workdir; `~` ok) |
 | Installed plugin | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/` | Installed plugin playbooks |
+| Installed plugin commands | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/commands/*.md` | Legacy Claude slash commands |
 
 Load order: project-local → user → global agents → Claude project → **config `skill_dirs`** → installed plugins. **Same standalone name: later wins**. Installed plugin skills always use a `plugin:skill` name, so they cannot replace standalone skills.
+
+Legacy `commands/*.md` files load into the same registry **after** a plugin's `skills/` (Claude Code treats both layouts identically — only the file layout differs), so a same-named command wins over the skill. Command names come from the file stem: `commands/commit.md` → `/plugin:commit`.
 
 ---
 
@@ -151,7 +154,7 @@ The open Agent Skills spec does **not** define argument placeholders. Tact’s T
 - Matches files named exactly `SKILL.md`
 - Inserts into `HashMap<String, SkillDocument>` keyed by skill name
 
-`get_skill_registry()` then loads validated installed plugin roots after the project roots, prefixing each local skill name with its plugin ID (`plugin:skill`).
+`get_skill_registry()` then loads validated installed plugin roots after the project roots, prefixing each local skill name with its plugin ID (`plugin:skill`). Legacy `commands/*.md` slash commands from the same plugin load next (`load_plugin_commands`), so a command overrides a same-named skill. The command name is the file stem (`commands/commit.md` → `plugin:commit`), and its frontmatter `description` / `argument-hint` / `allowed-tools` / `model` are parsed into the manifest (the last three are stored but not enforced in v1).
 
 Duplicate standalone names: later roots **overwrite** earlier ones — no warning. Within a single root, later walk entries also overwrite. Plugin skills occupy their own `plugin:skill` namespace.
 

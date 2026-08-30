@@ -34,7 +34,10 @@ use serde_json::{Map, Value};
 use tokio::process::Command;
 
 use crate::{
-    ToolSpec, consts::PluginHome, plugin::{PluginRoot, PluginStore}, tool::copy_tool_spec,
+    ToolSpec,
+    consts::PluginHome,
+    plugin::{PluginRoot, PluginStore},
+    tool::copy_tool_spec,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -128,9 +131,7 @@ impl McpProjectConfig {
     /// `None` for remote (`http`/`url`) or malformed entries.
     #[must_use]
     pub fn to_stdio(&self) -> Option<McpServerConfig> {
-        if matches!(self.server_type.as_deref(), Some("http") | Some("sse"))
-            || self.url.is_some()
-        {
+        if matches!(self.server_type.as_deref(), Some("http") | Some("sse")) || self.url.is_some() {
             return None;
         }
         Some(McpServerConfig {
@@ -556,10 +557,8 @@ pub async fn load_mcp_router() -> Result<MCPToolRouter> {
     let mut loader = PluginLoader::new(vec![cwd]);
     let _ = loader.scan()?;
 
-    let mut server_configs: Vec<(String, McpServerConfig)> = loader
-        .mcp_servers()
-        .into_iter()
-        .collect();
+    let mut server_configs: Vec<(String, McpServerConfig)> =
+        loader.mcp_servers().into_iter().collect();
     if let Some(home) = PluginHome::from_environment() {
         server_configs.extend(installed_plugin_mcp_servers(&home)?);
     }
@@ -744,7 +743,10 @@ mod tests {
         let local = configs["local"].to_stdio().expect("stdio server");
         assert_eq!(local.command, "node");
         assert_eq!(local.args, vec!["srv.js"]);
-        assert!(configs["remote"].to_stdio().is_none(), "http must be skipped");
+        assert!(
+            configs["remote"].to_stdio().is_none(),
+            "http must be skipped"
+        );
     }
 
     #[test]
@@ -816,7 +818,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let plugin_home = PluginHome::from_home(home.path());
 
-        assert!(installed_plugin_mcp_servers(&plugin_home).unwrap().is_empty());
+        assert!(
+            installed_plugin_mcp_servers(&plugin_home)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     fn upper_tool() -> McpTool {

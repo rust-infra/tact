@@ -81,8 +81,11 @@ graph TB
 | Project（Claude） | `<workdir>/.claude/skills/` | 团队/仓库 skills（Claude 兼容） |
 | 配置额外目录 | `[agent].skill_dirs` | TOML 额外根（相对 workdir；支持 `~`） |
 | Installed plugin | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/` | 已安装插件的 playbook |
+| Installed plugin commands | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/commands/*.md` | 旧式 Claude 斜杠命令 |
 
 加载顺序：项目本地 → user → global agents → Claude project → **配置 `skill_dirs`** → 已安装插件。**同名的独立 skill 以后者覆盖**。已安装插件的 skill 始终使用 `plugin:skill` 名称，因此不能替换独立 skill。
+
+旧式 `commands/*.md` 在插件的 `skills/` **之后**加载进同一注册表（Claude Code 两种布局加载方式相同，只是文件布局不同），因此同名命令覆盖技能。命令名取自文件 stem：`commands/commit.md` → `/plugin:commit`。
 
 ---
 
@@ -152,7 +155,7 @@ description: Comprehensive Rust coding guidelines
 - 匹配文件名恰好为 `SKILL.md` 的文件
 - 插入以 skill 名称为 key 的 `HashMap<String, SkillDocument>`
 
-随后，`get_skill_registry()` 会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill 名称添加前缀（`plugin:skill`）。
+随后，`get_skill_registry()` 会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill 名称添加前缀（`plugin:skill`）。同一插件的旧式 `commands/*.md` 斜杠命令随后加载（`load_plugin_commands`），同名命令覆盖技能。命令名取文件 stem（`commands/commit.md` → `plugin:commit`），frontmatter 的 `description` / `argument-hint` / `allowed-tools` / `model` 解析进 manifest（后三者仅存储，v1 不强制执行）。
 
 重名的独立 skill：后扫描的根**覆盖**先前的——无警告。同一根内，后遍历到的条目也会覆盖。插件 skill 位于独立的 `plugin:skill` 命名空间中。
 

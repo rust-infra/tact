@@ -288,16 +288,11 @@ fn parse_output(stdout: &str) -> HookOutput {
 
     let legacy = raw.hook_specific_output.as_ref();
     let blocked = raw.decision.as_deref() == Some("block")
-        || legacy
-            .and_then(|l| l.permission_decision.as_deref())
-            == Some("deny");
+        || legacy.and_then(|l| l.permission_decision.as_deref()) == Some("deny");
     let reason = raw
         .reason
         .clone()
-        .or_else(|| {
-            legacy
-                .and_then(|l| l.permission_decision_reason.clone())
-        })
+        .or_else(|| legacy.and_then(|l| l.permission_decision_reason.clone()))
         .unwrap_or_else(|| "blocked by plugin hook".to_string());
 
     HookOutput {
@@ -314,9 +309,7 @@ fn parse_output(stdout: &str) -> HookOutput {
             .system_prompt
             .clone()
             .or_else(|| legacy.and_then(|l| l.updated_system_prompt.clone())),
-        suppress_output: legacy
-            .and_then(|l| l.suppress_output)
-            .unwrap_or(false),
+        suppress_output: legacy.and_then(|l| l.suppress_output).unwrap_or(false),
     }
 }
 
@@ -441,56 +434,54 @@ pub fn plugin_subagent_start_hooks(work_dir: &Path) -> Result<Vec<Arc<dyn Subage
     };
     let mut out: Vec<Arc<dyn SubagentStartFn>> = Vec::new();
     for installed in installed_hooks(&home)? {
-                for (matcher, command) in installed.hooks.commands_for(HookEventKind::SubagentStart) {
+        for (matcher, command) in installed.hooks.commands_for(HookEventKind::SubagentStart) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
             let plugin_root = installed.plugin_root.clone();
             let work_dir = work_dir.to_path_buf();
             let plugin_id = installed.plugin_id.clone();
-            out.push(Arc::new(
-                move |ctx: &mut SubagentStartContext| {
-                    let command = command.clone();
-                    let plugin_root = plugin_root.clone();
-                    let work_dir = work_dir.clone();
-                    let matcher = matcher.clone();
-                    let plugin_id = plugin_id.clone();
-                    let mut ctx = ctx.clone();
-                    Box::pin(async move {
-                        if !matcher_matches(matcher.as_deref(), &ctx.name) {
-                            return Ok(HookControl::Continue);
+            out.push(Arc::new(move |ctx: &mut SubagentStartContext| {
+                let command = command.clone();
+                let plugin_root = plugin_root.clone();
+                let work_dir = work_dir.clone();
+                let matcher = matcher.clone();
+                let plugin_id = plugin_id.clone();
+                let mut ctx = ctx.clone();
+                Box::pin(async move {
+                    if !matcher_matches(matcher.as_deref(), &ctx.name) {
+                        return Ok(HookControl::Continue);
+                    }
+                    let output = run_command_hook(
+                        &command,
+                        &plugin_root,
+                        &HookRunInput {
+                            session_id: String::new(),
+                            work_dir,
+                            hook_event_name: "SubagentStart",
+                            event: json!({
+                                "subagent_name": ctx.name,
+                                "prompt": ctx.prompt,
+                            }),
+                        },
+                    )
+                    .await;
+                    if let Some(extra) = output.additional_context {
+                        ctx.system_prompt.push_str(&extra);
+                    }
+                    match output.control {
+                        HookControl::Continue => {}
+                        HookControl::Block(reason) => {
+                            warn!(
+                                "plugin {plugin_id} SubagentStart hook blocked subagent: {reason}"
+                            );
                         }
-                        let output = run_command_hook(
-                            &command,
-                            &plugin_root,
-                            &HookRunInput {
-                                session_id: String::new(),
-                                work_dir,
-                                hook_event_name: "SubagentStart",
-                                event: json!({
-                                    "subagent_name": ctx.name,
-                                    "prompt": ctx.prompt,
-                                }),
-                            },
-                        )
-                        .await;
-                        if let Some(extra) = output.additional_context {
-                            ctx.system_prompt.push_str(&extra);
-                        }
-                        match output.control {
-                            HookControl::Continue => {}
-                            HookControl::Block(reason) => {
-                                warn!(
-                                    "plugin {plugin_id} SubagentStart hook blocked subagent: {reason}"
-                                );
-                            }
-                        }
-                        // A blocked subagent still runs — the reason is visible
-                        // in the prompt — matching Claude Code's fail-open
-                        // posture for command hooks.
-                        Ok(HookControl::Continue)
-                    })
-                },
-            ));
+                    }
+                    // A blocked subagent still runs — the reason is visible
+                    // in the prompt — matching Claude Code's fail-open
+                    // posture for command hooks.
+                    Ok(HookControl::Continue)
+                })
+            }));
         }
     }
     Ok(out)
@@ -556,33 +547,34 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
             let command = command.clone();
             let plugin_root = installed.plugin_root.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_user_prompt_submit(move |_agent: &crate::Agent, prompt: &mut String| {
-                let matcher = matcher.clone();
-                let command = command.clone();
-                let plugin_root = plugin_root.clone();
-                let work_dir = work_dir.clone();
-                let prompt_snapshot = prompt.clone();
-                Box::pin(async move {
-                    if !matcher_matches(matcher.as_deref(), &prompt_snapshot) {
-                        return Ok(HookControl::Continue);
-                    }
-                    let output = run_command_hook(
-                        &command,
-                        &plugin_root,
-                        &HookRunInput {
-                            session_id: String::new(),
-                            work_dir,
-                            hook_event_name: "UserPromptSubmit",
-                            event: json!({ "prompt": prompt_snapshot }),
-                        },
-                    )
-                    .await;
-                    if let Some(extra) = output.additional_context {
-                        prompt.push_str(&extra);
-                    }
-                    Ok(output.control)
-                })
-            });
+            agent =
+                agent.with_user_prompt_submit(move |_agent: &crate::Agent, prompt: &mut String| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let plugin_root = plugin_root.clone();
+                    let work_dir = work_dir.clone();
+                    let prompt_snapshot = prompt.clone();
+                    Box::pin(async move {
+                        if !matcher_matches(matcher.as_deref(), &prompt_snapshot) {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_command_hook(
+                            &command,
+                            &plugin_root,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "UserPromptSubmit",
+                                event: json!({ "prompt": prompt_snapshot }),
+                            },
+                        )
+                        .await;
+                        if let Some(extra) = output.additional_context {
+                            prompt.push_str(&extra);
+                        }
+                        Ok(output.control)
+                    })
+                });
         }
 
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::PreToolUse) {
@@ -631,7 +623,10 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
             let plugin_root = installed.plugin_root.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_hook(
-                move |_agent: &crate::Agent, tool_use: &ToolUse, result: &mut ToolResult, _status| {
+                move |_agent: &crate::Agent,
+                      tool_use: &ToolUse,
+                      result: &mut ToolResult,
+                      _status| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let plugin_root = plugin_root.clone();
@@ -759,9 +754,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let command = HookCommand {
             ty: Some("command".into()),
-            command: Some(
-                r#"printf '{"decision":"block","reason":"no read allowed"}'"#.into(),
-            ),
+            command: Some(r#"printf '{"decision":"block","reason":"no read allowed"}'"#.into()),
             command_windows: None,
             timeout: Some(10),
             status_message: None,
@@ -929,7 +922,10 @@ mod tests {
         .await;
 
         let expected = dir.path().display().to_string();
-        assert_eq!(output.additional_context.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            output.additional_context.as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     #[test]

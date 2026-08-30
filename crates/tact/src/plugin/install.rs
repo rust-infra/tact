@@ -486,7 +486,9 @@ fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<Plugin
         .as_ref()
         .is_some_and(|hooks| candidate.join(hooks).is_file());
 
-    features.has_mcp = manifest.mcp_servers.is_some_and(|servers| !servers.is_empty())
+    features.has_mcp = manifest
+        .mcp_servers
+        .is_some_and(|servers| !servers.is_empty())
         || candidate.join(".mcp.json").is_file();
 
     if features.is_empty() {
@@ -509,9 +511,10 @@ fn read_compatibility_manifest(candidate: &Path) -> Result<PluginManifest> {
     if !manifest.is_file() {
         return Ok(PluginManifest::default());
     }
-    serde_json::from_reader(fs::File::open(&manifest).with_context(|| {
-        format!("failed to read plugin manifest {}", manifest.display())
-    })?)
+    serde_json::from_reader(
+        fs::File::open(&manifest)
+            .with_context(|| format!("failed to read plugin manifest {}", manifest.display()))?,
+    )
     .with_context(|| format!("failed to parse plugin manifest {}", manifest.display()))
 }
 
@@ -648,12 +651,16 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            repository.path().join("plugins/hooked/.claude-plugin/plugin.json"),
+            repository
+                .path()
+                .join("plugins/hooked/.claude-plugin/plugin.json"),
             r#"{ "name": "hooked", "hooks": "./hooks/hooks.json" }"#,
         )
         .unwrap();
         fs::write(
-            repository.path().join("plugins/served/.claude-plugin/plugin.json"),
+            repository
+                .path()
+                .join("plugins/served/.claude-plugin/plugin.json"),
             r#"{ "name": "served", "mcpServers": { "echo": { "command": "echo", "args": [] } } }"#,
         )
         .unwrap();
@@ -797,7 +804,10 @@ mod tests {
     fn install_accepts_agent_only_plugin() {
         let fixture = fixture_installer();
 
-        let installed = fixture.installer.install("agents", "fixture-market").unwrap();
+        let installed = fixture
+            .installer
+            .install("agents", "fixture-market")
+            .unwrap();
 
         assert_eq!(installed.agent_count, 1);
         assert_eq!(installed.skill_count, 0);
@@ -808,7 +818,10 @@ mod tests {
     fn install_accepts_hooks_only_plugin() {
         let fixture = fixture_installer();
 
-        let installed = fixture.installer.install("hooked", "fixture-market").unwrap();
+        let installed = fixture
+            .installer
+            .install("hooked", "fixture-market")
+            .unwrap();
 
         assert!(installed.has_hooks);
         assert_eq!(installed.skill_count, 0);
@@ -819,7 +832,10 @@ mod tests {
     fn install_accepts_mcp_only_plugin() {
         let fixture = fixture_installer();
 
-        let installed = fixture.installer.install("served", "fixture-market").unwrap();
+        let installed = fixture
+            .installer
+            .install("served", "fixture-market")
+            .unwrap();
 
         assert!(installed.has_mcp);
         assert_eq!(installed.skill_count, 0);

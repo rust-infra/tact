@@ -220,27 +220,21 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     let agent_definition = match input.agent.as_deref() {
         Some(name) => {
             let registry = crate::agent_def::lock_agent_definitions(&ctx.agent_registry);
-            Some(
-                registry
-                    .get(name)
-                    .cloned()
-                    .with_context(|| {
-                        format!(
-                            "unknown declarative agent '{name}'; available:\n{}",
-                            registry.describe_available()
-                        )
-                    })?,
-            )
+            Some(registry.get(name).cloned().with_context(|| {
+                format!(
+                    "unknown declarative agent '{name}'; available:\n{}",
+                    registry.describe_available()
+                )
+            })?)
         }
         None => None,
     };
-    if let Some(definition) = agent_definition.as_ref() {
-        if let Some(mode) = definition.permission_mode {
-            // Auto stays sticky; other inherited modes may be overridden.
-            if pm.mode() != PermissionMode::Auto {
-                pm.set_mode(mode);
-            }
-        }
+    if let Some(definition) = agent_definition.as_ref()
+        && let Some(mode) = definition.permission_mode
+        // Auto stays sticky; other inherited modes may be overridden.
+        && pm.mode() != PermissionMode::Auto
+    {
+        pm.set_mode(mode);
     }
     let mut system_prompt = match agent_definition.as_ref() {
         Some(definition) => {
@@ -298,7 +292,9 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     let mut subagent = Agent::new(
         client,
         ctx.clone(),
-        crate::tool::registry::subagent_toolset_for(agent_definition.as_ref().and_then(|d| d.tools.as_deref())),
+        crate::tool::registry::subagent_toolset_for(
+            agent_definition.as_ref().and_then(|d| d.tools.as_deref()),
+        ),
         MCPToolRouter::new(),
         pm,
         AgentSystemPrompt::Static(system_prompt),

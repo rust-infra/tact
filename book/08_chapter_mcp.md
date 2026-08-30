@@ -102,6 +102,8 @@ Meaning: run `command` as a subprocess—that process is the MCP Server.
 
 Code: `PluginLoader::scan` scans directories, parses the manifest, and builds server names like `{plugin}__{server}` (e.g. `demo__postgres`).
 
+**Installed marketplace plugins** are also scanned at startup: `installed_plugin_mcp_servers` walks every plugin cache root, reading both `.claude-plugin/plugin.json` `mcpServers` and a Claude project-style `.mcp.json` at the plugin root, and names servers `plugin__<plugin>__<server>`. Only stdio servers are connected; `http` / `url` entries are skipped with a warning (Tact has no remote MCP transport yet).
+
 ### Step 2: Transport — start the Server process
 
 ```

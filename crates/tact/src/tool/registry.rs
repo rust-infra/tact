@@ -121,7 +121,9 @@ fn allowed_tool_names(keep: &[String]) -> std::collections::HashSet<&'static str
     allowed
 }
 
-fn try_subagent_toolset_filtered(allowed: &std::collections::HashSet<&'static str>) -> anyhow::Result<ToolRouter> {
+fn try_subagent_toolset_filtered(
+    allowed: &std::collections::HashSet<&'static str>,
+) -> anyhow::Result<ToolRouter> {
     let mut router = ToolRouter::new();
     if allowed.contains("bash") {
         router = router.route(BashTool)?;

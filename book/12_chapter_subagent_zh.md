@@ -41,19 +41,50 @@ pub struct SubagentInput {
     pub max_turns: Option<u32>,
     pub resume: Option<String>,
     pub worktree: Option<bool>,
+    pub agent: Option<String>,
 }
 ```
 
 | 字段 | 角色 |
 |------|------|
-| `prompt` | 成为子 agent 的唯一 user 消息 |
+| `prompt` | 成为子 agent 的唯一 user 消息（任务） |
 | `description` | 仅 schema 提示给模型；**handler 不读取** |
 | `run_in_background` | `true` 立即返回 `async_launched { id }`；子 agent 脱钩运行，稍后回注 summary |
 | `max_turns` | 上限嵌套 `agent_loop` 轮数（防止失控） |
 | `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮 |
 | `worktree` | `true` 让子 agent 运行在隔离的 git worktree 泳道（`subagent-<child_id>`，分支 `wt/subagent-<child_id>`）；要求 `work_dir` 是 git 仓库。`resume` 时复用已有泳道。泳道在 handler 内同步创建（失败立即暴露），完成后保留供 `worktree_status` / `worktree_run` 检查。 |
+| `agent` | 按名运行**声明式 agent 定义**——已安装插件 `agents/*.md` 用 `plugin:<name>`，`.tact/agents/*.md` 本地定义可用唯一原名。定义正文成为 system prompt；其 `tools` / `model` / `permissionMode` frontmatter 生效（见 §2.1）。 |
 
 仅主 agent 的 `toolset()` 注册 `SpawnSubagentTool`（与 `CheckSubagentTool`）。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `spawn_subagent`。
+
+---
+
+## 2.1 声明式 agent 定义
+
+Tact 从两个根加载可复用子代理定义（同名后者覆盖）：
+
+- `<workdir>/.tact/agents/*.md` —— 项目本地，原名（`architect`）；
+- 已安装插件 `<cache>/agents/*.md` —— 命名空间 `plugin:<name>`（例如 `claude-security:code-reviewer`）。
+
+Frontmatter（Claude Code 兼容）：
+
+```markdown
+---
+name: reviewer
+description: Reviews code with an adversarial lens
+tools: Read, Glob, Grep, Bash
+model: sonnet
+permissionMode: plan
+---
+
+You are a principal reviewer. …
+```
+
+- `tools` 限制子代理工具集（Claude 名映射到 Tact 工具：Read/Glob/Grep → `read_file`、Bash → `bash`、Edit → `edit_file`、Write → `write_file`、Sleep → `sleep`；未知名忽略；空集保持默认五件套）。
+- `model` 覆盖子代理模型（叠加在 `[agent.subagent]` 配置之上）。
+- `permissionMode` 覆盖继承的权限模式，除非父级为 `Auto`（Auto 保持粘性）。
+
+注册表：`crates/tact/src/agent_def.rs`（`AgentDefinitionRegistry`，共享于 `ToolContext.agent_registry`）。`spawn_subagent` 引用未知 `agent` 名时报错并列出可用定义。
 
 ---
 
@@ -230,10 +261,9 @@ let summary = subagent
 | 独立 cancel 标志 | 父级 Cancel 可能无法中止长时间运行的子 agent；异步句柄已存，供未来 `cancel_subagent` / `/tasks` |
 | 无 worktree 删除 | 隔离泳道在子 agent 结束后保留；需手动 `git worktree remove`（尚无工具入口） |
 | worktree 基准为仓库 HEAD | 从另一 worktree 内 spawn 的子 agent 仍基于主仓库 HEAD 分支，而非父泳道 |
-| 无声明式 agent 定义 | `.tact/agents/*.md`（含 per-agent `permissionMode`）延后；继承为纯运行时 |
 | 列表隐藏子会话 | `--list-sessions` / resume 只显示 `ref_id = ''`；删父会级联删子 |
 | Summary 启发式 | 仅最后 assistant 文本；纯 tool 结尾返回 `(no summary)` |
-| 相同 LLM client | `get_llm_client()` — worker 无 model 覆盖（`subagent` 配置块除外） |
+| 相同 LLM client | `get_llm_client()` — worker 无 model 覆盖（`subagent` 配置块与声明式 `model` frontmatter 除外） |
 
 ---
 

@@ -103,6 +103,8 @@ Tact 目前**仅**使用 stdio（见 `McpClient::connect`）。
 
 代码：`PluginLoader::scan` 扫描目录、解析 manifest，构建形如 `{plugin}__{server}` 的服务器名（例如 `demo__postgres`）。
 
+**已安装的 marketplace 插件**同样在启动时被扫描：`installed_plugin_mcp_servers` 遍历每个插件缓存根，读取 `.claude-plugin/plugin.json` 的 `mcpServers` 与插件根下 Claude 项目风格的 `.mcp.json`，服务器命名为 `plugin__<plugin>__<server>`。只连接 stdio 服务器；`http` / `url` 类型跳过并告警（Tact 尚无远程 MCP 传输）。
+
 ### Step 2：传输——启动 Server 进程
 
 ```

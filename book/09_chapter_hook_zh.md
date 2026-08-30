@@ -21,15 +21,18 @@ Hooks 把这些关注点移出核心调度器，仍在流水线可预测的位�
 
 ---
 
-## 2. 三种 Hook 类型
+## 2. Hook 类型
 
 定义于 `crates/tact/src/hook/mod.rs`：
 
 | Hook | 注册 | 今天是否调用 | 可否变更 | 可否否决 |
 |------|------|--------------|----------|----------|
-| `SessionStart` | `Agent::session_start` | **否** — 已注册但 `agent_loop` 尚未调用 | 对 `LoopState`（`Agent`）只读 | 是 |
+| `SessionStart` | `Agent::session_start` | 是 — 每会话一次，初始化后（`dispatch_session_start_hooks`） | 对 `LoopState`（`Agent`）只读 | 是 |
+| `UserPromptSubmit` | `Agent::user_prompt_submit` | 是 — 用户回合消息进入 `agent_loop` 时 | prompt 文本（追加 `additionalContext`） | 是 |
 | `PreToolUse` | `Agent::pre_tool` | 是 — 权限检查之前，按 tool 顺序 | `ToolUse` 输入（`name`、`input` JSON） | 是 |
 | `PostToolUse` | `Agent::post_tool` | 是 — 每个 tool 完成后，随结果流入 | `ToolResult` content | 是 |
+
+`SubagentStart` 是**独立**的 hook trait（`SubagentStartFn`），不是 `Agent.hook`：`spawn_subagent` 是工具处理器、没有父 `Agent` 句柄，所以闭包挂在 `ToolContext.subagent_start_hooks` 上，由 spawn 路径调用以修改子代理的 system prompt。
 
 `LoopState` 是 `Agent` 的类型别名，因此 session hook 看到与循环相同的运行时（context、stats、tool router 等）。
 
@@ -147,6 +150,20 @@ agent.post_tool(|_agent, tool_use, tool_result| {
 Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 同类型多个 hook 组合：全部须 `Continue`，除非某个 `Block`（首个 block 生效）。
+
+### Claude Code 插件命令 hook
+
+已安装的 marketplace 插件可通过 `.claude-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把它们注册到 `Agent` 上，覆盖五个映射事件：
+
+- `SessionStart` — matcher 与 `"startup"` 匹配；`systemPrompt` 输出仅记录日志、**不应用**（v1）。
+- `UserPromptSubmit` — matcher 匹配 prompt 文本；`additionalContext` 输出追加到用户 prompt。
+- `PreToolUse` — matcher 匹配工具名；`additionalContext` 以 `_hook_context` 加入工具输入；`block` 阻止执行。
+- `PostToolUse` — matcher 匹配工具名；`suppressOutput` 清空结果；`block` 使其变为失败。
+- `SubagentStart` — `plugin_subagent_start_hooks` 构建 `ToolContext` 闭包；`additionalContext` 追加到子代理 system prompt。
+
+每条 hook 是一个 shell 命令（Unix 用 `sh -c`，`commandWindows` 暂不处理），注入 `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` 环境变量，stdin 输入 Claude 输入 JSON（`session_id`、`transcript_path`、`cwd`、`hook_event_name` 及事件字段），stdout 输出 JSON 同时兼容新版 `decision` / `reason` / `additionalContext` 与旧版 `hookSpecificOutput` 格式。`timeout` 默认 60s，`async: true` 即发即忘。失败（非零退出、超时、非法 JSON）仅告警并 **继续**——绝不阻塞 agent 循环（fail-open，与 Claude Code 一致）。
+
+插件 hook 在既有 Rust 闭包之后按声明顺序执行；`Block` 短路。
 
 ---
 

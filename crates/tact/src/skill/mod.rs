@@ -634,7 +634,10 @@ mod tests {
             .load_plugin_commands(&plugin_root.join("commands"), "plugin")
             .unwrap();
 
-        let doc = registry.skills().get("plugin:commit").expect("command loaded");
+        let doc = registry
+            .skills()
+            .get("plugin:commit")
+            .expect("command loaded");
         assert_eq!(doc.manifest.description, "Commit helper");
         assert!(doc.body.contains("git commit"));
     }
@@ -668,7 +671,10 @@ mod tests {
             .load_plugin_commands(&plugin_root.join("commands"), "plugin")
             .unwrap();
 
-        let doc = registry.skills().get("plugin:review").expect("review present");
+        let doc = registry
+            .skills()
+            .get("plugin:review")
+            .expect("review present");
         assert!(
             doc.body.contains("COMMAND BODY"),
             "command must override the same-named skill"
@@ -693,10 +699,7 @@ mod tests {
 
         let doc = registry.skills().get("plugin:build").expect("loaded");
         assert_eq!(doc.manifest.argument_hint.as_deref(), Some("<target>"));
-        assert_eq!(
-            doc.manifest.allowed_tools.as_deref(),
-            Some("Bash, Read")
-        );
+        assert_eq!(doc.manifest.allowed_tools.as_deref(), Some("Bash, Read"));
         assert_eq!(doc.manifest.model.as_deref(), Some("sonnet"));
     }
 
@@ -706,7 +709,11 @@ mod tests {
         let commands_dir = dir.path().join("commands");
         fs::create_dir_all(&commands_dir).unwrap();
         fs::write(commands_dir.join("run.sh"), "#!/bin/sh\n").unwrap();
-        fs::write(commands_dir.join("note.md"), "---\ndescription: Note\n---\n").unwrap();
+        fs::write(
+            commands_dir.join("note.md"),
+            "---\ndescription: Note\n---\n",
+        )
+        .unwrap();
         let mut registry = SkillRegistry::new([]);
 
         registry

@@ -695,7 +695,7 @@ Each discovered skill appears as `/{name}` with its frontmatter `description`. B
 | `/skill-name` or `/skill-name args` + Enter | **Invoke**: log shows the slash line; agent gets `<skill>` body (bare `$ARGUMENTS` substituted, else Claude-style `ARGUMENTS:` appended when args present) |
 | Palette Enter on a skill | Insert mode with `/name ` prefilled (undo checkpoint preserved) |
 | `/skill-reload` | Rescan roots into shared registry (TUI + agent), invalidate visual cache |
-| `/plugin …` | Queue install, uninstall, update, list, reload, and marketplace operations; successful install/uninstall/update/reload refreshes shared skills |
+| `/plugin …` | Queue install, uninstall, update, list, reload, and marketplace operations; successful install/uninstall/update/reload refreshes shared skills. `/plugin list` renders a feature table (Skills / Cmds / Agents / Hooks / MCP) |
 
 Input box and user log lines highlight `/skill-name` (accent+bold) vs args (`theme.fg`) via `render/slash_style.rs`. Full discovery paths and `$ARGUMENTS` rules: [Ch 2](./02_chapter_skill.md). Separate from the model calling `load_skill` mid-turn.
 

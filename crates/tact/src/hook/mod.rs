@@ -43,16 +43,11 @@ pub struct SubagentStartContext {
     pub system_prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HookControl {
+    #[default]
     Continue,
     Block(String),
-}
-
-impl Default for HookControl {
-    fn default() -> Self {
-        Self::Continue
-    }
 }
 
 pub trait SessionStartFn:
@@ -88,7 +83,10 @@ pub trait PostToolUseFn:
 /// loop and may append context to the prompt text (Claude Code
 /// `UserPromptSubmit.additionalContext`).
 pub trait UserPromptSubmitFn:
-    for<'a> Fn(&'a LoopState, &'a mut String) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    for<'a> Fn(
+        &'a LoopState,
+        &'a mut String,
+    ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
 {
@@ -102,7 +100,9 @@ pub trait UserPromptSubmitFn:
 /// command hooks are stored on the context as `Arc<dyn SubagentStartFn>` and
 /// invoked directly by the spawn path.
 pub trait SubagentStartFn:
-    for<'a> Fn(&'a mut SubagentStartContext) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    for<'a> Fn(
+        &'a mut SubagentStartContext,
+    ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
 {
@@ -138,14 +138,19 @@ impl<F> PostToolUseFn for F where
 }
 
 impl<F> UserPromptSubmitFn for F where
-    F: for<'a> Fn(&'a LoopState, &'a mut String) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    F: for<'a> Fn(
+            &'a LoopState,
+            &'a mut String,
+        ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
         + Sync
 {
 }
 
 impl<F> SubagentStartFn for F where
-    F: for<'a> Fn(&'a mut SubagentStartContext) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    F: for<'a> Fn(
+            &'a mut SubagentStartContext,
+        ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
         + Sync
 {

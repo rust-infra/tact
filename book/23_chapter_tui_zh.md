@@ -662,7 +662,7 @@ sequenceDiagram
 | `/skill-name` 或 `/skill-name args` + Enter | **Invoke**：log 显示 slash 行；agent 收到 `<skill>` body（裸 `$ARGUMENTS` 替换，或有 args 时 append Claude 式 `ARGUMENTS:`） |
 | Palette Enter 于 skill | Insert 模式预填 `/name `（undo checkpoint 保留） |
 | `/skill-reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
-| `/plugin …` | 排队安装、卸载、更新、列出、重载及 marketplace 操作；成功的 install/uninstall/update/reload 刷新共享 skills |
+| `/plugin …` | 排队安装、卸载、更新、列出、重载及 marketplace 操作；成功的 install/uninstall/update/reload 刷新共享 skills。`/plugin list` 渲染功能表（技能 / 命令 / 代理 / 钩子 / MCP） |
 
 输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill.md)。与模型 mid-turn 调用 `load_skill` 分离。
 
