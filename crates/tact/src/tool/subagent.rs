@@ -534,6 +534,14 @@ mod tests {
     }
 
     #[test]
+    fn subagent_toolset_for_empty_list_keeps_default() {
+        // Claude semantics: an empty `tools:` list does not restrict — keep
+        // the default five-tool set (not a zero-tool subagent).
+        let router = crate::tool::registry::subagent_toolset_for(Some(&[]));
+        assert_eq!(router.tool_specs().len(), 5);
+    }
+
+    #[test]
     fn resolve_agent_model_handles_claude_aliases() {
         assert_eq!(resolve_agent_model("inherit", "a"), None);
         assert_eq!(resolve_agent_model("", "a"), None);

@@ -1987,15 +1987,17 @@ mod tests {
 
     use sqlx::Row;
     use tact_llm::{
-        ContentBlock, LlmProvider, Message, MockClient, ProviderConversationState, ProviderKind,
-        Role, StopReason,
+        ContentBlock, LlmProvider, Message, MessageContent, MessageKind, MockClient,
+        ProviderConversationState, ProviderKind, Role, StopReason,
     };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::extract_text;
     use crate::store::SessionStore;
     use crate::tool::test_support::test_context;
+    use serde_json::Value;
 
     static INIT_CONFIG: Once = Once::new();
 
@@ -4413,5 +4415,71 @@ mod tests {
             agent.runtime.provider_state.is_none(),
             "mismatched state must not be adopted"
         );
+    }
+
+    #[test]
+    fn user_text_target_mutates_text_and_first_text_block() {
+        let mut plain = Message::new_text(Role::User, "hello");
+        {
+            let target = user_text_target(&mut plain).expect("text target");
+            target.push_str(" world");
+        }
+        assert_eq!(extract_text(&plain.content), "hello world");
+
+        let mut blocks = Message {
+            role: Role::User,
+            content: MessageContent::Blocks {
+                content: vec![
+                    ContentBlock::Text {
+                        text: "first".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t1".into(),
+                        name: "read_file".into(),
+                        input: Value::Null,
+                    },
+                    ContentBlock::Text {
+                        text: "second".into(),
+                    },
+                ],
+            },
+            kind: MessageKind::Normal,
+        };
+        {
+            let target = user_text_target(&mut blocks).expect("first text block");
+            target.push_str("-edited");
+        }
+        match &blocks.content {
+            MessageContent::Blocks { content } => {
+                assert_eq!(
+                    content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    vec!["first-edited".to_string(), "second".to_string()],
+                    "non-text blocks preserved, first text block edited"
+                );
+            }
+            _ => panic!("blocks content expected"),
+        }
+    }
+
+    #[test]
+    fn user_text_target_returns_none_without_text() {
+        let mut message = Message {
+            role: Role::User,
+            content: MessageContent::Blocks {
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "bash".into(),
+                    input: Value::Null,
+                }],
+            },
+            kind: MessageKind::Normal,
+        };
+        assert!(user_text_target(&mut message).is_none());
     }
 }

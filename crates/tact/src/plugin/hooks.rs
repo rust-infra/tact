@@ -201,10 +201,7 @@ pub async fn run_command_hook(
 
     let payload = build_payload(input);
     // Claude semantics: default 60s; an explicit `0` disables the timeout.
-    let timeout_secs = match command.timeout {
-        Some(0) => None,
-        other => other.or(Some(60)),
-    };
+    let timeout_secs = resolve_timeout(command.timeout);
     match run_process(
         &expand_plugin_root(raw, plugin_root),
         &input.work_dir,
@@ -267,6 +264,15 @@ async fn run_process(
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Resolves a hook's timeout: an explicit `0` disables the timeout, `None`
+/// defaults to 60s (Claude Code semantics).
+fn resolve_timeout(timeout: Option<u64>) -> Option<u64> {
+    match timeout {
+        Some(0) => None,
+        other => other.or(Some(60)),
+    }
 }
 
 /// Builds the Claude Code hook input JSON (`session_id`, `transcript_path`,
@@ -1125,6 +1131,17 @@ mod tests {
         assert_eq!(payload["tool_name"], "Bash");
         assert_eq!(payload["tool_input"]["command"], "ls");
         assert!(payload.get("_event").is_none(), "event must not be nested");
+    }
+
+    #[test]
+    fn resolve_timeout_semantics() {
+        assert_eq!(resolve_timeout(None), Some(60), "default is 60s");
+        assert_eq!(resolve_timeout(Some(5)), Some(5));
+        assert_eq!(
+            resolve_timeout(Some(0)),
+            None,
+            "explicit 0 disables timeout"
+        );
     }
 
     #[test]

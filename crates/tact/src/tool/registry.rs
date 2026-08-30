@@ -83,14 +83,18 @@ pub fn subagent_toolset() -> ToolRouter {
 /// named by a declarative agent definition's `tools:` frontmatter (Claude Code
 /// naming: Read/Glob/Grep → `read_file`, Bash → `bash`, Edit → `edit_file`,
 /// Write → `write_file`, Sleep → `sleep`). Unknown names are ignored while at
-/// least one known name remains; an empty allowed set (or `None`) keeps the
-/// default five-tool set. When `keep` is non-empty but **no** name maps to a
-/// known tool, the result is an empty router — callers must fail rather than
-/// silently widen permissions to the default set.
+/// least one known name remains. `None` and an **empty** list keep the default
+/// five-tool set (Claude semantics: an absent/empty `tools:` does not
+/// restrict). When `keep` is non-empty but **no** name maps to a known tool,
+/// the result is an empty router — callers must fail rather than silently
+/// widen permissions to the default set.
 pub fn subagent_toolset_for(keep: Option<&[String]>) -> ToolRouter {
     let Some(keep) = keep else {
         return subagent_toolset();
     };
+    if keep.is_empty() {
+        return subagent_toolset();
+    }
     let allowed = allowed_tool_names(keep);
     if allowed.is_empty() {
         // Declared tools exist but none map to a Tact tool: return an empty
