@@ -484,7 +484,8 @@ fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<Plugin
     features.has_hooks = manifest
         .hooks
         .as_ref()
-        .is_some_and(|hooks| candidate.join(hooks).is_file());
+        .is_some_and(|hooks| candidate.join(hooks).is_file())
+        || candidate.join("hooks").join("hooks.json").is_file();
 
     features.has_mcp = manifest
         .mcp_servers

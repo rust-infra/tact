@@ -45,7 +45,9 @@ Newest entries first. Each entry should include:
 4. **Agents** — 新 `agent_def` 注册表加载 `.tact/agents/*.md`（原名）与插件 `agents/*.md`（`plugin:<name>`）；`spawn_subagent` 新增 `agent` 字段：定义正文作 system prompt，`tools` 过滤子代理工具集（Read/Glob/Grep→read_file, Bash→bash, Edit→edit_file, Write→write_file, Sleep→sleep），`model`/`permissionMode` 覆盖（Auto 保持粘性）。
 5. **Hooks** — 新 `plugin/hooks.rs`：解析 Claude hooks JSON（matcher/command/commandWindows/timeout/statusMessage/async），`run_command_hook` 以 `sh -c` 执行并注入 `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PROJECT_DIR`，stdin JSON 负载、stdout 双格式解析（`decision` 与 `hookSpecificOutput`）；失败/超时/非法 JSON → warning + Continue（fail-open）。`Hook` 新增 `UserPromptSubmit`（agent_loop 入口对用户消息追加 `additionalContext`）；`SubagentStart` 作为独立 trait 存于 `ToolContext.subagent_start_hooks`（spawn 路径无 LoopState），在 `spawn_subagent` 中注入子代理 system prompt。
 
-**Behavior after:** 官方 marketplace 全部 39 个插件可安装；`/plugin:commit` 等命令即装即用；带 agents 的插件可通过 `spawn_subagent agent=…` 使用；带 hooks 的插件（如 ponytail）在会话启动 / 用户提交 / 工具调用前后 / 子代理启动时执行命令 hook；插件 `.mcp.json` stdio 服务器出现在 `mcp__` 工具集；`tact plugin list` 与 TUI `/plugin list` 显示功能摘要。
+**Behavior after:** 官方 marketplace 全部 39 个插件可安装；`/plugin:commit` 等命令即装即用；带 agents 的插件可通过 `spawn_subagent agent=…` 使用；带 hooks 的插件（如 ponytail、官方 hookify/security-guidance 等）在会话启动 / 用户提交 / 工具调用前后 / 子代理启动时执行命令 hook；插件 `.mcp.json` stdio 服务器出现在 `mcp__` 工具集；`tact plugin list` 与 TUI `/plugin list` 显示功能摘要。
+
+**Follow-up fixes (2026-08-30):** hooks 默认发现路径 `hooks/hooks.json`（manifest 缺省时回退，官方 6 个 hooks 插件受益）；声明式 agents 的 `model` 别名处理（`inherit` 不覆盖、`sonnet/opus/haiku` 警告忽略、具体 id 透传）；`tools:` 全部无法映射时报错而非回退默认五件套（防权限扩大）；UserPromptSubmit `Block` 真正阻止提交、SubagentStart `Block` 传播到 `spawn_subagent` 使其失败；SubagentStart 输入补 `agent_type` 字段（ponytail matcher 依赖）；`timeout: 0` 表示不设超时；新格式 `suppressOutput` 解析；SessionStart 纯文本输出显式告警。
 
 **Limitations (v1):** Python SDK `tools/`、http/url MCP、`Notification`/`Stop`/`SubagentStop`/`PreCompact`/`PostCompact`/`SessionEnd` 事件、SessionStart `systemPrompt` 输出、skills `allowed-tools`/`model` 强制执行均不支持（见设计文档 §2）。
 

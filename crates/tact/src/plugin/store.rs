@@ -322,6 +322,56 @@ mod tests {
     }
 
     #[test]
+    fn installed_plugin_roots_returns_only_valid_cache_roots() {
+        let home = tempdir().unwrap();
+        let store = PluginStore::from_home(home.path());
+        let valid_root = home.path().join(".tact/plugins/cache/acme/demo/abc123");
+        fs::create_dir_all(valid_root.join("skills/review")).unwrap();
+        fs::write(valid_root.join("skills/review/SKILL.md"), "review").unwrap();
+        // A second record whose cache path does not exist must be filtered out.
+        let missing_root = home.path().join(".tact/plugins/cache/acme/ghost/xyz");
+        let state = InstalledState {
+            plugins: BTreeMap::from([
+                (
+                    "acme/demo".to_owned(),
+                    InstalledPlugin {
+                        id: "demo".to_owned(),
+                        marketplace: "acme".to_owned(),
+                        revision: "abc123".to_owned(),
+                        cache_path: valid_root.clone(),
+                        skill_count: 1,
+                        command_count: 0,
+                        agent_count: 0,
+                        has_hooks: false,
+                        has_mcp: false,
+                    },
+                ),
+                (
+                    "acme/ghost".to_owned(),
+                    InstalledPlugin {
+                        id: "ghost".to_owned(),
+                        marketplace: "acme".to_owned(),
+                        revision: "xyz".to_owned(),
+                        cache_path: missing_root,
+                        skill_count: 0,
+                        command_count: 0,
+                        agent_count: 0,
+                        has_hooks: false,
+                        has_mcp: false,
+                    },
+                ),
+            ]),
+        };
+        store.commit_install(&state, &valid_root).unwrap();
+
+        let roots = store.installed_plugin_roots().unwrap();
+
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].plugin_id, "demo");
+        assert!(roots[0].root.join("skills/review/SKILL.md").is_file());
+    }
+
+    #[test]
     fn load_installed_migrates_task_one_records() {
         let home = tempdir().unwrap();
         let store = PluginStore::from_home(home.path());

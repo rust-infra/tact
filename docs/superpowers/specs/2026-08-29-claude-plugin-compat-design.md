@@ -34,8 +34,9 @@ Tact 的插件从 Claude marketplace（`claude-plugins-official` 等）安装，
 - **Python SDK 自定义工具**（`tools/` 目录）：官方插件当前没有使用，需要 Python 运行时 + SDK，v1 不做。
 - **远程 http/url 类型 MCP**：Tact 的 `McpClient` 仅支持 stdio，http 类型跳过并告警。
 - **Notification / Stop / SubagentStop / PreCompact / PostCompact / SessionEnd 事件**：Tact 循环没有对应注入点，v1 不映射。
-- **skills 的 `allowed-tools` 预授权 / `model` 覆盖**：解析并保存，但权限系统不强制执行（v1 限制）。
-- **SessionStart hook 修改 system prompt**：Tact 的 SessionStart hook 只返回 Continue/Block，`systemPrompt`/`updatedSystemPrompt` 输出仅告警不应用。
+- **skills 的 `allowed-tools` 预授权 / `model` 覆盖**：解析并保存，但权限系统不强制执行（v1 限制）。**声明式 agents 的 `model` 例外**：`inherit` 不覆盖、`sonnet/opus/haiku` 忽略告警、具体 id 透传。
+- **SessionStart hook 修改 system prompt**：Tact 的 SessionStart hook 只返回 Continue/Block，`systemPrompt`/`updatedSystemPrompt` 与纯文本 `additionalContext` 输出仅告警不应用。
+- **未映射 hook 事件**：官方部分插件使用 `UserPromptExpansion`、`Stop` 等事件，Tact 未映射（与 Notification 等一样在 v1 限制内），但含默认 `hooks/hooks.json` 的插件仍会被识别为 has_hooks 并加载其中映射到已知事件的 hook。
 
 ## 3. 现状分析（差距表）
 
@@ -90,7 +91,7 @@ pub struct PluginFeatures {
 impl PluginFeatures { pub fn is_empty(self) -> bool { /* 全零 */ } }
 ```
 
-校验规则：至少一种功能非空（skills≥1、commands≥1、agents≥1、hooks 指向存在的 JSON、mcpServers 或 `.mcp.json` 存在），否则报"插件不包含 Tact 支持的任何功能"。`hooks` 路径解析：相对于插件根，`${CLAUDE_PLUGIN_ROOT}` 不在此处展开（运行时展开）。
+校验规则：至少一种功能非空（skills≥1、commands≥1、agents≥1、hooks 指向存在的 JSON、mcpServers 或 `.mcp.json` 存在），否则报"插件不包含 Tact 支持的任何功能"。`hooks` 路径解析：相对于插件根，`${CLAUDE_PLUGIN_ROOT}` 不在此处展开（运行时展开）。**默认发现路径**：manifest `hooks` 字段缺省时回退 `<root>/hooks/hooks.json`（Claude Code 默认路径，官方 6 个 hooks 插件依赖它）。
 
 **InstalledPlugin 扩展**（`plugin/model.rs`，全部 `#[serde(default)]` 兼容旧记录）：
 
@@ -173,8 +174,8 @@ pub struct SubagentInput {
 
 语义：
 - `agent: Some(name)` 且解析成功 → system prompt = 定义 body + "\n\n用户任务：\n" + `prompt`；
-- `tools` 过滤 `subagent_toolset()`：Read/Glob/Grep → ReadFile，Bash → Bash，Edit → EditFile，Write → WriteFile，Sleep → Sleep；未知名忽略；`tools: None` 保持默认五件套；
-- `model` 覆盖子代理模型（与现有 `settings.agent.subagent` 覆盖逻辑叠加）；
+- `tools` 过滤 `subagent_toolset()`：Read/Glob/Grep → ReadFile，Bash → Bash，Edit → EditFile，Write → WriteFile，Sleep → Sleep；未知名忽略（至少保留一个已知名时）；**全部未知 → 报错**（绝不静默回退默认五件套，避免权限扩大）；`tools: None` 保持默认五件套；
+- `model` 覆盖子代理模型（与现有 `settings.agent.subagent` 覆盖逻辑叠加）。Claude 别名处理：`inherit` → 不覆盖（保持父级模型）；`sonnet`/`opus`/`haiku` → 警告并忽略（Tact 无别名映射，透传会导致 LLM 调用失败）；其余按具体模型 id 透传；
 - `permission_mode` 覆盖继承快照（仅当定义指定且父级非 Auto 时生效，Auto 保持粘性）；
 - `agent` 未找到 → 明确报错（列出可用名字）。
 
@@ -253,8 +254,8 @@ pub trait SubagentStartFn:   for<'a> Fn(&'a LoopState, &'a mut SubagentStartCtx)
 
 ### 4.6 Phase 5 与现有 hook 语义
 
-- 现有 Rust 闭包 hook（rtk_filter 等）与插件命令 hook **并存**，顺序：先插件 hook（按事件、按插件安装顺序），再内置闭包 hook；任一 Block 短路。
-- `HookTypes` 枚举同步扩展（strum discriminants 自动跟随）。
+- 现有 Rust 闭包 hook（rtk_filter 等）与插件命令 hook **并存**。注册顺序：内置闭包先（`interactive.rs`/`headless.rs` 的 builder 链），插件命令 hook 由 `apply_plugin_hooks` 追加在后；任一 Block 短路（首个 Block 生效）。
+- `HookTypes` 枚举同步扩展（strum discriminants 自动跟随）。`SubagentStart` **不进入** `Hook` 枚举——`spawn_subagent` 是工具处理器、无父 `Agent` 句柄，插件 SubagentStart 闭包存于 `ToolContext.subagent_start_hooks`（独立 `SubagentStartFn` trait），由 spawn 路径调用。
 
 ## 5. 兼容性与迁移
 

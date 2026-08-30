@@ -679,8 +679,16 @@ impl Agent {
         if let Some(mut message) = user_turn_message {
             // UserPromptSubmit hooks may append context to the user prompt
             // (Claude Code `additionalContext`). Runs before the message is
-            // pushed so hooks see the raw prompt.
-            apply_user_prompt_hooks(self, &mut message).await?;
+            // pushed so hooks see the raw prompt; a Block drops the turn.
+            match apply_user_prompt_hooks(self, &mut message).await? {
+                HookControl::Continue => {}
+                HookControl::Block(reason) => {
+                    self.emit_update(AgentUpdate::Info(format!(
+                        "[User prompt blocked by hook] {reason}"
+                    )));
+                    return Ok(());
+                }
+            }
             self.push_message(message).await?;
         }
 
@@ -1692,19 +1700,17 @@ fn user_text_target(message: &mut Message) -> Option<&mut String> {
 }
 
 /// Runs [`Hook::UserPromptSubmit`] hooks on the incoming user message.
-async fn apply_user_prompt_hooks(agent: &mut Agent, message: &mut Message) -> Result<()> {
+///
+/// Returns `HookControl::Block(reason)` when a hook vetoes the prompt — the
+/// caller must drop the message (Claude Code semantics: a blocked prompt is
+/// not sent). Hooks append `additionalContext` to the prompt text on
+/// `Continue`.
+async fn apply_user_prompt_hooks(agent: &mut Agent, message: &mut Message) -> Result<HookControl> {
     let Some(text) = user_text_target(message) else {
-        return Ok(());
+        return Ok(HookControl::Continue);
     };
-    match invoke_hooks!(UserPromptSubmit, agent, text)? {
-        HookControl::Continue => {}
-        HookControl::Block(reason) => {
-            // Claude Code semantics: a blocked prompt is not sent. Tact keeps
-            // the turn but marks it so the model can see why.
-            text.push_str(&format!("\n\n[User prompt blocked by hook: {reason}]"));
-        }
-    }
-    Ok(())
+    let control = invoke_hooks!(UserPromptSubmit, agent, text)?;
+    Ok(control)
 }
 
 /// Build the dynamic-context block that appears after `=== DYNAMIC_BOUNDARY ===`.

@@ -299,6 +299,8 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
 tact-ui headless "Summarize this repo"
 ```
 
+插件管理在 `tact plugin` / `/plugin` 下：`list` 打印每个已安装插件的功能摘要（`skills=N commands=M agents=K hooks mcp`），`install` / `uninstall` / `update` / `reload` 管理 `~/.tact/plugins` 下的修订锁定缓存。Marketplace 命令（`tact plugin marketplace add|list|update|remove`）管理 Git/catalog 源。已安装插件内容贡献 skills（`plugin:<name>`）、`commands/*.md` 斜杠命令、`agents/*.md` 声明式子代理、MCP 服务器与生命周期 hook——见 Ch 2、8、9、12。
+
 两个入口点均通过 `crates/tact-ui/src/permission.rs` 中的 `permission_mode_from_config()` 读取 `permission_mode`。
 
 `tools.bash_timeout_secs` 在 v1 仅可由 TOML 设置。Resolve 保留 `0` 的“禁用”

@@ -178,6 +178,9 @@ pub async fn run_command_hook(
     let Some(raw) = command.command.as_deref() else {
         return HookOutput::continue_default();
     };
+    if let Some(message) = command.status_message.as_deref() {
+        tracing::debug!("plugin hook status: {message}");
+    }
     if command.async_ == Some(true) {
         let expanded = expand_plugin_root(raw, plugin_root);
         let work_dir = input.work_dir.clone();
@@ -197,13 +200,17 @@ pub async fn run_command_hook(
     }
 
     let payload = build_payload(input);
-    let timeout_secs = command.timeout.filter(|t| *t > 0).unwrap_or(60);
+    // Claude semantics: default 60s; an explicit `0` disables the timeout.
+    let timeout_secs = match command.timeout {
+        Some(0) => None,
+        other => other.or(Some(60)),
+    };
     match run_process(
         &expand_plugin_root(raw, plugin_root),
         &input.work_dir,
         plugin_root,
         &payload,
-        Some(timeout_secs),
+        timeout_secs,
     )
     .await
     {
@@ -330,7 +337,10 @@ fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
             .system_prompt
             .clone()
             .or_else(|| legacy.and_then(|l| l.updated_system_prompt.clone())),
-        suppress_output: legacy.and_then(|l| l.suppress_output).unwrap_or(false),
+        suppress_output: raw
+            .suppress_output
+            .or_else(|| legacy.and_then(|l| l.suppress_output))
+            .unwrap_or(false),
     }
 }
 
@@ -345,6 +355,8 @@ struct RawHookOutput {
     additional_context: Option<String>,
     #[serde(default)]
     system_prompt: Option<String>,
+    #[serde(default)]
+    suppress_output: Option<bool>,
     #[serde(default)]
     hook_specific_output: Option<RawHookSpecificOutput>,
 }
@@ -393,6 +405,26 @@ fn matcher_matches(matcher: Option<&str>, subject: &str) -> bool {
     }
 }
 
+/// Resolves a plugin's hooks file path, honouring both the manifest `hooks`
+/// field and Claude Code's default discovery path `hooks/hooks.json` (several
+/// official marketplace plugins omit the manifest field and rely on the
+/// default).
+fn resolve_hooks_path(root: &Path, manifest: &HookManifest) -> Option<PathBuf> {
+    if let Some(relative) = manifest.hooks.as_ref() {
+        let candidate = root.join(relative);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        warn!(
+            "plugin at {} declares hooks at {} but the file is missing",
+            root.display(),
+            candidate.display()
+        );
+    }
+    let default = root.join("hooks").join("hooks.json");
+    default.is_file().then_some(default)
+}
+
 /// Loads every installed plugin's hooks file.
 fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
     let store = PluginStore::new(home.clone());
@@ -404,24 +436,21 @@ fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
         }
         let raw = std::fs::read_to_string(&manifest_path)
             .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-        let Ok(manifest) = serde_json::from_str::<HookManifest>(&raw) else {
+        let manifest = match serde_json::from_str::<HookManifest>(&raw) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                warn!(
+                    "plugin {} manifest skipped (unparseable): {error}",
+                    root.plugin_id
+                );
+                continue;
+            }
+        };
+        let Some(hooks_path) = resolve_hooks_path(&root.root, &manifest) else {
             continue;
         };
-        let Some(hooks_path) = manifest.hooks else {
-            continue;
-        };
-        let hooks_path = root.root.join(hooks_path);
-        if !hooks_path.is_file() {
-            warn!(
-                "plugin {} declares hooks at {} but the file is missing",
-                root.plugin_id,
-                hooks_path.display()
-            );
-            continue;
-        }
         match HooksFile::from_file(&hooks_path) {
             Ok(hooks) => out.push(InstalledHooks {
-                plugin_id: root.plugin_id,
                 plugin_root: root.root,
                 hooks,
             }),
@@ -439,7 +468,6 @@ struct HookManifest {
 }
 
 struct InstalledHooks {
-    plugin_id: String,
     plugin_root: PathBuf,
     hooks: HooksFile,
 }
@@ -450,26 +478,32 @@ struct InstalledHooks {
 /// invoked by `spawn_subagent`; `additionalContext` output is appended to the
 /// child's system prompt and a `block` decision fails the spawn.
 pub fn plugin_subagent_start_hooks(work_dir: &Path) -> Result<Vec<Arc<dyn SubagentStartFn>>> {
-    let Some(home) = PluginHome::from_environment() else {
-        return Ok(Vec::new());
-    };
+    match PluginHome::from_environment() {
+        Some(home) => plugin_subagent_start_hooks_with_home(&home, work_dir),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn plugin_subagent_start_hooks_with_home(
+    home: &PluginHome,
+    work_dir: &Path,
+) -> Result<Vec<Arc<dyn SubagentStartFn>>> {
     let mut out: Vec<Arc<dyn SubagentStartFn>> = Vec::new();
-    for installed in installed_hooks(&home)? {
+    for installed in installed_hooks(home)? {
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::SubagentStart) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
             let plugin_root = installed.plugin_root.clone();
             let work_dir = work_dir.to_path_buf();
-            let plugin_id = installed.plugin_id.clone();
             out.push(Arc::new(move |ctx: &mut SubagentStartContext| {
                 let command = command.clone();
                 let plugin_root = plugin_root.clone();
                 let work_dir = work_dir.clone();
                 let matcher = matcher.clone();
-                let plugin_id = plugin_id.clone();
-                let mut ctx = ctx.clone();
+                let name = ctx.name.clone();
+                let prompt = ctx.prompt.clone();
                 Box::pin(async move {
-                    if !matcher_matches(matcher.as_deref(), &ctx.name) {
+                    if !matcher_matches(matcher.as_deref(), &name) {
                         return Ok(HookControl::Continue);
                     }
                     let output = run_command_hook(
@@ -480,8 +514,14 @@ pub fn plugin_subagent_start_hooks(work_dir: &Path) -> Result<Vec<Arc<dyn Subage
                             work_dir,
                             hook_event_name: "SubagentStart",
                             event: json!({
-                                "subagent_name": ctx.name,
-                                "prompt": ctx.prompt,
+                                // Claude protocol: `agent_type` is the
+                                // subagent name (ponytail's
+                                // PONYTAIL_SUBAGENT_MATCHER scoping reads this
+                                // field); `subagent_name` is kept for
+                                // readability.
+                                "agent_type": name,
+                                "subagent_name": name,
+                                "prompt": prompt,
                             }),
                         },
                     )
@@ -489,18 +529,9 @@ pub fn plugin_subagent_start_hooks(work_dir: &Path) -> Result<Vec<Arc<dyn Subage
                     if let Some(extra) = output.additional_context {
                         ctx.system_prompt.push_str(&extra);
                     }
-                    match output.control {
-                        HookControl::Continue => {}
-                        HookControl::Block(reason) => {
-                            warn!(
-                                "plugin {plugin_id} SubagentStart hook blocked subagent: {reason}"
-                            );
-                        }
-                    }
-                    // A blocked subagent still runs — the reason is visible
-                    // in the prompt — matching Claude Code's fail-open
-                    // posture for command hooks.
-                    Ok(HookControl::Continue)
+                    // Propagate the block so `spawn_subagent` can veto the
+                    // spawn; only transport failures stay fail-open.
+                    Ok(output.control)
                 })
             }));
         }
@@ -554,6 +585,16 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                     .await;
                     if let Some(prompt) = output.system_prompt {
                         warn!("plugin SessionStart hook returned a system prompt; not applied in v1: {prompt}");
+                    }
+                    if let Some(context) = output.additional_context {
+                        // ponytail's native-Claude path emits plain text on
+                        // SessionStart (meant as injected context). Tact's
+                        // SessionStart hooks cannot rewrite the system prompt,
+                        // so surface it instead of silently dropping it.
+                        warn!(
+                            "plugin SessionStart hook returned additional context; \
+                             not applied in v1: {context}"
+                        );
                     }
                     Ok(output.control)
                 })
@@ -924,6 +965,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_command_hook_timeout_zero_disables_timeout() {
+        let dir = tempdir().unwrap();
+        // Explicit timeout 0 must NOT apply a 60s default: the command takes
+        // 2s and must complete (a 1s accidental timeout would kill it).
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some("sleep 2; printf %s '{\"decision\":\"approve\"}'".into()),
+            command_windows: None,
+            timeout: Some(0),
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "PreToolUse",
+                event: Value::Null,
+            },
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+    }
+
+    #[tokio::test]
+    async fn run_command_hook_suppress_output_new_format() {
+        let dir = tempdir().unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some(r#"printf %s '{"decision":"approve","suppressOutput":true}'"#.into()),
+            command_windows: None,
+            timeout: Some(10),
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "PostToolUse",
+                event: json!({ "tool_name": "Bash" }),
+            },
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+        assert!(
+            output.suppress_output,
+            "new-format suppressOutput must parse"
+        );
+    }
+
+    #[tokio::test]
     async fn run_command_hook_expands_plugin_root_env() {
         let dir = tempdir().unwrap();
         let command = HookCommand {
@@ -1035,5 +1134,147 @@ mod tests {
             Path::new("/cache/p"),
         );
         assert_eq!(expanded, r#"node "/cache/p/hooks/x.js""#);
+    }
+
+    #[test]
+    fn plugin_subagent_start_hooks_loads_default_hooks_path() {
+        // Claude Code default discovery: `hooks/hooks.json` even without a
+        // manifest `hooks` field (several official plugins rely on this).
+        use crate::plugin::InstalledPlugin;
+
+        let home = tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+        let plugin_root = plugin_home.cache.join("acme/demo/abc123");
+        std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
+        std::fs::write(
+            plugin_root.join(".claude-plugin/plugin.json"),
+            r#"{ "name": "demo" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join("hooks/hooks.json"),
+            r#"{
+                "hooks": {
+                    "SubagentStart": [{
+                        "hooks": [{ "type": "command",
+                                    "command": "printf %s '{\"decision\":\"approve\",\"additionalContext\":\"inject\"}'" }]
+                    }]
+                }
+            }"#,
+        )
+        .unwrap();
+        let store = PluginStore::new(plugin_home.clone());
+        store
+            .commit_install(
+                &crate::plugin::InstalledState {
+                    plugins: std::collections::BTreeMap::from([(
+                        "acme/demo".to_owned(),
+                        InstalledPlugin {
+                            id: "demo".to_owned(),
+                            marketplace: "acme".to_owned(),
+                            revision: "abc123".to_owned(),
+                            cache_path: plugin_root.clone(),
+                            skill_count: 0,
+                            command_count: 0,
+                            agent_count: 0,
+                            has_hooks: true,
+                            has_mcp: false,
+                        },
+                    )]),
+                },
+                &plugin_root,
+            )
+            .unwrap();
+
+        let hooks = plugin_subagent_start_hooks_with_home(&plugin_home, home.path()).unwrap();
+        assert_eq!(
+            hooks.len(),
+            1,
+            "default hooks/hooks.json must be discovered without a manifest hooks field"
+        );
+
+        // Running the hook appends its plain-text stdout as context.
+        let mut ctx = SubagentStartContext {
+            name: "child-1".into(),
+            prompt: "do the thing".into(),
+            system_prompt: "base".into(),
+        };
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(hooks[0](&mut ctx))
+            .unwrap();
+        assert_eq!(result, HookControl::Continue);
+        assert!(
+            ctx.system_prompt.contains("inject"),
+            "hook stdout should be appended to the system prompt"
+        );
+    }
+
+    #[test]
+    fn plugin_subagent_start_hooks_propagates_block() {
+        use crate::plugin::InstalledPlugin;
+
+        let home = tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+        let plugin_root = plugin_home.cache.join("acme/demo/abc123");
+        std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
+        std::fs::write(
+            plugin_root.join(".claude-plugin/plugin.json"),
+            r#"{ "name": "demo" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join("hooks/hooks.json"),
+            r#"{
+                "hooks": {
+                    "SubagentStart": [{
+                        "hooks": [{ "type": "command",
+                                    "command": "printf %s '{\"decision\":\"block\",\"reason\":\"no subagents\"}'" }]
+                    }]
+                }
+            }"#,
+        )
+        .unwrap();
+        let store = PluginStore::new(plugin_home.clone());
+        store
+            .commit_install(
+                &crate::plugin::InstalledState {
+                    plugins: std::collections::BTreeMap::from([(
+                        "acme/demo".to_owned(),
+                        InstalledPlugin {
+                            id: "demo".to_owned(),
+                            marketplace: "acme".to_owned(),
+                            revision: "abc123".to_owned(),
+                            cache_path: plugin_root.clone(),
+                            skill_count: 0,
+                            command_count: 0,
+                            agent_count: 0,
+                            has_hooks: true,
+                            has_mcp: false,
+                        },
+                    )]),
+                },
+                &plugin_root,
+            )
+            .unwrap();
+
+        let hooks = plugin_subagent_start_hooks_with_home(&plugin_home, home.path()).unwrap();
+        let mut ctx = SubagentStartContext {
+            name: "child-1".into(),
+            prompt: "p".into(),
+            system_prompt: "base".into(),
+        };
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(hooks[0](&mut ctx))
+            .unwrap();
+
+        assert_eq!(
+            result,
+            HookControl::Block("no subagents".to_string()),
+            "SubagentStart block must propagate to spawn_subagent"
+        );
     }
 }

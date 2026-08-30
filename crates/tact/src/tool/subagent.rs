@@ -11,6 +11,7 @@ use serde::Deserialize;
 use tact_llm::{ApiKeyProvider, Client, Message, Role, get_llm_client};
 use tact_protocol::{AgentUpdate, ToolVisualKind};
 use tool_refactor_macros::tool;
+use tracing::warn;
 
 use crate::{
     Agent, AgentSystemPrompt,
@@ -59,6 +60,26 @@ pub struct SubagentInput {
     #[schemars(description = "Name of a declarative agent definition to run.")]
     #[serde(default)]
     pub agent: Option<String>,
+}
+
+/// Resolves a declarative agent's `model:` frontmatter to a Tact model name.
+///
+/// Claude Code agents use aliases: `inherit` means "keep the parent's model"
+/// (no override); `sonnet` / `opus` / `haiku` name Claude models that Tact
+/// cannot address without config mapping, so they are ignored with a warning.
+/// Any other value is treated as a concrete model id and passed through.
+fn resolve_agent_model(model: &str, agent_name: &str) -> Option<String> {
+    match model.to_ascii_lowercase().as_str() {
+        "" | "inherit" => None,
+        "sonnet" | "opus" | "haiku" => {
+            warn!(
+                "declarative agent '{agent_name}' requests Claude model '{model}'; \
+                 ignoring (Tact has no alias mapping)"
+            );
+            None
+        }
+        _ => Some(model.to_string()),
+    }
 }
 
 /// Worktree lane name prefix for isolated subagents.
@@ -284,17 +305,39 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
 
     let mut agent_overrides = agent_overrides;
     if let Some(definition) = agent_definition.as_ref()
-        && let Some(model) = definition.model.as_ref()
+        && let Some(model) = definition.model.as_deref()
+        && let Some(resolved) = resolve_agent_model(model, &definition.name)
     {
-        agent_overrides.model = model.clone();
+        agent_overrides.model = resolved;
     }
 
     let mut subagent = Agent::new(
         client,
         ctx.clone(),
-        crate::tool::registry::subagent_toolset_for(
-            agent_definition.as_ref().and_then(|d| d.tools.as_deref()),
-        ),
+        {
+            let definition = agent_definition.as_ref();
+            let router = crate::tool::registry::subagent_toolset_for(
+                definition.and_then(|d| d.tools.as_deref()),
+            );
+            if router.tool_specs().is_empty()
+                && definition
+                    .and_then(|d| d.tools.as_deref())
+                    .is_some_and(|tools| !tools.is_empty())
+            {
+                bail!(
+                    "declarative agent '{}' declares tools: {} but none map to a Tact \
+                     subagent tool (supported: Read/Glob/Grep, Bash, Edit, Write, Sleep)",
+                    definition.expect("definition exists").name,
+                    definition
+                        .expect("definition exists")
+                        .tools
+                        .as_ref()
+                        .expect("tools exist")
+                        .join(", ")
+                );
+            }
+            router
+        },
         MCPToolRouter::new(),
         pm,
         AgentSystemPrompt::Static(system_prompt),
@@ -465,13 +508,48 @@ mod tests {
     }
 
     #[test]
-    fn subagent_toolset_for_unknown_names_falls_back_to_default() {
+    fn subagent_toolset_for_unknown_names_returns_empty_router() {
+        // All-declared-tools-unknown must NOT silently widen to the default
+        // set — the caller (spawn_subagent) errors out instead.
         let router = crate::tool::registry::subagent_toolset_for(Some(&["NotATool".to_string()]));
-        let specs = router.tool_specs();
-        assert_eq!(specs.len(), 5, "unknown names must keep the default set");
+        assert!(
+            router.tool_specs().is_empty(),
+            "fully-unknown tools must yield an empty router, got {} tools",
+            router.tool_specs().len()
+        );
 
         let router = crate::tool::registry::subagent_toolset_for(None);
         assert_eq!(router.tool_specs().len(), 5);
+    }
+
+    #[test]
+    fn subagent_toolset_for_mixed_known_unknown_keeps_known() {
+        let router = crate::tool::registry::subagent_toolset_for(Some(&[
+            "Read".to_string(),
+            "TotallyBogus".to_string(),
+            "Bash".to_string(),
+        ]));
+        let specs = router.tool_specs();
+        assert_eq!(specs.len(), 2, "unknown names must be ignored, known kept");
+    }
+
+    #[test]
+    fn resolve_agent_model_handles_claude_aliases() {
+        assert_eq!(resolve_agent_model("inherit", "a"), None);
+        assert_eq!(resolve_agent_model("", "a"), None);
+        // Claude aliases are ignored (Tact has no mapping) — never passed through.
+        assert_eq!(resolve_agent_model("sonnet", "a"), None);
+        assert_eq!(resolve_agent_model("Opus", "a"), None);
+        assert_eq!(resolve_agent_model("haiku", "a"), None);
+        // Concrete model ids pass through unchanged.
+        assert_eq!(
+            resolve_agent_model("deepseek-v4", "a").as_deref(),
+            Some("deepseek-v4")
+        );
+        assert_eq!(
+            resolve_agent_model("claude-sonnet-4-5", "a").as_deref(),
+            Some("claude-sonnet-4-5")
+        );
     }
 
     #[test]
