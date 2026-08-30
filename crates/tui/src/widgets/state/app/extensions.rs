@@ -159,12 +159,19 @@ impl App {
         } else {
             let mut rows = vec![
                 msgs.plugin_list_header.to_string(),
-                "|---|---|---|".to_string(),
+                "|---|---|---|---|---|---|".to_string(),
             ];
             rows.extend(plugins.iter().map(|plugin| {
+                let mut features = vec![plugin.skill_count.to_string()];
+                features.push(plugin.command_count.to_string());
+                features.push(plugin.agent_count.to_string());
+                features.push(if plugin.has_hooks { "✓" } else { "-" }.into());
+                features.push(if plugin.has_mcp { "✓" } else { "-" }.into());
                 format!(
                     "| {} | {} | {} |",
-                    plugin.id, plugin.marketplace, plugin.skill_count
+                    plugin.id,
+                    plugin.marketplace,
+                    features.join(" | ")
                 )
             }));
             let (styled, raw) =

@@ -5,7 +5,7 @@ use crate::tool::{
 };
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_llm::{ApiKeyProvider, Client, Message, Role, get_llm_client};
@@ -242,7 +242,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             }
         }
     }
-    let system_prompt = match agent_definition.as_ref() {
+    let mut system_prompt = match agent_definition.as_ref() {
         Some(definition) => {
             format!(
                 "{}\n\nUser task:\n{}",
@@ -255,6 +255,27 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             ctx.work_dir.display()
         ),
     };
+
+    // Claude Code plugin `SubagentStart` hooks may inject context into the
+    // child system prompt (e.g. ponytail injects its mode). A `Block` from a
+    // Rust-registered hook fails the spawn; plugin command hooks already
+    // normalize failures to Continue.
+    if !ctx.subagent_start_hooks.is_empty() {
+        let mut start_ctx = crate::hook::SubagentStartContext {
+            name: input.agent.clone().unwrap_or_else(|| child_id.clone()),
+            prompt: input.prompt.clone(),
+            system_prompt: system_prompt.clone(),
+        };
+        for hook in &ctx.subagent_start_hooks {
+            match hook(&mut start_ctx).await? {
+                crate::hook::HookControl::Continue => {}
+                crate::hook::HookControl::Block(reason) => {
+                    bail!("subagent start blocked by plugin hook: {reason}");
+                }
+            }
+        }
+        system_prompt = start_ctx.system_prompt;
+    }
 
     let store = if let Some(store) = &ctx.session_store {
         store.clone()

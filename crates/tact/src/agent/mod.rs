@@ -27,7 +27,10 @@ use crate::{
         retained_user_message_token_budget, should_auto_compact, write_transcript,
     },
     config::{self, AgentSettings},
-    hook::{Hook, HookControl, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn},
+    hook::{
+        Hook, HookControl, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn,
+        UserPromptSubmitFn,
+    },
     invoke_hooks,
     mcp::MCPToolRouter,
     memory::MEMORY_GUIDANCE,
@@ -673,7 +676,11 @@ impl Agent {
             self.emit_update(AgentUpdate::Info("[auto compact]".into()));
             self.compact_history(None).await?;
         }
-        if let Some(message) = user_turn_message {
+        if let Some(mut message) = user_turn_message {
+            // UserPromptSubmit hooks may append context to the user prompt
+            // (Claude Code `additionalContext`). Runs before the message is
+            // pushed so hooks see the raw prompt.
+            apply_user_prompt_hooks(self, &mut message).await?;
             self.push_message(message).await?;
         }
 
@@ -1039,11 +1046,23 @@ impl Agent {
         self
     }
 
+    pub fn with_user_prompt_submit(mut self, hook: impl UserPromptSubmitFn + 'static) -> Self {
+        self.hooks.push(Hook::UserPromptSubmit(Box::new(hook)));
+        self
+    }
+
     pub fn with_post_tool(mut self, hook: impl PostToolUseFn + 'static) -> Self {
         // RTK filter is opt-in — defaults to off for privacy.
         if !config::settings().tools.rtk_filter {
             return self;
         }
+        self.hooks.push(Hook::PostToolUse(Box::new(hook)));
+        self
+    }
+
+    /// Registers a `PostToolUse` hook unconditionally (used for plugin
+    /// command hooks; [`Self::with_post_tool`] is gated by `rtk_filter`).
+    pub fn with_post_tool_hook(mut self, hook: impl PostToolUseFn + 'static) -> Self {
         self.hooks.push(Hook::PostToolUse(Box::new(hook)));
         self
     }
@@ -1652,6 +1671,40 @@ impl Agent {
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
             .map(|manager| manager.load_memory_prompt())
     }
+}
+
+/// Extracts a mutable text target from a user message for prompt hooks.
+///
+/// Text-only mutation: `Text` content targets the whole string; `Blocks`
+/// content targets the first text block (non-text blocks are preserved). A
+/// message with no text block yields `None` and hooks are skipped.
+fn user_text_target(message: &mut Message) -> Option<&mut String> {
+    match &mut message.content {
+        MessageContent::Text { content } => Some(content),
+        MessageContent::Blocks { content } => content.iter_mut().find_map(|block| {
+            if let ContentBlock::Text { text } = block {
+                Some(text)
+            } else {
+                None
+            }
+        }),
+    }
+}
+
+/// Runs [`Hook::UserPromptSubmit`] hooks on the incoming user message.
+async fn apply_user_prompt_hooks(agent: &mut Agent, message: &mut Message) -> Result<()> {
+    let Some(text) = user_text_target(message) else {
+        return Ok(());
+    };
+    match invoke_hooks!(UserPromptSubmit, agent, text)? {
+        HookControl::Continue => {}
+        HookControl::Block(reason) => {
+            // Claude Code semantics: a blocked prompt is not sent. Tact keeps
+            // the turn but marks it so the model can see why.
+            text.push_str(&format!("\n\n[User prompt blocked by hook: {reason}]"));
+        }
+    }
+    Ok(())
 }
 
 /// Build the dynamic-context block that appears after `=== DYNAMIC_BOUNDARY ===`.

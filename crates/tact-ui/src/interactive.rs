@@ -118,6 +118,7 @@ async fn run_interactive_locked(
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
         agent_registry: tact::agent_def::shared_agent_definition_registry(tact_path.workdir())?,
+        subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
         memory_manager,
         work_dir,
         task_manager,
@@ -160,6 +161,9 @@ async fn run_interactive_locked(
     .with_session_start(|_at| Box::pin(async move { Ok(HookControl::Continue) }))
     .with_pre_tool(|_at, _tool_use| Box::pin(async move { Ok(HookControl::Continue) }))
     .with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
+    // Claude plugin command hooks (SessionStart / UserPromptSubmit /
+    // PreToolUse / PostToolUse) from every installed plugin.
+    agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
     // SessionStart hooks fire once per session, right after initialization.
     agent.dispatch_session_start_hooks().await?;
 

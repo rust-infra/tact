@@ -110,6 +110,10 @@ pub struct ToolContext {
     /// Declarative subagent definitions (`.tact/agents/*.md` + installed
     /// plugin `agents/*.md`), referenced by `spawn_subagent`'s `agent` field.
     pub agent_registry: crate::agent_def::SharedAgentDefinitionRegistry,
+    /// Claude Code plugin `SubagentStart` command hooks, stamped at dispatch
+    /// time so `spawn_subagent` can inject context into the child system
+    /// prompt without needing a parent [`Agent`](crate::Agent) handle.
+    pub subagent_start_hooks: Vec<Arc<dyn crate::hook::SubagentStartFn>>,
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
