@@ -59,6 +59,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("save", "Save log to file"),
     ("compact", "Compact conversation history"),
     ("cancel", "Cancel current task"),
+    (
+        "subagent_cancel",
+        "Cancel a running subagent (usage: /subagent_cancel <child-id>)",
+    ),
     ("quit", "Quit application"),
     ("help", "Show help panel"),
     ("history", "Show task history"),

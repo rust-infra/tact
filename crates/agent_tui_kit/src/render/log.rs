@@ -35,8 +35,22 @@ use crate::{
     widgets::tool_widget::TOOL_RUNNING_SPINNER,
 };
 
-/// Phase 3: pure render — build cells from the caches and draw. Reads only.
-pub fn render_log_panel_pure(frame: &mut Frame, area: Rect, ctx: &RenderCtx, borders: Borders) {
+/// A rendered cancel button for a live async subagent tool card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentCancelButton {
+    pub child_id: String,
+    pub rect: Rect,
+}
+
+/// Phase 3: pure render — build cells from the caches and draw. Returns the
+/// cancel-button rects for live async subagent cards so the host can route
+/// mouse clicks. Reads only.
+pub fn render_log_panel_pure(
+    frame: &mut Frame,
+    area: Rect,
+    ctx: &RenderCtx,
+    borders: Borders,
+) -> Vec<SubagentCancelButton> {
     let top = u16::from(borders.contains(Borders::TOP));
     let bottom = u16::from(borders.contains(Borders::BOTTOM));
     let left = u16::from(borders.contains(Borders::LEFT));
@@ -63,6 +77,7 @@ pub fn render_log_panel_pure(frame: &mut Frame, area: Rect, ctx: &RenderCtx, bor
     let log_fg = ctx.theme.fg;
 
     let mut renderer = LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
+    let mut cancel_buttons: Vec<SubagentCancelButton> = Vec::new();
 
     // Track message categories for separator insertion
     let mut prev_category: Option<&'static str> = None;
@@ -208,6 +223,31 @@ pub fn render_log_panel_pure(frame: &mut Frame, area: Rect, ctx: &RenderCtx, bor
                     msgs,
                 );
                 renderer.push(vis_start, card_cell);
+                // Live async subagent: draw a cancel button on the card's
+                // header row (right edge) and record its rect for the host's
+                // mouse routing.
+                if let Some(active) = ctx.tools.active.iter().find(|a| a.phys_idx == phys_idx)
+                    && let Some(child_id) = &active.subagent_child_id
+                {
+                    let label = format!("[{}]", msgs.subagent_cancel_btn);
+                    let label_width = label.chars().count() as u16;
+                    let btn_x = area
+                        .right()
+                        .saturating_sub(right)
+                        .saturating_sub(label_width + 1);
+                    let btn_y = area.y + top + vis_start.saturating_sub(visual_scroll) as u16;
+                    let btn_area = Rect::new(btn_x, btn_y, label_width + 1, 1);
+                    if btn_area.bottom() <= area.bottom() {
+                        let style = Style::default()
+                            .fg(ctx.theme.error)
+                            .add_modifier(Modifier::BOLD);
+                        frame.render_widget(Paragraph::new(Span::styled(label, style)), btn_area);
+                        cancel_buttons.push(SubagentCancelButton {
+                            child_id: child_id.clone(),
+                            rect: btn_area,
+                        });
+                    }
+                }
                 logical_i += visual_rows - rows_before;
                 continue;
             }
@@ -332,6 +372,8 @@ pub fn render_log_panel_pure(frame: &mut Frame, area: Rect, ctx: &RenderCtx, bor
     // left chrome because unchanged border cells are skipped by Buffer::diff. Force-emit the
     // left border every frame so those residues cannot persist.
     restamp_log_left_border(frame.buffer_mut(), area, borders, ctx.theme);
+
+    cancel_buttons
 }
 
 /// Re-assert the log panel's left vertical border and mark it `AlwaysUpdate`.

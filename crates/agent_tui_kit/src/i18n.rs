@@ -122,6 +122,7 @@ pub struct Messages {
     pub select_hint_cancel: &'static str,
     pub select_hint_toggle: &'static str,
     pub pending_cancel_btn: &'static str,
+    pub subagent_cancel_btn: &'static str,
 
     // ---- 帮助面板 ---
     pub help_header_shortcuts: &'static str,
@@ -205,6 +206,7 @@ pub struct Messages {
     pub cmd_permission: &'static str,
     pub cmd_save: &'static str,
     pub cmd_cancel: &'static str,
+    pub cmd_subagent_cancel: &'static str,
     pub cmd_quit: &'static str,
     pub cmd_help: &'static str,
     pub cmd_history: &'static str,
@@ -291,6 +293,7 @@ pub struct Messages {
     pub input_busy_msg: &'static str,
     pub pending_submit_hint: &'static str,
     pub cancel_noop_msg: &'static str,
+    pub subagent_cancel_usage_msg: &'static str,
 
     // ---- 持久任务进度 ----
     pub tasks_sticky_title: &'static str,
@@ -403,6 +406,7 @@ impl Messages {
             select_hint_cancel: " Cancel ",
             select_hint_toggle: " Toggle ",
             pending_cancel_btn: "Cancel",
+            subagent_cancel_btn: "Cancel",
 
             help_header_shortcuts: "⌨️  Keyboard Shortcuts:",
             help_normal_header: "  🔤 Normal Mode (Esc from Insert)",
@@ -491,6 +495,7 @@ impl Messages {
             cmd_permission: "Set permission mode (Default/Plan/Auto)",
             cmd_save: "Save log to file",
             cmd_cancel: "Cancel current task",
+            cmd_subagent_cancel: "Cancel a running subagent (usage: /subagent_cancel <child-id>)",
             cmd_quit: "Quit application",
             cmd_help: "Show help panel",
             cmd_history: "Show task history",
@@ -564,6 +569,7 @@ impl Messages {
             input_busy_msg: "⏳ Still processing previous prompt, please wait...",
             pending_submit_hint: "Message will be submitted after the current task finishes",
             cancel_noop_msg: "Nothing to cancel",
+            subagent_cancel_usage_msg: "Usage: /subagent_cancel <child-id>",
 
             tasks_sticky_title: "Tasks",
             tasks_log_created_tmpl: "Tasks · {}/{} created",
@@ -671,6 +677,7 @@ impl Messages {
             select_hint_cancel: " 取消 ",
             select_hint_toggle: " 勾选 ",
             pending_cancel_btn: "取消",
+            subagent_cancel_btn: "取消",
 
             help_header_shortcuts: "⌨️  键盘快捷键:",
             help_normal_header: "  🔤 普通模式 (在插入模式按 Esc)",
@@ -759,6 +766,7 @@ impl Messages {
             cmd_permission: "设置权限模式 (默认/只读/自动)",
             cmd_save: "保存日志到文件",
             cmd_cancel: "取消当前任务",
+            cmd_subagent_cancel: "取消运行中的子代理（用法：/subagent_cancel <child-id>）",
             cmd_quit: "退出应用",
             cmd_help: "显示帮助面板",
             cmd_history: "显示任务历史",
@@ -832,6 +840,7 @@ impl Messages {
             input_busy_msg: "⏳ 上一个任务还在处理中，请稍候...",
             pending_submit_hint: "消息将在当前任务结束后自动提交",
             cancel_noop_msg: "当前没有可取消的任务",
+            subagent_cancel_usage_msg: "用法：/subagent_cancel <child-id>",
 
             tasks_sticky_title: "任务",
             tasks_log_created_tmpl: "任务 · {}/{} 已创建",

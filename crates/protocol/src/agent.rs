@@ -406,6 +406,10 @@ pub enum UserCommand {
         summary: String,
         success: bool,
     },
+    /// Cancel a running background subagent (triggered by `/subagent_cancel`
+    /// or the TUI tool-card cancel button). The driver flips the child's
+    /// cooperative cancel flag and marks its run record Cancelled.
+    CancelSubagent { child_id: String },
     /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
     /// (see [`UiResponse`]). Routed by the driver to the shared responder.
     UiResponse(UiResponse),

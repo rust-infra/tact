@@ -3,7 +3,10 @@ use crate::tool::{
     PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
     ToolPresentation,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, atomic::Ordering},
+};
 
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
@@ -346,6 +349,13 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     .with_max_turns(input.max_turns)
     .with_session(child_id.clone(), store.clone());
 
+    // Expose the child's cooperative cancel flag so `cancel_subagent` /
+    // `/subagent_cancel` / the TUI button can request cancellation. The
+    // handle is unregistered when the child finishes.
+    let cancel_flag = subagent.runtime.cancel_flag.clone();
+    ctx.subagent_manager
+        .register_cancel_handle(&child_id, cancel_flag.clone());
+
     // Tag UI traffic so the TUI routes stream/steps into the parent tool-card
     // via ToolProgress. RequestSelect* still passes through for permission popups.
     if let Some(tx) = ctx.ui_tx.clone() {
@@ -391,16 +401,30 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             if let Some(lock) = lock {
                 let _ = lock.release().await;
             }
+            // A cancellation request flips the child flag; the agent loop
+            // exits cooperatively at its next check point. Mark the run as
+            // Cancelled instead of Completed so the record tells the truth.
+            let cancelled = cancel_flag.load(Ordering::Relaxed);
+            manager.unregister_cancel_handle(&child_id);
+            let summary = if cancelled {
+                format!("(cancelled by user)\n{summary}")
+            } else {
+                summary
+            };
+            let _ = if cancelled {
+                manager.cancel(&child_id).await
+            } else {
+                manager.finish(&child_id, success, summary.clone()).await
+            };
             // Persist the lifecycle and enqueue the result BEFORE emitting the
             // TUI notification: the driver may immediately submit a wake-up
             // turn on receipt, and that turn's drain must already see the
             // queued result.
-            let _ = manager.finish(&child_id, success, summary.clone()).await;
             if let Ok(mut queue) = results.lock() {
                 queue.push_back(SubagentResult {
                     child_id: child_id.clone(),
                     summary: summary.clone(),
-                    success,
+                    success: success && !cancelled,
                 });
             }
             // Emit on the PARENT ui_tx (not the child's tagged forwarder,
@@ -422,9 +446,15 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             .await?;
         let max_turns_reached = subagent.max_turns.is_some_and(|m| subagent.turns_taken > m);
         let summary = extract_summary(&subagent, max_turns_reached);
+        ctx.subagent_manager.unregister_cancel_handle(&child_id);
         if let Some(lock) = lock {
             lock.release().await?;
         }
+        let summary = if cancel_flag.load(Ordering::Relaxed) {
+            format!("(cancelled by user)\n{summary}")
+        } else {
+            summary
+        };
         Ok(with_worktree_note(summary, worktree.as_ref()))
     }
 }
@@ -433,6 +463,12 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
 pub struct CheckSubagentInput {
     #[schemars(description = "Optional subagent child session id.")]
     pub child_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CancelSubagentInput {
+    #[schemars(description = "Subagent child session id to cancel.")]
+    pub child_id: String,
 }
 
 pub const CHECK_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
@@ -454,6 +490,25 @@ pub const CHECK_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     argument_summary: ArgumentSummaryPolicy::Json,
 };
 
+pub const CANCEL_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
+    name: "cancel_subagent",
+    description: "Cancel a running background subagent by child session id. Flips the child's cooperative cancel flag so its agent loop exits at the next check point; the run record is marked Cancelled.",
+    permission: PermissionPolicy::High,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "⏹ Subagent Cancel",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
 #[tool]
 /// # Errors
 ///
@@ -463,11 +518,43 @@ pub async fn check_subagent(ctx: ToolContext, input: CheckSubagentInput) -> Resu
     ctx.subagent_manager.check(input.child_id.as_deref()).await
 }
 
+#[tool]
+/// # Errors
+///
+/// Returns an error when the requested child id has no live cancel handle
+/// (unknown or already finished).
+pub async fn cancel_subagent(ctx: ToolContext, input: CancelSubagentInput) -> Result<String> {
+    let cancelled = ctx.subagent_manager.request_cancel(input.child_id.as_str());
+    if cancelled {
+        // Best-effort: mark the run record Cancelled now; the child's finish
+        // path keeps it Cancelled when the flag is set.
+        let _ = ctx.subagent_manager.cancel(&input.child_id).await;
+        Ok(format!("cancel requested for subagent {}", input.child_id))
+    } else {
+        bail!(
+            "no running subagent {} to cancel (already finished or unknown); \
+             use check_subagent to list runs",
+            input.child_id
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tool::test_support::test_context;
     use tempfile::TempDir;
+
+    #[test]
+    fn main_toolset_registers_cancel_subagent() {
+        let router = crate::tool::registry::toolset();
+        let specs = router.tool_specs();
+        assert!(
+            specs.iter().any(|s| s.name == "cancel_subagent"),
+            "cancel_subagent must be in the main toolset"
+        );
+        assert!(specs.iter().any(|s| s.name == "check_subagent"));
+    }
 
     #[test]
     fn subagent_toolset_has_five_tools() {

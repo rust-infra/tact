@@ -1,6 +1,7 @@
 //! Mouse handling extracted from the main event loop for testability.
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use tact_protocol::UserCommand;
 
 use crate::widgets::state::{
     App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition, VoicePhase,
@@ -128,6 +129,19 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         // Clicking `[Cancel]` drops the queued messages only — the running
         // task keeps going (unlike `/cancel`, which stops it too).
         app.clear_pending_messages();
+        return;
+    }
+    // Cancel button on a live async-subagent tool card.
+    if let Some((child_id, _)) = app
+        .mouse
+        .subagent_cancel_btn_areas
+        .iter()
+        .find(|(_, rect)| point_in_rect(mouse.column, mouse.row, *rect))
+    {
+        let child_id = child_id.clone();
+        let _ = app
+            .user_cmd_tx
+            .send(UserCommand::CancelSubagent { child_id });
         return;
     }
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
@@ -621,6 +635,41 @@ mod tests {
             user_cmd_rx.try_recv().is_err(),
             "[Cancel] must not dispatch Cancel/SubmitTask"
         );
+    }
+
+    #[test]
+    fn subagent_cancel_button_sends_cancel_subagent() {
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            plugin_rx,
+            plugin_tx,
+            user_cmd_tx,
+            std::path::PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        app.mouse.subagent_cancel_btn_areas =
+            vec![("child-123".to_string(), Rect::new(70, 0, 10, 1))];
+
+        // Click the live subagent card's [Cancel] button.
+        handle_mouse_event(&mut app, mouse_down(71, 0));
+
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CancelSubagent"),
+            UserCommand::CancelSubagent { ref child_id } if child_id == "child-123"
+        ));
     }
 
     #[test]

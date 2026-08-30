@@ -78,6 +78,9 @@ impl TryFrom<UserCommand> for Command {
             // A wake-up signal routed from the TUI to the driver when a
             // background subagent finishes; not a host command for the kit.
             UserCommand::SubagentFinishedNotification { .. } => Err(()),
+            // Cancellation is handled by the driver (it owns the manager's
+            // cancel handles), not a host command for the kit.
+            UserCommand::CancelSubagent { .. } => Err(()),
             // Responses to agent-originated selects flow on the reverse command
             // channel; they are not host commands and never map to `Command`.
             UserCommand::UiResponse(_) => Err(()),

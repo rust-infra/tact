@@ -257,7 +257,7 @@ See [Team Coordination](./14_chapter_team.md).
 | No parent hooks | PreToolUse / PostToolUse policies do not wrap subagent tools |
 | Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
 | `description` ignored | JSON field has no runtime effect |
-| Separate cancel flag | Parent Cancel may not abort a long-running subagent; the async handle is stored for a future `cancel_subagent` / `/tasks` surface |
+| Separate cancel flag | Parent `/cancel` aborts the main task only. A **running background subagent** is cancelled via `cancel_subagent` (tool), `/subagent_cancel <child-id>` (slash), or the `[Cancel]` button on the live subagent tool card — all flip the child's cooperative flag via the shared `SubagentManager` cancel handles |
 | No worktree removal | Isolated lanes persist after the child finishes; remove manually via `git worktree remove` (no tool surface yet) |
 | Worktree base = repo HEAD | A subagent spawned *from* another worktree still branches from the main repo HEAD, not the parent lane |
 | Child sessions hidden from list | `--list-sessions` / resume only show `ref_id = ''`; delete parent cascades children |

@@ -135,6 +135,10 @@ pub struct MouseState {
     /// selection popup area (used to route mouse-wheel scrolls to the popup's
     /// option list instead of the log behind it).
     pub select_popup_area: Rect,
+    /// Cancel buttons for live async-subagent tool cards: `(child_id, rect)`.
+    /// Refreshed every frame by the log renderer; a click sends
+    /// `UserCommand::CancelSubagent { child_id }`.
+    pub subagent_cancel_btn_areas: Vec<(String, Rect)>,
     /// Selectable body area inside the active text popup border.
     pub popup_text_body_area: Rect,
     /// Hit maps for rows currently visible in the active text popup body.

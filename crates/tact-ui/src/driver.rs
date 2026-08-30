@@ -45,6 +45,9 @@ pub async fn run_command_loop_with_account(
     // Shared UI responder: routes TUI select responses to the waiter (parent
     // or subagent) even while the Agent is owned by the in-flight task.
     let ui_responder = agent.tool_context.ui_responder.clone();
+    // Shared subagent manager: lets CancelSubagent flip a running child's
+    // cooperative cancel flag without owning the parent Agent.
+    let subagent_manager = agent.tool_context.subagent_manager.clone();
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
@@ -62,6 +65,20 @@ pub async fn run_command_loop_with_account(
                 cancel_flag.store(true, Ordering::Relaxed);
                 if let Some(tx) = &ui_tx {
                     let _ = tx.send(AgentUpdate::Info("Cancelling...".into()));
+                }
+            }
+            UserCommand::CancelSubagent { child_id } => {
+                if subagent_manager.request_cancel(&child_id) {
+                    let _ = subagent_manager.cancel(&child_id).await;
+                    if let Some(tx) = &ui_tx {
+                        let _ = tx.send(AgentUpdate::Info(format!(
+                            "Cancelling subagent {child_id}..."
+                        )));
+                    }
+                } else if let Some(tx) = &ui_tx {
+                    let _ = tx.send(AgentUpdate::Info(format!(
+                        "No running subagent {child_id} to cancel"
+                    )));
                 }
             }
             UserCommand::QueryStats => {

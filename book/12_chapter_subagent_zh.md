@@ -258,7 +258,7 @@ let summary = subagent
 | 无父级 hook | PreToolUse / PostToolUse 策略不包裹子 agent 工具 |
 | 仅静态 prompt | 无 skills/memory/CLAUDE.md，除非父级复制进 `prompt` |
 | `description` 被忽略 | JSON 字段无运行时效果 |
-| 独立 cancel 标志 | 父级 Cancel 可能无法中止长时间运行的子 agent；异步句柄已存，供未来 `cancel_subagent` / `/tasks` |
+| 独立 cancel 标志 | 父级 `/cancel` 只中止主任务。**运行中的后台子代理**通过 `cancel_subagent`（工具）、`/subagent_cancel <child-id>`（slash 命令）或运行中子代理工具卡片上的 `[Cancel]` 按钮取消——三者都经由共享 `SubagentManager` 的 cancel handles 翻转子代理的协作取消标志 |
 | 无 worktree 删除 | 隔离泳道在子 agent 结束后保留；需手动 `git worktree remove`（尚无工具入口） |
 | worktree 基准为仓库 HEAD | 从另一 worktree 内 spawn 的子 agent 仍基于主仓库 HEAD 分支，而非父泳道 |
 | 列表隐藏子会话 | `--list-sessions` / resume 只显示 `ref_id = ''`；删父会级联删子 |

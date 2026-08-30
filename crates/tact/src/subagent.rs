@@ -15,8 +15,14 @@
 //! in-memory `pending_subagent_results` queue in [`crate::agent::AgentRuntime`]
 //! is the live fast path for same-process re-injection.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -55,6 +61,10 @@ pub struct SubagentResult {
 
 pub struct SubagentManager {
     records: Arc<dyn SubagentStore>,
+    /// Live cancel handles for running children, keyed by child session id.
+    /// Registered by `spawn_subagent` so a `cancel_subagent` tool / slash
+    /// command / TUI button can flip the child's cooperative cancel flag.
+    cancel_handles: std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl std::fmt::Debug for SubagentManager {
@@ -85,7 +95,10 @@ impl SubagentManager {
             records.upsert(&record).await?;
         }
 
-        Ok(Self { records })
+        Ok(Self {
+            records,
+            cancel_handles: std::sync::Mutex::new(HashMap::new()),
+        })
     }
 
     /// Records the start of a child run (`status = running`).
@@ -127,6 +140,43 @@ impl SubagentManager {
         record.status = SubagentStatus::Cancelled;
         record.finished_at = Some(Utc::now());
         self.records.upsert(&record).await
+    }
+
+    /// Registers the cooperative cancel flag for a running child so external
+    /// entry points (tool / slash command / TUI button) can request its
+    /// cancellation. Replaces any previous handle for the same id.
+    pub fn register_cancel_handle(&self, child_id: &str, flag: Arc<AtomicBool>) {
+        self.cancel_handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child_id.to_string(), flag);
+    }
+
+    /// Removes the cancel handle for a finished child.
+    pub fn unregister_cancel_handle(&self, child_id: &str) {
+        self.cancel_handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(child_id);
+    }
+
+    /// Requests cancellation of a running child by flipping its cooperative
+    /// flag. Returns `false` when no live handle exists (already finished,
+    /// unknown id, or a synchronous child that never registered a handle).
+    pub fn request_cancel(&self, child_id: &str) -> bool {
+        let flag = self
+            .cancel_handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(child_id)
+            .cloned();
+        match flag {
+            Some(flag) => {
+                flag.store(true, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Human/LLM-facing status query, mirroring `check_background`.
@@ -177,6 +227,18 @@ impl SharedSubagentManager {
 
     pub async fn cancel(&self, child_id: &str) -> Result<()> {
         self.inner.cancel(child_id).await
+    }
+
+    pub fn register_cancel_handle(&self, child_id: &str, flag: Arc<AtomicBool>) {
+        self.inner.register_cancel_handle(child_id, flag);
+    }
+
+    pub fn unregister_cancel_handle(&self, child_id: &str) {
+        self.inner.unregister_cancel_handle(child_id);
+    }
+
+    pub fn request_cancel(&self, child_id: &str) -> bool {
+        self.inner.request_cancel(child_id)
     }
 
     pub async fn check(&self, child_id: Option<&str>) -> Result<String> {
@@ -252,5 +314,29 @@ mod tests {
         manager.cancel("child-1").await.unwrap();
         let output = manager.check(Some("child-1")).await.unwrap();
         assert!(output.contains("cancelled"), "output: {output}");
+    }
+
+    #[test]
+    fn cancel_handle_register_request_unregister() {
+        let db = temp_db("cancel_handle");
+        let manager = SharedSubagentManager::new(
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(SubagentManager::new(&db))
+                .unwrap(),
+        );
+
+        // Unknown id has no handle.
+        assert!(!manager.request_cancel("ghost"));
+
+        // Registered handle is flipped by request_cancel.
+        let flag = Arc::new(AtomicBool::new(false));
+        manager.register_cancel_handle("child-1", flag.clone());
+        assert!(manager.request_cancel("child-1"));
+        assert!(flag.load(Ordering::Relaxed), "flag must be set");
+
+        // Unregister removes the handle; a second request fails.
+        manager.unregister_cancel_handle("child-1");
+        assert!(!manager.request_cancel("child-1"));
     }
 }

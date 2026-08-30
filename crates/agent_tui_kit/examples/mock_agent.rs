@@ -141,6 +141,7 @@ impl MockShell {
                         output,
                         live_output: tact_protocol::tool_output::ToolOutputBuffer::new_full(1024),
                         started_at: Instant::now(),
+                        subagent_child_id: None,
                     });
             }
             AgentUpdate::StepFinished { tool_id, .. } => {

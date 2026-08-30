@@ -123,6 +123,7 @@ impl App {
             "model-subagent" => msgs.cmd_model_subagent.to_string(),
             "save" => msgs.cmd_save.to_string(),
             "cancel" => msgs.cmd_cancel.to_string(),
+            "subagent_cancel" => msgs.cmd_subagent_cancel.to_string(),
             "quit" => msgs.cmd_quit.to_string(),
             "help" => msgs.cmd_help.to_string(),
             "history" => msgs.cmd_history.to_string(),

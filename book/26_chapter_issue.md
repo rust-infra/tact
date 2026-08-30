@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-08-30 — 子代理取消（`cancel_subagent` 工具 + `/subagent_cancel` + tool 卡片 [Cancel] 按钮）
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/subagent.rs`（`register_cancel_handle` / `request_cancel` / `unregister_cancel_handle`）、`crates/tact/src/tool/subagent.rs`（`CancelSubagentTool`、spawn 注册/注销 handle、取消感知结束路径）、`crates/tact/src/tool/registry.rs`、`crates/protocol/src/agent.rs`（`UserCommand::CancelSubagent`）、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/{mod,mouse}.rs`（`/subagent_cancel`、按钮点击）、`crates/agent_tui_kit/src/{components/tool.rs,render/log.rs,state/tool_state.rs,state/mouse_state.rs,i18n.rs}`（`parse_async_launched`、`SubagentCancelButton`、`subagent_child_id`）；Ch 12 |
+
+**Symptom / motivation:** 运行中的后台子代理没有任何取消入口：父级 `/cancel` 只取消主任务（每次 `Agent::new` 为子代理新建独立 cancel_flag，父进程拿不到句柄）；`SubagentManager::cancel` 只能事后改 DB 状态，无法中止运行中的子代理；异步子代理 detach 后只能等 `max_turns` 或自然结束。
+
+**Decision:** 建立协作取消链路：`SubagentManager` 增加内存 cancel-handle 注册表（`child_id → Arc<AtomicBool>`）；`spawn_subagent` 在 `Agent::new` 后注册子代理的 `runtime.cancel_flag`，结束（同步/异步）时注销；新增 `cancel_subagent` 工具（`request_cancel` 翻转标志 + 标记记录），注册进主 toolset；protocol 新增 `UserCommand::CancelSubagent`，driver 直接操作 manager（不依赖父 agent 空闲）；TUI 新增 `/subagent_cancel <child-id>` slash 命令与运行中子代理卡片上的 `[Cancel]` 按钮（`parse_async_launched` 从 `async_launched { id }` 结果提取 child_id，渲染层返回按钮 rect，mouse 点击发送命令）。异步结束路径检测标志：被取消的运行标为 `Cancelled`（而非 Completed），summary 前缀 `(cancelled by user)`。
+
+**Behavior after:** 运行中的后台子代理可通过三种入口取消：`cancel_subagent { child_id }` 工具（模型可调用）、`/subagent_cancel <child-id>`（用户）、live 卡片 `[Cancel]` 按钮（鼠标）。子代理循环在下一个检查点协作退出，运行记录标为 Cancelled，结果回注时 success=false。
+
+---
+
 ## 1. 2026-08-29 — Claude marketplace 插件全功能兼容（skills / commands / agents / hooks / MCP）
 
 | Field | Value |
