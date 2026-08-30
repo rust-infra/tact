@@ -688,6 +688,13 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
 }
 
 #[cfg(test)]
+impl HooksFile {
+    fn from_str(content: &str) -> Result<Self> {
+        serde_json::from_str(content).context("failed to parse hooks file")
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use tempfile::tempdir;
 
@@ -1028,12 +1035,5 @@ mod tests {
             Path::new("/cache/p"),
         );
         assert_eq!(expanded, r#"node "/cache/p/hooks/x.js""#);
-    }
-}
-
-#[cfg(test)]
-impl HooksFile {
-    fn from_str(content: &str) -> Result<Self> {
-        serde_json::from_str(content).context("failed to parse hooks file")
     }
 }
