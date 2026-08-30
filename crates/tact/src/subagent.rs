@@ -179,6 +179,23 @@ impl SubagentManager {
         }
     }
 
+    /// Requests cancellation of **every** currently running child (used when
+    /// the parent agent exits, so background subagents stop instead of
+    /// becoming orphans). Returns the number of live handles flipped.
+    pub fn cancel_all(&self) -> usize {
+        let handles: Vec<Arc<AtomicBool>> = self
+            .cancel_handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for flag in &handles {
+            flag.store(true, Ordering::Relaxed);
+        }
+        handles.len()
+    }
+
     /// Human/LLM-facing status query, mirroring `check_background`.
     ///
     /// `Some(id)` returns a single run as pretty JSON; `None` lists all runs
@@ -239,6 +256,10 @@ impl SharedSubagentManager {
 
     pub fn request_cancel(&self, child_id: &str) -> bool {
         self.inner.request_cancel(child_id)
+    }
+
+    pub fn cancel_all(&self) -> usize {
+        self.inner.cancel_all()
     }
 
     pub async fn check(&self, child_id: Option<&str>) -> Result<String> {
@@ -338,5 +359,33 @@ mod tests {
         // Unregister removes the handle; a second request fails.
         manager.unregister_cancel_handle("child-1");
         assert!(!manager.request_cancel("child-1"));
+    }
+
+    #[test]
+    fn cancel_all_flips_every_live_handle() {
+        let db = temp_db("cancel_all");
+        let manager = SharedSubagentManager::new(
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(SubagentManager::new(&db))
+                .unwrap(),
+        );
+        let f1 = Arc::new(AtomicBool::new(false));
+        let f2 = Arc::new(AtomicBool::new(false));
+        manager.register_cancel_handle("child-1", f1.clone());
+        manager.register_cancel_handle("child-2", f2.clone());
+
+        let count = manager.cancel_all();
+
+        assert_eq!(count, 2, "both live handles must be flipped");
+        assert!(f1.load(Ordering::Relaxed));
+        assert!(f2.load(Ordering::Relaxed));
+
+        // A second cancel_all has nothing left (handles still registered but
+        // already true — cancel_all re-flips; count stays 2). Unregister then
+        // verify it drops to 0.
+        manager.unregister_cancel_handle("child-1");
+        manager.unregister_cancel_handle("child-2");
+        assert_eq!(manager.cancel_all(), 0);
     }
 }

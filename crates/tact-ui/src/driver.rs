@@ -147,6 +147,18 @@ pub async fn run_command_loop_with_account(
     // finish instead of deadlocking on an answer that will never arrive.
     ui_responder.shutdown();
 
+    // The parent is exiting: cancel every running background subagent so
+    // none of them becomes an orphan. Their finish paths mark the runs
+    // Cancelled and re-inject (success=false) results that a surviving
+    // reaper can observe.
+    if subagent_manager.cancel_all() > 0
+        && let Some(tx) = &ui_tx
+    {
+        let _ = tx.send(AgentUpdate::Info(
+            "Cancelling background subagents (parent exiting)...".into(),
+        ));
+    }
+
     if let Some(handle) = active.take() {
         agent = Some(handle.await.expect("final task join panicked"));
     }
