@@ -207,7 +207,7 @@ pub async fn run_command_hook(
     )
     .await
     {
-        Ok(stdout) => parse_output(&stdout),
+        Ok(stdout) => parse_output(&stdout, input.hook_event_name),
         Err(error) => {
             warn!("plugin hook command failed (continuing): {error}");
             HookOutput::continue_default()
@@ -263,23 +263,44 @@ async fn run_process(
 }
 
 /// Builds the Claude Code hook input JSON (`session_id`, `transcript_path`,
-/// `cwd`, `hook_event_name`, plus event-specific fields).
+/// `cwd`, `hook_event_name`) with event-specific fields merged at the top
+/// level (the Claude protocol puts `tool_name`, `tool_input`, `prompt`, …
+/// at the root, not nested).
 fn build_payload(input: &HookRunInput) -> Value {
-    json!({
+    let mut payload = json!({
         "session_id": input.session_id,
         "transcript_path": input.work_dir.join(".tact/transcripts"),
         "cwd": input.work_dir,
         "hook_event_name": input.hook_event_name,
-        "_event": input.event,
-    })
+    });
+    if let Some(object) = input.event.as_object() {
+        for (key, value) in object {
+            payload[key] = value.clone();
+        }
+    }
+    payload
 }
 
-/// Parses hook stdout JSON, accepting both the newer `decision` shape and the
-/// legacy `hookSpecificOutput` shape.
-fn parse_output(stdout: &str) -> HookOutput {
+/// Parses hook stdout, accepting JSON in both the newer `decision` shape and
+/// the legacy `hookSpecificOutput` shape, plus Claude's plain-text fallback:
+/// for `UserPromptSubmit` / `SessionStart`, non-JSON stdout is treated as
+/// `additionalContext` verbatim (ponytail and other plugins rely on this).
+fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
     let raw: Result<RawHookOutput, _> = serde_json::from_str(stdout);
     let raw = match raw {
         Ok(raw) => raw,
+        Err(_) if matches!(event_name, "UserPromptSubmit" | "SessionStart") => {
+            let text = stdout.trim();
+            if text.is_empty() {
+                return HookOutput::continue_default();
+            }
+            return HookOutput {
+                control: HookControl::Continue,
+                additional_context: Some(text.to_string()),
+                system_prompt: None,
+                suppress_output: false,
+            };
+        }
         Err(error) => {
             warn!("plugin hook returned invalid JSON (continuing): {error}");
             return HookOutput::continue_default();
@@ -926,6 +947,78 @@ mod tests {
             output.additional_context.as_deref(),
             Some(expected.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn run_command_hook_plain_text_stdout_is_additional_context() {
+        let dir = tempdir().unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some(r#"printf %s 'Follow the house style.'"#.into()),
+            command_windows: None,
+            timeout: Some(10),
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "UserPromptSubmit",
+                event: json!({ "prompt": "hello" }),
+            },
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+        assert_eq!(
+            output.additional_context.as_deref(),
+            Some("Follow the house style.")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_hook_plain_text_ignored_for_pre_tool() {
+        let dir = tempdir().unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some(r#"printf %s 'not json'"#.into()),
+            command_windows: None,
+            timeout: Some(10),
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "PreToolUse",
+                event: json!({ "tool_name": "Read" }),
+            },
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+        assert!(output.additional_context.is_none());
+    }
+
+    #[test]
+    fn build_payload_merges_event_fields_at_top_level() {
+        let payload = build_payload(&HookRunInput {
+            session_id: "s1".into(),
+            work_dir: PathBuf::from("/proj"),
+            hook_event_name: "PreToolUse",
+            event: json!({ "tool_name": "Bash", "tool_input": { "command": "ls" } }),
+        });
+        assert_eq!(payload["session_id"], "s1");
+        assert_eq!(payload["hook_event_name"], "PreToolUse");
+        assert_eq!(payload["tool_name"], "Bash");
+        assert_eq!(payload["tool_input"]["command"], "ls");
+        assert!(payload.get("_event").is_none(), "event must not be nested");
     }
 
     #[test]
