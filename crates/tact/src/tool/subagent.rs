@@ -405,7 +405,6 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             // exits cooperatively at its next check point. Mark the run as
             // Cancelled instead of Completed so the record tells the truth.
             let cancelled = cancel_flag.load(Ordering::Relaxed);
-            manager.unregister_cancel_handle(&child_id);
             let summary = if cancelled {
                 format!("(cancelled by user)\n{summary}")
             } else {
@@ -416,6 +415,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             } else {
                 manager.finish(&child_id, success, summary.clone()).await
             };
+            // Keep the handle registered until the terminal state is durable;
+            // shutdown can otherwise miss this child in the small window
+            // between unregistering and persisting completion.
+            manager.unregister_cancel_handle(&child_id);
             // Persist the lifecycle and enqueue the result BEFORE emitting the
             // TUI notification: the driver may immediately submit a wake-up
             // turn on receipt, and that turn's drain must already see the

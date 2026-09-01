@@ -147,11 +147,9 @@ pub async fn run_command_loop_with_account(
     // finish instead of deadlocking on an answer that will never arrive.
     ui_responder.shutdown();
 
-    // The parent is exiting: cancel every running background subagent so
-    // none of them becomes an orphan. Their finish paths mark the runs
-    // Cancelled and re-inject (success=false) results that a surviving
-    // reaper can observe.
-    if subagent_manager.cancel_all() > 0
+    // The parent is exiting: request cancellation and persist Cancelled for
+    // every live child before detached tasks can be dropped by runtime shutdown.
+    if subagent_manager.cancel_all_and_persist().await > 0
         && let Some(tx) = &ui_tx
     {
         let _ = tx.send(AgentUpdate::Info(

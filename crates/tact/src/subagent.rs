@@ -196,6 +196,29 @@ impl SubagentManager {
         handles.len()
     }
 
+    /// Requests cancellation of every live child and persists `cancelled`
+    /// immediately. Shutdown uses this instead of waiting for detached child
+    /// tasks, which may be dropped when the Tokio runtime exits.
+    pub async fn cancel_all_and_persist(&self) -> usize {
+        let child_ids: Vec<String> = {
+            let handles = self
+                .cancel_handles
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for flag in handles.values() {
+                flag.store(true, Ordering::Relaxed);
+            }
+            handles.keys().cloned().collect()
+        };
+
+        for child_id in &child_ids {
+            // Synchronous children have cancel handles but no subagent_runs
+            // row; their errors are intentionally ignored here.
+            let _ = self.cancel(child_id).await;
+        }
+        child_ids.len()
+    }
+
     /// Human/LLM-facing status query, mirroring `check_background`.
     ///
     /// `Some(id)` returns a single run as pretty JSON; `None` lists all runs
@@ -260,6 +283,10 @@ impl SharedSubagentManager {
 
     pub fn cancel_all(&self) -> usize {
         self.inner.cancel_all()
+    }
+
+    pub async fn cancel_all_and_persist(&self) -> usize {
+        self.inner.cancel_all_and_persist().await
     }
 
     pub async fn check(&self, child_id: Option<&str>) -> Result<String> {
@@ -359,6 +386,39 @@ mod tests {
         // Unregister removes the handle; a second request fails.
         manager.unregister_cancel_handle("child-1");
         assert!(!manager.request_cancel("child-1"));
+    }
+
+    #[tokio::test]
+    async fn cancel_all_and_persist_marks_running_children_cancelled() {
+        let db = temp_db("cancel_all_persisted");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        manager.start("child-1".to_string()).await.unwrap();
+        manager.start("child-2".to_string()).await.unwrap();
+
+        let f1 = Arc::new(AtomicBool::new(false));
+        let f2 = Arc::new(AtomicBool::new(false));
+        manager.register_cancel_handle("child-1", f1.clone());
+        manager.register_cancel_handle("child-2", f2.clone());
+
+        let count = manager.cancel_all_and_persist().await;
+
+        assert_eq!(count, 2);
+        assert!(f1.load(Ordering::Relaxed));
+        assert!(f2.load(Ordering::Relaxed));
+        assert!(
+            manager
+                .check(Some("child-1"))
+                .await
+                .unwrap()
+                .contains("cancelled")
+        );
+        assert!(
+            manager
+                .check(Some("child-2"))
+                .await
+                .unwrap()
+                .contains("cancelled")
+        );
     }
 
     #[test]

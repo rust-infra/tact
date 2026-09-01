@@ -172,9 +172,13 @@ async fn run_headless_locked(
         let _ = tact::notifications::notify_task_complete(&summary);
     }
 
-    // The headless run is done: cancel any still-running background
-    // subagents so they stop instead of outliving this process.
-    agent.tool_context.subagent_manager.cancel_all();
+    // The headless run is done: cancel and persist any still-running
+    // background subagents before the process exits.
+    agent
+        .tool_context
+        .subagent_manager
+        .cancel_all_and_persist()
+        .await;
 
     agent.shutdown_mcp().await;
     Ok(())
