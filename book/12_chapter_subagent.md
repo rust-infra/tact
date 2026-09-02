@@ -16,7 +16,7 @@ Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_te
 | Entry | TUI / headless `agent_loop` | Parent calls `spawn_subagent` during tool execution |
 | Conversation history | Full session context | Single user prompt only (no parent messages) |
 | System prompt | Dynamic Tera template (skills, memory, CLAUDE.md) | Fixed static string |
-| Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (9 tools) |
+| Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (5 tools) |
 | MCP tools | Loaded from config | **None** (`MCPToolRouter::new()`) |
 | Hooks | Parent's registered hooks | Empty hook list |
 | Session SQLite | Yes (when wired in `tui.rs`) | **Yes** — new child session; `sessions.ref_id` = parent id (or `''` if parent has none) |
@@ -54,7 +54,7 @@ pub struct SubagentInput {
 | `worktree` | `true` runs the child inside an isolated git worktree lane (`subagent-<child_id>`, branch `wt/subagent-<child_id>`); requires a git repo at `work_dir`. On `resume` the existing lane is reused. The lane is created synchronously (failures surface immediately) and kept after completion for inspection via `worktree_status` / `worktree_run`; clean up with `worktree_remove { name }` (refuses a running subagent's lane and a dirty tree). |
 | `agent` | Runs a **declarative agent definition** by name — `plugin:<name>` for installed plugin `agents/*.md`, or a unique local name from `.tact/agents/*.md`. The definition body becomes the system prompt; its `tools` / `model` / `permissionMode` frontmatter apply (see §2.1). |
 
-Only the main agent's `toolset()` registers the worktree/team/task/skill/memory/MCP/plugin tools. The subagent toolset does register the subagent tools themselves, so **subagents can spawn nested subagents** — depth-limited to `MAX_SUBAGENT_DEPTH = 3` (main agent = depth 0; a subagent spawned by a subagent beyond the cap is refused) so a child cannot recursively fan out without bound.
+Only the main agent's `toolset()` registers the subagent tools (`SpawnSubagentTool`, `CheckSubagentTool`, `WaitSubagentTool`, `CancelSubagentTool`). Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
 
 ---
 
@@ -79,7 +79,7 @@ permissionMode: plan
 You are a principal reviewer. …
 ```
 
-- `tools` restricts the subagent toolset (Claude names map to Tact tools: Read/Glob/Grep → `read_file`, Bash → `bash`, Edit → `edit_file`, Write → `write_file`, Sleep → `sleep`, Task → `spawn_subagent`, Check/Wait/Cancel → `check_subagent`/`wait_subagent`/`cancel_subagent`; unknown names are ignored; an empty set keeps the default nine tools).
+- `tools` restricts the subagent toolset (Claude names map to Tact tools: Read/Glob/Grep → `read_file`, Bash → `bash`, Edit → `edit_file`, Write → `write_file`, Sleep → `sleep`; unknown names are ignored; an empty set keeps the default five tools).
 - `model` overrides the child model (layered on top of the `[agent.subagent]` config).
 - `permissionMode` overrides the inherited permission mode unless the parent is in `Auto` (Auto stays sticky).
 
@@ -105,7 +105,7 @@ sequenceDiagram
     Task->>Sub: agent_loop(Some(prompt))
 
     loop until stop ≠ ToolUse
-        Sub->>LLM: stream_message + 9 tool specs
+        Sub->>LLM: stream_message + 5 tool specs
         LLM-->>Sub: assistant blocks
         alt ToolUse
             Sub->>Tools: execute_tool_call (hooks empty, inherited permissions)
@@ -129,7 +129,7 @@ sequenceDiagram
 
 ## 4. Restricted Tool Set
 
-`subagent_toolset()` registers nine tools:
+`subagent_toolset()` registers exactly five tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -138,18 +138,14 @@ sequenceDiagram
 | `write_file` | Create or overwrite files |
 | `edit_file` | Exact string replace (first or all) |
 | `sleep` | Timing / polling |
-| `spawn_subagent` | **Nested** spawn (depth-limited to `MAX_SUBAGENT_DEPTH = 3`) |
-| `check_subagent` | Query a nested child's run status |
-| `wait_subagent` | Block until a nested child finishes / times out |
-| `cancel_subagent` | Cancel a running nested child |
 
 Notable **omissions** compared to the main agent:
 
-- No `load_skill`, `save_memory`, `compact`, web tools, LSP, apply_patch, batch tools
+- No `spawn_subagent`, `load_skill`, `save_memory`, `compact`, web tools, LSP, apply_patch, batch tools
 - No team, worktree, or persistent-task management tools
 - No MCP-prefixed tools
 
-The default nine-tool set is enforced by unit test `subagent_toolset_has_nine_tools`; a declarative `tools:` list can narrow it (unknown names ignored, empty list keeps the default set).
+The default five-tool set is enforced by unit test `subagent_toolset_has_five_tools`; a declarative `tools:` list can narrow it (unknown names ignored, empty list keeps the default set).
 
 ---
 
@@ -225,7 +221,7 @@ That string becomes the `spawn_subagent` tool's JSON/text result and is appended
 | | `spawn_subagent` (subagent) | `spawn_teammate` (team) |
 |--|-------------------|-------------------------|
 | Runs LLM loop | Yes, nested `agent_loop` | No — roster entry only |
-| Isolation | Fresh context, 9 tools | N/A |
+| Isolation | Fresh context, 5 tools | N/A |
 | Persistence | Own SQLite session (`ref_id` → parent) | `.tact/team/` JSON |
 | Use case | Delegate focused coding work | Multi-agent coordination protocol |
 
@@ -256,13 +252,13 @@ See [Team Coordination](./14_chapter_team.md).
 
 | Gap | Detail |
 |-----|--------|
-| No nested `spawn_subagent` | By design in toolset, but limits decomposition depth |
+| No nested `spawn_subagent` | By design in toolset (5 tools), so workers cannot decompose further |
 | No MCP on subagents | External tools unavailable inside workers |
 | No parent hooks | PreToolUse / PostToolUse policies do not wrap subagent tools |
 | Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
 | `description` ignored | JSON field has no runtime effect |
 | Separate cancel flag | Parent `/cancel` aborts the main task only. A **running background subagent** is cancelled via `cancel_subagent` (tool), `/subagent_cancel <child-id>` (slash), or the `[Cancel]` button on the live subagent tool card — all flip the child's cooperative flag via the shared `SubagentManager` cancel handles. When the parent exits (TUI quit / driver loop end), `cancel_all()` flips every live handle so background subagents stop instead of becoming orphans. (Headless never has live background children at exit: `run_in_background` degrades to synchronous there.) |
-| No worktree removal | Isolated lanes can now be cleaned up with `worktree_remove { name }` (runs `git worktree remove`, deletes the tracking record, refuses a running subagent's lane and a dirty tree). The backing branch `wt/<name>` is left in place so unmerged commits stay recoverable |
+| No worktree removal | Isolated lanes can now be cleaned up with `worktree_remove { name }` (runs `git worktree remove`, deletes the tracking record, refuses a running subagent's lane and a dirty tree). A fully-merged backing branch `wt/<name>` is auto-deleted; unmerged branches are kept so commits stay recoverable |
 | Worktree base = repo HEAD | A subagent spawned *from* another worktree still branches from the main repo HEAD, not the parent lane |
 | Child sessions hidden from list | `--list-sessions` / resume only show `ref_id = ''`; delete parent cascades children |
 | Summary heuristic | Last assistant text only; tool-only endings return `(no summary)` |
