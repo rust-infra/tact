@@ -474,6 +474,16 @@ pub struct CancelSubagentInput {
     pub child_id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WaitSubagentInput {
+    #[schemars(description = "Subagent child session id to wait for.")]
+    pub child_id: String,
+    /// Maximum time to wait in milliseconds before returning a "still
+    /// running" note (default 60000 = 1 minute).
+    #[schemars(description = "Maximum wait in milliseconds (default 60000).")]
+    pub timeout_ms: Option<u64>,
+}
+
 pub const CHECK_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "check_subagent",
     description: "Check subagent run status.",
@@ -503,6 +513,25 @@ pub const CANCEL_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Generic,
         display_name: "⏹ Subagent Cancel",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+pub const WAIT_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
+    name: "wait_subagent",
+    description: "Block until a background subagent finishes (or times out), returning its summary. Polls the subagent run record so the parent can spawn several subagents in parallel, then wait on each instead of burning turns polling check_subagent.",
+    permission: PermissionPolicy::Read,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Independent,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "⏳ Subagent Wait",
         live_output: LiveOutputPolicy::Standard,
         detail: DetailPolicy::Result,
         popup: PopupPolicy::None,
@@ -542,6 +571,17 @@ pub async fn cancel_subagent(ctx: ToolContext, input: CancelSubagentInput) -> Re
     }
 }
 
+#[tool]
+/// # Errors
+///
+/// Returns an error if the child id is unknown or the subagent manager
+/// encounters an internal error. A timeout returns an `Ok` "still running"
+/// note rather than an error.
+pub async fn wait_subagent(ctx: ToolContext, input: WaitSubagentInput) -> Result<String> {
+    let timeout_ms = input.timeout_ms.unwrap_or(60_000);
+    ctx.subagent_manager.wait(&input.child_id, timeout_ms).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,6 +597,10 @@ mod tests {
             "cancel_subagent must be in the main toolset"
         );
         assert!(specs.iter().any(|s| s.name == "check_subagent"));
+        assert!(
+            specs.iter().any(|s| s.name == "wait_subagent"),
+            "wait_subagent must be in the main toolset"
+        );
     }
 
     #[test]

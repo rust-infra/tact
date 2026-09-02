@@ -22,6 +22,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -219,6 +220,43 @@ impl SubagentManager {
         child_ids.len()
     }
 
+    /// Reads a single run record by child session id (`None` when unknown).
+    pub async fn get(&self, child_id: &str) -> Result<Option<SubagentRun>> {
+        self.records.get(child_id).await
+    }
+
+    /// Blocks until the child run reaches a terminal status
+    /// (`Completed` / `Failed` / `Cancelled`), or `timeout_ms` elapses.
+    ///
+    /// This is the Codex `wait_agent` analog: the parent can spawn N
+    /// background subagents, then `wait_subagent` on each instead of polling
+    /// `check_subagent` across multiple turns. Returns a human-readable
+    /// summary line on completion, or a "still running" note on timeout.
+    pub async fn wait(&self, child_id: &str, timeout_ms: u64) -> Result<String> {
+        const POLL_INTERVAL_MS: u64 = 250;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let record = self
+                .records
+                .get(child_id)
+                .await?
+                .with_context(|| format!("Unknown subagent {child_id}"))?;
+            match record.status {
+                SubagentStatus::Running => {}
+                _ => {
+                    let summary = record.summary.as_deref().unwrap_or("(no summary)");
+                    return Ok(format!("{}: {:?} {summary}", record.child_id, record.status));
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(format!(
+                    "{child_id}: still running (timed out after {timeout_ms} ms)"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+        }
+    }
+
     /// Human/LLM-facing status query, mirroring `check_background`.
     ///
     /// `Some(id)` returns a single run as pretty JSON; `None` lists all runs
@@ -292,6 +330,14 @@ impl SharedSubagentManager {
     pub async fn check(&self, child_id: Option<&str>) -> Result<String> {
         self.inner.check(child_id).await
     }
+
+    pub async fn get(&self, child_id: &str) -> Result<Option<SubagentRun>> {
+        self.inner.get(child_id).await
+    }
+
+    pub async fn wait(&self, child_id: &str, timeout_ms: u64) -> Result<String> {
+        self.inner.wait(child_id, timeout_ms).await
+    }
 }
 
 #[cfg(test)]
@@ -362,6 +408,43 @@ mod tests {
         manager.cancel("child-1").await.unwrap();
         let output = manager.check(Some("child-1")).await.unwrap();
         assert!(output.contains("cancelled"), "output: {output}");
+    }
+
+    #[tokio::test]
+    async fn wait_returns_summary_on_completion() {
+        let db = temp_db("wait_done");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        manager.start("child-1".to_string()).await.unwrap();
+
+        // Complete the run from a background task after a short delay.
+        let mgr = manager.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            mgr.finish("child-1", true, "done summary".to_string())
+                .await
+                .unwrap();
+        });
+
+        let output = manager.wait("child-1", 2_000).await.unwrap();
+        assert!(output.contains("Completed"), "output: {output}");
+        assert!(output.contains("done summary"), "output: {output}");
+    }
+
+    #[tokio::test]
+    async fn wait_times_out_while_still_running() {
+        let db = temp_db("wait_timeout");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        manager.start("child-1".to_string()).await.unwrap();
+
+        let output = manager.wait("child-1", 100).await.unwrap();
+        assert!(output.contains("still running"), "output: {output}");
+    }
+
+    #[tokio::test]
+    async fn wait_errors_for_unknown_child() {
+        let db = temp_db("wait_unknown");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+        assert!(manager.wait("ghost", 100).await.is_err());
     }
 
     #[test]

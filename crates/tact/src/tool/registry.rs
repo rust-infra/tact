@@ -12,7 +12,7 @@ use super::{
     read_file::ReadFileTool,
     read_image::ReadImageTool,
     sleep::SleepTool,
-    subagent::{CancelSubagentTool, CheckSubagentTool, SpawnSubagentTool},
+    subagent::{CancelSubagentTool, CheckSubagentTool, SpawnSubagentTool, WaitSubagentTool},
     task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool},
     team::{
         BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
@@ -42,6 +42,7 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(CompactTool)?
         .route(SpawnSubagentTool)?
         .route(CheckSubagentTool)?
+        .route(WaitSubagentTool)?
         .route(CancelSubagentTool)?
         .route(TaskCreateTool)?
         .route(TaskGetTool)?
