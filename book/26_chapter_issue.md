@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-02 — Async-subagent follow-ups: `wait_subagent` + `worktree_remove` + concurrent popups
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/subagent.rs` (`SharedSubagentManager::wait` / `get`), `crates/tact/src/tool/subagent.rs` (`WaitSubagentTool`), `crates/tact/src/tool/worktree.rs` (`WorktreeRemoveTool`), `crates/tact/src/worktree/mod.rs` (`WorktreeManager::remove`), `crates/tact/src/store/worktree_store/` (`remove_worktree`), `crates/tact/src/tool/registry.rs`, `crates/tui/src/widgets/state/{mod.rs,app/popups.rs,app/config.rs,app/construct.rs}`, `crates/tui/src/{handlers,render}`; Ch 12 |
+
+**Symptom / motivation:** The 2026-08-26 async-subagent design shipped `run_in_background`, `check_subagent`, `resume`, and cancel, but three follow-ups remained open: (1) the parent could only learn a running child's outcome by calling `check_subagent` across multiple LLM turns — wasteful; (2) isolated worktree lanes (`subagent-<child_id>`) had no removal surface and leaked until a manual `git worktree remove`; (3) the TUI held a single `Option<SubagentPopup>` slot, so opening a second concurrent subagent's transcript dropped the first one's scroll/selection.
+
+**Decision:** (1) `wait_subagent { child_id, timeout_ms? }` — a new Read tool that polls `subagent_runs` (250 ms interval) until the child reaches `Completed`/`Failed`/`Cancelled` or times out (default 60 s) and returns the summary; the Codex `wait_agent` analog (`SubagentManager::wait` / `get` added). (2) `worktree_remove { name }` — runs `git worktree remove` (no `--force`, so a dirty tree fails), deletes the tracking row, appends an audit event, and leaves the backing `wt/<name>` branch recoverable; it refuses a `subagent-<id>` lane whose run is still `Running` (`WorktreeStore::remove_worktree` + `WorktreeManager::remove` added). (3) TUI multi-popup — `App.subagent_popup: Option<_>` became `subagent_popups: HashMap<tool_id, _>` + `active_subagent_popup: Option<tool_id>`; `open_subagent_popup` inserts-or-reuses each card's entry so switching between concurrent subagents preserves scroll/selection/cached layout.
+
+**Behavior after:** the parent can spawn N background subagents and `wait_subagent` each (no more turn-burning `check_subagent` polling); isolated lanes are cleanable through a tool; concurrent subagent transcripts no longer clobber each other's popup state.
+
+---
+
 ## 1. 2026-08-30 — 子代理取消（`cancel_subagent` 工具 + `/subagent_cancel` + tool 卡片 [Cancel] 按钮）
 
 | Field | Value |

@@ -1,7 +1,7 @@
 # Worktree Lanes
 > Language: [English](./15_chapter_worktree.md) · [中文](./15_chapter_worktree_zh.md)
 
-This chapter explains Tact's **git worktree lanes**: isolated working directories created with `git worktree add`, tracked in a JSON index, and driven through five agent tools. The implementation lives in `crates/tact/src/worktree/mod.rs` with tool wrappers in `crates/tact/src/tool/worktree.rs`.
+This chapter explains Tact's **git worktree lanes**: isolated working directories created with `git worktree add`, tracked in a JSON index, and driven through six agent tools. The implementation lives in `crates/tact/src/worktree/mod.rs` with tool wrappers in `crates/tact/src/tool/worktree.rs`.
 
 A "lane" is Tact's term for one named worktree: its directory, its dedicated branch, an optional link to a persistent task, and a status string. Lanes let the agent run commands or experiments on a separate branch without disturbing the main checkout.
 
@@ -15,6 +15,7 @@ A "lane" is Tact's term for one named worktree: its directory, its dedicated bra
 | `worktree_list` | `list` | One `name branch path` line per lane |
 | `worktree_status` | `status` | Runs `git status` inside the lane, returns stdout |
 | `worktree_run` | `run` | Runs one `sh -c` command inside the lane, returns stdout+stderr |
+| `worktree_remove` | `remove` | `git worktree remove <path>` (fails on a dirty tree), deletes the tracking row, appends an audit event; refuses a running subagent's lane |
 | `worktree_events` | `events` | Last N lines of the audit log (default 20) |
 
 `base_ref` defaults to `HEAD` when omitted; `task_id` optionally links the lane to a record from the task manager ([Tasks and Tool Scheduling](./11_chapter_task.md)).
@@ -101,7 +102,7 @@ Every successful `create` appends a row to `worktree_events`:
 2026-07-06 21:14:03.512 UTC worktree.create fix-auth
 ```
 
-`worktree_events` returns the most recent `limit` entries in chronological order. Today `create` is the **only** writer — `run`, `status`, and `list` do not log, so the "audit log" is really a creation log.
+`worktree_events` returns the most recent `limit` entries in chronological order. Today `create` and `remove` are the **only** writers — `run`, `status`, and `list` do not log.
 
 ---
 
@@ -116,7 +117,7 @@ let worktree_manager =
 
 Note that `repo_root` is simply the session's working directory — Tact does not verify it is actually a git repository until the first `git worktree add` fails.
 
-All five tools are registered in the main `toolset()` only; sub-agents cannot manage lanes.
+All six tools are registered in the main `toolset()` only; sub-agents cannot manage lanes.
 
 One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands **synchronously** (`std::process::Command`), inside an async tool. A long `worktree_run` blocks the tokio worker thread until it finishes (it no longer holds a manager lock, so other worktree tools stay responsive).
 
@@ -132,10 +133,10 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 
 | File | Role |
 |------|------|
-| `crates/tact/src/worktree/mod.rs` | `WorktreeManager`, `SharedWorktreeManager`, create/list/status/run/events |
-| `crates/tact/src/store/worktree_store/mod.rs` | `WorktreeStore` trait (async: create_worktree/find_worktree/list_worktrees/append_event/recent_events) |
+| `crates/tact/src/worktree/mod.rs` | `WorktreeManager`, `SharedWorktreeManager`, create/list/status/run/remove/events |
+| `crates/tact/src/store/worktree_store/mod.rs` | `WorktreeStore` trait (async: create_worktree/find_worktree/list_worktrees/remove_worktree/append_event/recent_events) |
 | `crates/tact/src/store/worktree_store/sqlite.rs` | `SqliteWorktreeStore` — `worktrees` + `worktree_events` tables |
-| `crates/tact/src/tool/worktree.rs` | The five `#[tool]` wrappers |
+| `crates/tact/src/tool/worktree.rs` | The six `#[tool]` wrappers |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.worktree_manager` |
 | `crates/tact/src/tool/registry.rs` | Worktree tools in `toolset()` |
 | `crates/tact-ui/src/headless.rs`, `interactive.rs` | Manager constructed from `tact.db` + workdir |
@@ -146,13 +147,13 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 
 | Gap | Detail |
 |-----|--------|
-| No remove/cleanup | There is no `worktree_remove`; lanes and `wt/*` branches accumulate until removed manually |
+| Branch cleanup after remove | `worktree_remove` deletes the directory and tracking row but leaves the backing `wt/<name>` branch so unmerged commits stay recoverable; the branch must be merged or `git branch -D`'d separately |
 | Status never changes | Every lane is `"active"` forever; no done/merged/abandoned transitions |
 | No merge-back story | Nothing helps integrate a lane's branch (diff, merge, PR) into the base branch |
 | Index can drift from git | Manual `git worktree remove/prune` leaves stale records; the tables are never reconciled |
 | `worktree_run` bypasses shell validation | High-risk command substrings blocked in `bash` are allowed here |
 | Blocking execution | Long-running `run`/`status` blocks an async thread (no manager lock held anymore) |
-| Sparse audit log | Only `create` writes events; `run` invocations are not recorded |
+| Sparse audit log | Only `create` and `remove` write events; `run` invocations are not recorded |
 | `task_id` is unenforced | The optional link is never validated against the task manager |
 
 ---

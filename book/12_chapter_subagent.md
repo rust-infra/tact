@@ -51,10 +51,10 @@ pub struct SubagentInput {
 | `run_in_background` | `true` returns `async_launched { id }` immediately; the child runs detached and re-injects its summary later |
 | `max_turns` | Caps the nested `agent_loop` turn count (runaway guard) |
 | `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn |
-| `worktree` | `true` runs the child inside an isolated git worktree lane (`subagent-<child_id>`, branch `wt/subagent-<child_id>`); requires a git repo at `work_dir`. On `resume` the existing lane is reused. The lane is created synchronously (failures surface immediately) and kept after completion for inspection via `worktree_status` / `worktree_run`. |
+| `worktree` | `true` runs the child inside an isolated git worktree lane (`subagent-<child_id>`, branch `wt/subagent-<child_id>`); requires a git repo at `work_dir`. On `resume` the existing lane is reused. The lane is created synchronously (failures surface immediately) and kept after completion for inspection via `worktree_status` / `worktree_run`; clean up with `worktree_remove { name }` (refuses a running subagent's lane and a dirty tree). |
 | `agent` | Runs a **declarative agent definition** by name — `plugin:<name>` for installed plugin `agents/*.md`, or a unique local name from `.tact/agents/*.md`. The definition body becomes the system prompt; its `tools` / `model` / `permissionMode` frontmatter apply (see §2.1). |
 
-Only the main agent's `toolset()` registers `SpawnSubagentTool` (and `CheckSubagentTool`). Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
+Only the main agent's `toolset()` registers the subagent tools (`SpawnSubagentTool`, `CheckSubagentTool`, `WaitSubagentTool`, `CancelSubagentTool`). Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
 
 ---
 
@@ -186,7 +186,7 @@ Worktree lane creation runs synchronously inside the handler (before the sync lo
 
 ## 8. Persistence and Lifecycle
 
-Async subagents persist their run in the `subagent_runs` table (`child_id`, `status`, `summary`, `started_at`, `finished_at`), keyed by child session id — the subagent analog of `background_tasks`. `SubagentManager::new` repairs orphans on startup (any `running` row → `failed` with `"Process interrupted (agent restarted)"`). The `check_subagent` tool reads this state. The in-memory `pending_subagent_results` queue is the live fast path; the persisted row is the crash-recovery source of truth. Finished results are **not** re-delivered automatically after a restart — the injected `<subagent-finished>` message is already in the transcript, and the model decides to `resume` or re-spawn.
+Async subagents persist their run in the `subagent_runs` table (`child_id`, `status`, `summary`, `started_at`, `finished_at`), keyed by child session id — the subagent analog of `background_tasks`. `SubagentManager::new` repairs orphans on startup (any `running` row → `failed` with `"Process interrupted (agent restarted)"`). The `check_subagent` tool reads this state, and `wait_subagent { child_id, timeout_ms? }` blocks (polling `subagent_runs`) until the child reaches a terminal status or times out — the Codex `wait_agent` analog that lets the parent spawn N subagents then wait on each instead of burning turns polling `check_subagent`. The in-memory `pending_subagent_results` queue is the live fast path; the persisted row is the crash-recovery source of truth. Finished results are **not** re-delivered automatically after a restart — the injected `<subagent-finished>` message is already in the transcript, and the model decides to `resume` or re-spawn.
 
 ---
 
@@ -233,7 +233,7 @@ See [Team Coordination](./14_chapter_team.md).
 
 | File | Role |
 |------|------|
-| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` + `check_subagent` handlers — spawn, sync/async loop, summary extraction, resume, max_turns |
+| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` + `check_subagent` + `wait_subagent` + `cancel_subagent` handlers — spawn, sync/async loop, summary extraction, resume, max_turns |
 | `crates/tact/src/tool/mod.rs` | `SpawnSubagentTool` / `CheckSubagentTool` implementations; `permission_snapshot` + `subagent_results` + `subagent_manager` on `ToolContext` |
 | `crates/tact/src/tool/registry.rs` | `SpawnSubagentTool` + `CheckSubagentTool` in `toolset()`; `subagent_toolset()` |
 | `crates/tact/src/agent/mod.rs` | `Agent::new`, `agent_loop` (drain + max_turns), `ensure_session`, `pending_subagent_results` |
@@ -258,7 +258,7 @@ See [Team Coordination](./14_chapter_team.md).
 | Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
 | `description` ignored | JSON field has no runtime effect |
 | Separate cancel flag | Parent `/cancel` aborts the main task only. A **running background subagent** is cancelled via `cancel_subagent` (tool), `/subagent_cancel <child-id>` (slash), or the `[Cancel]` button on the live subagent tool card — all flip the child's cooperative flag via the shared `SubagentManager` cancel handles. When the parent exits (TUI quit / driver loop end / headless run end), `cancel_all()` flips every live handle so background subagents stop instead of becoming orphans |
-| No worktree removal | Isolated lanes persist after the child finishes; remove manually via `git worktree remove` (no tool surface yet) |
+| No worktree removal | Isolated lanes can now be cleaned up with `worktree_remove { name }` (runs `git worktree remove`, deletes the tracking record, refuses a running subagent's lane and a dirty tree). The backing branch `wt/<name>` is left in place so unmerged commits stay recoverable |
 | Worktree base = repo HEAD | A subagent spawned *from* another worktree still branches from the main repo HEAD, not the parent lane |
 | Child sessions hidden from list | `--list-sessions` / resume only show `ref_id = ''`; delete parent cascades children |
 | Summary heuristic | Last assistant text only; tool-only endings return `(no summary)` |

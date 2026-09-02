@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-02 — 异步子代理后续：`wait_subagent` + `worktree_remove` + 并发弹窗
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/subagent.rs`（`SharedSubagentManager::wait` / `get`）、`crates/tact/src/tool/subagent.rs`（`WaitSubagentTool`）、`crates/tact/src/tool/worktree.rs`（`WorktreeRemoveTool`）、`crates/tact/src/worktree/mod.rs`（`WorktreeManager::remove`）、`crates/tact/src/store/worktree_store/`（`remove_worktree`）、`crates/tact/src/tool/registry.rs`、`crates/tui/src/widgets/state/{mod.rs,app/popups.rs,app/config.rs,app/construct.rs}`、`crates/tui/src/{handlers,render}`；Ch 12 |
+
+**Symptom / motivation:** 2026-08-26 异步子代理设计已落地 `run_in_background`、`check_subagent`、`resume` 与取消，但遗留三项：其一，父级只能跨多轮调用 `check_subagent` 才能得知运行中子代理的结果——浪费回合；其二，隔离 worktree 泳道（`subagent-<child_id>`）无删除入口，只能手动 `git worktree remove` 清理；其三，TUI 仅持单个 `Option<SubagentPopup>` 槽位，打开第二个并发子代理的 transcript 会丢掉前一个的滚动/选中态。
+
+**Decision:** (1) `wait_subagent { child_id, timeout_ms? }` —— 新增 Read 工具，轮询 `subagent_runs`（250 ms 间隔）直到子代理到达 `Completed`/`Failed`/`Cancelled` 或超时（默认 60 s），返回 summary；即 Codex `wait_agent` 的对应物（新增 `SubagentManager::wait` / `get`）。(2) `worktree_remove { name }` —— 执行 `git worktree remove`（不加 `--force`，脏工作树会失败）、删除跟踪记录、追加审计事件，并保留 backing 分支 `wt/<name>` 以便未合并提交可恢复；拒绝删除仍在 `Running` 的 `subagent-<id>` 泳道（新增 `WorktreeStore::remove_worktree` + `WorktreeManager::remove`）。(3) TUI 多弹窗 —— `App.subagent_popup: Option<_>` 改为 `subagent_popups: HashMap<tool_id, _>` + `active_subagent_popup: Option<tool_id>`；`open_subagent_popup` 对每张卡片 insert-or-reuse，切换并发子代理时保留各自的滚动/选中/布局缓存。
+
+**Behavior after:** 父级可先 spawn N 个后台子代理再逐个 `wait_subagent`（不再跨回合轮询 `check_subagent`）；隔离泳道可通过工具清理；并发子代理的 transcript 不再互相覆盖弹窗状态。
+
+---
+
 ## 1. 2026-08-30 — 子代理取消（`cancel_subagent` 工具 + `/subagent_cancel` + tool 卡片 [Cancel] 按钮）
 
 | Field | Value |

@@ -52,10 +52,10 @@ pub struct SubagentInput {
 | `run_in_background` | `true` 立即返回 `async_launched { id }`；子 agent 脱钩运行，稍后回注 summary |
 | `max_turns` | 上限嵌套 `agent_loop` 轮数（防止失控） |
 | `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮 |
-| `worktree` | `true` 让子 agent 运行在隔离的 git worktree 泳道（`subagent-<child_id>`，分支 `wt/subagent-<child_id>`）；要求 `work_dir` 是 git 仓库。`resume` 时复用已有泳道。泳道在 handler 内同步创建（失败立即暴露），完成后保留供 `worktree_status` / `worktree_run` 检查。 |
+| `worktree` | `true` 让子 agent 运行在隔离的 git worktree 泳道（`subagent-<child_id>`，分支 `wt/subagent-<child_id>`）；要求 `work_dir` 是 git 仓库。`resume` 时复用已有泳道。泳道在 handler 内同步创建（失败立即暴露），完成后保留供 `worktree_status` / `worktree_run` 检查；用 `worktree_remove { name }` 清理（拒绝运行中子 agent 的泳道与脏工作树）。 |
 | `agent` | 按名运行**声明式 agent 定义**——已安装插件 `agents/*.md` 用 `plugin:<name>`，`.tact/agents/*.md` 本地定义可用唯一原名。定义正文成为 system prompt；其 `tools` / `model` / `permissionMode` frontmatter 生效（见 §2.1）。 |
 
-仅主 agent 的 `toolset()` 注册 `SpawnSubagentTool`（与 `CheckSubagentTool`）。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `spawn_subagent`。
+仅主 agent 的 `toolset()` 注册子 agent 工具（`SpawnSubagentTool`、`CheckSubagentTool`、`WaitSubagentTool`、`CancelSubagentTool`）。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `spawn_subagent`。
 
 ---
 
@@ -187,7 +187,7 @@ let system_prompt = format!(
 
 ## 8. 持久化与生命周期
 
-异步子 agent 将其运行持久化到 `subagent_runs` 表（`child_id`、`status`、`summary`、`started_at`、`finished_at`），以子 session id 为主键 —— 是 `background_tasks` 的子 agent 对应物。`SubagentManager::new` 在启动时修复 orphan（任何 `running` 行 → `failed`，带 `"Process interrupted (agent restarted)"`）。`check_subagent` 工具读取此状态。内存 `pending_subagent_results` 队列是实时快路径；持久化行是崩溃恢复的 source of truth。重启后 finished 结果**不会**自动重投 —— 注入的 `<subagent-finished>` 消息已在 transcript 中，模型自行决定 `resume` 或重新 spawn。
+异步子 agent 将其运行持久化到 `subagent_runs` 表（`child_id`、`status`、`summary`、`started_at`、`finished_at`），以子 session id 为主键 —— 是 `background_tasks` 的子 agent 对应物。`SubagentManager::new` 在启动时修复 orphan（任何 `running` 行 → `failed`，带 `"Process interrupted (agent restarted)"`）。`check_subagent` 工具读取此状态，`wait_subagent { child_id, timeout_ms? }` 则阻塞（轮询 `subagent_runs`）直到子 agent 到达终态或超时 —— 即 Codex `wait_agent` 的对应物，让父级可先 spawn N 个子 agent 再逐个 wait，而不必跨多轮轮询 `check_subagent`。内存 `pending_subagent_results` 队列是实时快路径；持久化行是崩溃恢复的 source of truth。重启后 finished 结果**不会**自动重投 —— 注入的 `<subagent-finished>` 消息已在 transcript 中，模型自行决定 `resume` 或重新 spawn。
 
 ---
 
@@ -234,7 +234,7 @@ let summary = subagent
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` + `check_subagent` handler — spawn、同步/异步循环、summary 提取、resume、max_turns |
+| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` + `check_subagent` + `wait_subagent` + `cancel_subagent` handler — spawn、同步/异步循环、summary 提取、resume、max_turns |
 | `crates/tact/src/tool/mod.rs` | `SpawnSubagentTool` / `CheckSubagentTool` 实现；`ToolContext` 上的 `permission_snapshot` + `subagent_results` + `subagent_manager` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `SpawnSubagentTool` + `CheckSubagentTool`；`subagent_toolset()` |
 | `crates/tact/src/agent/mod.rs` | `Agent::new`、`agent_loop`（drain + max_turns）、`ensure_session`、`pending_subagent_results` |
@@ -259,7 +259,7 @@ let summary = subagent
 | 仅静态 prompt | 无 skills/memory/CLAUDE.md，除非父级复制进 `prompt` |
 | `description` 被忽略 | JSON 字段无运行时效果 |
 | 独立 cancel 标志 | 父级 `/cancel` 只中止主任务。**运行中的后台子代理**通过 `cancel_subagent`（工具）、`/subagent_cancel <child-id>`（slash 命令）或运行中子代理工具卡片上的 `[Cancel]` 按钮取消——三者都经由共享 `SubagentManager` 的 cancel handles 翻转子代理的协作取消标志。当父级退出（TUI 退出 / driver 循环结束 / headless 运行结束）时，`cancel_all()` 翻转所有存活 handle，后台子代理一起停止而非成为孤儿 |
-| 无 worktree 删除 | 隔离泳道在子 agent 结束后保留；需手动 `git worktree remove`（尚无工具入口） |
+| 无 worktree 删除 | 隔离泳道现在可通过 `worktree_remove { name }` 清理（执行 `git worktree remove`、删除跟踪记录、拒绝运行中子 agent 的泳道与脏工作树）。保留 backing 分支 `wt/<name>` 以便未合并提交可恢复 |
 | worktree 基准为仓库 HEAD | 从另一 worktree 内 spawn 的子 agent 仍基于主仓库 HEAD 分支，而非父泳道 |
 | 列表隐藏子会话 | `--list-sessions` / resume 只显示 `ref_id = ''`；删父会级联删子 |
 | Summary 启发式 | 仅最后 assistant 文本；纯 tool 结尾返回 `(no summary)` |
