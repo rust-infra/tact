@@ -115,7 +115,6 @@ async fn run_headless_locked(
         session_store: None,
         permission_snapshot: None,
         subagent_results: None,
-        subagent_depth: 0,
     };
 
     // Responses compaction routing depends on the effective provider: OpenAI
