@@ -93,6 +93,10 @@ const SUBAGENT_WORKTREE_PREFIX: &str = "subagent";
 /// child cannot recursively fan out without bound.
 pub const MAX_SUBAGENT_DEPTH: u32 = 3;
 
+/// A finished subagent session may only be resumed within this window; older
+/// sessions are rejected because their context is stale (Claude's 24h expiry).
+const RESUME_EXPIRY_HOURS: i64 = 24;
+
 /// Creates (or, on `resume`, reuses) the isolation worktree for a child.
 ///
 /// Returns `Ok(None)` when the caller did not request worktree isolation.
@@ -245,9 +249,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     }
 
     // A resume must target a prior run that has already reached a terminal
-    // state. Resuming a still-running child would race the session lock (two
-    // loops on one session); resuming an unknown id would silently mint a
-    // fresh child instead of a follow-up.
+    // state and has not expired. Resuming a still-running child would race the
+    // session lock (two loops on one session); resuming an unknown id would
+    // silently mint a fresh child instead of a follow-up; resuming a session
+    // older than `RESUME_EXPIRY_HOURS` would feed stale context to the model.
     if resume {
         match ctx.subagent_manager.get(&child_id).await? {
             Some(record) if record.status == SubagentStatus::Running => {
@@ -256,7 +261,17 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
                      cancel it or wait for it to finish first"
                 );
             }
-            Some(_) => {}
+            Some(record) => {
+                if let Some(finished_at) = record.finished_at
+                    && chrono::Utc::now() - finished_at
+                        > chrono::Duration::hours(RESUME_EXPIRY_HOURS)
+                {
+                    bail!(
+                        "cannot resume subagent {child_id}: it finished more than \
+                         {RESUME_EXPIRY_HOURS}h ago; spawn a new subagent instead"
+                    );
+                }
+            }
             None => {
                 bail!(
                     "cannot resume subagent {child_id}: no prior run record; \
@@ -698,6 +713,44 @@ mod tests {
         assert!(terminal_success(true, false));
         assert!(!terminal_success(false, false));
         assert!(!terminal_success(false, true));
+    }
+
+    #[tokio::test]
+    async fn resume_expiry_uses_finished_at() {
+        let context = test_context("subagent-resume-expiry");
+        // A terminal record with a fresh `finished_at` passes the expiry check
+        // (the guard compares now - finished_at against RESUME_EXPIRY_HOURS).
+        context
+            .subagent_manager
+            .start("child-done".to_string())
+            .await
+            .unwrap();
+        context
+            .subagent_manager
+            .finish("child-done", true, "done".to_string())
+            .await
+            .unwrap();
+        let record = context
+            .subagent_manager
+            .get("child-done")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(record.status, SubagentStatus::Running);
+        assert!(
+            record.finished_at.is_some(),
+            "terminal record must carry finished_at for the expiry check"
+        );
+        // A record older than the window fails the guard: finished_at must be
+        // present and the age comparison must use it, not default to "ok".
+        assert!(
+            chrono::Utc::now()
+                - record
+                    .finished_at
+                    .expect("finished_at present")
+                < chrono::Duration::hours(RESUME_EXPIRY_HOURS),
+            "fresh record must be within the resume window"
+        );
     }
 
     #[test]
