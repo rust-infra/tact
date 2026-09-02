@@ -23,7 +23,7 @@ use crate::{
     mcp::MCPToolRouter,
     permission::{PermissionManager, PermissionMode, settings::PermissionSettings},
     store::{SessionLock, open_sqlite_session_store},
-    subagent::SubagentResult,
+    subagent::{SubagentResult, SubagentStatus},
     tool::ToolContext,
     worktree::WorktreeRecord,
 };
@@ -226,6 +226,28 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         None => uuid::Uuid::new_v4().to_string(),
     };
     let resume = input.resume.is_some();
+
+    // A resume must target a prior run that has already reached a terminal
+    // state. Resuming a still-running child would race the session lock (two
+    // loops on one session); resuming an unknown id would silently mint a
+    // fresh child instead of a follow-up.
+    if resume {
+        match ctx.subagent_manager.get(&child_id).await? {
+            Some(record) if record.status == SubagentStatus::Running => {
+                bail!(
+                    "cannot resume subagent {child_id}: it is still running; \
+                     cancel it or wait for it to finish first"
+                );
+            }
+            Some(_) => {}
+            None => {
+                bail!(
+                    "cannot resume subagent {child_id}: no prior run record; \
+                     resume only works on a finished `async_launched` child"
+                );
+            }
+        }
+    }
 
     // The child's session identity belongs to the main workspace, not the
     // isolation lane — capture it before `work_dir` may be overridden below.
