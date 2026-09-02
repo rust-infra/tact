@@ -170,6 +170,14 @@ fn extract_summary(subagent: &Agent, max_turns_reached: bool) -> String {
     }
 }
 
+/// A subagent is only reported successful when its agent loop returned `Ok`
+/// **and** it was not cooperatively cancelled. A cancelled child can still
+/// exit its loop cleanly (`Ok`) after the flag is set, so the raw result alone
+/// would misreport a cancellation as success.
+fn terminal_success(success: bool, cancelled: bool) -> bool {
+    success && !cancelled
+}
+
 #[tool]
 /// # Errors
 ///
@@ -405,6 +413,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             // exits cooperatively at its next check point. Mark the run as
             // Cancelled instead of Completed so the record tells the truth.
             let cancelled = cancel_flag.load(Ordering::Relaxed);
+            let succeeded = terminal_success(success, cancelled);
             let summary = if cancelled {
                 format!("(cancelled by user)\n{summary}")
             } else {
@@ -427,7 +436,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
                 queue.push_back(SubagentResult {
                     child_id: child_id.clone(),
                     summary: summary.clone(),
-                    success: success && !cancelled,
+                    success: succeeded,
                 });
             }
             // Emit on the PARENT ui_tx (not the child's tagged forwarder,
@@ -436,7 +445,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
                 let _ = tx.send(AgentUpdate::SubagentFinished {
                     tool_id: tool_id.clone(),
                     child_id: child_id.clone(),
-                    success,
+                    success: succeeded,
                     summary: summary.clone(),
                 });
             }
@@ -601,6 +610,16 @@ mod tests {
             specs.iter().any(|s| s.name == "wait_subagent"),
             "wait_subagent must be in the main toolset"
         );
+    }
+
+    #[test]
+    fn cancelled_subagent_is_not_reported_as_successful() {
+        // A cancelled child may still exit its loop cleanly (success=true),
+        // but must never be reported successful to the parent / TUI.
+        assert!(!terminal_success(true, true));
+        assert!(terminal_success(true, false));
+        assert!(!terminal_success(false, false));
+        assert!(!terminal_success(false, true));
     }
 
     #[test]
