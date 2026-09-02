@@ -51,11 +51,26 @@ pub struct SharedWorktreeManager {
 
 impl WorktreeManager {
     /// Creates a manager backed by the given SQLite database file.
+    ///
+    /// Performs orphan repair on startup: a tracked worktree whose on-disk
+    /// path no longer exists (removed/pruned manually with `git worktree
+    /// remove` / `git worktree prune`) is dropped from the index so the DB
+    /// cannot drift from git.
     pub async fn new(db_path: &Path, repo_root: PathBuf) -> Result<Self> {
-        Ok(Self {
-            repo_root,
-            store: Box::new(SqliteWorktreeStore::new(db_path).await?),
-        })
+        let store = Box::new(SqliteWorktreeStore::new(db_path).await?);
+        for record in store.list_worktrees().await? {
+            if !Path::new(&record.path).is_dir() {
+                store.remove_worktree(&record.name).await?;
+                store
+                    .append_event(&format!(
+                        "{} worktree.stale-removed {} (path missing)",
+                        Utc::now(),
+                        record.name
+                    ))
+                    .await?;
+            }
+        }
+        Ok(Self { repo_root, store })
     }
 
     pub async fn create(
@@ -339,6 +354,49 @@ mod tests {
         assert!(
             events.contains("worktree.run lane echo audit-me"),
             "run must be audit-logged: {events}"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_repairs_stale_records() {
+        let context = test_context("worktree-orphan-repair");
+        init_git_repo(&context.work_dir).await;
+        context
+            .worktree_manager
+            .create("lane".into(), None, "HEAD".into(), "sess".into())
+            .await
+            .unwrap();
+        assert!(
+            !context
+                .worktree_manager
+                .list()
+                .await
+                .unwrap()
+                .contains("No worktrees")
+        );
+
+        // Simulate a manual `git worktree remove` outside Tact: the lane dir
+        // disappears but the DB record survives.
+        let record = context.worktree_manager.get("lane").await.unwrap();
+        std::fs::remove_dir_all(&record.path).unwrap();
+
+        // Rebuilding the manager repairs the stale record.
+        let db_path = std::env::temp_dir()
+            .join("tact-tool-test-worktree-orphan-repair")
+            .join(".tact")
+            .join("tact.db");
+        let rebuilt = WorktreeManager::new(&db_path, context.work_dir.clone())
+            .await
+            .unwrap();
+        let list = rebuilt.list().await.unwrap();
+        assert!(
+            list.contains("No worktrees"),
+            "stale record must be pruned: {list}"
+        );
+        let events = rebuilt.events(10).await.unwrap();
+        assert!(
+            events.contains("worktree.stale-removed lane"),
+            "stale removal must be audit-logged: {events}"
         );
     }
 
