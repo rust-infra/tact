@@ -136,8 +136,12 @@ Restricted set for isolated workers spawned by the `spawn_subagent` tool:
 | `write_file` | Create/overwrite files |
 | `edit_file` | Exact string replace (first or all) |
 | `sleep` | Timing / polling |
+| `spawn_subagent` | **Nested** spawn (depth-limited to `MAX_SUBAGENT_DEPTH = 3`) |
+| `check_subagent` | Query a nested child's run status |
+| `wait_subagent` | Block until a nested child finishes / times out |
+| `cancel_subagent` | Cancel a running nested child |
 
-Sub-agents do **not** get team, task management, MCP-only names, or other privileged tools. The module comment mentions four tools but the implementation includes five — trust the `route()` list above. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
+Sub-agents do **not** get team, task management, MCP-only names, worktree tools, or other privileged tools. The default nine-tool set is enforced by `subagent_toolset_has_nine_tools`; a declarative `tools:` list can narrow it. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
 
 ---
 
@@ -262,7 +266,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | Gap | Detail |
 |-----|--------|
 | Static tool registration | No runtime plugin API for native tools beyond MCP |
-| Router comment drift | `subagent_toolset` doc comment lists 4 tools; code registers 5 |
+| Subagent toolset is fixed-ish | `subagent_toolset()` registers 9 tools; declarative `tools:` can only narrow it, never widen |
 | No tool versioning | Renaming a tool breaks saved allowlists and prompts |
 | MCP vs native name collision | Unchecked at registration — last writer wins in spec list |
 | `ToolRouter` not dynamic | Cannot add/remove tools mid-session |

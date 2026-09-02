@@ -744,10 +744,7 @@ mod tests {
         // A record older than the window fails the guard: finished_at must be
         // present and the age comparison must use it, not default to "ok".
         assert!(
-            chrono::Utc::now()
-                - record
-                    .finished_at
-                    .expect("finished_at present")
+            chrono::Utc::now() - record.finished_at.expect("finished_at present")
                 < chrono::Duration::hours(RESUME_EXPIRY_HOURS),
             "fresh record must be within the resume window"
         );

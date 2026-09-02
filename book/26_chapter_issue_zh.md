@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-02 — 收尾异步子代理遗留项：嵌套 spawn、resume 过期、worktree 分支清理、索引对账、run 校验/审计
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/tool/subagent.rs`（`MAX_SUBAGENT_DEPTH`、`RESUME_EXPIRY_HOURS`、子深度 stamp）、`crates/tact/src/tool/registry.rs`（`subagent_toolset` + `allowed_tool_names`）、`crates/tact/src/tool/mod.rs`（`ToolContext.subagent_depth`）、`crates/tact/src/worktree/mod.rs`（`new` orphan 修复、`remove` 分支清理、`run` 校验 + 审计）、`crates/tact/src/tool/worktree.rs`；Ch 12、15 |
+
+**Symptom / motivation:** 异步子代理后续完成后仍有五个设计延期的遗留：(1) `spawn_subagent` 有意为 depth-0（无嵌套 spawn），子代理无法进一步分解工作；(2) `resume` 没有过期策略（2026-08-26 设计标 "TBD"），可能带着过期上下文 resume 数周前的 session；(3) `worktree_remove` 总是保留 backing 分支 `wt/<name>`，需手动 merge 或 `git branch -D`；(4) 手动 `git worktree remove`/`prune` 会永久留下陈旧 DB 记录（索引漂移）；(5) `worktree_run` 绕过 `validate_shell_command` 且不记审计日志。
+
+**Decision:** (1) `ToolContext` 增加 `subagent_depth`（0 = 主 agent）；`subagent_toolset()` 现在也注册 `spawn_subagent`/`check_subagent`/`wait_subagent`/`cancel_subagent`（共 9 个工具；Claude `Task` 映射到 `spawn_subagent`），`spawn_subagent` 拒绝超过 `MAX_SUBAGENT_DEPTH = 3` 的嵌套；子 agent 的 tool context 携带 `depth + 1`。(2) `resume` 拒绝 `finished_at` 距今超过 `RESUME_EXPIRY_HOURS = 24` 的目标（Claude 的 24h 过期）。(3) `WorktreeManager::remove` 在 `git worktree remove` 后运行 `git branch -d wt/<name>`——仅删除完全合并的分支；未合并分支保留并上报/审计结果。(4) `WorktreeManager::new` 修复 orphan：路径缺失的跟踪泳道从表删除并记为 `worktree.stale-removed`。(5) `WorktreeManager::run` 调用 `validate_shell_command`（与 `bash` 同一门槛），并向审计日志追加 `worktree.run <name> <command>`。
+
+**Behavior after:** 子代理可 spawn 深度受限（≤3）的嵌套子代理并用 check/wait/cancel 管理；resume 24h 过期；`worktree_remove` 只自动删除已合并分支；worktree 索引在启动时与 git 对账；`worktree_run` 拦截高风险命令且每次调用都被审计。
+
+---
+
 ## 1. 2026-09-02 — 异步子代理 P1 可靠性修复（唤醒竞态、取消状态、resume 校验、同步生命周期、headless 语义）
 
 | Field | Value |

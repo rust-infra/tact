@@ -15,7 +15,7 @@ A "lane" is Tact's term for one named worktree: its directory, its dedicated bra
 | `worktree_list` | `list` | One `name branch path` line per lane |
 | `worktree_status` | `status` | Runs `git status` inside the lane, returns stdout |
 | `worktree_run` | `run` | Runs one `sh -c` command inside the lane, returns stdout+stderr |
-| `worktree_remove` | `remove` | `git worktree remove <path>` (fails on a dirty tree), deletes the tracking row, appends an audit event; refuses a running subagent's lane |
+| `worktree_remove` | `remove` | `git worktree remove <path>` (fails on a dirty tree), deletes the tracking row, appends an audit event; refuses a running subagent's lane. After removal the backing branch `wt/<name>` is deleted with `git branch -d` **only when fully merged** — an unmerged branch is kept so no work is destroyed |
 | `worktree_events` | `events` | Last N lines of the audit log (default 20) |
 
 `base_ref` defaults to `HEAD` when omitted; `task_id` optionally links the lane to a record from the task manager ([Tasks and Tool Scheduling](./11_chapter_task.md)).
@@ -102,7 +102,7 @@ Every successful `create` appends a row to `worktree_events`:
 2026-07-06 21:14:03.512 UTC worktree.create fix-auth
 ```
 
-`worktree_events` returns the most recent `limit` entries in chronological order. Today `create` and `remove` are the **only** writers — `run`, `status`, and `list` do not log.
+`worktree_events` returns the most recent `limit` entries in chronological order. Today `create`, `remove`, and `run` are the writers — `status` and `list` do not log. `run` appends `worktree.run <name> <command>` so the audit log shows every executed command inside a lane.
 
 ---
 
@@ -125,11 +125,17 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 
 ## 6. Interaction with Permissions and Shell Safety
 
-`worktree_run` executes arbitrary shell strings but does **not** go through `validate_shell_command` (unlike `bash` and `background_run`), and its permission classification is whatever the [Permission Model](./10_chapter_permission.md) assigns to the `worktree_run` tool name — the embedded command string is not inspected for high-risk patterns. Treat lanes as having the same blast radius as `bash`.
+`worktree_run` executes arbitrary shell strings and goes through the same `validate_shell_command` gate as `bash` — high-risk substrings (`sudo`, `shutdown`, destructive `rm`, device redirects) are blocked. Its permission classification is whatever the [Permission Model](./10_chapter_permission.md) assigns to the `worktree_run` tool name; the embedded command string is additionally inspected for high-risk patterns. Treat lanes as having the same blast radius as `bash`.
 
 ---
 
-## 7. Code Map
+## 7. Startup Reconciliation
+
+`WorktreeManager::new` performs orphan repair on startup: any tracked lane whose on-disk path no longer exists (removed or pruned manually with `git worktree remove` / `git worktree prune`) is dropped from the `worktrees` table and recorded as `worktree.stale-removed <name> (path missing)` in the audit log. The index therefore cannot drift from git across sessions.
+
+---
+
+## 8. Code Map
 
 | File | Role |
 |------|------|
@@ -143,17 +149,13 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 
 ---
 
-## 8. Current Gaps
+## 9. Current Gaps
 
 | Gap | Detail |
 |-----|--------|
-| Branch cleanup after remove | `worktree_remove` deletes the directory and tracking row but leaves the backing `wt/<name>` branch so unmerged commits stay recoverable; the branch must be merged or `git branch -D`'d separately |
 | Status never changes | Every lane is `"active"` forever; no done/merged/abandoned transitions |
 | No merge-back story | Nothing helps integrate a lane's branch (diff, merge, PR) into the base branch |
-| Index can drift from git | Manual `git worktree remove/prune` leaves stale records; the tables are never reconciled |
-| `worktree_run` bypasses shell validation | High-risk command substrings blocked in `bash` are allowed here |
 | Blocking execution | Long-running `run`/`status` blocks an async thread (no manager lock held anymore) |
-| Sparse audit log | Only `create` and `remove` write events; `run` invocations are not recorded |
 | `task_id` is unenforced | The optional link is never validated against the task manager |
 
 ---

@@ -16,7 +16,7 @@ Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_te
 | Entry | TUI / headless `agent_loop` | Parent calls `spawn_subagent` during tool execution |
 | Conversation history | Full session context | Single user prompt only (no parent messages) |
 | System prompt | Dynamic Tera template (skills, memory, CLAUDE.md) | Fixed static string |
-| Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (5 tools) |
+| Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (9 tools) |
 | MCP tools | Loaded from config | **None** (`MCPToolRouter::new()`) |
 | Hooks | Parent's registered hooks | Empty hook list |
 | Session SQLite | Yes (when wired in `tui.rs`) | **Yes** — new child session; `sessions.ref_id` = parent id (or `''` if parent has none) |
@@ -50,11 +50,11 @@ pub struct SubagentInput {
 | `description` | Schema-only hint for the model; **not read by the handler** |
 | `run_in_background` | `true` returns `async_launched { id }` immediately; the child runs detached and re-injects its summary later. Requires an interactive UI channel — in headless mode (no driver to submit a wake-up turn) it degrades to synchronous and returns the summary directly. |
 | `max_turns` | Caps the nested `agent_loop` turn count (runaway guard) |
-| `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn. The handler validates the target: it must have a prior `subagent_runs` record in a terminal state — resuming an unknown id or a still-`Running` child is rejected. |
+| `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn. The handler validates the target: it must have a prior `subagent_runs` record in a terminal state — resuming an unknown id, a still-`Running` child, or a session that finished more than 24h ago is rejected. |
 | `worktree` | `true` runs the child inside an isolated git worktree lane (`subagent-<child_id>`, branch `wt/subagent-<child_id>`); requires a git repo at `work_dir`. On `resume` the existing lane is reused. The lane is created synchronously (failures surface immediately) and kept after completion for inspection via `worktree_status` / `worktree_run`; clean up with `worktree_remove { name }` (refuses a running subagent's lane and a dirty tree). |
 | `agent` | Runs a **declarative agent definition** by name — `plugin:<name>` for installed plugin `agents/*.md`, or a unique local name from `.tact/agents/*.md`. The definition body becomes the system prompt; its `tools` / `model` / `permissionMode` frontmatter apply (see §2.1). |
 
-Only the main agent's `toolset()` registers the subagent tools (`SpawnSubagentTool`, `CheckSubagentTool`, `WaitSubagentTool`, `CancelSubagentTool`). Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
+Only the main agent's `toolset()` registers the worktree/team/task/skill/memory/MCP/plugin tools. The subagent toolset does register the subagent tools themselves, so **subagents can spawn nested subagents** — depth-limited to `MAX_SUBAGENT_DEPTH = 3` (main agent = depth 0; a subagent spawned by a subagent beyond the cap is refused) so a child cannot recursively fan out without bound.
 
 ---
 
@@ -79,7 +79,7 @@ permissionMode: plan
 You are a principal reviewer. …
 ```
 
-- `tools` restricts the subagent toolset (Claude names map to Tact tools: Read/Glob/Grep → `read_file`, Bash → `bash`, Edit → `edit_file`, Write → `write_file`, Sleep → `sleep`; unknown names are ignored; an empty set keeps the default five tools).
+- `tools` restricts the subagent toolset (Claude names map to Tact tools: Read/Glob/Grep → `read_file`, Bash → `bash`, Edit → `edit_file`, Write → `write_file`, Sleep → `sleep`, Task → `spawn_subagent`, Check/Wait/Cancel → `check_subagent`/`wait_subagent`/`cancel_subagent`; unknown names are ignored; an empty set keeps the default nine tools).
 - `model` overrides the child model (layered on top of the `[agent.subagent]` config).
 - `permissionMode` overrides the inherited permission mode unless the parent is in `Auto` (Auto stays sticky).
 
@@ -105,7 +105,7 @@ sequenceDiagram
     Task->>Sub: agent_loop(Some(prompt))
 
     loop until stop ≠ ToolUse
-        Sub->>LLM: stream_message + 5 tool specs
+        Sub->>LLM: stream_message + 9 tool specs
         LLM-->>Sub: assistant blocks
         alt ToolUse
             Sub->>Tools: execute_tool_call (hooks empty, inherited permissions)
@@ -129,7 +129,7 @@ sequenceDiagram
 
 ## 4. Restricted Tool Set
 
-`subagent_toolset()` registers exactly five tools:
+`subagent_toolset()` registers nine tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -138,14 +138,18 @@ sequenceDiagram
 | `write_file` | Create or overwrite files |
 | `edit_file` | Exact string replace (first or all) |
 | `sleep` | Timing / polling |
+| `spawn_subagent` | **Nested** spawn (depth-limited to `MAX_SUBAGENT_DEPTH = 3`) |
+| `check_subagent` | Query a nested child's run status |
+| `wait_subagent` | Block until a nested child finishes / times out |
+| `cancel_subagent` | Cancel a running nested child |
 
 Notable **omissions** compared to the main agent:
 
-- No `spawn_subagent`, `load_skill`, `save_memory`, `compact`, web tools, LSP, apply_patch, batch tools
+- No `load_skill`, `save_memory`, `compact`, web tools, LSP, apply_patch, batch tools
 - No team, worktree, or persistent-task management tools
 - No MCP-prefixed tools
 
-The module comment above `subagent_toolset()` still says "four tools" — the `route()` list above is authoritative (also enforced by unit test `subagent_toolset_has_five_tools`).
+The default nine-tool set is enforced by unit test `subagent_toolset_has_nine_tools`; a declarative `tools:` list can narrow it (unknown names ignored, empty list keeps the default set).
 
 ---
 
@@ -221,7 +225,7 @@ That string becomes the `spawn_subagent` tool's JSON/text result and is appended
 | | `spawn_subagent` (subagent) | `spawn_teammate` (team) |
 |--|-------------------|-------------------------|
 | Runs LLM loop | Yes, nested `agent_loop` | No — roster entry only |
-| Isolation | Fresh context, 5 tools | N/A |
+| Isolation | Fresh context, 9 tools | N/A |
 | Persistence | Own SQLite session (`ref_id` → parent) | `.tact/team/` JSON |
 | Use case | Delegate focused coding work | Multi-agent coordination protocol |
 

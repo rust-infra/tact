@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-02 — Close async-subagent leftovers: nested spawn, resume expiry, worktree branch cleanup, index reconciliation, run validation/audit
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/tool/subagent.rs` (`MAX_SUBAGENT_DEPTH`, `RESUME_EXPIRY_HOURS`, child-depth stamp), `crates/tact/src/tool/registry.rs` (`subagent_toolset` + `allowed_tool_names`), `crates/tact/src/tool/mod.rs` (`ToolContext.subagent_depth`), `crates/tact/src/worktree/mod.rs` (`new` orphan repair, `remove` branch cleanup, `run` validation + audit), `crates/tact/src/tool/worktree.rs`; Ch 12, 15 |
+
+**Symptom / motivation:** Five design-deferred leftovers remained after the async-subagent follow-ups: (1) `spawn_subagent` was intentionally depth-0 (no nested spawns), so a subagent could never decompose work further; (2) `resume` had no expiry policy ("TBD" in the 2026-08-26 design), so a weeks-old session could be resumed with stale context; (3) `worktree_remove` always left the backing `wt/<name>` branch, requiring a manual merge or `git branch -D`; (4) manual `git worktree remove`/`prune` left stale DB records forever (index drift); (5) `worktree_run` bypassed `validate_shell_command` and was not audit-logged.
+
+**Decision:** (1) `ToolContext` gains `subagent_depth` (0 = main agent); `subagent_toolset()` now also registers `spawn_subagent`/`check_subagent`/`wait_subagent`/`cancel_subagent` (9 tools; Claude `Task` maps to `spawn_subagent`), and `spawn_subagent` refuses to spawn beyond `MAX_SUBAGENT_DEPTH = 3`; the child's tool context carries `depth + 1`. (2) `resume` rejects a target whose `finished_at` is older than `RESUME_EXPIRY_HOURS = 24` (Claude's 24h expiry). (3) `WorktreeManager::remove` now runs `git branch -d wt/<name>` after `git worktree remove` — only a fully-merged branch is deleted; unmerged branches are kept and the outcome is reported/audited. (4) `WorktreeManager::new` repairs orphans: any tracked lane whose path is missing is dropped from the table and logged `worktree.stale-removed`. (5) `WorktreeManager::run` calls `validate_shell_command` (same gate as `bash`) and appends `worktree.run <name> <command>` to the audit log.
+
+**Behavior after:** subagents can spawn depth-limited nested subagents (≤ 3) and manage them with check/wait/cancel; resume expires after 24h; `worktree_remove` auto-deletes only merged branches; the worktree index reconciles with git on startup; `worktree_run` blocks high-risk commands and every invocation is audit-logged.
+
+---
+
 ## 1. 2026-09-02 — Async-subagent P1 reliability fixes (wake-up race, cancellation status, resume validation, sync lifecycle, headless semantics)
 
 | Field | Value |

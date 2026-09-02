@@ -17,7 +17,7 @@
 | 入口 | TUI / headless `agent_loop` | 父级在工具执行期间调用 `spawn_subagent` |
 | 对话历史 | 完整会话 context | 仅单条 user prompt（无父级消息） |
 | System prompt | 动态 Tera 模板（skills、memory、CLAUDE.md） | 固定静态字符串 |
-| Native 工具 | `toolset()`（约 40 个） | `subagent_toolset()`（5 个） |
+| Native 工具 | `toolset()`（约 40 个） | `subagent_toolset()`（9 个） |
 | MCP 工具 | 自 config 加载 | **无**（`MCPToolRouter::new()`） |
 | Hook | 父级已注册 hook | 空 hook 列表 |
 | Session SQLite | 有（在 `tui.rs` 接线时） | **有** — 新建子 session；`sessions.ref_id` = 父 id（父无 session 时为 `''`） |
@@ -51,11 +51,11 @@ pub struct SubagentInput {
 | `description` | 仅 schema 提示给模型；**handler 不读取** |
 | `run_in_background` | `true` 立即返回 `async_launched { id }`；子 agent 脱钩运行，稍后回注 summary。需要交互式 UI 通道 —— 在 headless 模式（没有 driver 提交唤醒轮）下退化为同步并直接返回 summary。 |
 | `max_turns` | 上限嵌套 `agent_loop` 轮数（防止失控） |
-| `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮。handler 校验目标：必须已有一条处于终态的 `subagent_runs` 记录 —— 复用未知 id 或仍 `Running` 的子 agent 会被拒绝。 |
+| `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮。handler 校验目标：必须已有一条处于终态的 `subagent_runs` 记录 —— 复用未知 id、仍 `Running` 的子 agent，或结束已超过 24h 的 session，都会被拒绝。 |
 | `worktree` | `true` 让子 agent 运行在隔离的 git worktree 泳道（`subagent-<child_id>`，分支 `wt/subagent-<child_id>`）；要求 `work_dir` 是 git 仓库。`resume` 时复用已有泳道。泳道在 handler 内同步创建（失败立即暴露），完成后保留供 `worktree_status` / `worktree_run` 检查；用 `worktree_remove { name }` 清理（拒绝运行中子 agent 的泳道与脏工作树）。 |
 | `agent` | 按名运行**声明式 agent 定义**——已安装插件 `agents/*.md` 用 `plugin:<name>`，`.tact/agents/*.md` 本地定义可用唯一原名。定义正文成为 system prompt；其 `tools` / `model` / `permissionMode` frontmatter 生效（见 §2.1）。 |
 
-仅主 agent 的 `toolset()` 注册子 agent 工具（`SpawnSubagentTool`、`CheckSubagentTool`、`WaitSubagentTool`、`CancelSubagentTool`）。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `spawn_subagent`。
+仅主 agent 的 `toolset()` 注册 worktree/team/task/skill/memory/MCP/plugin 工具。子代理工具集本身**注册**子代理工具，因此子代理可以 spawn **嵌套子代理**——深度限制为 `MAX_SUBAGENT_DEPTH = 3`（主 agent 为深度 0；超过上限的嵌套 spawn 被拒绝），防止子代理无界递归分解。
 
 ---
 
@@ -80,7 +80,7 @@ permissionMode: plan
 You are a principal reviewer. …
 ```
 
-- `tools` 限制子代理工具集（Claude 名映射到 Tact 工具：Read/Glob/Grep → `read_file`、Bash → `bash`、Edit → `edit_file`、Write → `write_file`、Sleep → `sleep`；未知名忽略；空集保持默认五件套）。
+- `tools` 限制子代理工具集（Claude 名映射到 Tact 工具：Read/Glob/Grep → `read_file`、Bash → `bash`、Edit → `edit_file`、Write → `write_file`、Sleep → `sleep`、Task → `spawn_subagent`、Check/Wait/Cancel → `check_subagent`/`wait_subagent`/`cancel_subagent`；未知名忽略；空集保持默认九件套）。
 - `model` 覆盖子代理模型（叠加在 `[agent.subagent]` 配置之上）。
 - `permissionMode` 覆盖继承的权限模式，除非父级为 `Auto`（Auto 保持粘性）。
 
@@ -130,7 +130,7 @@ sequenceDiagram
 
 ## 4. 受限工具集
 
-`subagent_toolset()` 恰好注册五个工具：
+`subagent_toolset()` 恰好注册九个工具：
 
 | Tool | 用途 |
 |------|------|
@@ -139,14 +139,18 @@ sequenceDiagram
 | `write_file` | 创建或覆盖文件 |
 | `edit_file` | 精确字符串替换（first 或 all） |
 | `sleep` | 计时 / 轮询 |
+| `spawn_subagent` | **嵌套** spawn（深度限制 `MAX_SUBAGENT_DEPTH = 3`） |
+| `check_subagent` | 查询嵌套子 agent 的运行状态 |
+| `wait_subagent` | 阻塞直到嵌套子 agent 结束 / 超时 |
+| `cancel_subagent` | 取消运行中的嵌套子 agent |
 
 与主 agent 相比 notable **省略**：
 
-- 无 `spawn_subagent`、`load_skill`、`save_memory`、`compact`、web 工具、LSP、`apply_patch`、batch 工具
+- 无 `load_skill`、`save_memory`、`compact`、web 工具、LSP、`apply_patch`、batch 工具
 - 无 team、worktree 或持久任务管理工具
 - 无 MCP 前缀工具
 
-`subagent_toolset()` 上方模块注释仍写「四个工具」——上文 `route()` 列表为准（单元测试 `subagent_toolset_has_five_tools` 亦强制）。
+默认九件套由单元测试 `subagent_toolset_has_nine_tools` 强制；声明式 `tools:` 列表可收窄（未知名忽略，空集保持默认集）。
 
 ---
 
@@ -222,7 +226,7 @@ let summary = subagent
 | | `spawn_subagent`（子 agent） | `spawn_teammate`（team） |
 |--|-------------------|-------------------------|
 | 运行 LLM 循环 | 是，嵌套 `agent_loop` | 否 — 仅 roster 条目 |
-| 隔离 | 全新 context，5 个工具 | N/A |
+| 隔离 | 全新 context，9 个工具 | N/A |
 | 持久化 | 独立 SQLite session（`ref_id`→父） | `.tact/team/` JSON |
 | 用例 | 委托聚焦的编码工作 | 多 agent 协调协议 |
 
@@ -253,7 +257,7 @@ let summary = subagent
 
 | 缺口 | 详情 |
 |------|------|
-| 无嵌套 `spawn_subagent` | 工具集设计如此，限制分解深度 |
+| 嵌套深度上限 | `spawn_subagent` 在 `MAX_SUBAGENT_DEPTH = 3` 处拒绝嵌套（防止无界递归） |
 | 子 agent 无 MCP | worker 内不可用外部工具 |
 | 无父级 hook | PreToolUse / PostToolUse 策略不包裹子 agent 工具 |
 | 仅静态 prompt | 无 skills/memory/CLAUDE.md，除非父级复制进 `prompt` |
