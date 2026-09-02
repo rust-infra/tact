@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-02 — Async-subagent P1 reliability fixes (wake-up race, cancellation status, resume validation, sync lifecycle, headless semantics)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-ui/src/driver.rs` (`run_command_loop_with_account` + `spawn_wakeup_task`), `crates/tact/src/tool/subagent.rs` (`spawn_subagent`, `terminal_success`); Ch 12 |
+
+**Symptom / motivation:** Five P1 reliability gaps in the async-subagent path. (1) **Wake-up race** — the driver dropped `SubagentFinishedNotification` whenever a turn was in flight, so a result that landed in the gap between the final queue drain and turn exit was never re-injected (the parent stayed silent until the next manual turn). (2) **Cancellation status** — the async completion task emitted `AgentUpdate::SubagentFinished` with the raw `agent_loop` result, so a cancelled child that exited cleanly was reported `success: true`. (3) **Resume validation** — `resume` blindly reused any id: resuming a still-`Running` child raced the session, and resuming an unknown id silently minted a fresh child instead of a follow-up. (4) **Synchronous child lifecycle** — sync children registered a cancel handle but never wrote a `subagent_runs` row, so `check_subagent`/`cancel_subagent` were blind to them and a failed sync spawn left a stale `Running` row. (5) **Headless semantics** — `run_in_background` in headless spawned a detached child that was then cancelled at exit, silently discarding its work.
+
+**Decision:** (1) the driver loop now `select!`s on the in-flight `JoinHandle` and `user_cmd_rx`, retaining a `pending_subagent_wakeup` flag and submitting the wake-up turn as soon as the active turn completes (new `spawn_wakeup_task` helper; `SubmitTask` clears the flag since the new turn drains the queue itself). (2) a `terminal_success(success, cancelled) = success && !cancelled` helper is used for both the queued `SubagentResult` and the `SubagentFinished` event. (3) resume validates via `SubagentManager::get`: a still-`Running` target or an unknown id bails before any spawn work. (4) `manager.start` moved above the sync/async split and the sync path now records `Completed`/`Failed`/`Cancelled` on exit (also unregisters the handle and releases the lock before propagating an error). (5) `run_async` requires `ctx.ui_tx.is_some()`; without an interactive channel (headless) `run_in_background` degrades to synchronous with a `warn!`, so the summary still reaches the parent.
+
+**Behavior after:** a subagent result is never lost to the wake-up gap; cancelled children read as unsuccessful in both the queue and the card; resume rejects running/unknown targets; sync and async children are uniformly visible to `check_subagent`/`cancel_subagent`/`wait_subagent`; headless `run_in_background` completes synchronously instead of being cancelled at exit.
+
+---
+
 ## 1. 2026-09-02 — Async-subagent follow-ups: `wait_subagent` + `worktree_remove` + concurrent popups
 
 | Field | Value |

@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-02 — 异步子代理 P1 可靠性修复（唤醒竞态、取消状态、resume 校验、同步生命周期、headless 语义）
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-ui/src/driver.rs`（`run_command_loop_with_account` + `spawn_wakeup_task`）、`crates/tact/src/tool/subagent.rs`（`spawn_subagent`、`terminal_success`）；Ch 12 |
+
+**Symptom / motivation:** 异步子代理路径存在五个 P1 可靠性缺口。(1) **唤醒竞态** —— driver 在任一轮进行中时直接丢弃 `SubagentFinishedNotification`，导致落在「最后一次队列 drain 与轮次退出之间」的结果永远不会被回注（父级要等到下一次手动 turn 才恢复）。(2) **取消状态** —— 异步完成任务用原始 `agent_loop` 结果发 `AgentUpdate::SubagentFinished`，因此一个干净退出的被取消子代理被上报为 `success: true`。(3) **resume 校验** —— `resume` 盲目复用任意 id：复用仍 `Running` 的子代理会与 session 竞争，复用未知 id 会静默新建子代理而非追加。(4) **同步子代理生命周期** —— 同步子代理注册了 cancel handle 但从不写 `subagent_runs` 行，导致 `check_subagent`/`cancel_subagent` 看不到它们，且失败的同步 spawn 会遗留陈旧的 `Running` 行。(5) **headless 语义** —— headless 下的 `run_in_background` 会 spawn 一个脱钩子代理，随后在退出时被取消，静默丢弃其工作。
+
+**Decision:** (1) driver 循环改为对在途 `JoinHandle` 与 `user_cmd_rx` 做 `select!`，保留 `pending_subagent_wakeup` 标志，在活动轮次一完成就提交唤醒轮（新增 `spawn_wakeup_task` 辅助函数；`SubmitTask` 清除标志，因为新一轮会自行 drain 队列）。(2) 用 `terminal_success(success, cancelled) = success && !cancelled` 同时生成入队的 `SubagentResult` 与 `SubagentFinished` 事件。(3) resume 通过 `SubagentManager::get` 校验：目标仍 `Running` 或 id 未知时在任何 spawn 工作前即 bail。(4) 将 `manager.start` 移到同步/异步分支之上，同步路径在退出时记录 `Completed`/`Failed`/`Cancelled`（并在传播错误前注销 handle、释放锁）。(5) `run_async` 要求 `ctx.ui_tx.is_some()`；没有交互通道（headless）时 `run_in_background` 退化为同步并 `warn!`，summary 仍能到达父级。
+
+**Behavior after:** 子代理结果不再因唤醒间隙而丢失；被取消的子代理在队列与卡片中都按不成功呈现；resume 拒绝运行中/未知目标；同步与异步子代理统一对 `check_subagent`/`cancel_subagent`/`wait_subagent` 可见；headless 的 `run_in_background` 同步完成，而非在退出时被取消。
+
+---
+
 ## 1. 2026-09-02 — 异步子代理后续：`wait_subagent` + `worktree_remove` + 并发弹窗
 
 | Field | Value |

@@ -48,9 +48,9 @@ pub struct SubagentInput {
 |-------|------|
 | `prompt` | Becomes the subagent's sole user message (the task) |
 | `description` | Schema-only hint for the model; **not read by the handler** |
-| `run_in_background` | `true` returns `async_launched { id }` immediately; the child runs detached and re-injects its summary later |
+| `run_in_background` | `true` returns `async_launched { id }` immediately; the child runs detached and re-injects its summary later. Requires an interactive UI channel — in headless mode (no driver to submit a wake-up turn) it degrades to synchronous and returns the summary directly. |
 | `max_turns` | Caps the nested `agent_loop` turn count (runaway guard) |
-| `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn |
+| `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn. The handler validates the target: it must have a prior `subagent_runs` record in a terminal state — resuming an unknown id or a still-`Running` child is rejected. |
 | `worktree` | `true` runs the child inside an isolated git worktree lane (`subagent-<child_id>`, branch `wt/subagent-<child_id>`); requires a git repo at `work_dir`. On `resume` the existing lane is reused. The lane is created synchronously (failures surface immediately) and kept after completion for inspection via `worktree_status` / `worktree_run`; clean up with `worktree_remove { name }` (refuses a running subagent's lane and a dirty tree). |
 | `agent` | Runs a **declarative agent definition** by name — `plugin:<name>` for installed plugin `agents/*.md`, or a unique local name from `.tact/agents/*.md`. The definition body becomes the system prompt; its `tools` / `model` / `permissionMode` frontmatter apply (see §2.1). |
 
@@ -121,7 +121,7 @@ sequenceDiagram
 
 **Blocking semantics (sync):** `spawn_subagent` is `async` and awaits the full subagent loop. From the parent's perspective it is one tool call that may run many LLM turns internally. The parent's `agent_loop` is paused until the summary string returns.
 
-**Async semantics (`run_in_background: true`):** the handler returns `async_launched { id }` immediately; the nested loop runs in a detached `tokio::spawn` task. On completion the task (a) transitions the `subagent_runs` row to `Completed`/`Failed`, (b) enqueues a `SubagentResult` into the parent's `pending_subagent_results`, and (c) emits `AgentUpdate::SubagentFinished` on the **parent** `ui_tx`. The parent's next `agent_loop` iteration drains the queue and injects a synthetic `<subagent-finished id=…>` user message via `push_message` (persisted). If the parent is idle, the TUI relays a `UserCommand::SubagentFinishedNotification` to the driver, which submits a lightweight wake-up turn.
+**Async semantics (`run_in_background: true`):** the handler returns `async_launched { id }` immediately; the nested loop runs in a detached `tokio::spawn` task. On completion the task (a) transitions the `subagent_runs` row to `Completed`/`Failed`/`Cancelled`, (b) enqueues a `SubagentResult` into the parent's `pending_subagent_results`, and (c) emits `AgentUpdate::SubagentFinished` on the **parent** `ui_tx`. The parent's next `agent_loop` iteration drains the queue and injects a synthetic `<subagent-finished id=…>` user message via `push_message` (persisted). If the parent is idle, the TUI relays a `UserCommand::SubagentFinishedNotification` to the driver, which submits a lightweight wake-up turn; if a turn is still in flight, the driver **retains** the wake-up and submits it as soon as that turn's `JoinHandle` completes, so a notification landing in the gap between the final queue drain and turn exit is not lost. A cancelled child is reported with `success = false` even when its loop exited cleanly after the flag was set.
 
 **Message seeding:** the handler calls `agent_loop(Some(user_prompt))` so the seed user turn is appended via `push_message` and persisted under the child session. Before the loop, `spawn_subagent` allocates a child session id (or reuses `resume`), sets `ref_id` to the parent session id (or `''`), and calls `with_session`. UI traffic uses a tagged `ui_tx` (`with_ui_channel` also syncs `tool_context.ui_tx` so `ToolProgress` is tagged).
 
@@ -186,7 +186,7 @@ Worktree lane creation runs synchronously inside the handler (before the sync lo
 
 ## 8. Persistence and Lifecycle
 
-Async subagents persist their run in the `subagent_runs` table (`child_id`, `status`, `summary`, `started_at`, `finished_at`), keyed by child session id — the subagent analog of `background_tasks`. `SubagentManager::new` repairs orphans on startup (any `running` row → `failed` with `"Process interrupted (agent restarted)"`). The `check_subagent` tool reads this state, and `wait_subagent { child_id, timeout_ms? }` blocks (polling `subagent_runs`) until the child reaches a terminal status or times out — the Codex `wait_agent` analog that lets the parent spawn N subagents then wait on each instead of burning turns polling `check_subagent`. The in-memory `pending_subagent_results` queue is the live fast path; the persisted row is the crash-recovery source of truth. Finished results are **not** re-delivered automatically after a restart — the injected `<subagent-finished>` message is already in the transcript, and the model decides to `resume` or re-spawn.
+Both sync and async subagents persist their run in the `subagent_runs` table (`child_id`, `status`, `summary`, `started_at`, `finished_at`), keyed by child session id — the subagent analog of `background_tasks`. `spawn_subagent` records `Running` on entry and `Completed`/`Failed`/`Cancelled` on exit for **both** paths, so `check_subagent` / `cancel_subagent` / `wait_subagent` see every child uniformly (a sync child is also cancellable via `/subagent_cancel` or parent exit, and a sync failure no longer leaves a stale `Running` row). `SubagentManager::new` repairs orphans on startup (any `running` row → `failed` with `"Process interrupted (agent restarted)"`). The `check_subagent` tool reads this state, and `wait_subagent { child_id, timeout_ms? }` blocks (polling `subagent_runs`) until the child reaches a terminal status or times out — the Codex `wait_agent` analog that lets the parent spawn N subagents then wait on each instead of burning turns polling `check_subagent`. The in-memory `pending_subagent_results` queue is the live fast path; the persisted row is the crash-recovery source of truth. Finished results are **not** re-delivered automatically after a restart — the injected `<subagent-finished>` message is already in the transcript, and the model decides to `resume` or re-spawn.
 
 ---
 
@@ -242,7 +242,7 @@ See [Team Coordination](./14_chapter_team.md).
 | `crates/tact/src/subagent.rs` | `SubagentManager` / `SubagentRun` / `SubagentStatus` (orphan repair) |
 | `crates/tact/src/store/subagent_store/` | `subagent_runs` SQLite table + trait |
 | `crates/protocol/src/agent.rs` | `AgentUpdate::SubagentFinished`, `UserCommand::SubagentFinishedNotification` |
-| `crates/tact-ui/src/driver.rs` | idle wake-up turn on `SubagentFinishedNotification` |
+| `crates/tact-ui/src/driver.rs` | wake-up turn on `SubagentFinishedNotification` (retained while a turn is in flight) |
 | `crates/tact/src/agent/tool_schedule.rs` | `spawn_subagent` as scheduling barrier |
 | `ARCHITECTURE.md` | One-line summary in tools table |
 
@@ -257,7 +257,7 @@ See [Team Coordination](./14_chapter_team.md).
 | No parent hooks | PreToolUse / PostToolUse policies do not wrap subagent tools |
 | Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
 | `description` ignored | JSON field has no runtime effect |
-| Separate cancel flag | Parent `/cancel` aborts the main task only. A **running background subagent** is cancelled via `cancel_subagent` (tool), `/subagent_cancel <child-id>` (slash), or the `[Cancel]` button on the live subagent tool card — all flip the child's cooperative flag via the shared `SubagentManager` cancel handles. When the parent exits (TUI quit / driver loop end / headless run end), `cancel_all()` flips every live handle so background subagents stop instead of becoming orphans |
+| Separate cancel flag | Parent `/cancel` aborts the main task only. A **running background subagent** is cancelled via `cancel_subagent` (tool), `/subagent_cancel <child-id>` (slash), or the `[Cancel]` button on the live subagent tool card — all flip the child's cooperative flag via the shared `SubagentManager` cancel handles. When the parent exits (TUI quit / driver loop end), `cancel_all()` flips every live handle so background subagents stop instead of becoming orphans. (Headless never has live background children at exit: `run_in_background` degrades to synchronous there.) |
 | No worktree removal | Isolated lanes can now be cleaned up with `worktree_remove { name }` (runs `git worktree remove`, deletes the tracking record, refuses a running subagent's lane and a dirty tree). The backing branch `wt/<name>` is left in place so unmerged commits stay recoverable |
 | Worktree base = repo HEAD | A subagent spawned *from* another worktree still branches from the main repo HEAD, not the parent lane |
 | Child sessions hidden from list | `--list-sessions` / resume only show `ref_id = ''`; delete parent cascades children |

@@ -49,9 +49,9 @@ pub struct SubagentInput {
 |------|------|
 | `prompt` | 成为子 agent 的唯一 user 消息（任务） |
 | `description` | 仅 schema 提示给模型；**handler 不读取** |
-| `run_in_background` | `true` 立即返回 `async_launched { id }`；子 agent 脱钩运行，稍后回注 summary |
+| `run_in_background` | `true` 立即返回 `async_launched { id }`；子 agent 脱钩运行，稍后回注 summary。需要交互式 UI 通道 —— 在 headless 模式（没有 driver 提交唤醒轮）下退化为同步并直接返回 summary。 |
 | `max_turns` | 上限嵌套 `agent_loop` 轮数（防止失控） |
-| `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮 |
+| `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮。handler 校验目标：必须已有一条处于终态的 `subagent_runs` 记录 —— 复用未知 id 或仍 `Running` 的子 agent 会被拒绝。 |
 | `worktree` | `true` 让子 agent 运行在隔离的 git worktree 泳道（`subagent-<child_id>`，分支 `wt/subagent-<child_id>`）；要求 `work_dir` 是 git 仓库。`resume` 时复用已有泳道。泳道在 handler 内同步创建（失败立即暴露），完成后保留供 `worktree_status` / `worktree_run` 检查；用 `worktree_remove { name }` 清理（拒绝运行中子 agent 的泳道与脏工作树）。 |
 | `agent` | 按名运行**声明式 agent 定义**——已安装插件 `agents/*.md` 用 `plugin:<name>`，`.tact/agents/*.md` 本地定义可用唯一原名。定义正文成为 system prompt；其 `tools` / `model` / `permissionMode` frontmatter 生效（见 §2.1）。 |
 
@@ -122,7 +122,7 @@ sequenceDiagram
 
 **阻塞语义（同步）：** `spawn_subagent` 为 `async` 并 await 完整子 agent 循环。从父级视角它是一个 tool call，内部可能运行多轮 LLM。父级 `agent_loop` 在 summary 字符串返回前暂停。
 
-**异步语义（`run_in_background: true`）：** handler 立即返回 `async_launched { id }`；嵌套循环运行在脱钩的 `tokio::spawn` 任务中。完成后该任务 (a) 将 `subagent_runs` 行转为 `Completed`/`Failed`，(b) 将 `SubagentResult` 入队父级 `pending_subagent_results`，(c) 在**父级** `ui_tx` 上发 `AgentUpdate::SubagentFinished`。父级下一轮 `agent_loop` drain 队列，经 `push_message`（持久化）注入合成 `<subagent-finished id=…>` user 消息。若父级空闲，TUI 将 `UserCommand::SubagentFinishedNotification` 转发给 driver，driver 提交一个轻量唤醒轮。
+**异步语义（`run_in_background: true`）：** handler 立即返回 `async_launched { id }`；嵌套循环运行在脱钩的 `tokio::spawn` 任务中。完成后该任务 (a) 将 `subagent_runs` 行转为 `Completed`/`Failed`/`Cancelled`，(b) 将 `SubagentResult` 入队父级 `pending_subagent_results`，(c) 在**父级** `ui_tx` 上发 `AgentUpdate::SubagentFinished`。父级下一轮 `agent_loop` drain 队列，经 `push_message`（持久化）注入合成 `<subagent-finished id=…>` user 消息。若父级空闲，TUI 将 `UserCommand::SubagentFinishedNotification` 转发给 driver，driver 提交一个轻量唤醒轮；若一轮仍在进行，driver 会**保留**该唤醒，并在那一轮的 `JoinHandle` 完成后立即提交，从而避免通知落在「最后一次队列 drain 与轮次退出之间」而被丢弃。被取消的子代理即便在标志置位后干净退出，也按 `success = false` 上报。
 
 **消息播种：** handler 调用 `agent_loop(Some(user_prompt))`，经 `push_message` 写入并持久化到子 session。循环前 `spawn_subagent` 分配子 session id（或复用 `resume`），将 `ref_id` 设为父 session id（或 `''`），并调用 `with_session`。UI 使用打标 `ui_tx`（`with_ui_channel` 同步 `tool_context.ui_tx`，使 `ToolProgress` 也被打标）。
 
@@ -187,7 +187,7 @@ let system_prompt = format!(
 
 ## 8. 持久化与生命周期
 
-异步子 agent 将其运行持久化到 `subagent_runs` 表（`child_id`、`status`、`summary`、`started_at`、`finished_at`），以子 session id 为主键 —— 是 `background_tasks` 的子 agent 对应物。`SubagentManager::new` 在启动时修复 orphan（任何 `running` 行 → `failed`，带 `"Process interrupted (agent restarted)"`）。`check_subagent` 工具读取此状态，`wait_subagent { child_id, timeout_ms? }` 则阻塞（轮询 `subagent_runs`）直到子 agent 到达终态或超时 —— 即 Codex `wait_agent` 的对应物，让父级可先 spawn N 个子 agent 再逐个 wait，而不必跨多轮轮询 `check_subagent`。内存 `pending_subagent_results` 队列是实时快路径；持久化行是崩溃恢复的 source of truth。重启后 finished 结果**不会**自动重投 —— 注入的 `<subagent-finished>` 消息已在 transcript 中，模型自行决定 `resume` 或重新 spawn。
+同步与异步子 agent 均将其运行持久化到 `subagent_runs` 表（`child_id`、`status`、`summary`、`started_at`、`finished_at`），以子 session id 为主键 —— 是 `background_tasks` 的子 agent 对应物。`spawn_subagent` 在入口记录 `Running`，并在**两条路径**（同步/异步）退出时记录 `Completed`/`Failed`/`Cancelled`，因此 `check_subagent` / `cancel_subagent` / `wait_subagent` 能统一看到每个子 agent（同步子 agent 也可通过 `/subagent_cancel` 或父级退出来取消，且同步失败不再遗留陈旧的 `Running` 行）。`SubagentManager::new` 在启动时修复 orphan（任何 `running` 行 → `failed`，带 `"Process interrupted (agent restarted)"`）。`check_subagent` 工具读取此状态，`wait_subagent { child_id, timeout_ms? }` 则阻塞（轮询 `subagent_runs`）直到子 agent 到达终态或超时 —— 即 Codex `wait_agent` 的对应物，让父级可先 spawn N 个子 agent 再逐个 wait，而不必跨多轮轮询 `check_subagent`。内存 `pending_subagent_results` 队列是实时快路径；持久化行是崩溃恢复的 source of truth。重启后 finished 结果**不会**自动重投 —— 注入的 `<subagent-finished>` 消息已在 transcript 中，模型自行决定 `resume` 或重新 spawn。
 
 ---
 
@@ -243,7 +243,7 @@ let summary = subagent
 | `crates/tact/src/subagent.rs` | `SubagentManager` / `SubagentRun` / `SubagentStatus`（orphan repair） |
 | `crates/tact/src/store/subagent_store/` | `subagent_runs` SQLite 表 + trait |
 | `crates/protocol/src/agent.rs` | `AgentUpdate::SubagentFinished`、`UserCommand::SubagentFinishedNotification` |
-| `crates/tact-ui/src/driver.rs` | `SubagentFinishedNotification` 的空闲唤醒轮 |
+| `crates/tact-ui/src/driver.rs` | `SubagentFinishedNotification` 的唤醒轮（一轮进行中时保留） |
 | `crates/tact/src/agent/tool_schedule.rs` | `spawn_subagent` 作为调度 barrier |
 | `ARCHITECTURE.md` | 工具表中的一行摘要 |
 
@@ -258,7 +258,7 @@ let summary = subagent
 | 无父级 hook | PreToolUse / PostToolUse 策略不包裹子 agent 工具 |
 | 仅静态 prompt | 无 skills/memory/CLAUDE.md，除非父级复制进 `prompt` |
 | `description` 被忽略 | JSON 字段无运行时效果 |
-| 独立 cancel 标志 | 父级 `/cancel` 只中止主任务。**运行中的后台子代理**通过 `cancel_subagent`（工具）、`/subagent_cancel <child-id>`（slash 命令）或运行中子代理工具卡片上的 `[Cancel]` 按钮取消——三者都经由共享 `SubagentManager` 的 cancel handles 翻转子代理的协作取消标志。当父级退出（TUI 退出 / driver 循环结束 / headless 运行结束）时，`cancel_all()` 翻转所有存活 handle，后台子代理一起停止而非成为孤儿 |
+| 独立 cancel 标志 | 父级 `/cancel` 只中止主任务。**运行中的后台子代理**通过 `cancel_subagent`（工具）、`/subagent_cancel <child-id>`（slash 命令）或运行中子代理工具卡片上的 `[Cancel]` 按钮取消——三者都经由共享 `SubagentManager` 的 cancel handles 翻转子代理的协作取消标志。当父级退出（TUI 退出 / driver 循环结束）时，`cancel_all()` 翻转所有存活 handle，后台子代理一起停止而非成为孤儿。（headless 在退出时永远没有存活的后台子代理：那里 `run_in_background` 已退化为同步。） |
 | 无 worktree 删除 | 隔离泳道现在可通过 `worktree_remove { name }` 清理（执行 `git worktree remove`、删除跟踪记录、拒绝运行中子 agent 的泳道与脏工作树）。保留 backing 分支 `wt/<name>` 以便未合并提交可恢复 |
 | worktree 基准为仓库 HEAD | 从另一 worktree 内 spawn 的子 agent 仍基于主仓库 HEAD 分支，而非父泳道 |
 | 列表隐藏子会话 | `--list-sessions` / resume 只显示 `ref_id = ''`；删父会级联删子 |
