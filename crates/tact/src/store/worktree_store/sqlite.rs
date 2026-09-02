@@ -116,6 +116,15 @@ impl WorktreeStore for SqliteWorktreeStore {
         rows.iter().map(row_to_record).collect()
     }
 
+    async fn remove_worktree(&self, name: &str) -> Result<bool> {
+        let affected = sqlx::query("DELETE FROM worktrees WHERE name = ?")
+            .bind(name)
+            .execute(&*self.pool)
+            .await?
+            .rows_affected();
+        Ok(affected > 0)
+    }
+
     async fn append_event(&self, event: &str) -> Result<()> {
         sqlx::query("INSERT INTO worktree_events (event, created_at) VALUES (?, ?)")
             .bind(event)
@@ -217,6 +226,28 @@ mod tests {
         }
         let events = store.recent_events(3).await.unwrap();
         assert_eq!(events, vec!["event 2", "event 3", "event 4"]);
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_deletes_record_and_reports_missing() {
+        let db = temp_db("remove");
+        let store = SqliteWorktreeStore::new(&db).await.unwrap();
+        store
+            .create_worktree(&record("a", None), "sess-1")
+            .await
+            .unwrap();
+        store
+            .create_worktree(&record("b", None), "sess-1")
+            .await
+            .unwrap();
+
+        assert!(store.remove_worktree("a").await.unwrap());
+        assert_eq!(store.list_worktrees().await.unwrap().len(), 1);
+        assert!(store.find_worktree("a").await.unwrap().is_none());
+
+        // Removing an unknown name is a no-op returning `false`.
+        assert!(!store.remove_worktree("a").await.unwrap());
+        assert!(!store.remove_worktree("ghost").await.unwrap());
     }
 
     #[tokio::test]

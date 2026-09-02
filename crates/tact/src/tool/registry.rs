@@ -19,8 +19,8 @@ use super::{
         ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
     },
     worktree::{
-        WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool,
-        WorktreeStatusTool,
+        WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRemoveTool,
+        WorktreeRunTool, WorktreeStatusTool,
     },
     write_file::WriteFileTool,
 };
@@ -60,6 +60,7 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(WorktreeListTool)?
         .route(WorktreeStatusTool)?
         .route(WorktreeRunTool)?
+        .route(WorktreeRemoveTool)?
         .route(WorktreeEventsTool)
 }
 

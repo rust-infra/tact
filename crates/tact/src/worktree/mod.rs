@@ -150,6 +150,34 @@ impl WorktreeManager {
         Ok(self.store.recent_events(limit).await?.join("\n"))
     }
 
+    /// Removes a tracked worktree: runs `git worktree remove` on its path
+    /// (which refuses a dirty tree — no `--force`), deletes the tracking
+    /// record, and appends an audit event. The backing branch `wt/<name>` is
+    /// left in place so unmerged commits stay recoverable.
+    pub async fn remove(&self, name: &str) -> Result<String> {
+        let record = self.get(name).await?;
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(["worktree", "remove", &record.path])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .context("failed to run git worktree remove")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            anyhow::bail!(if stderr.is_empty() {
+                format!("git worktree remove failed with {}", output.status)
+            } else {
+                format!("git worktree remove failed: {stderr}")
+            });
+        }
+        self.store.remove_worktree(name).await?;
+        self.store
+            .append_event(&format!("{} worktree.remove {}", Utc::now(), name))
+            .await?;
+        Ok(format!("removed worktree {name}"))
+    }
+
     /// Looks up a tracked worktree by name.
     pub async fn get(&self, name: &str) -> Result<WorktreeRecord> {
         self.store
@@ -190,6 +218,10 @@ impl SharedWorktreeManager {
 
     pub async fn events(&self, limit: usize) -> Result<String> {
         self.inner.events(limit).await
+    }
+
+    pub async fn remove(&self, name: &str) -> Result<String> {
+        self.inner.remove(name).await
     }
 
     pub async fn get(&self, name: &str) -> Result<WorktreeRecord> {
