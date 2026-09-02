@@ -147,6 +147,11 @@ pub struct ToolContext {
     /// (headless direct tool runs, orphan/test contexts) — `spawn_subagent`
     /// rejects `run_in_background` in that case.
     pub subagent_results: Option<Arc<Mutex<VecDeque<crate::subagent::SubagentResult>>>>,
+    /// Nested-spawn depth: `0` for the main agent, `+1` per `spawn_subagent`
+    /// hop. `spawn_subagent` refuses to spawn beyond
+    /// [`crate::tool::subagent::MAX_SUBAGENT_DEPTH`] so a subagent cannot
+    /// recursively fan out without bound.
+    pub subagent_depth: u32,
 }
 
 impl ToolContext {

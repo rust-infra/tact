@@ -69,13 +69,23 @@ pub fn toolset() -> ToolRouter {
 }
 
 /// Assembles the restricted tool set for sub-agents.
+///
+/// A subagent can read/edit files, run shells, sleep — and, since
+/// 2026-09-02, **spawn its own nested subagents** (depth-limited via
+/// [`crate::tool::subagent::MAX_SUBAGENT_DEPTH`]) plus manage them with
+/// check/wait/cancel. It still cannot use team, worktree, task, skill,
+/// memory, MCP, or plugin tools.
 fn try_subagent_toolset() -> anyhow::Result<ToolRouter> {
     ToolRouter::new()
         .route(BashTool)?
         .route(ReadFileTool)?
         .route(SleepTool)?
         .route(WriteFileTool)?
-        .route(EditFileTool)
+        .route(EditFileTool)?
+        .route(SpawnSubagentTool)?
+        .route(CheckSubagentTool)?
+        .route(WaitSubagentTool)?
+        .route(CancelSubagentTool)
 }
 
 pub fn subagent_toolset() -> ToolRouter {
@@ -85,12 +95,13 @@ pub fn subagent_toolset() -> ToolRouter {
 /// Builds the restricted subagent toolset, optionally keeping only the tools
 /// named by a declarative agent definition's `tools:` frontmatter (Claude Code
 /// naming: Read/Glob/Grep → `read_file`, Bash → `bash`, Edit → `edit_file`,
-/// Write → `write_file`, Sleep → `sleep`). Unknown names are ignored while at
-/// least one known name remains. `None` and an **empty** list keep the default
-/// five-tool set (Claude semantics: an absent/empty `tools:` does not
-/// restrict). When `keep` is non-empty but **no** name maps to a known tool,
-/// the result is an empty router — callers must fail rather than silently
-/// widen permissions to the default set.
+/// Write → `write_file`, Sleep → `sleep`, Task → `spawn_subagent`,
+/// Check/Wait/Cancel → `check_subagent`/`wait_subagent`/`cancel_subagent`).
+/// Unknown names are ignored while at least one known name remains. `None`
+/// and an **empty** list keep the default nine-tool set (Claude semantics: an
+/// absent/empty `tools:` does not restrict). When `keep` is non-empty but
+/// **no** name maps to a known tool, the result is an empty router — callers
+/// must fail rather than silently widen permissions to the default set.
 pub fn subagent_toolset_for(keep: Option<&[String]>) -> ToolRouter {
     let Some(keep) = keep else {
         return subagent_toolset();
@@ -127,6 +138,18 @@ fn allowed_tool_names(keep: &[String]) -> std::collections::HashSet<&'static str
             "sleep" => {
                 allowed.insert("sleep");
             }
+            "task" | "spawn_subagent" => {
+                allowed.insert("spawn_subagent");
+            }
+            "check" | "check_subagent" => {
+                allowed.insert("check_subagent");
+            }
+            "wait" | "wait_subagent" => {
+                allowed.insert("wait_subagent");
+            }
+            "cancel" | "cancel_subagent" => {
+                allowed.insert("cancel_subagent");
+            }
             _ => {}
         }
     }
@@ -151,6 +174,18 @@ fn try_subagent_toolset_filtered(
     }
     if allowed.contains("edit_file") {
         router = router.route(EditFileTool)?;
+    }
+    if allowed.contains("spawn_subagent") {
+        router = router.route(SpawnSubagentTool)?;
+    }
+    if allowed.contains("check_subagent") {
+        router = router.route(CheckSubagentTool)?;
+    }
+    if allowed.contains("wait_subagent") {
+        router = router.route(WaitSubagentTool)?;
+    }
+    if allowed.contains("cancel_subagent") {
+        router = router.route(CancelSubagentTool)?;
     }
     Ok(router)
 }

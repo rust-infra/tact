@@ -88,6 +88,11 @@ fn resolve_agent_model(model: &str, agent_name: &str) -> Option<String> {
 /// Worktree lane name prefix for isolated subagents.
 const SUBAGENT_WORKTREE_PREFIX: &str = "subagent";
 
+/// Maximum nested-spawn depth. The main agent is depth 0; a subagent spawned
+/// by it is depth 1, etc. `spawn_subagent` refuses to spawn beyond this so a
+/// child cannot recursively fan out without bound.
+pub const MAX_SUBAGENT_DEPTH: u32 = 3;
+
 /// Creates (or, on `resume`, reuses) the isolation worktree for a child.
 ///
 /// Returns `Ok(None)` when the caller did not request worktree isolation.
@@ -227,6 +232,18 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     };
     let resume = input.resume.is_some();
 
+    // Nested-spawn guard: the main agent is depth 0; each `spawn_subagent`
+    // hop adds one. Beyond `MAX_SUBAGENT_DEPTH` we refuse so a subagent
+    // cannot recursively fan out without bound.
+    let child_depth = ctx.subagent_depth + 1;
+    if child_depth > MAX_SUBAGENT_DEPTH {
+        bail!(
+            "cannot spawn subagent: maximum nesting depth ({MAX_SUBAGENT_DEPTH}) reached \
+             (current depth {})",
+            ctx.subagent_depth
+        );
+    }
+
     // A resume must target a prior run that has already reached a terminal
     // state. Resuming a still-running child would race the session lock (two
     // loops on one session); resuming an unknown id would silently mint a
@@ -346,7 +363,13 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
 
     let mut subagent = Agent::new(
         client,
-        ctx.clone(),
+        {
+            // The child carries the incremented depth so a grandchild spawned
+            // from *its* tool context is checked against the same limit.
+            let mut child_ctx = ctx.clone();
+            child_ctx.subagent_depth = child_depth;
+            child_ctx
+        },
         {
             let definition = agent_definition.as_ref();
             let router = crate::tool::registry::subagent_toolset_for(
@@ -359,7 +382,8 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             {
                 bail!(
                     "declarative agent '{}' declares tools: {} but none map to a Tact \
-                     subagent tool (supported: Read/Glob/Grep, Bash, Edit, Write, Sleep)",
+                     subagent tool (supported: Read/Glob/Grep, Bash, Edit, Write, Sleep, \
+                     Task, Check, Wait, Cancel)",
                     definition.expect("definition exists").name,
                     definition
                         .expect("definition exists")
@@ -677,16 +701,24 @@ mod tests {
     }
 
     #[test]
-    fn subagent_toolset_has_five_tools() {
+    fn subagent_toolset_has_nine_tools() {
         let router = crate::tool::registry::subagent_toolset();
         let specs = router.tool_specs();
-        assert_eq!(specs.len(), 5, "subagent should have exactly 5 tools");
+        assert_eq!(specs.len(), 9, "subagent should have exactly 9 tools");
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"bash"));
-        assert!(names.contains(&"read_file"));
-        assert!(names.contains(&"write_file"));
-        assert!(names.contains(&"edit_file"));
-        assert!(names.contains(&"sleep"));
+        for expected in [
+            "bash",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "sleep",
+            "spawn_subagent",
+            "check_subagent",
+            "wait_subagent",
+            "cancel_subagent",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
     }
 
     #[test]
@@ -701,17 +733,20 @@ mod tests {
         assert!(names.contains(&"bash"));
         assert!(names.contains(&"read_file"));
 
-        // Edit / Write map to edit_file / write_file; Sleep is Tact-specific.
+        // Edit / Write map to edit_file / write_file; Sleep and Task are
+        // Tact/Claude extensions.
         let router = crate::tool::registry::subagent_toolset_for(Some(&[
             "Edit".to_string(),
             "Write".to_string(),
             "Sleep".to_string(),
+            "Task".to_string(),
         ]));
         let specs = router.tool_specs();
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"edit_file"));
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"sleep"));
+        assert!(names.contains(&"spawn_subagent"));
     }
 
     #[test]
@@ -726,7 +761,7 @@ mod tests {
         );
 
         let router = crate::tool::registry::subagent_toolset_for(None);
-        assert_eq!(router.tool_specs().len(), 5);
+        assert_eq!(router.tool_specs().len(), 9);
     }
 
     #[test]
@@ -743,9 +778,9 @@ mod tests {
     #[test]
     fn subagent_toolset_for_empty_list_keeps_default() {
         // Claude semantics: an empty `tools:` list does not restrict — keep
-        // the default five-tool set (not a zero-tool subagent).
+        // the default nine-tool set (not a zero-tool subagent).
         let router = crate::tool::registry::subagent_toolset_for(Some(&[]));
-        assert_eq!(router.tool_specs().len(), 5);
+        assert_eq!(router.tool_specs().len(), 9);
     }
 
     #[test]

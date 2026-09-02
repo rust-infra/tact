@@ -136,6 +136,7 @@ async fn run_interactive_locked(
         session_store: None,
         permission_snapshot: None,
         subagent_results: None,
+        subagent_depth: 0,
     };
 
     let history_store = session_store.clone();
