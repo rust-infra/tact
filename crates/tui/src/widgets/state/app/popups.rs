@@ -54,7 +54,7 @@ impl App {
             || self.mermaid_popup.is_some()
             || self.task_dag_popup.is_some()
             || self.system_prompt_popup.is_some()
-            || self.subagent_popup.is_some()
+            || self.has_subagent_popup()
     }
 
     fn overlay_scroll_mut(&mut self) -> Option<&mut u16> {
@@ -78,7 +78,9 @@ impl App {
         if let Some(p) = self.system_prompt_popup.as_mut() {
             return Some(&mut p.scroll);
         }
-        if let Some(p) = self.subagent_popup.as_mut() {
+        if let Some(id) = self.active_subagent_popup.as_ref()
+            && let Some(p) = self.subagent_popups.get_mut(id)
+        {
             return Some(&mut p.scroll);
         }
         None
@@ -109,12 +111,8 @@ impl App {
             self.task_dag_popup = None;
         } else if self.system_prompt_popup.is_some() {
             self.system_prompt_popup = None;
-        } else if self.subagent_popup.is_some() {
-            self.subagent_popup = None;
-            self.mouse.subagent_popup_area = Rect::default();
-            self.mouse.popup_text_body_area = Rect::default();
-            self.mouse.popup_text_hit_rows.clear();
-            self.mouse.popup_text_drag_origin = None;
+        } else if self.has_subagent_popup() {
+            self.close_subagent_popup();
         }
     }
 
@@ -131,7 +129,7 @@ impl App {
             Some(self.mouse.mermaid_popup_area)
         } else if self.task_dag_popup.is_some() {
             Some(self.mouse.task_dag_popup_area)
-        } else if self.subagent_popup.is_some() {
+        } else if self.has_subagent_popup() {
             Some(self.mouse.subagent_popup_area)
         } else {
             None
@@ -154,7 +152,7 @@ impl App {
             self.copy_code_popup();
         } else if self.mermaid_popup.is_some() {
             self.copy_mermaid_popup();
-        } else if self.subagent_popup.is_some() {
+        } else if self.has_subagent_popup() {
             self.copy_subagent_popup();
         } else if self.task_dag_popup.is_some() {
             let src = self
@@ -181,6 +179,11 @@ impl App {
     }
 
     /// Open a subagent live-output / markdown-summary popup for a tool card.
+    ///
+    /// Each subagent tool card owns an independent popup entry (keyed by tool
+    /// id) so switching between concurrent subagents preserves each one's
+    /// scroll / selection / cached layout. Re-opening a popup re-activates its
+    /// existing entry rather than resetting it.
     pub(crate) fn open_subagent_popup(&mut self, phys_idx: usize) {
         let output = match self.tool_output_at(phys_idx) {
             Some(o) if matches!(o.visual_kind, tact_protocol::ToolVisualKind::Subagent) => {
@@ -204,19 +207,52 @@ impl App {
         let Some(tool_id) = tool_id else {
             return;
         };
-        self.subagent_popup = Some(crate::widgets::state::SubagentPopup {
-            title: output.title_raw.clone(),
-            scroll: 0,
-            tool_id,
-            cached_markdown: None,
-            selection: None,
-            layout_cache: None,
-        });
+        self.subagent_popups
+            .entry(tool_id.clone())
+            .or_insert_with(|| crate::widgets::state::SubagentPopup {
+                title: output.title_raw.clone(),
+                scroll: 0,
+                tool_id: tool_id.clone(),
+                cached_markdown: None,
+                selection: None,
+                layout_cache: None,
+            });
+        self.active_subagent_popup = Some(tool_id);
+    }
+
+    /// The currently-visible subagent popup, if any.
+    pub(crate) fn subagent_popup(&self) -> Option<&crate::widgets::state::SubagentPopup> {
+        self.active_subagent_popup
+            .as_ref()
+            .and_then(|id| self.subagent_popups.get(id))
+    }
+
+    /// Mutable access to the currently-visible subagent popup.
+    pub(crate) fn subagent_popup_mut(
+        &mut self,
+    ) -> Option<&mut crate::widgets::state::SubagentPopup> {
+        let id = self.active_subagent_popup.clone()?;
+        self.subagent_popups.get_mut(&id)
+    }
+
+    /// True when a subagent popup is active (visible).
+    pub(crate) fn has_subagent_popup(&self) -> bool {
+        self.active_subagent_popup.is_some()
+    }
+
+    /// Deactivate the visible subagent popup (keep its entry so re-opening
+    /// preserves scroll / selection).
+    pub(crate) fn close_subagent_popup(&mut self) {
+        self.active_subagent_popup = None;
+        self.mouse.subagent_popup_area = Rect::default();
+        self.mouse.popup_text_body_area = Rect::default();
+        self.mouse.popup_text_hit_rows.clear();
+        self.mouse.popup_text_drag_origin = None;
     }
 
     /// Copy the visible subagent popup content to clipboard.
     pub(crate) fn copy_subagent_popup(&mut self) {
-        let Some(popup) = self.subagent_popup.as_ref() else {
+        let Some(popup) = self.subagent_popup() else {
             return;
         };
         // Prefer the text the popup actually laid out (markdown-rendered when
@@ -783,16 +819,70 @@ fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ratatui::layout::Rect;
-    use tact_protocol::{StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{
+        AgentUpdate, PlanStep, StepResult, StepStatus, ToolDetailKind, ToolPopupKind,
+        ToolPresentationInfo, ToolVisualKind,
+    };
 
     use crate::{
         render::test_harness::make_app,
         widgets::{
-            state::{DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, ThinkingPopup},
+            state::{
+                App, DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, SubagentPopup,
+                ThinkingPopup,
+            },
             tool_widget::{ToolPhase, ToolWidget},
         },
     };
+
+    fn subagent_presentation() -> ToolPresentationInfo {
+        ToolPresentationInfo {
+            visual_kind: ToolVisualKind::Subagent,
+            display_name: "spawn_subagent".into(),
+            keep_full_live_output: true,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::SubagentTranscript,
+            compact_result_to_meta: false,
+            keep_live: false,
+        }
+    }
+
+    /// Push a finished `spawn_subagent` tool card and return its `phys_idx`.
+    fn push_subagent_card(app: &mut App, tool_id: &str) -> usize {
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run",
+            "spawn_subagent",
+            tool_id,
+            HashMap::from([("prompt".to_string(), "do it".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: tool_id.into(),
+            tool_name: "spawn_subagent".into(),
+            arg_summary: "do it".into(),
+            arg_full: "do it".into(),
+            presentation: subagent_presentation(),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: tool_id.into(),
+            result: StepResult {
+                tool: "spawn_subagent".into(),
+                arg_summary: "do it".into(),
+                arg_full: Some("do it".into()),
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some(format!("summary for {tool_id}")),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: subagent_presentation(),
+            },
+        });
+        app.tools_mut().blocks.last().unwrap().phys_idx
+    }
 
     fn inline_popup(content: &str) -> DiffPopup {
         DiffPopup {
@@ -934,5 +1024,57 @@ mod tests {
             output.detail_total_lines,
             popup.inline_content.unwrap().lines().count()
         );
+    }
+
+    #[test]
+    fn subagent_popups_keep_independent_scroll_per_tool_id() {
+        let mut app = make_app();
+        let phys_a = push_subagent_card(&mut app, "sa-1");
+        let phys_b = push_subagent_card(&mut app, "sa-2");
+
+        // Open A, scroll it.
+        app.open_subagent_popup(phys_a);
+        assert_eq!(app.active_subagent_popup.as_deref(), Some("sa-1"));
+        app.subagent_popup_mut().unwrap().scroll = 7;
+
+        // Open B — the map now has two entries and B is active.
+        app.open_subagent_popup(phys_b);
+        assert_eq!(app.subagent_popups.len(), 2);
+        assert_eq!(app.active_subagent_popup.as_deref(), Some("sa-2"));
+        assert_eq!(app.subagent_popup().unwrap().tool_id, "sa-2");
+
+        // Re-open A — its scroll is preserved (not reset), because the map
+        // keeps one popup entry per tool id.
+        app.open_subagent_popup(phys_a);
+        assert_eq!(app.active_subagent_popup.as_deref(), Some("sa-1"));
+        assert_eq!(app.subagent_popup().unwrap().scroll, 7);
+
+        // Closing deactivates but keeps the entry so re-open still preserves.
+        app.close_subagent_popup();
+        assert!(app.active_subagent_popup.is_none());
+        assert!(!app.has_subagent_popup());
+        assert_eq!(app.subagent_popups.len(), 2);
+        app.open_subagent_popup(phys_a);
+        assert_eq!(app.subagent_popup().unwrap().scroll, 7);
+    }
+
+    #[test]
+    fn subagent_popup_is_not_in_overlay_set_when_none_active() {
+        let mut app = make_app();
+        assert!(!app.has_subagent_popup());
+        // A stale map entry alone must not report an open overlay.
+        app.subagent_popups.insert(
+            "sa-1".into(),
+            SubagentPopup {
+                title: "A".into(),
+                scroll: 0,
+                tool_id: "sa-1".into(),
+                cached_markdown: None,
+                selection: None,
+                layout_cache: None,
+            },
+        );
+        assert!(!app.has_subagent_popup());
+        assert!(!app.has_overlay_popup());
     }
 }

@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, path::PathBuf};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+};
 
 use tact::{
     plugin::{PluginEvent, PluginRequest},
@@ -227,8 +230,13 @@ pub struct App {
     pub(crate) mermaid_popup: Option<MermaidPopup>,
     /// `/tasks-dag` Mermaid→Unicode dependency graph popup.
     pub(crate) task_dag_popup: Option<TaskDagPopup>,
-    /// Subagent live-output / markdown summary popup.
-    pub(crate) subagent_popup: Option<SubagentPopup>,
+    /// Subagent live-output / markdown summary popups, keyed by tool id so
+    /// concurrent subagents each keep their own scroll / selection / cached
+    /// layout when the user switches between them.
+    pub(crate) subagent_popups: HashMap<String, SubagentPopup>,
+    /// Tool id of the currently-visible subagent popup (an entry in
+    /// [`Self::subagent_popups`]).
+    pub(crate) active_subagent_popup: Option<String>,
     pub(crate) system_prompt_popup: Option<SystemPromptPopup>,
     // Selection popup
     pub(crate) select: SelectPopup,

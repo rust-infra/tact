@@ -9,10 +9,12 @@ use crate::widgets::state::App;
 pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     // Prepare: rebuild the layout cache when stale (live output grows,
     // width changes, live→completed transition).
-    if app.subagent_popup.is_some() {
+    if app.has_subagent_popup() {
         let popup_area = agent_tui_kit::render::popups::centered_popup_area(area);
         let body_area = agent_tui_kit::render::popups::popup_inner(popup_area);
-        if let Some(popup) = app.subagent_popup.as_mut() {
+        if let Some(id) = app.active_subagent_popup.clone()
+            && let Some(popup) = app.subagent_popups.get_mut(&id)
+        {
             let tools_state = app
                 .registry
                 .get::<agent_tui_kit::components::ToolComponent>()

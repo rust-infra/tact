@@ -72,7 +72,7 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left)
             if app.tools_mut().popup.is_some()
                 || app.thinking_mut().popup.is_some()
-                || app.subagent_popup.is_some() =>
+                || app.has_subagent_popup() =>
         {
             handle_text_popup_mouse_drag(app, mouse);
         }
@@ -190,7 +190,7 @@ fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     app.mouse.popup_text_drag_origin = None;
     let popup_area = if app.thinking_mut().popup.is_some() {
         app.mouse.thinking_popup_area
-    } else if app.subagent_popup.is_some() {
+    } else if app.has_subagent_popup() {
         app.mouse.subagent_popup_area
     } else {
         app.mouse.diff_popup_area
@@ -210,7 +210,7 @@ fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     } else if let Some(popup) = app.tools_mut().popup.as_mut() {
         popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
         app.mouse.popup_text_drag_origin = Some(origin);
-    } else if let Some(popup) = app.subagent_popup.as_mut() {
+    } else if let Some(popup) = app.subagent_popup_mut() {
         popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
         app.mouse.popup_text_drag_origin = Some(origin);
     }
@@ -412,7 +412,7 @@ fn handle_text_popup_mouse_drag(app: &mut App, mouse: MouseEvent) {
         popup.selection = Some(selection);
     } else if let Some(popup) = app.tools_mut().popup.as_mut() {
         popup.selection = Some(selection);
-    } else if let Some(popup) = app.subagent_popup.as_mut() {
+    } else if let Some(popup) = app.subagent_popup_mut() {
         popup.selection = Some(selection);
     }
 }

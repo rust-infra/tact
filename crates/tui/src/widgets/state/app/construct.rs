@@ -1,7 +1,10 @@
 // impl App — core application logic
 // Extracted from state.rs to keep file sizes manageable.
 
-use std::{collections::VecDeque, path::PathBuf};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+};
 
 use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
@@ -127,7 +130,8 @@ impl App {
             mermaid_blocks: Vec::new(),
             mermaid_popup: None,
             task_dag_popup: None,
-            subagent_popup: None,
+            subagent_popups: HashMap::new(),
+            active_subagent_popup: None,
             system_prompt_popup: None,
             voice: VoiceState::disabled(),
             voice_parsed_keybind: None,
