@@ -132,6 +132,9 @@ impl WorktreeManager {
     }
 
     pub async fn run(&self, name: &str, command: &str) -> Result<String> {
+        // Same validation as the `bash` tool: worktree_run executes arbitrary
+        // shell inside the lane and must not become a validation bypass.
+        crate::shell::validate_shell_command(command)?;
         let record = self.get(name).await?;
         let output = Command::new("sh")
             .current_dir(&record.path)
@@ -139,6 +142,10 @@ impl WorktreeManager {
             .arg(command)
             .output()
             .with_context(|| format!("failed to run command in {}", record.path))?;
+        // Audit every invocation so `worktree_events` shows who ran what.
+        self.store
+            .append_event(&format!("{} worktree.run {name} {command}", Utc::now()))
+            .await?;
         Ok(format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
@@ -289,6 +296,50 @@ mod tests {
             ],
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn run_rejects_dangerous_commands() {
+        let context = test_context("worktree-run-validate");
+        init_git_repo(&context.work_dir).await;
+        context
+            .worktree_manager
+            .create("lane".into(), None, "HEAD".into(), "sess".into())
+            .await
+            .unwrap();
+
+        let err = context
+            .worktree_manager
+            .run("lane", "sudo rm -rf /")
+            .await
+            .expect_err("dangerous command must be blocked");
+        assert!(
+            err.to_string().contains("blocked"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_audits_invocations() {
+        let context = test_context("worktree-run-audit");
+        init_git_repo(&context.work_dir).await;
+        context
+            .worktree_manager
+            .create("lane".into(), None, "HEAD".into(), "sess".into())
+            .await
+            .unwrap();
+
+        context
+            .worktree_manager
+            .run("lane", "echo audit-me")
+            .await
+            .unwrap();
+
+        let events = context.worktree_manager.events(10).await.unwrap();
+        assert!(
+            events.contains("worktree.run lane echo audit-me"),
+            "run must be audit-logged: {events}"
+        );
     }
 
     #[tokio::test]
