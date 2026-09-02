@@ -151,9 +151,10 @@ impl WorktreeManager {
     }
 
     /// Removes a tracked worktree: runs `git worktree remove` on its path
-    /// (which refuses a dirty tree — no `--force`), deletes the tracking
-    /// record, and appends an audit event. The backing branch `wt/<name>` is
-    /// left in place so unmerged commits stay recoverable.
+    /// (which refuses a dirty tree — no `--force`), then attempts to delete
+    /// the backing branch `wt/<name>` with `git branch -d` — **only** when
+    /// the branch is fully merged, so unmerged commits are never destroyed.
+    /// Finally deletes the tracking record and appends an audit event.
     pub async fn remove(&self, name: &str) -> Result<String> {
         let record = self.get(name).await?;
         let output = Command::new("git")
@@ -171,11 +172,33 @@ impl WorktreeManager {
                 format!("git worktree remove failed: {stderr}")
             });
         }
+
+        // Delete the backing branch only if it is fully merged (`-d`, never
+        // `-D`). A branch with unmerged commits is kept — the record removal
+        // below must still succeed so the lane disappears from the index.
+        let branch = record.branch.clone();
+        let branch_deleted = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(["branch", "-d", &branch])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .context("failed to run git branch -d")?
+            .success();
+
         self.store.remove_worktree(name).await?;
+        let outcome = if branch_deleted {
+            format!("removed worktree {name} (branch {branch} deleted)")
+        } else {
+            format!("removed worktree {name} (branch {branch} kept: unmerged)")
+        };
         self.store
-            .append_event(&format!("{} worktree.remove {}", Utc::now(), name))
+            .append_event(&format!(
+                "{} worktree.remove {name} branch_deleted={branch_deleted}",
+                Utc::now()
+            ))
             .await?;
-        Ok(format!("removed worktree {name}"))
+        Ok(outcome)
     }
 
     /// Looks up a tracked worktree by name.
@@ -193,7 +216,6 @@ impl SharedWorktreeManager {
             inner: Arc::new(manager),
         }
     }
-
     pub async fn create(
         &self,
         name: String,
@@ -226,5 +248,121 @@ impl SharedWorktreeManager {
 
     pub async fn get(&self, name: &str) -> Result<WorktreeRecord> {
         self.inner.get(name).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::test_support::test_context;
+
+    /// Runs a git command in `dir`, asserting success.
+    async fn git_run(dir: &Path, args: &[&str]) {
+        let out = tokio::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .await
+            .expect("git command should run");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Initialises a git repo with one commit so `git worktree add` has a HEAD.
+    async fn init_git_repo(dir: &Path) {
+        git_run(dir, &["init", "-q"]).await;
+        std::fs::write(dir.join("README.md"), "hello\n").unwrap();
+        git_run(dir, &["add", "."]).await;
+        git_run(
+            dir,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=tact-test",
+                "commit",
+                "-m",
+                "init",
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_merged_branch_and_keeps_unmerged() {
+        let context = test_context("worktree-remove-branch");
+        init_git_repo(&context.work_dir).await;
+        context
+            .worktree_manager
+            .create("merged-lane".into(), None, "HEAD".into(), "sess".into())
+            .await
+            .unwrap();
+        let _merged = context.worktree_manager.get("merged-lane").await.unwrap();
+
+        // Merged: the lane branch points at HEAD (the main branch has all its
+        // commits), so `git branch -d` succeeds and the branch is removed.
+        let out = context
+            .worktree_manager
+            .remove("merged-lane")
+            .await
+            .unwrap();
+        assert!(
+            out.contains("branch wt/merged-lane deleted"),
+            "merged branch should be deleted: {out}"
+        );
+        let status = tokio::process::Command::new("git")
+            .current_dir(&context.work_dir)
+            .args(["branch", "--list", "wt/merged-lane"])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+            "wt/merged-lane should no longer exist"
+        );
+
+        // Unmerged: commit on the lane, then remove — the branch is kept.
+        context
+            .worktree_manager
+            .create("unmerged-lane".into(), None, "HEAD".into(), "sess".into())
+            .await
+            .unwrap();
+        let unmerged = context.worktree_manager.get("unmerged-lane").await.unwrap();
+        git_run(
+            Path::new(&unmerged.path),
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=tact-test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "lane-only work",
+            ],
+        )
+        .await;
+        let out = context
+            .worktree_manager
+            .remove("unmerged-lane")
+            .await
+            .unwrap();
+        assert!(
+            out.contains("branch wt/unmerged-lane kept"),
+            "unmerged branch must be kept: {out}"
+        );
+        let status = tokio::process::Command::new("git")
+            .current_dir(&context.work_dir)
+            .args(["branch", "--list", "wt/unmerged-lane"])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&status.stdout).contains("wt/unmerged-lane"),
+            "unmerged branch should survive removal"
+        );
     }
 }
