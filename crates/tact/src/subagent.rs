@@ -245,7 +245,10 @@ impl SubagentManager {
                 SubagentStatus::Running => {}
                 _ => {
                     let summary = record.summary.as_deref().unwrap_or("(no summary)");
-                    return Ok(format!("{}: {:?} {summary}", record.child_id, record.status));
+                    return Ok(format!(
+                        "{}: {:?} {summary}",
+                        record.child_id, record.status
+                    ));
                 }
             }
             if tokio::time::Instant::now() >= deadline {
