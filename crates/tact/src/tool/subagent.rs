@@ -404,7 +404,25 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         None
     };
 
-    if input.run_in_background == Some(true) {
+    // Record the run start for BOTH sync and async children so `check_subagent`
+    // / `cancel_subagent` / `wait_subagent` see every child uniformly (a sync
+    // child can also be cancelled via `/subagent_cancel` or parent exit). On
+    // `resume` this resets the prior terminal record to Running for the
+    // follow-up run.
+    ctx.subagent_manager.start(child_id.clone()).await?;
+
+    // True background dispatch needs a UI channel: without a driver there is
+    // no one to submit a wake-up turn, and headless exits by cancelling the
+    // child. Degrade to synchronous so the summary still reaches the parent.
+    let run_async = input.run_in_background == Some(true) && ctx.ui_tx.is_some();
+    if input.run_in_background == Some(true) && !run_async {
+        warn!(
+            "run_in_background requested without an interactive UI channel; \
+             running subagent synchronously"
+        );
+    }
+
+    if run_async {
         // Async: return immediately; the detached task finalizes the card,
         // persists the lifecycle, and re-injects the summary.
         let results = ctx
@@ -416,7 +434,6 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         let tool_id = ctx.progress_reporter.tool_id().to_string();
         let prompt = input.prompt;
         let worktree_for_task = worktree.clone();
-        manager.start(child_id.clone()).await?;
         let launched = format!("async_launched {{ {child_id} }}");
         tokio::spawn(async move {
             let result = subagent
@@ -475,16 +492,31 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         Ok(launched)
     } else {
         // Sync: block on the nested loop; tool result = last assistant text.
-        subagent
+        let result = subagent
             .agent_loop(Some(Message::new_text(Role::User, input.prompt)))
-            .await?;
+            .await;
+        let success = result.is_ok();
+        let cancelled = cancel_flag.load(Ordering::Relaxed);
         let max_turns_reached = subagent.max_turns.is_some_and(|m| subagent.turns_taken > m);
         let summary = extract_summary(&subagent, max_turns_reached);
         ctx.subagent_manager.unregister_cancel_handle(&child_id);
+        // Persist the terminal state so a cancelled / failed sync child is
+        // visible to `check_subagent` (it previously left no `subagent_runs`
+        // row at all).
+        let _ = if cancelled {
+            ctx.subagent_manager.cancel(&child_id).await
+        } else {
+            ctx.subagent_manager
+                .finish(&child_id, success, summary.clone())
+                .await
+        };
         if let Some(lock) = lock {
             lock.release().await?;
         }
-        let summary = if cancel_flag.load(Ordering::Relaxed) {
+        // Propagate the agent-loop error after the lifecycle record is
+        // durable, so a failed sync spawn does not leave a stale Running row.
+        result?;
+        let summary = if cancelled {
             format!("(cancelled by user)\n{summary}")
         } else {
             summary
