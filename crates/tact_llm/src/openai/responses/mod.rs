@@ -42,6 +42,9 @@ struct ResponsesCompatConfig {
     api_base: String,
     api_key: Option<SecretString>,
     empty_api_key: SecretString,
+    /// Tact session id → OpenCode `x-opencode-session` header. `None` falls
+    /// back to a per-`base_url` token for non-conversation requests.
+    opencode_session: Option<String>,
 }
 
 impl ResponsesCompatConfig {
@@ -50,6 +53,7 @@ impl ResponsesCompatConfig {
             api_base,
             api_key,
             empty_api_key: SecretString::from(String::new()),
+            opencode_session: None,
         }
     }
 }
@@ -67,7 +71,12 @@ impl Config for ResponsesCompatConfig {
         }
         // OpenCode Go requires x-opencode-session on every request and wants
         // a recognizable User-Agent; both are added only for that endpoint.
-        headers.extend(crate::opencode::endpoint_headers(&self.api_base));
+        // The session id doubles as the cache-distinguishing key, so each
+        // Tact session maps to exactly one OpenCode session.
+        headers.extend(crate::opencode::endpoint_headers(
+            &self.api_base,
+            self.opencode_session.as_deref(),
+        ));
         headers
     }
 
@@ -250,6 +259,12 @@ pub struct OpenAiResponsesAdapter {
     /// entirely; Tact never falls back to a local summary compaction for
     /// Responses providers.
     compact_threshold: Option<u32>,
+    /// Tact session id, wired by [`Agent::with_session`](crate::Agent)
+    /// through `LlmProvider::set_user_id`. On OpenCode Go endpoints this
+    /// becomes the `x-opencode-session` header value, which the service uses
+    /// to distinguish per-conversation caches: same session = same header,
+    /// different sessions get different caches.
+    session_id: Option<String>,
 }
 
 impl OpenAiResponsesAdapter {
@@ -279,6 +294,7 @@ impl OpenAiResponsesAdapter {
             http,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             compact_threshold,
+            session_id: None,
         }
     }
 
@@ -286,12 +302,23 @@ impl OpenAiResponsesAdapter {
         &self.base_url
     }
 
+    /// Sets the Tact session id used as the OpenCode `x-opencode-session`
+    /// value (cache-distinguishing session key) for this adapter's endpoint.
+    pub fn set_session_id(&mut self, session_id: String) {
+        self.session_id = Some(session_id);
+    }
+
+    fn opencode_session(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
     /// Builds the SDK client for the current request after resolving
     /// credentials, so OAuth-style flows can refresh tokens between calls.
     async fn sdk_client(&self) -> Result<Client<ResponsesCompatConfig>, LlmError> {
         let secret = self.credentials.resolve().await?;
         let key = SecretString::from(LegacyExposeSecret::expose_secret(&secret).clone());
-        let config = ResponsesCompatConfig::new(self.base_url.clone(), Some(key));
+        let mut config = ResponsesCompatConfig::new(self.base_url.clone(), Some(key));
+        config.opencode_session = self.opencode_session().map(str::to_owned);
         Ok(Client::build(self.http.inner().clone(), config))
     }
 
@@ -486,7 +513,10 @@ impl LlmClient for OpenAiResponsesAdapter {
             .inner()
             .post(&url)
             .header(AUTHORIZATION, format!("Bearer {key}"))
-            .headers(crate::opencode::endpoint_headers(&self.base_url))
+            .headers(crate::opencode::endpoint_headers(
+                &self.base_url,
+                self.opencode_session(),
+            ))
             .json(&compact_request)
             .send()
             .await
@@ -555,6 +585,54 @@ mod tests {
     use async_openai_responses::types::responses::OutputItem;
 
     #[test]
+    fn opencode_config_headers_carry_the_session_id() {
+        use async_openai_responses::config::Config;
+
+        let mut config =
+            super::ResponsesCompatConfig::new("https://opencode.ai/zen/go/v1".into(), None);
+        // Simulate Agent::with_session → LlmProvider::set_user_id wiring.
+        config.opencode_session = Some("tact-session-1".into());
+        let headers = config.headers();
+        assert_eq!(
+            headers
+                .get(crate::opencode::X_OPENCODE_SESSION)
+                .and_then(|v| v.to_str().ok()),
+            Some("tact-session-1"),
+            "x-opencode-session must equal the session id (cache-distinguishing key)"
+        );
+        let ua = headers
+            .get(reqwest13::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ua.starts_with("tact/"), "user agent identifies tact: {ua}");
+    }
+
+    #[test]
+    fn opencode_config_without_session_uses_fallback_token() {
+        use async_openai_responses::config::Config;
+
+        let config =
+            super::ResponsesCompatConfig::new("https://opencode.ai/zen/go/v1".into(), None);
+        let headers = config.headers();
+        let session = headers
+            .get(crate::opencode::X_OPENCODE_SESSION)
+            .and_then(|v| v.to_str().ok())
+            .expect("x-opencode-session must always be present on opencode endpoints");
+        assert!(!session.is_empty());
+    }
+
+    #[test]
+    fn set_session_id_is_used_by_compact_and_sdk_headers() {
+        // The adapter stores the session id and hands it to both the SDK
+        // config (ordinary /responses) and the direct compact POST.
+        let mut adapter =
+            super::OpenAiResponsesAdapter::new("test-key", "https://opencode.ai/zen/go/v1", None);
+        assert!(adapter.opencode_session().is_none());
+        adapter.set_session_id("tact-session-2".into());
+        assert_eq!(adapter.opencode_session(), Some("tact-session-2"));
+    }
+
+    #[test]
     fn fills_missing_output_text_annotations_for_terminal_events() {
         let event = normalize_stream_event_json(serde_json::json!({
             "type": "response.completed",
@@ -565,7 +643,6 @@ mod tests {
                 }]
             }
         }));
-
         assert_eq!(
             event["response"]["output"][0]["content"][0]["annotations"],
             serde_json::json!([])

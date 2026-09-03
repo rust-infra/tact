@@ -44,7 +44,13 @@ pub fn is_opencode_base_url(base_url: &str) -> bool {
 
 /// Headers to attach to every request for `base_url`. Empty unless the
 /// endpoint is OpenCode Go.
-pub fn endpoint_headers(base_url: &str) -> HeaderMap {
+///
+/// `session_id` is the Tact session id: OpenCode treats `x-opencode-session`
+/// as the session key that distinguishes its per-conversation caches, so one
+/// conversation must reuse the same value and different conversations must
+/// differ. When no session is available (e.g. the `/v1/models` picker fetch)
+/// a per-process, per-`base_url` fallback token is used instead.
+pub fn endpoint_headers(base_url: &str, session_id: Option<&str>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     if !is_opencode_base_url(base_url) {
         return headers;
@@ -52,7 +58,11 @@ pub fn endpoint_headers(base_url: &str) -> HeaderMap {
     if let Ok(ua) = USER_AGENT.parse() {
         headers.insert(reqwest13::header::USER_AGENT, ua);
     }
-    if let Ok(session) = session_token(base_url).parse() {
+    let session = session_id
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| session_token(base_url));
+    if let Ok(session) = session.parse() {
         headers.insert(X_OPENCODE_SESSION, session);
     }
     headers
@@ -123,10 +133,17 @@ mod tests {
 
     #[test]
     fn endpoint_headers_only_attach_to_opencode() {
-        let headers = endpoint_headers("https://opencode.ai/zen/go/v1");
+        let headers = endpoint_headers("https://opencode.ai/zen/go/v1", Some("sess-1"));
         assert!(
             headers.contains_key(X_OPENCODE_SESSION),
             "must carry x-opencode-session"
+        );
+        assert_eq!(
+            headers
+                .get(X_OPENCODE_SESSION)
+                .and_then(|v| v.to_str().ok()),
+            Some("sess-1"),
+            "the session id must be used verbatim when supplied"
         );
         let ua = headers
             .get(reqwest13::header::USER_AGENT)
@@ -134,8 +151,20 @@ mod tests {
             .unwrap_or_default();
         assert!(ua.starts_with("tact/"), "user agent identifies tact: {ua}");
 
-        let non_opencode = endpoint_headers("https://api.openai.com/v1");
+        let non_opencode = endpoint_headers("https://api.openai.com/v1", Some("sess-1"));
         assert!(non_opencode.is_empty(), "must not add headers elsewhere");
+    }
+
+    #[test]
+    fn session_header_falls_back_when_session_absent() {
+        // Without a session id the per-base fallback token is used, so the
+        // header is still present (OpenCode will error without it).
+        let headers = endpoint_headers("https://opencode.ai/zen/go/v1", None);
+        let session = headers
+            .get(X_OPENCODE_SESSION)
+            .and_then(|v| v.to_str().ok())
+            .expect("must carry x-opencode-session");
+        assert!(!session.is_empty());
     }
 
     #[test]
