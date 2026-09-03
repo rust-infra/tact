@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-02 — OpenCode Go 端点发送 `x-opencode-session` 与真实 User-Agent
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs`（新增）、`crates/tact_llm/src/openai/responses/mod.rs`（`ResponsesCompatConfig::headers`、compact POST）、`crates/tact_llm/src/openai/compatible/mod.rs`（`CompatibleConfig::headers`）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）；Ch 21 |
+
+**Symptom / motivation:** 发往 OpenCode Go（`https://opencode.ai/zen/go/v1`）的请求没有 `x-opencode-session` 头，且只有 reqwest 的通用 `User-Agent`，导致 OpenCode 无法关联/优化会话并把这些请求报为「Unknown client」；09/06 起缺该头的请求可能报错。
+
+**Decision:** 新增 `opencode` 辅助模块，检测 OpenCode 端点（`opencode.ai` 或其子域）并返回按进程与 `base_url` 稳定的 `x-opencode-session` 值，外加 `tact/<version>` 的 `User-Agent`。头附加在访问该端点的所有路径上：Responses SDK 配置（`create_byot` / `create_stream_byot`）、直接 `POST /responses/compact`、Chat Completions 配置（防御性）以及 `/v1/models` 选择器拉取。设置 `TACT_OPENCODE_SESSION` 可固定会话值。
+
+**Behavior after:** 对 OpenCode Go 端点的每个请求都携带稳定的 `x-opencode-session` 头与标识性的 `tact/<version>` `User-Agent`；其他端点不受影响（空头映射）。
+
+---
+
 ## 1. 2026-09-02 — 移除嵌套子代理 spawn（恢复 depth-0）
 
 | Field | Value |

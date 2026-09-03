@@ -109,6 +109,8 @@ base_url = "https://api.moonshot.cn/v1"   # 自定义 provider 必填
 model = "kimi-k2.5"
 ```
 
+**OpenCode Go 端点**（`https://opencode.ai/zen/go/v1` 及 `opencode.ai` 子域）：Tact 自动为每个请求附加 `x-opencode-session` 头（SDK 调用、`/responses/compact` 与 `/v1/models` 选择器拉取都覆盖），并发送 `tact/<version>` 作为 `User-Agent` 让端点识别工具。会话值按进程与 `base_url` 保持稳定；设置 `TACT_OPENCODE_SESSION` 可固定该值（例如恢复先前会话）。
+
 ---
 
 ## 4. TOML 模式

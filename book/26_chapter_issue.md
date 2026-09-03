@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-02 — OpenCode Go endpoints send `x-opencode-session` + a real User-Agent
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs` (new), `crates/tact_llm/src/openai/responses/mod.rs` (`ResponsesCompatConfig::headers`, compact POST), `crates/tact_llm/src/openai/compatible/mod.rs` (`CompatibleConfig::headers`), `crates/tact_llm/src/models.rs` (`fetch_model_ids`); Ch 21 |
+
+**Symptom / motivation:** Requests to OpenCode Go (`https://opencode.ai/zen/go/v1`) carried no `x-opencode-session` header and only reqwest's generic `User-Agent`, so OpenCode could not correlate/optimize the session and reported them as "Unknown client"; starting 09/06 requests missing the header may error.
+
+**Decision:** Add an `opencode` helper module that detects OpenCode endpoints (`opencode.ai` or a subdomain) and returns an `x-opencode-session` value that is stable per process and per `base_url`, plus a `tact/<version>` `User-Agent`. The headers are attached on every path that talks to the endpoint: the Responses SDK config (`create_byot` / `create_stream_byot`), the direct `/responses/compact` POST, the Chat Completions config (defensive), and the `/v1/models` picker fetch. `TACT_OPENCODE_SESSION` pins the session value when set.
+
+**Behavior after:** every request to an OpenCode Go endpoint carries a stable `x-opencode-session` header and an identifying `tact/<version>` `User-Agent`; other endpoints are unaffected (empty header map).
+
+---
+
 ## 1. 2026-09-02 — Remove nested subagent spawns (depth-0 restored)
 
 | Field | Value |
