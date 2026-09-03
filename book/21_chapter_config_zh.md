@@ -109,7 +109,7 @@ base_url = "https://api.moonshot.cn/v1"   # 自定义 provider 必填
 model = "kimi-k2.5"
 ```
 
-**OpenCode Go 端点**（`https://opencode.ai/zen/go/v1` 及 `opencode.ai` 子域）：Tact 自动为每个请求附加 `x-opencode-session` 头（SDK 调用、`/responses/compact` 与 `/v1/models` 选择器拉取都覆盖），并发送 `tact/<version>` 作为 `User-Agent` 让端点识别工具。会话值按进程与 `base_url` 保持稳定；设置 `TACT_OPENCODE_SESSION` 可固定该值（例如恢复先前会话）。
+**OpenCode Go 端点**（`https://opencode.ai/zen/go/v1` 及 `opencode.ai` 子域）：Tact 自动为每个请求附加 `x-opencode-session` 头，并发送 `tact/<version>` 作为 `User-Agent` 让端点识别工具。头值即 **Tact session id** —— OpenCode 以它作为区分各会话缓存的键：同一会话（含 resume）复用同一值，不同会话得到不同值。无会话的请求（如 `/v1/models` 选择器拉取）回退到按 `base_url` 稳定的 token；设置 `TACT_OPENCODE_SESSION` 可固定该回退值。
 
 ---
 

@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-02 — OpenCode `x-opencode-session` 绑定 Tact session id（缓存隔离）
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs`（`endpoint_headers(base_url, session)`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::set_session_id`、`ResponsesCompatConfig.opencode_session`、compact POST）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）、`crates/tact/src/agent/mod.rs`（`Agent::with_session`）；Ch 21 |
+
+**Symptom / motivation:** 第一版 OpenCode 修复以按进程、按 `base_url` 的 token 作为 `x-opencode-session`。但 OpenCode 用该头作为**区分各会话缓存的键**：两个不同 Tact 会话共享同一 token 会共享/污染彼此的 OpenCode 缓存，而 resume 一个 Tact 会话也不会续上同一 OpenCode 缓存。
+
+**Decision:** 把头绑定到 Tact session id。`Agent::with_session` 本就把 session id 经 `LlmProvider::set_user_id` 转发给 client（DeepSeek KV 缓存隔离所用的同一钩子）；OpenAI Responses adapter 现在保存它（`set_session_id`），SDK 配置与 compact POST 发出 `x-opencode-session = <session id>`。无会话的请求（如 `/v1/models` 选择器拉取）仍回退到按 `base_url` 的 token；`TACT_OPENCODE_SESSION` 只固定该回退值。
+
+**Behavior after:** 一个 Tact 会话（含 resume —— 复用同一 session id）恰好对应一个 OpenCode 会话/缓存；不同 Tact 会话 —— 主 agent、以及各自带子 session id 的每个子代理 —— 得到不同的 `x-opencode-session` 值，因此 OpenCode 缓存按会话隔离。
+
+---
+
 ## 1. 2026-09-02 — OpenCode Go 端点发送 `x-opencode-session` 与真实 User-Agent
 
 | Field | Value |

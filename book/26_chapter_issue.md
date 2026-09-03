@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-02 — OpenCode `x-opencode-session` is bound to the Tact session id (cache isolation)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs` (`endpoint_headers(base_url, session)`), `crates/tact_llm/src/openai/responses/mod.rs` (`OpenAiResponsesAdapter::set_session_id`, `ResponsesCompatConfig.opencode_session`, compact POST), `crates/tact_llm/src/client.rs` (`LlmProvider::set_user_id`), `crates/tact/src/agent/mod.rs` (`Agent::with_session`); Ch 21 |
+
+**Symptom / motivation:** The first OpenCode fix sent a per-process, per-`base_url` token as `x-opencode-session`. OpenCode uses that header as the **session key that distinguishes its per-conversation caches**, so two different Tact sessions sharing one token would share (and pollute) each other's OpenCode cache, while resuming a Tact session would not resume the same OpenCode cache.
+
+**Decision:** Bind the header to the Tact session id. `Agent::with_session` already forwards the session id to the client via `LlmProvider::set_user_id` (the hook DeepSeek uses for KV-cache isolation); the OpenAI Responses adapter now stores it (`set_session_id`) and the SDK config / compact POST emit `x-opencode-session = <session id>`. Requests without a session (the `/v1/models` picker fetch) still fall back to the per-`base_url` token; `TACT_OPENCODE_SESSION` pins that fallback only.
+
+**Behavior after:** one Tact session (including a resumed one, which reuses the same session id) maps to exactly one OpenCode session/cache; different Tact sessions — main agent, each subagent with its own child session id — get distinct `x-opencode-session` values, so OpenCode caches are isolated per conversation.
+
+---
+
 ## 1. 2026-09-02 — OpenCode Go endpoints send `x-opencode-session` + a real User-Agent
 
 | Field | Value |
