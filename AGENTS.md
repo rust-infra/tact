@@ -12,7 +12,18 @@ When giving a final answer, always structure your reasoning as a Markdown list (
 
 ## Documentation sync — when to update
 
-Update docs **in the same change** (or immediately after) when behavior or public contracts change. Do not leave book / design docs lagging behind code.
+Batch doc updates at **push time**, not per change. Do **not** stop to sync
+docs after every intermediate edit — that burns tokens re-reading chapters
+mid-work. Instead:
+
+1. Code first — implement, test, and verify behavior.
+2. Before pushing (or at the end of a multi-commit work unit), compare the
+   final diff against the trigger table below and sync every doc it touches
+   **in one pass**, then push. Nothing should reach the remote with
+   lagging docs, but nothing before the push needs doc work either.
+
+The trigger table says *what* to sync; the sync happens once, right before
+push, not after each change.
 
 | Trigger | Sync these |
 |---------|------------|
