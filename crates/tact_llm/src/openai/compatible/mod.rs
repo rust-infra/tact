@@ -338,6 +338,10 @@ impl Config for CompatibleConfig {
             reqwest13::header::USER_AGENT,
             "Claude Code".parse().unwrap(),
         );
+        // OpenCode Go requires x-opencode-session (and a recognizable UA) on
+        // every request; both are added only for that endpoint and override
+        // the generic UA above.
+        headers.extend(crate::opencode::endpoint_headers(&self.api_base));
         headers
     }
 

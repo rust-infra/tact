@@ -65,6 +65,9 @@ impl Config for ResponsesCompatConfig {
                     .expect("bearer header value is valid"),
             );
         }
+        // OpenCode Go requires x-opencode-session on every request and wants
+        // a recognizable User-Agent; both are added only for that endpoint.
+        headers.extend(crate::opencode::endpoint_headers(&self.api_base));
         headers
     }
 
@@ -483,6 +486,7 @@ impl LlmClient for OpenAiResponsesAdapter {
             .inner()
             .post(&url)
             .header(AUTHORIZATION, format!("Bearer {key}"))
+            .headers(crate::opencode::endpoint_headers(&self.base_url))
             .json(&compact_request)
             .send()
             .await
