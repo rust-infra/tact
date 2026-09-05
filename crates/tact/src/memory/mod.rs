@@ -1,7 +1,9 @@
 //! Persistent memory (user preferences, project facts, feedback).
 //!
-//! Memories are stored as Markdown files under `.tact/memory/`, each
-//! with YAML frontmatter declaring `name`, `description`, and `type`.
+//! Memories are stored as Markdown files under `~/.tact/memory/` — a
+//! user-global directory shared across all projects (like Claude Code's
+//! `~/.claude` user-level state) — each with YAML frontmatter declaring
+//! `name`, `description`, and `type`.
 //!
 //! ## Memory types
 //!
@@ -221,10 +223,7 @@ impl MemoryManager {
             "Saved memory '{}' [{}] to {}",
             name,
             memory_type,
-            file_path
-                .strip_prefix(std::env::current_dir()?)
-                .unwrap_or(&file_path)
-                .display()
+            display_save_path(&file_path)?
         ))
     }
 
@@ -323,6 +322,23 @@ fn sanitize_name(name: &str) -> String {
         .collect::<String>()
         .trim_matches('_')
         .to_string()
+}
+
+/// Render the path shown in the `save_memory` confirmation: `~/…` when the
+/// memory lives under `$HOME` (the normal `~/.tact/memory` case), otherwise
+/// relative to the current directory when possible, else absolute.
+fn display_save_path(path: &std::path::Path) -> anyhow::Result<String> {
+    if let Some(home) = std::env::var_os("HOME")
+        && let Ok(relative) = path.strip_prefix(std::path::PathBuf::from(home))
+    {
+        return Ok(format!("~/{}", relative.display()));
+    }
+
+    Ok(path
+        .strip_prefix(std::env::current_dir()?)
+        .unwrap_or(path)
+        .display()
+        .to_string())
 }
 
 #[cfg(test)]

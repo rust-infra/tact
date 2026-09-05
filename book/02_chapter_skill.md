@@ -254,7 +254,7 @@ Separate from the model calling `load_skill` mid-turn.
 
 | Aspect | Skills | Memory |
 |--------|--------|--------|
-| Location | `.tact/skills/` + `~/.tact/skills/` + `.claude/skills/` (+ optional `skill_dirs`) | `<workdir>/.tact/memory/` |
+| Location | `.tact/skills/` + `~/.tact/skills/` + `.claude/skills/` (+ optional `skill_dirs`) | `~/.tact/memory/` (user-global) |
 | Format | `SKILL.md` + optional frontmatter | `{name}.md` + required frontmatter |
 | Prompt injection | Summaries always; body on demand / slash | Full content every turn (dynamic section) |
 | Write path | Edit files on disk (no agent tool) | `save_memory` tool |

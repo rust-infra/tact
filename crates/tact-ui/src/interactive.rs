@@ -97,8 +97,11 @@ async fn run_interactive_locked(
     );
     let subagent_manager =
         SharedSubagentManager::new(SubagentManager::new(&tact_path.session_db_path()).await?);
+    // Memory is user-global (`~/.tact/memory`, like Claude Code's `~/.claude`)
+    // so it persists across projects. Project-local `.tact/memory` is only the
+    // fallback when `$HOME` is unset.
     let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(
-        tact_path.memory_dir(),
+        TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
     )?));
     let mcp_router = load_mcp_router().await?;
 

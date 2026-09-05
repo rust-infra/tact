@@ -2,7 +2,7 @@
 
 > 语言：[中文](./03_chapter_memory_zh.md) · [English](./03_chapter_memory.md)
 
-本章说明 Tact 如何在对话上下文之外存储**长期事实**：用户偏好、纠正、项目约束与参考 URL。记忆是 `.tact/memory/` 下带 YAML frontmatter 的 Markdown 文件。每轮注入系统提示词，并可通过 `save_memory` 原生工具在运行时写入。
+本章说明 Tact 如何在对话上下文之外存储**长期事实**：用户偏好、纠正、项目约束与参考 URL。记忆是 `~/.tact/memory/` 下带 YAML frontmatter 的 Markdown 文件——一个**用户级全局**目录，跨所有项目共享（类似 Claude Code 用户级 `~/.claude` 状态）。每轮注入系统提示词，并可通过 `save_memory` 原生工具在运行时写入。
 
 记忆如何融入提示词组装与动态边界，见 [系统提示词](./04_chapter_prompt_zh.md)。写入工具见 [工具系统](./07_chapter_tool_zh.md)。
 
@@ -27,11 +27,11 @@ Memory 回答：*跨会话 agent 应记住什么，且无法从当前代码库�
 
 ```mermaid
 graph TB
-    subgraph Startup["会话启动 (tui.rs)"]
-        TP[TactPath.memory_dir]
+    subgraph Startup["会话启动 (headless.rs / interactive.rs)"]
+        TP[TactPath.home_memory_dir]
         MM[MemoryManager]
         TP --> MM
-        MM -->|load_all| Files[".tact/memory/*.md"]
+        MM -->|load_all| Files["~/.tact/memory/*.md"]
     end
 
     subgraph Agent["每个 LLM 回合"]
@@ -50,7 +50,7 @@ graph TB
     Files --> MM2
 ```
 
-启动时，`get_memory_manager(tact_path.memory_dir())` 构造 `MemoryManager`，扫描 `.tact/memory/`，将所有合法 `.md` 载入内存 `HashMap`。同一 `Arc<Mutex<MemoryManager>>` 经 `ToolContext` 共享，供提示词渲染与 `save_memory` 使用。
+启动时，会话运行器（`tact-ui` headless / interactive）基于 `TactPath::home_memory_dir()` —— `$HOME/.tact/memory` —— 构造 `MemoryManager`，`load_all` 扫描该目录。由于目录位于用户主目录，记忆可**跨项目持久**；旧的项目本地路径（`TactPath::memory_dir()`，`<workdir>/.tact/memory`）仅在 `$HOME` 未设置时作为回退使用。同一 `Arc<Mutex<MemoryManager>>` 经 `ToolContext` 共享，供提示词渲染与 `save_memory` 使用。
 
 ---
 
@@ -168,9 +168,9 @@ pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 
 | 路径 | 用途 |
 |------|------|
-| `<workdir>/.tact/memory/` | 记忆目录（`TactPath::memory_dir()`） |
-| `<workdir>/.tact/memory/{name}.md` | 单条记忆文件 |
-| `<workdir>/.tact/memory/MEMORY.md` | 自动生成索引（不作为记忆加载） |
+| `~/.tact/memory/` | 用户级全局记忆目录（`TactPath::home_memory_dir()`；`TactPath::memory_dir()` 的 `<workdir>/.tact/memory` 仅作无 `$HOME` 时的回退） |
+| `~/.tact/memory/{name}.md` | 单条记忆文件 |
+| `~/.tact/memory/MEMORY.md` | 自动生成索引（不作为记忆加载） |
 
 记忆**直接使用 Markdown 文件**，而非 [存储与持久化](./01_chapter_store_zh.md) 中的 JSON `Store` 层。
 
@@ -185,7 +185,7 @@ pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 | `crates/tact/src/agent/mod.rs` | `load_memory_prompt()`、系统提示词接线 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.memory_manager` |
 | `crates/tact-ui/src/headless.rs`、`interactive.rs` | 会话启动时 `get_memory_manager()` |
-| `crates/tact/src/consts.rs` | `TactPath::memory_dir()` → `.tact/memory` |
+| `crates/tact/src/consts.rs` | `TactPath::home_memory_dir()` → `~/.tact/memory`（`memory_dir()` 保留项目本地回退） |
 
 ---
 
@@ -195,6 +195,7 @@ pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 |------|------|
 | 无删除或编辑工具 | 仅有 `save_memory`；覆盖使用同名 |
 | 会话中不从磁盘 reload | 外部编辑 `.md` 需重启才生效 |
+| 无项目级隔离 | 存储为用户全局（`~/.tact/memory`），`project` 类型记忆跨项目共享，名称不得跨项目冲突 |
 | 浅层扫描 | `load_all()` 使用 `max_depth(1)`——忽略嵌套子目录 |
 | 必需 frontmatter | 无 `---` 头的文件静默跳过 |
 | 无去重 | 相同显示名不同 sanitize 理论上可能文件名冲突 |

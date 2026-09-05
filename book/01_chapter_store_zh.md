@@ -4,7 +4,7 @@
 
 本章说明 Tact 的**磁盘持久化层**：`.tact/` 下的 JSON 文件存储，以及独立的 SQLite 会话数据库。二者共同保存对话历史、领域状态（background、队友等）与可观测性数据。
 
-记忆（[持久化记忆](./03_chapter_memory_zh.md)）使用 `.tact/memory/` 下的 Markdown 文件，**不属于** JSON store API。
+记忆（[持久化记忆](./03_chapter_memory_zh.md)）使用用户级全局目录 `~/.tact/memory/` 下的 Markdown 文件，**不属于** JSON store API。
 
 ---
 

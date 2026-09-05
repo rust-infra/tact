@@ -1,7 +1,7 @@
 # Persistent Memory
 > Language: [English](./03_chapter_memory.md) · [中文](./03_chapter_memory_zh.md)
 
-This chapter explains how Tact stores **long-lived facts** outside the conversation context: user preferences, corrections, project constraints, and reference URLs. Memories are Markdown files with YAML frontmatter under `.tact/memory/`. They are injected into the system prompt every turn and can be written at runtime through the `save_memory` native tool.
+This chapter explains how Tact stores **long-lived facts** outside the conversation context: user preferences, corrections, project constraints, and reference URLs. Memories are Markdown files with YAML frontmatter under `~/.tact/memory/` — a **user-global** directory shared across all projects (like Claude Code's user-level `~/.claude` state). They are injected into the system prompt every turn and can be written at runtime through the `save_memory` native tool.
 
 For how memory fits into prompt assembly and the dynamic boundary, see [System Prompt](./04_chapter_prompt.md). For the tool that writes memories, see [Tool System](./07_chapter_tool.md).
 
@@ -26,11 +26,11 @@ The static string `MEMORY_GUIDANCE` (`crates/tact/src/memory/mod.rs`) is injecte
 
 ```mermaid
 graph TB
-    subgraph Startup["Session startup (tui.rs)"]
-        TP[TactPath.memory_dir]
+    subgraph Startup["Session startup (headless.rs / interactive.rs)"]
+        TP[TactPath.home_memory_dir]
         MM[MemoryManager]
         TP --> MM
-        MM -->|load_all| Files[".tact/memory/*.md"]
+        MM -->|load_all| Files["~/.tact/memory/*.md"]
     end
 
     subgraph Agent["Each LLM turn"]
@@ -49,7 +49,7 @@ graph TB
     Files --> MM2
 ```
 
-At startup, `get_memory_manager(tact_path.memory_dir())` constructs a `MemoryManager`, scans `.tact/memory/`, and loads all valid `.md` files into an in-memory `HashMap`. The same `Arc<Mutex<MemoryManager>>` is shared through `ToolContext` for both prompt rendering and `save_memory`.
+At startup, the session runner (`tact-ui` headless / interactive) constructs a `MemoryManager` over `TactPath::home_memory_dir()` — `$HOME/.tact/memory` — and `load_all` scans that directory. Because it lives in the user home, memories persist **across projects**; the legacy project-local path (`TactPath::memory_dir()`, `<workdir>/.tact/memory`) is used only as a fallback when `$HOME` is unset. The same `Arc<Mutex<MemoryManager>>` is shared through `ToolContext` for both prompt rendering and `save_memory`.
 
 ---
 
@@ -167,9 +167,9 @@ Constructed in `tui.rs` alongside other session services. Sub-agents inherit the
 
 | Path | Purpose |
 |------|---------|
-| `<workdir>/.tact/memory/` | Memory directory (`TactPath::memory_dir()`) |
-| `<workdir>/.tact/memory/{name}.md` | Individual memory files |
-| `<workdir>/.tact/memory/MEMORY.md` | Auto-generated index (not loaded as a memory) |
+| `~/.tact/memory/` | User-global memory directory (`TactPath::home_memory_dir()`; `<workdir>/.tact/memory` via `TactPath::memory_dir()` remains only as a no-`$HOME` fallback) |
+| `~/.tact/memory/{name}.md` | Individual memory files |
+| `~/.tact/memory/MEMORY.md` | Auto-generated index (not loaded as a memory) |
 
 Memory uses **Markdown files directly**, not the JSON `Store` layer described in [Store and Persistence](./01_chapter_store.md).
 
@@ -184,7 +184,7 @@ Memory uses **Markdown files directly**, not the JSON `Store` layer described in
 | `crates/tact/src/agent/mod.rs` | `load_memory_prompt()`, system prompt wiring |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.memory_manager` |
 | `crates/tact-ui/src/headless.rs`, `interactive.rs` | `get_memory_manager()` at session startup |
-| `crates/tact/src/consts.rs` | `TactPath::memory_dir()` → `.tact/memory` |
+| `crates/tact/src/consts.rs` | `TactPath::home_memory_dir()` → `~/.tact/memory` (`memory_dir()` keeps the project-local fallback) |
 
 ---
 
@@ -194,6 +194,7 @@ Memory uses **Markdown files directly**, not the JSON `Store` layer described in
 |-----|--------|
 | No delete or edit tool | Only `save_memory` exists; overwriting uses the same name |
 | No reload from disk mid-session | External edits to `.md` files are not picked up until restart |
+| No project scoping | The store is user-global (`~/.tact/memory`), so `project`-typed memories are shared across every project and names must not collide across them |
 | Shallow scan | `load_all()` uses `max_depth(1)` — nested subdirectories are ignored |
 | Frontmatter required | Files without `---` headers are silently skipped |
 | No deduplication | Same display name with different sanitization could theoretically collide on filename |

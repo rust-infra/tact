@@ -29,7 +29,7 @@
 |---|------|------|
 | 1 | [存储与持久化](./01_chapter_store_zh.md) | `StoreRoot` / JSON 文件存储、SQLite 会话库、领域消费者与 agent 持久化挂钩 |
 | 2 | [Skill 注册表](./02_chapter_skill_zh.md) | `SKILL.md` 多根发现、prompt 摘要、`load_skill`、TUI slash（`$ARGUMENTS`）、`<skill>` 标签 |
-| 3 | [持久记忆](./03_chapter_memory_zh.md) | `.tact/memory/` Markdown 记忆、类型、系统提示注入、`save_memory`、`MEMORY.md` 索引 |
+| 3 | [持久记忆](./03_chapter_memory_zh.md) | `~/.tact/memory/` Markdown 记忆、类型、系统提示注入、`save_memory`、`MEMORY.md` 索引 |
 | 4 | [系统提示](./04_chapter_prompt_zh.md) | 从 role / skills / guidelines / memory / 动态上下文组装系统提示，以及跨回合的缓存友好性 |
 | 5 | [上下文压缩](./05_chapter_compact_zh.md) | `micro_compact` stub、`compact_history` 摘要、transcript / 大输出落盘 |
 | 6 | [错误恢复](./06_chapter_recovery_zh.md) | `RecoveryState`、传输退避重试、prompt-too-long 压缩、输出截断续写 |

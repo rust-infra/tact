@@ -40,6 +40,21 @@ pub fn exceeds_input_char_limit(char_count: usize) -> bool {
 }
 
 #[cfg(test)]
+mod tact_path_tests {
+    use std::path::Path;
+
+    use super::TactPath;
+
+    #[test]
+    fn home_memory_dir_for_joins_home_tact_memory() {
+        assert_eq!(
+            TactPath::home_memory_dir_for(Path::new("/home/alice")),
+            Path::new("/home/alice/.tact/memory")
+        );
+    }
+}
+
+#[cfg(test)]
 mod input_limit_tests {
     use super::{MAX_INPUT_CHARS, exceeds_input_char_limit};
 
@@ -143,7 +158,11 @@ impl TactPath {
     // Subdirectories under `.tact/`
     // ----------------------------------------------------------------
 
-    /// `<workdir>/.tact/memory`
+    /// `<workdir>/.tact/memory` — legacy project-local memory directory.
+    ///
+    /// The agent runtime keeps memory user-global under
+    /// [`home_memory_dir`](Self::home_memory_dir); this project-local path is
+    /// only used as a fallback when `$HOME` is unset.
     pub fn memory_dir(&self) -> PathBuf {
         self.tact_dir().join(MEMORY_DIR)
     }
@@ -180,6 +199,20 @@ impl TactPath {
     /// `$HOME/.tact` — global tact config directory.
     pub fn home_tact_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join(TACT_DIR))
+    }
+
+    /// `$HOME/.tact/memory` — user-global persistent memory directory, shared
+    /// across all projects (the `.tact` analogue of Claude Code's user-level
+    /// `~/.claude` state).
+    pub fn home_memory_dir() -> Option<PathBuf> {
+        std::env::var_os("HOME").map(|home| Self::home_memory_dir_for(Path::new(&home)))
+    }
+
+    /// [`home_memory_dir`](Self::home_memory_dir) with an explicit home path
+    /// (kept separate so path derivation is unit-testable without env vars).
+    #[must_use]
+    pub fn home_memory_dir_for(home: &Path) -> PathBuf {
+        home.join(TACT_DIR).join(MEMORY_DIR)
     }
 
     /// `$HOME/.claude` — global claude config directory.

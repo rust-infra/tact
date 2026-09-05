@@ -3,7 +3,7 @@
 
 This chapter explains Tact's **on-disk persistence layers**: the JSON file store under `.tact/` and the SQLite database. Together they hold conversation history, domain state (worktrees, …), and observability data.
 
-Memory ([Persistent Memory](./03_chapter_memory.md)) uses Markdown files in `.tact/memory/` and is **not** part of the JSON store API.
+Memory ([Persistent Memory](./03_chapter_memory.md)) uses Markdown files in the user-global `~/.tact/memory/` directory and is **not** part of the JSON store API.
 
 ---
 
