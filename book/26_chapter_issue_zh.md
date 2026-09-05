@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-05 — 兼容 `/responses` 端点不再回放历史 reasoning item
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact_llm/src/openai/responses/convert.rs`（`ResponsesRequestPolicy`、`create_response_with_policy`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::with_replay_prior_reasoning`、`is_official_openai_base_url`、compact POST）；task #58；Ch 22 §6.2/§6.2.3 |
+
+**Symptom / motivation:** 每个 `/responses` 请求都把完整的历史 `reasoning` item（持久化的 opaque encrypted payload signature）重放进 `input`。官方 OpenAI 需要它来延续 turn，但兼容端点（OpenCode Go、自定义 OpenAI-compatible 代理）每轮都会自行重新生成 reasoning，回放每一条历史思维链纯属浪费 input token——实测约占请求字节的 ~17%（DeepSeek 类端点按 token 计高达 ~47%）。
+
+**Decision:** 增加 per-adapter 的 `replay_prior_reasoning` 策略。`OpenAiResponsesAdapter::new` 按 base URL 推导默认值（`is_official_openai_base_url`：`api.openai.com` / Azure OpenAI → 回放；其他一切 → 丢弃）；`with_replay_prior_reasoning` 可覆盖。`create_response` 改为 `create_response_with_policy(request, provider_state, compact_threshold, ResponsesRequestPolicy { native_web_search, replay_prior_reasoning })`。reasoning signature 在每条路径上仍会被解码，使 `fc_*` function-call item id 保持挂在其 `function_call` item 上；只是省略独立的 `reasoning` 载荷。回放被关闭时，构造请求前会先从持久化状态基线中过滤掉过期的 `reasoning` item，返回的 `input_items` 也不含 reasoning，因此旧版本写入的 state 会在升级后的第一次请求自愈。
+
+**Behavior after:** 官方 OpenAI（及 Azure OpenAI）的 Responses 请求与之前完全一致地回放先前 reasoning；其他任何 base URL 都会从普通请求、显式 `/responses/compact` 请求体与持久化状态基线中丢弃历史 reasoning item，在保留 function-call identity 的同时削减约 17% 的 input 字节。对语义与其主机名不同的端点，提供显式覆盖开关。
+
+---
+
 ## 1. 2026-09-02 — OpenCode `x-opencode-session` 绑定 Tact session id（缓存隔离）
 
 | Field | Value |

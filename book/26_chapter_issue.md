@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-05 — Compatible `/responses` endpoints stop replaying historical reasoning items
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact_llm/src/openai/responses/convert.rs` (`ResponsesRequestPolicy`, `create_response_with_policy`), `crates/tact_llm/src/openai/responses/mod.rs` (`OpenAiResponsesAdapter::with_replay_prior_reasoning`, `is_official_openai_base_url`, compact POST); task #58; Ch 22 §6.2/§6.2.3 |
+
+**Symptom / motivation:** Every `/responses` request replayed the full historical `reasoning` items (persisted signatures with opaque encrypted payloads) into `input`. Official OpenAI needs that for turn continuation, but compatible endpoints (OpenCode Go, custom OpenAI-compatible proxies) regenerate reasoning each turn, so replaying every previous chain of thought was pure input-token waste — measured at ~17% of request bytes (up to ~47% of tokens on DeepSeek-style endpoints).
+
+**Decision:** Add a per-adapter `replay_prior_reasoning` policy. `OpenAiResponsesAdapter::new` derives the default from the base URL (`is_official_openai_base_url`: `api.openai.com` / Azure OpenAI → replay; everything else → drop); `with_replay_prior_reasoning` overrides it. `create_response` became `create_response_with_policy(request, provider_state, compact_threshold, ResponsesRequestPolicy { native_web_search, replay_prior_reasoning })`. The reasoning signature is still decoded on every path so `fc_*` function-call item ids stay attached to their `function_call` items; only the standalone `reasoning` payload is omitted. When replay is disabled the persisted state baseline is filtered of stale `reasoning` items before the body is built, and the returned `input_items` exclude reasoning, so states persisted by an older build self-heal on the first request.
+
+**Behavior after:** official OpenAI (and Azure OpenAI) Responses requests replay prior reasoning exactly as before; any other base URL drops historical reasoning items from ordinary requests, explicit `/responses/compact` bodies, and the persisted state baseline, cutting ~17% of input bytes while preserving function-call identity. An explicit override exists for endpoints whose semantics differ from their host name.
+
+---
+
 ## 1. 2026-09-02 — OpenCode `x-opencode-session` is bound to the Tact session id (cache isolation)
 
 | Field | Value |

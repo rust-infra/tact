@@ -334,7 +334,7 @@ reasoning_effort = "high"
 
 Tact 继续拥有 conversation。每次请求以 `store: false` 发送**已持久化的协议基线 + 新出现的逻辑消息**；不使用 Conversations 或 `previous_response_id`。转换覆盖 system instructions、用户/assistant 文本、图片 data URL、function call、function output、function tools、tool choice、采样字段，以及 `max_tokens → max_output_tokens`。`top_k` 与 stop sequences 因 Responses 请求类型无对应字段而省略。
 
-Responses 请求包含 `reasoning.encrypted_content`。返回的 reasoning item 转为 `ContentBlock::Thinking`：summary 文本存入 `thinking`，`signature` 保存一个带版本的 opaque envelope，其中包含完整 reasoning item 与相关 `fc_*` function-call item id。下一次请求由该 envelope 重建原始 `rs_*` / `fc_*` identity；没有 encrypted payload 的 thinking block 仅用于显示，不发送回 API。
+Responses 请求包含 `reasoning.encrypted_content`。返回的 reasoning item 转为 `ContentBlock::Thinking`：summary 文本存入 `thinking`，`signature` 保存一个带版本的 opaque envelope，其中包含完整 reasoning item 与相关 `fc_*` function-call item id。下一次请求由该 envelope 重建原始 `rs_*` / `fc_*` identity——独立的 `reasoning` item 本身是否回放是按 base URL 的策略（官方 OpenAI 回放；兼容端点丢弃以省 input token，见 §6.2.3）；没有 encrypted payload 的 thinking block 仅用于显示，不发送回 API。
 
 Responses 使用独立的 `responses_system_prompt_template.md`，不改变其他 provider 模板。其 skill 加载策略禁止对问候、闲聊和普通问题调用 `load_skill`；必须由用户显式 slash 调用或明确要求使用某个 skill，且 skill 描述不得自行要求必须调用该 skill。
 
@@ -431,15 +431,17 @@ custom OpenAI-compatible 端点一视同仁。没有按 provider 的开关，也
 **转换 / 状态边界**：
 
 - **状态基线** — `ResponsesConversationState` 保存不透明协议基线：
-  `input_items`（此前 terminal outputs 的原样 JSON，含 `compaction` 与
-  `reasoning` item）、`compaction_id`、`is_compacted`、`logical_message_count`
-  与 `logical_context_hash`。
+  `input_items`（此前 terminal outputs 的原样 JSON，含 `compaction` item；
+  当回放策略保留时才含 `reasoning` item——§6.2.3）、`compaction_id`、
+  `is_compacted`、`logical_message_count` 与 `logical_context_hash`。
 - **校验** — 复用前，`validate_conversion_state` 检查 state version/provider 与逻辑
   消息前缀哈希，adapter 检查 provider 与 base URL；这些不一致仍是硬性协议错误。
   模型不一致则允许继续，仅在发送基线时适配 hosted web-search 的 `query` /
   `queries` 字段，不重建整段逻辑历史。
 - **增量转换** — `create_response` 发送状态基线原文，再加上仅新出现的逻辑
-  消息转换出的 `/responses` items。无状态时则转换全部逻辑消息。
+  消息转换出的 `/responses` items。无状态时则转换全部逻辑消息。当
+  reasoning 回放策略丢弃历史 reasoning（§6.2.3）时，会先从基线中过滤掉
+  过期的 `reasoning` item；其余保持原样。
 - **`context_management`** — 解析出压缩阈值（配置或推导）后，每个普通
   `/responses` 请求都会携带
   `context_management: [{ "type": "compaction", "compact_threshold": N }]`，
@@ -524,6 +526,8 @@ Responses reasoning item 并不是从可见文本重新推导出来的。相反�
 - 在可用时带匹配 provider item id 的 `function_call` item
 
 这也是为什么即使 adapter 每次都从持久化基线 + 本地消息重建请求，而不是依赖服务端 `previous_response_id` 链，compact 过的会话依然能回放 Responses-native 的 reasoning / function-call 历史。
+
+**回放策略。** 历史 `reasoning` item 是否真的被回放，是 adapter 的策略决定，而不是 signature 的固定属性。官方 OpenAI（`api.openai.com`、Azure OpenAI）是唯一在 turn 延续语义上期望把前一轮 reasoning item（连同其 opaque encrypted payload）发回的端点族，因此 `OpenAiResponsesAdapter` 在那里默认回放。兼容端点（DeepSeek、OpenCode Go、任意 OpenAI-compatible 代理）接受这些 item，但每轮都会自行重新生成 reasoning，回放每一条历史思维链纯粹浪费 input token（实测约占请求字节的 ~17%）。`OpenAiResponsesAdapter::new` 按 base URL 推导默认值；`with_replay_prior_reasoning` 可覆盖（官方 OpenAI → 回放；其他一切 base URL → 丢弃）。当回放被关闭时，`message_to_input` 仍会解码 signature，使 `fc_*` function-call item id 保持挂在其 `function_call` item 上——只是省略独立的 `reasoning` 载荷——同时返回的 `input_items`（作为下一次请求的状态基线持久化）也不含 reasoning，因此旧版本写入的 state 会在升级后的第一次请求自愈。
 
 **加密边界。** reasoning 的 `encrypted_content` **只允许**存在于这个内部、
 不可渲染的 signature envelope 中：绝不进入可见的 `thinking` 摘要文本，绝不

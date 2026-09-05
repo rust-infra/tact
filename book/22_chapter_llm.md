@@ -375,8 +375,11 @@ Responses requests include `reasoning.encrypted_content`. A returned reasoning
 item becomes `ContentBlock::Thinking`: summary text is stored in `thinking`,
 while `signature` stores a versioned opaque envelope containing the complete
 reasoning item and related `fc_*` function-call item ids. The next request
-reconstructs the original `rs_*` / `fc_*` identities; a thinking block without
-an encrypted payload is display-only and is not sent back.
+reconstructs the original `rs_*` / `fc_*` identities — whether the standalone
+`reasoning` item itself is replayed is a base-URL policy (official OpenAI
+yes; compatible endpoints drop it to save input tokens, §6.2.3) — and a
+thinking block without an encrypted payload is display-only and is not sent
+back.
 
 Responses uses its own `responses_system_prompt_template.md`, leaving other
 provider templates unchanged. Its skill-loading policy forbids
@@ -514,7 +517,8 @@ owns the exact **conversion/state boundaries**:
 
 - **State baseline** — `ResponsesConversationState` holds the opaque protocol
   baseline: `input_items` (verbatim JSON from previous terminal outputs,
-  including `compaction` and `reasoning` items), `compaction_id`,
+  including `compaction` items and, when the replay policy keeps them,
+  `reasoning` items — §6.2.3), `compaction_id`,
   `is_compacted`, `logical_message_count`, and `logical_context_hash`.
 - **Validation** — before reuse, `validate_conversion_state` checks the state
   version/provider and logical-message prefix hash, while the adapter checks
@@ -524,7 +528,10 @@ owns the exact **conversion/state boundaries**:
   history.
 - **Incremental conversion** — `create_response` sends the state baseline
   verbatim plus only the newly uncovered logical messages converted to
-  `/responses` items. With no state, every logical message is converted.
+  `/responses` items. With no state, every logical message is converted. When
+  the reasoning-replay policy drops historical reasoning (§6.2.3), the
+  baseline is first filtered of stale `reasoning` items; everything else stays
+  verbatim.
 - **`context_management`** — when a compact threshold is configured (or
   derived), every ordinary `/responses` request carries
   `context_management: [{ "type": "compaction", "compact_threshold": N }]`, so
@@ -626,6 +633,8 @@ On a later request, `history::decode` can recover that state so `message_to_inpu
 - `function_call` items carrying the matching provider item ids when available
 
 This is why a compacted conversation can still replay Responses-native reasoning/function-call history even though the adapter rebuilds every request from the persisted baseline plus local messages rather than a server-side `previous_response_id` chain.
+
+**Replay policy.** Whether the historical `reasoning` items are actually replayed is an adapter policy, not a fixed property of the signature. Official OpenAI (`api.openai.com`, Azure OpenAI) is the one family whose turn-continuation semantics expect the prior reasoning item (with its opaque encrypted payload) to be passed back, so `OpenAiResponsesAdapter` replays by default there. Compatible endpoints (DeepSeek, OpenCode Go, arbitrary OpenAI-compatible proxies) accept the items but regenerate reasoning each turn, so replaying every previous chain of thought is pure input-token waste (measured at ~17% of request bytes). `OpenAiResponsesAdapter::new` derives the default from the base URL; `with_replay_prior_reasoning` overrides it (official OpenAI → replay; every other base URL → drop). When replay is disabled, `message_to_input` still decodes the signature so the `fc_*` function-call item ids stay attached to their `function_call` items — only the standalone `reasoning` payload is omitted — and the returned `input_items` (persisted back as the next request's state baseline) also exclude reasoning, so states written by an older build self-heal on the first request after the upgrade.
 
 **Encrypted boundary.** The reasoning `encrypted_content` may exist **only**
 inside this internal, non-renderable signature envelope: never in the visible
