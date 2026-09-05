@@ -15,7 +15,6 @@ pub mod inject;
 pub mod mock;
 pub mod models;
 pub mod openai;
-pub mod opencode;
 pub mod profile;
 pub mod provider;
 pub mod provider_state;

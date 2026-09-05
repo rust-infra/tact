@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-05 — 移除 OpenCode `x-opencode-session` 头接线
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | 移除 `crates/tact_llm/src/opencode.rs`；`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter`、`ResponsesCompatConfig`）、`crates/tact_llm/src/openai/compatible/mod.rs`（`CompatibleConfig::headers`）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）；Ch 21 |
+
+**症状 / 动机:** OpenCode 托管端点不再要求 `x-opencode-session` 头（也不需要自定义 `tact/<version>` User-Agent），因此整套「检测 `opencode.ai` 端点并为每个请求附加该头」的机制成为死代码——而且它迫使把 Tact session id 一路透传（`Agent::with_session` → `LlmProvider::set_user_id` → `OpenAiResponsesAdapter::set_session_id`）仅仅是为了填充这一个头的值。
+
+**决策:** 整体移除 OpenCode 会话逻辑：删除 `opencode` 辅助模块，并停止在 Responses SDK 配置、直接 `POST /responses/compact`、Chat Completions 配置以及 `/v1/models` 选择器拉取上附加 `x-opencode-session` / `tact/<version>`。从 Responses adapter 移除 `session_id`/`opencode_session` 字段与 `set_session_id`，去掉 `LlmProvider::set_user_id` 的 `OpenAiResponses` 分支，并删除 `TACT_OPENCODE_SESSION` 环境变量覆盖。
+
+**改动后行为:** 任何端点的请求都不再携带 `x-opencode-session` 头（也无自定义 OpenCode User-Agent）；`opencode.ai` 端点与其它 OpenAI 兼容 base URL 一视同仁。DeepSeek 经 Chat Completions adapter 的 `user_id` KV 缓存隔离不受影响。
+
+---
+
 ## 1. 2026-09-05 — 兼容 `/responses` 端点不再回放历史 reasoning item
 
 | Field | Value |

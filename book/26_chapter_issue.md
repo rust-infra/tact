@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-05 — OpenCode `x-opencode-session` header wiring removed
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | removed `crates/tact_llm/src/opencode.rs`; `crates/tact_llm/src/openai/responses/mod.rs` (`OpenAiResponsesAdapter`, `ResponsesCompatConfig`), `crates/tact_llm/src/openai/compatible/mod.rs` (`CompatibleConfig::headers`), `crates/tact_llm/src/models.rs` (`fetch_model_ids`), `crates/tact_llm/src/client.rs` (`LlmProvider::set_user_id`); Ch 21 |
+
+**Symptom / motivation:** OpenCode's hosted endpoints no longer require an `x-opencode-session` header (nor a custom `tact/<version>` User-Agent), so the whole mechanism that detected `opencode.ai` base URLs and attached the header to every request was dead weight — and it forced plumbing the Tact session id (`Agent::with_session` → `LlmProvider::set_user_id` → `OpenAiResponsesAdapter::set_session_id`) purely to feed one header value.
+
+**Decision:** Remove the OpenCode session logic entirely: delete the `opencode` helper module and stop attaching `x-opencode-session`/`tact/<version>` on the Responses SDK config, the direct `/responses/compact` POST, the Chat Completions config, and the `/v1/models` picker fetch. Drop the `session_id`/`opencode_session` fields and `set_session_id` from the Responses adapter, remove the `OpenAiResponses` arm of `LlmProvider::set_user_id`, and delete the `TACT_OPENCODE_SESSION` env override.
+
+**Behavior after:** requests carry no `x-opencode-session` header (and no custom OpenCode User-Agent) on any endpoint; `opencode.ai` endpoints are treated like any other OpenAI-compatible base URL. DeepSeek `user_id` KV-cache isolation through the Chat Completions adapter is unaffected.
+
+---
+
 ## 1. 2026-09-05 — Compatible `/responses` endpoints stop replaying historical reasoning items
 
 | Field | Value |

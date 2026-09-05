@@ -338,12 +338,6 @@ impl Config for CompatibleConfig {
             reqwest13::header::USER_AGENT,
             "Claude Code".parse().unwrap(),
         );
-        // OpenCode Go requires x-opencode-session (and a recognizable UA) on
-        // every request; both are added only for that endpoint and override
-        // the generic UA above. The Chat Completions path has no session id
-        // here (OpenCode Go speaks the Responses protocol), so the per-base
-        // fallback token is used when the endpoint is opencode.
-        headers.extend(crate::opencode::endpoint_headers(&self.api_base, None));
         headers
     }
 

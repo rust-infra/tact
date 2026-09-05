@@ -117,16 +117,6 @@ base_url = "https://api.moonshot.cn/v1"   # required for custom providers
 model = "kimi-k2.5"
 ```
 
-**OpenCode Go endpoints** (`https://opencode.ai/zen/go/v1` and subdomains of
-`opencode.ai`): Tact automatically attaches an `x-opencode-session` header to
-every request and sends `tact/<version>` as the `User-Agent` so the endpoint
-can identify the tool. The header value is the **Tact session id** — OpenCode
-uses it as the key that distinguishes its per-conversation caches, so the same
-session (including a resumed one) reuses one value and different sessions get
-different values. Requests without a session (e.g. the `/v1/models` picker
-fetch) fall back to a per-`base_url` token; set `TACT_OPENCODE_SESSION` to pin
-that fallback.
-
 ---
 
 ## 4. TOML Schema

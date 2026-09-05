@@ -144,7 +144,6 @@ async fn fetch_model_ids(base_url: &str, api_key: &str, http: &SharedHttpClient)
         .inner()
         .get(&url)
         .header("Authorization", format!("Bearer {api_key}"))
-        .headers(crate::opencode::endpoint_headers(base_url, None))
         .timeout(Duration::from_millis(5000))
         .send()
         .await
