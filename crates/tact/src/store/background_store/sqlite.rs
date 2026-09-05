@@ -85,23 +85,6 @@ impl SqliteBackgroundStore {
     }
 }
 
-fn status_to_str(status: BackgroundTaskStatus) -> &'static str {
-    match status {
-        BackgroundTaskStatus::Running => "running",
-        BackgroundTaskStatus::Completed => "completed",
-        BackgroundTaskStatus::Error => "error",
-    }
-}
-
-fn str_to_status(s: &str) -> Result<BackgroundTaskStatus> {
-    match s {
-        "running" => Ok(BackgroundTaskStatus::Running),
-        "completed" => Ok(BackgroundTaskStatus::Completed),
-        "error" => Ok(BackgroundTaskStatus::Error),
-        other => anyhow::bail!("invalid background task status in database: {other}"),
-    }
-}
-
 fn from_millis(millis: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(millis).unwrap_or_else(Utc::now)
 }
@@ -109,7 +92,7 @@ fn from_millis(millis: i64) -> DateTime<Utc> {
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<BackgroundTaskRecord> {
     Ok(BackgroundTaskRecord {
         id: row.try_get("id")?,
-        status: str_to_status(&row.try_get::<String, _>("status")?)?,
+        status: BackgroundTaskStatus::try_from(row.try_get::<String, _>("status")?.as_str())?,
         command: row.try_get("command")?,
         session_id: row.try_get("session_id")?,
         started_at: from_millis(row.try_get("started_at")?),
@@ -143,7 +126,7 @@ impl BackgroundStore for SqliteBackgroundStore {
             "#,
         )
         .bind(&record.id)
-        .bind(status_to_str(record.status))
+        .bind(<&'static str>::from(record.status))
         .bind(&record.command)
         .bind(&record.session_id)
         .bind(record.started_at.timestamp_millis())

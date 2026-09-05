@@ -40,6 +40,31 @@ pub enum SubagentStatus {
     Cancelled,
 }
 
+impl From<SubagentStatus> for &'static str {
+    fn from(status: SubagentStatus) -> Self {
+        match status {
+            SubagentStatus::Running => "running",
+            SubagentStatus::Completed => "completed",
+            SubagentStatus::Failed => "failed",
+            SubagentStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl TryFrom<&str> for SubagentStatus {
+    type Error = anyhow::Error;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => anyhow::bail!("invalid subagent status in database: {other}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentRun {
     pub child_id: String,

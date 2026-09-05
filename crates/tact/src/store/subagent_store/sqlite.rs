@@ -61,25 +61,6 @@ impl SqliteSubagentStore {
     }
 }
 
-fn status_to_str(status: SubagentStatus) -> &'static str {
-    match status {
-        SubagentStatus::Running => "running",
-        SubagentStatus::Completed => "completed",
-        SubagentStatus::Failed => "failed",
-        SubagentStatus::Cancelled => "cancelled",
-    }
-}
-
-fn str_to_status(s: &str) -> Result<SubagentStatus> {
-    match s {
-        "running" => Ok(SubagentStatus::Running),
-        "completed" => Ok(SubagentStatus::Completed),
-        "failed" => Ok(SubagentStatus::Failed),
-        "cancelled" => Ok(SubagentStatus::Cancelled),
-        other => anyhow::bail!("invalid subagent status in database: {other}"),
-    }
-}
-
 fn from_millis(millis: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(millis).unwrap_or_else(Utc::now)
 }
@@ -87,7 +68,7 @@ fn from_millis(millis: i64) -> DateTime<Utc> {
 fn row_to_run(row: &sqlx::sqlite::SqliteRow) -> Result<SubagentRun> {
     Ok(SubagentRun {
         child_id: row.try_get("child_id")?,
-        status: str_to_status(&row.try_get::<String, _>("status")?)?,
+        status: SubagentStatus::try_from(row.try_get::<String, _>("status")?.as_str())?,
         summary: row.try_get::<Option<String>, _>("summary")?,
         started_at: from_millis(row.try_get("started_at")?),
         finished_at: row
@@ -112,7 +93,7 @@ impl SubagentStore for SqliteSubagentStore {
             "#,
         )
         .bind(&record.child_id)
-        .bind(status_to_str(record.status))
+        .bind(<&'static str>::from(record.status))
         .bind(&record.summary)
         .bind(record.started_at.timestamp_millis())
         .bind(record.finished_at.map(|dt| dt.timestamp_millis()))
