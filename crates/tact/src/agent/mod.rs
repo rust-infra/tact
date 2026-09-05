@@ -3369,11 +3369,18 @@ mod tests {
         let mut tool_context = context;
         tool_context.ui_tx = None;
         let mut agent = Agent::new(
-            LlmProvider::OpenAiResponses(tact_llm::openai::responses::OpenAiResponsesAdapter::new(
-                "test-key",
-                server.uri(),
-                None,
-            )),
+            LlmProvider::OpenAiResponses(
+                tact_llm::openai::responses::OpenAiResponsesAdapter::new(
+                    "test-key",
+                    server.uri(),
+                    None,
+                )
+                // This wiremock serves an OpenAI-shaped protocol stream
+                // (reasoning + encrypted content + item ids), so reasoning
+                // replay must stay enabled even though the mock base URL is
+                // not api.openai.com.
+                .with_replay_prior_reasoning(true),
+            ),
             tool_context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
