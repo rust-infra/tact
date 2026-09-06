@@ -56,33 +56,6 @@ pub struct SubagentInput {
     #[schemars(description = "Run the subagent inside an isolated git worktree.")]
     #[serde(default)]
     pub worktree: Option<bool>,
-    /// Reference a declarative subagent definition by name (`plugin:<name>`
-    /// for plugin agents, or a unique local name). The definition body
-    /// becomes the subagent's system prompt, and its `tools` / `model` /
-    /// `permissionMode` frontmatter override the defaults.
-    #[schemars(description = "Name of a declarative agent definition to run.")]
-    #[serde(default)]
-    pub agent: Option<String>,
-}
-
-/// Resolves a declarative agent's `model:` frontmatter to a Tact model name.
-///
-/// Claude Code agents use aliases: `inherit` means "keep the parent's model"
-/// (no override); `sonnet` / `opus` / `haiku` name Claude models that Tact
-/// cannot address without config mapping, so they are ignored with a warning.
-/// Any other value is treated as a concrete model id and passed through.
-fn resolve_agent_model(model: &str, agent_name: &str) -> Option<String> {
-    match model.to_ascii_lowercase().as_str() {
-        "" | "inherit" => None,
-        "sonnet" | "opus" | "haiku" => {
-            warn!(
-                "declarative agent '{agent_name}' requests Claude model '{model}'; \
-                 ignoring (Tact has no alias mapping)"
-            );
-            None
-        }
-        _ => Some(model.to_string()),
-    }
 }
 
 /// Worktree lane name prefix for isolated subagents.
@@ -139,7 +112,7 @@ fn with_worktree_note(summary: String, worktree: Option<&WorktreeRecord>) -> Str
 
 pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "spawn_subagent",
-    description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default it runs in the current working directory, blocks until it finishes, and returns the subagent's final summary. Set run_in_background: true to return immediately as async_launched { id } and have the summary re-injected on a later turn; use it to fan out several independent subagents in parallel, then wait_subagent on each (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; the lane path is appended to the returned summary. Set agent: <name> to run a declarative agent from .tact/agents/*.md or an installed plugin (plugin:<name>); its body becomes the system prompt, its tools/model/permissionMode frontmatter apply where supported, and this prompt argument is still required (it becomes the child's task).",
+    description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default it runs in the current working directory, blocks until it finishes, and returns the subagent's final summary. Set run_in_background: true to return immediately as async_launched { id } and have the summary re-injected on a later turn; use it to fan out several independent subagents in parallel, then wait_subagent on each (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; the lane path is appended to the returned summary.",
     permission: PermissionPolicy::High,
     permission_prompt: PermissionPromptPolicy::Json,
     resources: ResourcePolicy::Barrier,
@@ -282,42 +255,12 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     }
 
     // The child's system prompt is built after the work_dir override so a
-    // worktree-isolated subagent is told exactly where it is working. A
-    // declarative agent definition replaces the default generic prompt with
-    // its own body; the caller's `prompt` becomes the user task.
-    let mut pm = pm;
-    let agent_definition = match input.agent.as_deref() {
-        Some(name) => {
-            let registry = crate::agent_def::lock_agent_definitions(&ctx.agent_registry);
-            Some(registry.get(name).cloned().with_context(|| {
-                format!(
-                    "unknown declarative agent '{name}'; available:\n{}",
-                    registry.describe_available()
-                )
-            })?)
-        }
-        None => None,
-    };
-    if let Some(definition) = agent_definition.as_ref()
-        && let Some(mode) = definition.permission_mode
-        // Auto stays sticky; other inherited modes may be overridden.
-        && pm.mode() != PermissionMode::Auto
-    {
-        pm.set_mode(mode);
-    }
-    let mut system_prompt = match agent_definition.as_ref() {
-        Some(definition) => {
-            format!(
-                "{}\n\nUser task:\n{}",
-                definition.body.trim(),
-                input.prompt.trim()
-            )
-        }
-        None => format!(
-            "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
-            ctx.work_dir.display()
-        ),
-    };
+    // worktree-isolated subagent is told exactly where it is working; the
+    // caller's `prompt` becomes the user task.
+    let mut system_prompt = format!(
+        "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
+        ctx.work_dir.display()
+    );
 
     // Claude Code plugin `SubagentStart` hooks may inject context into the
     // child system prompt (e.g. ponytail injects its mode). A `Block` from a
@@ -325,7 +268,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // normalize failures to Continue.
     if !ctx.subagent_start_hooks.is_empty() {
         let mut start_ctx = crate::hook::SubagentStartContext {
-            name: input.agent.clone().unwrap_or_else(|| child_id.clone()),
+            name: child_id.clone(),
             prompt: input.prompt.clone(),
             system_prompt: system_prompt.clone(),
         };
@@ -351,41 +294,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         .ensure_session_row(&child_id, &root_dir, &ref_id)
         .await?;
 
-    let mut agent_overrides = agent_overrides;
-    if let Some(definition) = agent_definition.as_ref()
-        && let Some(model) = definition.model.as_deref()
-        && let Some(resolved) = resolve_agent_model(model, &definition.name)
-    {
-        agent_overrides.model = resolved;
-    }
-
     let mut subagent = Agent::new(
         client,
         ctx.clone(),
-        {
-            let definition = agent_definition.as_ref();
-            let router = crate::tool::registry::subagent_toolset_for(
-                definition.and_then(|d| d.tools.as_deref()),
-            );
-            if router.tool_specs().is_empty()
-                && definition
-                    .and_then(|d| d.tools.as_deref())
-                    .is_some_and(|tools| !tools.is_empty())
-            {
-                bail!(
-                    "declarative agent '{}' declares tools: {} but none map to a Tact \
-                     subagent tool (supported: Read/Glob/Grep, Bash, Edit, Write, Sleep)",
-                    definition.expect("definition exists").name,
-                    definition
-                        .expect("definition exists")
-                        .tools
-                        .as_ref()
-                        .expect("tools exist")
-                        .join(", ")
-                );
-            }
-            router
-        },
+        crate::tool::registry::subagent_toolset(),
         MCPToolRouter::new(),
         pm,
         AgentSystemPrompt::Static(system_prompt),
@@ -740,84 +652,6 @@ mod tests {
     }
 
     #[test]
-    fn subagent_toolset_for_filters_by_claude_tool_names() {
-        let router = crate::tool::registry::subagent_toolset_for(Some(&[
-            "Read".to_string(),
-            "Bash".to_string(),
-        ]));
-        let specs = router.tool_specs();
-        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names.len(), 2);
-        assert!(names.contains(&"bash"));
-        assert!(names.contains(&"read_file"));
-
-        // Edit / Write map to edit_file / write_file; Sleep is Tact-specific.
-        let router = crate::tool::registry::subagent_toolset_for(Some(&[
-            "Edit".to_string(),
-            "Write".to_string(),
-            "Sleep".to_string(),
-        ]));
-        let specs = router.tool_specs();
-        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"edit_file"));
-        assert!(names.contains(&"write_file"));
-        assert!(names.contains(&"sleep"));
-    }
-
-    #[test]
-    fn subagent_toolset_for_unknown_names_returns_empty_router() {
-        // All-declared-tools-unknown must NOT silently widen to the default
-        // set — the caller (spawn_subagent) errors out instead.
-        let router = crate::tool::registry::subagent_toolset_for(Some(&["NotATool".to_string()]));
-        assert!(
-            router.tool_specs().is_empty(),
-            "fully-unknown tools must yield an empty router, got {} tools",
-            router.tool_specs().len()
-        );
-
-        let router = crate::tool::registry::subagent_toolset_for(None);
-        assert_eq!(router.tool_specs().len(), 5);
-    }
-
-    #[test]
-    fn subagent_toolset_for_mixed_known_unknown_keeps_known() {
-        let router = crate::tool::registry::subagent_toolset_for(Some(&[
-            "Read".to_string(),
-            "TotallyBogus".to_string(),
-            "Bash".to_string(),
-        ]));
-        let specs = router.tool_specs();
-        assert_eq!(specs.len(), 2, "unknown names must be ignored, known kept");
-    }
-
-    #[test]
-    fn subagent_toolset_for_empty_list_keeps_default() {
-        // Claude semantics: an empty `tools:` list does not restrict — keep
-        // the default five-tool set (not a zero-tool subagent).
-        let router = crate::tool::registry::subagent_toolset_for(Some(&[]));
-        assert_eq!(router.tool_specs().len(), 5);
-    }
-
-    #[test]
-    fn resolve_agent_model_handles_claude_aliases() {
-        assert_eq!(resolve_agent_model("inherit", "a"), None);
-        assert_eq!(resolve_agent_model("", "a"), None);
-        // Claude aliases are ignored (Tact has no mapping) — never passed through.
-        assert_eq!(resolve_agent_model("sonnet", "a"), None);
-        assert_eq!(resolve_agent_model("Opus", "a"), None);
-        assert_eq!(resolve_agent_model("haiku", "a"), None);
-        // Concrete model ids pass through unchanged.
-        assert_eq!(
-            resolve_agent_model("deepseek-v4", "a").as_deref(),
-            Some("deepseek-v4")
-        );
-        assert_eq!(
-            resolve_agent_model("claude-sonnet-4-5", "a").as_deref(),
-            Some("claude-sonnet-4-5")
-        );
-    }
-
-    #[test]
     fn subagent_input_deserialization() {
         let json = serde_json::json!({
             "prompt": "Fix the bug in main.rs",
@@ -830,22 +664,6 @@ mod tests {
         assert_eq!(input.max_turns, None);
         assert_eq!(input.resume, None);
         assert_eq!(input.worktree, None);
-        assert_eq!(input.agent, None);
-    }
-
-    #[test]
-    fn subagent_input_deserializes_agent_field() {
-        let json = serde_json::json!({
-            "prompt": "Review the diff",
-            "agent": "claude-security:code-reviewer",
-            "worktree": true
-        });
-        let input: SubagentInput = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            input.agent.as_deref(),
-            Some("claude-security:code-reviewer")
-        );
-        assert_eq!(input.worktree, Some(true));
     }
 
     #[test]

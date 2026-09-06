@@ -93,9 +93,6 @@ fn print_result(result: &PluginResult) {
                 if p.command_count > 0 {
                     features.push(format!("commands={}", p.command_count));
                 }
-                if p.agent_count > 0 {
-                    features.push(format!("agents={}", p.agent_count));
-                }
                 if p.has_hooks {
                     features.push("hooks".into());
                 }

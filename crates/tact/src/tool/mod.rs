@@ -107,9 +107,6 @@ pub struct ToolContext {
     /// Shared with the TUI in interactive mode so `/skill-reload` updates
     /// `load_skill` / system-prompt skill summaries without restarting.
     pub skill_registry: crate::skill::SharedSkillRegistry,
-    /// Declarative subagent definitions (`.tact/agents/*.md` + installed
-    /// plugin `agents/*.md`), referenced by `spawn_subagent`'s `agent` field.
-    pub agent_registry: crate::agent_def::SharedAgentDefinitionRegistry,
     /// Claude Code plugin `SubagentStart` command hooks, stamped at dispatch
     /// time so `spawn_subagent` can inject context into the child system
     /// prompt without needing a parent [`Agent`](crate::Agent) handle.

@@ -72,7 +72,6 @@ pub fn test_context(name: &str) -> ToolContext {
         skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
             root_dir.join(".claude/skills")
         ]))),
-        agent_registry: Arc::new(Mutex::new(crate::agent_def::AgentDefinitionRegistry::new())),
         subagent_start_hooks: Vec::new(),
         memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new(
             root_dir.join(".tact/memory"),

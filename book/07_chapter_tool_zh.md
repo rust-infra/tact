@@ -137,7 +137,7 @@ Spec 通过 `OnceLock` 只算一次——正常用法下首次 `tool_specs()` �
 | `edit_file` | 精确字符串替换（首次或全部） |
 | `sleep` | 定时 / 轮询 |
 
-子 agent **不**获得团队、任务管理、仅 MCP 名称、worktree 工具或其他特权工具——包括 `spawn_subagent` 本身（无嵌套子 agent）。默认五件套由 `subagent_toolset_has_five_tools` 强制；声明式 `tools:` 列表只能收窄。完整 spawn 生命周期：[Subagents](./12_chapter_subagent.md)（英文）。
+子 agent **不**获得团队、任务管理、仅 MCP 名称、worktree 工具或其他特权工具——包括 `spawn_subagent` 本身（无嵌套子 agent）。默认五件套由 `subagent_toolset_has_five_tools` 强制。完整 spawn 生命周期：[Subagents](./12_chapter_subagent.md)（英文）。
 
 ---
 

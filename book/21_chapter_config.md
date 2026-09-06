@@ -336,13 +336,13 @@ tact-ui headless "Summarize this repo"
 ```
 
 Plugin management lives under `tact plugin` / `/plugin`: `list` prints each
-installed plugin with a feature summary (`skills=N commands=M agents=K hooks
-mcp`), and `install` / `uninstall` / `update` / `reload` manage the
+installed plugin with a feature summary (`skills=N commands=M hooks mcp`),
+and `install` / `uninstall` / `update` / `reload` manage the
 revision-locked cache under `~/.tact/plugins`. Marketplace commands
 (`tact plugin marketplace add|list|update|remove`) manage Git/catalog
 sources. Installed plugin content contributes skills (`plugin:<name>`),
-`commands/*.md` slash commands, `agents/*.md` declarative subagents, MCP
-servers, and lifecycle hooks — see Ch 2, 8, 9, 12.
+`commands/*.md` slash commands, MCP servers, and lifecycle hooks — see Ch 2,
+8, 9, 12.
 
 Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.
 

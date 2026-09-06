@@ -204,7 +204,6 @@ impl PluginInstaller {
                 cache_path: destination,
                 skill_count: features.skill_count,
                 command_count: features.command_count,
-                agent_count: features.agent_count,
                 has_hooks: features.has_hooks,
                 has_mcp: features.has_mcp,
             };
@@ -469,18 +468,6 @@ fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<Plugin
         }
     }
 
-    let agents = candidate.join("agents");
-    if let Ok(entries) = fs::read_dir(&agents) {
-        for entry in entries {
-            let Ok(entry) = entry else { continue };
-            if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
-                && entry.path().extension().is_some_and(|e| e == "md")
-            {
-                features.agent_count += 1;
-            }
-        }
-    }
-
     features.has_hooks = manifest
         .hooks
         .as_ref()
@@ -495,7 +482,7 @@ fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<Plugin
     if features.is_empty() {
         bail!(
             "plugin {plugin_id} contains no supported feature \
-             (expected skills/, commands/, agents/, hooks, or an MCP configuration)"
+             (expected skills/, commands/, hooks, or an MCP configuration)"
         );
     }
 
@@ -802,17 +789,22 @@ mod tests {
     }
 
     #[test]
-    fn install_accepts_agent_only_plugin() {
+    fn install_rejects_agent_only_plugin() {
+        // Declarative agents were removed as a feature, so an `agents/`-only
+        // plugin now has no supported surface and must be rejected like any
+        // other empty plugin (it previously installed with agent_count = 1).
         let fixture = fixture_installer();
 
-        let installed = fixture
+        let error = fixture
             .installer
             .install("agents", "fixture-market")
-            .unwrap();
+            .unwrap_err()
+            .to_string();
 
-        assert_eq!(installed.agent_count, 1);
-        assert_eq!(installed.skill_count, 0);
-        assert!(installed.cache_path.join("agents/reviewer.md").is_file());
+        assert!(
+            error.contains("no supported feature"),
+            "expected feature error, got: {error}"
+        );
     }
 
     #[test]
@@ -850,7 +842,6 @@ mod tests {
 
         assert_eq!(installed.skill_count, 1);
         assert_eq!(installed.command_count, 0);
-        assert_eq!(installed.agent_count, 0);
         assert!(!installed.has_hooks);
         assert!(!installed.has_mcp);
     }
@@ -943,7 +934,6 @@ mod tests {
                 cache_path: outside.path().to_path_buf(),
                 skill_count: 0,
                 command_count: 0,
-                agent_count: 0,
                 has_hooks: false,
                 has_mcp: false,
             },

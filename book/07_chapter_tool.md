@@ -137,7 +137,7 @@ Restricted set for isolated workers spawned by the `spawn_subagent` tool:
 | `edit_file` | Exact string replace (first or all) |
 | `sleep` | Timing / polling |
 
-Sub-agents do **not** get team, task management, MCP-only names, worktree tools, or other privileged tools — including `spawn_subagent` itself (no nested subagents). The default five-tool set is enforced by `subagent_toolset_has_five_tools`; a declarative `tools:` list can narrow it. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
+Sub-agents do **not** get team, task management, MCP-only names, worktree tools, or other privileged tools — including `spawn_subagent` itself (no nested subagents). The default five-tool set is enforced by `subagent_toolset_has_five_tools`. Full spawn lifecycle: [Subagents](./12_chapter_subagent.md).
 
 ---
 

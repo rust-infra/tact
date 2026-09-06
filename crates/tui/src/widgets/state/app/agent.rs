@@ -1046,7 +1046,6 @@ mod lifecycle_tests {
                     cache_path: std::path::PathBuf::new(),
                     skill_count: 12,
                     command_count: 0,
-                    agent_count: 0,
                     has_hooks: false,
                     has_mcp: false,
                 }],

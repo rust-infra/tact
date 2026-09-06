@@ -164,7 +164,6 @@ impl App {
             rows.extend(plugins.iter().map(|plugin| {
                 let mut features = vec![plugin.skill_count.to_string()];
                 features.push(plugin.command_count.to_string());
-                features.push(plugin.agent_count.to_string());
                 features.push(if plugin.has_hooks { "✓" } else { "-" }.into());
                 features.push(if plugin.has_mcp { "✓" } else { "-" }.into());
                 format!(

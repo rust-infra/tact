@@ -70,7 +70,6 @@ mod input_limit_tests {
 const TACT_DIR: &str = ".tact";
 const CLAUDE_DIR: &str = ".claude";
 const AGENTS_DIR: &str = ".agents";
-const AGENT_DEFS_DIR: &str = "agents";
 const MEMORY_DIR: &str = "memory";
 const SKILL_DIR: &str = "skills";
 
@@ -165,11 +164,6 @@ impl TactPath {
     /// only used as a fallback when `$HOME` is unset.
     pub fn memory_dir(&self) -> PathBuf {
         self.tact_dir().join(MEMORY_DIR)
-    }
-
-    /// `<workdir>/.tact/agents` — project-local declarative subagent definitions.
-    pub fn agents_dir(&self) -> PathBuf {
-        self.tact_dir().join(AGENT_DEFS_DIR)
     }
 
     /// `<workdir>/.tact/transcripts`

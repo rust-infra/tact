@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-06 — Declarative subagent definitions removed
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | deleted `crates/tact/src/agent_def.rs`; `crates/tact/src/tool/subagent.rs` (`SubagentInput.agent`, `resolve_agent_model`, spawn prompt/permission/model/toolset overrides), `crates/tact/src/tool/registry.rs` (`subagent_toolset_for`, `allowed_tool_names`, filtered toolset builder), `crates/tact/src/tool/mod.rs` (`ToolContext.agent_registry`), `crates/tact/src/consts.rs` (`TactPath::agents_dir`), plugin feature bookkeeping (`InstalledPlugin.agent_count`, `PluginFeatures.agent_count` in `crates/tact/src/plugin/{model,install}.rs`), `crates/tact-ui/src/plugin_cli.rs`, `crates/tui/src/widgets/state/app/extensions.rs`, `crates/agent_tui_kit/src/i18n.rs` (`plugin_list_header`); Ch 7, 12, 21 |
+
+**Symptom / motivation:** `spawn_subagent` carried a declarative "agent definition" path — Markdown+YAML-frontmatter files under `<workdir>/.tact/agents/*.md` and installed-plugin `agents/*.md` (namespaced `plugin:<name>`) — that replaced the child system prompt and could override its tool set, model, and permission mode. The surface was large for the value: a frontmatter parser, a shared registry (`Arc<Mutex>` with local-name ambiguity resolution), a second toolset builder (`subagent_toolset_for` + Claude-name mapping) guarded by a fail-closed empty-router check, a third model-override layer on top of `[agent.subagent]`, install-time `agent_count` bookkeeping, and two plugin-list UIs — all to run a worker equally well served by a plain prompt on the fixed five-tool set.
+
+**Decision:** Remove the feature end to end. `spawn_subagent` always uses the generic static system prompt ("You are a coding subagent at …") and `subagent_toolset()`; `SubagentInput.agent`, `resolve_agent_model`, the whole `agent_def` module, the `ToolContext.agent_registry` field, and the `subagent_toolset_for`/`allowed_tool_names`/filtered-builder trio are deleted. Plugins no longer count or advertise `agents/*.md`: `agent_count` is dropped from `InstalledPlugin`/`PluginFeatures`, `tact plugin list`, and the `/plugin` table (column removed from the localized `plugin_list_header`); plugin `SubagentStart` hooks and the skill/command/hook/MCP plugin features are unaffected. An `agents/`-only plugin now has no installable feature and is rejected at install time.
+
+**Behavior after:** `spawn_subagent` accepts only `prompt`/`description`/`run_in_background`/`max_turns`/`resume`/`worktree`; every subagent runs on the fixed five-tool set with the generic prompt. Per-worker definition overrides are gone; the `[agent.subagent]` config block and `/model-subagent` picker still set the subagent's provider/model globally. Plugin feature summaries show `skills/commands/hooks/mcp` only.
+
+---
+
 ## 1. 2026-09-05 — OpenCode `x-opencode-session` header wiring removed
 
 | Field | Value |

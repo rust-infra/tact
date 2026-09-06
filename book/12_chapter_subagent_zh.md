@@ -41,7 +41,6 @@ pub struct SubagentInput {
     pub max_turns: Option<u32>,
     pub resume: Option<String>,
     pub worktree: Option<bool>,
-    pub agent: Option<String>,
 }
 ```
 
@@ -53,38 +52,8 @@ pub struct SubagentInput {
 | `max_turns` | 上限嵌套 `agent_loop` 轮数（防止失控） |
 | `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮。handler 校验目标：必须已有一条处于终态的 `subagent_runs` 记录 —— 复用未知 id、仍 `Running` 的子 agent，或结束已超过 24h 的 session，都会被拒绝。 |
 | `worktree` | `true` 让子 agent 运行在隔离的 git worktree 泳道（`subagent-<child_id>`，分支 `wt/subagent-<child_id>`）；要求 `work_dir` 是 git 仓库。`resume` 时复用已有泳道。泳道在 handler 内同步创建（失败立即暴露），完成后保留供 `worktree_status` / `worktree_run` 检查；用 `worktree_remove { name }` 清理（拒绝运行中子 agent 的泳道与脏工作树）。 |
-| `agent` | 按名运行**声明式 agent 定义**——已安装插件 `agents/*.md` 用 `plugin:<name>`，`.tact/agents/*.md` 本地定义可用唯一原名。定义正文成为 system prompt；其 `tools` / `model` / `permissionMode` frontmatter 生效（见 §2.1）。 |
 
 仅主 agent 的 `toolset()` 注册子 agent 工具（`SpawnSubagentTool`、`CheckSubagentTool`、`WaitSubagentTool`、`CancelSubagentTool`）。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `spawn_subagent`。
-
----
-
-## 2.1 声明式 agent 定义
-
-Tact 从两个根加载可复用子代理定义（同名后者覆盖）：
-
-- `<workdir>/.tact/agents/*.md` —— 项目本地，原名（`architect`）；
-- 已安装插件 `<cache>/agents/*.md` —— 命名空间 `plugin:<name>`（例如 `claude-security:code-reviewer`）。
-
-Frontmatter（Claude Code 兼容）：
-
-```markdown
----
-name: reviewer
-description: Reviews code with an adversarial lens
-tools: Read, Glob, Grep, Bash
-model: sonnet
-permissionMode: plan
----
-
-You are a principal reviewer. …
-```
-
-- `tools` 限制子代理工具集（Claude 名映射到 Tact 工具：Read/Glob/Grep → `read_file`、Bash → `bash`、Edit → `edit_file`、Write → `write_file`、Sleep → `sleep`；未知名忽略；空集保持默认五件套）。
-- `model` 覆盖子代理模型（叠加在 `[agent.subagent]` 配置之上）。
-- `permissionMode` 覆盖继承的权限模式，除非父级为 `Auto`（Auto 保持粘性）。
-
-注册表：`crates/tact/src/agent_def.rs`（`AgentDefinitionRegistry`，共享于 `ToolContext.agent_registry`）。`spawn_subagent` 引用未知 `agent` 名时报错并列出可用定义。
 
 ---
 
@@ -146,7 +115,7 @@ sequenceDiagram
 - 无 team、worktree 或持久任务管理工具
 - 无 MCP 前缀工具
 
-默认五件套由单元测试 `subagent_toolset_has_five_tools` 强制；声明式 `tools:` 列表可收窄（未知名忽略，空集保持默认集）。
+默认五件套由单元测试 `subagent_toolset_has_five_tools` 强制。
 
 ---
 
@@ -263,7 +232,7 @@ let summary = subagent
 | worktree 基准为仓库 HEAD | 从另一 worktree 内 spawn 的子 agent 仍基于主仓库 HEAD 分支，而非父泳道 |
 | 列表隐藏子会话 | `--list-sessions` / resume 只显示 `ref_id = ''`；删父会级联删子 |
 | Summary 启发式 | 仅最后 assistant 文本；纯 tool 结尾返回 `(no summary)` |
-| 相同 LLM client | `get_llm_client()` — worker 无 model 覆盖（`subagent` 配置块与声明式 `model` frontmatter 除外） |
+| 相同 LLM client | `get_llm_client()` — worker 无 model 覆盖（`subagent` 配置块除外） |
 
 ---
 

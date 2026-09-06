@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-06 — 移除声明式 subagent 定义（agent definitions）
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | 删除 `crates/tact/src/agent_def.rs`；`crates/tact/src/tool/subagent.rs`（`SubagentInput.agent`、`resolve_agent_model`、spawn 的 prompt/权限/model/工具集覆盖）、`crates/tact/src/tool/registry.rs`（`subagent_toolset_for`、`allowed_tool_names`、过滤工具集构造器）、`crates/tact/src/tool/mod.rs`（`ToolContext.agent_registry`）、`crates/tact/src/consts.rs`（`TactPath::agents_dir`）、插件功能记账（`crates/tact/src/plugin/{model,install}.rs` 的 `InstalledPlugin.agent_count`、`PluginFeatures.agent_count`）、`crates/tact-ui/src/plugin_cli.rs`、`crates/tui/src/widgets/state/app/extensions.rs`、`crates/agent_tui_kit/src/i18n.rs`（`plugin_list_header`）；Ch 7、12、21 |
+
+**症状 / 动机:** `spawn_subagent` 带着一条「声明式 agent 定义」路径——`<workdir>/.tact/agents/*.md` 与已安装插件 `agents/*.md`（命名空间 `plugin:<name>`）里的 Markdown+YAML-frontmatter 文件——可以替换子代理 system prompt 并覆盖其工具集、模型与权限模式。实现面与价值不成比例：frontmatter 解析器、共享注册表（`Arc<Mutex>` + 本地名歧义消解）、第二套工具集构造器（`subagent_toolset_for` + Claude 名映射，配 fail-closed 的空 router 护栏）、叠在 `[agent.subagent]` 之上的第三层 model 覆盖、安装期 `agent_count` 记账，以及两处插件列表 UI——而这一切服务的 worker，用一个固定五件套上的纯 prompt 就能同样好地完成。
+
+**决策:** 端到端移除该功能。`spawn_subagent` 恒用默认静态 system prompt（"You are a coding subagent at …"）与 `subagent_toolset()`；删除 `SubagentInput.agent`、`resolve_agent_model`、整个 `agent_def` 模块、`ToolContext.agent_registry` 字段与 `subagent_toolset_for`/`allowed_tool_names`/过滤构造器三件套。插件不再统计或宣传 `agents/*.md`：`agent_count` 从 `InstalledPlugin`/`PluginFeatures`、`tact plugin list` 与 `/plugin` 表格（本地化 `plugin_list_header` 去掉对应列）移除；插件 `SubagentStart` hooks 与 skill/command/hook/MCP 插件功能不受影响。仅含 `agents/` 的插件如今没有任何可安装功能，安装时被拒绝。
+
+**改动后行为:** `spawn_subagent` 只接受 `prompt`/`description`/`run_in_background`/`max_turns`/`resume`/`worktree`；所有子代理都跑在固定五件套与通用 prompt 上。按 worker 的定义级覆盖消失；`[agent.subagent]` 配置块与 `/model-subagent` 仍全局设定子代理的 provider/model。插件功能摘要只显示 `skills/commands/hooks/mcp`。
+
+---
+
 ## 1. 2026-09-05 — 移除 OpenCode `x-opencode-session` 头接线
 
 | Field | Value |

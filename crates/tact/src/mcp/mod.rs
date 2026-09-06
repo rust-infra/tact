@@ -781,7 +781,6 @@ mod tests {
                             cache_path: plugin_root.clone(),
                             skill_count: 0,
                             command_count: 0,
-                            agent_count: 0,
                             has_hooks: false,
                             has_mcp: true,
                         },
