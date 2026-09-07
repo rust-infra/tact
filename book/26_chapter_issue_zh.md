@@ -59,6 +59,21 @@
 
 ---
 
+## 1. 2026-09-07 — 重新接入 OpenCode Go `x-opencode-session` 头（绑定会话）
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs`（重建；`endpoint_headers(base_url, session)`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::set_session_id`、`ResponsesCompatConfig.opencode_session`、compact POST）、`crates/tact_llm/src/openai/compatible/mod.rs`（`OpenAiAdapter::set_session_id`、`request_headers`、`CompatibleConfig::headers`）、`crates/tact_llm/src/openai/compatible/multi_model.rs`（`ChatCompletionsAdapter::set_user_id` 转发会话）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）；Ch 21 |
+
+**症状 / 动机:** OpenCode 发布的 OpenCode Go（`https://opencode.ai/zen/go/v1`）客户端要求再次要求各类 coding-agent 客户端自报身份，并在每个请求里发送**稳定的会话 id**（`x-opencode-session`，用于路由与 prompt 缓存）；会话支持不全的客户端会被列入 "Known Problematic"。09-05 的 `revert(llm)`（ed480ec）在该头还属可选时把整套机制（绑定会话的头 + `tact/<version>` User-Agent）删掉了，于是 OpenCode Go 请求又变成裸奔。
+
+**决策:** 重建 `opencode` 辅助模块，并重新挂载这些头：Responses SDK config（普通 `/responses` 的 `create_byot` / `create_stream_byot`）、直连 `/responses/compact` POST、**Chat Completions 传输层**（`OpenAiAdapter::request_headers`，现与会话感知）、以及 `/v1/models` 选择器拉取。取值**只由 Tact session id 填充**：`Agent::with_session` → `LlmProvider::set_user_id` → 各 adapter 保存之（Responses 走 `OpenAiResponsesAdapter::set_session_id`；Chat Completions 走 `ChatCompletionsAdapter::set_user_id` 转发到 `OpenAiAdapter::set_session_id`），因此一个 Tact 会话（含 resume 复用的会话、以及每个子代理自己的 child session）在任一协议下都恰对应一个 OpenCode 会话/缓存。与 09-02 的设计不同，这里**没有按 `base_url` 的 fallback token，也没有 `TACT_OPENCODE_SESSION` 环境变量覆盖**——头值要么是 `session_id` 原文、要么不发送。无会话的请求（如早于 `with_session` 的 `/v1/models` 选择器拉取）省略 `x-opencode-session`，只发送标识用的 `tact/<version>` `User-Agent`。端点识别与删除前一致（`opencode.ai` 或其子域）。
+
+**改后行为:** 发往 OpenCode Go 端点的会话请求，无论走 Responses 还是 Chat Completions 协议，都带 `x-opencode-session`（等于 Tact session id）与 `tact/<version>` `User-Agent`；无会话的请求（模型选择器拉取）省略会话头但仍以 User-Agent 自报身份；非 OpenCode 端点不加额外头。这是对 09-05 删除设计的重新接入——下方条目保留作历史记录。
+
+---
+
 ## 1. 2026-09-06 — 子代理技能卡：经 `skill` 注入隔离角色
 
 | Field | Value |

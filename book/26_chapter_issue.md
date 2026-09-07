@@ -59,6 +59,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-07 — OpenCode Go `x-opencode-session` header re-wired (session-bound)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs` (re-created; `endpoint_headers(base_url, session)`), `crates/tact_llm/src/openai/responses/mod.rs` (`OpenAiResponsesAdapter::set_session_id`, `ResponsesCompatConfig.opencode_session`, compact POST), `crates/tact_llm/src/openai/compatible/mod.rs` (`OpenAiAdapter::set_session_id`, `request_headers`, `CompatibleConfig::headers`), `crates/tact_llm/src/openai/compatible/multi_model.rs` (`ChatCompletionsAdapter::set_user_id` → forwards session), `crates/tact_llm/src/models.rs` (`fetch_model_ids`), `crates/tact_llm/src/client.rs` (`LlmProvider::set_user_id`); Ch 21 |
+
+**Symptom / motivation:** OpenCode's published client requirements for OpenCode Go (`https://opencode.ai/zen/go/v1`) again ask every coding-agent client to identify itself and send a **stable session id** in `x-opencode-session` on each request (routing + prompt caching); clients without session support are listed as "Known Problematic". The whole mechanism that satisfied this (session-bound header + `tact/<version>` User-Agent, ed480ec `revert(llm)` on 09-05) had been removed while the header was optional, so OpenCode Go requests went out bare again.
+
+**Decision:** Re-create the `opencode` helper module and re-attach the headers: the Responses SDK config (ordinary `/responses` via `create_byot` / `create_stream_byot`), the direct `/responses/compact` POST, the **Chat Completions transport** (`OpenAiAdapter::request_headers`, now session-aware), and the `/v1/models` picker fetch. The value is filled from the **Tact session id** only: `Agent::with_session` → `LlmProvider::set_user_id` → each adapter stores it (`OpenAiResponsesAdapter::set_session_id` for Responses; `ChatCompletionsAdapter::set_user_id` forwards to `OpenAiAdapter::set_session_id` for Chat Completions), so one Tact conversation (including a resumed session and each subagent's own child session) maps to exactly one OpenCode session/cache on either protocol. Unlike the 09-02 design there is **no per-`base_url` fallback token and no `TACT_OPENCODE_SESSION` env override** — the header is `session_id` verbatim or absent. Requests without a session (e.g. the `/v1/models` picker fetch, which predates `with_session`) omit `x-opencode-session` and send only the identifying `tact/<version>` `User-Agent`. Endpoint detection is unchanged from the pre-removal build (`opencode.ai` or a subdomain host).
+
+**Behavior after:** conversation requests to an OpenCode Go endpoint over either the Responses or Chat Completions protocol carry `x-opencode-session` equal to the Tact session id plus a `tact/<version>` `User-Agent`; sessionless requests (models picker) omit the session header but still identify via the User-Agent; non-OpenCode endpoints carry no additional headers. This is a re-add of the design removed on 09-05 — the entry below stays for history.
+
+---
+
 ## 1. 2026-09-06 — Subagent skill cards: isolated role injection via `skill`
 
 | Field | Value |
