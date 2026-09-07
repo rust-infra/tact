@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-07 — 插件 hook 的 stdin 管道断开不再吞掉 hook 的 stdout
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/plugin/hooks.rs`（`run_process` 的 stdin 载荷投递；回归测试 `run_command_hook_stdin_broken_pipe_still_honors_stdout`）；Claude Code 插件 hook 兼容（v1.1.26） |
+
+**症状 / 动机:** 在负载较高的机器或并行测试负载下，命令 hook 若在父进程把 JSON 载荷写入 stdin 之前就结束——例如不读 stdin 的快速 `printf` 式 hook——会先关闭管道，载荷写入随即以 `Broken pipe (os error 32)` 失败。`run_process` 把*任何* stdin 写入失败都视为致命错误，返回默认 `Continue`，静默丢弃 hook 的 stdout：`block` 决策、`suppressOutput` 或 `additionalContext` 都会丢失（hook 变成 fail-open）。这表现为 `plugin::hooks` 测试（`run_command_hook_expands_plugin_root_env`、`run_command_hook_suppress_output_new_format` 等）约每十次运行失败一次。
+
+**决策:** stdin 载荷只是尽力投递；管道断开（hook 已退出或已关闭 stdin）不算运行失败——hook 的退出码与 stdout 仍是权威结果。只有真正的非 `BrokenPipe` I/O 错误才让 hook 失败。确定性回归测试把载荷撑大到超过 OS 管道缓冲区（64 KiB），确保遇到不读 stdin 的 hook 退出时写入必然断开，与调度时序无关。
+
+**改后行为:** 不读 stdin 就退出的 hook，其 stdout 仍会被解析（`decision` / `reason` / `additionalContext` / `suppressOutput` / 旧格式）；只有 spawn 失败、超时、非零退出、非法 JSON 以及真实 I/O 错误才回退为 `Continue` 并告警。
+
+---
+
 ## 1. 2026-09-07 — Subagent sticky tab：Log 下方子代理总览条
 
 | Field | Value |

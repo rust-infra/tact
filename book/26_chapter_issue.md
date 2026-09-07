@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-07 — Plugin hook stdin broken pipe no longer swallows hook stdout
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/plugin/hooks.rs` (`run_process` stdin payload delivery; regression test `run_command_hook_stdin_broken_pipe_still_honors_stdout`); Claude Code plugin-hook compatibility (v1.1.26) |
+
+**Symptom / motivation:** Command hooks that finish before the parent delivers the JSON payload on stdin — fast `printf`-style hooks that never read stdin, on a loaded machine or under parallel test load — intermittently closed the pipe first, so the payload write failed with `Broken pipe (os error 32)`. `run_process` treated *any* stdin-write failure as fatal, returning the default `Continue` output and silently discarding the hook's stdout: a `block` decision, `suppressOutput`, or `additionalContext` was lost (hooks fail open). This surfaced as flaky `plugin::hooks` tests (`run_command_hook_expands_plugin_root_env`, `run_command_hook_suppress_output_new_format`, …) failing roughly one run in ten.
+
+**Decision:** The stdin payload is a best-effort delivery; a broken pipe (the hook already exited or closed stdin) is not a run failure — the hook's exit status and stdout remain authoritative. Only genuine non-`BrokenPipe` I/O errors still fail the hook. The deterministic regression test inflates the payload past the OS pipe buffer (64 KiB) so the write is guaranteed to break once a non-reading hook exits, independent of scheduling.
+
+**Behavior after:** A hook that exits without reading stdin still has its stdout parsed (`decision` / `reason` / `additionalContext` / `suppressOutput` / legacy shape); only spawn failures, timeouts, non-zero exits, invalid JSON, and real I/O errors fall back to `Continue` with a warning.
+
+---
+
 ## 1. 2026-09-07 — Subagent sticky tab: overview strip under the Log
 
 | Field | Value |

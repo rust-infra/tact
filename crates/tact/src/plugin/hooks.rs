@@ -243,11 +243,17 @@ async fn run_process(
         .take()
         .context("hook command has no stdin handle")?;
     let payload = serde_json::to_string(payload)?;
-    stdin
-        .write_all(payload.as_bytes())
-        .await
-        .context("failed to write hook payload to stdin")?;
+    // Best-effort payload delivery: a fast hook that finishes (or closes its
+    // stdin) before this write runs — e.g. a one-shot `printf`-style hook on a
+    // loaded machine — yields a broken pipe. Its exit status and stdout are
+    // authoritative, so that must not fail the run; real I/O errors still do.
+    let write_result = stdin.write_all(payload.as_bytes()).await;
     drop(stdin);
+    if let Err(error) = write_result
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(error).context("failed to write hook payload to stdin");
+    }
 
     let output = match timeout_secs {
         Some(secs) => timeout(Duration::from_secs(secs), child.wait_with_output())
@@ -1025,6 +1031,43 @@ mod tests {
         assert!(
             output.suppress_output,
             "new-format suppressOutput must parse"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_hook_stdin_broken_pipe_still_honors_stdout() {
+        // Regression: a fast hook that never reads stdin can exit before the
+        // parent delivers the payload, so the stdin write ends in EPIPE.
+        // Inflate the payload past the OS pipe buffer (64 KiB on Linux) so the
+        // write is guaranteed to block and then break once the hook exits —
+        // deterministic regardless of scheduling. The hook's stdout must still
+        // be parsed: exit status and stdout are authoritative, stdin is a
+        // best-effort delivery.
+        let dir = tempdir().unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some(r#"printf %s '{"decision":"approve","suppressOutput":true}'"#.into()),
+            command_windows: None,
+            timeout: Some(10),
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "PostToolUse",
+                event: json!({ "tool_name": "Bash", "pad": "x".repeat(200 * 1024) }),
+            },
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+        assert!(
+            output.suppress_output,
+            "hook stdout must be honored after a broken-pipe stdin write"
         );
     }
 
