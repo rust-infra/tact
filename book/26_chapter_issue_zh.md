@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-06 — 子代理技能卡：经 `skill` 注入隔离角色
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/tool/subagent.rs`（`SubagentInput.skill`、`parse_skill_card_frontmatter`、`read_skill_card`、`list_skill_cards`、`format_skill_card_line`、`apply_skill_card`、`annotate_spawn_subagent_skill_catalog`）、`crates/tact/src/tool/mod.rs`（`ToolRouter::set_tool_description` description override）、`crates/tact-ui/src/{interactive,headless}.rs`；设计 `docs/superpowers/specs/2026-09-06-subagent-skill-cards-design.md`、计划 `docs/superpowers/plans/2026-09-06-subagent-skill-cards.md`；Ch 12 §2.1 |
+
+**症状 / 动机:** 移除声明式 agent definitions（`8c74f4e`）后，子代理缺少复用角色/工作方法的途径——每种专业 worker 身份都只能在 `prompt` 里临时手写。复用主 agent 的 `SkillRegistry` 被否决：会污染主 agent 可见的 skill 列表并使两套系统纠缠。
+
+**决策:** 给 `spawn_subagent` 增加一个隔离、可选的 `skill: <name>` 字段。handler 读取 `~/.tact/subagent/<name>.md`（key = 文件 stem；frontmatter 的 `description` 用于报错列表与发现清单展示），将其正文以 `<skill>` 块追加到子代理静态 system prompt（在 `SubagentStart` hooks 之前）。名字必须是纯文件 stem（无分隔符 / `.`/`..` / NUL），因此 `skill` 值无法读到技能卡目录之外。未知名使 spawn 失败并列出可用卡。不新增 `ToolContext` 状态、不触及 `SkillRegistry`、不引入 tools/model/permission frontmatter 语义。
+
+**改动后行为:** `spawn_subagent { prompt, skill: "reviewer" }` 让子代理获得写入 system prompt 的稳定角色（每轮都在、压缩后不丢）；不传 `skill` 则与之前完全一致（通用模板 + 五件套）。技能卡目录与主 agent skills 物理隔离。会话启动时 `spawn_subagent` 工具描述会附加可用卡清单（单行、description 按 60 字符截断、上限 30 张），使主 agent 能发现合法 `skill:` 名；目录缺失/为空则描述保持不变。符号链接的卡在清单与读取间行为一致。
+
+---
+
 ## 1. 2026-09-06 — 移除声明式 subagent 定义（agent definitions）
 
 | Field | Value |

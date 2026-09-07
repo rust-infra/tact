@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-06 — Subagent skill cards: isolated role injection via `skill`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/tool/subagent.rs` (`SubagentInput.skill`, `parse_skill_card_frontmatter`, `read_skill_card`, `list_skill_cards`, `format_skill_card_line`, `apply_skill_card`, `annotate_spawn_subagent_skill_catalog`), `crates/tact/src/tool/mod.rs` (`ToolRouter::set_tool_description` description overrides), `crates/tact-ui/src/{interactive,headless}.rs`; design `docs/superpowers/specs/2026-09-06-subagent-skill-cards-design.md`, plan `docs/superpowers/plans/2026-09-06-subagent-skill-cards.md`; Ch 12 §2.1 |
+
+**Symptom / motivation:** Removing declarative agent definitions (`8c74f4e`) left subagents with no reusable way to attach a stable role/working method — every specialized worker persona had to be restated inline in `prompt`. Reusing the main-agent `SkillRegistry` was rejected because it would pollute the main agent's visible skill list and entangle the two systems.
+
+**Decision:** Add an isolated, opt-in `skill: <name>` field to `spawn_subagent`. The handler reads `~/.tact/subagent/<name>.md` (key = file stem; frontmatter `description` is used for error listings and the discovery catalog) and appends its body as a `<skill>` block to the child's static system prompt, before `SubagentStart` hooks run. Names must be plain file stems (no separators / `.`/`..` / NUL), so a `skill` value cannot read outside the card directory. Unknown names fail the spawn and list available cards. No `ToolContext` state, no `SkillRegistry` involvement, and no tools/model/permission frontmatter semantics.
+
+**Behavior after:** `spawn_subagent { prompt, skill: "reviewer" }` gives the child a stable role carried in its system prompt every turn (compaction-safe); omitting `skill` keeps the exact prior behavior (generic template + five-tool set). The card directory is physically isolated from the main agent's skills. At session start the `spawn_subagent` tool description is annotated with the available card list (single-line, 60-char-capped descriptions, capped at 30 cards) so the main agent can discover valid `skill:` names; an absent/empty card directory leaves the description unchanged. Symlinked cards are listed and readable consistently.
+
+---
+
 ## 1. 2026-09-06 — Declarative subagent definitions removed
 
 | Field | Value |

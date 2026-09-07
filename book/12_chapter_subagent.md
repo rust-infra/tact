@@ -40,6 +40,7 @@ pub struct SubagentInput {
     pub max_turns: Option<u32>,
     pub resume: Option<String>,
     pub worktree: Option<bool>,
+    pub skill: Option<String>,
 }
 ```
 
@@ -51,8 +52,42 @@ pub struct SubagentInput {
 | `max_turns` | Caps the nested `agent_loop` turn count (runaway guard) |
 | `resume` | Reuses an existing child session id (from a prior `async_launched`) for a follow-up turn. The handler validates the target: it must have a prior `subagent_runs` record in a terminal state — resuming an unknown id, a still-`Running` child, or a session that finished more than 24h ago is rejected. |
 | `worktree` | `true` runs the child inside an isolated git worktree lane (`subagent-<child_id>`, branch `wt/subagent-<child_id>`); requires a git repo at `work_dir`. On `resume` the existing lane is reused. The lane is created synchronously (failures surface immediately) and kept after completion for inspection via `worktree_status` / `worktree_run`; clean up with `worktree_remove { name }` (refuses a running subagent's lane and a dirty tree). |
+| `skill` | Attaches an isolated **subagent skill card** by name (`~/.tact/subagent/<name>.md`); its body is appended to the child's system prompt as the role (see §2.1). |
 
 Only the main agent's `toolset()` registers the subagent tools (`SpawnSubagentTool`, `CheckSubagentTool`, `WaitSubagentTool`, `CancelSubagentTool`). Subagents cannot spawn nested subagents — `spawn_subagent` is absent from `subagent_toolset()`.
+
+---
+
+### 2.1 Subagent skill cards
+
+A subagent can be given a reusable role/working method via an **isolated skill
+card** — a Markdown file under `~/.tact/subagent/<name>.md`. These cards are
+physically separate from the main agent's skill system: they are never loaded
+into `SkillRegistry`, and never appear in the main agent's available-skills list
+or `/skill` commands.
+
+```markdown
+---
+description: Adversarial code review role for subagents
+---
+
+You are a principal reviewer. Assess diffs for correctness, test coverage,
+and scope creep. Verdicts: Critical / Important / Minor.
+```
+
+- The registry key is the **file stem** (`reviewer.md` → `reviewer`); frontmatter
+  `name` is ignored and `description` is used for error listings and the
+  discovery catalog. Names must be plain file stems — a `skill` value cannot
+  escape the card directory.
+- `spawn_subagent { prompt, skill: "reviewer" }` reads `~/.tact/subagent/reviewer.md`
+  and appends its body to the child's static system prompt as a `<skill name=…>`
+  block, before `SubagentStart` hooks run.
+- An unknown `skill` fails the spawn and lists the available cards.
+- At session start the `spawn_subagent` tool description is annotated with the
+  available card names (single-line, length-capped, bounded at 30 cards) so the
+  main agent can discover valid `skill:` values without seeing the cards' bodies.
+- The toolset, permission inheritance, worktree isolation, and `[agent.subagent]`
+  model config are all unaffected.
 
 ---
 
@@ -127,6 +162,17 @@ let system_prompt = format!(
     "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
     ctx.work_dir.display()
 );
+```
+
+When `skill: <name>` is set, the handler appends the card body as a `<skill>` block
+before the hooks run:
+
+```text
+You are a coding subagent at <work_dir>. Complete the given task, then summarize your findings.
+
+<skill name="reviewer">
+You are a principal reviewer. …
+</skill>
 ```
 
 `build_system_prompt()` returns this string verbatim every turn — no skill summaries, memory injection, CLAUDE.md, or directory snapshot. See [System Prompt](./04_chapter_prompt.md) for how the main agent differs.

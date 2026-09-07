@@ -41,6 +41,7 @@ pub struct SubagentInput {
     pub max_turns: Option<u32>,
     pub resume: Option<String>,
     pub worktree: Option<bool>,
+    pub skill: Option<String>,
 }
 ```
 
@@ -52,8 +53,34 @@ pub struct SubagentInput {
 | `max_turns` | 上限嵌套 `agent_loop` 轮数（防止失控） |
 | `resume` | 复用已有子 session id（来自先前 `async_launched`）追加一轮。handler 校验目标：必须已有一条处于终态的 `subagent_runs` 记录 —— 复用未知 id、仍 `Running` 的子 agent，或结束已超过 24h 的 session，都会被拒绝。 |
 | `worktree` | `true` 让子 agent 运行在隔离的 git worktree 泳道（`subagent-<child_id>`，分支 `wt/subagent-<child_id>`）；要求 `work_dir` 是 git 仓库。`resume` 时复用已有泳道。泳道在 handler 内同步创建（失败立即暴露），完成后保留供 `worktree_status` / `worktree_run` 检查；用 `worktree_remove { name }` 清理（拒绝运行中子 agent 的泳道与脏工作树）。 |
+| `skill` | 按名附加一张隔离的**子代理技能卡**（`~/.tact/subagent/<name>.md`）；正文作为角色拼进子代理 system prompt（见 §2.1）。 |
 
 仅主 agent 的 `toolset()` 注册子 agent 工具（`SpawnSubagentTool`、`CheckSubagentTool`、`WaitSubagentTool`、`CancelSubagentTool`）。子 agent 不能 spawn 嵌套子 agent —— `subagent_toolset()` 中无 `spawn_subagent`。
+
+---
+
+### 2.1 子代理技能卡（Subagent skill cards）
+
+子代理可通过一张**隔离的技能卡**获得可复用的角色/工作方法——即 `~/.tact/subagent/<name>.md`
+下的 Markdown 文件。这些卡与主 agent 的 skill 系统物理隔离：不会载入 `SkillRegistry`，
+也不会出现在主 agent 的可用 skill 列表或 `/skill` 命令里。
+
+```markdown
+---
+description: Adversarial code review role for subagents
+---
+
+You are a principal reviewer. Assess diffs for correctness, test coverage,
+and scope creep. Verdicts: Critical / Important / Minor.
+```
+
+- 注册 key 是**文件名 stem**（`reviewer.md` → `reviewer`）；frontmatter 的 `name` 被忽略，
+  `description` 用于报错列表与发现清单展示。名字必须是纯文件 stem——`skill` 值无法逃逸技能卡目录。
+- `spawn_subagent { prompt, skill: "reviewer" }` 读取 `~/.tact/subagent/reviewer.md`，
+  将其正文以 `<skill name=…>` 块追加到子代理静态 system prompt（在 `SubagentStart` hooks 之前）。
+- 未知 `skill` 使 spawn 失败并列出可用卡。
+- 会话启动时 `spawn_subagent` 工具描述会附加可用卡名（单行、长度截断、上限 30 张），主 agent 无需看到卡正文即可发现合法 `skill:` 值。
+- 工具集、权限继承、worktree 隔离与 `[agent.subagent]` 模型配置均不受影响。
 
 ---
 
@@ -128,6 +155,16 @@ let system_prompt = format!(
     "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
     ctx.work_dir.display()
 );
+```
+
+当设置 `skill: <name>` 时，handler 会在 hooks 之前把卡正文作为 `<skill>` 块追加：
+
+```text
+You are a coding subagent at <work_dir>. Complete the given task, then summarize your findings.
+
+<skill name="reviewer">
+You are a principal reviewer. …
+</skill>
 ```
 
 `build_system_prompt()` 每轮 verbatim 返回该字符串 —— 无 skill 摘要、memory 注入、CLAUDE.md 或目录快照。主 agent 差异见 [System Prompt](./04_chapter_prompt_zh.md)。

@@ -4,7 +4,7 @@ use crate::tool::{
     ToolPresentation,
 };
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
 };
 
@@ -56,6 +56,11 @@ pub struct SubagentInput {
     #[schemars(description = "Run the subagent inside an isolated git worktree.")]
     #[serde(default)]
     pub worktree: Option<bool>,
+    /// Attach an isolated subagent skill card (`~/.tact/subagent/<name>.md`);
+    /// its body is appended to the child's system prompt as the role.
+    #[schemars(description = "Name of a subagent skill card to attach as the role.")]
+    #[serde(default)]
+    pub skill: Option<String>,
 }
 
 /// Worktree lane name prefix for isolated subagents.
@@ -64,6 +69,16 @@ const SUBAGENT_WORKTREE_PREFIX: &str = "subagent";
 /// A finished subagent session may only be resumed within this window; older
 /// sessions are rejected because their context is stale (Claude's 24h expiry).
 const RESUME_EXPIRY_HOURS: i64 = 24;
+
+/// Cap for a skill-card description rendered in the spawn tool description /
+/// error listings — each line ships with every request, so keep it tight.
+const SKILL_CARD_DESC_CAP: usize = 60;
+
+/// Cap for the number of cards rendered into the `spawn_subagent` tool
+/// description. The whole catalog ships with every main-loop request, so a
+/// description length cap alone (60 chars/line) is not enough to bound the
+/// per-request token cost once many cards exist.
+const MAX_SKILL_CARD_CATALOG_LINES: usize = 30;
 
 /// Creates (or, on `resume`, reuses) the isolation worktree for a child.
 ///
@@ -112,7 +127,7 @@ fn with_worktree_note(summary: String, worktree: Option<&WorktreeRecord>) -> Str
 
 pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "spawn_subagent",
-    description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default it runs in the current working directory, blocks until it finishes, and returns the subagent's final summary. Set run_in_background: true to return immediately as async_launched { id } and have the summary re-injected on a later turn; use it to fan out several independent subagents in parallel, then wait_subagent on each (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; the lane path is appended to the returned summary.",
+    description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default it runs in the current working directory, blocks until it finishes, and returns the subagent's final summary. Set run_in_background: true to return immediately as async_launched { id } and have the summary re-injected on a later turn; use it to fan out several independent subagents in parallel, then wait_subagent on each (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; the lane path is appended to the returned summary. Set skill: <name> to attach an isolated subagent skill card from ~/.tact/subagent/<name>.md; its body is appended to the child system prompt as the role.",
     permission: PermissionPolicy::High,
     permission_prompt: PermissionPromptPolicy::Json,
     resources: ResourcePolicy::Barrier,
@@ -153,6 +168,174 @@ fn extract_summary(subagent: &Agent, max_turns_reached: bool) -> String {
 /// would misreport a cancellation as success.
 fn terminal_success(success: bool, cancelled: bool) -> bool {
     success && !cancelled
+}
+
+/// Optional frontmatter for a subagent skill card. Only `description` is
+/// consumed — for error listings and the discovery catalog appended to the
+/// `spawn_subagent` tool description. The registry key is always the file
+/// stem, so a `name:` frontmatter field is intentionally ignored.
+#[derive(Debug, Default, Deserialize)]
+struct SkillCardFrontmatter {
+    description: Option<String>,
+}
+
+/// A resolved subagent skill card: role body plus an optional description.
+#[derive(Debug)]
+struct SkillCard {
+    description: String,
+    body: String,
+}
+
+/// Splits an optional `---`-fenced YAML header from the role body. Fails open:
+/// a missing fence keeps the whole file as the body; a malformed frontmatter
+/// block falls back to defaults but still yields the post-fence body.
+fn parse_skill_card_frontmatter(text: &str) -> (SkillCardFrontmatter, String) {
+    let text = text.replace("\r\n", "\n");
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return (SkillCardFrontmatter::default(), text.trim().to_string());
+    };
+    let Some((frontmatter, body)) = rest.split_once("\n---\n") else {
+        return (SkillCardFrontmatter::default(), text.trim().to_string());
+    };
+    let meta = serde_yaml::from_str::<SkillCardFrontmatter>(frontmatter).unwrap_or_default();
+    (meta, body.trim().to_string())
+}
+
+/// Directory holding isolated subagent skill cards, user-global under
+/// `~/.tact/subagent/` — deliberately separate from the main-agent skill roots.
+fn subagent_skill_dir() -> Option<PathBuf> {
+    TactPath::home_tact_dir().map(|dir| dir.join("subagent"))
+}
+
+/// Rejects names that could escape the skill-card directory. Cards live flat
+/// under `~/.tact/subagent/`, so a valid key is a single file stem — no path
+/// separators, no `.`/`..`, no NUL.
+fn is_plain_stem(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
+/// Reads a single skill card keyed by file stem. Names that are not plain
+/// stems (and could therefore escape `dir`) resolve to `None` — the registry
+/// is flat by construction, mirroring the listing in [`list_skill_cards`].
+fn read_skill_card(dir: &Path, name: &str) -> Option<SkillCard> {
+    if !is_plain_stem(name) {
+        return None;
+    }
+    let content = std::fs::read_to_string(dir.join(format!("{name}.md"))).ok()?;
+    let (meta, body) = parse_skill_card_frontmatter(&content);
+    Some(SkillCard {
+        description: meta.description.unwrap_or_else(|| "No description".to_string()),
+        body,
+    })
+}
+
+/// Formats a catalog line as `- stem: <flattened, length-capped description>`.
+fn format_skill_card_line(stem: &str, description: &str) -> String {
+    let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat_len = flat.chars().count();
+    let capped: String = flat.chars().take(SKILL_CARD_DESC_CAP).collect();
+    let capped = if flat_len > SKILL_CARD_DESC_CAP {
+        format!("{capped}…")
+    } else {
+        capped
+    };
+    format!("- {stem}: {capped}")
+}
+
+/// Lists available skill cards as sorted `- stem: description` lines
+/// (error path and the spawn-description catalog).
+fn list_skill_cards(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut cards = entries
+        .filter_map(|entry| entry.ok())
+        // `fs::metadata(entry.path())` (unlike `DirEntry::metadata`, which does
+        // not traverse links) follows symlinks, so a symlinked card that
+        // `read_skill_card` can read is also listed here — the catalog and the
+        // resolver never disagree.
+        .filter(|entry| entry.path().metadata().map(|m| m.is_file()).unwrap_or(false))
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                return None;
+            }
+            let stem = path.file_stem()?.to_str()?.to_string();
+            let card = read_skill_card(dir, &stem)?;
+            Some(format_skill_card_line(&stem, &card.description))
+        })
+        .collect::<Vec<_>>();
+    cards.sort();
+    cards
+}
+
+/// Resolves `name` to a skill card and appends its body to `system_prompt`.
+/// Fails closed on an unknown name (lists available cards) and on any name
+/// that is not a plain file stem (would escape the card directory).
+fn apply_skill_card(system_prompt: &mut String, dir: &Path, name: &str) -> Result<()> {
+    let card = read_skill_card(dir, name).ok_or_else(|| {
+        if !is_plain_stem(name) {
+            anyhow::anyhow!(
+                "invalid subagent skill name '{name}': names are plain file stems under the \
+                 skill-card directory"
+            )
+        } else {
+            let available = list_skill_cards(dir).join("\n");
+            let available = if available.is_empty() {
+                "(none found)".to_string()
+            } else {
+                available
+            };
+            anyhow::anyhow!("unknown subagent skill '{name}'; available:\n{available}")
+        }
+    })?;
+    system_prompt.push_str(&format!(
+        "\n\n<skill name=\"{name}\">\n{}\n</skill>",
+        card.body
+    ));
+    Ok(())
+}
+
+/// Appends the available subagent skill cards (`~/.tact/subagent/`) to the
+/// `spawn_subagent` tool description so the main agent can discover valid
+/// `skill:` names on every request. No-op when there is no card home.
+pub fn annotate_spawn_subagent_skill_catalog(tools: &mut crate::tool::ToolRouter) {
+    if let Some(dir) = subagent_skill_dir() {
+        annotate_spawn_subagent_skill_catalog_with_dir(tools, &dir);
+    }
+}
+
+/// Directory-scoped core of [`annotate_spawn_subagent_skill_catalog`]; no-op
+/// when the directory holds no cards.
+fn annotate_spawn_subagent_skill_catalog_with_dir(
+    tools: &mut crate::tool::ToolRouter,
+    dir: &Path,
+) {
+    let cards = list_skill_cards(dir);
+    if cards.is_empty() {
+        return;
+    }
+    // The catalog ships with every main-loop request, so bound how many card
+    // lines are rendered (descriptions are already length-capped per line).
+    let total = cards.len();
+    let rendered = cards
+        .iter()
+        .take(MAX_SKILL_CARD_CATALOG_LINES)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut suffix = format!("\nAvailable subagent skill cards:\n{}", rendered.join("\n"));
+    if total > MAX_SKILL_CARD_CATALOG_LINES {
+        suffix.push_str(&format!("\n… and {} more", total - MAX_SKILL_CARD_CATALOG_LINES));
+    }
+    tools.set_tool_description(
+        "spawn_subagent",
+        format!("{}{}", SPAWN_SUBAGENT_METADATA.description, suffix),
+    );
 }
 
 #[tool]
@@ -261,6 +444,15 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         "You are a coding subagent at {}. Complete the given task, then summarize your findings.",
         ctx.work_dir.display()
     );
+
+    // Optional subagent skill card: attach an isolated role body before hooks
+    // run, so hooks can still append/override afterward.
+    if let Some(skill) = input.skill.as_deref() {
+        let dir = subagent_skill_dir().ok_or_else(|| {
+            anyhow::anyhow!("subagent skill '{skill}' requested but $HOME is unavailable")
+        })?;
+        apply_skill_card(&mut system_prompt, &dir, skill)?;
+    }
 
     // Claude Code plugin `SubagentStart` hooks may inject context into the
     // child system prompt (e.g. ponytail injects its mode). A `Block` from a
@@ -649,6 +841,237 @@ mod tests {
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"edit_file"));
         assert!(names.contains(&"sleep"));
+    }
+
+    fn write_skill_card(dir: &Path, stem: &str, content: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(format!("{stem}.md")), content).unwrap();
+    }
+
+    #[test]
+    fn apply_skill_card_appends_body_after_base_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill_card(
+            dir.path(),
+            "reviewer",
+            "---\ndescription: Adversarial review\n---\n\nYou are a principal reviewer.",
+        );
+        let mut prompt = "You are a coding subagent at /repo. Complete the given task, then summarize your findings.".to_string();
+        apply_skill_card(&mut prompt, dir.path(), "reviewer").unwrap();
+        assert!(
+            prompt.starts_with("You are a coding subagent at /repo"),
+            "base template must stay first: {prompt}"
+        );
+        assert!(prompt.contains("<skill name=\"reviewer\">"), "{prompt}");
+        assert!(prompt.contains("You are a principal reviewer."), "{prompt}");
+        assert!(prompt.ends_with("</skill>"), "{prompt}");
+    }
+
+    #[test]
+    fn apply_skill_card_unknown_name_lists_available() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill_card(dir.path(), "a", "body a");
+        write_skill_card(dir.path(), "b", "---\ndescription: B role\n---\nbody b");
+        let err = apply_skill_card(&mut String::new(), dir.path(), "missing").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unknown subagent skill 'missing'"), "{msg}");
+        assert!(msg.contains("- a:"), "{msg}");
+        assert!(msg.contains("- b: B role"), "{msg}");
+    }
+
+    #[test]
+    fn skill_card_key_is_stem_and_bad_frontmatter_fails_open() {
+        let dir = tempfile::tempdir().unwrap();
+        // Malformed YAML but a valid fence: body is the post-fence text.
+        write_skill_card(dir.path(), "fixer", "---\nnot a mapping\n---\nrole body");
+        let card = read_skill_card(dir.path(), "fixer").unwrap();
+        assert_eq!(card.body, "role body");
+        assert_eq!(card.description, "No description");
+        // No fence: whole file is the body.
+        write_skill_card(dir.path(), "plain", "just a role body");
+        let card = read_skill_card(dir.path(), "plain").unwrap();
+        assert_eq!(card.body, "just a role body");
+    }
+
+    #[test]
+    fn skill_card_description_defaults_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill_card(dir.path(), "architect", "---\ndescription: Arch review\n---\nbody");
+        let card = read_skill_card(dir.path(), "architect").unwrap();
+        assert_eq!(card.description, "Arch review");
+    }
+
+    #[test]
+    fn skill_cards_are_isolated_from_main_skill_registry() {
+        let subagent_dir = tempfile::tempdir().unwrap();
+        write_skill_card(subagent_dir.path(), "reviewer", "role body");
+        let skills_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(skills_dir.path().join("other")).unwrap();
+        std::fs::write(
+            skills_dir.path().join("other/SKILL.md"),
+            "---\ndescription: o\n---\nskill body",
+        )
+        .unwrap();
+        let mut reg = crate::skill::SkillRegistry::new([skills_dir.path().to_path_buf()]);
+        reg.load_skills().unwrap();
+        assert!(reg.skills().contains_key("other"));
+        assert!(
+            !reg.skills().contains_key("reviewer"),
+            "subagent skill cards must not enter the main skill registry"
+        );
+    }
+
+    #[test]
+    fn catalog_lines_are_flattened_and_capped() {
+        let description =
+            "line one\nline two with a long tail that keeps going well beyond the cap for display";
+        let line = format_skill_card_line("long", description);
+        assert!(!line.contains('\n'), "catalog lines must be single-line: {line}");
+        assert!(line.starts_with("- long: line one line two with a long tail"));
+        let body = line.trim_start_matches("- long: ");
+        assert!(
+            body.chars().count() <= SKILL_CARD_DESC_CAP + 1,
+            "capped body too long: {body}"
+        );
+        assert!(body.ends_with('…'), "truncated lines end with ellipsis: {body}");
+    }
+
+    #[test]
+    fn annotate_spawn_description_appends_available_cards() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill_card(
+            dir.path(),
+            "reviewer",
+            "---\ndescription: Adversarial code review for subagents\n---\nrole",
+        );
+        write_skill_card(dir.path(), "fixer", "fixer role");
+        let mut tools = crate::tool::registry::toolset();
+        annotate_spawn_subagent_skill_catalog_with_dir(&mut tools, dir.path());
+        let specs = tools.tool_specs();
+        let spawn = specs
+            .iter()
+            .find(|spec| spec.name == "spawn_subagent")
+            .expect("spawn_subagent must be registered");
+        let description = spawn.description.as_deref().expect("spawn has a description");
+        assert!(description.contains("Available subagent skill cards:"), "{description}");
+        assert!(
+            description.contains("- reviewer: Adversarial code review for subagents"),
+            "{description}"
+        );
+        assert!(description.contains("- fixer:"), "{description}");
+    }
+
+    #[test]
+    fn annotate_spawn_description_skips_when_no_cards() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = crate::tool::registry::toolset();
+        annotate_spawn_subagent_skill_catalog_with_dir(&mut tools, dir.path());
+        let specs = tools.tool_specs();
+        let spawn = specs
+            .iter()
+            .find(|spec| spec.name == "spawn_subagent")
+            .expect("spawn_subagent must be registered");
+        let description = spawn.description.as_deref().expect("spawn has a description");
+        assert!(
+            !description.contains("Available subagent skill cards:"),
+            "an empty catalog must not rewrite the description: {description}"
+        );
+    }
+
+    #[test]
+    fn skill_card_name_rejects_directory_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        // `cards` is the skill-card home; the secret sits next to it so a
+        // `../secret` traversal would reach it if the name were not validated.
+        let cards = dir.path().join("cards");
+        write_skill_card(&cards, "reviewer", "role body");
+        let secret = dir.path().join("secret.txt");
+        std::fs::write(&secret, "TOP SECRET").unwrap();
+
+        let mut prompt = String::new();
+        let err = apply_skill_card(&mut prompt, &cards, "../secret").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.contains("TOP SECRET"),
+            "traversal must not read outside the card directory: {msg}"
+        );
+        assert!(msg.contains("invalid subagent skill name"), "{msg}");
+        assert!(prompt.is_empty(), "no role body may be appended on escape: {prompt}");
+
+        // Separator- and NUL-containing names are rejected too.
+        for bad in ["a/b", "..", "a\\b", "a\0b"] {
+            let err = apply_skill_card(&mut prompt, &cards, bad).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("invalid subagent skill name"), "{bad}: {msg}");
+            assert!(prompt.is_empty(), "{bad} must not append a role body: {prompt}");
+        }
+
+        // A legit stem still resolves.
+        apply_skill_card(&mut prompt, &cards, "reviewer").unwrap();
+        assert!(prompt.contains("<skill name=\"reviewer\">"), "{prompt}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_lists_symlinked_cards_like_read_resolves_them() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        write_skill_card(dir.path(), "reviewer", "role body");
+        // A card whose file is a symlink: `read_skill_card` follows links, so
+        // the catalog must list it too (otherwise the resolver and the catalog
+        // disagree about which names are valid). The target lives in a
+        // subdirectory so it is not itself a top-level card.
+        let target_dir = dir.path().join("targets");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let external = target_dir.join("external-card.md");
+        std::fs::write(
+            &external,
+            "---\ndescription: Linked review role\n---\nlinked body",
+        )
+        .unwrap();
+        symlink(&external, dir.path().join("reviewer-link.md")).unwrap();
+
+        let lines = list_skill_cards(dir.path());
+        assert!(
+            lines.iter().any(|l| l.starts_with("- reviewer-link: Linked review role")),
+            "symlinked card must appear in the catalog: {lines:?}"
+        );
+        let card = read_skill_card(dir.path(), "reviewer-link").unwrap();
+        assert_eq!(card.body, "linked body");
+    }
+
+    #[test]
+    fn annotate_spawn_description_caps_catalog_size() {
+        let dir = tempfile::tempdir().unwrap();
+        // Exceed the render cap so the annotation must truncate.
+        for i in 0..(MAX_SKILL_CARD_CATALOG_LINES + 2) {
+            write_skill_card(dir.path(), &format!("card{i:02}"), &format!("card {i} role"));
+        }
+        let mut tools = crate::tool::registry::toolset();
+        annotate_spawn_subagent_skill_catalog_with_dir(&mut tools, dir.path());
+        let specs = tools.tool_specs();
+        let spawn = specs
+            .iter()
+            .find(|spec| spec.name == "spawn_subagent")
+            .expect("spawn_subagent must be registered");
+        let description = spawn.description.as_deref().expect("spawn has a description");
+        assert!(
+            description.contains("Available subagent skill cards:"),
+            "{description}"
+        );
+        let body = description
+            .split("Available subagent skill cards:\n")
+            .nth(1)
+            .unwrap_or("");
+        let rendered_lines = body.lines().filter(|l| l.starts_with("- ")).count();
+        assert!(
+            rendered_lines <= MAX_SKILL_CARD_CATALOG_LINES,
+            "catalog must be capped at {MAX_SKILL_CARD_CATALOG_LINES} lines: {description}"
+        );
+        assert!(
+            description.contains("… and 2 more"),
+            "catalog must advertise the omitted count: {description}"
+        );
     }
 
     #[test]

@@ -90,6 +90,7 @@ pub use registry::{subagent_toolset, toolset};
 #[cfg(test)]
 use sleep::SleepTool;
 pub(crate) use subagent::SPAWN_SUBAGENT_METADATA;
+pub use subagent::annotate_spawn_subagent_skill_catalog;
 #[cfg(test)]
 use task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool};
 #[cfg(test)]
@@ -201,6 +202,9 @@ impl ResolvedNativeTool<'_> {
 pub struct ToolRouter {
     tools: HashMap<String, RegisteredTool>,
     cached_specs: OnceLock<Vec<ToolSpec>>,
+    /// Optional per-tool description overrides (e.g. a runtime-injected list of
+    /// available subagent skill cards), applied when emitting tool specs.
+    description_overrides: HashMap<String, String>,
 }
 
 impl ToolRouter {
@@ -208,7 +212,24 @@ impl ToolRouter {
         Self {
             tools: HashMap::new(),
             cached_specs: OnceLock::new(),
+            description_overrides: HashMap::new(),
         }
+    }
+
+    /// Overrides the description a tool reports in its spec — used to annotate
+    /// `spawn_subagent` with the current subagent skill-card catalog.
+    ///
+    /// The override only affects specs emitted *after* this call. Callers that
+    /// snapshot specs once (e.g. `Agent::new` captures `tool_specs()` at
+    /// construction) must set overrides before constructing the agent — both
+    /// current call sites (`interactive.rs` / `headless.rs`) annotate the
+    /// router right after `toolset()` and before `Agent::new`.
+    pub fn set_tool_description(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) {
+        self.description_overrides.insert(name.into(), description.into());
     }
 
     pub fn route<T>(mut self, tool: T) -> Result<Self>
@@ -238,7 +259,8 @@ impl ToolRouter {
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
-        self.cached_specs
+        let mut specs: Vec<ToolSpec> = self
+            .cached_specs
             .get_or_init(|| {
                 self.tools
                     .values()
@@ -247,7 +269,13 @@ impl ToolRouter {
             })
             .iter()
             .map(copy_tool_spec)
-            .collect()
+            .collect();
+        for (name, description) in &self.description_overrides {
+            if let Some(spec) = specs.iter_mut().find(|spec| &spec.name == name) {
+                spec.description = Some(description.clone());
+            }
+        }
+        specs
     }
 
     pub async fn call_result(

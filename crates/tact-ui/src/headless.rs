@@ -96,7 +96,10 @@ async fn run_headless_locked(
     )?));
     let mcp_router = load_mcp_router().await?;
 
-    let tools = toolset();
+    let mut tools = toolset();
+    // Annotate `spawn_subagent` with the current subagent skill-card catalog
+    // so the main agent can discover valid `skill:` names.
+    tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
