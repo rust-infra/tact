@@ -89,7 +89,7 @@ pub struct MemoryManager {
     memories: HashMap<String, MemoryEntry>,
 }
 
-pub fn get_memory_manager(memory_dir: PathBuf) -> Result<MemoryManager> {
+pub fn memory_manager(memory_dir: PathBuf) -> Result<MemoryManager> {
     let mut manager = MemoryManager::new(memory_dir);
     manager.load_all()?;
     Ok(manager)

@@ -184,7 +184,7 @@ pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 | `crates/tact/src/tool/memory.rs` | `save_memory` 原生工具 |
 | `crates/tact/src/agent/mod.rs` | `load_memory_prompt()`、系统提示词接线 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.memory_manager` |
-| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 会话启动时 `get_memory_manager()` |
+| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 会话启动时 `memory_manager()` |
 | `crates/tact/src/consts.rs` | `TactPath::home_memory_dir()` → `~/.tact/memory`（`memory_dir()` 保留项目本地回退） |
 
 ---

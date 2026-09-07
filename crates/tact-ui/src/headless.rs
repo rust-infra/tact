@@ -7,7 +7,7 @@ use tact::{
     consts::TactPath,
     extract_text,
     mcp::load_mcp_router,
-    memory::get_memory_manager,
+    memory::memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
     store::DynSessionStore,
     subagent::{SharedSubagentManager, SubagentManager},
@@ -91,7 +91,7 @@ async fn run_headless_locked(
     // Memory is user-global (`~/.tact/memory`, like Claude Code's `~/.claude`)
     // so it persists across projects. Project-local `.tact/memory` is only the
     // fallback when `$HOME` is unset.
-    let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(
+    let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
         TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
     )?));
     let mcp_router = load_mcp_router().await?;

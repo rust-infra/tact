@@ -689,7 +689,7 @@ sequenceDiagram
 |------|------|
 | `get_skill_registry` | Skills（[Ch 2](./02_chapter_skill.md)） |
 | `StoreRoot` + managers | Tasks、background、team、worktree |
-| `get_memory_manager` | Memory（[Ch 3](./03_chapter_memory.md)） |
+| `memory_manager` | Memory（[Ch 3](./03_chapter_memory.md)） |
 | `load_mcp_router` | MCP tools（[Ch 8](./08_chapter_mcp.md)） |
 | `PermissionManager::try_new(PermissionMode::Default)` | **硬编码** — 见缺口 |
 | `open_sqlite_session_store` | Session + 输入历史（[Ch 1](./01_chapter_store.md)） |

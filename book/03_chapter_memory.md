@@ -183,7 +183,7 @@ Memory uses **Markdown files directly**, not the JSON `Store` layer described in
 | `crates/tact/src/tool/memory.rs` | `save_memory` native tool |
 | `crates/tact/src/agent/mod.rs` | `load_memory_prompt()`, system prompt wiring |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.memory_manager` |
-| `crates/tact-ui/src/headless.rs`, `interactive.rs` | `get_memory_manager()` at session startup |
+| `crates/tact-ui/src/headless.rs`, `interactive.rs` | `memory_manager()` at session startup |
 | `crates/tact/src/consts.rs` | `TactPath::home_memory_dir()` → `~/.tact/memory` (`memory_dir()` keeps the project-local fallback) |
 
 ---
