@@ -1771,8 +1771,8 @@ mod lifecycle_tests {
             .expect("first stats")
             + 1;
         let mut expected_parts = Vec::new();
-        for i in start..stats_idx {
-            let line = app.log.items[i].raw.as_str();
+        for item in &app.log.items[start..stats_idx] {
+            let line = item.raw.as_str();
             if line.is_empty()
                 || crate::render::cells::separator::is_task_end_separator(line)
                 || crate::widgets::state::is_task_stats_line(line)

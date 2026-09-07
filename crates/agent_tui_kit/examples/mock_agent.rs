@@ -35,8 +35,8 @@ use agent_tui_kit::{
     },
     state::{
         ActiveThinkingBlock, FocusedPanel, InputMode, LogCoordinator, LogItemKind, LogScroll,
-        MouseState, PlanPanel, SelectPopup, Status, StatusBarState, StreamState, SubagentPanelState,
-        TaskPanelState, ThinkingBlock, ThinkingState, ToolState,
+        MouseState, PlanPanel, SelectPopup, Status, StatusBarState, StreamState,
+        SubagentPanelState, TaskPanelState, ThinkingBlock, ThinkingState, ToolState,
     },
     theme::{Theme, ThemeName},
 };

@@ -229,7 +229,9 @@ fn read_skill_card(dir: &Path, name: &str) -> Option<SkillCard> {
     let content = std::fs::read_to_string(dir.join(format!("{name}.md"))).ok()?;
     let (meta, body) = parse_skill_card_frontmatter(&content);
     Some(SkillCard {
-        description: meta.description.unwrap_or_else(|| "No description".to_string()),
+        description: meta
+            .description
+            .unwrap_or_else(|| "No description".to_string()),
         body,
     })
 }
@@ -259,7 +261,13 @@ fn list_skill_cards(dir: &Path) -> Vec<String> {
         // not traverse links) follows symlinks, so a symlinked card that
         // `read_skill_card` can read is also listed here — the catalog and the
         // resolver never disagree.
-        .filter(|entry| entry.path().metadata().map(|m| m.is_file()).unwrap_or(false))
+        .filter(|entry| {
+            entry
+                .path()
+                .metadata()
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+        })
         .filter_map(|entry| {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -312,10 +320,7 @@ pub fn annotate_spawn_subagent_skill_catalog(tools: &mut crate::tool::ToolRouter
 
 /// Directory-scoped core of [`annotate_spawn_subagent_skill_catalog`]; no-op
 /// when the directory holds no cards.
-fn annotate_spawn_subagent_skill_catalog_with_dir(
-    tools: &mut crate::tool::ToolRouter,
-    dir: &Path,
-) {
+fn annotate_spawn_subagent_skill_catalog_with_dir(tools: &mut crate::tool::ToolRouter, dir: &Path) {
     let cards = list_skill_cards(dir);
     if cards.is_empty() {
         return;
@@ -330,7 +335,10 @@ fn annotate_spawn_subagent_skill_catalog_with_dir(
         .collect::<Vec<_>>();
     let mut suffix = format!("\nAvailable subagent skill cards:\n{}", rendered.join("\n"));
     if total > MAX_SKILL_CARD_CATALOG_LINES {
-        suffix.push_str(&format!("\n… and {} more", total - MAX_SKILL_CARD_CATALOG_LINES));
+        suffix.push_str(&format!(
+            "\n… and {} more",
+            total - MAX_SKILL_CARD_CATALOG_LINES
+        ));
     }
     tools.set_tool_description(
         "spawn_subagent",
@@ -905,7 +913,11 @@ mod tests {
     #[test]
     fn skill_card_description_defaults_when_absent() {
         let dir = tempfile::tempdir().unwrap();
-        write_skill_card(dir.path(), "architect", "---\ndescription: Arch review\n---\nbody");
+        write_skill_card(
+            dir.path(),
+            "architect",
+            "---\ndescription: Arch review\n---\nbody",
+        );
         let card = read_skill_card(dir.path(), "architect").unwrap();
         assert_eq!(card.description, "Arch review");
     }
@@ -935,14 +947,20 @@ mod tests {
         let description =
             "line one\nline two with a long tail that keeps going well beyond the cap for display";
         let line = format_skill_card_line("long", description);
-        assert!(!line.contains('\n'), "catalog lines must be single-line: {line}");
+        assert!(
+            !line.contains('\n'),
+            "catalog lines must be single-line: {line}"
+        );
         assert!(line.starts_with("- long: line one line two with a long tail"));
         let body = line.trim_start_matches("- long: ");
         assert!(
             body.chars().count() <= SKILL_CARD_DESC_CAP + 1,
             "capped body too long: {body}"
         );
-        assert!(body.ends_with('…'), "truncated lines end with ellipsis: {body}");
+        assert!(
+            body.ends_with('…'),
+            "truncated lines end with ellipsis: {body}"
+        );
     }
 
     #[test]
@@ -961,8 +979,14 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "spawn_subagent")
             .expect("spawn_subagent must be registered");
-        let description = spawn.description.as_deref().expect("spawn has a description");
-        assert!(description.contains("Available subagent skill cards:"), "{description}");
+        let description = spawn
+            .description
+            .as_deref()
+            .expect("spawn has a description");
+        assert!(
+            description.contains("Available subagent skill cards:"),
+            "{description}"
+        );
         assert!(
             description.contains("- reviewer: Adversarial code review for subagents"),
             "{description}"
@@ -980,7 +1004,10 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "spawn_subagent")
             .expect("spawn_subagent must be registered");
-        let description = spawn.description.as_deref().expect("spawn has a description");
+        let description = spawn
+            .description
+            .as_deref()
+            .expect("spawn has a description");
         assert!(
             !description.contains("Available subagent skill cards:"),
             "an empty catalog must not rewrite the description: {description}"
@@ -1005,14 +1032,20 @@ mod tests {
             "traversal must not read outside the card directory: {msg}"
         );
         assert!(msg.contains("invalid subagent skill name"), "{msg}");
-        assert!(prompt.is_empty(), "no role body may be appended on escape: {prompt}");
+        assert!(
+            prompt.is_empty(),
+            "no role body may be appended on escape: {prompt}"
+        );
 
         // Separator- and NUL-containing names are rejected too.
         for bad in ["a/b", "..", "a\\b", "a\0b"] {
             let err = apply_skill_card(&mut prompt, &cards, bad).unwrap_err();
             let msg = format!("{err:#}");
             assert!(msg.contains("invalid subagent skill name"), "{bad}: {msg}");
-            assert!(prompt.is_empty(), "{bad} must not append a role body: {prompt}");
+            assert!(
+                prompt.is_empty(),
+                "{bad} must not append a role body: {prompt}"
+            );
         }
 
         // A legit stem still resolves.
@@ -1042,7 +1075,9 @@ mod tests {
 
         let lines = list_skill_cards(dir.path());
         assert!(
-            lines.iter().any(|l| l.starts_with("- reviewer-link: Linked review role")),
+            lines
+                .iter()
+                .any(|l| l.starts_with("- reviewer-link: Linked review role")),
             "symlinked card must appear in the catalog: {lines:?}"
         );
         let card = read_skill_card(dir.path(), "reviewer-link").unwrap();
@@ -1054,7 +1089,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Exceed the render cap so the annotation must truncate.
         for i in 0..(MAX_SKILL_CARD_CATALOG_LINES + 2) {
-            write_skill_card(dir.path(), &format!("card{i:02}"), &format!("card {i} role"));
+            write_skill_card(
+                dir.path(),
+                &format!("card{i:02}"),
+                &format!("card {i} role"),
+            );
         }
         let mut tools = crate::tool::registry::toolset();
         annotate_spawn_subagent_skill_catalog_with_dir(&mut tools, dir.path());
@@ -1063,7 +1102,10 @@ mod tests {
             .iter()
             .find(|spec| spec.name == "spawn_subagent")
             .expect("spawn_subagent must be registered");
-        let description = spawn.description.as_deref().expect("spawn has a description");
+        let description = spawn
+            .description
+            .as_deref()
+            .expect("spawn has a description");
         assert!(
             description.contains("Available subagent skill cards:"),
             "{description}"

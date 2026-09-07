@@ -26,7 +26,6 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
 syntect = { workspace = true }
-tracing-subscriber = { workspace = true }
 unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
 

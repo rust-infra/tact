@@ -731,10 +731,7 @@ mod tests {
             .unwrap();
 
         let runs = manager.ui_snapshot().await;
-        let statuses: Vec<_> = runs
-            .iter()
-            .map(|r| r.status)
-            .collect();
+        let statuses: Vec<_> = runs.iter().map(|r| r.status).collect();
         assert_eq!(
             statuses,
             vec![
@@ -772,12 +769,7 @@ mod tests {
         let runs = manager.ui_snapshot().await;
         let running: Vec<_> = runs
             .iter()
-            .filter(|r| {
-                matches!(
-                    r.status,
-                    tact_protocol::SubagentStatusSnapshot::Running
-                )
-            })
+            .filter(|r| matches!(r.status, tact_protocol::SubagentStatusSnapshot::Running))
             .collect();
         assert_eq!(running.len(), 2, "all running children must be preserved");
         assert_eq!(

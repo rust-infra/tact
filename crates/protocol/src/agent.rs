@@ -356,9 +356,7 @@ pub enum AgentUpdate {
     /// requested). `runs` is the full visible snapshot for the TUI sticky
     /// strip (Running first, then newest-finished, capped). The subagent
     /// analog of [`Self::TasksChanged`]; read-only tools do not emit.
-    SubagentsChanged {
-        runs: Vec<SubagentRunSnapshot>,
-    },
+    SubagentsChanged { runs: Vec<SubagentRunSnapshot> },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.

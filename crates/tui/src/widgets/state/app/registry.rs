@@ -8,8 +8,8 @@
 //! `Deref` exposes the underlying state type directly.
 
 use agent_tui_kit::components::{
-    PlanComponent, StatusBarComponent, StreamComponent, SubagentPanelComponent,
-    TaskPanelComponent, ThinkingComponent, ToolComponent,
+    PlanComponent, StatusBarComponent, StreamComponent, SubagentPanelComponent, TaskPanelComponent,
+    ThinkingComponent, ToolComponent,
 };
 
 use crate::widgets::state::App;

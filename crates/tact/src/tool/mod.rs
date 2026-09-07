@@ -229,7 +229,8 @@ impl ToolRouter {
         name: impl Into<String>,
         description: impl Into<String>,
     ) {
-        self.description_overrides.insert(name.into(), description.into());
+        self.description_overrides
+            .insert(name.into(), description.into());
     }
 
     pub fn route<T>(mut self, tool: T) -> Result<Self>

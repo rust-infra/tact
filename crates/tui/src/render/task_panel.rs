@@ -29,25 +29,10 @@ pub(crate) fn active_sticky_tab(app: &App) -> agent_tui_kit::state::StickyTab {
     agent_tui_kit::render::sticky_host::active_visible_tab(&ctx)
 }
 
-pub(crate) fn sticky_tab_visible(app: &App, tab: agent_tui_kit::state::StickyTab) -> bool {
-    match tab {
-        agent_tui_kit::state::StickyTab::Tasks => app.task_panel().visible,
-        agent_tui_kit::state::StickyTab::Subagent => app.subagent_panel().visible,
-    }
-}
-
 pub(crate) fn sticky_tab_expanded(app: &App, tab: agent_tui_kit::state::StickyTab) -> bool {
     match tab {
         agent_tui_kit::state::StickyTab::Tasks => app.task_panel().expanded,
         agent_tui_kit::state::StickyTab::Subagent => app.subagent_panel().expanded,
-    }
-}
-
-/// Scroll position of a given sticky domain.
-pub(crate) fn sticky_tab_scroll(app: &App, tab: agent_tui_kit::state::StickyTab) -> usize {
-    match tab {
-        agent_tui_kit::state::StickyTab::Tasks => app.task_panel().scroll,
-        agent_tui_kit::state::StickyTab::Subagent => app.subagent_panel().scroll,
     }
 }
 
@@ -61,7 +46,9 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
 #[cfg(test)]
 mod sticky_host_tests {
-    use tact_protocol::{SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot};
+    use tact_protocol::{
+        SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
+    };
 
     use super::super::test_harness::{make_app, render_main_area_text};
 
@@ -197,10 +184,7 @@ mod sticky_host_tests {
             for x in 0..buf.area.width {
                 let cell = &buf[(x, y)];
                 if cell.symbol() == " " || cell.symbol().is_empty() {
-                    assert_eq!(
-                        cell.bg, bg,
-                        "blank cell at {x},{y} must carry theme.bg"
-                    );
+                    assert_eq!(cell.bg, bg, "blank cell at {x},{y} must carry theme.bg");
                 }
             }
         }

@@ -28,10 +28,10 @@ use crate::{
     render::ctx::RenderCtx,
     state::{
         StickyTab,
-        subagent_panel::{format_sticky_title_line as format_subagent_title, format_subagent_lines},
-        task_panel::{
-            format_grouped_lines, format_sticky_title_line as format_tasks_title,
+        subagent_panel::{
+            format_sticky_title_line as format_subagent_title, format_subagent_lines,
         },
+        task_panel::{format_grouped_lines, format_sticky_title_line as format_tasks_title},
     },
 };
 
@@ -197,10 +197,7 @@ pub fn render_sticky_host(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Sti
 
         let label_width = UnicodeWidthStr::width(label_text);
         spans.push(Span::styled(label_text.to_string(), label_style));
-        tab_areas.push((
-            tab,
-            Rect::new(x_cursor, title_y, label_width as u16, 1),
-        ));
+        tab_areas.push((tab, Rect::new(x_cursor, title_y, label_width as u16, 1)));
         x_cursor = x_cursor.saturating_add(label_width as u16);
 
         spans.push(Span::styled(" ", row_style));
@@ -222,9 +219,7 @@ pub fn render_sticky_host(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Sti
 
     let expanded_tab = active_visible_tab(ctx);
     if !domain_expanded(ctx, expanded_tab) || inner.height == 1 {
-        return StickyHostHitAreas {
-            tab_areas,
-        };
+        return StickyHostHitAreas { tab_areas };
     }
 
     // Expanded: hairline + active-domain body.

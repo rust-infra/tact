@@ -242,10 +242,7 @@ impl PluginFeatures {
     /// True when the plugin contributes no supported feature at all.
     #[must_use]
     pub fn is_empty(self) -> bool {
-        self.skill_count == 0
-            && self.command_count == 0
-            && !self.has_hooks
-            && !self.has_mcp
+        self.skill_count == 0 && self.command_count == 0 && !self.has_hooks && !self.has_mcp
     }
 }
 

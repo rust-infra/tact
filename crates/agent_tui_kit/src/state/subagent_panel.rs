@@ -136,14 +136,14 @@ pub fn format_subagent_lines(
         return Vec::new();
     }
     let mut sorted = runs.to_vec();
-    sorted.sort_by_key(|r| (status_group(r), std::cmp::Reverse(r.started_at.unwrap_or(0))));
+    sorted.sort_by_key(|r| {
+        (
+            status_group(r),
+            std::cmp::Reverse(r.started_at.unwrap_or(0)),
+        )
+    });
 
-    let group_names = [
-        "Running",
-        "Completed",
-        "Failed",
-        "Cancelled",
-    ];
+    let group_names = ["Running", "Completed", "Failed", "Cancelled"];
     let mut all_lines: Vec<String> = Vec::new();
     let mut current_group = 0;
     let mut started = false;
@@ -180,7 +180,10 @@ pub fn format_subagent_lines(
     visible
 }
 
-pub fn format_sticky_title_line(msgs: &crate::i18n::Messages, runs: &[SubagentRunSnapshot]) -> String {
+pub fn format_sticky_title_line(
+    msgs: &crate::i18n::Messages,
+    runs: &[SubagentRunSnapshot],
+) -> String {
     let running = runs
         .iter()
         .filter(|r| r.status == SubagentStatusSnapshot::Running)
@@ -211,7 +214,12 @@ mod tests {
     use super::*;
     use tact_protocol::SubagentRunSnapshot;
 
-    fn run(id: u64, status: SubagentStatusSnapshot, summary: &str, started: i64) -> SubagentRunSnapshot {
+    fn run(
+        id: u64,
+        status: SubagentStatusSnapshot,
+        summary: &str,
+        started: i64,
+    ) -> SubagentRunSnapshot {
         SubagentRunSnapshot {
             child_id: format!("{id:032x}"),
             status,
@@ -224,8 +232,18 @@ mod tests {
     #[test]
     fn has_running_detects_running() {
         assert!(!has_running(&[]));
-        assert!(has_running(&[run(1, SubagentStatusSnapshot::Running, "w", 1)]));
-        assert!(!has_running(&[run(1, SubagentStatusSnapshot::Completed, "d", 1)]));
+        assert!(has_running(&[run(
+            1,
+            SubagentStatusSnapshot::Running,
+            "w",
+            1
+        )]));
+        assert!(!has_running(&[run(
+            1,
+            SubagentStatusSnapshot::Completed,
+            "d",
+            1
+        )]));
     }
 
     #[test]
@@ -249,7 +267,10 @@ mod tests {
         assert!(text.contains('d'));
         // Short id is the first 8 hex chars, not the full 32.
         assert!(text.contains("00000000"), "text: {text}");
-        assert!(!text.contains("00000000000000000000000000000001"), "full id leaked");
+        assert!(
+            !text.contains("00000000000000000000000000000001"),
+            "full id leaked"
+        );
     }
 
     #[test]

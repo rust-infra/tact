@@ -202,8 +202,7 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
             // Clicking the active tab (or anywhere else in the strip) toggles
             // the active domain's expansion.
             _ => {
-                let expanded =
-                    crate::render::task_panel::sticky_tab_expanded(app, active);
+                let expanded = crate::render::task_panel::sticky_tab_expanded(app, active);
                 match active {
                     StickyTab::Tasks => app.task_panel_mut().expanded = !expanded,
                     StickyTab::Subagent => app.subagent_panel_mut().expanded = !expanded,
@@ -658,7 +657,8 @@ mod tests {
             mouse_event(crossterm::event::MouseEventKind::ScrollDown, 20, 10),
         );
         assert_eq!(
-            app.subagent_panel_mut().scroll, 1,
+            app.subagent_panel_mut().scroll,
+            1,
             "subagent panel scroll should advance"
         );
         assert_eq!(app.task_panel_mut().scroll, 0, "tasks scroll untouched");
