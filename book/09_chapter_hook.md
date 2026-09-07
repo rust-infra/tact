@@ -20,15 +20,18 @@ Hooks keep those concerns out of the core scheduler while still running at predi
 
 ---
 
-## 2. Three Hook Types
+## 2. Hook Types
 
 Defined in `crates/tact/src/hook/mod.rs`:
 
 | Hook | Registration | Invoked today? | Can mutate | Can veto |
 |------|----------------|----------------|------------|----------|
-| `SessionStart` | `Agent::session_start` | **No** — registered but not yet called from `agent_loop` | read-only access to `LoopState` (`Agent`) | Yes |
+| `SessionStart` | `Agent::session_start` | Yes — once per session, after initialization (`dispatch_session_start_hooks`) | read-only access to `LoopState` (`Agent`) | Yes |
+| `UserPromptSubmit` | `Agent::user_prompt_submit` | Yes — when a user turn message enters `agent_loop` | prompt text (append `additionalContext`) | Yes |
 | `PreToolUse` | `Agent::pre_tool` | Yes — before permission check, per tool in order | `ToolUse` input (`name`, `input` JSON) | Yes |
 | `PostToolUse` | `Agent::post_tool` | Yes — after each tool finishes, as results stream in | `ToolResult` content | Yes |
+
+`SubagentStart` is a **standalone** hook trait (`SubagentStartFn`), not an `Agent.hook`: `spawn_subagent` is a tool handler without a parent `Agent` handle, so the closures live on `ToolContext.subagent_start_hooks` and are invoked by the spawn path to mutate the child's system prompt.
 
 `LoopState` is a type alias for `Agent`, so session hooks see the same runtime the loop uses (context, stats, tool routers, etc.).
 
@@ -146,6 +149,20 @@ agent.post_tool(|_agent, tool_use, tool_result| {
 Hooks are appended to `Agent.hooks` in registration order and executed in that order for each invocation.
 
 Multiple hooks of the same type compose: all must return `Continue` unless one `Block`s (first block wins).
+
+### Claude Code plugin command hooks
+
+Installed marketplace plugins can declare command hooks through `.claude-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks` (in `crates/tact/src/plugin/hooks.rs`) registers them on the `Agent` builder in `interactive.rs` / `headless.rs` for the five mapped events:
+
+- `SessionStart` — matcher is matched against `"startup"`; `systemPrompt` output is logged but **not applied** (v1).
+- `UserPromptSubmit` — matcher against the prompt text; `additionalContext` output is appended to the user prompt.
+- `PreToolUse` — matcher against the tool name; `additionalContext` is added to the tool input as `_hook_context`; `block` prevents execution.
+- `PostToolUse` — matcher against the tool name; `suppressOutput` clears the result; `block` turns it into a failure.
+- `SubagentStart` — `plugin_subagent_start_hooks` builds `ToolContext` closures; `additionalContext` is appended to the child system prompt.
+
+Each hook entry is a shell command (`sh -c` on Unix, `commandWindows` ignored for now) run with `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` env vars, the Claude input JSON on stdin (`session_id`, `transcript_path`, `cwd`, `hook_event_name`, event fields), and stdout JSON parsed in both the newer `decision` / `reason` / `additionalContext` format and the legacy `hookSpecificOutput` format. `timeout` defaults to 60s, `async: true` fire-and-forgets. Failures (non-zero exit, timeout, invalid JSON) log a warning and **continue** — they never block the agent loop (fail-open, matching Claude Code).
+
+Hooks execute in declaration order after any Rust closures registered earlier; a `Block` short-circuits.
 
 ---
 

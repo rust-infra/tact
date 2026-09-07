@@ -5,7 +5,35 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::widgets::state::{App, InputMode, Status};
 
 fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app) && app.task_panel().expanded
+    crate::render::task_panel::sticky_host_visible(app)
+        && crate::render::task_panel::sticky_tab_expanded(
+            app,
+            crate::render::task_panel::active_sticky_tab(app),
+        )
+}
+
+/// Move the active sticky domain's scroll by `delta` rows (signed).
+fn scroll_active_sticky(app: &mut App, delta: isize) {
+    use agent_tui_kit::state::StickyTab;
+    let tab = crate::render::task_panel::active_sticky_tab(app);
+    match tab {
+        StickyTab::Tasks => {
+            let p = app.task_panel_mut();
+            if delta < 0 {
+                p.scroll = p.scroll.saturating_sub(delta.unsigned_abs());
+            } else {
+                p.scroll = p.scroll.saturating_add(delta as usize);
+            }
+        }
+        StickyTab::Subagent => {
+            let p = app.subagent_panel_mut();
+            if delta < 0 {
+                p.scroll = p.scroll.saturating_sub(delta.unsigned_abs());
+            } else {
+                p.scroll = p.scroll.saturating_add(delta as usize);
+            }
+        }
+    }
 }
 
 pub(crate) fn handle_normal_mode(
@@ -16,7 +44,7 @@ pub(crate) fn handle_normal_mode(
     match key.code {
         KeyCode::Char('j') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
-                app.task_panel_mut().scroll = app.task_panel_mut().scroll.saturating_add(1);
+                scroll_active_sticky(app, 1);
             } else {
                 let step = crate::widgets::state::app::scroll::key_cell_step(
                     app.log_scroll.height as usize,
@@ -26,9 +54,7 @@ pub(crate) fn handle_normal_mode(
         }
         KeyCode::Char('k') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
-                if app.task_panel_mut().scroll > 0 {
-                    app.task_panel_mut().scroll -= 1;
-                }
+                scroll_active_sticky(app, -1);
             } else {
                 let step = crate::widgets::state::app::scroll::key_cell_step(
                     app.log_scroll.height as usize,

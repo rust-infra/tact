@@ -14,12 +14,22 @@ pub fn render_system_prompt_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx
         return;
     };
     let popup_area = super::centered_popup_area(area);
+    let footer: &[super::FooterHint] = &[
+        super::FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
+        super::FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
+    ];
     let inner = super::render_popup_chrome(
         frame,
         popup_area,
         ctx.theme,
         &format!(" {} ", popup.title),
-        None,
+        Some(footer),
     );
     // Plain ratatui-markdown render at the popup's content width; the popup
     // scrolls internally so lines wrap at the renderer's max width.

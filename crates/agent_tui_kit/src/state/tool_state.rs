@@ -27,6 +27,10 @@ pub struct ActiveToolBlock {
     pub output: ToolRenderOutput,
     pub live_output: ToolOutputBuffer,
     pub started_at: Instant,
+    /// For `spawn_subagent` with `run_in_background`, the child session id
+    /// parsed from the `async_launched { id }` result — lets the TUI render a
+    /// cancel button while the subagent card is live.
+    pub subagent_child_id: Option<String>,
 }
 
 /// A completed tool invocation's range in messages and its pre-built render output.

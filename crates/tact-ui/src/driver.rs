@@ -45,12 +45,37 @@ pub async fn run_command_loop_with_account(
     // Shared UI responder: routes TUI select responses to the waiter (parent
     // or subagent) even while the Agent is owned by the in-flight task.
     let ui_responder = agent.tool_context.ui_responder.clone();
+    // Shared subagent manager: lets CancelSubagent flip a running child's
+    // cooperative cancel flag without owning the parent Agent.
+    let subagent_manager = agent.tool_context.subagent_manager.clone();
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
+    // A `SubagentFinishedNotification` that arrives while a turn is in flight
+    // cannot be dropped: the result may already have been drained from the
+    // queue at the start of the turn, and once the turn exits there is nothing
+    // left to wake the parent. Retain the wake-up until the in-flight task
+    // completes, then submit it.
+    let mut pending_subagent_wakeup = false;
 
-    while let Some(cmd) = user_cmd_rx.recv().await {
-        reap_finished_task(&mut agent, &mut active).await;
+    loop {
+        let cmd = if active.is_some() {
+            tokio::select! {
+                result = active.as_mut().expect("active task") => {
+                    agent = Some(result.expect("active task join panicked"));
+                    active = None;
+                    if pending_subagent_wakeup {
+                        pending_subagent_wakeup = false;
+                        spawn_wakeup_task(&mut agent, &mut active, &image_work_dir);
+                    }
+                    continue;
+                }
+                cmd = user_cmd_rx.recv() => cmd,
+            }
+        } else {
+            user_cmd_rx.recv().await
+        };
+        let Some(cmd) = cmd else { break };
 
         match cmd {
             UserCommand::UiResponse(response) => {
@@ -64,6 +89,21 @@ pub async fn run_command_loop_with_account(
                     let _ = tx.send(AgentUpdate::Info("Cancelling...".into()));
                 }
             }
+            UserCommand::CancelSubagent { child_id } => {
+                if subagent_manager.request_cancel(&child_id) {
+                    let _ = subagent_manager.cancel(&child_id).await;
+                    tact::subagent::emit_subagents_changed(&ui_tx, &subagent_manager).await;
+                    if let Some(tx) = &ui_tx {
+                        let _ = tx.send(AgentUpdate::Info(format!(
+                            "Cancelling subagent {child_id}..."
+                        )));
+                    }
+                } else if let Some(tx) = &ui_tx {
+                    let _ = tx.send(AgentUpdate::Info(format!(
+                        "No running subagent {child_id} to cancel"
+                    )));
+                }
+            }
             UserCommand::QueryStats => {
                 // Immediate snapshot: does NOT wait for the running task —
                 // stats live in an Arc<RwLock<SessionStats>> shared with the
@@ -73,10 +113,23 @@ pub async fn run_command_loop_with_account(
                     let _ = tx.send(AgentUpdate::SessionStats(stats_text));
                 }
             }
+            UserCommand::SubagentFinishedNotification { .. } => {
+                // If a turn is active, retain the wake-up until that turn's
+                // JoinHandle completes. Otherwise the notification could be
+                // lost in the gap between the final queue drain and turn exit.
+                if active.is_none() {
+                    spawn_wakeup_task(&mut agent, &mut active, &image_work_dir);
+                } else {
+                    pending_subagent_wakeup = true;
+                }
+            }
             UserCommand::SubmitTask(task) => {
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("submit task join panicked"));
                 }
+                // The new user turn drains pending subagent results itself;
+                // do not add a redundant wake-up after it finishes.
+                pending_subagent_wakeup = false;
                 let work_dir = image_work_dir.clone();
                 let mut task_agent = agent.take().expect("agent available for submit");
                 active = Some(tokio::spawn(async move {
@@ -107,6 +160,16 @@ pub async fn run_command_loop_with_account(
     // finish instead of deadlocking on an answer that will never arrive.
     ui_responder.shutdown();
 
+    // The parent is exiting: request cancellation and persist Cancelled for
+    // every live child before detached tasks can be dropped by runtime shutdown.
+    if subagent_manager.cancel_all_and_persist().await > 0
+        && let Some(tx) = &ui_tx
+    {
+        let _ = tx.send(AgentUpdate::Info(
+            "Cancelling background subagents (parent exiting)...".into(),
+        ));
+    }
+
     if let Some(handle) = active.take() {
         agent = Some(handle.await.expect("final task join panicked"));
     }
@@ -116,13 +179,23 @@ pub async fn run_command_loop_with_account(
     agent
 }
 
-async fn reap_finished_task(agent: &mut Option<Agent>, active: &mut Option<JoinHandle<Agent>>) {
-    if let Some(handle) = active.as_mut()
-        && handle.is_finished()
-    {
-        *agent = Some(handle.await.expect("finished task join panicked"));
-        *active = None;
+fn spawn_wakeup_task(
+    agent: &mut Option<Agent>,
+    active: &mut Option<JoinHandle<Agent>>,
+    image_work_dir: &Path,
+) {
+    if active.is_some() {
+        return;
     }
+    let Some(mut task_agent) = agent.take() else {
+        return;
+    };
+    let work_dir = image_work_dir.to_path_buf();
+    *active = Some(tokio::spawn(async move {
+        let prompt = "A background subagent finished. Review its result below.".to_string();
+        handle_user_command(&mut task_agent, UserCommand::SubmitTask(prompt), &work_dir).await;
+        task_agent
+    }));
 }
 
 /// Handle a single user command (shared by the loop and tests).
@@ -439,6 +512,68 @@ mod tests {
             }
         }
         assert!(saw_error, "QueryBackground with unknown id must emit Error");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagent_finished_notification_is_not_lost_when_parent_finishes() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Duration;
+
+        install_test_config();
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_rx = release.clone();
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let calls_rx = calls.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            calls_rx.fetch_add(1, Ordering::Relaxed);
+            if idx == 0 {
+                while !release_rx.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            let text = if idx == 0 { "parent done" } else { "wake done" };
+            Ok((vec![text_block(text)], Some(StopReason::EndTurn), None))
+        });
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
+
+        user_cmd_tx
+            .send(UserCommand::SubmitTask("parent task".into()))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while calls.load(Ordering::Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("parent task should start");
+
+        // The notification arrives while the parent turn is still running.
+        user_cmd_tx
+            .send(UserCommand::SubagentFinishedNotification {
+                child_id: "child-1".into(),
+                summary: "finished".into(),
+                success: true,
+            })
+            .unwrap();
+        release.store(true, Ordering::Relaxed);
+
+        let mut completions = 0;
+        let wait_result = tokio::time::timeout(Duration::from_secs(1), async {
+            while completions < 2 {
+                if let Some(AgentUpdate::TaskComplete(_)) = agent_rx.recv().await {
+                    completions += 1;
+                }
+            }
+        })
+        .await;
+        drop(user_cmd_tx);
+        let _ = loop_handle.await;
+
+        wait_result.expect("queued wake-up should run after the parent finishes");
+        assert_eq!(completions, 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]

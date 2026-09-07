@@ -26,6 +26,10 @@ pub trait WorktreeStore: Send + Sync {
     /// Lists all worktrees in insertion order.
     async fn list_worktrees(&self) -> Result<Vec<WorktreeRecord>>;
 
+    /// Deletes a worktree record by name. Returns `false` when no worktree
+    /// with that name exists (nothing is deleted).
+    async fn remove_worktree(&self, name: &str) -> Result<bool>;
+
     /// Appends one audit-log event.
     async fn append_event(&self, event: &str) -> Result<()>;
 

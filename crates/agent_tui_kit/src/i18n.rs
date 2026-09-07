@@ -116,7 +116,13 @@ pub struct Messages {
     pub palette_empty: &'static str,
     pub select_empty: &'static str,
     pub select_arrow: &'static str,
+    /// Select popup footer hints (keys are rendered in accent, labels muted).
+    pub select_hint_nav: &'static str,
+    pub select_hint_confirm: &'static str,
+    pub select_hint_cancel: &'static str,
+    pub select_hint_toggle: &'static str,
     pub pending_cancel_btn: &'static str,
+    pub subagent_cancel_btn: &'static str,
 
     // ---- 帮助面板 ---
     pub help_header_shortcuts: &'static str,
@@ -200,6 +206,7 @@ pub struct Messages {
     pub cmd_permission: &'static str,
     pub cmd_save: &'static str,
     pub cmd_cancel: &'static str,
+    pub cmd_subagent_cancel: &'static str,
     pub cmd_quit: &'static str,
     pub cmd_help: &'static str,
     pub cmd_history: &'static str,
@@ -286,9 +293,11 @@ pub struct Messages {
     pub input_busy_msg: &'static str,
     pub pending_submit_hint: &'static str,
     pub cancel_noop_msg: &'static str,
+    pub subagent_cancel_usage_msg: &'static str,
 
     // ---- 持久任务进度 ----
     pub tasks_sticky_title: &'static str,
+    pub subagents_sticky_title: &'static str,
     pub tasks_log_created_tmpl: &'static str, // "Tasks · {}/{} created"
     pub tasks_log_updated_tmpl: &'static str, // "Tasks · {}/{} updated"
 
@@ -393,7 +402,12 @@ impl Messages {
             palette_empty: "No matching commands",
             select_empty: "No options",
             select_arrow: "▶ ",
+            select_hint_nav: " Select ",
+            select_hint_confirm: " Confirm ",
+            select_hint_cancel: " Cancel ",
+            select_hint_toggle: " Toggle ",
             pending_cancel_btn: "Cancel",
+            subagent_cancel_btn: "Cancel",
 
             help_header_shortcuts: "⌨️  Keyboard Shortcuts:",
             help_normal_header: "  🔤 Normal Mode (Esc from Insert)",
@@ -482,6 +496,7 @@ impl Messages {
             cmd_permission: "Set permission mode (Default/Plan/Auto)",
             cmd_save: "Save log to file",
             cmd_cancel: "Cancel current task",
+            cmd_subagent_cancel: "Cancel a running subagent (usage: /subagent_cancel <child-id>)",
             cmd_quit: "Quit application",
             cmd_help: "Show help panel",
             cmd_history: "Show task history",
@@ -509,7 +524,7 @@ impl Messages {
             plugin_up_to_date_tmpl: "✓ Plugin {} is up to date ({}@{})",
             plugin_list_empty: "(no plugins installed)",
             plugin_list_title_tmpl: "🔌 Installed plugins ({})",
-            plugin_list_header: "| Plugin | Marketplace | Skills |",
+            plugin_list_header: "| Plugin | Marketplace | Skills | Cmds | Hooks | MCP |",
             plugin_reloaded_tmpl: "✓ Reloaded {} installed plugin(s)",
             marketplace_added_tmpl: "added marketplace {}",
             marketplace_list_empty: "(no marketplaces)",
@@ -555,10 +570,12 @@ impl Messages {
             input_busy_msg: "⏳ Still processing previous prompt, please wait...",
             pending_submit_hint: "Message will be submitted after the current task finishes",
             cancel_noop_msg: "Nothing to cancel",
+            subagent_cancel_usage_msg: "Usage: /subagent_cancel <child-id>",
 
             tasks_sticky_title: "Tasks",
             tasks_log_created_tmpl: "Tasks · {}/{} created",
             tasks_log_updated_tmpl: "Tasks · {}/{} updated",
+            subagents_sticky_title: "Subagent",
 
             startup_welcome: "Agent TUI started. Press 'i' for insert mode, '/' for commands.",
             startup_mode_hint: "Current mode: Insert. Type a task and press Enter. Shift+Enter for new line.",
@@ -657,7 +674,12 @@ impl Messages {
             palette_empty: "没有匹配的命令",
             select_empty: "无选项",
             select_arrow: "▶ ",
+            select_hint_nav: " 选择 ",
+            select_hint_confirm: " 确认 ",
+            select_hint_cancel: " 取消 ",
+            select_hint_toggle: " 勾选 ",
             pending_cancel_btn: "取消",
+            subagent_cancel_btn: "取消",
 
             help_header_shortcuts: "⌨️  键盘快捷键:",
             help_normal_header: "  🔤 普通模式 (在插入模式按 Esc)",
@@ -746,6 +768,7 @@ impl Messages {
             cmd_permission: "设置权限模式 (默认/只读/自动)",
             cmd_save: "保存日志到文件",
             cmd_cancel: "取消当前任务",
+            cmd_subagent_cancel: "取消运行中的子代理（用法：/subagent_cancel <child-id>）",
             cmd_quit: "退出应用",
             cmd_help: "显示帮助面板",
             cmd_history: "显示任务历史",
@@ -773,7 +796,7 @@ impl Messages {
             plugin_up_to_date_tmpl: "✓ 插件 {} 已是最新（{}@{}）",
             plugin_list_empty: "（未安装任何插件）",
             plugin_list_title_tmpl: "🔌 已安装插件（{}）",
-            plugin_list_header: "| 插件 | 市场 | 技能数 |",
+            plugin_list_header: "| 插件 | 市场 | 技能 | 命令 | 钩子 | MCP |",
             plugin_reloaded_tmpl: "✓ 已重新加载 {} 个已安装插件",
             marketplace_added_tmpl: "已添加市场 {}",
             marketplace_list_empty: "（未注册任何市场）",
@@ -819,10 +842,12 @@ impl Messages {
             input_busy_msg: "⏳ 上一个任务还在处理中，请稍候...",
             pending_submit_hint: "消息将在当前任务结束后自动提交",
             cancel_noop_msg: "当前没有可取消的任务",
+            subagent_cancel_usage_msg: "用法：/subagent_cancel <child-id>",
 
             tasks_sticky_title: "任务",
             tasks_log_created_tmpl: "任务 · {}/{} 已创建",
             tasks_log_updated_tmpl: "任务 · {}/{} 已更新",
+            subagents_sticky_title: "子代理",
 
             startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",

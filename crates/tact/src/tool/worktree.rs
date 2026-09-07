@@ -184,6 +184,54 @@ pub async fn worktree_events(ctx: ToolContext, input: WorktreeEventsInput) -> Re
     ctx.worktree_manager.events(input.limit.unwrap_or(20)).await
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WorktreeRemoveInput {
+    #[schemars(description = "Worktree lane name to remove.")]
+    pub name: String,
+}
+
+pub const WORKTREE_REMOVE_METADATA: ToolMetadata = ToolMetadata {
+    name: "worktree_remove",
+    description: "Remove a tracked git worktree lane (e.g. a finished subagent's lane). Fails if the worktree has uncommitted changes; refuses to remove the lane of a subagent that is still running.",
+    permission: PermissionPolicy::Write,
+    permission_prompt: PermissionPromptPolicy::Json,
+    resources: ResourcePolicy::Barrier,
+    domain: ToolDomain::Generic,
+    presentation: ToolPresentation {
+        visual_kind: ToolVisualKind::Generic,
+        display_name: "🌿 Worktree Remove",
+        live_output: LiveOutputPolicy::Standard,
+        detail: DetailPolicy::Result,
+        popup: PopupPolicy::None,
+        compact_result_to_meta: false,
+    },
+    output: OutputPolicy::KeepInline,
+    argument_summary: ArgumentSummaryPolicy::Json,
+};
+
+#[tool]
+/// # Errors
+///
+/// Returns an error if the worktree does not exist, `git worktree remove`
+/// fails (e.g. the lane has uncommitted changes), or the lane belongs to a
+/// subagent that is still running.
+pub async fn worktree_remove(ctx: ToolContext, input: WorktreeRemoveInput) -> Result<String> {
+    // Guard: never remove the lane of a subagent that is still running —
+    // the child's tools still resolve against it and removal would be
+    // destructive. `spawn_subagent` names isolated lanes `subagent-<child_id>`.
+    if let Some(child_id) = input.name.strip_prefix("subagent-")
+        && let Some(run) = ctx.subagent_manager.get(child_id).await?
+        && run.status == crate::subagent::SubagentStatus::Running
+    {
+        anyhow::bail!(
+            "cannot remove worktree {}: subagent {child_id} is still running; \
+             cancel or wait for it first",
+            input.name
+        );
+    }
+    ctx.worktree_manager.remove(&input.name).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +267,42 @@ mod tests {
         .unwrap();
 
         assert_eq!(output, "");
+    }
+
+    #[tokio::test]
+    async fn worktree_remove_refuses_running_subagent_lane() {
+        let context = test_context("worktree_remove_running_guard");
+        // Seed a running subagent run so its `subagent-<id>` lane is protected.
+        context
+            .subagent_manager
+            .start("child-1".to_string())
+            .await
+            .unwrap();
+
+        let result = run_tool(
+            &context,
+            WorktreeRemoveTool,
+            "worktree_remove",
+            serde_json::json!({ "name": "subagent-child-1" }),
+        )
+        .await;
+
+        let err = result.expect_err("must refuse a running subagent's lane");
+        assert!(err.to_string().contains("still running"), "err: {err}");
+    }
+
+    #[tokio::test]
+    async fn worktree_remove_unknown_name_errors() {
+        let context = test_context("worktree_remove_unknown");
+
+        let result = run_tool(
+            &context,
+            WorktreeRemoveTool,
+            "worktree_remove",
+            serde_json::json!({ "name": "no-such-lane" }),
+        )
+        .await;
+
+        assert!(result.is_err(), "unknown worktree name must error");
     }
 }

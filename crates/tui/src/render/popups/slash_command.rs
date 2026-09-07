@@ -8,9 +8,10 @@ use ratatui::{
 
 use crate::widgets::state::App;
 
-pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &App) {
+pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     let slash = &app.slash_command;
     if !slash.active {
+        app.mouse.slash_popup_area = Rect::default();
         return;
     }
 
@@ -32,6 +33,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
     let filtered = slash.matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
     let n = filtered.len();
     if n == 0 {
+        app.mouse.slash_popup_area = Rect::default();
         let hint_area = super::centered_list_popup_area(area, 40, 5);
         let inner = super::render_popup_chrome(
             frame,
@@ -80,17 +82,33 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
         .position(|r| matches!(r, SlashRow::Item { global_idx, .. } if *global_idx == selected))
         .unwrap_or(0);
 
-    let list_height = rows.len().min(max_visible + 2) as u16;
-    let popup_area = super::centered_list_popup_area(area, popup_width, list_height + 2);
+    // The popup can show at most `max_visible` items plus up to two section
+    // headers — but never more rows than the main area actually fits (the
+    // block borders take 2 rows). The scroll window and the popup height MUST
+    // agree: when the window is larger than the real content area, the List
+    // widget clips the bottom rows and the selected row can land outside the
+    // visible content, which reads as "the list does not scroll".
+    let available_content = (area.height.saturating_sub(2)) as usize;
+    let window = rows
+        .len()
+        .min(max_visible + 2)
+        .min(available_content.max(1));
+    let popup_area = super::centered_list_popup_area(area, popup_width, window as u16 + 2);
 
-    let offset = if rows.len() > max_visible + 2 && selected_row >= max_visible {
-        selected_row - max_visible + 1
+    // Scroll window: keep the selected row visible. Once the list overflows
+    // the popup, pin the selected row near the bottom (2 context rows below),
+    // which mirrors the previous anchor while guaranteeing the highlight is
+    // always on screen at any terminal height.
+    let max_offset = rows.len().saturating_sub(window);
+    let pin = window.saturating_sub(3).min(window.saturating_sub(1));
+    let offset = if rows.len() > window {
+        selected_row.saturating_sub(pin).min(max_offset)
     } else {
         0
     };
 
     let accent = Color::Cyan;
-    let visible_end = (offset + max_visible + 2).min(rows.len());
+    let visible_end = (offset + window).min(rows.len());
     let items: Vec<ListItem> = rows[offset..visible_end]
         .iter()
         .map(|row| match row {
@@ -165,6 +183,10 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &Ap
 
     frame.render_widget(Clear, popup_area);
     frame.render_widget(list, popup_area);
+
+    // Expose the popup rect so mouse-wheel scrolls over the list move the
+    // selection instead of scrolling the log behind the popup.
+    app.mouse.slash_popup_area = popup_area;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

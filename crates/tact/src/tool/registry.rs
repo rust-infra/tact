@@ -12,15 +12,15 @@ use super::{
     read_file::ReadFileTool,
     read_image::ReadImageTool,
     sleep::SleepTool,
-    subagent::SpawnSubagentTool,
+    subagent::{CancelSubagentTool, CheckSubagentTool, SpawnSubagentTool, WaitSubagentTool},
     task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool},
     team::{
         BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
         ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
     },
     worktree::{
-        WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRunTool,
-        WorktreeStatusTool,
+        WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRemoveTool,
+        WorktreeRunTool, WorktreeStatusTool,
     },
     write_file::WriteFileTool,
 };
@@ -41,6 +41,9 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(SaveMemoryTool)?
         .route(CompactTool)?
         .route(SpawnSubagentTool)?
+        .route(CheckSubagentTool)?
+        .route(WaitSubagentTool)?
+        .route(CancelSubagentTool)?
         .route(TaskCreateTool)?
         .route(TaskGetTool)?
         .route(TaskListTool)?
@@ -57,6 +60,7 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(WorktreeListTool)?
         .route(WorktreeStatusTool)?
         .route(WorktreeRunTool)?
+        .route(WorktreeRemoveTool)?
         .route(WorktreeEventsTool)
 }
 

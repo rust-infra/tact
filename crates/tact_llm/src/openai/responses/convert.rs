@@ -47,7 +47,36 @@ fn reasoning_item(signature: &str) -> Result<Option<InputItem>, LlmError> {
     Ok(None)
 }
 
-fn message_to_input(message: &Message) -> Result<Vec<InputItem>, LlmError> {
+/// Policy controlling whether historical assistant `reasoning` items are
+/// replayed into the `/responses` input.
+///
+/// Official OpenAI expects prior reasoning items (with their opaque
+/// encrypted payload) to be passed back so the model can continue a
+/// tool-calling turn. Compatible endpoints (DeepSeek, OpenCode, custom
+/// OpenAI-compatible proxies) accept them but do not require them — they
+/// regenerate reasoning each turn, so replaying every previous chain of
+/// thought is pure input-token waste (measured at ~17% of request bytes on
+/// such endpoints). Defaults to replaying (legacy behavior); the adapter
+/// chooses the default from the base URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResponsesRequestPolicy {
+    pub native_web_search: bool,
+    pub replay_prior_reasoning: bool,
+}
+
+impl Default for ResponsesRequestPolicy {
+    fn default() -> Self {
+        Self {
+            native_web_search: false,
+            replay_prior_reasoning: true,
+        }
+    }
+}
+
+fn message_to_input(
+    message: &Message,
+    policy: ResponsesRequestPolicy,
+) -> Result<Vec<InputItem>, LlmError> {
     let Message { role, content, .. } = message;
     if let MessageContent::Text { content } = content {
         return Ok(vec![message_item(
@@ -85,7 +114,14 @@ fn message_to_input(message: &Message) -> Result<Vec<InputItem>, LlmError> {
             }
             ContentBlock::Thinking { signature, .. } => {
                 flush_message_content(*role, &mut message_content, &mut input);
-                if let Some(reasoning) = reasoning_item(signature)? {
+                // The reasoning signature is always decoded above so
+                // `function_call_item_ids` stay attached to their function
+                // calls. Whether the reasoning item itself is replayed is a
+                // policy decision (official OpenAI yes; compatible endpoints
+                // drop it to save input tokens).
+                if policy.replay_prior_reasoning
+                    && let Some(reasoning) = reasoning_item(signature)?
+                {
                     input.push(reasoning);
                 }
             }
@@ -214,7 +250,29 @@ fn validate_conversion_state(
     Ok(())
 }
 
-/// Builds a state-aware `/responses` request body.
+/// Test convenience wrapper that builds the wire body with the legacy
+/// replay-everything policy (official-OpenAI behavior). Production callers
+/// use [`create_response_with_policy`] so the adapter can apply its
+/// reasoning-replay default per base URL.
+#[cfg(test)]
+pub(crate) fn create_response(
+    request: &CreateMessageParams,
+    provider_state: Option<&ProviderConversationState>,
+    compact_threshold: Option<u32>,
+    native_web_search: bool,
+) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
+    create_response_with_policy(
+        request,
+        provider_state,
+        compact_threshold,
+        ResponsesRequestPolicy {
+            native_web_search,
+            replay_prior_reasoning: true,
+        },
+    )
+}
+
+/// Policy-aware state-aware `/responses` request builder.
 ///
 /// Returns the serialized request body and the exact `input`-item JSON sent in
 /// this request (the state baseline plus the newly converted uncovered
@@ -225,15 +283,25 @@ fn validate_conversion_state(
 /// only hosted web-search `query` / `queries` fields are adapted to the target
 /// model's spelling.
 ///
-/// When `native_web_search` is true, a `Tool::WebSearch` is injected
-/// alongside the function tools so the Provider can execute web search
-/// server-side. This is independent of any MCP-provided `web_search`
-/// function tool — it never inspects or replaces tool names.
-pub(crate) fn create_response(
+/// `policy.native_web_search` injects a hosted `Tool::WebSearch` alongside the
+/// function tools so the Provider can execute web search server-side. This is
+/// independent of any MCP-provided `web_search` function tool — it never
+/// inspects or replaces tool names.
+///
+/// When `policy.replay_prior_reasoning` is false (compatible endpoints),
+/// historical assistant `reasoning` items are dropped from both the state
+/// baseline and the newly converted suffix before the body is built.
+/// Function-call items and their item-id links are preserved — only the
+/// reasoning payload (which compatible models regenerate themselves) is
+/// omitted, cutting ~17% of input bytes on such endpoints. The returned
+/// `input_items` (persisted back as the next request's state baseline) also
+/// excludes reasoning, so existing persisted states self-heal on the first
+/// request after the upgrade.
+pub(crate) fn create_response_with_policy(
     request: &CreateMessageParams,
     provider_state: Option<&ProviderConversationState>,
     compact_threshold: Option<u32>,
-    native_web_search: bool,
+    policy: ResponsesRequestPolicy,
 ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
     let (mut baseline, covered, model_changed) = match provider_state {
         None => (Vec::new(), 0, false),
@@ -257,7 +325,7 @@ pub(crate) fn create_response(
 
     let mut converted = Vec::new();
     for message in &request.messages[covered..] {
-        converted.extend(message_to_input(message)?);
+        converted.extend(message_to_input(message, policy)?);
     }
 
     let mut builder = CreateResponseArgs::default();
@@ -307,7 +375,7 @@ pub(crate) fn create_response(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if native_web_search {
+    if policy.native_web_search {
         response_tools.push(ResponsesTool::WebSearch(WebSearchTool {
             user_location: None,
             search_context_size: None,
@@ -348,6 +416,15 @@ pub(crate) fn create_response(
         new_items.push(serde_json::to_value(item)?);
     }
     normalize_assistant_history_items(&mut new_items);
+    // Compatible endpoints do not need prior reasoning items replayed (they
+    // regenerate reasoning each turn); official OpenAI does. When the policy
+    // drops them, filter the state baseline too — the persisted baseline may
+    // still carry reasoning items recorded by an older Tact build.
+    if !policy.replay_prior_reasoning {
+        baseline.retain(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) != Some("reasoning")
+        });
+    }
     let mut input_items = baseline;
     input_items.extend(new_items);
     body["input"] = serde_json::Value::Array(input_items.clone());
@@ -359,7 +436,7 @@ pub(crate) fn create_response(
 mod tests {
     use super::super::ResponsesRequestOptions;
     use super::super::normalize::parse_compact_resource;
-    use super::{create_response, message_to_input};
+    use super::{ResponsesRequestPolicy, create_response, message_to_input};
     use crate::{
         ContentBlock, CreateMessageParams, ImageSource, Message, OpenAiReasoningEffort,
         RequiredMessageParams, ResponsesConversationState, Role, Thinking, ThinkingType, Tool,
@@ -367,8 +444,10 @@ mod tests {
     };
 
     fn state_covering_first_message(request: &CreateMessageParams) -> ResponsesConversationState {
-        let first =
-            serde_json::to_value(&message_to_input(&request.messages[0]).unwrap()[0]).unwrap();
+        let first = serde_json::to_value(
+            &message_to_input(&request.messages[0], ResponsesRequestPolicy::default()).unwrap()[0],
+        )
+        .unwrap();
         ResponsesConversationState {
             version: 1,
             provider: "openai_responses".into(),
@@ -458,6 +537,66 @@ mod tests {
         request
     }
 
+    /// Builds a request whose assistant history carries a persisted Responses
+    /// reasoning signature (a full reasoning payload with encrypted content),
+    /// so tests exercise the replay/drop decision rather than the
+    /// not-a-Responses-signature fallback used by [`request_with_history`].
+    fn request_with_reasoning_signature() -> CreateMessageParams {
+        let reasoning: async_openai_responses::types::responses::ReasoningItem =
+            serde_json::from_value(serde_json::json!({
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [{"type": "summary_text", "text": "plan"}],
+                "content": [{"type": "reasoning_text", "text": "full chain of thought"}],
+                "encrypted_content": "opaque-reasoning-1",
+                "status": "completed"
+            }))
+            .unwrap();
+        let signature = super::super::history::encode(
+            reasoning,
+            std::collections::BTreeMap::from([("call-1".to_string(), "fc_1".to_string())]),
+        )
+        .unwrap();
+        CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![
+                Message::new_text(Role::User, "inspect this"),
+                Message::new_blocks(
+                    Role::Assistant,
+                    vec![
+                        ContentBlock::Thinking {
+                            thinking: "plan".to_string(),
+                            signature,
+                        },
+                        ContentBlock::Text {
+                            text: "checking".to_string(),
+                        },
+                        ContentBlock::ToolUse {
+                            id: "call-1".to_string(),
+                            name: "bash".to_string(),
+                            input: serde_json::json!({"cmd": "pwd"}),
+                        },
+                    ],
+                ),
+                Message::new_blocks(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: "call-1".to_string(),
+                        content: "/tmp/project".to_string(),
+                    }],
+                ),
+            ],
+            max_tokens: 4096,
+        })
+    }
+
+    fn no_replay_policy(native_web_search: bool) -> super::ResponsesRequestPolicy {
+        super::ResponsesRequestPolicy {
+            native_web_search,
+            replay_prior_reasoning: false,
+        }
+    }
+
     #[test]
     fn converts_multimodal_tool_history_and_options() {
         let (body, _) = create_response(&request_with_history(), None, None, false).unwrap();
@@ -523,6 +662,88 @@ mod tests {
                 .iter()
                 .all(|item| item["type"] != "reasoning")
         );
+    }
+
+    #[test]
+    fn replays_persisted_reasoning_signature_by_default() {
+        let (body, _) =
+            create_response(&request_with_reasoning_signature(), None, None, false).unwrap();
+
+        let reasoning = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reasoning.len(),
+            1,
+            "official-OpenAI policy replays the persisted reasoning item: {body:?}"
+        );
+        assert_eq!(reasoning[0]["id"], "rs_1");
+        assert_eq!(reasoning[0]["content"][0]["text"], "full chain of thought");
+    }
+
+    #[test]
+    fn drops_historical_reasoning_when_policy_disables_replay() {
+        let request = request_with_reasoning_signature();
+        let (body, sent_items) =
+            super::create_response_with_policy(&request, None, None, no_replay_policy(false))
+                .unwrap();
+
+        let input = body["input"].as_array().unwrap();
+        assert!(
+            input.iter().all(|item| item["type"] != "reasoning"),
+            "compatible-endpoint policy must not replay reasoning: {body:?}"
+        );
+        // Function calls and their outputs survive the reasoning drop.
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "function_call" && item["call_id"] == "call-1")
+        );
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "function_call_output" && item["call_id"] == "call-1")
+        );
+        // The returned input_items (persisted back as the next request's
+        // baseline) also exclude reasoning, so states self-heal.
+        assert!(sent_items.iter().all(|item| item["type"] != "reasoning"));
+    }
+
+    #[test]
+    fn drops_reasoning_from_state_baseline_when_policy_disables_replay() {
+        let request = request_with_reasoning_signature();
+        let mut state = state_covering_first_message(&request);
+        // Simulate a stale baseline persisted by an older build: it already
+        // carries a reasoning item in front of the covered message.
+        state.input_items.insert(
+            0,
+            serde_json::json!({
+                "type": "reasoning",
+                "id": "rs_stale_1",
+                "summary": [],
+                "content": [{"type": "reasoning_text", "text": "stale reasoning"}],
+                "encrypted_content": "opaque",
+                "status": "completed"
+            }),
+        );
+        let (body, _) = super::create_response_with_policy(
+            &request,
+            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            None,
+            no_replay_policy(false),
+        )
+        .unwrap();
+
+        let input = body["input"].as_array().unwrap();
+        assert!(
+            input.iter().all(|item| item["type"] != "reasoning"),
+            "stale baseline reasoning must be dropped when replay is disabled: {body:?}"
+        );
+        // The covered message baseline is otherwise preserved verbatim.
+        assert!(input.iter().any(|item| item["type"] == "message"));
     }
 
     #[test]

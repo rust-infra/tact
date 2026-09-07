@@ -193,6 +193,7 @@ impl ToolComponent {
                 crate::protocol::ToolOutputBuffer::new(50_000)
             },
             started_at: std::time::Instant::now(),
+            subagent_child_id: None,
         });
         events.push(ToolEvent::Started {
             tool_id: tool_id.to_string(),
@@ -247,6 +248,15 @@ impl ToolComponent {
         // card keeps streaming: skip finalization here; a later
         // `BackgroundTaskFinished` closes the card with the real outcome.
         if result.presentation.keep_live {
+            // `spawn_subagent` with `run_in_background` returns
+            // `async_launched { <child_id> }`; parse it so the live card can
+            // offer a cancel button while the child runs.
+            if result.tool == "spawn_subagent"
+                && let Some(child_id) = parse_async_launched(&result.message)
+                && let Some(active) = self.state.active.iter_mut().find(|a| a.tool_id == tool_id)
+            {
+                active.subagent_child_id = Some(child_id);
+            }
             return;
         }
         let is_subagent = matches!(
@@ -360,6 +370,66 @@ impl ToolComponent {
             widget = widget.with_message(message.to_string());
         }
         self.finalize_push(tool_id, widget.build(), events);
+    }
+
+    /// Finalize a subagent card after a `run_in_background` child finishes.
+    ///
+    /// Like [`Self::on_background_task_finished`] but must carry over the full
+    /// subagent transcript: keep-live finalization skips `on_step_finished`
+    /// (the only place the popup transcript is populated today), so this
+    /// handler re-does that carry-over before finalizing.
+    fn on_subagent_finished(
+        &mut self,
+        tool_id: &str,
+        child_id: &str,
+        success: bool,
+        summary: &str,
+        events: &mut Vec<ToolEvent>,
+    ) {
+        let Some(pos) = self.state.active.iter().position(|a| a.tool_id == tool_id) else {
+            // The live card is gone (e.g. a fresh process after restart);
+            // surface the outcome as a system message instead.
+            let prefix = if success { "✓" } else { "✗" };
+            events.push(ToolEvent::Missing {
+                message: format!("{prefix} Subagent {child_id} finished: {summary}"),
+            });
+            return;
+        };
+        let (tool_name, arg_summary, arg_full, elapsed_us) = {
+            let active = &self.state.active[pos];
+            (
+                active.output.tool_name.clone(),
+                active.output.arg_summary.clone(),
+                active.output.arg_full.clone(),
+                active.started_at.elapsed().as_micros() as u64,
+            )
+        };
+        let step_idx = self.resolve_step_idx(tool_id, 0);
+        let mut output = ToolWidget::new(&self.theme, &self.messages)
+            .with_tool(tool_name)
+            .with_arg_summary(arg_summary)
+            .with_arg_full(arg_full)
+            .with_step_index(step_idx)
+            .with_phase(if success {
+                ToolPhase::Success
+            } else {
+                ToolPhase::Failed
+            })
+            .with_duration_us(elapsed_us)
+            .with_detail(summary.to_string())
+            .build();
+        // Carry over the full transcript (and subagent model/token metadata)
+        // so the popup shows the complete conversation.
+        if let Some(active) = self.state.active.iter_mut().find(|a| a.tool_id == tool_id) {
+            let full_text = active.live_output.take_full_detail();
+            if !full_text.is_empty() {
+                output.detail_total_lines = full_text.lines().count();
+                output.detail_full = Some(full_text);
+            }
+            output.subagent_model = active.output.subagent_model.take();
+            output.subagent_tokens = active.output.subagent_tokens.take();
+        }
+        self.finalize_push(tool_id, output, events);
     }
 
     /// Shared finalize tail: move active → blocks and emit `Finalized`; when
@@ -509,6 +579,15 @@ impl Component for ToolComponent {
                 );
                 true
             }
+            AgentUpdate::SubagentFinished {
+                tool_id,
+                child_id,
+                success,
+                summary,
+            } => {
+                self.on_subagent_finished(tool_id, child_id, *success, summary, ctx.tool_events);
+                true
+            }
             _ => false,
         }
     }
@@ -536,6 +615,16 @@ impl Component for ToolComponent {
 
 #[allow(dead_code)]
 fn _type_markers(_: Option<(ToolOutputChunk, TokenUsageInfo)>) {}
+
+/// Extracts the child id from `spawn_subagent`'s `async_launched { <id> }`
+/// result message. Returns `None` for anything else (sync results, errors).
+fn parse_async_launched(message: &str) -> Option<String> {
+    let start = message.find("async_launched {")?;
+    let rest = &message[start + "async_launched {".len()..];
+    let end = rest.find('}')?;
+    let id = rest[..end].trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
 
 #[cfg(test)]
 mod tests {
@@ -753,6 +842,61 @@ mod tests {
         );
         assert_eq!(c.state().active.len(), 1, "keep-live card stays active");
         assert!(tool_events.is_empty(), "no finalize event for keep-live");
+    }
+
+    #[test]
+    fn keep_live_subagent_records_child_id_for_cancel_button() {
+        let mut c = comp();
+        step_added(&mut c, "t1");
+        let _ = step_started(&mut c, "t1");
+        let mut pres = ToolPresentationInfo::generic("spawn_subagent");
+        pres.keep_live = true;
+        let result = StepResult {
+            tool: "spawn_subagent".into(),
+            arg_summary: "run in background".into(),
+            arg_full: None,
+            status: StepStatus::Success,
+            message: "async_launched { child-123 }".into(),
+            detail: None,
+            duration_us: Some(1),
+            permission_label: None,
+            presentation: pres,
+        };
+        let (mut log, mut pending, mut events, mut tool_events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        c.on_update(
+            &AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "t1".into(),
+                result,
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+        );
+        assert_eq!(c.state().active.len(), 1, "keep-live card stays active");
+        assert_eq!(
+            c.state().active[0].subagent_child_id.as_deref(),
+            Some("child-123"),
+            "async subagent card must record the child id for the cancel button"
+        );
+    }
+
+    #[test]
+    fn parse_async_launched_extracts_id() {
+        assert_eq!(
+            parse_async_launched("async_launched { 7f9c-abc }"),
+            Some("7f9c-abc".to_string())
+        );
+        assert_eq!(
+            parse_async_launched("async_launched {abc}"),
+            Some("abc".to_string())
+        );
+        assert_eq!(parse_async_launched("done"), None);
+        assert_eq!(parse_async_launched("async_launched {}"), None);
+        assert_eq!(parse_async_launched("async_launched {"), None);
     }
 
     #[test]

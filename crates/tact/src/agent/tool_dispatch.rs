@@ -276,6 +276,56 @@ fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
     }
 }
 
+/// Per-invocation resource resolution for a cleared tool call.
+///
+/// Most tools use their static metadata [`ResourcePolicy`]. The one
+/// input-aware exception: a `spawn_subagent` call with `worktree: true` runs
+/// in its own git worktree lane, so its file effects are scoped and it may
+/// fan out in the same wave as other tools — mapped to
+/// [`ToolResources::independent`] instead of the static `Barrier`. This is
+/// the "worktree follow-up" named in the 2026-08-26 async-subagent design
+/// review: same-wave fan-out of blocking subagents becomes safe once each
+/// subagent has a scoped filesystem.
+fn tool_resources_for(
+    prep: &PreparedTool,
+    work_dir: &std::path::Path,
+) -> super::tool_schedule::ToolResources {
+    match &prep.resolved {
+        ResolvedTool::Native { metadata } => {
+            if metadata.name == crate::tool::SPAWN_SUBAGENT_METADATA.name
+                && prep.input.get("worktree").and_then(|v| v.as_bool()) == Some(true)
+            {
+                return super::tool_schedule::ToolResources::independent();
+            }
+            super::tool_schedule::tool_resources_from_metadata(
+                &metadata.resources,
+                &prep.input,
+                work_dir,
+            )
+        }
+        ResolvedTool::Mcp { server, .. } => super::tool_schedule::mcp_server_resources(server),
+        ResolvedTool::Unknown { .. } => super::tool_schedule::ToolResources::barrier(),
+    }
+}
+
+/// Like [`make_presentation`], but input-aware: a `spawn_subagent` call with
+/// `run_in_background: true` keeps its card live (the invocation returns
+/// `async_launched { id }` and the card is finalized later by
+/// [`AgentUpdate::SubagentFinished`]). Static metadata can't express this
+/// because `keep_live` is a per-invocation property, not a per-tool one.
+fn make_presentation_for(
+    meta: &crate::tool::ToolMetadata,
+    input: &serde_json::Value,
+) -> ToolPresentationInfo {
+    let mut presentation = make_presentation(meta);
+    if meta.name == "spawn_subagent"
+        && input.get("run_in_background").and_then(|v| v.as_bool()) == Some(true)
+    {
+        presentation.keep_live = true;
+    }
+    presentation
+}
+
 // ── Main dispatch ────────────────────────────────────────────────────────
 
 impl Agent {
@@ -397,7 +447,7 @@ impl Agent {
                 format!("{name} ({arg_summary})")
             };
             let presentation = match &resolved {
-                ResolvedTool::Native { metadata } => make_presentation(metadata),
+                ResolvedTool::Native { metadata } => make_presentation_for(metadata, input),
                 _ => ToolPresentationInfo::generic(name.clone()),
             };
 
@@ -560,6 +610,17 @@ impl Agent {
             });
         }
 
+        // Phase-1 pre-flight is complete. Stamp the permission snapshot now so
+        // a `spawn_subagent` spawned in this turn inherits the parent's
+        // *current* mode / allow-list / settings — including any "always allow"
+        // granted earlier in this same turn. This must happen before the wave
+        // loop borrows `self.tool_context` below (the borrow checker rejects a
+        // later mutable access).
+        self.tool_context.permission_snapshot = Some(self.runtime.permission_manager.snapshot());
+        // Stamp the pending-results queue handle so a detached async subagent
+        // task can push its summary back for re-injection.
+        self.tool_context.subagent_results = Some(self.runtime.pending_subagent_results.clone());
+
         // Phase 2: execute in conflict-free waves
         let run_indices: Vec<usize> = prepared
             .iter()
@@ -570,19 +631,7 @@ impl Agent {
 
         let resources: Vec<super::tool_schedule::ToolResources> = run_indices
             .iter()
-            .map(|&i| match &prepared[i].resolved {
-                ResolvedTool::Native { metadata } => {
-                    super::tool_schedule::tool_resources_from_metadata(
-                        &metadata.resources,
-                        &prepared[i].input,
-                        &self.tool_context.work_dir,
-                    )
-                }
-                ResolvedTool::Mcp { server, .. } => {
-                    super::tool_schedule::mcp_server_resources(server)
-                }
-                ResolvedTool::Unknown { .. } => super::tool_schedule::ToolResources::barrier(),
-            })
+            .map(|&i| tool_resources_for(&prepared[i], &self.tool_context.work_dir))
             .collect();
 
         if !run_indices.is_empty() {
@@ -751,7 +800,9 @@ impl Agent {
                 let succeeded = matches!(final_status, StepStatus::Success);
 
                 let presentation = match &prep.resolved {
-                    ResolvedTool::Native { metadata } => make_presentation(metadata),
+                    ResolvedTool::Native { metadata } => {
+                        make_presentation_for(metadata, &prep_input)
+                    }
                     _ => ToolPresentationInfo::generic(prep_name.clone()),
                 };
 
@@ -966,5 +1017,46 @@ mod tests {
             &serde_json::json!({"command": "git status"}),
         );
         assert_eq!(full, "git status");
+    }
+
+    fn prepared_spawn_subagent(worktree: bool) -> PreparedTool {
+        PreparedTool {
+            id: "t1".into(),
+            name: "spawn_subagent".into(),
+            input: if worktree {
+                serde_json::json!({ "prompt": "p", "worktree": true })
+            } else {
+                serde_json::json!({ "prompt": "p" })
+            },
+            step_idx: 0,
+            permission_label: None,
+            state: PreparedState::Run,
+            resolved: ResolvedTool::Native {
+                metadata: &crate::tool::SPAWN_SUBAGENT_METADATA,
+            },
+            task_before: None,
+        }
+    }
+
+    #[test]
+    fn worktree_subagent_resources_are_independent() {
+        let prep = prepared_spawn_subagent(true);
+        let resources = tool_resources_for(&prep, std::path::Path::new("/tmp"));
+        assert!(
+            !resources.barrier,
+            "isolated subagent must not be a barrier"
+        );
+        assert!(resources.reads.is_empty());
+        assert!(resources.writes.is_empty());
+    }
+
+    #[test]
+    fn non_worktree_subagent_stays_barrier() {
+        let prep = prepared_spawn_subagent(false);
+        let resources = tool_resources_for(&prep, std::path::Path::new("/tmp"));
+        assert!(
+            resources.barrier,
+            "non-isolated subagent must stay a barrier"
+        );
     }
 }

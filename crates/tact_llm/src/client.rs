@@ -128,11 +128,11 @@ impl LlmClient for LlmProvider {
 }
 
 impl LlmProvider {
-    /// Set a `user_id` on the underlying client adapter.
+    /// Set a session `user_id` on the underlying client adapter.
     ///
     /// DeepSeek injects top-level `"user_id"` for KV cache isolation.
     /// OpenAI multi-model adapter forwards it when the live hook is DeepSeek.
-    /// Anthropic / Kimi / Mock — no-op.
+    /// Anthropic / Mock / OpenAI Responses — no-op.
     pub fn set_user_id(&mut self, user_id: &str) {
         match self {
             LlmProvider::ChatCompletions(c) => c.set_user_id(user_id.to_string()),

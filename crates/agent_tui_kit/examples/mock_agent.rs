@@ -35,8 +35,8 @@ use agent_tui_kit::{
     },
     state::{
         ActiveThinkingBlock, FocusedPanel, InputMode, LogCoordinator, LogItemKind, LogScroll,
-        MouseState, PlanPanel, SelectPopup, Status, StatusBarState, StreamState, TaskPanelState,
-        ThinkingBlock, ThinkingState, ToolState,
+        MouseState, PlanPanel, SelectPopup, Status, StatusBarState, StreamState,
+        SubagentPanelState, TaskPanelState, ThinkingBlock, ThinkingState, ToolState,
     },
     theme::{Theme, ThemeName},
 };
@@ -141,6 +141,7 @@ impl MockShell {
                         output,
                         live_output: tact_protocol::tool_output::ToolOutputBuffer::new_full(1024),
                         started_at: Instant::now(),
+                        subagent_child_id: None,
                     });
             }
             AgentUpdate::StepFinished { tool_id, .. } => {
@@ -289,6 +290,7 @@ impl MockShell {
                     task_history: &[],
                     select: &SelectPopup::default(),
                     task_panel: &TaskPanelState::default(),
+                    subagent_panel: &SubagentPanelState::default(),
                 };
                 render_status_bar(frame, chunks[0], &ctx);
                 render_log_panel_pure(frame, chunks[1], &ctx, Borders::ALL);

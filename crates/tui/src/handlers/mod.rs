@@ -229,7 +229,7 @@ pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
 /// Built-ins that take a subcommand / arguments: Enter should autocomplete
 /// `/{cmd} ` into the insert box instead of executing immediately.
 pub(crate) fn command_needs_args(cmd: &str) -> bool {
-    matches!(cmd, "plugin")
+    matches!(cmd, "plugin" | "subagent_cancel")
 }
 
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
@@ -369,6 +369,37 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                     app.msgs().cancel_noop_msg.to_string(),
                     std::time::Instant::now(),
                 ));
+            }
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        "subagent_cancel" => {
+            // Cancel a running background subagent: `/subagent_cancel <child-id>`.
+            // The child-id comes from the `async_launched { id }` handle or
+            // `check_subagent`. The driver flips the child's cooperative flag;
+            // it works even while the parent task is mid-turn.
+            let rest = app
+                .input
+                .trim()
+                .strip_prefix("/subagent_cancel")
+                .unwrap_or("")
+                .trim();
+            if rest.is_empty() {
+                app.flash_msg = Some((
+                    app.msgs().subagent_cancel_usage_msg.to_string(),
+                    std::time::Instant::now(),
+                ));
+            } else {
+                let child_id = rest
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let _ = app
+                    .user_cmd_tx
+                    .send(UserCommand::CancelSubagent { child_id });
             }
             CommandExecOutcome {
                 handled: true,
@@ -692,6 +723,38 @@ mod tests {
             user_cmd_rx.try_recv().is_err(),
             "idle cancel must not dispatch Cancel"
         );
+    }
+
+    #[test]
+    fn subagent_cancel_without_args_shows_usage() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.input = "/subagent_cancel".into();
+        app.input_cursor = app.input.len();
+
+        let outcome = execute_palette_command(&mut app, "subagent_cancel");
+
+        assert!(outcome.handled);
+        assert!(app.flash_msg.is_some(), "missing args must flash usage");
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "no command must be sent without a child id"
+        );
+    }
+
+    #[test]
+    fn subagent_cancel_with_id_sends_command() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.input = "/subagent_cancel child-123".into();
+        app.input_cursor = app.input.len();
+
+        let outcome = execute_palette_command(&mut app, "subagent_cancel");
+
+        assert!(outcome.handled);
+        assert!(app.flash_msg.is_none());
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CancelSubagent"),
+            UserCommand::CancelSubagent { ref child_id } if child_id == "child-123"
+        ));
     }
 
     #[test]

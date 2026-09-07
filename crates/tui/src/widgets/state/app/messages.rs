@@ -293,8 +293,8 @@ impl App {
             .map(|i| i + 1)
             .unwrap_or(0);
         let mut parts: Vec<&str> = Vec::new();
-        for i in start..stats_phys {
-            let line = self.log.items[i].raw.as_str();
+        for item in &self.log.items[start..stats_phys] {
+            let line = item.raw.as_str();
             if line.is_empty() || is_task_end_separator(line) || is_task_stats_line(line) {
                 continue;
             }

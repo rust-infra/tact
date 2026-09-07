@@ -108,10 +108,11 @@ impl App {
             code_popup: self.code_popup.as_ref(),
             mermaid_popup: self.mermaid_popup.as_ref(),
             system_prompt_popup: self.system_prompt_popup.as_ref(),
-            subagent_popup: self.subagent_popup.as_ref(),
+            subagent_popup: self.subagent_popup(),
             task_history: &self.task_history,
             select: &self.select,
             task_panel: self.task_panel().state(),
+            subagent_panel: self.subagent_panel().state(),
         }
     }
 
@@ -123,6 +124,7 @@ impl App {
             "model-subagent" => msgs.cmd_model_subagent.to_string(),
             "save" => msgs.cmd_save.to_string(),
             "cancel" => msgs.cmd_cancel.to_string(),
+            "subagent_cancel" => msgs.cmd_subagent_cancel.to_string(),
             "quit" => msgs.cmd_quit.to_string(),
             "help" => msgs.cmd_help.to_string(),
             "history" => msgs.cmd_history.to_string(),

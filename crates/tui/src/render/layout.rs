@@ -34,6 +34,7 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if sticky_h == 0 {
         app.mouse.task_panel_area = Rect::default();
+        app.mouse.sticky_tab_areas.clear();
         app.mouse.log_area = area;
         app.log_scroll.height = area.height.saturating_sub(2);
         super::log::render_log_panel(frame, area, app);
@@ -71,7 +72,7 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.task_dag_popup.is_some() {
         super::popups::task_dag_popup::render_task_dag_popup(frame, area, app);
     }
-    if app.subagent_popup.is_some() {
+    if app.has_subagent_popup() {
         super::popups::subagent_popup::render_subagent_popup(frame, area, app);
     }
 }

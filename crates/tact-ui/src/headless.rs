@@ -7,9 +7,10 @@ use tact::{
     consts::TactPath,
     extract_text,
     mcp::load_mcp_router,
-    memory::get_memory_manager,
+    memory::memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
     store::DynSessionStore,
+    subagent::{SharedSubagentManager, SubagentManager},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     tool::{ToolContext, toolset},
@@ -86,20 +87,29 @@ async fn run_headless_locked(
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
-    let memory_manager = Arc::new(std::sync::Mutex::new(get_memory_manager(
-        tact_path.memory_dir(),
+    let subagent_manager = SharedSubagentManager::new(SubagentManager::new(&db_path).await?);
+    // Memory is user-global (`~/.tact/memory`, like Claude Code's `~/.claude`)
+    // so it persists across projects. Project-local `.tact/memory` is only the
+    // fallback when `$HOME` is unset.
+    let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
+        TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
     )?));
     let mcp_router = load_mcp_router().await?;
 
-    let tools = toolset();
+    let mut tools = toolset();
+    // Annotate `spawn_subagent` with the current subagent skill-card catalog
+    // so the main agent can discover valid `skill:` names.
+    tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
+        subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
         memory_manager,
         work_dir: work_dir.clone(),
         task_manager,
         background_manager,
         teammate_manager,
         worktree_manager,
+        subagent_manager,
         ui_tx: None,
         ui_responder: tact::ui_responder::UiResponder::new(),
         progress_reporter: tact::tool::ToolProgressReporter::default(),
@@ -108,6 +118,8 @@ async fn run_headless_locked(
         bash_nice: tact::config::settings().tools.bash_nice,
         session_id: None,
         session_store: None,
+        permission_snapshot: None,
+        subagent_results: None,
     };
 
     // Responses compaction routing depends on the effective provider: OpenAI
@@ -132,6 +144,10 @@ async fn run_headless_locked(
     // RTK filter is opt-in — `with_post_tool` no-ops unless the
     // `tools.rtk_filter` setting is enabled.
     agent = agent.with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
+
+    // Claude plugin command hooks (SessionStart / UserPromptSubmit /
+    // PreToolUse / PostToolUse) from every installed plugin.
+    agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
 
     // SessionStart hooks fire once per session, before the first turn.
     agent.dispatch_session_start_hooks().await?;
@@ -160,6 +176,14 @@ async fn run_headless_locked(
         let summary = text.chars().take(200).collect::<String>();
         let _ = tact::notifications::notify_task_complete(&summary);
     }
+
+    // The headless run is done: cancel and persist any still-running
+    // background subagents before the process exits.
+    agent
+        .tool_context
+        .subagent_manager
+        .cancel_all_and_persist()
+        .await;
 
     agent.shutdown_mcp().await;
     Ok(())

@@ -26,9 +26,9 @@
 //! JSON schema from an async function signature.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use anyhow::Result;
@@ -84,8 +84,13 @@ use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset};
+// Re-exported so `crate::agent::tool_dispatch` can do per-invocation resource
+// resolution for worktree-isolated `spawn_subagent` calls without naming the
+// private `subagent` module.
 #[cfg(test)]
 use sleep::SleepTool;
+pub(crate) use subagent::SPAWN_SUBAGENT_METADATA;
+pub use subagent::annotate_spawn_subagent_skill_catalog;
 #[cfg(test)]
 use task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool};
 #[cfg(test)]
@@ -103,12 +108,17 @@ pub struct ToolContext {
     /// Shared with the TUI in interactive mode so `/skill-reload` updates
     /// `load_skill` / system-prompt skill summaries without restarting.
     pub skill_registry: crate::skill::SharedSkillRegistry,
+    /// Claude Code plugin `SubagentStart` command hooks, stamped at dispatch
+    /// time so `spawn_subagent` can inject context into the child system
+    /// prompt without needing a parent [`Agent`](crate::Agent) handle.
+    pub subagent_start_hooks: Vec<Arc<dyn crate::hook::SubagentStartFn>>,
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
     pub background_manager: SharedBackgroundManager,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
+    pub subagent_manager: crate::subagent::SharedSubagentManager,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     /// Shared request/reply registry for `ask_user` and permission selects.
     /// Cloned into subagents so request ids stay globally unique.
@@ -124,6 +134,17 @@ pub struct ToolContext {
     pub session_id: Option<String>,
     /// Shared SQLite session store from the parent agent, if any.
     pub session_store: Option<crate::store::DynSessionStore>,
+    /// Parent permission state stamped at dispatch time. `spawn_subagent`
+    /// clones it to inherit the parent's mode / allow-list / settings
+    /// (Claude-style inheritance) instead of always starting in `Default`.
+    /// `None` for orphan/test contexts that have no parent agent.
+    pub permission_snapshot: Option<crate::permission::PermissionSnapshot>,
+    /// Handle to the parent's `pending_subagent_results` queue, stamped at
+    /// dispatch time so a detached async subagent task can push its summary
+    /// back for re-injection. `None` when there is no parent agent runtime
+    /// (headless direct tool runs, orphan/test contexts) — `spawn_subagent`
+    /// rejects `run_in_background` in that case.
+    pub subagent_results: Option<Arc<Mutex<VecDeque<crate::subagent::SubagentResult>>>>,
 }
 
 impl ToolContext {
@@ -181,6 +202,9 @@ impl ResolvedNativeTool<'_> {
 pub struct ToolRouter {
     tools: HashMap<String, RegisteredTool>,
     cached_specs: OnceLock<Vec<ToolSpec>>,
+    /// Optional per-tool description overrides (e.g. a runtime-injected list of
+    /// available subagent skill cards), applied when emitting tool specs.
+    description_overrides: HashMap<String, String>,
 }
 
 impl ToolRouter {
@@ -188,7 +212,25 @@ impl ToolRouter {
         Self {
             tools: HashMap::new(),
             cached_specs: OnceLock::new(),
+            description_overrides: HashMap::new(),
         }
+    }
+
+    /// Overrides the description a tool reports in its spec — used to annotate
+    /// `spawn_subagent` with the current subagent skill-card catalog.
+    ///
+    /// The override only affects specs emitted *after* this call. Callers that
+    /// snapshot specs once (e.g. `Agent::new` captures `tool_specs()` at
+    /// construction) must set overrides before constructing the agent — both
+    /// current call sites (`interactive.rs` / `headless.rs`) annotate the
+    /// router right after `toolset()` and before `Agent::new`.
+    pub fn set_tool_description(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) {
+        self.description_overrides
+            .insert(name.into(), description.into());
     }
 
     pub fn route<T>(mut self, tool: T) -> Result<Self>
@@ -218,7 +260,8 @@ impl ToolRouter {
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
-        self.cached_specs
+        let mut specs: Vec<ToolSpec> = self
+            .cached_specs
             .get_or_init(|| {
                 self.tools
                     .values()
@@ -227,7 +270,13 @@ impl ToolRouter {
             })
             .iter()
             .map(copy_tool_spec)
-            .collect()
+            .collect();
+        for (name, description) in &self.description_overrides {
+            if let Some(spec) = specs.iter_mut().find(|spec| &spec.name == name) {
+                spec.description = Some(description.clone());
+            }
+        }
+        specs
     }
 
     pub async fn call_result(

@@ -8,6 +8,7 @@ use crate::{
     background::{BackgroundManager, SharedBackgroundManager},
     memory::MemoryManager,
     skill::{SharedSkillRegistry, SkillRegistry},
+    subagent::{SharedSubagentManager, SubagentManager},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
     worktree::{SharedWorktreeManager, WorktreeManager},
@@ -71,6 +72,7 @@ pub fn test_context(name: &str) -> ToolContext {
         skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
             root_dir.join(".claude/skills")
         ]))),
+        subagent_start_hooks: Vec::new(),
         memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new(
             root_dir.join(".tact/memory"),
         ))),
@@ -85,6 +87,9 @@ pub fn test_context(name: &str) -> ToolContext {
         worktree_manager: SharedWorktreeManager::new(
             block_on(WorktreeManager::new(&db_path, root_dir)).unwrap(),
         ),
+        subagent_manager: SharedSubagentManager::new(
+            block_on(SubagentManager::new(&db_path)).unwrap(),
+        ),
         ui_tx: None,
         ui_responder: crate::ui_responder::UiResponder::new(),
         progress_reporter: super::ToolProgressReporter::default(),
@@ -93,6 +98,8 @@ pub fn test_context(name: &str) -> ToolContext {
         bash_nice: 0,
         session_id: None,
         session_store: None,
+        permission_snapshot: None,
+        subagent_results: None,
     }
 }
 

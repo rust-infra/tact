@@ -105,6 +105,21 @@ pub struct PermissionManager {
     settings: Option<settings::PermissionSettings>,
 }
 
+/// A `Clone`-able point-in-time view of a [`PermissionManager`]'s inherited
+/// state: the active mode, the in-session always-allowed list, and the loaded
+/// settings. Stamped onto [`crate::tool::ToolContext`] at dispatch time so a
+/// subagent can inherit the parent's permission context (Claude-style) instead
+/// of always starting from `PermissionMode::Default`.
+///
+/// Deliberately excludes the denial counters, which are per-process and reset
+/// when a subagent is spawned.
+#[derive(Clone)]
+pub struct PermissionSnapshot {
+    pub mode: PermissionMode,
+    pub always_allowed_tools: Vec<String>,
+    pub settings: Option<settings::PermissionSettings>,
+}
+
 impl PermissionManager {
     /// Create a new manager with no loaded permission-settings store.
     ///
@@ -149,6 +164,31 @@ impl PermissionManager {
 
     pub fn rules(&self) -> &[String] {
         &self.always_allowed_tools
+    }
+
+    /// Capture a `Clone`-able point-in-time snapshot of the inherited state
+    /// (mode + allow-list + settings). Used to seed a subagent's own
+    /// [`PermissionManager`] so it inherits the parent's permission context.
+    pub fn snapshot(&self) -> PermissionSnapshot {
+        PermissionSnapshot {
+            mode: self.mode,
+            always_allowed_tools: self.always_allowed_tools.clone(),
+            settings: self.settings.clone(),
+        }
+    }
+
+    /// Build a fresh manager from a [`PermissionSnapshot`]. The denial
+    /// counters are reset (`consecutive_denials = 0`, max stays 3) so a
+    /// subagent starts with a clean slate rather than inheriting the parent's
+    /// in-flight denial streak.
+    pub fn from_snapshot(s: PermissionSnapshot) -> Self {
+        Self {
+            mode: s.mode,
+            always_allowed_tools: s.always_allowed_tools,
+            consecutive_denials: 0,
+            max_consecutive_denials: 3,
+            settings: s.settings,
+        }
     }
 
     /// Check permission for a tool given its stable name, resolved risk,
@@ -1110,5 +1150,75 @@ mod tests {
             mgr.consecutive_denials, 1,
             "High-risk denial should increment denials"
         );
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_mode_and_allow_list() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+        mgr.allow_tool("bash");
+        mgr.allow_tool("write_file");
+
+        let snap = mgr.snapshot();
+        assert_eq!(snap.mode, PermissionMode::Plan);
+        assert_eq!(
+            snap.always_allowed_tools,
+            vec![
+                "read_file".to_string(),
+                "bash".to_string(),
+                "write_file".to_string(),
+            ]
+        );
+        assert!(snap.settings.is_none());
+
+        let restored = PermissionManager::from_snapshot(snap);
+        assert_eq!(restored.mode(), PermissionMode::Plan);
+        assert_eq!(restored.rules(), &["read_file", "bash", "write_file"]);
+    }
+
+    #[test]
+    fn snapshot_round_trip_with_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Auto, settings).unwrap();
+        mgr.allow_tool("bash");
+
+        let restored = PermissionManager::from_snapshot(mgr.snapshot());
+        assert_eq!(restored.mode(), PermissionMode::Auto);
+        assert!(restored.settings.is_some(), "settings must be cloned");
+        assert!(restored.rules().contains(&"bash".to_string()));
+    }
+
+    #[test]
+    fn from_snapshot_resets_denial_counters() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        // Push the denial counter past zero, then snapshot + restore.
+        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        mgr.apply_user_choice(UserPermissionChoice::Deny, "bash");
+        assert_eq!(mgr.consecutive_denials, 2);
+
+        let restored = PermissionManager::from_snapshot(mgr.snapshot());
+        assert_eq!(restored.consecutive_denials, 0);
+        assert_eq!(restored.max_consecutive_denials, 3);
+    }
+
+    #[test]
+    fn from_snapshot_plan_parent_yields_read_only_child() {
+        // Regression: a read-only (Plan) parent must not spawn a Default-mode
+        // subagent that can write. Inheriting the snapshot preserves Plan mode.
+        let parent = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+        let mut child = PermissionManager::from_snapshot(parent.snapshot());
+        assert_eq!(child.mode(), PermissionMode::Plan);
+        let decision = child.check("write_file", CapabilityRisk::Write, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn from_snapshot_auto_parent_yields_auto_child() {
+        let parent = PermissionManager::try_new(PermissionMode::Auto).unwrap();
+        let child = PermissionManager::from_snapshot(parent.snapshot());
+        assert_eq!(child.mode(), PermissionMode::Auto);
     }
 }

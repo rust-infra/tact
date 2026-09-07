@@ -1,6 +1,7 @@
 //! Mouse handling extracted from the main event loop for testability.
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use tact_protocol::UserCommand;
 
 use crate::widgets::state::{
     App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition, VoicePhase,
@@ -28,10 +29,34 @@ fn point_in_rect(column: u16, row: u16, area: ratatui::layout::Rect) -> bool {
 pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
+            if app.input_mode == crate::widgets::state::InputMode::Select
+                && point_in_rect(mouse.column, mouse.row, app.mouse.select_popup_area)
+            {
+                app.select.move_up();
+                return;
+            }
+            if app.slash_command.active
+                && point_in_rect(mouse.column, mouse.row, app.mouse.slash_popup_area)
+            {
+                app.step_slash_selection(-1);
+                return;
+            }
             let hit = panel_hit(app, mouse.column, mouse.row);
             handle_mouse_scroll_up(app, hit);
         }
         MouseEventKind::ScrollDown => {
+            if app.input_mode == crate::widgets::state::InputMode::Select
+                && point_in_rect(mouse.column, mouse.row, app.mouse.select_popup_area)
+            {
+                app.select.move_down();
+                return;
+            }
+            if app.slash_command.active
+                && point_in_rect(mouse.column, mouse.row, app.mouse.slash_popup_area)
+            {
+                app.step_slash_selection(1);
+                return;
+            }
             let hit = panel_hit(app, mouse.column, mouse.row);
             handle_mouse_scroll_down(app, hit);
         }
@@ -47,7 +72,7 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left)
             if app.tools_mut().popup.is_some()
                 || app.thinking_mut().popup.is_some()
-                || app.subagent_popup.is_some() =>
+                || app.has_subagent_popup() =>
         {
             handle_text_popup_mouse_drag(app, mouse);
         }
@@ -69,9 +94,7 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_up();
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
-        if app.task_panel_mut().scroll > 0 {
-            app.task_panel_mut().scroll -= 1;
-        }
+        scroll_active_sticky(app, -1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
         app.scroll_log_up(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
@@ -84,7 +107,7 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_down();
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
-        app.task_panel_mut().scroll = app.task_panel_mut().scroll.saturating_add(1);
+        scroll_active_sticky(app, 1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
         app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
@@ -92,7 +115,34 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
 }
 
 fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app) && app.task_panel().expanded
+    crate::render::task_panel::sticky_host_visible(app)
+        && crate::render::task_panel::sticky_tab_expanded(
+            app,
+            crate::render::task_panel::active_sticky_tab(app),
+        )
+}
+
+/// Scroll the active sticky domain by `delta` rows (clamped to >= 0).
+fn scroll_active_sticky(app: &mut App, delta: isize) {
+    let tab = crate::render::task_panel::active_sticky_tab(app);
+    match tab {
+        agent_tui_kit::state::StickyTab::Tasks => {
+            let scroll = app.task_panel_mut();
+            if delta < 0 {
+                scroll.scroll = scroll.scroll.saturating_sub(delta.unsigned_abs());
+            } else {
+                scroll.scroll = scroll.scroll.saturating_add(delta as usize);
+            }
+        }
+        agent_tui_kit::state::StickyTab::Subagent => {
+            let scroll = app.subagent_panel_mut();
+            if delta < 0 {
+                scroll.scroll = scroll.scroll.saturating_sub(delta.unsigned_abs());
+            } else {
+                scroll.scroll = scroll.scroll.saturating_add(delta as usize);
+            }
+        }
+    }
 }
 
 fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
@@ -106,6 +156,19 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         app.clear_pending_messages();
         return;
     }
+    // Cancel button on a live async-subagent tool card.
+    if let Some((child_id, _)) = app
+        .mouse
+        .subagent_cancel_btn_areas
+        .iter()
+        .find(|(_, rect)| point_in_rect(mouse.column, mouse.row, *rect))
+    {
+        let child_id = child_id.clone();
+        let _ = app
+            .user_cmd_tx
+            .send(UserCommand::CancelSubagent { child_id });
+        return;
+    }
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
         return;
     }
@@ -116,9 +179,38 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         app.mouse.dragging_log = false;
     }
     if hit.in_task_panel && crate::render::task_panel::sticky_host_visible(app) {
-        app.task_panel_mut().expanded = !app.task_panel_mut().expanded;
-        app.mouse.in_task_panel = app.task_panel_mut().expanded;
-        app.dirty = true;
+        use agent_tui_kit::state::StickyTab;
+        let active = crate::render::task_panel::active_sticky_tab(app);
+        let clicked = app
+            .mouse
+            .sticky_tab_areas
+            .iter()
+            .find(|(_, rect)| point_in_rect(mouse.column, mouse.row, *rect))
+            .map(|(tab, _)| *tab);
+        match clicked {
+            // A visible tab that is not the active domain: switch to it and
+            // expand it (the host now shows that domain's body).
+            Some(tab) if tab != active => {
+                app.mouse.active_sticky_tab = tab;
+                app.mouse.in_task_panel = true;
+                match tab {
+                    StickyTab::Tasks => app.task_panel_mut().expanded = true,
+                    StickyTab::Subagent => app.subagent_panel_mut().expanded = true,
+                }
+                app.dirty = true;
+            }
+            // Clicking the active tab (or anywhere else in the strip) toggles
+            // the active domain's expansion.
+            _ => {
+                let expanded = crate::render::task_panel::sticky_tab_expanded(app, active);
+                match active {
+                    StickyTab::Tasks => app.task_panel_mut().expanded = !expanded,
+                    StickyTab::Subagent => app.subagent_panel_mut().expanded = !expanded,
+                }
+                app.mouse.in_task_panel = !expanded;
+                app.dirty = true;
+            }
+        }
         return;
     }
     if hit.in_log {
@@ -152,7 +244,7 @@ fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     app.mouse.popup_text_drag_origin = None;
     let popup_area = if app.thinking_mut().popup.is_some() {
         app.mouse.thinking_popup_area
-    } else if app.subagent_popup.is_some() {
+    } else if app.has_subagent_popup() {
         app.mouse.subagent_popup_area
     } else {
         app.mouse.diff_popup_area
@@ -172,7 +264,7 @@ fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     } else if let Some(popup) = app.tools_mut().popup.as_mut() {
         popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
         app.mouse.popup_text_drag_origin = Some(origin);
-    } else if let Some(popup) = app.subagent_popup.as_mut() {
+    } else if let Some(popup) = app.subagent_popup_mut() {
         popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
         app.mouse.popup_text_drag_origin = Some(origin);
     }
@@ -374,7 +466,7 @@ fn handle_text_popup_mouse_drag(app: &mut App, mouse: MouseEvent) {
         popup.selection = Some(selection);
     } else if let Some(popup) = app.tools_mut().popup.as_mut() {
         popup.selection = Some(selection);
-    } else if let Some(popup) = app.subagent_popup.as_mut() {
+    } else if let Some(popup) = app.subagent_popup_mut() {
         popup.selection = Some(selection);
     }
 }
@@ -520,6 +612,59 @@ mod tests {
     }
 
     #[test]
+    fn click_subagent_tab_switches_domain_and_scrolls_active_panel() {
+        use agent_tui_kit::state::StickyTab;
+        use tact_protocol::{SubagentRunSnapshot, SubagentStatusSnapshot};
+
+        let mut app = make_app();
+        // Two visible domains: Tasks (active by default, collapsed) and
+        // Subagent (running, expanded false).
+        app.task_panel_mut().visible = true;
+        app.task_panel_mut().expanded = false;
+        app.subagent_panel_mut().visible = true;
+        app.subagent_panel_mut().expanded = false;
+        app.subagent_panel_mut().snapshot = vec![SubagentRunSnapshot {
+            child_id: "child-abc".into(),
+            status: SubagentStatusSnapshot::Running,
+            summary_first: "working".into(),
+            started_at: None,
+            finished_at: None,
+        }];
+        app.mouse.task_panel_area = Rect::new(0, 10, 60, 1);
+        // Renderer populates these each frame; the test stands in for it.
+        app.mouse.sticky_tab_areas = vec![
+            (StickyTab::Tasks, Rect::new(0, 10, 7, 1)),
+            (StickyTab::Subagent, Rect::new(10, 10, 10, 1)),
+        ];
+
+        // Click the Subagent tab: it becomes the active domain and expands.
+        handle_mouse_event(&mut app, mouse_down(11, 10));
+        assert_eq!(app.mouse.active_sticky_tab, StickyTab::Subagent);
+        assert!(app.subagent_panel_mut().expanded);
+        assert!(
+            crate::render::task_panel::sticky_tab_expanded(
+                &app,
+                crate::render::task_panel::active_sticky_tab(&app)
+            ),
+            "active domain must be expanded after tab click"
+        );
+
+        // A wheel scroll now moves the subagent panel, not the tasks panel.
+        app.task_panel_mut().scroll = 0;
+        app.subagent_panel_mut().scroll = 0;
+        handle_mouse_event(
+            &mut app,
+            mouse_event(crossterm::event::MouseEventKind::ScrollDown, 20, 10),
+        );
+        assert_eq!(
+            app.subagent_panel_mut().scroll,
+            1,
+            "subagent panel scroll should advance"
+        );
+        assert_eq!(app.task_panel_mut().scroll, 0, "tasks scroll untouched");
+    }
+
+    #[test]
     fn voice_button_click_starts_and_stops_recording() {
         use tact::voice::VoiceCommand;
         use tokio::sync::mpsc::unbounded_channel;
@@ -597,6 +742,41 @@ mod tests {
             user_cmd_rx.try_recv().is_err(),
             "[Cancel] must not dispatch Cancel/SubmitTask"
         );
+    }
+
+    #[test]
+    fn subagent_cancel_button_sends_cancel_subagent() {
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
+        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            plugin_rx,
+            plugin_tx,
+            user_cmd_tx,
+            std::path::PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        app.mouse.subagent_cancel_btn_areas =
+            vec![("child-123".to_string(), Rect::new(70, 0, 10, 1))];
+
+        // Click the live subagent card's [Cancel] button.
+        handle_mouse_event(&mut app, mouse_down(71, 0));
+
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CancelSubagent"),
+            UserCommand::CancelSubagent { ref child_id } if child_id == "child-123"
+        ));
     }
 
     #[test]
@@ -894,6 +1074,75 @@ mod tests {
 
         assert!(app.tools_mut().popup.is_none());
         assert!(app.mouse.log_selection.is_none());
+    }
+
+    #[test]
+    fn mouse_wheel_over_slash_popup_steps_selection() {
+        use crate::widgets::state::{InputMode, SkillEntry};
+
+        let mut app = make_app();
+        app.input_mode = InputMode::Insert;
+        app.input = "/".into();
+        app.input_cursor = 1;
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+        app.skills_data = (0..40)
+            .map(|i| SkillEntry {
+                name: format!("skill-{i:02}"),
+                description: format!("Skill number {i} description"),
+                body: String::new(),
+            })
+            .collect();
+        app.mouse.slash_popup_area = Rect::new(20, 5, 60, 14);
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
+        assert_eq!(
+            app.slash_command.selected, 1,
+            "wheel down must advance selection"
+        );
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollUp, 30, 8));
+        assert_eq!(
+            app.slash_command.selected, 0,
+            "wheel up must move selection back"
+        );
+
+        // Wheel outside the recorded popup rect must not move the selection.
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 1, 20));
+        assert_eq!(
+            app.slash_command.selected, 0,
+            "wheel outside the slash popup must not move selection"
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_over_select_popup_steps_selection() {
+        use crate::widgets::state::SelectKind;
+
+        let mut app = make_app();
+        app.input_mode = crate::widgets::state::InputMode::Select;
+        app.select_kind = SelectKind::ModelPick;
+        app.select.set_local(
+            "Select model".into(),
+            (0..30).map(|i| format!("model-{i:02}")).collect(),
+            0,
+            false,
+        );
+        app.mouse.select_popup_area = Rect::new(20, 5, 60, 14);
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
+        assert_eq!(app.select.selected, 1, "wheel down must advance selection");
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollUp, 30, 8));
+        assert_eq!(app.select.selected, 0, "wheel up must move selection back");
+
+        // Wheel outside the recorded popup rect must not move the selection.
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 1, 20));
+        assert_eq!(
+            app.select.selected, 0,
+            "wheel outside the select popup must not move selection"
+        );
     }
 
     #[test]

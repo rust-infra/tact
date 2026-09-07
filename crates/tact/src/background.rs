@@ -58,6 +58,29 @@ pub enum BackgroundTaskStatus {
     Error,
 }
 
+impl From<BackgroundTaskStatus> for &'static str {
+    fn from(status: BackgroundTaskStatus) -> Self {
+        match status {
+            BackgroundTaskStatus::Running => "running",
+            BackgroundTaskStatus::Completed => "completed",
+            BackgroundTaskStatus::Error => "error",
+        }
+    }
+}
+
+impl TryFrom<&str> for BackgroundTaskStatus {
+    type Error = anyhow::Error;
+
+    fn try_from(s: &str) -> Result<Self, anyhow::Error> {
+        match s {
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "error" => Ok(Self::Error),
+            other => anyhow::bail!("invalid background task status in database: {other}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackgroundTaskRecord {
     pub id: String,

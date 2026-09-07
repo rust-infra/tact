@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+};
 
 use tact::{
     plugin::{PluginEvent, PluginRequest},
@@ -15,9 +18,6 @@ mod input_history;
 mod slash_command;
 
 mod task_dag;
-pub(crate) mod task_panel {
-    pub(crate) use agent_tui_kit::state::task_panel::*;
-}
 mod voice;
 
 pub(crate) use agent_tui_kit::state::account::AccountState;
@@ -59,6 +59,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("save", "Save log to file"),
     ("compact", "Compact conversation history"),
     ("cancel", "Cancel current task"),
+    (
+        "subagent_cancel",
+        "Cancel a running subagent (usage: /subagent_cancel <child-id>)",
+    ),
     ("quit", "Quit application"),
     ("help", "Show help panel"),
     ("history", "Show task history"),
@@ -124,6 +128,18 @@ pub(crate) enum SelectKind {
         model: String,
         effort: tact_llm::OpenAiReasoningEffort,
     },
+}
+
+/// A queued agent-originated select (`RequestSelect` / `RequestMultiSelect`)
+/// waiting behind the currently-open one. Concurrent subagents can each ask
+/// for permission; a single [`SelectPopup`] would overwrite the first waiter
+/// and hang it, so these queue up and are shown one at a time.
+pub(crate) struct AgentSelectRequest {
+    pub prompt: String,
+    pub options: Vec<String>,
+    pub request_id: u64,
+    pub multi: bool,
+    pub log_confirm: bool,
 }
 
 // ========== Main State ==========
@@ -211,13 +227,21 @@ pub struct App {
     pub(crate) mermaid_popup: Option<MermaidPopup>,
     /// `/tasks-dag` Mermaid→Unicode dependency graph popup.
     pub(crate) task_dag_popup: Option<TaskDagPopup>,
-    /// Subagent live-output / markdown summary popup.
-    pub(crate) subagent_popup: Option<SubagentPopup>,
+    /// Subagent live-output / markdown summary popups, keyed by tool id so
+    /// concurrent subagents each keep their own scroll / selection / cached
+    /// layout when the user switches between them.
+    pub(crate) subagent_popups: HashMap<String, SubagentPopup>,
+    /// Tool id of the currently-visible subagent popup (an entry in
+    /// [`Self::subagent_popups`]).
+    pub(crate) active_subagent_popup: Option<String>,
     pub(crate) system_prompt_popup: Option<SystemPromptPopup>,
     // Selection popup
     pub(crate) select: SelectPopup,
     /// Distinguishes agent permission selects from `/model` UX.
     pub(crate) select_kind: SelectKind,
+    /// Agent-originated selects queued behind the currently-open one
+    /// (concurrent subagents asking for permission simultaneously).
+    pub(crate) pending_agent_selects: VecDeque<AgentSelectRequest>,
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
     pub(crate) slash_command: SlashCommandState,

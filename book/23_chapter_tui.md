@@ -53,15 +53,17 @@ app-layer popups (palette, file picker, slash commands, task DAG).
 **Component registry (whole-App switch, 2026-08-23):** the kit's six
 components own the UI state that `App` once held as bare fields. `App` now
 holds a `ComponentRegistry` (`plan` / `thinking` / `stream` / `tools` /
-`status_bar` / `task_panel` components) and reaches the state through typed
-accessors (`app.plan()` / `app.plan_mut()`, …); the shared `LogCoordinator`
-stays shell-owned. `handle_agent_update` is `coordinator_prepass` →
+`status_bar` / `task_panel` / `subagent_panel` components) and reaches the
+state through typed accessors (`app.plan()` / `app.plan_mut()`, …); the shared
+`LogCoordinator` stays shell-owned. `handle_agent_update` is
+`coordinator_prepass` →
 `dispatch_components` (registry dispatch; the stream outbox carries parsed
 `StreamEvent`s) → `apply_stream_events` (StreamChunk only — the gap checks
 append rows) → `shell_handle` (rich shell behavior: status/log effects,
 tool-card lifecycle, select popups, thinking card) → `refresh_tail_scroll`.
 Kit components claim `TokenUsage`/`ModelInfo` (status bar), `ToolProgress`/
-`ToolMeta` (tool), `StepAdded` (plan), `TasksChanged` (task panel), and
+`ToolMeta` (tool), `StepAdded` (plan), `TasksChanged` (task panel),
+`SubagentsChanged` (subagent panel), and
 `StreamChunk` (parse only). `ThinkingChunk` and `StepFinished`/`StepFailed`
 stay in the shell (they are entangled with the log-anchored lifecycle).
 
@@ -250,7 +252,8 @@ flowchart TB
 | `agent_tui_kit::render/input.rs` | Multi-line input box, pending block, palette command line (pure) |
 | `agent_tui_kit::render/log.rs` | Log panel pure render (wrap cache consumed, scroll, overlays, scrollbar) |
 | `agent_tui_kit::render/log_column.rs` | Viewport-clipped `Renderable` compositor |
-| `agent_tui_kit::render/task_panel.rs` | Sticky persistent-task strip (collapsed / expand) under Log |
+| `agent_tui_kit::render/task_panel.rs` | Sticky persistent-task body formatting + single-domain render helpers |
+| `agent_tui_kit::render/sticky_host.rs` | Two-domain sticky host under Log (`[Tasks] [Subagent]` tabs; pure render returns tab hit areas) |
 | `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s (`pulldown-cmark` + Mermaid routing + width-aware tables) |
 | `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` event loop → ratatui `Line`s |
 | `agent_tui_kit::render/mermaid_sequence.rs` | Local Mermaid `sequenceDiagram` renderer (alias/activation/CJK-safe) |
@@ -262,7 +265,7 @@ flowchart TB
 
 Supporting pieces: `agent_tui_kit::state/` (`LogCoordinator`, `LogScroll`,
 `ToolState`, `ThinkingState`, `StreamState`, `StatusBarState`, `PlanPanel`,
-`TaskPanelState`, `MouseState`, popup states …), `agent_tui_kit::theme` /
+`TaskPanelState`, `SubagentPanelState`, `MouseState`, popup states …), `agent_tui_kit::theme` /
 `i18n` (colors, `Messages` strings); `crates/tui/src/widgets/state/` holds
 `App` and the app-layer states (`AccountState`, `VoiceState`, `FilePicker`,
 `SlashCommandState`, `InputHistory`, `TaskDagPopup`, `SelectKind`).
@@ -275,13 +278,29 @@ Each repaint runs inside `terminal.draw(|f| { ... })` when the dirty check passe
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
 │    ├─ log panel (scrollable)
-│    └─ sticky tasks? (0 rows if hidden; click to expand)
+│    └─ sticky host (Tasks | Subagent)? (0 rows if hidden; click to expand)
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
-When `task_panel.visible` **or** the Subagent pane has content, `render_main_area` **outer-splits** the main Rect (Log above, unified sticky below) without changing Log wrap/scroll internals. The sticky host shows tabs **Tasks | Subagent**: persistent-task checklist vs nested `spawn_subagent` mini-log. Subagent stream/steps never enter the main Log. First `spawn_subagent` in a UI session auto-focuses the Subagent tab; later runs only increment a badge. Visibility for Tasks still requires a `TasksChanged` with pending/in_progress items ([Ch 19](./19_chapter_persistent_tasks.md), [Ch 25](./25_chapter_protocol.md)).
+When the **Tasks** panel (`task_panel.visible`, fed by `TasksChanged`) or the
+**Subagent** overview (`subagent_panel.visible`, fed by `SubagentsChanged`) has
+content, `render_main_area` **outer-splits** the main Rect (Log above, a
+two-domain sticky host below) without changing Log wrap/scroll internals. The
+host title row shows one `[Tasks] …` / `[Subagent] …` segment per visible
+domain; the active domain's body (hairline-separated) appears when it is
+expanded. The Tasks body is the persistent-task checklist; the Subagent body
+is a **status overview** of the current process's subagent runs grouped
+Running → Completed → Failed → Cancelled (`marker short-id summary-first ⏱
+duration`). Subagent live detail never enters the sticky or the main Log —
+it stays on the parent `spawn_subagent` tool card and its popup. Clicking an
+inactive tab switches and expands that domain; clicking the active tab (or the
+strip) collapses it; wheel / `jk` scroll the active domain. A domain is
+dropped from the host when it is invisible: Tasks when no open task remains,
+Subagent when collapsed with nothing running. Visibility for Tasks still
+requires a `TasksChanged` with pending/in_progress items
+([Ch 19](./19_chapter_persistent_tasks.md), [Ch 25](./25_chapter_protocol.md)).
 
 Vertical constraints in `lib.rs`:
 
@@ -695,7 +714,7 @@ Each discovered skill appears as `/{name}` with its frontmatter `description`. B
 | `/skill-name` or `/skill-name args` + Enter | **Invoke**: log shows the slash line; agent gets `<skill>` body (bare `$ARGUMENTS` substituted, else Claude-style `ARGUMENTS:` appended when args present) |
 | Palette Enter on a skill | Insert mode with `/name ` prefilled (undo checkpoint preserved) |
 | `/skill-reload` | Rescan roots into shared registry (TUI + agent), invalidate visual cache |
-| `/plugin …` | Queue install, uninstall, update, list, reload, and marketplace operations; successful install/uninstall/update/reload refreshes shared skills |
+| `/plugin …` | Queue install, uninstall, update, list, reload, and marketplace operations; successful install/uninstall/update/reload refreshes shared skills. `/plugin list` renders a feature table (Skills / Cmds / Agents / Hooks / MCP) |
 
 Input box and user log lines highlight `/skill-name` (accent+bold) vs args (`theme.fg`) via `render/slash_style.rs`. Full discovery paths and `$ARGUMENTS` rules: [Ch 2](./02_chapter_skill.md). Separate from the model calling `load_skill` mid-turn.
 
@@ -711,7 +730,7 @@ Twelve built-in themes in `theme.rs`: `dark`, `light`, `solarized-dark/light`, `
 |------------|---------|
 | `get_skill_registry` | Skills ([Ch 2](./02_chapter_skill.md)) |
 | `StoreRoot` + managers | Tasks, background, team, worktree |
-| `get_memory_manager` | Memory ([Ch 3](./03_chapter_memory.md)) |
+| `memory_manager` | Memory ([Ch 3](./03_chapter_memory.md)) |
 | `load_mcp_router` | MCP tools ([Ch 8](./08_chapter_mcp.md)) |
 | `PermissionManager::try_new(PermissionMode::Default)` | **Hardcoded** — see gaps |
 | `open_sqlite_session_store` | Session + input history ([Ch 1](./01_chapter_store.md)) |

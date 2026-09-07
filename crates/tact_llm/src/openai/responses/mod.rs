@@ -21,7 +21,6 @@ use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use self::{
-    convert::create_response,
     normalize::{NormalizedResponse, parse_compact_resource},
     stream::ResponsesStreamState,
     wire::parse_response_envelope,
@@ -230,6 +229,18 @@ fn parse_stream_event(event: Value) -> Result<Option<ResponseStreamEvent>, LlmEr
     Ok(parse_stream_event_with_raw(event)?.map(|parsed| parsed.event))
 }
 
+/// Whether a `/responses` base URL is the official OpenAI API.
+///
+/// Official OpenAI is the one family whose turn-continuation semantics
+/// expect prior `reasoning` items (with their encrypted payload) to be
+/// replayed into the next request. Compatible endpoints (DeepSeek, Kimi,
+/// OpenCode Go, arbitrary OpenAI-compatible proxies) regenerate reasoning
+/// themselves and only waste input tokens when Tact replays it.
+fn is_official_openai_base_url(base_url: &str) -> bool {
+    let host = base_url.to_ascii_lowercase();
+    host.contains("api.openai.com") || host.contains("openai.azure.com")
+}
+
 /// OpenAI Responses API adapter backed by async-openai 0.41.x.
 ///
 /// Hosted web search is a **Responses-protocol capability**, independent of
@@ -247,6 +258,14 @@ pub struct OpenAiResponsesAdapter {
     /// entirely; Tact never falls back to a local summary compaction for
     /// Responses providers.
     compact_threshold: Option<u32>,
+    /// Whether historical assistant `reasoning` items are replayed into the
+    /// `/responses` input. Official OpenAI needs them for turn continuation;
+    /// compatible endpoints (DeepSeek, OpenCode, custom OpenAI-compatible
+    /// proxies) regenerate reasoning themselves, so dropping the replay cuts
+    /// ~17% of input bytes. Defaults from the base URL (official OpenAI →
+    /// replay; everything else → drop); override with
+    /// [`Self::with_replay_prior_reasoning`].
+    replay_prior_reasoning: bool,
 }
 
 impl OpenAiResponsesAdapter {
@@ -271,16 +290,35 @@ impl OpenAiResponsesAdapter {
         compact_threshold: Option<u32>,
         http: SharedHttpClient,
     ) -> Self {
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        let replay_prior_reasoning = is_official_openai_base_url(&base_url);
         Self {
             credentials,
             http,
-            base_url: base_url.into().trim_end_matches('/').to_string(),
+            base_url,
             compact_threshold,
+            replay_prior_reasoning,
         }
     }
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Overrides whether historical assistant `reasoning` items are replayed
+    /// into `/responses` input. Defaults from the base URL: official OpenAI
+    /// replays; compatible endpoints drop the reasoning payload to save
+    /// input tokens. Set this explicitly for an endpoint whose semantics
+    /// differ from its host name.
+    pub fn with_replay_prior_reasoning(mut self, replay: bool) -> Self {
+        self.replay_prior_reasoning = replay;
+        self
+    }
+
+    /// Effective reasoning-replay policy for this adapter (used by tests).
+    #[cfg(test)]
+    fn replay_prior_reasoning(&self) -> bool {
+        self.replay_prior_reasoning
     }
 
     /// Builds the SDK client for the current request after resolving
@@ -303,7 +341,15 @@ impl OpenAiResponsesAdapter {
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
-        create_response(request, provider_state, self.compact_threshold, true)
+        convert::create_response_with_policy(
+            request,
+            provider_state,
+            self.compact_threshold,
+            convert::ResponsesRequestPolicy {
+                native_web_search: true,
+                replay_prior_reasoning: self.replay_prior_reasoning,
+            },
+        )
     }
 
     /// Validates that a persisted Responses state is bound to this adapter's
@@ -468,8 +514,18 @@ impl LlmClient for OpenAiResponsesAdapter {
         // logical messages not yet represented in it. The exact JSON input
         // items (including unknown/future item types) are preserved by
         // sending the request through the byot JSON path; no local summary
-        // prompt or `create_message()` call is used.
-        let (body, _) = create_response(request, provider_state, None, false)?;
+        // prompt or `create_message()` call is used. The reasoning-replay
+        // policy applies here too: compatible endpoints compact without
+        // historical reasoning payloads.
+        let (body, _) = convert::create_response_with_policy(
+            request,
+            provider_state,
+            None,
+            convert::ResponsesRequestPolicy {
+                native_web_search: false,
+                replay_prior_reasoning: self.replay_prior_reasoning,
+            },
+        )?;
         let compact_request = serde_json::json!({
             "model": request.model,
             "input": body["input"],
@@ -561,7 +617,6 @@ mod tests {
                 }]
             }
         }));
-
         assert_eq!(
             event["response"]["output"][0]["content"][0]["annotations"],
             serde_json::json!([])
@@ -978,6 +1033,44 @@ mod tests {
         adapter
             .validate_state_binding(&state)
             .expect("model mismatch should not be rejected by local state validation");
+    }
+
+    #[test]
+    fn replay_defaults_from_base_url_and_can_be_overridden() {
+        // Official OpenAI replays historical reasoning by default.
+        let official =
+            super::OpenAiResponsesAdapter::new("test-key", "https://api.openai.com/v1", None);
+        assert!(
+            official.replay_prior_reasoning(),
+            "official OpenAI must keep replaying prior reasoning items"
+        );
+        let azure =
+            super::OpenAiResponsesAdapter::new("test-key", "https://my.openai.azure.com", None);
+        assert!(azure.replay_prior_reasoning());
+
+        // Compatible endpoints default to dropping the reasoning replay.
+        for base_url in [
+            "https://opencode.ai/zen/go/v1",
+            "https://api.deepseek.com",
+            "https://api.moonshot.cn/v1",
+            "https://proxy.example.com/v1",
+        ] {
+            let compatible = super::OpenAiResponsesAdapter::new("test-key", base_url, None);
+            assert!(
+                !compatible.replay_prior_reasoning(),
+                "compatible endpoint {base_url} must drop prior reasoning replay by default"
+            );
+        }
+
+        // Explicit override wins.
+        let compatible =
+            super::OpenAiResponsesAdapter::new("test-key", "https://api.deepseek.com", None)
+                .with_replay_prior_reasoning(true);
+        assert!(compatible.replay_prior_reasoning());
+        let official =
+            super::OpenAiResponsesAdapter::new("test-key", "https://api.openai.com/v1", None)
+                .with_replay_prior_reasoning(false);
+        assert!(!official.replay_prior_reasoning());
     }
 
     /// Run with:

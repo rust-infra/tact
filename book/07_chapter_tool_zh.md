@@ -137,7 +137,7 @@ Spec 通过 `OnceLock` 只算一次——正常用法下首次 `tool_specs()` �
 | `edit_file` | 精确字符串替换（首次或全部） |
 | `sleep` | 定时 / 轮询 |
 
-子 agent **不**获得团队、任务管理、仅 MCP 名称或其他特权工具。模块注释写四个工具，实现里是五个——以上方 `route()` 列表为准。完整 spawn 生命周期：[Subagents](./12_chapter_subagent.md)（英文）。
+子 agent **不**获得团队、任务管理、仅 MCP 名称、worktree 工具或其他特权工具——包括 `spawn_subagent` 本身（无嵌套子 agent）。默认五件套由 `subagent_toolset_has_five_tools` 强制。完整 spawn 生命周期：[Subagents](./12_chapter_subagent.md)（英文）。
 
 ---
 
@@ -257,7 +257,7 @@ pipeline 来绕过应用缓冲。
 | 缺口 | 说明 |
 |------|------|
 | 静态工具注册 | 除 MCP 外无运行时原生工具插件 API |
-| Router 注释漂移 | `subagent_toolset` 文档写 4 个工具；代码注册 5 个 |
+| 子代理工具集固定 | `subagent_toolset()` 注册 5 个工具；声明式 `tools:` 只能收窄，不能加宽 |
 | 无工具版本 | 重命名工具会破坏已保存 allowlist 与 prompt |
 | MCP 与原生名冲突 | 注册时未检查——spec 列表里后写者胜出 |
 | `ToolRouter` 非动态 | 会话中途不能增删工具 |

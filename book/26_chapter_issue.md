@@ -29,7 +29,255 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-08-24 — `AgentUpdate` drops the embedded oneshot; select requests use `request_id` + `UiResponse`
+## 1. 2026-09-07 — Subagent sticky tab: overview strip under the Log
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/protocol/src/agent.rs` (`SubagentRunSnapshot`, `SubagentStatusSnapshot`, `AgentUpdate::SubagentsChanged`), `crates/tact/src/subagent.rs` (`SubagentManager.known`, `note_started`, `ui_snapshot`, `MAX_SUBAGENT_SNAPSHOT`, `emit_subagents_changed`), `crates/tact/src/tool/subagent.rs` + `crates/tact-ui/src/driver.rs` (emit points), `crates/agent_tui_kit/src/{state,components,render}/subagent_panel.rs`, `crates/agent_tui_kit/src/render/sticky_host.rs` (two-domain host), `crates/tui/src/render/task_panel.rs` + `handlers/{mouse,normal}.rs`; design `docs/superpowers/specs/2026-09-07-subagent-sticky-tab-design.md`, plan `docs/superpowers/plans/2026-09-07-subagent-sticky-tab.md`; Ch 12, 23 |
+
+**Symptom / motivation:** Background `run_in_background` subagent fan-out had no persistent status overview: each child's live stream renders in its own parent `spawn_subagent` tool card and the Log only shows the card of the invocation that returned, so "which children are still running / just finished / what did they say" was scattered across tool cards and `check_subagent`. The 2026-07-26 removal (`98a133f`) of the old Subagent sticky pane left a gap for a *status-level* surface; this re-implements it on the current component architecture **without** restoring the old `AgentUpdate::Subagent` wrapper or routing live detail into the sticky.
+
+**Decision:** Mirror the Tasks pattern with a new `AgentUpdate::SubagentsChanged { runs }` full-snapshot event. `SubagentManager` keeps an in-memory `known` set of children started by the current process (not the whole `subagent_runs` table, which accumulates across sessions and orphan-repair noise), and emits after spawn start / sync+async finish / `cancel_subagent` tool / driver `CancelSubagent`. The TUI gains a `SubagentPanelComponent`/`SubagentPanelState` (kit) and a two-domain sticky host under the Log showing `[Tasks] [Subagent]` tab segments; each domain keeps its own visible/expanded/scroll state. The Subagent body groups runs Running → Completed → Failed → Cancelled with `{marker} {short-id} {summary-first-line} ⏱ {duration}`; rows are capped (`MAX_SUBAGENT_SNAPSHOT = 20` total, all Running preserved). Live detail still lives on the tool card / SubagentPopup.
+
+**Behavior after:** Spawning or finishing any subagent in the current process updates the sticky (hidden when no domain is active; first appearance defaults expanded; collapses to one row and hides once collapsed with nothing running). Clicking a visible inactive tab switches the active domain and expands it; wheel/`jk` scroll the active domain. Subagents are never added to the main Log (one row = the tool card) and never duplicate into Tasks.
+
+---
+
+## 1. 2026-09-06 — Subagent skill cards: isolated role injection via `skill`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/tool/subagent.rs` (`SubagentInput.skill`, `parse_skill_card_frontmatter`, `read_skill_card`, `list_skill_cards`, `format_skill_card_line`, `apply_skill_card`, `annotate_spawn_subagent_skill_catalog`), `crates/tact/src/tool/mod.rs` (`ToolRouter::set_tool_description` description overrides), `crates/tact-ui/src/{interactive,headless}.rs`; design `docs/superpowers/specs/2026-09-06-subagent-skill-cards-design.md`, plan `docs/superpowers/plans/2026-09-06-subagent-skill-cards.md`; Ch 12 §2.1 |
+
+**Symptom / motivation:** Removing declarative agent definitions (`8c74f4e`) left subagents with no reusable way to attach a stable role/working method — every specialized worker persona had to be restated inline in `prompt`. Reusing the main-agent `SkillRegistry` was rejected because it would pollute the main agent's visible skill list and entangle the two systems.
+
+**Decision:** Add an isolated, opt-in `skill: <name>` field to `spawn_subagent`. The handler reads `~/.tact/subagent/<name>.md` (key = file stem; frontmatter `description` is used for error listings and the discovery catalog) and appends its body as a `<skill>` block to the child's static system prompt, before `SubagentStart` hooks run. Names must be plain file stems (no separators / `.`/`..` / NUL), so a `skill` value cannot read outside the card directory. Unknown names fail the spawn and list available cards. No `ToolContext` state, no `SkillRegistry` involvement, and no tools/model/permission frontmatter semantics.
+
+**Behavior after:** `spawn_subagent { prompt, skill: "reviewer" }` gives the child a stable role carried in its system prompt every turn (compaction-safe); omitting `skill` keeps the exact prior behavior (generic template + five-tool set). The card directory is physically isolated from the main agent's skills. At session start the `spawn_subagent` tool description is annotated with the available card list (single-line, 60-char-capped descriptions, capped at 30 cards) so the main agent can discover valid `skill:` names; an absent/empty card directory leaves the description unchanged. Symlinked cards are listed and readable consistently.
+
+---
+
+## 1. 2026-09-06 — Declarative subagent definitions removed
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | deleted `crates/tact/src/agent_def.rs`; `crates/tact/src/tool/subagent.rs` (`SubagentInput.agent`, `resolve_agent_model`, spawn prompt/permission/model/toolset overrides), `crates/tact/src/tool/registry.rs` (`subagent_toolset_for`, `allowed_tool_names`, filtered toolset builder), `crates/tact/src/tool/mod.rs` (`ToolContext.agent_registry`), `crates/tact/src/consts.rs` (`TactPath::agents_dir`), plugin feature bookkeeping (`InstalledPlugin.agent_count`, `PluginFeatures.agent_count` in `crates/tact/src/plugin/{model,install}.rs`), `crates/tact-ui/src/plugin_cli.rs`, `crates/tui/src/widgets/state/app/extensions.rs`, `crates/agent_tui_kit/src/i18n.rs` (`plugin_list_header`); Ch 7, 12, 21 |
+
+**Symptom / motivation:** `spawn_subagent` carried a declarative "agent definition" path — Markdown+YAML-frontmatter files under `<workdir>/.tact/agents/*.md` and installed-plugin `agents/*.md` (namespaced `plugin:<name>`) — that replaced the child system prompt and could override its tool set, model, and permission mode. The surface was large for the value: a frontmatter parser, a shared registry (`Arc<Mutex>` with local-name ambiguity resolution), a second toolset builder (`subagent_toolset_for` + Claude-name mapping) guarded by a fail-closed empty-router check, a third model-override layer on top of `[agent.subagent]`, install-time `agent_count` bookkeeping, and two plugin-list UIs — all to run a worker equally well served by a plain prompt on the fixed five-tool set.
+
+**Decision:** Remove the feature end to end. `spawn_subagent` always uses the generic static system prompt ("You are a coding subagent at …") and `subagent_toolset()`; `SubagentInput.agent`, `resolve_agent_model`, the whole `agent_def` module, the `ToolContext.agent_registry` field, and the `subagent_toolset_for`/`allowed_tool_names`/filtered-builder trio are deleted. Plugins no longer count or advertise `agents/*.md`: `agent_count` is dropped from `InstalledPlugin`/`PluginFeatures`, `tact plugin list`, and the `/plugin` table (column removed from the localized `plugin_list_header`); plugin `SubagentStart` hooks and the skill/command/hook/MCP plugin features are unaffected. An `agents/`-only plugin now has no installable feature and is rejected at install time.
+
+**Behavior after:** `spawn_subagent` accepts only `prompt`/`description`/`run_in_background`/`max_turns`/`resume`/`worktree`; every subagent runs on the fixed five-tool set with the generic prompt. Per-worker definition overrides are gone; the `[agent.subagent]` config block and `/model-subagent` picker still set the subagent's provider/model globally. Plugin feature summaries show `skills/commands/hooks/mcp` only.
+
+---
+
+## 1. 2026-09-05 — OpenCode `x-opencode-session` header wiring removed
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | removed `crates/tact_llm/src/opencode.rs`; `crates/tact_llm/src/openai/responses/mod.rs` (`OpenAiResponsesAdapter`, `ResponsesCompatConfig`), `crates/tact_llm/src/openai/compatible/mod.rs` (`CompatibleConfig::headers`), `crates/tact_llm/src/models.rs` (`fetch_model_ids`), `crates/tact_llm/src/client.rs` (`LlmProvider::set_user_id`); Ch 21 |
+
+**Symptom / motivation:** OpenCode's hosted endpoints no longer require an `x-opencode-session` header (nor a custom `tact/<version>` User-Agent), so the whole mechanism that detected `opencode.ai` base URLs and attached the header to every request was dead weight — and it forced plumbing the Tact session id (`Agent::with_session` → `LlmProvider::set_user_id` → `OpenAiResponsesAdapter::set_session_id`) purely to feed one header value.
+
+**Decision:** Remove the OpenCode session logic entirely: delete the `opencode` helper module and stop attaching `x-opencode-session`/`tact/<version>` on the Responses SDK config, the direct `/responses/compact` POST, the Chat Completions config, and the `/v1/models` picker fetch. Drop the `session_id`/`opencode_session` fields and `set_session_id` from the Responses adapter, remove the `OpenAiResponses` arm of `LlmProvider::set_user_id`, and delete the `TACT_OPENCODE_SESSION` env override.
+
+**Behavior after:** requests carry no `x-opencode-session` header (and no custom OpenCode User-Agent) on any endpoint; `opencode.ai` endpoints are treated like any other OpenAI-compatible base URL. DeepSeek `user_id` KV-cache isolation through the Chat Completions adapter is unaffected.
+
+---
+
+## 1. 2026-09-05 — Compatible `/responses` endpoints stop replaying historical reasoning items
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact_llm/src/openai/responses/convert.rs` (`ResponsesRequestPolicy`, `create_response_with_policy`), `crates/tact_llm/src/openai/responses/mod.rs` (`OpenAiResponsesAdapter::with_replay_prior_reasoning`, `is_official_openai_base_url`, compact POST); task #58; Ch 22 §6.2/§6.2.3 |
+
+**Symptom / motivation:** Every `/responses` request replayed the full historical `reasoning` items (persisted signatures with opaque encrypted payloads) into `input`. Official OpenAI needs that for turn continuation, but compatible endpoints (OpenCode Go, custom OpenAI-compatible proxies) regenerate reasoning each turn, so replaying every previous chain of thought was pure input-token waste — measured at ~17% of request bytes (up to ~47% of tokens on DeepSeek-style endpoints).
+
+**Decision:** Add a per-adapter `replay_prior_reasoning` policy. `OpenAiResponsesAdapter::new` derives the default from the base URL (`is_official_openai_base_url`: `api.openai.com` / Azure OpenAI → replay; everything else → drop); `with_replay_prior_reasoning` overrides it. `create_response` became `create_response_with_policy(request, provider_state, compact_threshold, ResponsesRequestPolicy { native_web_search, replay_prior_reasoning })`. The reasoning signature is still decoded on every path so `fc_*` function-call item ids stay attached to their `function_call` items; only the standalone `reasoning` payload is omitted. When replay is disabled the persisted state baseline is filtered of stale `reasoning` items before the body is built, and the returned `input_items` exclude reasoning, so states persisted by an older build self-heal on the first request.
+
+**Behavior after:** official OpenAI (and Azure OpenAI) Responses requests replay prior reasoning exactly as before; any other base URL drops historical reasoning items from ordinary requests, explicit `/responses/compact` bodies, and the persisted state baseline, cutting ~17% of input bytes while preserving function-call identity. An explicit override exists for endpoints whose semantics differ from their host name.
+
+---
+
+## 1. 2026-09-02 — OpenCode `x-opencode-session` is bound to the Tact session id (cache isolation)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs` (`endpoint_headers(base_url, session)`), `crates/tact_llm/src/openai/responses/mod.rs` (`OpenAiResponsesAdapter::set_session_id`, `ResponsesCompatConfig.opencode_session`, compact POST), `crates/tact_llm/src/client.rs` (`LlmProvider::set_user_id`), `crates/tact/src/agent/mod.rs` (`Agent::with_session`); Ch 21 |
+
+**Symptom / motivation:** The first OpenCode fix sent a per-process, per-`base_url` token as `x-opencode-session`. OpenCode uses that header as the **session key that distinguishes its per-conversation caches**, so two different Tact sessions sharing one token would share (and pollute) each other's OpenCode cache, while resuming a Tact session would not resume the same OpenCode cache.
+
+**Decision:** Bind the header to the Tact session id. `Agent::with_session` already forwards the session id to the client via `LlmProvider::set_user_id` (the hook DeepSeek uses for KV-cache isolation); the OpenAI Responses adapter now stores it (`set_session_id`) and the SDK config / compact POST emit `x-opencode-session = <session id>`. Requests without a session (the `/v1/models` picker fetch) still fall back to the per-`base_url` token; `TACT_OPENCODE_SESSION` pins that fallback only.
+
+**Behavior after:** one Tact session (including a resumed one, which reuses the same session id) maps to exactly one OpenCode session/cache; different Tact sessions — main agent, each subagent with its own child session id — get distinct `x-opencode-session` values, so OpenCode caches are isolated per conversation.
+
+---
+
+## 1. 2026-09-02 — OpenCode Go endpoints send `x-opencode-session` + a real User-Agent
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs` (new), `crates/tact_llm/src/openai/responses/mod.rs` (`ResponsesCompatConfig::headers`, compact POST), `crates/tact_llm/src/openai/compatible/mod.rs` (`CompatibleConfig::headers`), `crates/tact_llm/src/models.rs` (`fetch_model_ids`); Ch 21 |
+
+**Symptom / motivation:** Requests to OpenCode Go (`https://opencode.ai/zen/go/v1`) carried no `x-opencode-session` header and only reqwest's generic `User-Agent`, so OpenCode could not correlate/optimize the session and reported them as "Unknown client"; starting 09/06 requests missing the header may error.
+
+**Decision:** Add an `opencode` helper module that detects OpenCode endpoints (`opencode.ai` or a subdomain) and returns an `x-opencode-session` value that is stable per process and per `base_url`, plus a `tact/<version>` `User-Agent`. The headers are attached on every path that talks to the endpoint: the Responses SDK config (`create_byot` / `create_stream_byot`), the direct `/responses/compact` POST, the Chat Completions config (defensive), and the `/v1/models` picker fetch. `TACT_OPENCODE_SESSION` pins the session value when set.
+
+**Behavior after:** every request to an OpenCode Go endpoint carries a stable `x-opencode-session` header and an identifying `tact/<version>` `User-Agent`; other endpoints are unaffected (empty header map).
+
+---
+
+## 1. 2026-09-02 — Remove nested subagent spawns (depth-0 restored)
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact/src/tool/registry.rs` (`subagent_toolset` back to 5 tools), `crates/tact/src/tool/mod.rs` (`ToolContext.subagent_depth` removed), `crates/tact/src/tool/subagent.rs` (`MAX_SUBAGENT_DEPTH` removed); revert of `6c32665e`; Ch 12 |
+
+**Symptom / motivation:** The nested-spawn feature (commit `6c32665e`, depth-limited to `MAX_SUBAGENT_DEPTH = 3`, 9-tool subagent set) was shipped on the same day, but the design proved too complex for the value: subagents now carried `subagent_depth` state through `ToolContext`, the router had to map Claude `Task` names, and each child needed depth propagation — all to let a worker spawn a worker.
+
+**Decision:** Revert the nested-spawn commit. `subagent_toolset()` is back to exactly five tools (`bash`, `read_file`, `write_file`, `edit_file`, `sleep`), `spawn_subagent`/`check_subagent`/`wait_subagent`/`cancel_subagent` are main-toolset-only again, `ToolContext.subagent_depth` and `MAX_SUBAGENT_DEPTH` are deleted, and `allowed_tool_names` drops the Task/Check/Wait/Cancel mappings. The resume 24h expiry and the worktree improvements (branch cleanup, run validation/audit, index reconciliation) are unaffected.
+
+**Behavior after:** subagents cannot spawn nested subagents (same depth-0 contract as before 2026-09-02); the main agent keeps full subagent tool surface; declarative `tools:` lists only narrow the five-tool set.
+
+---
+
+## 1. 2026-09-02 — Close async-subagent leftovers: resume expiry, worktree branch cleanup, index reconciliation, run validation/audit
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/tool/subagent.rs` (`RESUME_EXPIRY_HOURS`), `crates/tact/src/worktree/mod.rs` (`new` orphan repair, `remove` branch cleanup, `run` validation + audit), `crates/tact/src/tool/worktree.rs`; Ch 12, 15 |
+
+**Symptom / motivation:** Four design-deferred leftovers remained after the async-subagent follow-ups: (1) `resume` had no expiry policy ("TBD" in the 2026-08-26 design), so a weeks-old session could be resumed with stale context; (2) `worktree_remove` always left the backing `wt/<name>` branch, requiring a manual merge or `git branch -D`; (3) manual `git worktree remove`/`prune` left stale DB records forever (index drift); (4) `worktree_run` bypassed `validate_shell_command` and was not audit-logged.
+
+**Decision:** (1) `resume` rejects a target whose `finished_at` is older than `RESUME_EXPIRY_HOURS = 24` (Claude's 24h expiry). (2) `WorktreeManager::remove` now runs `git branch -d wt/<name>` after `git worktree remove` — only a fully-merged branch is deleted; unmerged branches are kept and the outcome is reported/audited. (3) `WorktreeManager::new` repairs orphans: any tracked lane whose path is missing is dropped from the table and logged `worktree.stale-removed`. (4) `WorktreeManager::run` calls `validate_shell_command` (same gate as `bash`) and appends `worktree.run <name> <command>` to the audit log.
+
+**Behavior after:** resume expires after 24h; `worktree_remove` auto-deletes only merged branches; the worktree index reconciles with git on startup; `worktree_run` blocks high-risk commands and every invocation is audit-logged.
+
+---
+
+## 1. 2026-09-02 — Async-subagent P1 reliability fixes (wake-up race, cancellation status, resume validation, sync lifecycle, headless semantics)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-ui/src/driver.rs` (`run_command_loop_with_account` + `spawn_wakeup_task`), `crates/tact/src/tool/subagent.rs` (`spawn_subagent`, `terminal_success`); Ch 12 |
+
+**Symptom / motivation:** Five P1 reliability gaps in the async-subagent path. (1) **Wake-up race** — the driver dropped `SubagentFinishedNotification` whenever a turn was in flight, so a result that landed in the gap between the final queue drain and turn exit was never re-injected (the parent stayed silent until the next manual turn). (2) **Cancellation status** — the async completion task emitted `AgentUpdate::SubagentFinished` with the raw `agent_loop` result, so a cancelled child that exited cleanly was reported `success: true`. (3) **Resume validation** — `resume` blindly reused any id: resuming a still-`Running` child raced the session, and resuming an unknown id silently minted a fresh child instead of a follow-up. (4) **Synchronous child lifecycle** — sync children registered a cancel handle but never wrote a `subagent_runs` row, so `check_subagent`/`cancel_subagent` were blind to them and a failed sync spawn left a stale `Running` row. (5) **Headless semantics** — `run_in_background` in headless spawned a detached child that was then cancelled at exit, silently discarding its work.
+
+**Decision:** (1) the driver loop now `select!`s on the in-flight `JoinHandle` and `user_cmd_rx`, retaining a `pending_subagent_wakeup` flag and submitting the wake-up turn as soon as the active turn completes (new `spawn_wakeup_task` helper; `SubmitTask` clears the flag since the new turn drains the queue itself). (2) a `terminal_success(success, cancelled) = success && !cancelled` helper is used for both the queued `SubagentResult` and the `SubagentFinished` event. (3) resume validates via `SubagentManager::get`: a still-`Running` target or an unknown id bails before any spawn work. (4) `manager.start` moved above the sync/async split and the sync path now records `Completed`/`Failed`/`Cancelled` on exit (also unregisters the handle and releases the lock before propagating an error). (5) `run_async` requires `ctx.ui_tx.is_some()`; without an interactive channel (headless) `run_in_background` degrades to synchronous with a `warn!`, so the summary still reaches the parent.
+
+**Behavior after:** a subagent result is never lost to the wake-up gap; cancelled children read as unsuccessful in both the queue and the card; resume rejects running/unknown targets; sync and async children are uniformly visible to `check_subagent`/`cancel_subagent`/`wait_subagent`; headless `run_in_background` completes synchronously instead of being cancelled at exit.
+
+---
+
+## 1. 2026-09-02 — Async-subagent follow-ups: `wait_subagent` + `worktree_remove` + concurrent popups
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/subagent.rs` (`SharedSubagentManager::wait` / `get`), `crates/tact/src/tool/subagent.rs` (`WaitSubagentTool`), `crates/tact/src/tool/worktree.rs` (`WorktreeRemoveTool`), `crates/tact/src/worktree/mod.rs` (`WorktreeManager::remove`), `crates/tact/src/store/worktree_store/` (`remove_worktree`), `crates/tact/src/tool/registry.rs`, `crates/tui/src/widgets/state/{mod.rs,app/popups.rs,app/config.rs,app/construct.rs}`, `crates/tui/src/{handlers,render}`; Ch 12 |
+
+**Symptom / motivation:** The 2026-08-26 async-subagent design shipped `run_in_background`, `check_subagent`, `resume`, and cancel, but three follow-ups remained open: (1) the parent could only learn a running child's outcome by calling `check_subagent` across multiple LLM turns — wasteful; (2) isolated worktree lanes (`subagent-<child_id>`) had no removal surface and leaked until a manual `git worktree remove`; (3) the TUI held a single `Option<SubagentPopup>` slot, so opening a second concurrent subagent's transcript dropped the first one's scroll/selection.
+
+**Decision:** (1) `wait_subagent { child_id, timeout_ms? }` — a new Read tool that polls `subagent_runs` (250 ms interval) until the child reaches `Completed`/`Failed`/`Cancelled` or times out (default 60 s) and returns the summary; the Codex `wait_agent` analog (`SubagentManager::wait` / `get` added). (2) `worktree_remove { name }` — runs `git worktree remove` (no `--force`, so a dirty tree fails), deletes the tracking row, appends an audit event, and leaves the backing `wt/<name>` branch recoverable; it refuses a `subagent-<id>` lane whose run is still `Running` (`WorktreeStore::remove_worktree` + `WorktreeManager::remove` added). (3) TUI multi-popup — `App.subagent_popup: Option<_>` became `subagent_popups: HashMap<tool_id, _>` + `active_subagent_popup: Option<tool_id>`; `open_subagent_popup` inserts-or-reuses each card's entry so switching between concurrent subagents preserves scroll/selection/cached layout.
+
+**Behavior after:** the parent can spawn N background subagents and `wait_subagent` each (no more turn-burning `check_subagent` polling); isolated lanes are cleanable through a tool; concurrent subagent transcripts no longer clobber each other's popup state.
+
+---
+
+## 1. 2026-08-30 — 子代理取消（`cancel_subagent` 工具 + `/subagent_cancel` + tool 卡片 [Cancel] 按钮）
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/subagent.rs`（`register_cancel_handle` / `request_cancel` / `unregister_cancel_handle`）、`crates/tact/src/tool/subagent.rs`（`CancelSubagentTool`、spawn 注册/注销 handle、取消感知结束路径）、`crates/tact/src/tool/registry.rs`、`crates/protocol/src/agent.rs`（`UserCommand::CancelSubagent`）、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/{mod,mouse}.rs`（`/subagent_cancel`、按钮点击）、`crates/agent_tui_kit/src/{components/tool.rs,render/log.rs,state/tool_state.rs,state/mouse_state.rs,i18n.rs}`（`parse_async_launched`、`SubagentCancelButton`、`subagent_child_id`）；Ch 12 |
+
+**Symptom / motivation:** 运行中的后台子代理没有任何取消入口：父级 `/cancel` 只取消主任务（每次 `Agent::new` 为子代理新建独立 cancel_flag，父进程拿不到句柄）；`SubagentManager::cancel` 只能事后改 DB 状态，无法中止运行中的子代理；异步子代理 detach 后只能等 `max_turns` 或自然结束。
+
+**Decision:** 建立协作取消链路：`SubagentManager` 增加内存 cancel-handle 注册表（`child_id → Arc<AtomicBool>`）；`spawn_subagent` 在 `Agent::new` 后注册子代理的 `runtime.cancel_flag`，结束（同步/异步）时注销；新增 `cancel_subagent` 工具（`request_cancel` 翻转标志 + 标记记录），注册进主 toolset；protocol 新增 `UserCommand::CancelSubagent`，driver 直接操作 manager（不依赖父 agent 空闲）；TUI 新增 `/subagent_cancel <child-id>` slash 命令与运行中子代理卡片上的 `[Cancel]` 按钮（`parse_async_launched` 从 `async_launched { id }` 结果提取 child_id，渲染层返回按钮 rect，mouse 点击发送命令）。异步结束路径检测标志：被取消的运行标为 `Cancelled`（而非 Completed），summary 前缀 `(cancelled by user)`。
+
+**Behavior after:** 运行中的后台子代理可通过三种入口取消：`cancel_subagent { child_id }` 工具（模型可调用）、`/subagent_cancel <child-id>`（用户）、live 卡片 `[Cancel]` 按钮（鼠标）。子代理循环在下一个检查点协作退出，运行记录标为 Cancelled，结果回注时 success=false。**父级退出联动**：driver 循环收尾与 headless 运行结束都会调用 `SubagentManager::cancel_all()`，翻转所有存活子代理的取消标志，避免后台子代理成为孤儿。
+
+---
+
+## 1. 2026-08-29 — Claude marketplace 插件全功能兼容（skills / commands / agents / hooks / MCP）
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/plugin/{install,model,store,hooks}.rs`, `crates/tact/src/skill/mod.rs` (`load_plugin_commands`), `crates/tact/src/mcp/mod.rs` (`installed_plugin_mcp_servers`, `McpProjectConfig`), `crates/tact/src/agent_def.rs` (declarative agents), `crates/tact/src/tool/{subagent,registry}.rs` (`agent` field, `subagent_toolset_for`), `crates/tact/src/hook/mod.rs` (`UserPromptSubmit`), `crates/tact/src/agent/mod.rs` (`apply_user_prompt_hooks`, `with_post_tool_hook`), `crates/tact-ui/src/{interactive,headless}.rs`, `crates/tui/src/widgets/state/app/extensions.rs`; design `docs/superpowers/specs/2026-08-29-claude-plugin-compat-design.md`, plan `docs/superpowers/plans/2026-08-29-claude-plugin-compat.md`; Ch 2, 8, 9, 12, 21, 23 |
+
+**Symptom / motivation:** Tact 的插件只消费 `skills/` 一项，且安装校验硬性要求 `skills/*/SKILL.md`，导致官方 claude-plugins-official 中 15+ 无 skills 的插件（LSP 文档类、`commit-commands`、`code-review` 等）无法安装；`commands/*.md`、`agents/*.md`、plugin.json hooks、`.mcp.json` 全部被忽略（ponytail 的 hooks 完全没跑）。
+
+**Decision:** 以 Claude Code 插件契约为准做五类兼容：
+1. **安装/清单** — 校验放宽为"至少一种受支持功能"（skills/commands/agents/hooks/mcp）；完整解析 plugin.json（name/description/version/author/hooks/mcpServers）；`InstalledPlugin` 新增 `command_count`/`agent_count`/`has_hooks`/`has_mcp`（serde default，旧记录兼容）。
+2. **Commands** — `commands/*.md` 加载为 `plugin:<name>` 技能（Claude：与 skills 加载方式相同），同一插件内命令覆盖同名技能；frontmatter 解析 `argument-hint`/`allowed-tools`/`model`（v1 不强制）。
+3. **MCP** — 扫描已安装插件缓存的 `.claude-plugin/plugin.json` `mcpServers` 与插件根 `.mcp.json`，服务器命名 `plugin__<id>__<server>`；`http`/`url` 类型跳过并告警（客户端仅 stdio）。
+4. **Agents** — 新 `agent_def` 注册表加载 `.tact/agents/*.md`（原名）与插件 `agents/*.md`（`plugin:<name>`）；`spawn_subagent` 新增 `agent` 字段：定义正文作 system prompt，`tools` 过滤子代理工具集（Read/Glob/Grep→read_file, Bash→bash, Edit→edit_file, Write→write_file, Sleep→sleep），`model`/`permissionMode` 覆盖（Auto 保持粘性）。
+5. **Hooks** — 新 `plugin/hooks.rs`：解析 Claude hooks JSON（matcher/command/commandWindows/timeout/statusMessage/async），`run_command_hook` 以 `sh -c` 执行并注入 `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PROJECT_DIR`，stdin JSON 负载、stdout 双格式解析（`decision` 与 `hookSpecificOutput`）；失败/超时/非法 JSON → warning + Continue（fail-open）。`Hook` 新增 `UserPromptSubmit`（agent_loop 入口对用户消息追加 `additionalContext`）；`SubagentStart` 作为独立 trait 存于 `ToolContext.subagent_start_hooks`（spawn 路径无 LoopState），在 `spawn_subagent` 中注入子代理 system prompt。
+
+**Behavior after:** 官方 marketplace 全部 39 个插件可安装；`/plugin:commit` 等命令即装即用；带 agents 的插件可通过 `spawn_subagent agent=…` 使用；带 hooks 的插件（如 ponytail、官方 hookify/security-guidance 等）在会话启动 / 用户提交 / 工具调用前后 / 子代理启动时执行命令 hook；插件 `.mcp.json` stdio 服务器出现在 `mcp__` 工具集；`tact plugin list` 与 TUI `/plugin list` 显示功能摘要。
+
+**Follow-up fixes (2026-08-30):** hooks 默认发现路径 `hooks/hooks.json`（manifest 缺省时回退，官方 6 个 hooks 插件受益）；声明式 agents 的 `model` 别名处理（`inherit` 不覆盖、`sonnet/opus/haiku` 警告忽略、具体 id 透传）；`tools:` 全部无法映射时报错而非回退默认五件套（防权限扩大）；UserPromptSubmit `Block` 真正阻止提交、SubagentStart `Block` 传播到 `spawn_subagent` 使其失败；SubagentStart 输入补 `agent_type` 字段（ponytail matcher 依赖）；`timeout: 0` 表示不设超时；新格式 `suppressOutput` 解析；SessionStart 纯文本输出显式告警。
+
+**Limitations (v1):** Python SDK `tools/`、http/url MCP、`Notification`/`Stop`/`SubagentStop`/`PreCompact`/`PostCompact`/`SessionEnd` 事件、SessionStart `systemPrompt` 输出、skills `allowed-tools`/`model` 强制执行均不支持（见设计文档 §2）。
+
+---
+
+## 1. 2026-08-29 — Slash & select popups scroll long lists (selection always visible + mouse wheel)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tui/src/render/popups/slash_command.rs` (scroll window/offset), `crates/tui/src/widgets/state/slash_command.rs` (`step_slash_selection`), `crates/agent_tui_kit/src/widgets/select_popup_widget.rs` (`select_popup_layout`, footer), `crates/agent_tui_kit/src/render/popups/select.rs`, `crates/agent_tui_kit/src/render/popups/system_prompt_popup.rs` (session-stats footer), `crates/agent_tui_kit/src/i18n.rs` (footer strings), `crates/tui/src/render/popups/select.rs` (mouse area), `crates/tui/src/handlers/mouse.rs` (wheel routing), `crates/tui/src/handlers/insert.rs` (Up/Down reuse), `crates/agent_tui_kit/src/state/mouse_state.rs` (`slash_popup_area`, `select_popup_area`); Ch 23 |
+
+**Symptom / motivation:** With a long list the popup appeared not to scroll. The slash popup's scroll window was sized `max_visible + 2` regardless of the popup's real content height (`area.height - 2`); on short terminals the `List` widget clipped the bottom rows and the selected row was anchored at window index `max_visible - 1` — below the visible content — so Up/Down moved the selection off-screen and the visible rows looked frozen. The select popup (`/model`, permission, ask_user) had the same failure: its List chunk was sized `Constraint::Length(option_count)` (the full option count) even when the popup height was capped, so the selected row sat below the popup border and the list never scrolled. The mouse wheel over either popup also had no effect: neither popup is an overlay popup, so wheel events fell through to the log panel behind it.
+
+**Decision:** (1) Both popups now size their scroll window from the area that actually fits (`min(rows, max_visible + 2, area.height - 2)` for slash; a shared `select_popup_layout(state, area, fg)` helper for select) so the window and the popup height always agree and nothing is clipped; the offset keeps the selected row inside the window (pinned near the bottom with ~2 context rows below once the list overflows), preserving the previous anchor at normal sizes while guaranteeing the highlight is always on screen. (2) `render_slash_command_popup` and the select wrapper take `&mut App`, record their rects in `MouseState::slash_popup_area` / `select_popup_area`, and run every frame (clearing the area when inactive); `handle_mouse_event` routes `ScrollUp`/`ScrollDown` over those rects to the selection. (3) Slash Up/Down and the wheel share one `App::step_slash_selection(delta)` helper; select reuses `SelectPopup::move_up`/`move_down`. (4) The select popup gained a bottom-border navigation hint (same style as code/mermaid popups: keys in accent, labels muted, centered in `title_bottom`) — `↑↓/j/k` select, `Enter` confirm, `Esc` cancel, plus `Space` toggle for multi-select; the popup width widens to fit the hint, replacing the old hardcoded inner "Space toggle · Enter confirm" row (which also freed one content row for options). (5) The `/stats` session-stats popup (a `SystemPromptPopup` reused from `/view-system-prompt`) gained the same bottom-border footer (`j/k` scroll · `Esc` close), matching every other scrollable popup.
+
+**Behavior after:** The selected command/option is always visible at any terminal height; a long slash or select list scrolls with Up/Down or the mouse wheel (wheel over the popup moves the selection instead of scrolling the log behind it); a closed popup clears its recorded mouse area; the select popup footer shows the navigation keys at the bottom border; the `/stats` session-stats popup shows the same `j/k scroll · Esc close` footer.
+
+---
+## 2. 2026-08-27 — Subagent worktree isolation (`worktree: true`) + same-wave fan-out for isolated spawns
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/tool/subagent.rs` (`SubagentInput.worktree`, `ensure_subagent_worktree`), `crates/tact/src/agent/tool_dispatch.rs` (`tool_resources_for`), `crates/tact/src/worktree/mod.rs` (`get`), `crates/tact/src/tool/mod.rs` (re-export); plan `docs/superpowers/plans/2026-08-27-subagent-worktree-isolation.md`; Ch 12 |
+
+**Symptom / motivation:** `spawn_subagent` always shared the parent's `work_dir` and stayed `ResourcePolicy::Barrier`, so multi-subagent fan-out was either serial (sync) or only parallel via `run_in_background` + `tokio::spawn`. The 2026-08-26 async-subagent design review named the follow-up: same-wave fan-out of blocking subagents becomes safe once each subagent has a scoped filesystem. The tool description ("shares the filesystem") gave the model no way to request isolation.
+
+**Decision:** (1) `SubagentInput` gains `worktree: Option<bool>`; when `true`, the handler creates (or, on `resume`, reuses) a git worktree lane `subagent-<child_id>` (branch `wt/subagent-<child_id>`) synchronously — failures surface immediately — and points the child's `ToolContext.work_dir` at the lane. The summary gains a `(worktree: <name> at <path>)` note in both sync and async returns. (2) `execute_tool_call` resolves resources per invocation (`tool_resources_for`): a worktree-isolated `spawn_subagent` maps to `ToolResources::independent()` instead of the static `Barrier`, so isolated spawns may fan out in the same wave; non-isolated spawns stay `Barrier`. (3) `WorktreeManager`/`SharedWorktreeManager` expose `get(name)` for resume reuse. Tool description rewritten to state the sync/async/worktree strategy.
+
+**Behavior after:** `spawn_subagent` with `worktree: true` runs in an isolated lane based on repo-root `HEAD`; the child's `bash`/`read_file`/`write_file`/`edit_file` resolve against the lane; lanes persist after completion (inspect via `worktree_status`/`worktree_run`, remove via `git worktree remove`). A non-git `work_dir` fails the spawn with a clear error. A worktree is an organizational boundary, not an OS sandbox — `bash` can still reach outside the lane. Per-agent declarative definitions (`.tact/agents/*.md`) and a worktree-removal tool remain deferred.
+
+---
+
+## 3. 2026-08-27 — Subagent permission inheritance + async `run_in_background` + result re-injection
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/permission/mod.rs` (`PermissionSnapshot`), `crates/tact/src/tool/subagent.rs`, `crates/tact/src/subagent.rs`, `crates/tact/src/store/subagent_store/`, `crates/tact/src/agent/mod.rs` + `tool_dispatch.rs`, `crates/protocol/src/agent.rs`, `crates/tact-ui/src/driver.rs`, `crates/agent_tui_kit/src/components/tool.rs`, `crates/tui/src/…`; design `docs/superpowers/specs/2026-08-26-async-subagent-design.md`, review `…-design-review.md`, plan `docs/superpowers/plans/2026-08-26-async-subagent.md`; Ch 12 |
+
+**Symptom / motivation:** `spawn_subagent` was a single synchronous, blocking tool that always built the child's `PermissionManager` in `PermissionMode::Default` — a `Plan` (read-only) parent could spawn a `Default` child that wrote files, escaping the read-only intent. There was no way to run a subagent in the background, cap its turns, resume it, or query its lifecycle after a restart.
+
+**Decision:** (1) `PermissionSnapshot { mode, always_allowed_tools, settings }` + `PermissionManager::snapshot()`/`from_snapshot()`; `execute_tool_call` stamps the snapshot (and the pending-results queue) onto `ToolContext` after phase-1 pre-flight, and `spawn_subagent` builds the child from it (Claude-style inheritance; `Default`→`Default`, `Plan`→`Plan`, `Auto`→`Auto`, denial counter resets; orphan/test contexts fall back to `Default`). (2) `SubagentInput` gains `run_in_background` / `max_turns` / `resume`; async spawns a detached task, returns `async_launched { id }`, and on completion transitions a `subagent_runs` row and enqueues a `SubagentResult` re-injected as a `<subagent-finished>` message drained before the next LLM call. (3) `AgentUpdate::SubagentFinished` finalizes the keep-live card (with transcript carry-over); `UserCommand::SubagentFinishedNotification` + driver wake-up turn let an idle parent resume; `check_subagent` exposes the persisted lifecycle. `spawn_subagent` stays `ResourcePolicy::Barrier` (background parallelism comes from `tokio::spawn`, not wave scheduling).
+
+**Behavior after:** subagents inherit the parent's permission context (fixing the read-only escape); `run_in_background` returns an async handle and re-injects the child summary into the parent transcript; `max_turns` bounds runaway children; `resume` reuses a finished child session; `check_subagent` reads `subagent_runs`; orphan `running` rows are repaired to `failed` on startup. Per-agent `permissionMode` override remains deferred (no declarative `.tact/agents/*.md` yet); worktree isolation shipped separately (entry above).
+
+---
+
+## 2. 2026-08-24 — `AgentUpdate` drops the embedded oneshot; select requests use `request_id` + `UiResponse`
 
 | Field | Value |
 |-------|-------|
@@ -44,7 +292,7 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-08-24 — Plugin update command: `tact plugin update` / `/plugin update`
+## 2. 2026-08-24 — Plugin update command: `tact plugin update` / `/plugin update`
 
 | Field | Value |
 |-------|-------|
@@ -59,7 +307,7 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-08-24 — Plugin uninstall command: `tact plugin uninstall` / `/plugin uninstall`
+## 2. 2026-08-24 — Plugin uninstall command: `tact plugin uninstall` / `/plugin uninstall`
 
 | Field | Value |
 |-------|-------|
@@ -74,7 +322,7 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-08-23 — Attachments are de-inlined: `@file`/`![alt]` kept as path text
+## 2. 2026-08-23 — Attachments are de-inlined: `@file`/`![alt]` kept as path text
 
 | Field | Value |
 |-------|-------|
@@ -89,7 +337,7 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-08-23 — `read_image` tool: model-driven image reads, tool-result images fold into a user message
+## 2. 2026-08-23 — `read_image` tool: model-driven image reads, tool-result images fold into a user message
 
 | Field | Value |
 |-------|-------|
@@ -104,7 +352,7 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-08-23 — Tool-card step indices resolve to the plan position (bugfix, task #43 review)
+## 2. 2026-08-23 — Tool-card step indices resolve to the plan position (bugfix, task #43 review)
 
 | Field | Value |
 |-------|-------|
@@ -159,7 +407,7 @@ position for the `tool_id`, even when the agent's raw `idx` differs
 
 ---
 
-## 1. 2026-08-23 — TUI render layer extracted into `agent_tui_kit` (reusable, Tact-free)
+## 2. 2026-08-23 — TUI render layer extracted into `agent_tui_kit` (reusable, Tact-free)
 
 | Field | Value |
 |-------|-------|
@@ -205,7 +453,7 @@ still TODO.
 
 ---
 
-## 1. 2026-08-23 — TUI `App` switches to the kit's `ComponentRegistry` (whole-App refactor, task #42)
+## 2. 2026-08-23 — TUI `App` switches to the kit's `ComponentRegistry` (whole-App refactor, task #42)
 
 | Field | Value |
 |-------|-------|
@@ -255,7 +503,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-17 — Responses model switches adapt web-search query fields
+## 2. 2026-08-17 — Responses model switches adapt web-search query fields
 
 | Field | Value |
 |-------|-------|
@@ -272,7 +520,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-17 — Pending prompt `[Cancel]` sits beside the hint text
+## 2. 2026-08-17 — Pending prompt `[Cancel]` sits beside the hint text
 
 | Field | Value |
 |-------|-------|
@@ -289,7 +537,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Log rows carry explicit provenance instead of inferring system items from text
+## 2. 2026-08-16 — Log rows carry explicit provenance instead of inferring system items from text
 
 | Field | Value |
 |-------|-------|
@@ -306,7 +554,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Nested Markdown list items no longer join the parent row
+## 2. 2026-08-16 — Nested Markdown list items no longer join the parent row
 
 | Field | Value |
 |-------|-------|
@@ -323,7 +571,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Tables render a horizontal separator between body rows
+## 2. 2026-08-16 — Tables render a horizontal separator between body rows
 
 | Field | Value |
 |-------|-------|
@@ -340,7 +588,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Over-wide tables stay intact when a compact layout fits (chunk splits are the last resort)
+## 2. 2026-08-16 — Over-wide tables stay intact when a compact layout fits (chunk splits are the last resort)
 
 | Field | Value |
 |-------|-------|
@@ -357,7 +605,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Streamed table rows no longer clip their rightmost pipes after the reply indent
+## 2. 2026-08-16 — Streamed table rows no longer clip their rightmost pipes after the reply indent
 
 | Field | Value |
 |-------|-------|
@@ -374,7 +622,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Table cells containing `|` no longer split into phantom columns
+## 2. 2026-08-16 — Table cells containing `|` no longer split into phantom columns
 
 | Field | Value |
 |-------|-------|
@@ -391,7 +639,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Over-wide tables split into fitting column chunks (no more shredded pipe rows)
+## 2. 2026-08-16 — Over-wide tables split into fitting column chunks (no more shredded pipe rows)
 
 | Field | Value |
 |-------|-------|
@@ -408,7 +656,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — `/stats` responds immediately via a shared stats snapshot (no longer awaits the running task)
+## 2. 2026-08-16 — `/stats` responds immediately via a shared stats snapshot (no longer awaits the running task)
 
 | Field | Value |
 |-------|-------|
@@ -425,7 +673,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Codex-style queued messages while the agent is busy (submit after the current task)
+## 2. 2026-08-16 — Codex-style queued messages while the agent is busy (submit after the current task)
 
 | Field | Value |
 |-------|-------|
@@ -442,7 +690,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Inline code uses accent text instead of a background patch
+## 2. 2026-08-16 — Inline code uses accent text instead of a background patch
 
 | Field | Value |
 |-------|-------|
@@ -459,7 +707,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Prose/list lines with inline code no longer paint a full code-block background
+## 2. 2026-08-16 — Prose/list lines with inline code no longer paint a full code-block background
 
 | Field | Value |
 |-------|-------|
@@ -476,7 +724,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Task-stats line is localized and drops the wide 📊 icon
+## 2. 2026-08-16 — Task-stats line is localized and drops the wide 📊 icon
 
 | Field | Value |
 |-------|-------|
@@ -493,7 +741,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — `install.sh` no longer errors on `tmp: unbound variable` or leaks the clone dir
+## 2. 2026-08-16 — `install.sh` no longer errors on `tmp: unbound variable` or leaks the clone dir
 
 | Field | Value |
 |-------|-------|
@@ -510,7 +758,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — `plugin install` no longer panics and parses the official `url` plugin sources
+## 2. 2026-08-16 — `plugin install` no longer panics and parses the official `url` plugin sources
 
 | Field | Value |
 |-------|-------|
@@ -527,7 +775,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Overlay list popups stay inside the main area
+## 2. 2026-08-16 — Overlay list popups stay inside the main area
 
 | Field | Value |
 |-------|-------|
@@ -544,7 +792,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-16 — Main-area headings no longer paint the highlight band
+## 2. 2026-08-16 — Main-area headings no longer paint the highlight band
 
 | Field | Value |
 |-------|-------|
@@ -561,7 +809,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — `/stats` popup renders through ratatui-markdown directly
+## 2. 2026-08-15 — `/stats` popup renders through ratatui-markdown directly
 
 | Field | Value |
 |-------|-------|
@@ -573,7 +821,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — Auto-compaction no longer enables thinking on the summary call
+## 2. 2026-08-15 — Auto-compaction no longer enables thinking on the summary call
 
 | Field | Value |
 |-------|-------|
@@ -585,7 +833,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — Bottom-bar `out` renamed to `max_out_token` with the real output budget
+## 2. 2026-08-15 — Bottom-bar `out` renamed to `max_out_token` with the real output budget
 
 | Field | Value |
 |-------|-------|
@@ -597,7 +845,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — Model→context-window mapping overrides manual `model_context_window` config
+## 2. 2026-08-15 — Model→context-window mapping overrides manual `model_context_window` config
 
 | Field | Value |
 |-------|-------|
@@ -609,7 +857,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — Markdown body moves to pulldown-cmark; ratatui-markdown kept for Mermaid only
+## 2. 2026-08-15 — Markdown body moves to pulldown-cmark; ratatui-markdown kept for Mermaid only
 
 | Field | Value |
 |-------|-------|
@@ -622,7 +870,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — Main-area Markdown consolidated onto ratatui-markdown
+## 2. 2026-08-15 — Main-area Markdown consolidated onto ratatui-markdown
 
 | Field | Value |
 |-------|-------|
@@ -635,7 +883,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-15 — Thinking, command-output, and read cards drop the redundant line count from their top titles
+## 2. 2026-08-15 — Thinking, command-output, and read cards drop the redundant line count from their top titles
 
 | Field | Value |
 |-------|-------|
@@ -645,7 +893,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Thinking cards read `🧠 Thinking` / `🧠 思考中`; live bash cards read `Live output` / `实时输出`; completed command cards read `Command output`; read cards read `Read <path>`. All line counts live in the card bottom bars. Popup titles unchanged (they already used the command text or bare `Command output`). |
 | Pointers | `crates/tui/src/i18n.rs`, `crates/tui/src/render/cells/thinking.rs`, `crates/tui/src/widgets/tool_widget.rs` (`detail_card_title`), `crates/tui/src/render/cells/tool.rs` (`card_bottom_text`); tests `live_output_total_excludes_command_prefix_but_popup_keeps_it`, `log_tool_card_renders_when_scrolled_into_placeholder_rows`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
 
-## 1. 2026-08-15 — Log word-wrap at word boundaries; selection UX made symmetric
+## 2. 2026-08-15 — Log word-wrap at word boundaries; selection UX made symmetric
 
 | Field | Value |
 |-------|-------|
@@ -655,7 +903,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Words no longer break mid-word (URLs/paths/CJK stay intact until they genuinely exceed the line); selection highlight stays visible across every wrapped line; double-click selects whole 中文 runs; Markdown cards are never silently "selected"; stray clicks clear stale selections instead of keeping them; clicks on indented rows map to the right byte. |
 | Pointers | `crates/tui/src/render/util.rs` (`wrap_break_offsets`, `wrap_line`, `visual_pos_to_byte_offset`, `col_to_byte_offset`), `crates/tui/src/widgets/state/app/visibility.rs` (`find_word_bounds`, `is_markdown_row`, `byte_offset_from_log_position`), `crates/tui/src/handlers/mouse.rs` (click/drag/triple-click guards + outside-click clear), `crates/tui/src/render/cells/text.rs`; tests `wrap_break_offsets_prefers_word_boundaries`, `wrap_line_keeps_word_intact_and_preserves_span_styles`, `wrap_break_offsets_agree_with_byte_offset_hit_testing`, `partial_selection_reverses_target_span_across_wrapped_lines`, `double_click_selects_cjk_run`, `click_below_last_message_clears_selection`, `click_on_markdown_row_does_not_create_invisible_selection`, `drag_into_markdown_row_does_not_extend_selection`, `click_outside_log_clears_selection`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
 
-## 1. 2026-08-15 — Log scroll becomes visual; `/skills` paginated
+## 2. 2026-08-15 — Log scroll becomes visual; `/skills` paginated
 
 | Field | Value |
 |-------|-------|
@@ -665,7 +913,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Any cell taller than the viewport (long tables, expanded tool cards) is fully traversable in both directions with `j`/`k`/wheel; `g`/`G` still jump to top/bottom, and auto-follow-the-stream keeps working (`is_log_pinned_to_bottom` compares visual positions). `/skills` renders 15 skills per page with numbered headings. |
 | Pointers | `crates/tui/src/widgets/state/app/scroll.rs` (step functions + scroll API), `crates/tui/src/widgets/state/log_scroll.rs` (`visual_top`), `crates/tui/src/render/log.rs` (visual clamp + mirror derivation), `crates/tui/src/handlers/{normal,mouse,mod}.rs` (keys, wheel, `/skills` pagination), `crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs` (pin helpers); regression tests `tall_markdown_cell_is_fully_traversable`, `skills_command_paginates_long_lists`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
 
-## 1. 2026-08-15 — Main-area render polish: markdown indent, theme links, code backgrounds, hidden markers
+## 2. 2026-08-15 — Main-area render polish: markdown indent, theme links, code backgrounds, hidden markers
 
 | Field | Value |
 |-------|-------|
@@ -675,7 +923,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Code blocks in streamed replies show their background; H1 keeps its highlight band; quotes render as `▎ text`; headings render without `## `; links adapt per theme; long pastes no longer trigger quadratic row walks; `/skills` and other Markdown notices align with replies. |
 | Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`, `crates/tui/src/render/cells/{text.rs,markdown.rs}`, `crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`; tests `span_backgrounds_survive_rendering`, `heading_keeps_no_background`, `user_line_mask_matches_the_per_row_walk`, `hardcoded_blue_links_remap_to_theme_heading`, `render_markdown_fenced_code_block`, `render_markdown_heading_markers_are_stripped`, `indented_cell_shifts_content_right`; [Ch 23](./23_chapter_tui.md) §render pipeline. |
 
-## 1. 2026-08-14 — Cron scheduling feature removed
+## 2. 2026-08-14 — Cron scheduling feature removed
 
 | Field | Value |
 |-------|-------|
@@ -685,7 +933,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | No `cron_*` tools; the model can no longer create scheduled prompts. Existing `cron_tasks` rows and the legacy `.tact/cron/` files are left untouched on disk (dead data, removable manually). |
 | Pointers | Removed files: `crates/tact/src/cron/*`, `crates/tact/src/store/cron_store/*`, `crates/tact/src/tool/cron.rs`, `book/16_chapter_cron*.md`; edited: `crates/tact/src/lib.rs`, `crates/tact/src/tool/{mod,registry}.rs`, `crates/tact/src/tool/test_support.rs`, `crates/tact/src/store/mod.rs`, `crates/tact-ui/src/{headless,interactive}.rs`, `crates/tact-ui/tests/{subsystem_tools.rs,harness/mod.rs}`, `crates/tui/src/widgets/tool_widget.rs`, `book/01_chapter_store*`; [Ch 1](./01_chapter_store.md), [Ch 7](./07_chapter_tool.md). |
 
-## 1. 2026-08-14 — Background output stored hybrid: full log file + `output_path` on the record
+## 2. 2026-08-14 — Background output stored hybrid: full log file + `output_path` on the record
 
 | Field | Value |
 |-------|-------|
@@ -695,7 +943,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Polled JSON includes `output_path`; the agent can `bash tail <path>` / `grep error <path>` on the full log instead of ingesting a 50k blob. The log file exists from the moment the task starts (record is written with the path before spawn), so a long-running task can be inspected live. |
 | Pointers | `crates/tact/src/background.rs` (`BackgroundTaskRecord.output_path`, `open_log_file`, `log_write`, `run_background_process`), `crates/tact/src/store/background_store/sqlite.rs` (schema + migration + upsert/read), `crates/tact/src/tool/background_run.rs` (listing); tests `run_writes_full_output_to_log_file_and_truncates_db_record`, `migrates_legacy_table_without_output_path`; [Ch 13](./13_chapter_background.md) §2, §3, §6, §8; [Ch 1](./01_chapter_store.md). |
 
-## 1. 2026-08-13 — Plan-mode read-only shell classification hardened against newline command separators
+## 2. 2026-08-13 — Plan-mode read-only shell classification hardened against newline command separators
 
 | Field | Value |
 |-------|-------|
@@ -705,7 +953,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | `ls\nrm file`, `echo hi\nrm -f x`, CRLF variants and leading/trailing bare newlines are all classified **Write** (prompted / denied in plan mode); `echo "line1\nline2"` and `cat "file\nname"` (quoted literal newlines) remain Read. |
 | Pointers | `crates/tact/src/tool/readonly_shell.rs` (`split_plain_command`, `GIT_GLOBAL_OPTIONS`, `find_git_global_option`, `git_has_unsafe_global_option`); regression tests in the same file; [Ch 10](./10_chapter_permission.md) §7. |
 
-## 1. 2026-08-13 — OpenAI-compatible Chat Completions surfaces transport failures as `LlmError::Request`
+## 2. 2026-08-13 — OpenAI-compatible Chat Completions surfaces transport failures as `LlmError::Request`
 
 | Field | Value |
 |-------|-------|
@@ -715,7 +963,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | A dead endpoint / dropped connection surfaces `request error: …` instead of `unsupported: …`; oversized token counts saturate instead of wrapping; malformed tool args are visible in debug logs. |
 | Pointers | `crates/tact_llm/src/error.rs` (`LlmError::Request`), `crates/tact_llm/src/openai/compatible/mod.rs` (`OpenAiAdapter` chat/stream paths, `u32_token_count`, `tool_use_block_from_parts`); [Ch 22](./22_chapter_llm.md). |
 
-## 1. 2026-08-13 — TUI input box soft-wraps long lines and maps the caret through wrapped rows
+## 2. 2026-08-13 — TUI input box soft-wraps long lines and maps the caret through wrapped rows
 
 | Field | Value |
 |-------|-------|
@@ -725,7 +973,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Long input lines wrap inside the box instead of overflowing; height auto-expands with wrapped rows (1–3 display rows + border); caret and scroll follow the wrapped row. Submitted text is unchanged. |
 | Pointers | `crates/tui/src/render/input.rs` (`wrap_line`, `caret_in_wrapped`); `crates/tui/src/lib.rs` (input height); tests in `input.rs` (`wrap_line_splits_at_column_width`, `caret_in_wrapped_maps_logical_column_to_display_row`, `input_box_soft_wraps_overlong_line`, `input_box_scrolls_to_caret_on_wrapped_line`); [Ch 23](./23_chapter_tui.md) §6.2, §6.6. |
 
-## 1. 2026-08-13 — Plan mode runs provably read-only shell commands (`ls`, `grep`, …)
+## 2. 2026-08-13 — Plan mode runs provably read-only shell commands (`ls`, `grep`, …)
 
 | Field | Value |
 |-------|-------|
@@ -735,7 +983,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | In plan mode `ls -la`, `grep -rn x .`, `git status` run without prompting; `cargo test`, pipes, redirections, unknown programs and unsafe options (`find -delete`, `git push`, …) are still denied. `bash` and `background_run` share the same classification, so read-only commands are also auto-allowed in Default mode. |
 | Pointers | `crates/tact/src/tool/readonly_shell.rs`; `crates/tact/src/tool/metadata.rs` (`ShellCommand::resolve`); tests in `crates/tact/src/tool/readonly_shell.rs` and `crates/tact/src/permission/mod.rs` (`plan_mode_allows_readonly_shell_commands_and_denies_others`); [Ch 10](./10_chapter_permission.md) §2, §4, §7. |
 
-## 1. 2026-08-12 — async-openai switched from `vendor/async-openai` to a locally maintained fork at `../async-openai`
+## 2. 2026-08-12 — async-openai switched from `vendor/async-openai` to a locally maintained fork at `../async-openai`
 
 | Field | Value |
 |-------|-------|
@@ -745,7 +993,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | No user-visible change: the wire body still carries `context_management` when a threshold is configured. Maintenance moved out-of-tree: patch the local fork (`/Users/rg/Projects/async-openai`, branch `feat/tact`) instead of re-vendoring. |
 | Pointers | `/Users/rg/Projects/async-openai` (fork, commits `7de8bb4` / `5e22785` / `12488eb` on `feat/tact`); `Cargo.toml` `async-openai-responses` dependency; `crates/tact_llm/src/openai/responses/convert.rs` (`create_response` builder injection); [Ch 22](./22_chapter_llm.md) §6.2. |
 
-## 1. 2026-08-12 — Worktree storage migrated from JSON files to SQLite (`WorktreeStore`)
+## 2. 2026-08-12 — Worktree storage migrated from JSON files to SQLite (`WorktreeStore`)
 
 | Field | Value |
 |-------|-------|
@@ -755,7 +1003,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Lanes and events persist in `tact.db` (old `worktrees/index.json` entries are gone unless exported manually); `worktree_*` surfaces unchanged; `session_id` appears in worktree records. |
 | Pointers | `crates/tact/src/store/worktree_store/{mod,sqlite}.rs`, `crates/tact/src/worktree/mod.rs`, `crates/tact/src/tool/worktree.rs`, `crates/tact-ui/src/{headless,interactive}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 15](./15_chapter_worktree.md) §2–5. |
 
-## 1. 2026-08-12 — Team storage migrated from JSON files to SQLite (`TeamStore`)
+## 2. 2026-08-12 — Team storage migrated from JSON files to SQLite (`TeamStore`)
 
 | Field | Value |
 |-------|-------|
@@ -765,7 +1013,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Roster and inboxes persist in `tact.db` (old `team/` JSON entries are gone unless exported manually); `spawn_teammate` / `broadcast` / `read_inbox` / `plan_approval` / `shutdown_*` surfaces unchanged; cross-process inbox writes no longer race on file appends. |
 | Pointers | `crates/tact/src/store/team_store/{mod,sqlite}.rs`, `crates/tact/src/team.rs`, `crates/tact/src/tool/team.rs`, `crates/tact-ui/src/{headless,interactive}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 14](./14_chapter_team.md) §3–5. |
 
-## 1. 2026-08-12 — Cron & background tasks migrated from JSON files to SQLite (`CronStore` / `BackgroundStore`)
+## 2. 2026-08-12 — Cron & background tasks migrated from JSON files to SQLite (`CronStore` / `BackgroundStore`)
 
 | Field | Value |
 |-------|-------|
@@ -775,7 +1023,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Cron ids restart at `00000001` (legacy entries are gone unless exported manually from `.tact/cron/`); `cron_*` / `background_*` / `/background` surface unchanged; startup orphan repair (`running` → `error`) now sweeps the table; `session_id` appears in cron JSON and background records. |
 | Pointers | `crates/tact/src/store/cron_store/{mod,sqlite}.rs`, `crates/tact/src/store/background_store/{mod,sqlite}.rs`, `crates/tact/src/cron/mod.rs`, `crates/tact/src/background.rs`, `crates/tact/src/tool/{cron,background_run}.rs`, `crates/tact-ui/src/{headless,interactive,driver}.rs`; [Ch 1](./01_chapter_store.md) §5–6, [Ch 13](./13_chapter_background.md) §2–5. (Ch 16 was removed with the cron feature on 2026-08-14.) |
 
-## 1. 2026-08-11 — Tasks migrated from JSON files to SQLite (`TaskStore`)
+## 2. 2026-08-11 — Tasks migrated from JSON files to SQLite (`TaskStore`)
 
 | Field | Value |
 |-------|-------|
@@ -785,7 +1033,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | New task IDs start at 1 (old 1–233 records are gone unless exported manually from `.tact/tasks/`); dependency updates are atomic; `task_*` tools unchanged on the surface (`session_id` appears in task JSON/snapshots). |
 | Pointers | `crates/tact/src/store/task_store/{mod,sqlite}.rs`, `crates/tact/src/task/mod.rs`, `crates/tact/src/tool/task.rs`; [Ch 1](./01_chapter_store.md) §6, [Ch 19](./19_chapter_persistent_tasks.md) §2–3. |
 
-## 1. 2026-08-11 — Summarizer thinking budget clamped below `max_tokens`; Kimi K3 default reasoning reserve
+## 2. 2026-08-11 — Summarizer thinking budget clamped below `max_tokens`; Kimi K3 default reasoning reserve
 
 | Field | Value |
 |-------|-------|
@@ -795,7 +1043,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Anthropic compaction with a large thinking budget sends `budget_tokens = max_tokens - 1` instead of failing with a 400; a budget that already fits passes through unchanged. Kimi K3 with no explicit effort gets the same 75% reasoning reserve as DeepSeek. |
 | Pointers | `compact_summary_thinking` + `compact_summary_reasoning_reserve_percent` in `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`); tests `compact_summary_thinking_clamps_below_max_tokens`, `local_compact_clamps_thinking_budget_below_summary_max_tokens`, `compact_summary_reasoning_reserve_percent_tiers`; [Ch 5](./05_chapter_compact.md) §5 step 3. |
 
-## 1. 2026-08-10 — Vendor async-openai locally as `async-openai-local` for typed `context_management`
+## 2. 2026-08-10 — Vendor async-openai locally as `async-openai-local` for typed `context_management`
 
 | Field | Value |
 |-------|-------|
@@ -805,7 +1053,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | No user-visible change: the wire body still carries `context_management` when a threshold is configured. Maintenance is now local: new Responses fields can be added to the vendor without waiting for the upstream Rust crate. |
 | Pointers | `vendor/async-openai/` (`README.fork.md`, `src/types/responses/response.rs`); `Cargo.toml` `async-openai-responses` dependency; `crates/tact_llm/src/openai/responses/convert.rs` (`create_response` builder injection); [Ch 22](./22_chapter_llm.md) §6.2. |
 
-## 1. 2026-08-10 — Clear error when a Responses endpoint does not implement `/responses/compact`
+## 2. 2026-08-10 — Clear error when a Responses endpoint does not implement `/responses/compact`
 
 | Field | Value |
 |-------|-------|
@@ -815,7 +1063,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | On an endpoint without `/responses/compact`, triggering compaction immediately shows the clear message naming the missing endpoint and base URL (no HTML dump, no retries); the session state is left untouched. |
 | Pointers | `compact()` in `crates/tact_llm/src/openai/responses/mod.rs`; test `compact_reports_missing_endpoint_clearly`; [Ch 22](./22_chapter_llm.md) §6.2, [Ch 5](./05_chapter_compact.md). |
 
-## 1. 2026-08-10 — Responses adapter recovers when a compatible stream ends without a terminal event
+## 2. 2026-08-10 — Responses adapter recovers when a compatible stream ends without a terminal event
 
 | Field | Value |
 |-------|-------|
@@ -825,7 +1073,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Turns that previously died with "stream ended without a terminal event" now complete from the done sequence / streamed text when the response was fully delivered; genuinely empty or compaction-incomplete streams still fail loudly. |
 | Pointers | `finish()` in `crates/tact_llm/src/openai/responses/stream.rs`; tests `no_terminal_event_recovers_from_complete_done_sequence`, `no_terminal_event_recovers_visible_text`, `no_terminal_event_empty_stream_is_error`, `no_terminal_event_with_pending_compaction_is_error`; [Ch 22](./22_chapter_llm.md) §6.2. |
 
-## 1. 2026-08-10 — Local compaction reserves output for reasoning / thinking tokens
+## 2. 2026-08-10 — Local compaction reserves output for reasoning / thinking tokens
 
 | Field | Value |
 |-------|-------|
@@ -835,7 +1083,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Compaction summaries with reasoning effort configured (or on DeepSeek) get a larger wire `max_tokens` (e.g. high effort on a 128k window → 2,000 + 1,500 = 3,500) while the text portion still receives its full classic budget; the summarizer request carries the same thinking config as main-loop turns; the input reservation accounts for both reasoning and thinking headroom, and bails with the existing "too small" error when the window cannot fit the prompt after those reservations. |
 | Pointers | `compact_summary_reasoning_reserve_percent` + budget math in `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`); tests `compact_summary_reasoning_reserve_percent_tiers`, `local_compact_reserves_reasoning_budget_and_forwards_thinking`, `local_compact_input_reservation_subtracts_thinking_budget`; [Ch 5](./05_chapter_compact.md) §5 step 3. |
 
-## 1. 2026-08-10 — `background_run` streams live output to the tool card (bash-like)
+## 2. 2026-08-10 — `background_run` streams live output to the tool card (bash-like)
 
 | Field | Value |
 |-------|-------|
@@ -845,7 +1093,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | `background_run cargo build` shows a spinner + live build output in the TUI card, then finalizes with ✓/✗ and duration when the process exits — even if the agent turn already ended. The model still has no completion push and must poll `check_background`. |
 | Pointers | `crates/tact/src/background.rs` (`BackgroundProgressSink`, `run_background_process`); `crates/tact/src/tool/background_run.rs`; `LiveOutputPolicy::Background` in `crates/tact/src/tool/metadata.rs`; `AgentUpdate::BackgroundTaskFinished` in `crates/protocol/src/agent.rs`; TUI `on_step_finished` / `on_background_task_finished` in `crates/tui/src/widgets/state/app/agent.rs`; [Ch 13](./13_chapter_background.md), [Ch 25](./25_chapter_protocol.md). |
 
-## 1. 2026-08-10 — `/background` slash command for background job status
+## 2. 2026-08-10 — `/background` slash command for background job status
 
 | Field | Value |
 |-------|-------|
@@ -855,7 +1103,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | `/background` prints one line per task (id, status, command); `/background <id>` prints the task's pretty JSON; an unknown id shows an error. No new state, no completion push — the command only reads the persisted/in-memory records. |
 | Pointers | `UserCommand::QueryBackground` in `crates/protocol/src/agent.rs`; driver match arm in `crates/tact-ui/src/driver.rs`; `PALETTE_COMMANDS` in `crates/tui/src/widgets/state/mod.rs`; `execute_palette_command` in `crates/tui/src/handlers/mod.rs`; [Ch 13](./13_chapter_background.md), [Ch 23](./23_chapter_tui.md) §3. |
 
-## 1. 2026-08-09 — Hosted web search for OpenAI Responses (`protocol = "responses"`)
+## 2. 2026-08-09 — Hosted web search for OpenAI Responses (`protocol = "responses"`)
 
 | Field | Value |
 |-------|-------|
@@ -866,7 +1114,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Any `protocol = "responses"` session — OpenAI, DeepSeek, or custom OpenAI-compatible — automatically gets hosted web search; the TUI shows a `🔍 Web Search` card with the query as title and sources as expandable detail; failures carry status/query/action diagnostics. |
 | Pointers | `crates/tact_llm/src/openai/responses/{convert,stream,wire,mod}.rs`, `crates/tact_llm/src/provider.rs` (`build_openai_responses`), `crates/tui/src/widgets/tool_widget.rs`, AGENTS.md "Hosted tools (Provider-executed) — design invariants", [Ch 22 §6.2.1.1](./22_chapter_llm.md). |
 
-## 1. 2026-08-09 — Task-stats `[copy]` copies the last turn
+## 2. 2026-08-09 — Task-stats `[copy]` copies the last turn
 
 | Field | Value |
 |-------|-------|
@@ -876,7 +1124,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Click `[copy]` on a stats line → clipboard gets that turn's user/assistant content; earlier turns are excluded. |
 | Pointers | `add_task_stats_block` / `copy_turn_ending_at_stats` in `messages.rs`; mouse hit in `handlers/mouse.rs`; regression `copy_turn_ending_at_stats_copies_last_turn_only`. |
 
-## 1. 2026-08-09 — Mermaid diagram copy popup (double-click → source)
+## 2. 2026-08-09 — Mermaid diagram copy popup (double-click → source)
 
 | Field | Value |
 |-------|-------|
@@ -886,7 +1134,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Double-click any diagram row → source popup (`y` / `j/k` / `Esc`); failed Mermaid still uses the code-card path. |
 | Pointers | Spec `docs/superpowers/specs/2026-08-09-mermaid-diagram-copy-popup-design.md`; `finish_stream_code_block`; `popups/mermaid_popup.rs`; regressions `log_renders_streamed_mermaid_without_code_card`, `mermaid_popup_copy_uses_source_not_ascii`. |
 
-## 1. 2026-08-09 — Mermaid sequence self-messages draw a U-shaped loop
+## 2. 2026-08-09 — Mermaid sequence self-messages draw a U-shaped loop
 
 | Field | Value |
 |-------|-------|
@@ -896,7 +1144,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Self calls read as a clear U-turn on the lifeline; last-column self-messages loop left so the shape stays inside the diagram. |
 | Pointers | `crates/tui/src/render/mermaid_sequence.rs` (`self_loop_rows`); regressions `self_message_draws_u_shaped_loop`, `self_message_on_last_participant_loops_left`. |
 
-## 1. 2026-08-09 — Mermaid sequence labels no longer drop characters or shift columns
+## 2. 2026-08-09 — Mermaid sequence labels no longer drop characters or shift columns
 
 | Field | Value |
 |-------|-------|
@@ -906,7 +1154,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Long ASCII and CJK arrow labels keep every character (split around `│` when needed) and every diagram row shares the same display width, so lifelines stay vertically aligned. |
 | Pointers | `crates/tui/src/render/mermaid_sequence.rs` (`label_row`); regressions `cjk_label_keeps_same_display_width_as_lifeline_row`, `long_ascii_label_is_not_eaten_by_lifelines`, `self_message_keeps_lifeline_intact`. |
 
-## 1. 2026-08-08 — TUI renders Mermaid sequence diagrams with its own renderer
+## 2. 2026-08-08 — TUI renders Mermaid sequence diagrams with its own renderer
 
 | Field | Value |
 |-------|-------|
@@ -916,7 +1164,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | Only declared participants render as columns; `A->>+B` targets participant `B`; CJK labels stay centered between lifelines and never overwrite a `│`. Unparseable sources still fall back to ordinary code rendering. |
 | Pointers | `crates/tui/src/render/mermaid_sequence.rs`; routing: `crates/tui/src/render/render_md.rs` (`render_mermaid_block`); regression tests in `mermaid_sequence.rs`. |
 
-## 1. 2026-08-08 — Subagent model picker uses its own provider
+## 2. 2026-08-08 — Subagent model picker uses its own provider
 
 | Field | Value |
 |-------|-------|
@@ -926,7 +1174,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | The subagent picker shows configured and API-discovered models belonging to the subagent provider. The main `/model` picker keeps using the main provider. |
 | Pointers | `crates/tact_llm/src/models.rs`, `crates/tui/src/handlers/select.rs`; regression test `explicit_provider_model_query_uses_subagent_credentials`; design: `docs/superpowers/specs/2026-08-08-subagent-model-picker-provider-design.md`; plan: `docs/superpowers/plans/2026-08-08-subagent-model-picker-provider.md`. |
 
-## 1. 2026-08-08 — DeepSeek and Kimi Responses remain configuration-gated
+## 2. 2026-08-08 — DeepSeek and Kimi Responses remain configuration-gated
 
 | Field | Value |
 |-------|-------|
@@ -937,7 +1185,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Pointers | `crates/tact/src/config/resolve.rs`; provider construction: `crates/tact_llm/src/provider.rs`; related design: `docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`; compaction behavior: Ch 5. |
 
 
-## 1. 2026-08-08 — OpenAI Responses preserves unknown wire items
+## 2. 2026-08-08 — OpenAI Responses preserves unknown wire items
 
 | Field | Value |
 |-------|-------|
@@ -948,7 +1196,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Pointers | `crates/tact_llm/src/openai/responses/wire.rs`, `request_options.rs`, `stream.rs`, `provider.rs`; design: `docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`; plan: `docs/superpowers/plans/2026-08-08-responses-compatibility-foundation.md`; compaction: Ch 5 and `docs/compaction.md`. |
 
 
-## 1. 2026-08-08 — Main-area Markdown renders complete Mermaid fences as terminal diagrams
+## 2. 2026-08-08 — Main-area Markdown renders complete Mermaid fences as terminal diagrams
 
 | Field | Value |
 |-------|-------|
@@ -962,7 +1210,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 ---
 
 
-## 1. 2026-08-06 — OpenAI Responses exposes detailed reasoning summaries
+## 2. 2026-08-06 — OpenAI Responses exposes detailed reasoning summaries
 
 | Field | Value |
 |-------|-------|
@@ -995,7 +1243,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Recovery retry messages include the underlying error
+## 2. 2026-08-06 — Recovery retry messages include the underlying error
 
 | Field | Value |
 |-------|-------|
@@ -1008,7 +1256,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Unknown provider names allowed as custom OpenAI-compatible providers
+## 2. 2026-08-06 — Unknown provider names allowed as custom OpenAI-compatible providers
 
 | Field | Value |
 |-------|-------|
@@ -1021,7 +1269,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Account poller reports each outage once instead of every backoff tick
+## 2. 2026-08-06 — Account poller reports each outage once instead of every backoff tick
 
 | Field | Value |
 |-------|-------|
@@ -1034,7 +1282,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Kimi Code usage quota query restricted to the official `https://api.kimi.com/coding` endpoint
+## 2. 2026-08-06 — Kimi Code usage quota query restricted to the official `https://api.kimi.com/coding` endpoint
 
 | Field | Value |
 |-------|-------|
@@ -1047,7 +1295,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — DeepSeek balance query restricted to the official `https://api.deepseek.com` endpoint
+## 2. 2026-08-06 — DeepSeek balance query restricted to the official `https://api.deepseek.com` endpoint
 
 | Field | Value |
 |-------|-------|
@@ -1060,7 +1308,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — `/tasks-dag` popup does not show tasks added while it is open
+## 2. 2026-08-06 — `/tasks-dag` popup does not show tasks added while it is open
 
 | Field | Value |
 |-------|-------|
@@ -1073,7 +1321,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — `/tasks-dag` renders missing dependency edges (asymmetric task store)
+## 2. 2026-08-06 — `/tasks-dag` renders missing dependency edges (asymmetric task store)
 
 | Field | Value |
 |-------|-------|
@@ -1086,7 +1334,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Task completion shows a stats block (elapsed · model · tokens)
+## 2. 2026-08-06 — Task completion shows a stats block (elapsed · model · tokens)
 
 | Field | Value |
 |-------|-------|
@@ -1099,7 +1347,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — `/tasks-dag` renders Mermaid via ratatui-markdown (replaces meraid)
+## 2. 2026-08-06 — `/tasks-dag` renders Mermaid via ratatui-markdown (replaces meraid)
 
 | Field | Value |
 |-------|-------|
@@ -1112,7 +1360,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Compaction summary continues after MaxTokens truncation
+## 2. 2026-08-06 — Compaction summary continues after MaxTokens truncation
 
 | Field | Value |
 |-------|-------|
@@ -1125,7 +1373,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — First run auto-writes default config to ~/.tact/config.toml
+## 2. 2026-08-06 — First run auto-writes default config to ~/.tact/config.toml
 
 | Field | Value |
 |-------|-------|
@@ -1138,7 +1386,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-06 — Session stats track RTK output-filter metrics
+## 2. 2026-08-06 — Session stats track RTK output-filter metrics
 
 | Field | Value |
 |-------|-------|
@@ -1151,7 +1399,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-05 — Unify tool-family card labels (background + team)
+## 2. 2026-08-05 — Unify tool-family card labels (background + team)
 
 | Field | Value |
 |-------|-------|
@@ -1164,7 +1412,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-05 — `/model` 按 provider 分流 budget/effort + model→档位映射 + effort/model per-agent
+## 2. 2026-08-05 — `/model` 按 provider 分流 budget/effort + model→档位映射 + effort/model per-agent
 
 | Field | Value |
 |-------|-------|
@@ -1177,7 +1425,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 2. 2026-08-04 — `tact upgrade` self-upgrade command
+## 3. 2026-08-04 — `tact upgrade` self-upgrade command
 
 | Field | Value |
 |-------|-------|
@@ -1190,7 +1438,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-04 — Google voice transcription honors standard proxy environment variables
+## 2. 2026-08-04 — Google voice transcription honors standard proxy environment variables
 
 | Field | Value |
 |-------|-------|
@@ -1203,7 +1451,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-02 — Pre-push hook no longer leaks `GIT_DIR`/`GIT_WORK_TREE` into `cargo test`
+## 2. 2026-08-02 — Pre-push hook no longer leaks `GIT_DIR`/`GIT_WORK_TREE` into `cargo test`
 
 | Field | Value |
 |-------|-------|
@@ -1216,7 +1464,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-02 — Google Cloud API-key voice transcription provider
+## 2. 2026-08-02 — Google Cloud API-key voice transcription provider
 
 | Field | Value |
 |-------|-------|
@@ -1229,7 +1477,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-02 — Compaction handoff is now a typed message cell
+## 2. 2026-08-02 — Compaction handoff is now a typed message cell
 
 | Field | Value |
 |-------|-------|
@@ -1240,7 +1488,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | `build_compacted_history` / `compacted_context` emit a framed, kind-marked cell: `<context-handoff>\nThis conversation was compacted…\n\n{summary}\n</context-handoff>`. `collect_user_messages` skips it by type; reloaded sessions are re-detected by content. Wire format is unchanged for Normal messages; Anthropic never sees `kind`. |
 | Pointers | `crates/tact_llm/src/content.rs` (`MessageKind`, `Message::with_kind/is_summary`); `crates/tact/src/compact/mod.rs` (`summary_message`, `is_summary_message`, `build_compacted_history`, `compacted_context`); `crates/tact/src/store/session_store/sqlite.rs` (`load_session`); `book/05_chapter_compact.md` |
 
-## 1. 2026-08-02 — DeepSeek can now use the OpenAI Responses protocol
+## 2. 2026-08-02 — DeepSeek can now use the OpenAI Responses protocol
 
 | Field | Value |
 |-------|-------|
@@ -1251,7 +1499,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | A DeepSeek entry may set `protocol = "responses"`; requests go to `{base_url}/responses` with automatic compaction and reasoning semantics. Explicit `POST /responses/compact` is not implemented by the DeepSeek endpoint (live-verified 2026-08-02), so DeepSeek + Responses compacts through the local summary pipeline and clears the stale baseline; OpenAI Responses keeps the strict no-fallback contract. The default remains `chat_completions`. |
 | Pointers | `crates/tact/src/config/resolve.rs` (`resolve_llm` validation); `crates/tact_llm/src/provider.rs` (`build_client`); `docs/superpowers/specs/2026-08-02-deepseek-responses-design.md`; `docs/superpowers/plans/2026-08-02-deepseek-responses.md`; Ch 21 (config), Ch 5 (compaction) |
 
-## 1. 2026-08-01 — Responses compact threshold now reaches ordinary `/responses` requests (native `context_management`)
+## 2. 2026-08-01 — Responses compact threshold now reaches ordinary `/responses` requests (native `context_management`)
 
 | Field | Value |
 |-------|-------|
@@ -1264,7 +1512,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-08-01 — Empty fenced block after markdown list no longer hijacks the tail line into a code card
+## 2. 2026-08-01 — Empty fenced block after markdown list no longer hijacks the tail line into a code card
 
 | Field | Value |
 |-------|-------|
@@ -1275,7 +1523,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Behavior after | A markdown list followed by an empty fence snippet no longer turns the remaining tail line into a `Click for full code` card. Real language-tagged streamed code blocks still render as code cards. |
 | Pointers | `crates/tui/src/widgets/state/app/agent.rs` (stream fence promotion guard); `crates/tui/src/render/render_gap_tests.rs` (`log_markdown_list_then_empty_fence_stays_in_markdown_flow`); `crates/tui/src/render/render_md.rs` (`render_markdown_list_then_fenced_code_then_list_tail`); Ch 23, Ch 24 |
 
-## 1. 2026-07-28 — Theme detection fallback wrong theme (Ink vs Retro)
+## 2. 2026-07-28 — Theme detection fallback wrong theme (Ink vs Retro)
 
 | Field | Value |
 |-------|-------|
@@ -1288,7 +1536,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Log left-border scrollbar residue
+## 2. 2026-07-28 — Log left-border scrollbar residue
 
 | Field | Value |
 |-------|-------|
@@ -1301,7 +1549,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Distinct tool-card labels for CRUD-style tool families
+## 2. 2026-07-28 — Distinct tool-card labels for CRUD-style tool families
 
 | Field | Value |
 |-------|-------|
@@ -1314,7 +1562,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Bash tool card label restored (`$ Bash`)
+## 2. 2026-07-28 — Bash tool card label restored (`$ Bash`)
 
 | Field | Value |
 |-------|-------|
@@ -1327,7 +1575,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Voice keybind ate all keyboard input
+## 2. 2026-07-28 — Voice keybind ate all keyboard input
 
 | Field | Value |
 |-------|-------|
@@ -1340,7 +1588,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Input title-bar border restored; voice button centered
+## 2. 2026-07-28 — Input title-bar border restored; voice button centered
 
 | Field | Value |
 |-------|-------|
@@ -1353,7 +1601,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Configurable voice recording keybind
+## 2. 2026-07-28 — Configurable voice recording keybind
 
 | Field | Value |
 |-------|-------|
@@ -1365,7 +1613,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Permission: shell Write risk, settings allow for High, headless ask defaults
+## 2. 2026-07-28 — Permission: shell Write risk, settings allow for High, headless ask defaults
 
 | Field | Value |
 |-------|-------|
@@ -1382,7 +1630,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — `/model` thinking budget not synced to status bar
+## 2. 2026-07-28 — `/model` thinking budget not synced to status bar
 
 | Field | Value |
 |-------|-------|
@@ -1399,7 +1647,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Clickable voice-to-text input (title bar)
+## 2. 2026-07-28 — Clickable voice-to-text input (title bar)
 
 | Field | Value |
 |-------|-------|
@@ -1416,7 +1664,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-28 — Subagent metadata rendered in tool-card header
+## 2. 2026-07-28 — Subagent metadata rendered in tool-card header
 
 | Field | Value |
 |-------|-------|
@@ -1433,7 +1681,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-27 — Permission settings persistence (JSON-based dynamic rules)
+## 2. 2026-07-27 — Permission settings persistence (JSON-based dynamic rules)
 
 | Field | Value |
 |-------|-------|
@@ -1448,7 +1696,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 **Pointers:** `crates/tact/src/permission/settings.rs`, `crates/tact/src/permission/mod.rs`, `crates/tact/src/consts.rs`, `crates/tact/src/agent/tool_dispatch.rs`, `crates/tact/src/tool/subagent.rs`, `crates/tact-ui/src/interactive.rs`, `crates/tact-ui/src/headless.rs`; `docs/superpowers/specs/2026-07-27-permission-settings-design.md`; `docs/superpowers/plans/2026-07-27-permission-settings.md`; `docs/state_machines.md §5`; `config.example.toml`; Ch 7, Ch 21.
 
-## 1. 2026-07-27 — Log scroll restores the theme background
+## 2. 2026-07-27 — Log scroll restores the theme background
 
 | Field | Value |
 |-------|-------|
@@ -1465,7 +1713,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-27 — Subagent popup shows its model
+## 2. 2026-07-27 — Subagent popup shows its model
 
 | Field | Value |
 |-------|-------|
@@ -1482,7 +1730,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-27 — Ink themes + unified popup chrome
+## 2. 2026-07-27 — Ink themes + unified popup chrome
 
 | Field | Value |
 |-------|-------|
@@ -1499,7 +1747,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-26 — Subagent tool renamed `task` → `spawn_subagent`
+## 2. 2026-07-26 — Subagent tool renamed `task` → `spawn_subagent`
 
 | Field | Value |
 |-------|-------|
@@ -1516,7 +1764,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-26 — `TasksChanged` no longer appends a Log card
+## 2. 2026-07-26 — `TasksChanged` no longer appends a Log card
 
 | Field | Value |
 |-------|-------|
@@ -1533,7 +1781,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-26 — Sticky host separates tabs from body
+## 2. 2026-07-26 — Sticky host separates tabs from body
 
 | Field | Value |
 |-------|-------|
@@ -1550,7 +1798,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-26 — Bash non-zero exit is Failed
+## 2. 2026-07-26 — Bash non-zero exit is Failed
 
 | Field | Value |
 |-------|-------|
@@ -1567,7 +1815,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — Subagent sticky tab (clean main Log)
+## 2. 2026-07-25 — Subagent sticky tab (clean main Log)
 
 | Field | Value |
 |-------|-------|
@@ -1584,7 +1832,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — Subagent sessions linked via `ref_id`
+## 2. 2026-07-25 — Subagent sessions linked via `ref_id`
 
 | Field | Value |
 |-------|-------|
@@ -1601,7 +1849,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — Ctx meter visible at low usage
+## 2. 2026-07-25 — Ctx meter visible at low usage
 
 | Field | Value |
 |-------|-------|
@@ -1618,7 +1866,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — Task tool titles, short Log cards, sticky tree, `/tasks-dag`
+## 2. 2026-07-25 — Task tool titles, short Log cards, sticky tree, `/tasks-dag`
 
 | Field | Value |
 |-------|-------|
@@ -1635,7 +1883,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — Task checklist renders fully (no `… +N`)
+## 2. 2026-07-25 — Task checklist renders fully (no `… +N`)
 
 | Field | Value |
 |-------|-------|
@@ -1652,7 +1900,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-25 — Serialize persistent `task_*` tools in one turn
+## 2. 2026-07-25 — Serialize persistent `task_*` tools in one turn
 
 | Field | Value |
 |-------|-------|
@@ -1669,7 +1917,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-24 — Persistent task progress sticky + Log card
+## 2. 2026-07-24 — Persistent task progress sticky + Log card
 
 | Field | Value |
 |-------|-------|
@@ -1690,7 +1938,7 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 
 ---
 
-## 1. 2026-07-24 — Remove redundant `[Log]` from bottom bar
+## 2. 2026-07-24 — Remove redundant `[Log]` from bottom bar
 
 | Field | Value |
 |-------|-------|
@@ -1712,7 +1960,7 @@ path (then uptime, branch, optional account).
 | Code | `crates/tui/src/render/bar.rs` |
 
 ---
-## 2. 2026-07-24 — Slash popup Esc hint + priority over overlay
+## 3. 2026-07-24 — Slash popup Esc hint + priority over overlay
 
 | Field | Value |
 |-------|-------|
@@ -1735,7 +1983,7 @@ without clearing typed input; overlay Esc only after slash is closed.
 | Code | `crates/tui/src/render/popups/slash_command.rs`, `crates/tui/src/lib.rs` |
 
 ---
-## 3. 2026-07-24 — Idle bottom-bar `Up` ticks without CPU spin
+## 4. 2026-07-24 — Idle bottom-bar `Up` ticks without CPU spin
 
 | Field | Value |
 |-------|-------|
@@ -1757,7 +2005,7 @@ redraw loop.
 | Code | `crates/tui/src/lib.rs` (`on_poll_timeout`) |
 
 ---
-## 4. 2026-07-24 — Prompt elapsed moves to task-end separator
+## 5. 2026-07-24 — Prompt elapsed moves to task-end separator
 
 | Field | Value |
 |-------|-------|
@@ -1780,7 +2028,7 @@ trailing separator; bottom row 1 no longer shows `Elapsed`.
 
 ---
 
-## 5. 2026-07-24 — Bottom bar readability restore
+## 6. 2026-07-24 — Bottom bar readability restore
 
 | Field | Value |
 |-------|-------|
@@ -1807,7 +2055,7 @@ token/cache numbers. Narrow drop order: cache → uptime → path → ∑ → ct
 
 ---
 
-## 6. 2026-07-24 — Slash popup: Tab completes, Enter runs skills
+## 7. 2026-07-24 — Slash popup: Tab completes, Enter runs skills
 
 | Field | Value |
 |-------|-------|
@@ -1830,7 +2078,7 @@ now.
 
 ---
 
-## 7. 2026-07-24 — TUI left Execution Plan panel removed
+## 8. 2026-07-24 — TUI left Execution Plan panel removed
 
 | Field | Value |
 |-------|-------|
@@ -1864,7 +2112,7 @@ bookkeeping but never draws a dedicated panel.
 
 ---
 
-## 8. 2026-07-24 — Project config file renamed `tact.toml` → `config.toml`
+## 9. 2026-07-24 — Project config file renamed `tact.toml` → `config.toml`
 
 | Field | Value |
 |-------|-------|
@@ -1885,7 +2133,7 @@ bookkeeping but never draws a dedicated panel.
 
 ---
 
-## 9. 2026-07-24 — Session Stats GFM cells padded for plain-text alignment
+## 10. 2026-07-24 — Session Stats GFM cells padded for plain-text alignment
 
 | Field | Value |
 |-------|-------|
@@ -1907,7 +2155,7 @@ monospace; `/stats` popup still renders via tui-markdown box tables.
 
 ---
 
-## 10. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
+## 11. 2026-07-24 — Extra `skill_dirs` + project-local `.tact/skills`
 
 | Field | Value |
 |-------|-------|
@@ -1931,7 +2179,7 @@ same-named standalone skills. Bare `<workdir>/skills/` is no longer scanned.
 
 ---
 
-## 11. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
+## 12. 2026-07-24 — `/skills` list via tui-markdown (no pipe table)
 
 | Field | Value |
 |-------|-------|
@@ -1954,7 +2202,7 @@ text wraps cleanly at any panel width. Namespace names (`plugin:skill`) unchange
 
 ---
 
-## 12. 2026-07-24 — Session Stats as GFM tables via tui-markdown
+## 13. 2026-07-24 — Session Stats as GFM tables via tui-markdown
 
 | Field | Value |
 |-------|-------|
@@ -1979,7 +2227,7 @@ summaries are GFM markdown. Counters and visibility rules unchanged.
 
 ---
 
-## 13. 2026-07-24 — Session Stats rendered with comfy-table
+## 14. 2026-07-24 — Session Stats rendered with comfy-table
 
 | Field | Value |
 |-------|-------|
@@ -2005,7 +2253,7 @@ tables instead of free-form lines.
 
 ---
 
-## 14. 2026-07-24 — `/model` supplements config from `/v1/models`
+## 15. 2026-07-24 — `/model` supplements config from `/v1/models`
 
 | Field | Value |
 |-------|-------|
@@ -2027,7 +2275,7 @@ Ch 21, Ch 22 (account-style queries).
 
 ---
 
-## 15. 2026-07-24 — `read_file` pagination and `batch_read` removal
+## 16. 2026-07-24 — `read_file` pagination and `batch_read` removal
 
 | Field | Value |
 |-------|-------|
@@ -2092,7 +2340,7 @@ Token estimate: existing `approx_token_count` (`ceil(UTF-8 bytes / 4)`).
 
 ---
 
-## 16. 2026-07-24 — Bottom bar visual polish
+## 17. 2026-07-24 — Bottom bar visual polish
 
 | Field | Value |
 |-------|-------|

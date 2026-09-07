@@ -1,5 +1,7 @@
 use ratatui::layout::Rect;
 
+use crate::state::StickyTab;
+
 /// Source byte range represented by one popup screen cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PopupTextHit {
@@ -121,6 +123,13 @@ pub struct MouseState {
     pub task_panel_area: Rect,
     /// Whether the cursor is hovering over the task panel (used for keyboard scrolling).
     pub in_task_panel: bool,
+    /// Which sticky domain (Tasks / Subagent) is currently active when the
+    /// shared host strip is visible. Drives which body renders when expanded
+    /// and which panel's `scroll` the wheel / jk keys move.
+    pub active_sticky_tab: StickyTab,
+    /// Hit rectangles for each visible sticky tab label, refreshed every
+    /// frame by the host renderer (mirrors `subagent_cancel_btn_areas`).
+    pub sticky_tab_areas: Vec<(StickyTab, Rect)>,
     pub log_selection: Option<LogSelection>,
     pub dragging_log: bool,
     /// thinking popup area (used to determine if click is inside the popup).
@@ -129,6 +138,16 @@ pub struct MouseState {
     pub diff_popup_area: Rect,
     /// subagent popup area (used to determine if click is inside the popup).
     pub subagent_popup_area: Rect,
+    /// slash-command popup area (used to route mouse-wheel scrolls to the
+    /// popup's selection list instead of the log behind it).
+    pub slash_popup_area: Rect,
+    /// selection popup area (used to route mouse-wheel scrolls to the popup's
+    /// option list instead of the log behind it).
+    pub select_popup_area: Rect,
+    /// Cancel buttons for live async-subagent tool cards: `(child_id, rect)`.
+    /// Refreshed every frame by the log renderer; a click sends
+    /// `UserCommand::CancelSubagent { child_id }`.
+    pub subagent_cancel_btn_areas: Vec<(String, Rect)>,
     /// Selectable body area inside the active text popup border.
     pub popup_text_body_area: Rect,
     /// Hit maps for rows currently visible in the active text popup body.

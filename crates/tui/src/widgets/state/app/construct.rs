@@ -1,7 +1,10 @@
 // impl App — core application logic
 // Extracted from state.rs to keep file sizes manageable.
 
-use std::path::PathBuf;
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+};
 
 use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
@@ -17,8 +20,8 @@ use crate::{
     },
 };
 use agent_tui_kit::components::{
-    ComponentRegistry, PlanComponent, StatusBarComponent, StreamComponent, TaskPanelComponent,
-    ThinkingComponent, ToolComponent,
+    ComponentRegistry, PlanComponent, StatusBarComponent, StreamComponent, SubagentPanelComponent,
+    TaskPanelComponent, ThinkingComponent, ToolComponent,
 };
 use agent_tui_kit::i18n::Messages;
 
@@ -78,6 +81,7 @@ impl App {
         registry.push(ToolComponent::new(theme, Messages::by_language(language)));
         registry.push(StatusBarComponent::new(git_branch));
         registry.push(TaskPanelComponent::new());
+        registry.push(SubagentPanelComponent::new());
         Self {
             input: String::new(),
             input_cursor: 0,
@@ -118,6 +122,7 @@ impl App {
             workspace_dir,
             select: SelectPopup::default(),
             select_kind: SelectKind::Agent,
+            pending_agent_selects: VecDeque::new(),
             file_picker: FilePicker::new(),
             slash_command: SlashCommandState::default(),
             registry,
@@ -126,7 +131,8 @@ impl App {
             mermaid_blocks: Vec::new(),
             mermaid_popup: None,
             task_dag_popup: None,
-            subagent_popup: None,
+            subagent_popups: HashMap::new(),
+            active_subagent_popup: None,
             system_prompt_popup: None,
             voice: VoiceState::disabled(),
             voice_parsed_keybind: None,
