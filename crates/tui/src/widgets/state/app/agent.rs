@@ -353,10 +353,12 @@ impl App {
             // TokenUsage / ModelInfo → StatusBarComponent (dispatch).
             // ToolMeta → ToolComponent (dispatch).
             // StreamChunk → StreamComponent parse + apply_stream_events.
+            // SubagentsChanged → SubagentPanelComponent (registry dispatch).
             AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::StreamChunk(_) => {}
+            | AgentUpdate::StreamChunk(_)
+            | AgentUpdate::SubagentsChanged { .. } => {}
         }
     }
 

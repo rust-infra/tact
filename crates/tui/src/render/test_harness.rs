@@ -153,12 +153,19 @@ pub fn render_log_panel_text(app: &mut App, width: u16, height: u16) -> String {
 
 /// Draw only the main content area (plan/log + overlay popups).
 pub fn render_main_area_text(app: &mut App, width: u16, height: u16) -> String {
+    let terminal = render_main_area_terminal(app, width, height);
+    buffer_text(terminal.backend().buffer())
+}
+
+/// Draw only the main content area into a `TestBackend` for buffer-level
+/// assertions (styles/backgrounds), not just flattened text.
+pub fn render_main_area_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
         .draw(|frame| render_main_area(frame, frame.area(), app))
         .expect("draw");
-    buffer_text(terminal.backend().buffer())
+    terminal
 }
 
 /// Draw the full UI into a `TestBackend` and return the rendered buffer text.

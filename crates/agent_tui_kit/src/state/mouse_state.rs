@@ -1,5 +1,7 @@
 use ratatui::layout::Rect;
 
+use crate::state::StickyTab;
+
 /// Source byte range represented by one popup screen cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PopupTextHit {
@@ -121,6 +123,13 @@ pub struct MouseState {
     pub task_panel_area: Rect,
     /// Whether the cursor is hovering over the task panel (used for keyboard scrolling).
     pub in_task_panel: bool,
+    /// Which sticky domain (Tasks / Subagent) is currently active when the
+    /// shared host strip is visible. Drives which body renders when expanded
+    /// and which panel's `scroll` the wheel / jk keys move.
+    pub active_sticky_tab: StickyTab,
+    /// Hit rectangles for each visible sticky tab label, refreshed every
+    /// frame by the host renderer (mirrors `subagent_cancel_btn_areas`).
+    pub sticky_tab_areas: Vec<(StickyTab, Rect)>,
     pub log_selection: Option<LogSelection>,
     pub dragging_log: bool,
     /// thinking popup area (used to determine if click is inside the popup).

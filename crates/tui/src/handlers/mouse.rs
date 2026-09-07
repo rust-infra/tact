@@ -94,9 +94,7 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_up();
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
-        if app.task_panel_mut().scroll > 0 {
-            app.task_panel_mut().scroll -= 1;
-        }
+        scroll_active_sticky(app, -1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
         app.scroll_log_up(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
@@ -109,7 +107,7 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
         app.overlay_popup_scroll_down();
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
-        app.task_panel_mut().scroll = app.task_panel_mut().scroll.saturating_add(1);
+        scroll_active_sticky(app, 1);
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
         app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
@@ -117,7 +115,34 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
 }
 
 fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app) && app.task_panel().expanded
+    crate::render::task_panel::sticky_host_visible(app)
+        && crate::render::task_panel::sticky_tab_expanded(
+            app,
+            crate::render::task_panel::active_sticky_tab(app),
+        )
+}
+
+/// Scroll the active sticky domain by `delta` rows (clamped to >= 0).
+fn scroll_active_sticky(app: &mut App, delta: isize) {
+    let tab = crate::render::task_panel::active_sticky_tab(app);
+    match tab {
+        agent_tui_kit::state::StickyTab::Tasks => {
+            let scroll = app.task_panel_mut();
+            if delta < 0 {
+                scroll.scroll = scroll.scroll.saturating_sub(delta.unsigned_abs());
+            } else {
+                scroll.scroll = scroll.scroll.saturating_add(delta as usize);
+            }
+        }
+        agent_tui_kit::state::StickyTab::Subagent => {
+            let scroll = app.subagent_panel_mut();
+            if delta < 0 {
+                scroll.scroll = scroll.scroll.saturating_sub(delta.unsigned_abs());
+            } else {
+                scroll.scroll = scroll.scroll.saturating_add(delta as usize);
+            }
+        }
+    }
 }
 
 fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
@@ -154,9 +179,39 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         app.mouse.dragging_log = false;
     }
     if hit.in_task_panel && crate::render::task_panel::sticky_host_visible(app) {
-        app.task_panel_mut().expanded = !app.task_panel_mut().expanded;
-        app.mouse.in_task_panel = app.task_panel_mut().expanded;
-        app.dirty = true;
+        use agent_tui_kit::state::StickyTab;
+        let active = crate::render::task_panel::active_sticky_tab(app);
+        let clicked = app
+            .mouse
+            .sticky_tab_areas
+            .iter()
+            .find(|(_, rect)| point_in_rect(mouse.column, mouse.row, *rect))
+            .map(|(tab, _)| *tab);
+        match clicked {
+            // A visible tab that is not the active domain: switch to it and
+            // expand it (the host now shows that domain's body).
+            Some(tab) if tab != active => {
+                app.mouse.active_sticky_tab = tab;
+                app.mouse.in_task_panel = true;
+                match tab {
+                    StickyTab::Tasks => app.task_panel_mut().expanded = true,
+                    StickyTab::Subagent => app.subagent_panel_mut().expanded = true,
+                }
+                app.dirty = true;
+            }
+            // Clicking the active tab (or anywhere else in the strip) toggles
+            // the active domain's expansion.
+            _ => {
+                let expanded =
+                    crate::render::task_panel::sticky_tab_expanded(app, active);
+                match active {
+                    StickyTab::Tasks => app.task_panel_mut().expanded = !expanded,
+                    StickyTab::Subagent => app.subagent_panel_mut().expanded = !expanded,
+                }
+                app.mouse.in_task_panel = !expanded;
+                app.dirty = true;
+            }
+        }
         return;
     }
     if hit.in_log {
@@ -555,6 +610,58 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(20, 10));
         assert!(!app.task_panel_mut().expanded);
         assert!(!app.task_panel_mut().expanded);
+    }
+
+    #[test]
+    fn click_subagent_tab_switches_domain_and_scrolls_active_panel() {
+        use agent_tui_kit::state::StickyTab;
+        use tact_protocol::{SubagentRunSnapshot, SubagentStatusSnapshot};
+
+        let mut app = make_app();
+        // Two visible domains: Tasks (active by default, collapsed) and
+        // Subagent (running, expanded false).
+        app.task_panel_mut().visible = true;
+        app.task_panel_mut().expanded = false;
+        app.subagent_panel_mut().visible = true;
+        app.subagent_panel_mut().expanded = false;
+        app.subagent_panel_mut().snapshot = vec![SubagentRunSnapshot {
+            child_id: "child-abc".into(),
+            status: SubagentStatusSnapshot::Running,
+            summary_first: "working".into(),
+            started_at: None,
+            finished_at: None,
+        }];
+        app.mouse.task_panel_area = Rect::new(0, 10, 60, 1);
+        // Renderer populates these each frame; the test stands in for it.
+        app.mouse.sticky_tab_areas = vec![
+            (StickyTab::Tasks, Rect::new(0, 10, 7, 1)),
+            (StickyTab::Subagent, Rect::new(10, 10, 10, 1)),
+        ];
+
+        // Click the Subagent tab: it becomes the active domain and expands.
+        handle_mouse_event(&mut app, mouse_down(11, 10));
+        assert_eq!(app.mouse.active_sticky_tab, StickyTab::Subagent);
+        assert!(app.subagent_panel_mut().expanded);
+        assert!(
+            crate::render::task_panel::sticky_tab_expanded(
+                &app,
+                crate::render::task_panel::active_sticky_tab(&app)
+            ),
+            "active domain must be expanded after tab click"
+        );
+
+        // A wheel scroll now moves the subagent panel, not the tasks panel.
+        app.task_panel_mut().scroll = 0;
+        app.subagent_panel_mut().scroll = 0;
+        handle_mouse_event(
+            &mut app,
+            mouse_event(crossterm::event::MouseEventKind::ScrollDown, 20, 10),
+        );
+        assert_eq!(
+            app.subagent_panel_mut().scroll, 1,
+            "subagent panel scroll should advance"
+        );
+        assert_eq!(app.task_panel_mut().scroll, 0, "tasks scroll untouched");
     }
 
     #[test]

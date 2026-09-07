@@ -16,7 +16,7 @@
 //! is the live fast path for same-process re-injection.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{
         Arc,
@@ -91,6 +91,11 @@ pub struct SubagentManager {
     /// Registered by `spawn_subagent` so a `cancel_subagent` tool / slash
     /// command / TUI button can flip the child's cooperative cancel flag.
     cancel_handles: std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Child ids started by **this process** (registered by `spawn_subagent`
+    /// right after the run row is recorded). This is the sticky-overview
+    /// source: `subagent_runs` itself accumulates across sessions and picks up
+    /// orphan-repair history, so the UI must scope snapshots to the live set.
+    known: std::sync::Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for SubagentManager {
@@ -124,6 +129,7 @@ impl SubagentManager {
         Ok(Self {
             records,
             cancel_handles: std::sync::Mutex::new(HashMap::new()),
+            known: std::sync::Mutex::new(HashSet::new()),
         })
     }
 
@@ -314,6 +320,102 @@ impl SubagentManager {
             .collect::<Vec<_>>()
             .join("\n"))
     }
+
+    /// Registers a child as started by the current process. Called by
+    /// `spawn_subagent` right after the run row is recorded, so the sticky
+    /// overview (`ui_snapshot`) only reflects this process's live children —
+    /// not historical `subagent_runs` rows or orphan-repair noise.
+    pub fn note_started(&self, child_id: &str) {
+        self.known
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child_id.to_string());
+    }
+
+    /// Builds the UI snapshot for the sticky overview: all children started
+    /// by this process. Running children come first (each preserved), then
+    /// terminal runs by newest start time, capped at
+    /// [`MAX_SUBAGENT_SNAPSHOT`]. A `known` id whose row has disappeared
+    /// (record deleted out-of-band) is skipped.
+    pub async fn ui_snapshot(&self) -> Vec<tact_protocol::SubagentRunSnapshot> {
+        let known: Vec<String> = self
+            .known
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+
+        let mut runs: Vec<tact_protocol::SubagentRunSnapshot> = Vec::new();
+        for child_id in known {
+            let Ok(Some(record)) = self.records.get(&child_id).await else {
+                continue;
+            };
+            let summary_first = record
+                .summary
+                .as_deref()
+                .unwrap_or("(no summary)")
+                .lines()
+                .next()
+                .unwrap_or("(no summary)")
+                .to_string();
+            runs.push(tact_protocol::SubagentRunSnapshot {
+                child_id: record.child_id.clone(),
+                status: match record.status {
+                    SubagentStatus::Running => tact_protocol::SubagentStatusSnapshot::Running,
+                    SubagentStatus::Completed => tact_protocol::SubagentStatusSnapshot::Completed,
+                    SubagentStatus::Failed => tact_protocol::SubagentStatusSnapshot::Failed,
+                    SubagentStatus::Cancelled => tact_protocol::SubagentStatusSnapshot::Cancelled,
+                },
+                summary_first,
+                started_at: Some(record.started_at.timestamp_millis()),
+                finished_at: record.finished_at.map(|dt| dt.timestamp_millis()),
+            });
+        }
+
+        // Running first (kept in start order), then terminal runs newest-first.
+        runs.sort_by_key(|r| {
+            (
+                !matches!(r.status, tact_protocol::SubagentStatusSnapshot::Running),
+                std::cmp::Reverse(r.started_at.unwrap_or(0)),
+            )
+        });
+
+        let running: Vec<_> = runs
+            .iter()
+            .filter(|r| matches!(r.status, tact_protocol::SubagentStatusSnapshot::Running))
+            .cloned()
+            .collect();
+        let terminal: Vec<_> = runs
+            .iter()
+            .filter(|r| !matches!(r.status, tact_protocol::SubagentStatusSnapshot::Running))
+            .cloned()
+            .collect();
+        let room = MAX_SUBAGENT_SNAPSHOT.saturating_sub(running.len());
+        running
+            .into_iter()
+            .chain(terminal.into_iter().take(room))
+            .collect()
+    }
+}
+
+/// Cap on [`SubagentManager::ui_snapshot`] output: running children are all
+/// preserved; terminal runs are truncated to this many so a long-lived session
+/// does not flood the sticky strip.
+pub const MAX_SUBAGENT_SNAPSHOT: usize = 20;
+
+/// Notify the TUI that the current-process subagent set changed (no-op without
+/// `ui_tx`). Emitted after the run row is durable so the TUI never sees a
+/// snapshot that disagrees with the store.
+pub async fn emit_subagents_changed(
+    ui_tx: &Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
+    manager: &SharedSubagentManager,
+) {
+    let Some(tx) = ui_tx else {
+        return;
+    };
+    let runs = manager.ui_snapshot().await;
+    let _ = tx.send(tact_protocol::AgentUpdate::SubagentsChanged { runs });
 }
 
 impl SharedSubagentManager {
@@ -337,6 +439,14 @@ impl SharedSubagentManager {
 
     pub fn register_cancel_handle(&self, child_id: &str, flag: Arc<AtomicBool>) {
         self.inner.register_cancel_handle(child_id, flag);
+    }
+
+    pub fn note_started(&self, child_id: &str) {
+        self.inner.note_started(child_id);
+    }
+
+    pub async fn ui_snapshot(&self) -> Vec<tact_protocol::SubagentRunSnapshot> {
+        self.inner.ui_snapshot().await
     }
 
     pub fn unregister_cancel_handle(&self, child_id: &str) {
@@ -558,5 +668,122 @@ mod tests {
         manager.unregister_cancel_handle("child-1");
         manager.unregister_cancel_handle("child-2");
         assert_eq!(manager.cancel_all(), 0);
+    }
+
+    #[tokio::test]
+    async fn ui_snapshot_only_includes_children_started_this_process() {
+        let db = temp_db("ui_snapshot_known");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+
+        // A historical / orphan row that exists in the DB but was never
+        // started by this process must NOT appear in the UI snapshot.
+        {
+            let store = SqliteSubagentStore::new(&db).await.unwrap();
+            store
+                .upsert(&SubagentRun {
+                    child_id: "old-row".to_string(),
+                    status: SubagentStatus::Running,
+                    summary: None,
+                    started_at: Utc::now(),
+                    finished_at: None,
+                })
+                .await
+                .unwrap();
+        }
+        assert!(
+            manager.ui_snapshot().await.is_empty(),
+            "orphan rows must stay out of the sticky snapshot"
+        );
+
+        manager.start("child-1".to_string()).await.unwrap();
+        manager.note_started("child-1");
+        let runs = manager.ui_snapshot().await;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].child_id, "child-1");
+        assert!(matches!(
+            runs[0].status,
+            tact_protocol::SubagentStatusSnapshot::Running
+        ));
+    }
+
+    #[tokio::test]
+    async fn ui_snapshot_orders_running_before_terminal_runs() {
+        let db = temp_db("ui_snapshot_order");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+
+        manager.start("done-1".to_string()).await.unwrap();
+        manager.note_started("done-1");
+        manager
+            .finish("done-1", true, "finished first".to_string())
+            .await
+            .unwrap();
+
+        manager.start("running-1".to_string()).await.unwrap();
+        manager.note_started("running-1");
+
+        // Distinct start milliseconds make the newest-first assertion stable.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        manager.start("done-2".to_string()).await.unwrap();
+        manager.note_started("done-2");
+        manager
+            .finish("done-2", true, "finished second".to_string())
+            .await
+            .unwrap();
+
+        let runs = manager.ui_snapshot().await;
+        let statuses: Vec<_> = runs
+            .iter()
+            .map(|r| r.status)
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                tact_protocol::SubagentStatusSnapshot::Running,
+                tact_protocol::SubagentStatusSnapshot::Completed,
+                tact_protocol::SubagentStatusSnapshot::Completed,
+            ],
+            "running must lead, terminal runs newest-first: {statuses:?}"
+        );
+        // Terminal runs are newest-first: done-2 (started later) before done-1.
+        assert_eq!(runs[1].child_id, "done-2");
+        assert_eq!(runs[2].child_id, "done-1");
+        assert_eq!(runs[0].summary_first, "(no summary)");
+        assert_eq!(runs[1].summary_first, "finished second");
+    }
+
+    #[tokio::test]
+    async fn ui_snapshot_caps_terminal_runs_but_keeps_all_running() {
+        let db = temp_db("ui_snapshot_cap");
+        let manager = SharedSubagentManager::new(SubagentManager::new(&db).await.unwrap());
+
+        // Exceed MAX with terminal runs.
+        for i in 0..(MAX_SUBAGENT_SNAPSHOT + 2) {
+            let id = format!("done-{i:02}");
+            manager.start(id.clone()).await.unwrap();
+            manager.note_started(&id);
+            manager.finish(&id, true, format!("run {i}")).await.unwrap();
+        }
+        // Add running children: all must be preserved even past the cap.
+        manager.start("running-1".to_string()).await.unwrap();
+        manager.note_started("running-1");
+        manager.start("running-2".to_string()).await.unwrap();
+        manager.note_started("running-2");
+
+        let runs = manager.ui_snapshot().await;
+        let running: Vec<_> = runs
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.status,
+                    tact_protocol::SubagentStatusSnapshot::Running
+                )
+            })
+            .collect();
+        assert_eq!(running.len(), 2, "all running children must be preserved");
+        assert_eq!(
+            runs.len(),
+            MAX_SUBAGENT_SNAPSHOT,
+            "snapshot output must respect the cap"
+        );
     }
 }

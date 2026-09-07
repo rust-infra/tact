@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-07 — Subagent sticky tab：Log 下方子代理总览条
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/protocol/src/agent.rs`（`SubagentRunSnapshot`、`SubagentStatusSnapshot`、`AgentUpdate::SubagentsChanged`）、`crates/tact/src/subagent.rs`（`SubagentManager.known`、`note_started`、`ui_snapshot`、`MAX_SUBAGENT_SNAPSHOT`、`emit_subagents_changed`）、`crates/tact/src/tool/subagent.rs` + `crates/tact-ui/src/driver.rs`（发射点）、`crates/agent_tui_kit/src/{state,components,render}/subagent_panel.rs`、`crates/agent_tui_kit/src/render/sticky_host.rs`（双域 host）、`crates/tui/src/render/task_panel.rs` + `handlers/{mouse,normal}.rs`；设计 `docs/superpowers/specs/2026-09-07-subagent-sticky-tab-design.md`、计划 `docs/superpowers/plans/2026-09-07-subagent-sticky-tab.md`；Ch 12、23 |
+
+**症状 / 动机:** 后台 `run_in_background` 子代理 fan-out 缺少常驻状态总览：每个子代理的流式内容渲染在自己的父 `spawn_subagent` 工具卡里，Log 只显示已返回调用的那张卡，于是「哪些子代理还在跑 / 刚完成 / 各自说了什么」散落在多张工具卡与 `check_subagent` 中。2026-07-26 的移除提交（`98a133f`）删掉了旧 Subagent sticky pane，留下一个**状态级**表面的缺口；本次在当前组件化架构上重新实现，**不**恢复旧的 `AgentUpdate::Subagent` 包裹、也不把明细流路由进 sticky。
+
+**决策:** 镜像 Tasks 模式，新增 `AgentUpdate::SubagentsChanged { runs }` 全量快照事件。`SubagentManager` 维护一个**进程内** `known` 集合（只记录本进程 spawn 过的 child，而非会跨会话累积并混入 orphan-repair 噪音的整张 `subagent_runs` 表），并在 spawn start / sync+async finish / `cancel_subagent` 工具 / driver `CancelSubagent` 之后发射。TUI 新增 `SubagentPanelComponent`/`SubagentPanelState`（kit），Log 下方 sticky 升级为双域 host `[Tasks] [Subagent]`；每个域独立维护 visible/expanded/scroll。Subagent body 分组 Running → Completed → Failed → Cancelled，行格式 `{marker} {短id} {摘要首行} ⏱ {耗时}`；数量封顶（`MAX_SUBAGENT_SNAPSHOT = 20` 总数，Running 全保留）。明细仍留在工具卡 / SubagentPopup。
+
+**改后行为:** 当前进程内任何子代理启动/结束时都会刷新 sticky（无可见域则整条隐藏；首次出现默认展开；收起且无 Running 后折叠为一行并最终隐藏）。点击可见的非活动 tab 会切换活动域并展开；滚轮/`jk` 滚动活动域。子代理永不进入主 Log（一行 = 工具卡），也绝不混入 Tasks。
+
+---
+
 ## 1. 2026-09-06 — 子代理技能卡：经 `skill` 注入隔离角色
 
 | Field | Value |

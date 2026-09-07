@@ -42,7 +42,7 @@ sequenceDiagram
 
 **分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands、task DAG）。
 
-**组件注册表（whole-App 切换，2026-08-23）：** kit 的六个组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
+**组件注册表（whole-App 切换，2026-08-23）：** kit 的组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` / `subagent_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）、`SubagentsChanged`（subagent panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
 
 ---
 
@@ -218,7 +218,8 @@ flowchart TB
 | `agent_tui_kit::render/input.rs` | 多行输入框、pending block、palette 命令行（纯） |
 | `agent_tui_kit::render/log.rs` | Log 面板纯渲染（消费 wrap cache、scroll、overlays、scrollbar） |
 | `agent_tui_kit::render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
-| `agent_tui_kit::render/task_panel.rs` | Log 下方持久任务 sticky 条（收起 / 展开） |
+| `agent_tui_kit::render/task_panel.rs` | 持久任务 sticky body 格式化 + 单域渲染辅助 |
+| `agent_tui_kit::render/sticky_host.rs` | Log 下方双域 sticky host（`[Tasks] [Subagent]` tab；纯渲染并返回 tab 命中区） |
 | `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s（`pulldown-cmark` + Mermaid 路由 + 宽度感知表格） |
 | `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` 事件循环 → ratatui `Line`s |
 | `agent_tui_kit::render/mermaid_sequence.rs` | 本地 Mermaid `sequenceDiagram` 渲染器（alias/activation/CJK 安全） |
@@ -228,7 +229,7 @@ flowchart TB
 | `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select + chrome helpers |
 | `agent_tui_kit::widgets/` | `ToolWidget`、`HelpWidget`、`PopupWidget`、`SelectPopupWidget` |
 
-支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
+支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
 
 ### 6.2 帧管线
 
@@ -238,13 +239,23 @@ flowchart TB
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
 │    ├─ log panel (可滚动)
-│    └─ sticky tasks?（隐藏时 0 行；点击展开）
+│    └─ sticky host (Tasks | Subagent)?（隐藏时 0 行；点击展开）
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
-当 `task_panel.visible` **或** Subagent pane 有内容时，`render_main_area` 对外层主区做 **outer-split**（上 Log、下统一 sticky），不改动 Log wrap/scroll 内核。sticky 主机显示 tab **Tasks | Subagent**：持久任务清单 vs 嵌套 `spawn_subagent` 迷你 Log。子 agent 流式/步骤不进主 Log。本 UI 会话第一次 `spawn_subagent` 自动切到 Subagent tab；之后仅角标。Tasks 可见性仍要求本会话出现过 `TasksChanged` 且有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、[第 25 章](./25_chapter_protocol_zh.md)）。
+当 **Tasks** 面板（`task_panel.visible`，由 `TasksChanged` 驱动）或 **Subagent**
+总览（`subagent_panel.visible`，由 `SubagentsChanged` 驱动）有内容时，`render_main_area`
+对外层主区做 **outer-split**（上 Log、下双域 sticky host），不改动 Log wrap/scroll 内核。
+host 标题行对每个可见域渲染一个 `[Tasks] …` / `[Subagent] …` 分段；活动域展开时在分隔线下方
+显示该域 body。Tasks body 是持久任务清单；Subagent body 是**当前进程子代理运行的状态总览**，
+按 Running → Completed → Failed → Cancelled 分组（`marker 短id 摘要首行 ⏱ 耗时`）。子代理
+明细永不进入 sticky 或主 Log——仍留在父 `spawn_subagent` 工具卡与其 popup。点击非活动 tab 会
+切换并展开该域；点击活动 tab（或条内空白）收起；滚轮 / `jk` 滚动活动域。某域不可见即从 host
+消失：Tasks 在无 open 任务时，Subagent 在收起且无 Running 时。Tasks 可见性仍要求本会话出现过
+`TasksChanged` 且有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、
+[第 25 章](./25_chapter_protocol_zh.md)）。
 
 `lib.rs` 中垂直约束：
 

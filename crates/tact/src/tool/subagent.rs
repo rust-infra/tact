@@ -529,6 +529,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // `resume` this resets the prior terminal record to Running for the
     // follow-up run.
     ctx.subagent_manager.start(child_id.clone()).await?;
+    // The sticky overview only shows children started by this process;
+    // register now and broadcast the snapshot (no-op without ui_tx).
+    ctx.subagent_manager.note_started(&child_id);
+    crate::subagent::emit_subagents_changed(&ctx.ui_tx, &ctx.subagent_manager).await;
 
     // True background dispatch needs a UI channel: without a driver there is
     // no one to submit a wake-up turn, and headless exits by cancelling the
@@ -582,6 +586,9 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             } else {
                 manager.finish(&child_id, success, summary.clone()).await
             };
+            // Broadcast the sticky snapshot after the row is durable, before
+            // the parent tool card is finalized.
+            crate::subagent::emit_subagents_changed(&ui_tx, &manager).await;
             // Keep the handle registered until the terminal state is durable;
             // shutdown can otherwise miss this child in the small window
             // between unregistering and persisting completion.
@@ -629,6 +636,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
                 .finish(&child_id, success, summary.clone())
                 .await
         };
+        crate::subagent::emit_subagents_changed(&ctx.ui_tx, &ctx.subagent_manager).await;
         if let Some(lock) = lock {
             lock.release().await?;
         }
@@ -743,6 +751,7 @@ pub async fn cancel_subagent(ctx: ToolContext, input: CancelSubagentInput) -> Re
         // Best-effort: mark the run record Cancelled now; the child's finish
         // path keeps it Cancelled when the flag is set.
         let _ = ctx.subagent_manager.cancel(&input.child_id).await;
+        crate::subagent::emit_subagents_changed(&ctx.ui_tx, &ctx.subagent_manager).await;
         Ok(format!("cancel requested for subagent {}", input.child_id))
     } else {
         bail!(

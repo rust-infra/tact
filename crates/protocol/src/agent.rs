@@ -182,6 +182,45 @@ pub struct TaskSnapshot {
     pub completed_at: Option<i64>,
 }
 
+/// UI-facing subagent run status for the sticky 总览 (mirrors
+/// [`TaskStatusSnapshot`] but keeps terminal states visible: a finished child
+/// still has a summary worth showing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubagentStatusSnapshot {
+    #[default]
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl SubagentStatusSnapshot {
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Running => "▶",
+            Self::Completed => "✓",
+            Self::Failed => "✗",
+            Self::Cancelled => "⏹",
+        }
+    }
+}
+
+/// One subagent run for the sticky total-overview strip. The snapshot is
+/// scoped to runs started by the **current process** (a `SubagentManager`
+/// in-memory known set) — unlike `subagent_runs` rows, which accumulate across
+/// sessions and orphan-repair noise. Live detail still lives on the parent
+/// `spawn_subagent` tool card / popup; this is status-level only.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SubagentRunSnapshot {
+    /// Child session id (the `async_launched { id }` handle).
+    pub child_id: String,
+    pub status: SubagentStatusSnapshot,
+    /// First line of the run summary (single-line safe for the sticky body).
+    pub summary_first: String,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+}
+
 /// Status update messages sent from the Agent to the TUI.
 #[derive(Debug)]
 pub enum AgentUpdate {
@@ -311,6 +350,14 @@ pub enum AgentUpdate {
         success: bool,
         /// One-line summary; the full transcript stays in the popup.
         summary: String,
+    },
+    /// The set of subagent runs started by the current process changed
+    /// (a spawn started / a sync or async child finished / a cancel was
+    /// requested). `runs` is the full visible snapshot for the TUI sticky
+    /// strip (Running first, then newest-finished, capped). The subagent
+    /// analog of [`Self::TasksChanged`]; read-only tools do not emit.
+    SubagentsChanged {
+        runs: Vec<SubagentRunSnapshot>,
     },
 }
 
@@ -509,5 +556,37 @@ mod tests {
         assert_eq!(TaskStatusSnapshot::Pending.marker(), "[ ]");
         assert_eq!(TaskStatusSnapshot::InProgress.marker(), "[>]");
         assert_eq!(TaskStatusSnapshot::Completed.marker(), "[x]");
+    }
+
+    #[test]
+    fn subagents_changed_snapshot_round_trips_fields() {
+        use super::{SubagentRunSnapshot, SubagentStatusSnapshot};
+        let update = AgentUpdate::SubagentsChanged {
+            runs: vec![SubagentRunSnapshot {
+                child_id: "child-abc".into(),
+                status: SubagentStatusSnapshot::Completed,
+                summary_first: "all done".into(),
+                started_at: Some(1),
+                finished_at: Some(2),
+            }],
+        };
+        match update {
+            AgentUpdate::SubagentsChanged { runs } => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].child_id, "child-abc");
+                assert_eq!(runs[0].status, SubagentStatusSnapshot::Completed);
+                assert_eq!(runs[0].summary_first, "all done");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subagent_status_snapshot_markers() {
+        use super::SubagentStatusSnapshot as S;
+        assert_eq!(S::Running.marker(), "▶");
+        assert_eq!(S::Completed.marker(), "✓");
+        assert_eq!(S::Failed.marker(), "✗");
+        assert_eq!(S::Cancelled.marker(), "⏹");
     }
 }

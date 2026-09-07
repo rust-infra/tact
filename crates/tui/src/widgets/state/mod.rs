@@ -21,6 +21,9 @@ mod task_dag;
 pub(crate) mod task_panel {
     pub(crate) use agent_tui_kit::state::task_panel::*;
 }
+pub(crate) mod subagent_panel {
+    pub(crate) use agent_tui_kit::state::subagent_panel::*;
+}
 mod voice;
 
 pub(crate) use agent_tui_kit::state::account::AccountState;

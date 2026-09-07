@@ -106,3 +106,16 @@ pub enum Status {
     Executing { current_step: usize, total: usize },
     Done,
 }
+
+/// Which domain the sticky strip under the Log is showing.
+///
+/// The sticky host has at most two domains: persistent tasks and the
+/// current-process subagent overview. A domain is only drawn when it is
+/// visible; `active` selects which expanded body / scroll the host renders
+/// when more than one is visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StickyTab {
+    #[default]
+    Tasks,
+    Subagent,
+}

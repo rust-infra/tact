@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-07 — Subagent sticky tab: overview strip under the Log
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/protocol/src/agent.rs` (`SubagentRunSnapshot`, `SubagentStatusSnapshot`, `AgentUpdate::SubagentsChanged`), `crates/tact/src/subagent.rs` (`SubagentManager.known`, `note_started`, `ui_snapshot`, `MAX_SUBAGENT_SNAPSHOT`, `emit_subagents_changed`), `crates/tact/src/tool/subagent.rs` + `crates/tact-ui/src/driver.rs` (emit points), `crates/agent_tui_kit/src/{state,components,render}/subagent_panel.rs`, `crates/agent_tui_kit/src/render/sticky_host.rs` (two-domain host), `crates/tui/src/render/task_panel.rs` + `handlers/{mouse,normal}.rs`; design `docs/superpowers/specs/2026-09-07-subagent-sticky-tab-design.md`, plan `docs/superpowers/plans/2026-09-07-subagent-sticky-tab.md`; Ch 12, 23 |
+
+**Symptom / motivation:** Background `run_in_background` subagent fan-out had no persistent status overview: each child's live stream renders in its own parent `spawn_subagent` tool card and the Log only shows the card of the invocation that returned, so "which children are still running / just finished / what did they say" was scattered across tool cards and `check_subagent`. The 2026-07-26 removal (`98a133f`) of the old Subagent sticky pane left a gap for a *status-level* surface; this re-implements it on the current component architecture **without** restoring the old `AgentUpdate::Subagent` wrapper or routing live detail into the sticky.
+
+**Decision:** Mirror the Tasks pattern with a new `AgentUpdate::SubagentsChanged { runs }` full-snapshot event. `SubagentManager` keeps an in-memory `known` set of children started by the current process (not the whole `subagent_runs` table, which accumulates across sessions and orphan-repair noise), and emits after spawn start / sync+async finish / `cancel_subagent` tool / driver `CancelSubagent`. The TUI gains a `SubagentPanelComponent`/`SubagentPanelState` (kit) and a two-domain sticky host under the Log showing `[Tasks] [Subagent]` tab segments; each domain keeps its own visible/expanded/scroll state. The Subagent body groups runs Running → Completed → Failed → Cancelled with `{marker} {short-id} {summary-first-line} ⏱ {duration}`; rows are capped (`MAX_SUBAGENT_SNAPSHOT = 20` total, all Running preserved). Live detail still lives on the tool card / SubagentPopup.
+
+**Behavior after:** Spawning or finishing any subagent in the current process updates the sticky (hidden when no domain is active; first appearance defaults expanded; collapses to one row and hides once collapsed with nothing running). Clicking a visible inactive tab switches the active domain and expands it; wheel/`jk` scroll the active domain. Subagents are never added to the main Log (one row = the tool card) and never duplicate into Tasks.
+
+---
+
 ## 1. 2026-09-06 — Subagent skill cards: isolated role injection via `skill`
 
 | Field | Value |

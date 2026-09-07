@@ -13,6 +13,7 @@ pub mod selection;
 pub mod status_bar_state;
 pub mod stream_parser;
 pub mod stream_state;
+pub mod subagent_panel;
 pub mod task_panel;
 pub mod thinking;
 pub mod tool_state;
@@ -28,6 +29,7 @@ pub use selection::PopupTextSelection;
 pub use status_bar_state::StatusBarState;
 pub use stream_parser::StreamEvent;
 pub use stream_state::StreamState;
+pub use subagent_panel::SubagentPanelState;
 pub use task_panel::TaskPanelState;
 pub use thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState, find_thinking_at_logical,
@@ -35,5 +37,5 @@ pub use thinking::{
 pub use tool_state::{ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock, ToolState};
 pub use ui_types::{
     CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, MermaidBlock, MermaidPopup,
-    SkillEntry, Status, SystemPromptPopup,
+    SkillEntry, Status, StickyTab, SystemPromptPopup,
 };

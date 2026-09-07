@@ -112,6 +112,7 @@ impl App {
             task_history: &self.task_history,
             select: &self.select,
             task_panel: self.task_panel().state(),
+            subagent_panel: self.subagent_panel().state(),
         }
     }
 

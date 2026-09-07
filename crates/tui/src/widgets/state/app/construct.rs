@@ -20,8 +20,8 @@ use crate::{
     },
 };
 use agent_tui_kit::components::{
-    ComponentRegistry, PlanComponent, StatusBarComponent, StreamComponent, TaskPanelComponent,
-    ThinkingComponent, ToolComponent,
+    ComponentRegistry, PlanComponent, StatusBarComponent, StreamComponent, SubagentPanelComponent,
+    TaskPanelComponent, ThinkingComponent, ToolComponent,
 };
 use agent_tui_kit::i18n::Messages;
 
@@ -81,6 +81,7 @@ impl App {
         registry.push(ToolComponent::new(theme, Messages::by_language(language)));
         registry.push(StatusBarComponent::new(git_branch));
         registry.push(TaskPanelComponent::new());
+        registry.push(SubagentPanelComponent::new());
         Self {
             input: String::new(),
             input_cursor: 0,

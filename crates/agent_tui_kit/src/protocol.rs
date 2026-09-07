@@ -6,9 +6,10 @@
 //! protocol additions.
 
 pub use tact_protocol::agent::{
-    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus, TaskSnapshot,
-    TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind,
-    ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
+    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus,
+    SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
+    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
+    ToolPresentationInfo, ToolVisualKind,
 };
 pub use tact_protocol::tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,

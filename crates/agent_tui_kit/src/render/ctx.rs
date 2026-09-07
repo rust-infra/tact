@@ -14,8 +14,8 @@ use crate::{
     state::{
         AccountState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, LogCoordinator,
         LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel, SelectPopup, SkillEntry,
-        Status, StatusBarState, StreamState, SubagentPopup, SystemPromptPopup, TaskPanelState,
-        ThinkingState, ToolState,
+        Status, StatusBarState, StreamState, SubagentPanelState, SubagentPopup, SystemPromptPopup,
+        TaskPanelState, ThinkingState, ToolState,
     },
     theme::Theme,
 };
@@ -79,6 +79,8 @@ pub struct RenderCtx<'a> {
     pub select: &'a SelectPopup,
     /// Persistent tasks sticky strip state.
     pub task_panel: &'a TaskPanelState,
+    /// Subagent overview sticky strip state (current-process runs).
+    pub subagent_panel: &'a SubagentPanelState,
 }
 
 /// A command emitted by render code, executed by the app after the frame.
