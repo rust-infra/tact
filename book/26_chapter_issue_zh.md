@@ -31,6 +31,23 @@
 
 ---
 
+## 1. 2026-09-08 — 移除权限弹窗超时；改为修复「弹窗被错过」的失同步
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tui/src/widgets/state/app/agent.rs`（`restore_pending_select_mode`）、`crates/tact/src/agent/tool_dispatch.rs`（Ask 分支的 `request_select` 等待） |
+
+**症状 / 动机:** 中间的兜底修复（`PERMISSION_PROMPT_TIMEOUT_SECS`，300 s）两处都错了。它只限制了挂起时长，隐藏弹窗的原始失同步仍然存在。而且其副作用过大：任何搁置超过 300 s 的询问都会被静默自动 `deny`，把用户可能只是暂时离开的工具直接拒绝，且无法区分「用户说了不」与「用户不在场」。权限决定必须来自用户本人，绝不该来自时钟。
+
+**根因:** 待处理的 `RequestSelect` 必须保持 `input_mode == Select` 才会渲染弹窗，但 `AgentUpdate::SessionStats`（以及未来任何更新）都会无条件地把 `input_mode` 重置为 `Normal`。当它在权限提示尚未应答时发生，弹窗消失但 `select.request_id` 仍被占用，等待者便永久阻塞（最初的 14 分钟 `save_memory` 挂起）。
+
+**决策:** 两部分修复。(1) 彻底移除超时——Ask 分支重新变为无界的 `request_select().await`，其唯一终止条件是真实用户应答或 UI 关闭（两者都经 `UiResponder`：Esc → `choice: None`，UI 关闭 / channel 死亡 → `Err(Closed)`，均按 Deny）。(2) 消除使弹窗可能被错过的失同步：每次 `handle_agent_update` 之后，若 `select.request_id` 已设置但 `input_mode` 不再是 `Select`，则恢复为 `Select`（`restore_pending_select_mode`）。待处理的请求绝不会被渲染成不可见，用户始终有弹窗可应答，ACK 路径即可生效。
+
+**改后行为:** 权限弹窗不再有任何超时。弹窗会一直显示并等待用户作答（Allow once / Always allow / Deny）或 UI 关闭——绝不会因经过时间而被自动拒绝。造成最初 14 分钟挂起的「弹窗被错过」失同步已被根除。
+
+---
+
 ## 1. 2026-09-08 — 补齐三个 hook 以完成 agentmemory 接入（PostToolUseFailure · Notification · TaskCompleted）
 
 | Field | Value |
@@ -76,18 +93,18 @@
 
 ---
 
-## 1. 2026-09-08 — 权限弹窗加超时，工具不再无限卡在 "Running"
+## 1. 2026-09-08 — 权限弹窗加超时，工具不再无限卡在 "Running"（已被最新条目取代）
 
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact/src/agent/tool_dispatch.rs`（`PERMISSION_PROMPT_TIMEOUT_SECS`、Ask 分支的 `request_select` 等待） |
+| **Related** | `crates/tact/src/agent/tool_dispatch.rs`（Ask 分支的 `request_select` 等待） |
 
-**症状 / 动机:** 一次 `save_memory` 调用在 TUI 中停留为 `Running · 829s`（14 分钟），且没有可见的授权弹窗。`save_memory` 是 `PermissionPolicy::Write`，在 Default 模式下会触发交互式 `PermissionBehavior::Ask`，向 TUI 派发 `RequestSelect` 后**无超时**地等待 `UiResponder` 的 oneshot（`crates/tact/src/agent/tool_dispatch.rs`）。若弹窗被错过、关闭或在 UI 忙时被丢弃，工具 future 会永久阻塞，卡片的实时计时只会一直增加。权限弹窗本身是有意保留的、必须存在——缺的是用户一直不答复时的无界等待。
+**症状 / 动机:** 一次 `save_memory` 调用在 TUI 中停留为 `Running · 829s`（14 分钟），且没有可见的授权弹窗。`save_memory` 是 `PermissionPolicy::Write`，在 Default 模式下会触发交互式 `PermissionBehavior::Ask`，向 TUI 派发 `RequestSelect` 后等待 `UiResponder` 的 oneshot。若弹窗被错过、关闭或在 UI 忙时被丢弃，工具 future 会永久阻塞，卡片的实时计时只会一直增加。权限弹窗本身是有意保留的、必须存在——缺的是用户一直不答复时的无界等待。
 
-**决策:** 用 `PERMISSION_PROMPT_TIMEOUT_SECS`（300 秒；`0` 表示禁用）限制每次交互式权限 `request_select` 的等待。超时——以及用户取消或 UI 关闭——一律按 Deny 处理，因此任何工具都不会无限卡在 `Running`。对于用户实际答复的询问，原有的 Allow/Deny 弹窗行为不变。
+**决策（已被取代）:** 首次尝试用 `PERMISSION_PROMPT_TIMEOUT_SECS`（300 秒）限制每次交互式权限 `request_select` 的等待，超时自动 Deny。**同日已回退**：超时会自动拒绝用户从未应答的询问（把可能只是暂时离开的工具直接拒绝），且掩盖了而非修复了隐藏弹窗的失同步。最终根因修复见最新条目（「移除权限弹窗超时；改为修复『弹窗被错过』的失同步」）。
 
-**改后行为:** 超过 300 秒未获答复的权限弹窗会被自动拒绝并结束该工具（卡片不再永久悬挂）。`save_memory` 在 Default 模式下仍会像以前一样弹窗询问；只是消除了无界等待。
+**改后行为:** 仅中间状态；未在任何发布中包含该超时。Ask 分支的等待重新变为无界（以真实用户应答或 UI 关闭终止），且隐藏弹窗的失同步已在源头修复。
 
 ---
 

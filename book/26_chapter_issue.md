@@ -31,6 +31,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-08 — Remove permission-prompt timeout; fix the "missed popup" desync instead
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tui/src/widgets/state/app/agent.rs` (`restore_pending_select_mode`), `crates/tact/src/agent/tool_dispatch.rs` (Ask-path `request_select` wait) |
+
+**Symptom / motivation:** The intermediate timeout fix (`PERMISSION_PROMPT_TIMEOUT_SECS`, 300 s) was wrong on both counts. It only bounded the hang — the original desync that hid a pending popup remained. And its side effect was too large: any prompt left unattended for 300 s was silently auto-`deny`ed, dropping a tool the user may simply have stepped away from, with no way to distinguish "I said no" from "I wasn't there". A permission decision must come from the user, never from a clock.
+
+**Root cause:** A pending `RequestSelect` must keep `input_mode == Select` for the popup to render, but `AgentUpdate::SessionStats` (and any future update) reset `input_mode = Normal` unconditionally. When that happened while a permission prompt was outstanding, the popup vanished but `select.request_id` stayed set, so the waiter blocked forever (the original 14-minute `save_memory` hang).
+
+**Decision:** Two-part fix. (1) Remove the timeout entirely — the Ask-path wait is again an unbounded `request_select().await`, whose only terminations are a real user answer or a UI close (both already route through `UiResponder`: Esc → `choice: None`, UI close / dead channel → `Err(Closed)`, both deny). (2) Remove the desync that made a popup missable: after every `handle_agent_update`, if `select.request_id` is set but `input_mode` is no longer `Select`, restore `Select` (`restore_pending_select_mode`). A pending request can therefore never be rendered invisible, so the user always has a popup to answer and the ACK paths fire.
+
+**Behavior after:** No timeout exists for permission prompts. A prompt stays on screen and waits until the user answers (Allow once / Always allow / Deny) or the UI closes — never auto-denied by elapsed time. The "missed popup" desync that caused the original 14-minute hang is gone.
+
+---
+
 ## 1. 2026-09-08 — Three more hooks complete agentmemory integration (PostToolUseFailure · Notification · TaskCompleted)
 
 | Field | Value |
@@ -76,18 +93,18 @@ Newest entries first. Each entry should include:
 
 ---
 
-## 1. 2026-09-08 — Permission prompts time out instead of hanging a tool in "Running"
+## 1. 2026-09-08 — Permission prompts time out instead of hanging a tool in "Running" (superseded — see newest entry)
 
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact/src/agent/tool_dispatch.rs` (`PERMISSION_PROMPT_TIMEOUT_SECS`, Ask-path `request_select` wait) |
+| **Related** | `crates/tact/src/agent/tool_dispatch.rs` (Ask-path `request_select` wait) |
 
-**Symptom / motivation:** A `save_memory` call sat in the TUI as `Running · 829s` (14 minutes) with no visible approval popup. `save_memory` is `PermissionPolicy::Write`, so in Default mode it raised an interactive `PermissionBehavior::Ask`, which dispatched `RequestSelect` to the TUI and then awaited the `UiResponder` oneshot **with no timeout** (`crates/tact/src/agent/tool_dispatch.rs`). If the popup was missed, dismissed, or dropped while the UI was busy, the tool future blocked forever and the card's live elapsed counter kept climbing. The permission prompt itself is intentional and must stay — the gap was the unbounded wait when the user never answers.
+**Symptom / motivation:** A `save_memory` call sat in the TUI as `Running · 829s` (14 minutes) with no visible approval popup. `save_memory` is `PermissionPolicy::Write`, so in Default mode it raised an interactive `PermissionBehavior::Ask`, which dispatched `RequestSelect` to the TUI and then awaited the `UiResponder` oneshot. If the popup was missed, dismissed, or dropped while the UI was busy, the tool future blocked forever and the card's live elapsed counter kept climbing.
 
-**Decision:** Bound every interactive permission `request_select` wait with `PERMISSION_PROMPT_TIMEOUT_SECS` (300 s; `0` disables). On timeout — or when the user cancels or the UI closes — the tool is denied, so no tool can hang in `Running` indefinitely. The normal Allow/Deny popup is unchanged for prompts the user actually answers.
+**Decision (superseded):** This first attempt bounded every interactive permission `request_select` wait with `PERMISSION_PROMPT_TIMEOUT_SECS` (300 s), auto-denying on timeout. **Reverted** the same day: the timeout auto-denied prompts the user never answered (dropping tools they may have stepped away from), and it masked — rather than fixed — the desync that hid the popup. See the newest entry ("Remove permission-prompt timeout; fix the 'missed popup' desync instead") for the final root-cause fix.
 
-**Behavior after:** A permission prompt that goes unanswered for 300 s is auto-denied and the tool resolves (the card no longer hangs forever). `save_memory` still prompts in Default mode exactly as before; only the unbounded wait is gone.
+**Behavior after:** Interim state only; no timeout shipped in a release. The Ask-path wait is again unbounded (terminates on a real user answer or a UI close), and the popup-hiding desync is fixed at its source.
 
 ---
 

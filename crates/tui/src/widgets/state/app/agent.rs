@@ -62,6 +62,22 @@ impl App {
         //    (log/status/scroll effects, select popups, plan writes).
         self.shell_handle(update);
         self.refresh_tail_scroll();
+        // 5. Invariant: a pending select request must stay visible. If an
+        //    update reset `input_mode` away from `Select` while a request is
+        //    still outstanding (the "missed popup" hang), restore it so the
+        //    popup keeps rendering and the user can still answer.
+        self.restore_pending_select_mode();
+    }
+
+    /// A select request is "pending" whenever `select.request_id` is set. The
+    /// popup only renders in [`InputMode::Select`], so the two must not be
+    /// allowed to drift apart: a request whose popup stopped rendering can
+    /// never be answered and its waiter hangs forever. Any agent update that
+    /// reset the mode while a request is outstanding is corrected here.
+    fn restore_pending_select_mode(&mut self) {
+        if self.select.request_id.is_some() && !matches!(self.input_mode, InputMode::Select) {
+            self.input_mode = InputMode::Select;
+        }
     }
 
     /// Route an update to the component registry (state-owner components).
@@ -1958,6 +1974,30 @@ mod lifecycle_tests {
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(app.select.prompt.contains("Allow bash"));
         assert_eq!(app.select.request_id, Some(1));
+    }
+
+    #[test]
+    fn pending_select_stays_visible_after_other_updates() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        // A permission prompt is pending.
+        app.handle_agent_update(AgentUpdate::RequestSelect {
+            request_id: 7,
+            prompt: "Allow write?".into(),
+            options: vec!["Allow once".into(), "Deny".into()],
+            log_confirm: false,
+        });
+        assert!(matches!(app.input_mode, InputMode::Select));
+
+        // An unrelated update resets the mode (the historical "missed popup"
+        // hang). The pending request must force the popup back on screen.
+        app.handle_agent_update(AgentUpdate::SessionStats("tokens: 42".into()));
+        assert!(
+            matches!(app.input_mode, InputMode::Select),
+            "a pending select must stay rendered so it can still be answered"
+        );
+        assert_eq!(app.select.request_id, Some(7));
     }
 
     #[test]
