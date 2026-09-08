@@ -212,21 +212,19 @@ async fn run_interactive_locked(
     )
     .await
     {
-        Ok(agent) => {
-            Some(tokio::spawn(run_command_loop_with_account(
-                agent,
-                user_cmd_rx,
-                image_work_dir,
-                Some(account_tx),
-            )))
-        }
+        Ok(agent) => Some(tokio::spawn(run_command_loop_with_account(
+            agent,
+            user_cmd_rx,
+            image_work_dir,
+            Some(account_tx),
+        ))),
         Err(err) => {
             // Deliver the failure into the already-running TUI instead of
             // propagating it past the raw-mode boundary. The TUI shows the
             // error and the user quits normally (restoring the terminal).
-            let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(
-                format!("startup failed: {err:#}"),
-            )));
+            let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                "startup failed: {err:#}"
+            ))));
             None
         }
     };

@@ -333,14 +333,13 @@ impl McpClient {
         // index/recovery "Reconstruction complete") there; forwarding those
         // lines through tracing would still pollute the TUI when verbose logs
         // are enabled.
-        let (transport, stderr) = TokioChildProcess::builder(Command::new(&command).configure(
-            move |cmd| {
+        let (transport, stderr) =
+            TokioChildProcess::builder(Command::new(&command).configure(move |cmd| {
                 cmd.args(&args).envs(&env);
-            },
-        ))
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to spawn MCP server {server_name}"))?;
+            }))
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to spawn MCP server {server_name}"))?;
 
         if let Some(stderr) = stderr {
             tokio::spawn(async move {
