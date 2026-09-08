@@ -182,7 +182,7 @@ fn collect_plugin_mcp_servers(
         for (name, config) in configs {
             match config.to_stdio() {
                 Some(server) => servers.push((prefix(&name), server)),
-                None => tracing::warn!(
+                None => tracing::debug!(
                     "plugin {} MCP server {} uses an unsupported transport (http/url); skipped",
                     root.plugin_id,
                     name
@@ -257,19 +257,16 @@ impl McpService for RealMcpService {
     }
 }
 
-/// Read every line from a captured MCP server stderr and hand it to
-/// `handle`, until the pipe closes (the server has exited). Never panics
-/// and never blocks the MCP transport: it is always driven from a spawned
-/// task so a chatty server cannot stall JSON-RPC on stdout.
-async fn forward_mcp_stderr<R, F>(reader: R, mut handle: F)
+/// Drain every line from a captured MCP server stderr until the pipe closes
+/// (the server has exited). MCP servers commonly write progress and startup
+/// logs to stderr; those bytes must be consumed to avoid backpressure, but
+/// must not be forwarded to the interactive terminal.
+async fn drain_mcp_stderr<R>(reader: R)
 where
     R: AsyncBufRead + Unpin,
-    F: FnMut(&str),
 {
     let mut lines = reader.lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        handle(&line);
-    }
+    while lines.next_line().await.ok().flatten().is_some() {}
 }
 
 pub struct McpClient {
@@ -331,27 +328,23 @@ impl McpClient {
         let command = config.command;
         let args = config.args;
         let env = config.env;
-        // Capture the server's stderr instead of inheriting it to the terminal:
-        // many stdio MCP servers log incidental progress (e.g. index/recovery
-        // "Reconstruction complete") to stderr, which previously leaked straight
-        // onto the screen and mixed with the TUI output. Captured lines are
-        // forwarded through `tracing`, so they still surface under verbose
-        // logging (e.g. tokio-console) but no longer pollute the terminal.
-        let (transport, stderr) = TokioChildProcess::builder(
-            Command::new(&command).configure(move |cmd| {
-                cmd.args(&args).envs(&env).stderr(Stdio::piped());
-            }),
-        )
+        // Capture and drain the server's stderr instead of inheriting it to
+        // the terminal. Many stdio MCP servers log incidental progress (e.g.
+        // index/recovery "Reconstruction complete") there; forwarding those
+        // lines through tracing would still pollute the TUI when verbose logs
+        // are enabled.
+        let (transport, stderr) = TokioChildProcess::builder(Command::new(&command).configure(
+            move |cmd| {
+                cmd.args(&args).envs(&env);
+            },
+        ))
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn MCP server {server_name}"))?;
 
         if let Some(stderr) = stderr {
-            let server = server_name.to_string();
             tokio::spawn(async move {
-                forward_mcp_stderr(BufReader::new(stderr), |line| {
-                    tracing::debug!(mcp_server = %server, stderr = %line);
-                })
-                .await;
+                drain_mcp_stderr(BufReader::new(stderr)).await;
             });
         }
 
@@ -607,14 +600,19 @@ pub async fn load_mcp_router() -> Result<MCPToolRouter> {
     while let Some((server_name, result)) = connections.next().await {
         match result {
             Ok(client) => {
-                println!(
-                    "[MCP connected: {server_name} ({} tools)]",
-                    client.list_tools().len()
+                tracing::debug!(
+                    mcp_server = %server_name,
+                    tools = client.list_tools().len(),
+                    "MCP server connected",
                 );
                 router.register_client(client);
             }
             Err(err) => {
-                println!("[MCP connect failed: {server_name}: {err:#}]");
+                tracing::debug!(
+                    mcp_server = %server_name,
+                    error = %err,
+                    "MCP server connection failed",
+                );
             }
         }
     }
@@ -654,7 +652,7 @@ mod tests {
 
     use super::{
         MCPToolRouter, McpClient, McpProjectConfig, McpServerConfig, McpToolName, MockMcpService,
-        PluginLoader, PluginManifest, RealMcpService, forward_mcp_stderr,
+        PluginLoader, PluginManifest, RealMcpService, drain_mcp_stderr,
         installed_plugin_mcp_servers,
     };
     use crate::{
@@ -663,20 +661,13 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn forward_mcp_stderr_drains_every_line_to_handle() {
+    async fn drain_mcp_stderr_consumes_every_line() {
         use tokio::io::BufReader;
 
-        let mut got = Vec::new();
-        forward_mcp_stderr(
-            BufReader::new(&b"Reconstruction complete 1\nindexing note A\n"[..]),
-            |line| got.push(line.to_string()),
-        )
+        drain_mcp_stderr(BufReader::new(
+            &b"Reconstruction complete 1\nindexing note A\n"[..],
+        ))
         .await;
-
-        assert_eq!(
-            got,
-            vec!["Reconstruction complete 1".to_string(), "indexing note A".to_string()]
-        );
     }
 
     #[test]

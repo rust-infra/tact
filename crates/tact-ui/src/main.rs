@@ -6,13 +6,24 @@ use tact::{
 use tact_ui::{
     run_headless, run_interactive, session_lock::SessionLockRegistry, sessions::print_sessions,
 };
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = init()?;
 
     if tact::config::settings().tokio_console {
-        console_subscriber::init();
+        if args.command.is_none() {
+            // The normal interactive UI owns the terminal. Install only the
+            // tokio-console layer here; console_subscriber::init() also adds
+            // a fmt layer that writes tracing events (including rmcp's MCP
+            // handshake logs) into the TUI when RUST_LOG enables them.
+            tracing_subscriber::registry()
+                .with(console_subscriber::spawn())
+                .init();
+        } else {
+            console_subscriber::init();
+        }
         eprintln!("[tokio-console] listening on http://127.0.0.1:6669");
     }
 

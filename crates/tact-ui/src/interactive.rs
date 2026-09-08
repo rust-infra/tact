@@ -272,8 +272,6 @@ async fn build_agent_for_interactive(
     let mode = permission_mode_from_config();
     let settings = PermissionSettings::load(&tact_path);
     let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
-    eprintln!("[permission: {mode}]");
-
     let task_manager =
         SharedTaskManager::new(TaskManager::new(&tact_path.session_db_path()).await?);
     let background_manager =
