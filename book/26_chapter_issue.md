@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-08 — Permission prompts time out instead of hanging a tool in "Running"
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/tool_dispatch.rs` (`PERMISSION_PROMPT_TIMEOUT_SECS`, Ask-path `request_select` wait) |
+
+**Symptom / motivation:** A `save_memory` call sat in the TUI as `Running · 829s` (14 minutes) with no visible approval popup. `save_memory` is `PermissionPolicy::Write`, so in Default mode it raised an interactive `PermissionBehavior::Ask`, which dispatched `RequestSelect` to the TUI and then awaited the `UiResponder` oneshot **with no timeout** (`crates/tact/src/agent/tool_dispatch.rs`). If the popup was missed, dismissed, or dropped while the UI was busy, the tool future blocked forever and the card's live elapsed counter kept climbing. The permission prompt itself is intentional and must stay — the gap was the unbounded wait when the user never answers.
+
+**Decision:** Bound every interactive permission `request_select` wait with `PERMISSION_PROMPT_TIMEOUT_SECS` (300 s; `0` disables). On timeout — or when the user cancels or the UI closes — the tool is denied, so no tool can hang in `Running` indefinitely. The normal Allow/Deny popup is unchanged for prompts the user actually answers.
+
+**Behavior after:** A permission prompt that goes unanswered for 300 s is auto-denied and the tool resolves (the card no longer hangs forever). `save_memory` still prompts in Default mode exactly as before; only the unbounded wait is gone.
+
+---
+
 ## 1. 2026-09-07 — Plugin hook stdin broken pipe no longer swallows hook stdout
 
 | Field | Value |

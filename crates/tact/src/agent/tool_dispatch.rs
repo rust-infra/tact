@@ -56,6 +56,11 @@ enum PreparedState {
 
 const TOOL_CANCELLED_MSG: &str = "Cancelled by user";
 const MAX_TOOL_ARG_SUMMARY_CHARS: usize = 120;
+/// How long an interactive permission prompt waits for the user before the
+/// tool is auto-denied. Prevents a tool card from hanging in "Running"
+/// indefinitely when the approval popup is missed, dismissed, or never
+/// rendered (e.g. an ask that arrives while the UI is busy). 0 disables.
+const PERMISSION_PROMPT_TIMEOUT_SECS: u64 = 300;
 
 fn build_tool_results(
     prepared: Vec<PreparedTool>,
@@ -518,9 +523,31 @@ impl Agent {
                                     "Always allow this tool".to_string(),
                                 ];
                                 let responder = self.tool_context.ui_responder.clone();
-                                match responder.request_select(tx, prompt, options, false).await {
-                                    Ok(Some(0)) => Some("allow_once"),
-                                    Ok(Some(2)) => Some("always_allow"),
+                                // Bound the wait so a missed/dropped approval
+                                // popup cannot leave the tool stuck "Running"
+                                // forever. On timeout the tool is denied.
+                                let wait = responder.request_select(tx, prompt, options, false);
+                                let selection = if PERMISSION_PROMPT_TIMEOUT_SECS == 0 {
+                                    wait.await.ok().flatten()
+                                } else {
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(
+                                            PERMISSION_PROMPT_TIMEOUT_SECS,
+                                        ),
+                                        wait,
+                                    )
+                                    .await
+                                    {
+                                        // User picked Allow once / Always allow.
+                                        Ok(Ok(Some(idx))) => Some(idx),
+                                        // User cancelled, UI closed, or the
+                                        // prompt timed out → deny.
+                                        Ok(Ok(None)) | Ok(Err(_)) | Err(_) => None,
+                                    }
+                                };
+                                match selection {
+                                    Some(0) => Some("allow_once"),
+                                    Some(2) => Some("always_allow"),
                                     _ => Some("deny"),
                                 }
                             } else {

@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-08 — 权限弹窗加超时，工具不再无限卡在 "Running"
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/tool_dispatch.rs`（`PERMISSION_PROMPT_TIMEOUT_SECS`、Ask 分支的 `request_select` 等待） |
+
+**症状 / 动机:** 一次 `save_memory` 调用在 TUI 中停留为 `Running · 829s`（14 分钟），且没有可见的授权弹窗。`save_memory` 是 `PermissionPolicy::Write`，在 Default 模式下会触发交互式 `PermissionBehavior::Ask`，向 TUI 派发 `RequestSelect` 后**无超时**地等待 `UiResponder` 的 oneshot（`crates/tact/src/agent/tool_dispatch.rs`）。若弹窗被错过、关闭或在 UI 忙时被丢弃，工具 future 会永久阻塞，卡片的实时计时只会一直增加。权限弹窗本身是有意保留的、必须存在——缺的是用户一直不答复时的无界等待。
+
+**决策:** 用 `PERMISSION_PROMPT_TIMEOUT_SECS`（300 秒；`0` 表示禁用）限制每次交互式权限 `request_select` 的等待。超时——以及用户取消或 UI 关闭——一律按 Deny 处理，因此任何工具都不会无限卡在 `Running`。对于用户实际答复的询问，原有的 Allow/Deny 弹窗行为不变。
+
+**改后行为:** 超过 300 秒未获答复的权限弹窗会被自动拒绝并结束该工具（卡片不再永久悬挂）。`save_memory` 在 Default 模式下仍会像以前一样弹窗询问；只是消除了无界等待。
+
+---
+
 ## 1. 2026-09-07 — 插件 hook 的 stdin 管道断开不再吞掉 hook 的 stdout
 
 | Field | Value |
