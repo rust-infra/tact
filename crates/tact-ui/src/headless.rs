@@ -103,6 +103,7 @@ async fn run_headless_locked(
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
+        subagent_stop_hooks: tact::plugin::plugin_subagent_stop_hooks(tact_path.workdir())?,
         memory_manager,
         work_dir: work_dir.clone(),
         task_manager,
@@ -184,6 +185,9 @@ async fn run_headless_locked(
         .subagent_manager
         .cancel_all_and_persist()
         .await;
+
+    // SessionEnd hooks fire once at teardown, symmetrical with SessionStart.
+    let _ = agent.dispatch_session_end_hooks().await;
 
     agent.shutdown_mcp().await;
     Ok(())

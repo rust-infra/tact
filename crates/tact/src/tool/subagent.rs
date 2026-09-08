@@ -125,6 +125,42 @@ fn with_worktree_note(summary: String, worktree: Option<&WorktreeRecord>) -> Str
     }
 }
 
+/// Runs `SubagentStop` hooks over a finished child and returns the (possibly
+/// rewritten) summary. A `Block` is log-only: the child already returned, so
+/// there is nothing left to veto — the hook may only edit the summary.
+async fn run_subagent_stop_hooks(
+    hooks: &[Arc<dyn crate::hook::SubagentStopFn>],
+    agent_id: String,
+    prompt: String,
+    success: bool,
+    cancelled: bool,
+    summary: String,
+) -> String {
+    if hooks.is_empty() {
+        return summary;
+    }
+    let mut ctx = crate::hook::SubagentStopContext {
+        agent_id: agent_id.clone(),
+        agent_type: agent_id,
+        prompt,
+        success,
+        cancelled,
+        summary,
+    };
+    for hook in hooks {
+        match hook(&mut ctx).await {
+            Ok(crate::hook::HookControl::Continue) => {}
+            Ok(crate::hook::HookControl::Block(reason)) => {
+                warn!("SubagentStop hook blocked (ignored): {reason}");
+            }
+            Err(error) => {
+                warn!("SubagentStop hook failed (continuing): {error:#}");
+            }
+        }
+    }
+    ctx.summary
+}
+
 pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "spawn_subagent",
     description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default it runs in the current working directory, blocks until it finishes, and returns the subagent's final summary. Set run_in_background: true to return immediately as async_launched { id } and have the summary re-injected on a later turn; use it to fan out several independent subagents in parallel, then wait_subagent on each (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; the lane path is appended to the returned summary. Set skill: <name> to attach an isolated subagent skill card from ~/.tact/subagent/<name>.md; its body is appended to the child system prompt as the role.",
@@ -564,6 +600,8 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         let ui_tx = ctx.ui_tx.clone();
         let tool_id = ctx.progress_reporter.tool_id().to_string();
         let prompt = input.prompt;
+        let prompt_for_stop = prompt.clone();
+        let stop_hooks = ctx.subagent_stop_hooks.clone();
         let worktree_for_task = worktree.clone();
         let launched = format!("async_launched {{ {child_id} }}");
         tokio::spawn(async move {
@@ -589,6 +627,17 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             } else {
                 summary
             };
+            // SubagentStop hooks may rewrite the summary before it is
+            // persisted and re-injected into the parent.
+            let summary = run_subagent_stop_hooks(
+                &stop_hooks,
+                child_id.clone(),
+                prompt_for_stop,
+                success,
+                cancelled,
+                summary,
+            )
+            .await;
             let _ = if cancelled {
                 manager.cancel(&child_id).await
             } else {
@@ -626,6 +675,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         Ok(launched)
     } else {
         // Sync: block on the nested loop; tool result = last assistant text.
+        let prompt_for_stop = input.prompt.clone();
         let result = subagent
             .agent_loop(Some(Message::new_text(Role::User, input.prompt)))
             .await;
@@ -648,14 +698,25 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         if let Some(lock) = lock {
             lock.release().await?;
         }
-        // Propagate the agent-loop error after the lifecycle record is
-        // durable, so a failed sync spawn does not leave a stale Running row.
-        result?;
         let summary = if cancelled {
             format!("(cancelled by user)\n{summary}")
         } else {
             summary
         };
+        // SubagentStop hooks fire regardless of the child's exit status and
+        // may rewrite the summary fed back to the parent.
+        let summary = run_subagent_stop_hooks(
+            &ctx.subagent_stop_hooks,
+            child_id.clone(),
+            prompt_for_stop,
+            success,
+            cancelled,
+            summary,
+        )
+        .await;
+        // Propagate the agent-loop error after the lifecycle record is
+        // durable, so a failed sync spawn does not leave a stale Running row.
+        result?;
         Ok(with_worktree_note(summary, worktree.as_ref()))
     }
 }

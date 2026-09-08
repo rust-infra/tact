@@ -21,15 +21,17 @@ use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use crate::{
     ToolSpec,
     compact::{
-        CompactState, approx_text_tokens, build_compacted_history, collect_user_messages,
-        compact_rebuild_headroom_tokens, compacted_context, estimate_context_tokens,
-        estimate_message_tokens, micro_compact, recent_messages_for_summary,
-        retained_user_message_token_budget, should_auto_compact, write_transcript,
+        CompactState, CompactTrigger, approx_text_tokens, build_compacted_history,
+        collect_user_messages, compact_rebuild_headroom_tokens, compacted_context,
+        estimate_context_tokens, estimate_message_tokens, micro_compact,
+        recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
+        write_transcript,
     },
     config::{self, AgentSettings},
     hook::{
-        Hook, HookControl, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn,
-        UserPromptSubmitFn,
+        Hook, HookControl, HookTypes, NotificationFn, PostCompactFn, PostToolUseFailureFn,
+        PostToolUseFn, PreCompactFn, PreToolUseFn, SessionEndFn, SessionStartFn, StopFn,
+        TaskCompletedFn, UserPromptSubmitFn,
     },
     invoke_hooks,
     mcp::MCPToolRouter,
@@ -826,7 +828,8 @@ impl Agent {
                             "[Recovery] compact ({}/{}): context too large",
                             self.runtime.recovery_state.compact_attempts, MAX_COMPACT_ATTEMPTS
                         )));
-                        self.compact_history(None).await?;
+                        self.compact_history_with_trigger(CompactTrigger::Recovery, None)
+                            .await?;
                         continue;
                     }
 
@@ -945,7 +948,11 @@ impl Agent {
                         .await?;
                     if let Some(focus) = manual_compact {
                         self.emit_update(AgentUpdate::Info("[manual compact]".into()));
-                        self.compact_history(Some(focus.as_str())).await?;
+                        self.compact_history_with_trigger(
+                            CompactTrigger::Manual,
+                            Some(focus.as_str()),
+                        )
+                        .await?;
                     }
                 }
 
@@ -1015,7 +1022,8 @@ impl Agent {
 
             if let Some(focus) = manual_compact {
                 self.emit_update(AgentUpdate::Info("[manual compact]".into()));
-                self.compact_history(Some(focus.as_str())).await?;
+                self.compact_history_with_trigger(CompactTrigger::Manual, Some(focus.as_str()))
+                    .await?;
             }
         }
     }
@@ -1080,6 +1088,41 @@ impl Agent {
         self
     }
 
+    pub fn with_stop(mut self, hook: impl StopFn + 'static) -> Self {
+        self.hooks.push(Hook::Stop(Box::new(hook)));
+        self
+    }
+
+    pub fn with_session_end(mut self, hook: impl SessionEndFn + 'static) -> Self {
+        self.hooks.push(Hook::SessionEnd(Box::new(hook)));
+        self
+    }
+
+    pub fn with_pre_compact(mut self, hook: impl PreCompactFn + 'static) -> Self {
+        self.hooks.push(Hook::PreCompact(Box::new(hook)));
+        self
+    }
+
+    pub fn with_post_compact(mut self, hook: impl PostCompactFn + 'static) -> Self {
+        self.hooks.push(Hook::PostCompact(Box::new(hook)));
+        self
+    }
+
+    pub fn with_post_tool_failure(mut self, hook: impl PostToolUseFailureFn + 'static) -> Self {
+        self.hooks.push(Hook::PostToolUseFailure(Box::new(hook)));
+        self
+    }
+
+    pub fn with_notification(mut self, hook: impl NotificationFn + 'static) -> Self {
+        self.hooks.push(Hook::Notification(Box::new(hook)));
+        self
+    }
+
+    pub fn with_task_completed(mut self, hook: impl TaskCompletedFn + 'static) -> Self {
+        self.hooks.push(Hook::TaskCompleted(Box::new(hook)));
+        self
+    }
+
     pub async fn dispatch_session_start_hooks(&mut self) -> Result<()> {
         match invoke_hooks!(SessionStart, self)? {
             HookControl::Continue => Ok(()),
@@ -1090,6 +1133,55 @@ impl Agent {
                 Ok(())
             }
         }
+    }
+
+    /// Runs [`Hook::Stop`] hooks once at the outer turn boundary and returns
+    /// the aggregated control. `Continue` means "stop normally"; `Block(reason)`
+    /// means "continue the turn with `reason` as the next prompt" (Codex
+    /// continuation-fragment semantics).
+    pub async fn dispatch_stop_hooks(&mut self) -> Result<HookControl> {
+        invoke_hooks!(Stop, self)
+    }
+
+    /// Runs [`Hook::TaskCompleted`] hooks once per completed user task.
+    /// Observational only: a `Block` is surfaced as info and ignored.
+    pub async fn dispatch_task_completed_hooks(&mut self) -> Result<()> {
+        match invoke_hooks!(TaskCompleted, self)? {
+            HookControl::Continue => Ok(()),
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[TaskCompleted hook blocked] {reason}"
+                )));
+                Ok(())
+            }
+        }
+    }
+
+    /// Runs [`Hook::SessionEnd`] hooks at real teardown. Observational only:
+    /// a `Block` is surfaced as info and ignored because the session is ending.
+    pub async fn dispatch_session_end_hooks(&mut self) -> Result<()> {
+        match invoke_hooks!(SessionEnd, self)? {
+            HookControl::Continue => Ok(()),
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[SessionEnd hook blocked] {reason}"
+                )));
+                Ok(())
+            }
+        }
+    }
+
+    /// The last assistant message text, if any — exposed so Stop/SubagentStop
+    /// hooks (and the plugin payload) can report what the model just produced.
+    #[must_use]
+    pub fn last_assistant_message(&self) -> Option<String> {
+        self.runtime
+            .context
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, Role::Assistant))
+            .map(|message| crate::extract_text(&message.content))
+            .filter(|text| !text.is_empty())
     }
     /// Returns hooks registered for the given [`HookTypes`] variant.
     pub fn hooks_by_type(&self, hook_type: HookTypes) -> Vec<&Hook> {
@@ -1111,11 +1203,47 @@ impl Agent {
     // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
     // bodies first, keep user/assistant text).
     pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
-        if self.is_openai_responses() && self.provider_kind != ProviderKind::DeepSeek {
+        self.compact_history_with_trigger(CompactTrigger::Auto, focus)
+            .await
+    }
+
+    /// Compacts with an explicit [`CompactTrigger`] (used by the recovery /
+    /// manual-compact / slash-command paths so plugin `PreCompact` /
+    /// `PostCompact` matchers can distinguish them).
+    pub async fn compact_history_with_trigger(
+        &mut self,
+        trigger: CompactTrigger,
+        focus: Option<&str>,
+    ) -> Result<()> {
+        // PreCompact hooks may veto the compaction (Codex `should_stop`).
+        match invoke_hooks!(PreCompact, self, trigger)? {
+            HookControl::Continue => {}
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[PreCompact hook vetoed compaction] {reason}"
+                )));
+                return Ok(());
+            }
+        }
+
+        let result = if self.is_openai_responses() && self.provider_kind != ProviderKind::DeepSeek {
             self.compact_responses_native().await
         } else {
             self.compact_history_local(focus).await
+        };
+
+        // PostCompact hooks run once, only after a successful compaction.
+        if result.is_ok() {
+            match invoke_hooks!(PostCompact, self, trigger)? {
+                HookControl::Continue => {}
+                HookControl::Block(reason) => {
+                    self.emit_update(AgentUpdate::Info(format!(
+                        "[PostCompact hook blocked] {reason}"
+                    )));
+                }
+            }
         }
+        result
     }
 
     /// Native OpenAI Responses compaction via `POST /responses/compact`.
@@ -4488,5 +4616,85 @@ mod tests {
             kind: MessageKind::Normal,
         };
         assert!(user_text_target(&mut message).is_none());
+    }
+
+    // ——— lifecycle hook wiring (Stop / SessionEnd / PreCompact / PostCompact) ———
+
+    fn hook_test_agent(context_name: &str) -> Agent {
+        ensure_config();
+        let context = test_context(context_name);
+        Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("hook test".into()),
+        )
+    }
+
+    #[tokio::test]
+    async fn stop_hook_block_requests_continuation() {
+        let agent = hook_test_agent("stop_hook_block").with_stop(|_agent| {
+            Box::pin(async move { Ok(HookControl::Block("keep going".into())) })
+        });
+        let mut agent = agent;
+        let control = agent.dispatch_stop_hooks().await.unwrap();
+        assert_eq!(control, HookControl::Block("keep going".into()));
+    }
+
+    #[tokio::test]
+    async fn stop_hook_continue_defaults_to_stop() {
+        let mut agent = hook_test_agent("stop_hook_continue");
+        let control = agent.dispatch_stop_hooks().await.unwrap();
+        assert_eq!(control, HookControl::Continue);
+    }
+
+    #[tokio::test]
+    async fn session_end_hook_is_observational() {
+        let mut agent = hook_test_agent("session_end_obs").with_session_end(|_agent| {
+            Box::pin(async move { Ok(HookControl::Block("ignored".into())) })
+        });
+        // A block must not fail the dispatch — the session is ending.
+        agent.dispatch_session_end_hooks().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn task_completed_hook_is_observational() {
+        let mut agent = hook_test_agent("task_completed_obs").with_task_completed(|_agent| {
+            Box::pin(async move { Ok(HookControl::Block("ignored".into())) })
+        });
+        // A block must not fail the dispatch — the task already completed.
+        agent.dispatch_task_completed_hooks().await.unwrap();
+    }
+
+    #[test]
+    fn new_hook_builders_register_variants() {
+        let agent = hook_test_agent("new_hook_builders")
+            .with_post_tool_failure(|_agent, _tool_use, _error| {
+                Box::pin(async { Ok(HookControl::Continue) })
+            })
+            .with_notification(|_agent, _ctx| Box::pin(async { Ok(HookControl::Continue) }))
+            .with_task_completed(|_agent| Box::pin(async { Ok(HookControl::Continue) }));
+        assert_eq!(agent.hooks_by_type(HookTypes::PostToolUseFailure).len(), 1);
+        assert_eq!(agent.hooks_by_type(HookTypes::Notification).len(), 1);
+        assert_eq!(agent.hooks_by_type(HookTypes::TaskCompleted).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pre_compact_block_vetoes_compaction() {
+        let mut agent = hook_test_agent("pre_compact_veto").with_pre_compact(|_agent, trigger| {
+            assert_eq!(trigger, CompactTrigger::Auto);
+            Box::pin(async move { Ok(HookControl::Block("no auto compact".into())) })
+        });
+        // PreCompact veto returns Ok without compacting (has_compacted stays false).
+        agent
+            .compact_history_with_trigger(CompactTrigger::Auto, None)
+            .await
+            .unwrap();
+        assert!(!agent.runtime.compact_state.has_compacted);
     }
 }

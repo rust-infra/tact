@@ -54,6 +54,35 @@ pub const KEEP_USER_MESSAGE_TOKENS: usize = 20_000;
 const COMPACT_REBUILD_HEADROOM_PERCENT: usize = 20;
 const AUTO_COMPACT_THRESHOLD_PERCENT: usize = 80;
 
+/// Why a compaction is being triggered.
+///
+/// Mirrors Codex's `PreCompact` / `PostCompact` `trigger` matcher vocabulary:
+/// hooks may veto only a specific kind of compaction. The variant's string is
+/// both the plugin matcher subject and the `trigger` field in the hook payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactTrigger {
+    /// Pre-turn / in-loop size threshold (`should_auto_compact`).
+    Auto,
+    /// Tool-driven compaction (`compact` tool / focus request).
+    Manual,
+    /// Recovery compaction after a too-large request is rejected.
+    Recovery,
+    /// Explicit user `/compact` slash command.
+    Command,
+}
+
+impl CompactTrigger {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+            Self::Recovery => "recovery",
+            Self::Command => "command",
+        }
+    }
+}
+
 /// Running compaction state for a session.
 ///
 /// Tracks whether compaction has occurred, the last summary produced,

@@ -29,6 +29,38 @@
 
 ---
 
+---
+
+## 1. 2026-09-08 — 补齐三个 hook 以完成 agentmemory 接入（PostToolUseFailure · Notification · TaskCompleted）
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/hook/mod.rs`、`crates/tact/src/agent/{mod,tool_dispatch}.rs`、`crates/tact/src/plugin/hooks.rs`、`crates/tact-ui/src/driver.rs` |
+
+**症状 / 动机:** agentmemory 的自动采集插件声明了十二个 Claude Code hook 事件（`plugin/hooks/hooks.json`），但 Tact 仍缺 `PostToolUseFailure`、`Notification`、`TaskCompleted` —— 工具失败、权限提示与任务完成对记忆采集不可见。
+
+**决策:** 按 Claude Code 语义补齐这三个事件。`PostToolUseFailure` 在工具*失败*后触发（在面向成功的 `PostToolUse` 之外），携带 `tool_name` / `tool_input` / `tool_use_id` / `error`。`Notification` 在 agent 呈现用户通知时触发——目前仅 `permission_prompt`——携带 `notification_type` / `title` / `message`。`TaskCompleted` 在每个用户任务完成时于 driver 的 `SubmitTask` 边界触发一次，携带 `task_description`（最后一条 assistant 消息）。三者均为观测性（`Block` 仅记日志并忽略），并经 `apply_plugin_hooks` 接入。
+
+**改后行为:** Tact 现覆盖 agentmemory 的全部十二个 hook 事件（另含 agentmemory 不消费的 `PostCompact`）。工具失败、权限提示与已完成任务都会流入插件命令 hook。
+
+---
+
+## 1. 2026-09-08 — 新增五个生命周期 hook（SubagentStop · Stop · SessionEnd · PreCompact · PostCompact）
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/hook/mod.rs`、`crates/tact/src/agent/mod.rs`、`crates/tact/src/compact/mod.rs`、`crates/tact/src/tool/{mod,subagent}.rs`、`crates/tact/src/plugin/hooks.rs`、`crates/tact-ui/src/{interactive,headless,driver}.rs` |
+
+**症状 / 动机:** Tact 只映射了五个 Claude Code 风格的 hook 事件（`SessionStart`、`UserPromptSubmit`、`SubagentStart`、`PreToolUse`、`PostToolUse`），而 Codex 暴露了十二个。移植依赖 `SubagentStop`、`Stop`、`SessionEnd`、`PreCompact`、`PostCompact` 的 Codex/Claude 插件时，找不到可挂接的循环点。
+
+**决策:** 补齐 Codex 有而 Tact 缺的五个事件，语义对齐 Codex（来源：`codex-rs/hooks/src/events/{stop,compact,session_end}.rs`）。`Stop` 在外层回合边界触发一次，`Block(reason)` 以 `reason` 作为下一条 prompt *继续*该回合（Codex continuation fragment）——是唯一一个 `Block` 反转为「继续」的事件。`PreCompact` 在压缩前触发、`Block` 否决压缩；`PostCompact` 在成功后触发；两者都按 `CompactTrigger { Auto|Manual|Recovery|Command }` 字符串做 matcher。`SessionEnd` 在拆除时触发（仅观测）。`SubagentStop` 是独立 `ToolContext` trait（与 `SubagentStart` 类似），可改写子代理 summary；所有事件都接入了插件命令层（`apply_plugin_hooks`）与 `Hook` 枚举。
+
+**改后行为:** 插件可声明这十个事件；`Stop` 的 block 会让 agent 多跑一个回合（每任务最多 4 次续跑）；`PreCompact` 的 block 跳过压缩；其余三个仅观测。压缩调用点传入显式 `CompactTrigger`，让插件 matcher 区分 auto/manual/recovery/command。
+
+---
+
 ## 1. 2026-09-08 — 推理模型在 thinking 模式下强制在兼容 base URL 上回放 reasoning
 
 | Field | Value |

@@ -30,8 +30,17 @@ Defined in `crates/tact/src/hook/mod.rs`:
 | `UserPromptSubmit` | `Agent::user_prompt_submit` | Yes — when a user turn message enters `agent_loop` | prompt text (append `additionalContext`) | Yes |
 | `PreToolUse` | `Agent::pre_tool` | Yes — before permission check, per tool in order | `ToolUse` input (`name`, `input` JSON) | Yes |
 | `PostToolUse` | `Agent::post_tool` | Yes — after each tool finishes, as results stream in | `ToolResult` content | Yes |
+| `PostToolUseFailure` | `Agent::post_tool_failure` | Yes — after a tool **fails**, in addition to `PostToolUse` | read-only `LoopState` + `ToolUse` + error text | log-only (tool already failed) |
+| `Notification` | `Agent::notification` | Yes — when the agent surfaces a user notification (only `permission_prompt`) | read-only `LoopState` + `NotificationContext` | log-only (observational) |
+| `TaskCompleted` | `Agent::task_completed` | Yes — once per completed user task (`dispatch_task_completed_hooks`) | read-only `LoopState` | log-only (task already done) |
+| `Stop` | `Agent::stop` | Yes — once at the outer turn boundary (`dispatch_stop_hooks`) | read-only `LoopState` | Yes — `Block(reason)` means *continue* the turn with `reason` as the next prompt |
+| `SessionEnd` | `Agent::session_end` | Yes — once at teardown (`dispatch_session_end_hooks`) | read-only `LoopState` | log-only (session is ending) |
+| `PreCompact` | `Agent::pre_compact` | Yes — before `compact_history` routes to native/local | read-only `LoopState` + `CompactTrigger` | Yes — `Block` vetoes the compaction |
+| `PostCompact` | `Agent::post_compact` | Yes — after a successful compaction, once per route | read-only `LoopState` + `CompactTrigger` | log-only (already committed) |
 
-`SubagentStart` is a **standalone** hook trait (`SubagentStartFn`), not an `Agent.hook`: `spawn_subagent` is a tool handler without a parent `Agent` handle, so the closures live on `ToolContext.subagent_start_hooks` and are invoked by the spawn path to mutate the child's system prompt.
+`SubagentStart` and `SubagentStop` are **standalone** hook traits (`SubagentStartFn` / `SubagentStopFn`), not `Agent.hook` variants: `spawn_subagent` is a tool handler without a parent `Agent` handle, so the closures live on `ToolContext.subagent_start_hooks` / `ToolContext.subagent_stop_hooks` and are invoked by the spawn path. `SubagentStart` mutates the child's system prompt; `SubagentStop` runs after the child finishes and may rewrite the summary fed back to the parent.
+
+`Stop` is the one event where `Block` inverts meaning: the "operation" being blocked is the stop itself, so `Block(reason)` means *continue* the turn (Codex continuation-fragment semantics), not veto. All other hooks use `Block` to veto.
 
 `LoopState` is a type alias for `Agent`, so session hooks see the same runtime the loop uses (context, stats, tool routers, etc.).
 
@@ -152,13 +161,21 @@ Multiple hooks of the same type compose: all must return `Continue` unless one `
 
 ### Claude Code plugin command hooks
 
-Installed marketplace plugins can declare command hooks through `.claude-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks` (in `crates/tact/src/plugin/hooks.rs`) registers them on the `Agent` builder in `interactive.rs` / `headless.rs` for the five mapped events:
+Installed marketplace plugins can declare command hooks through `.claude-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks` (in `crates/tact/src/plugin/hooks.rs`) registers them on the `Agent` builder in `interactive.rs` / `headless.rs` for the thirteen mapped events:
 
 - `SessionStart` — matcher is matched against `"startup"`; `systemPrompt` output is logged but **not applied** (v1).
 - `UserPromptSubmit` — matcher against the prompt text; `additionalContext` output is appended to the user prompt.
 - `PreToolUse` — matcher against the tool name; `additionalContext` is added to the tool input as `_hook_context`; `block` prevents execution.
 - `PostToolUse` — matcher against the tool name; `suppressOutput` clears the result; `block` turns it into a failure.
+- `PostToolUseFailure` — matcher against the tool name; observational (`tool_name`, `tool_input`, `tool_use_id`, `error`).
+- `Notification` — matcher against the notification type (`permission_prompt`); observational (`notification_type`, `title`, `message`).
+- `TaskCompleted` — matcher ignored (parity); observational (`task_description` = last assistant message).
 - `SubagentStart` — `plugin_subagent_start_hooks` builds `ToolContext` closures; `additionalContext` is appended to the child system prompt.
+- `SubagentStop` — `plugin_subagent_stop_hooks` builds `ToolContext` closures; runs after the child finishes; observational (a `block` cannot resume a finished child).
+- `Stop` — matcher ignored (Codex parity); a `block` continues the turn with the `reason` as the next prompt.
+- `SessionEnd` — matcher against `reason` (`"other"`); observational.
+- `PreCompact` — matcher against the trigger string (`auto`/`manual`/`recovery`/`command`); a `block` vetoes the compaction.
+- `PostCompact` — matcher against the trigger string; observational.
 
 Each hook entry is a shell command (`sh -c` on Unix, `commandWindows` ignored for now) run with `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` env vars, the Claude input JSON on stdin (`session_id`, `transcript_path`, `cwd`, `hook_event_name`, event fields), and stdout JSON parsed in both the newer `decision` / `reason` / `additionalContext` format and the legacy `hookSpecificOutput` format. `timeout` defaults to 60s, `async: true` fire-and-forgets. Failures (non-zero exit, timeout, invalid JSON) log a warning and **continue** — they never block the agent loop (fail-open, matching Claude Code).
 

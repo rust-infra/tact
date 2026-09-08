@@ -11,7 +11,7 @@ use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 use super::Agent;
 use crate::{
     compact::persist_large_output,
-    hook::{HookControl, ToolResult, ToolUse},
+    hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
     mcp::MCPToolRouter,
     permission::{
@@ -511,12 +511,35 @@ impl Agent {
                                 ResolvedTool::Native { metadata } => metadata.permission_prompt,
                                 _ => crate::tool::PermissionPromptPolicy::Json,
                             };
+                            let prompt = format_permission_prompt(
+                                stable_name,
+                                permit_prompt,
+                                &tool_use.input,
+                            );
+
+                            // `Notification` hooks fire when the agent surfaces
+                            // a user notification; a permission prompt is the
+                            // only kind Tact emits today. Observational.
+                            let notification = NotificationContext {
+                                notification_type: "permission_prompt".to_string(),
+                                title: stable_name.to_string(),
+                                message: prompt.clone(),
+                            };
+                            match invoke_hooks!(Notification, self, &notification) {
+                                Ok(HookControl::Continue) => {}
+                                Ok(HookControl::Block(reason)) => {
+                                    self.emit_update(AgentUpdate::Info(format!(
+                                        "[Notification hook blocked] {reason}"
+                                    )));
+                                }
+                                Err(error) => {
+                                    self.emit_update(AgentUpdate::Info(format!(
+                                        "[Notification hook failed] {error}"
+                                    )));
+                                }
+                            }
+
                             let choice = if let Some(tx) = &self.runtime.ui_tx {
-                                let prompt = format_permission_prompt(
-                                    stable_name,
-                                    permit_prompt,
-                                    &tool_use.input,
-                                );
                                 let options = vec![
                                     "Allow once".to_string(),
                                     "Deny".to_string(),
@@ -732,7 +755,7 @@ impl Agent {
                 let exec_status = exec.status;
                 let mut tool_result = ToolResult {
                     tool_use_id: prep_id.clone(),
-                    content: exec_content,
+                    content: exec_content.clone(),
                 };
                 let (content_after_hook, final_status) = match invoke_hooks!(
                     PostToolUse,
@@ -752,6 +775,28 @@ impl Agent {
                     ),
                 };
                 let exec_output = content_after_hook.clone();
+
+                // `PostToolUseFailure` fires only when the tool *itself* failed
+                // (Claude Code: `PostToolUse` covers the success path,
+                // `PostToolUseFailure` covers the error path). A hook `Block` is
+                // observational — the tool already failed. The raw execution
+                // error (not the PostToolUse-rewritten content) is passed on.
+                if matches!(exec_status, StepStatus::Failed) {
+                    let error_text = exec_content;
+                    match invoke_hooks!(PostToolUseFailure, self, &tool_use, error_text.as_str()) {
+                        Ok(HookControl::Continue) => {}
+                        Ok(HookControl::Block(reason)) => {
+                            self.emit_update(AgentUpdate::Info(format!(
+                                "[PostToolUseFailure hook blocked] {reason}"
+                            )));
+                        }
+                        Err(error) => {
+                            self.emit_update(AgentUpdate::Info(format!(
+                                "[PostToolUseFailure hook failed] {error}"
+                            )));
+                        }
+                    }
+                }
                 pending_durations_us.push(duration_us);
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let task_before = prepared[pi].task_before.clone();

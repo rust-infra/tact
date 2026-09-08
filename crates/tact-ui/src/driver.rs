@@ -2,7 +2,8 @@
 
 use std::{path::Path, sync::atomic::Ordering};
 
-use tact::{Agent, extract_text};
+use tact::{Agent, extract_text, hook::HookControl};
+use tact_llm::{Message, Role};
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -175,6 +176,8 @@ pub async fn run_command_loop_with_account(
     }
 
     let mut agent = agent.expect("agent should be available after command loop");
+    // SessionEnd hooks fire once at teardown, symmetrical with SessionStart.
+    let _ = agent.dispatch_session_end_hooks().await;
     agent.shutdown_mcp().await;
     agent
 }
@@ -230,27 +233,66 @@ async fn handle_user_command_with_account(
                 return;
             }
 
-            match agent.agent_loop(Some(task_message)).await {
-                Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
-                    if let Some(last) = agent.runtime.context.last() {
-                        let text = extract_text(&last.content);
-                        agent.emit_update(AgentUpdate::TaskComplete(text));
+            // A Stop hook may `block` to request one more turn (Codex
+            // continuation-fragment semantics: the block reason becomes the
+            // next prompt). Bound the loop so a misbehaving hook cannot spin
+            // the agent forever.
+            const MAX_STOP_CONTINUATIONS: u32 = 4;
+            let mut task_message = Some(task_message);
+            let mut stop_continuations = 0u32;
+            loop {
+                match agent.agent_loop(task_message.take()).await {
+                    Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
+                        // Turn completed normally: run Stop hooks to decide
+                        // whether to keep going.
+                        match agent.dispatch_stop_hooks().await {
+                            Ok(HookControl::Block(reason))
+                                if stop_continuations < MAX_STOP_CONTINUATIONS =>
+                            {
+                                stop_continuations += 1;
+                                agent.emit_update(AgentUpdate::Info(format!(
+                                    "[Stop hook] continuing: {reason}"
+                                )));
+                                task_message = Some(Message::new_text(Role::User, reason));
+                                continue;
+                            }
+                            Ok(HookControl::Block(reason)) => {
+                                agent.emit_update(AgentUpdate::Info(format!(
+                                    "[Stop hook] continuation limit reached; stopping: {reason}"
+                                )));
+                            }
+                            Ok(HookControl::Continue) | Err(_) => {}
+                        }
+                        if let Some(last) = agent.runtime.context.last() {
+                            let text = extract_text(&last.content);
+                            agent.emit_update(AgentUpdate::TaskComplete(text));
+                        }
+                        // TaskCompleted hooks fire once per completed user task.
+                        if let Err(error) = agent.dispatch_task_completed_hooks().await {
+                            agent.emit_update(AgentUpdate::Info(format!(
+                                "[TaskCompleted hook failed] {error}"
+                            )));
+                        }
+                    }
+                    Ok(()) => {
+                        // Cancelled: clear TUI busy state (Planning/Executing) so
+                        // queued (pending) messages are flushed rather than waiting
+                        // on a stale busy state.
+                        agent.emit_update(AgentUpdate::TaskCancelled);
+                    }
+                    Err(e) => {
+                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
                     }
                 }
-                Ok(()) => {
-                    // Cancelled: clear TUI busy state (Planning/Executing) so
-                    // queued (pending) messages are flushed rather than waiting
-                    // on a stale busy state.
-                    agent.emit_update(AgentUpdate::TaskCancelled);
-                }
-                Err(e) => {
-                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
-                }
+                break;
             }
         }
         UserCommand::Compact => {
             agent.emit_update(AgentUpdate::Info("[compacting]".into()));
-            if let Err(error) = agent.compact_history(None).await {
+            if let Err(error) = agent
+                .compact_history_with_trigger(tact::compact::CompactTrigger::Command, None)
+                .await
+            {
                 agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
                     "Compaction failed: {error}"
                 ))));

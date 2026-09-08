@@ -73,6 +73,7 @@ pub fn test_context(name: &str) -> ToolContext {
             root_dir.join(".claude/skills")
         ]))),
         subagent_start_hooks: Vec::new(),
+        subagent_stop_hooks: Vec::new(),
         memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new(
             root_dir.join(".tact/memory"),
         ))),

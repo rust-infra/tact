@@ -296,6 +296,7 @@ async fn build_agent_for_interactive(
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
+        subagent_stop_hooks: tact::plugin::plugin_subagent_stop_hooks(tact_path.workdir())?,
         memory_manager,
         work_dir,
         task_manager,

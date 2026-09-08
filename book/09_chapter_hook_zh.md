@@ -31,8 +31,17 @@ Hooks 把这些关注点移出核心调度器，仍在流水线可预测的位�
 | `UserPromptSubmit` | `Agent::user_prompt_submit` | 是 — 用户回合消息进入 `agent_loop` 时 | prompt 文本（追加 `additionalContext`） | 是 |
 | `PreToolUse` | `Agent::pre_tool` | 是 — 权限检查之前，按 tool 顺序 | `ToolUse` 输入（`name`、`input` JSON） | 是 |
 | `PostToolUse` | `Agent::post_tool` | 是 — 每个 tool 完成后，随结果流入 | `ToolResult` content | 是 |
+| `PostToolUseFailure` | `Agent::post_tool_failure` | 是 — tool **失败**后，在 `PostToolUse` 之外触发 | 只读 `LoopState` + `ToolUse` + 错误文本 | 仅记录（tool 已失败） |
+| `Notification` | `Agent::notification` | 是 — agent 呈现用户通知时（目前仅 `permission_prompt`） | 只读 `LoopState` + `NotificationContext` | 仅记录（观测性） |
+| `TaskCompleted` | `Agent::task_completed` | 是 — 每个完成的用户任务一次（`dispatch_task_completed_hooks`） | 只读 `LoopState` | 仅记录（任务已完成） |
+| `Stop` | `Agent::stop` | 是 — 在外层回合边界调用一次（`dispatch_stop_hooks`） | 对 `LoopState` 只读 | 是 — `Block(reason)` 表示用 `reason` 作为下一条 prompt *继续*该回合 |
+| `SessionEnd` | `Agent::session_end` | 是 — 拆除时调用一次（`dispatch_session_end_hooks`） | 对 `LoopState` 只读 | 仅记录（会话即将结束） |
+| `PreCompact` | `Agent::pre_compact` | 是 — `compact_history` 路由到 native/local 之前 | 只读 `LoopState` + `CompactTrigger` | 是 — `Block` 否决压缩 |
+| `PostCompact` | `Agent::post_compact` | 是 — 压缩成功后，每条路径调用一次 | 只读 `LoopState` + `CompactTrigger` | 仅记录（已提交） |
 
-`SubagentStart` 是**独立**的 hook trait（`SubagentStartFn`），不是 `Agent.hook`：`spawn_subagent` 是工具处理器、没有父 `Agent` 句柄，所以闭包挂在 `ToolContext.subagent_start_hooks` 上，由 spawn 路径调用以修改子代理的 system prompt。
+`SubagentStart` 与 `SubagentStop` 是**独立**的 hook trait（`SubagentStartFn` / `SubagentStopFn`），不是 `Agent.hook` 变体：`spawn_subagent` 是工具处理器、没有父 `Agent` 句柄，所以闭包挂在 `ToolContext.subagent_start_hooks` / `ToolContext.subagent_stop_hooks` 上，由 spawn 路径调用。`SubagentStart` 修改子代理的 system prompt；`SubagentStop` 在子代理结束后运行，可改写回传给父级的 summary。
+
+`Stop` 是唯一一个 `Block` 语义反转的事件：被「block」的「操作」是「停下」本身，因此 `Block(reason)` 表示*继续*该回合（Codex continuation-fragment 语义），而不是否决。其余所有 hook 都用 `Block` 来否决。
 
 `LoopState` 是 `Agent` 的类型别名，因此 session hook 看到与循环相同的运行时（context、stats、tool router 等）。
 
@@ -153,13 +162,21 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 ### Claude Code 插件命令 hook
 
-已安装的 marketplace 插件可通过 `.claude-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把它们注册到 `Agent` 上，覆盖五个映射事件：
+已安装的 marketplace 插件可通过 `.claude-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把它们注册到 `Agent` 上，覆盖十三个映射事件：
 
 - `SessionStart` — matcher 与 `"startup"` 匹配；`systemPrompt` 输出仅记录日志、**不应用**（v1）。
 - `UserPromptSubmit` — matcher 匹配 prompt 文本；`additionalContext` 输出追加到用户 prompt。
 - `PreToolUse` — matcher 匹配工具名；`additionalContext` 以 `_hook_context` 加入工具输入；`block` 阻止执行。
 - `PostToolUse` — matcher 匹配工具名；`suppressOutput` 清空结果；`block` 使其变为失败。
+- `PostToolUseFailure` — matcher 匹配工具名；仅观测（`tool_name`、`tool_input`、`tool_use_id`、`error`）。
+- `Notification` — matcher 匹配通知类型（`permission_prompt`）；仅观测（`notification_type`、`title`、`message`）。
+- `TaskCompleted` — matcher 忽略（对齐）；仅观测（`task_description` = 最后一条 assistant 消息）。
 - `SubagentStart` — `plugin_subagent_start_hooks` 构建 `ToolContext` 闭包；`additionalContext` 追加到子代理 system prompt。
+- `SubagentStop` — `plugin_subagent_stop_hooks` 构建 `ToolContext` 闭包；子代理结束后运行；仅观测（`block` 无法恢复已结束的子代理）。
+- `Stop` — matcher 忽略（与 Codex 对齐）；`block` 以 `reason` 作为下一条 prompt 继续该回合。
+- `SessionEnd` — matcher 匹配 `reason`（`"other"`）；仅观测。
+- `PreCompact` — matcher 匹配 trigger 字符串（`auto`/`manual`/`recovery`/`command`）；`block` 否决压缩。
+- `PostCompact` — matcher 匹配 trigger 字符串；仅观测。
 
 每条 hook 是一个 shell 命令（Unix 用 `sh -c`，`commandWindows` 暂不处理），注入 `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` 环境变量，stdin 输入 Claude 输入 JSON（`session_id`、`transcript_path`、`cwd`、`hook_event_name` 及事件字段），stdout 输出 JSON 同时兼容新版 `decision` / `reason` / `additionalContext` 与旧版 `hookSpecificOutput` 格式。`timeout` 默认 60s，`async: true` 即发即忘。失败（非零退出、超时、非法 JSON）仅告警并 **继续**——绝不阻塞 agent 循环（fail-open，与 Claude Code 一致）。
 

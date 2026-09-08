@@ -29,6 +29,38 @@ Newest entries first. Each entry should include:
 
 ---
 
+---
+
+## 1. 2026-09-08 — Three more hooks complete agentmemory integration (PostToolUseFailure · Notification · TaskCompleted)
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/hook/mod.rs`, `crates/tact/src/agent/{mod,tool_dispatch}.rs`, `crates/tact/src/plugin/hooks.rs`, `crates/tact-ui/src/driver.rs` |
+
+**Symptom / motivation:** agentmemory's auto-capture plugin declares twelve Claude-Code hook events (`plugin/hooks/hooks.json`), but tact still lacked `PostToolUseFailure`, `Notification`, and `TaskCompleted` — failed tool calls, permission prompts, and task completion were invisible to memory capture.
+
+**Decision:** Add the three remaining events following Claude Code semantics. `PostToolUseFailure` fires after a tool *fails* (in addition to the success-oriented `PostToolUse`), carrying `tool_name` / `tool_input` / `tool_use_id` / `error`. `Notification` fires when the agent surfaces a user notification — only `permission_prompt` today — carrying `notification_type` / `title` / `message`. `TaskCompleted` fires once per completed user task at the driver's `SubmitTask` boundary, carrying `task_description` (the last assistant message). All three are observational (a `Block` is logged and ignored) and wired through `apply_plugin_hooks`.
+
+**Behavior after:** Tact now covers all twelve agentmemory hook events (plus `PostCompact`, which agentmemory does not consume). Failed tool calls, permission prompts, and completed tasks flow to plugin command hooks.
+
+---
+
+## 1. 2026-09-08 — Five more lifecycle hooks (SubagentStop · Stop · SessionEnd · PreCompact · PostCompact)
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/hook/mod.rs`, `crates/tact/src/agent/mod.rs`, `crates/tact/src/compact/mod.rs`, `crates/tact/src/tool/{mod,subagent}.rs`, `crates/tact/src/plugin/hooks.rs`, `crates/tact-ui/src/{interactive,headless,driver}.rs` |
+
+**Symptom / motivation:** Tact mapped only five Claude-Code-style hook events (`SessionStart`, `UserPromptSubmit`, `SubagentStart`, `PreToolUse`, `PostToolUse`), whereas Codex exposes twelve. Users porting Codex/Claude plugins that rely on `SubagentStop`, `Stop`, `SessionEnd`, `PreCompact`, or `PostCompact` found no loop point to attach to.
+
+**Decision:** Add the five events Codex has that tact lacked, following Codex's semantics (source: `codex-rs/hooks/src/events/{stop,compact,session_end}.rs`). `Stop` fires once at the outer turn boundary and a `Block(reason)` *continues* the turn with `reason` as the next prompt (Codex continuation fragment) — the one event where `Block` inverts to "continue". `PreCompact` fires before compaction and a `Block` vetoes it; `PostCompact` after success; both matched against a `CompactTrigger { Auto|Manual|Recovery|Command }` string. `SessionEnd` fires at teardown (observational). `SubagentStop` is a standalone `ToolContext` trait (like `SubagentStart`) that may rewrite the child summary; all events are wired through the plugin command layer (`apply_plugin_hooks`) and the `Hook` enum.
+
+**Behavior after:** Plugins can declare the ten events; `Stop` blocks loop the agent once more (bounded to 4 continuations per task); `PreCompact` blocks skip compaction; the other three are observational. Compaction call sites pass an explicit `CompactTrigger` so plugin matchers can distinguish auto/manual/recovery/command.
+
+---
+
 ## 1. 2026-09-08 — Thinking-mode on a reasoning model forces reasoning replay on compatible base URLs
 
 | Field | Value |

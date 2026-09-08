@@ -112,6 +112,10 @@ pub struct ToolContext {
     /// time so `spawn_subagent` can inject context into the child system
     /// prompt without needing a parent [`Agent`](crate::Agent) handle.
     pub subagent_start_hooks: Vec<Arc<dyn crate::hook::SubagentStartFn>>,
+    /// Claude Code plugin `SubagentStop` command hooks, stamped at dispatch
+    /// time so `spawn_subagent` can observe (and rewrite) the child's summary
+    /// when it finishes.
+    pub subagent_stop_hooks: Vec<Arc<dyn crate::hook::SubagentStopFn>>,
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
