@@ -31,6 +31,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::{
@@ -256,6 +257,21 @@ impl McpService for RealMcpService {
     }
 }
 
+/// Read every line from a captured MCP server stderr and hand it to
+/// `handle`, until the pipe closes (the server has exited). Never panics
+/// and never blocks the MCP transport: it is always driven from a spawned
+/// task so a chatty server cannot stall JSON-RPC on stdout.
+async fn forward_mcp_stderr<R, F>(reader: R, mut handle: F)
+where
+    R: AsyncBufRead + Unpin,
+    F: FnMut(&str),
+{
+    let mut lines = reader.lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        handle(&line);
+    }
+}
+
 pub struct McpClient {
     pub server_name: String,
     service: Arc<dyn McpService>,
@@ -315,12 +331,29 @@ impl McpClient {
         let command = config.command;
         let args = config.args;
         let env = config.env;
-        let transport = TokioChildProcess::builder(Command::new(&command).configure(move |cmd| {
-            cmd.args(&args).envs(&env).stderr(Stdio::inherit());
-        }))
+        // Capture the server's stderr instead of inheriting it to the terminal:
+        // many stdio MCP servers log incidental progress (e.g. index/recovery
+        // "Reconstruction complete") to stderr, which previously leaked straight
+        // onto the screen and mixed with the TUI output. Captured lines are
+        // forwarded through `tracing`, so they still surface under verbose
+        // logging (e.g. tokio-console) but no longer pollute the terminal.
+        let (transport, stderr) = TokioChildProcess::builder(
+            Command::new(&command).configure(move |cmd| {
+                cmd.args(&args).envs(&env).stderr(Stdio::piped());
+            }),
+        )
         .spawn()
-        .with_context(|| format!("failed to spawn MCP server {server_name}"))?
-        .0;
+        .with_context(|| format!("failed to spawn MCP server {server_name}"))?;
+
+        if let Some(stderr) = stderr {
+            let server = server_name.to_string();
+            tokio::spawn(async move {
+                forward_mcp_stderr(BufReader::new(stderr), |line| {
+                    tracing::debug!(mcp_server = %server, stderr = %line);
+                })
+                .await;
+            });
+        }
 
         ().serve(transport)
             .await
@@ -621,12 +654,30 @@ mod tests {
 
     use super::{
         MCPToolRouter, McpClient, McpProjectConfig, McpServerConfig, McpToolName, MockMcpService,
-        PluginLoader, PluginManifest, RealMcpService, installed_plugin_mcp_servers,
+        PluginLoader, PluginManifest, RealMcpService, forward_mcp_stderr,
+        installed_plugin_mcp_servers,
     };
     use crate::{
         consts::PluginHome,
         plugin::{InstalledPlugin, InstalledState, PluginStore},
     };
+
+    #[tokio::test]
+    async fn forward_mcp_stderr_drains_every_line_to_handle() {
+        use tokio::io::BufReader;
+
+        let mut got = Vec::new();
+        forward_mcp_stderr(
+            BufReader::new(&b"Reconstruction complete 1\nindexing note A\n"[..]),
+            |line| got.push(line.to_string()),
+        )
+        .await;
+
+        assert_eq!(
+            got,
+            vec!["Reconstruction complete 1".to_string(), "indexing note A".to_string()]
+        );
+    }
 
     #[test]
     fn parses_plugin_manifest() {
