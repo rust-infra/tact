@@ -255,6 +255,19 @@ fn is_official_openai_base_url(base_url: &str) -> bool {
     host.contains("api.openai.com") || host.contains("openai.azure.com")
 }
 
+/// Whether a reasoning-capable model is being asked to think on this request.
+///
+/// DeepSeek (and similar OpenAI-compatible Reasoning models) require prior
+/// `reasoning_text` to be passed back in thinking mode, even on a compatible
+/// base URL that is not `api.openai.com`. The base-URL heuristic alone would
+/// drop the reasoning replay for such endpoints and produce a 400
+/// (`reasoning_text in the thinking mode must be passed back to the API`).
+fn reasoning_replay_required(request: &CreateMessageParams) -> bool {
+    let thinking = request.thinking.is_some() || request.reasoning_effort.is_some();
+    let deepseekish = request.model.to_ascii_lowercase().contains("deepseek");
+    thinking && deepseekish
+}
+
 /// OpenAI Responses API adapter backed by async-openai 0.41.x.
 ///
 /// Hosted web search is a **Responses-protocol capability**, independent of
@@ -373,13 +386,20 @@ impl OpenAiResponsesAdapter {
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
+        // A compatible base URL defaults to dropping the historical reasoning
+        // replay to save input tokens — unless the request is thinking mode
+        // on a reasoning model (DeepSeek-style) that requires `reasoning_text`
+        // to be passed back on the next turn. Honor the explicit
+        // `with_replay_prior_reasoning` override too.
+        let replay_prior_reasoning =
+            self.replay_prior_reasoning || reasoning_replay_required(request);
         convert::create_response_with_policy(
             request,
             provider_state,
             self.compact_threshold,
             convert::ResponsesRequestPolicy {
                 native_web_search: true,
-                replay_prior_reasoning: self.replay_prior_reasoning,
+                replay_prior_reasoning,
             },
         )
     }
@@ -548,14 +568,17 @@ impl LlmClient for OpenAiResponsesAdapter {
         // sending the request through the byot JSON path; no local summary
         // prompt or `create_message()` call is used. The reasoning-replay
         // policy applies here too: compatible endpoints compact without
-        // historical reasoning payloads.
+        // historical reasoning payloads — unless the request is thinking
+        // mode on a reasoning model that must receive `reasoning_text` back.
+        let replay_prior_reasoning =
+            self.replay_prior_reasoning || reasoning_replay_required(request);
         let (body, _) = convert::create_response_with_policy(
             request,
             provider_state,
             None,
             convert::ResponsesRequestPolicy {
                 native_web_search: false,
-                replay_prior_reasoning: self.replay_prior_reasoning,
+                replay_prior_reasoning,
             },
         )?;
         let compact_request = serde_json::json!({
@@ -638,7 +661,7 @@ mod tests {
     use super::{normalize_stream_event_json, parse_stream_event, parse_stream_event_with_raw};
     use crate::{
         ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
-        StopReason, Tool,
+        StopReason, Thinking, ThinkingType, Tool,
     };
     use async_openai_responses::types::responses::OutputItem;
 
@@ -1161,6 +1184,54 @@ mod tests {
             super::OpenAiResponsesAdapter::new("test-key", "https://api.openai.com/v1", None)
                 .with_replay_prior_reasoning(false);
         assert!(!official.replay_prior_reasoning());
+    }
+
+    #[test]
+    fn thinking_on_reasoning_model_forces_replay_on_compatible_base_url() {
+        // DeepSeek-ish models in thinking mode require historical
+        // `reasoning_text` to be passed back, even on a compatible base URL
+        // (OpenCode Go, api.deepseek.com) whose default would drop the
+        // replay. Without this the provider returns 400
+        // ("reasoning_text in the thinking mode must be passed back to the API").
+        for base_url in ["https://opencode.ai/zen/go/v1", "https://api.deepseek.com"] {
+            let adapter = super::OpenAiResponsesAdapter::new("test-key", base_url, None);
+
+            // Prior assistant turn carries a persisted reasoning signature.
+            let mut request =
+                CreateMessageParams::new(RequiredMessageParams {
+                    model: "deepseek-v4-flash".to_string(),
+                    max_tokens: 128,
+                    messages: vec![
+                        Message::new_text(Role::User, "inspect this"),
+                        Message::new_blocks(
+                            Role::Assistant,
+                            vec![ContentBlock::Thinking {
+                                thinking: "plan".to_string(),
+                                signature: "openai-responses-v1:{\"reasoning\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"full chain of thought\"}],\"encrypted_content\":\"opaque\"},\"function_call_item_ids\":{}}"
+                                    .to_string(),
+                            }],
+                        ),
+                    ],
+                });
+            request.thinking = Some(Thinking {
+                type_: ThinkingType::Enabled,
+                budget_tokens: 64_000,
+            });
+
+            let (body, _) = adapter.build_wire_request(&request, None).unwrap();
+            let reasoning = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count();
+            assert_eq!(
+                reasoning,
+                1,
+                "thinking-mode {model} on {base_url} must replay the reasoning item: {body:?}",
+                model = request.model
+            );
+        }
     }
 
     /// Run with:

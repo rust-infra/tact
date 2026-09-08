@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-08 — Thinking-mode on a reasoning model forces reasoning replay on compatible base URLs
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/openai/responses/mod.rs` (`reasoning_replay_required`, `build_wire_request` / compact reasoning-replay policy); DeepSeek (OpenCode) provider support |
+
+**Symptom / motivation:** On an OpenAI-compatible base URL that is **not** `api.openai.com` (e.g. the OpenCode Go endpoint `opencode.ai/zen/go/v1` or `api.deepseek.com`), the adapter's base-URL heuristic defaults to *dropping* historical `reasoning` replay to save input tokens. But DeepSeek-style Reasoning models in **thinking mode** (`thinking` or `reasoning_effort` set) require the prior `reasoning_text` to be passed back on the next turn; dropping it made the provider return HTTP 400 (`reasoning_text in the thinking mode must be passed back to the API`).
+
+**Decision:** `reasoning_replay_required(request)` is true when the request is thinking-mode **and** the model id looks reasoning-capable (currently a `deepseek` substring on the lowercased model). The effective policy becomes `replay_prior_reasoning || reasoning_replay_required(...)`, so the explicit `with_replay_prior_reasoning` override is still honored. The base-URL-only heuristic still drops replay for ordinary (non-thinking) requests to save tokens.
+
+**Behavior after:** A thinking-mode request on a DeepSeek-style model over a compatible base URL replays the historical `reasoning` item, so the provider no longer 400s. Non-thinking requests and thinking-mode on models the heuristic does not recognize keep the prior token-saving default.
+
+---
+
 ## 1. 2026-09-08 — Permission prompts time out instead of hanging a tool in "Running"
 
 | Field | Value |

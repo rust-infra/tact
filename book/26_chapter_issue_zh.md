@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-08 — 推理模型在 thinking 模式下强制在兼容 base URL 上回放 reasoning
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/openai/responses/mod.rs`（`reasoning_replay_required`、`build_wire_request` / compact 的 reasoning 回放策略）；DeepSeek（OpenCode）provider 支持 |
+
+**症状 / 动机:** 当 base URL 是兼容 OpenAI 但**非** `api.openai.com` 的端点（如 OpenCode Go 端点 `opencode.ai/zen/go/v1` 或 `api.deepseek.com`）时，适配器的 base-URL 启发式默认会*丢弃*历史 `reasoning` 回放以节省输入 token。但 DeepSeek 风格的推理模型在 **thinking 模式**（设置了 `thinking` 或 `reasoning_effort`）下要求下一轮把之前的 `reasoning_text` 传回；丢弃它会令 provider 返回 HTTP 400（`reasoning_text in the thinking mode must be passed back to the API`）。
+
+**决策:** `reasoning_replay_required(request)` 在请求处于 thinking 模式**且**模型名看起来具备推理能力时（目前为小写后的模型 id 含 `deepseek` 子串）为 true。实际生效策略变为 `replay_prior_reasoning || reasoning_replay_required(...)`，因此显式的 `with_replay_prior_reasoning` 覆盖仍然生效。对普通（非 thinking）请求，仅凭 base-URL 的启发式仍会丢弃回放以省 token。
+
+**改后行为:** 兼容 base URL 上、DeepSeek 风格模型处于 thinking 模式时，会回放历史 `reasoning` 条目，provider 不再返回 400。非 thinking 请求、以及启发式未识别的模型上的 thinking 模式，仍保持原有省 token 的默认行为。
+
+---
+
 ## 1. 2026-09-08 — 权限弹窗加超时，工具不再无限卡在 "Running"
 
 | Field | Value |
