@@ -39,24 +39,21 @@ impl Default for SubagentPanelState {
 impl SubagentPanelState {
     pub fn apply_snapshot(&mut self, runs: Vec<SubagentRunSnapshot>) {
         self.scroll = 0;
-        let was_seen = self.session_seen;
+        let was_visible = self.visible;
         self.snapshot = runs;
         self.session_seen = true;
-        if !was_seen {
-            // First appearance: a plain transient sync spawn shows once, an
-            // async fan-out settles in. Default expanded.
-            self.visible = !self.snapshot.is_empty();
-            self.expanded = self.visible;
-            return;
-        }
-        // Later snapshots: keep the strip while work is running OR while the
-        // user is actively looking at it (expanded). Once it is collapsed and
-        // nothing runs, hide entirely — mirroring the Tasks "no open items
-        // hides" rule.
-        if has_running(&self.snapshot) {
-            self.visible = true;
-        } else if !self.expanded {
-            self.visible = false;
+        // Mirror the Tasks sticky rule: visible only while a subagent is
+        // actually running. Once the last one finishes, the whole strip hides
+        // again — the finished run's detail/summary stays on its parent
+        // `spawn_subagent` tool card / popup, not on the sticky.
+        self.visible = has_running(&self.snapshot);
+        if self.visible {
+            if !was_visible {
+                // Default expanded when the strip first appears (or reappears).
+                self.expanded = true;
+            }
+        } else {
+            self.expanded = false;
         }
     }
 }
@@ -295,21 +292,30 @@ mod tests {
     }
 
     #[test]
-    fn apply_snapshot_hides_when_all_done_and_collapsed() {
+    fn apply_snapshot_hides_when_all_done() {
         let mut s = SubagentPanelState::default();
         s.apply_snapshot(vec![run(1, SubagentStatusSnapshot::Running, "w", 1)]);
-        s.expanded = false;
+        assert!(s.visible && s.expanded);
+        // Last subagent finishes: the whole strip hides (mirrors Tasks).
         s.apply_snapshot(vec![run(1, SubagentStatusSnapshot::Completed, "d", 1)]);
         assert!(!s.visible);
+        assert!(!s.expanded);
     }
 
     #[test]
-    fn apply_snapshot_keeps_visible_while_expanded_after_finish() {
+    fn apply_snapshot_stays_visible_while_other_runs_are_running() {
         let mut s = SubagentPanelState::default();
-        s.apply_snapshot(vec![run(1, SubagentStatusSnapshot::Running, "w", 1)]);
-        // User is reading the expanded list when everything finishes.
-        s.apply_snapshot(vec![run(1, SubagentStatusSnapshot::Completed, "d", 1)]);
-        assert!(s.visible, "expanded view stays while user is looking");
+        s.apply_snapshot(vec![
+            run(1, SubagentStatusSnapshot::Running, "a", 1),
+            run(2, SubagentStatusSnapshot::Running, "b", 2),
+        ]);
+        assert!(s.visible);
+        // One of several finishes; another still runs → strip stays.
+        s.apply_snapshot(vec![
+            run(1, SubagentStatusSnapshot::Completed, "a", 1),
+            run(2, SubagentStatusSnapshot::Running, "b", 2),
+        ]);
+        assert!(s.visible, "other subagent still running");
     }
 
     #[test]

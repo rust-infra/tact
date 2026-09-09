@@ -31,6 +31,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-09 — Subagent sticky no longer stays open after the last subagent finishes
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/state/subagent_panel.rs` (`SubagentPanelState::apply_snapshot`); host render `crates/tui/src/render/task_panel.rs` |
+
+**Symptom / motivation:** After the last running subagent completed, the sticky subagent strip stayed **expanded** (`[Subagent] 0/1` + a `— Completed —` row with the summary) instead of closing. It only hid if the user manually collapsed it first. The Tasks sticky, by contrast, hides as soon as no open item remains.
+
+**Decision:** Mirror the Tasks rule — the subagent sticky is visible only while at least one subagent is **Running**. When the last one finishes, hide the whole strip (`visible = false`, `expanded = false`). The finished run's summary/detail is not lost: it stays on the parent `spawn_subagent` tool card / subagent popup, not the sticky.
+
+**Behavior after:** A running subagent pops the strip (expanded); once the final subagent reaches a terminal state the strip closes automatically. If several run concurrently, the strip stays until the last one finishes. Sticky show/timing no longer depends on the user's expand/collapse state.
+
+**Pointers:** `crates/agent_tui_kit/src/state/subagent_panel.rs`; sibling rule `crates/agent_tui_kit/src/state/task_panel.rs::apply_snapshot`; Ch 9 hook / agent-loop chapters reference the subagent overview. Tests: `agent_tui_kit` state `subagent_panel` (`hides_when_all_done`, `stays_visible_while_other_runs_are_running`) and `crates/tui` `sticky_host` render tests.
+
+---
+
 ## 1. 2026-09-09 — Adopt the Codex plugin/ecosystem; remove Claude-directory compatibility
 
 | Field | Value |

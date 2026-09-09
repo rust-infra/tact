@@ -31,6 +31,23 @@
 
 ---
 
+## 1. 2026-09-09 — 最后 subagent 完成后，subagent sticky 不再残留展开
+
+| 欄位 | 值 |
+|------|-----|
+| **類型** | bugfix |
+| **相關** | `crates/agent_tui_kit/src/state/subagent_panel.rs`（`SubagentPanelState::apply_snapshot`）；宿主渲染 `crates/tui/src/render/task_panel.rs` |
+
+**症狀 / 動機:** 最后一个运行中的 subagent 完成后，sticky subagent 条仍保持**展开**（`[Subagent] 0/1` + 一条 `— Completed —` 摘要行）而不是自动收起；只有用户先手动收合才消失。而 Tasks sticky 只要没有打开项就自动隐藏。
+
+**决策:** 对齐 Tasks 规则 —— 只有当至少一个 subagent 处于 **Running** 时 subagent sticky 才可见。最后一个完成后整条隐藏（`visible = false`、`expanded = false`）。完成的运行摘要/详情不会丢失：它保留在父级 `spawn_subagent` 工具卡片 / subagent 弹窗上，而非 sticky。
+
+**变更后行为:** 运行中的 subagent 会弹出（展开）该条；最后一个进入终态后自动收起。若多个并发运行，则直到最后一个完成才收起。sticky 的显示/时机不再依赖用户的展开/收合状态。
+
+**指针:** `crates/agent_tui_kit/src/state/subagent_panel.rs`；对应规则 `crates/agent_tui_kit/src/state/task_panel.rs::apply_snapshot`；Ch 9 hook / agent-loop 章节提及 subagent 概览。测试：`agent_tui_kit` 状态 `subagent_panel`（`hides_when_all_done`、`stays_visible_while_other_runs_are_running`）与 `crates/tui` `sticky_host` 渲染测试。
+
+---
+
 ## 1. 2026-09-09 — 采用 Codex 插件/生态；移除 Claude 目录兼容
 
 | Field | Value |
