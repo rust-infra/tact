@@ -433,7 +433,7 @@ fn copy_git_tree_entries(
 /// MCP server configuration (`.mcp.json` or plugin.json `mcpServers`). This
 /// deliberately replaces the old hard requirement for a `skills/` directory,
 /// which blocked command-only / agent-only / hook-only / MCP-only plugins from
-/// the official Claude marketplace.
+/// the official marketplace.
 fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<PluginFeatures> {
     let manifest = read_compatibility_manifest(candidate)?;
     if let Some(name) = manifest.name
@@ -489,13 +489,13 @@ fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<Plugin
     Ok(features)
 }
 
-/// Reads the Claude-compatible plugin manifest (`.claude-plugin/plugin.json`).
+/// Reads the Codex plugin manifest (`.codex-plugin/plugin.json`).
 ///
 /// The manifest is optional; a missing or empty file yields a default manifest
-/// so legacy / minimal plugins still install as long as they ship a supported
-/// feature on disk.
+/// so minimal plugins still install as long as they ship a supported feature
+/// on disk.
 fn read_compatibility_manifest(candidate: &Path) -> Result<PluginManifest> {
-    let manifest = candidate.join(".claude-plugin").join("plugin.json");
+    let manifest = candidate.join(".codex-plugin").join("plugin.json");
     if !manifest.is_file() {
         return Ok(PluginManifest::default());
     }
@@ -506,10 +506,10 @@ fn read_compatibility_manifest(candidate: &Path) -> Result<PluginManifest> {
     .with_context(|| format!("failed to parse plugin manifest {}", manifest.display()))
 }
 
-/// Claude-compatible plugin manifest, parsed for install-time validation.
+/// Codex plugin manifest, parsed for install-time validation.
 ///
-/// `hooks` is a repository-relative path to a Claude hooks JSON file; it is
-/// only validated for existence here — hook execution happens at runtime (see
+/// `hooks` is a repository-relative path to a hooks JSON file; it is only
+/// validated for existence here — hook execution happens at runtime (see
 /// `crates/tact/src/plugin/hooks.rs`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -596,8 +596,8 @@ mod tests {
         fs::create_dir_all(repository.path().join("plugins/cmds/commands")).unwrap();
         fs::create_dir_all(repository.path().join("plugins/agents/agents")).unwrap();
         fs::create_dir_all(repository.path().join("plugins/hooked/hooks")).unwrap();
-        fs::create_dir_all(repository.path().join("plugins/hooked/.claude-plugin")).unwrap();
-        fs::create_dir_all(repository.path().join("plugins/served/.claude-plugin")).unwrap();
+        fs::create_dir_all(repository.path().join("plugins/hooked/.codex-plugin")).unwrap();
+        fs::create_dir_all(repository.path().join("plugins/served/.codex-plugin")).unwrap();
         fs::write(
             repository.path().join("marketplace.json"),
             r#"{
@@ -641,14 +641,14 @@ mod tests {
         fs::write(
             repository
                 .path()
-                .join("plugins/hooked/.claude-plugin/plugin.json"),
+                .join("plugins/hooked/.codex-plugin/plugin.json"),
             r#"{ "name": "hooked", "hooks": "./hooks/hooks.json" }"#,
         )
         .unwrap();
         fs::write(
             repository
                 .path()
-                .join("plugins/served/.claude-plugin/plugin.json"),
+                .join("plugins/served/.codex-plugin/plugin.json"),
             r#"{ "name": "served", "mcpServers": { "echo": { "command": "echo", "args": [] } } }"#,
         )
         .unwrap();
@@ -866,7 +866,7 @@ mod tests {
     fn install_rejects_conflicting_compatibility_manifest_name() {
         let fixture = fixture_installer();
         let root = fixture.installer.marketplace_root("fixture-market");
-        let source = root.join("plugins/demo/.claude-plugin");
+        let source = root.join("plugins/demo/.codex-plugin");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("plugin.json"), r#"{ "name": "other" }"#).unwrap();
         commit_worktree(&root);

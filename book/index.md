@@ -88,7 +88,7 @@ sequenceDiagram
 
         Note over Agent,Prompt: build_system_prompt()
         Agent->>Memory: load memory prompt, skill list
-        Agent->>Agent: load CLAUDE.md, directory snapshot
+        Agent->>Agent: load AGENTS.md, directory snapshot
         Agent->>Prompt: builder → render template
         Prompt-->>Agent: system string (static prefix + dynamic suffix)
 
@@ -115,7 +115,7 @@ sequenceDiagram
     end
 ```
 
-**Stable vs. dynamic sections:** everything above `=== DYNAMIC_BOUNDARY ===` (role, guidelines, CLAUDE.md) is rebuilt but intended to stay byte-identical for prefix caching. Memory and dynamic context below the boundary refresh every turn. See [System Prompt](./04_chapter_prompt.md).
+**Stable vs. dynamic sections:** everything above `=== DYNAMIC_BOUNDARY ===` (role, guidelines, AGENTS.md) is rebuilt but intended to stay byte-identical for prefix caching. Memory and dynamic context below the boundary refresh every turn. See [System Prompt](./04_chapter_prompt.md).
 
 **Tool turns:** when the model returns `ToolUse`, the loop does not exit — tool results are appended to `runtime.context` and the next iteration runs steps 5–12 again with an updated message list and a freshly rendered system prompt.
 

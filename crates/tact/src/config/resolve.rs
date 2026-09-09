@@ -1273,15 +1273,12 @@ protocol = "responses"
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [agent]
-instruction_sources = ["agents_md", "claude_md_project"]
+instruction_sources = ["agents_md"]
 "#,
         )
         .unwrap();
         let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
         assert!(resolved.agent.instruction_sources.agents_md);
-        assert!(!resolved.agent.instruction_sources.claude_user);
-        assert!(resolved.agent.instruction_sources.claude_project);
-        assert!(!resolved.agent.instruction_sources.claude_subdir);
     }
 
     #[test]

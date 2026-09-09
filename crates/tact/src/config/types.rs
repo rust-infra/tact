@@ -126,8 +126,7 @@ pub struct AgentTomlConfig {
 
     /// Project instruction files to inject into the system prompt (default: `["agents_md"]`).
     ///
-    /// Supported values: `agents_md`, `claude_md` (all CLAUDE paths), `claude_md_user`,
-    /// `claude_md_project`, `claude_md_subdir`.
+    /// Supported values: `agents_md`.
     pub instruction_sources: Option<Vec<String>>,
 
     /// Subagent LLM configuration (optional).

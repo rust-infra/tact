@@ -16,7 +16,7 @@
 |------|----------|-------------------------|
 | 入口 | TUI / headless `agent_loop` | 父级在工具执行期间调用 `spawn_subagent` |
 | 对话历史 | 完整会话 context | 仅单条 user prompt（无父级消息） |
-| System prompt | 动态 Tera 模板（skills、memory、CLAUDE.md） | 固定静态字符串 |
+| System prompt | 动态 Tera 模板（skills、memory、AGENTS.md） | 固定静态字符串 |
 | Native 工具 | `toolset()`（约 40 个） | `subagent_toolset()`（5 个） |
 | MCP 工具 | 自 config 加载 | **无**（`MCPToolRouter::new()`） |
 | Hook | 父级已注册 hook | 空 hook 列表 |
@@ -167,7 +167,7 @@ You are a principal reviewer. …
 </skill>
 ```
 
-`build_system_prompt()` 每轮 verbatim 返回该字符串 —— 无 skill 摘要、memory 注入、CLAUDE.md 或目录快照。主 agent 差异见 [System Prompt](./04_chapter_prompt_zh.md)。
+`build_system_prompt()` 每轮 verbatim 返回该字符串 —— 无 skill 摘要、memory 注入、AGENTS.md 或目录快照。主 agent 差异见 [System Prompt](./04_chapter_prompt_zh.md)。
 
 压缩与恢复 **仍** 在子 agent 循环内运行（[上下文压缩](./05_chapter_compact_zh.md)、[错误恢复](./06_chapter_recovery_zh.md)）：`micro_compact`、`compact_history`、transport 重试与 continuation 消息适用于子 agent 私有 `runtime.context`。
 
@@ -262,7 +262,7 @@ let summary = subagent
 | 无嵌套 `spawn_subagent` | 工具集设计如此（5 个工具），worker 无法进一步分解 |
 | 子 agent 无 MCP | worker 内不可用外部工具 |
 | 无父级 hook | PreToolUse / PostToolUse 策略不包裹子 agent 工具 |
-| 仅静态 prompt | 无 skills/memory/CLAUDE.md，除非父级复制进 `prompt` |
+| 仅静态 prompt | 无 skills/memory/AGENTS.md，除非父级复制进 `prompt` |
 | `description` 被忽略 | JSON 字段无运行时效果 |
 | 独立 cancel 标志 | 父级 `/cancel` 只中止主任务。**运行中的后台子代理**通过 `cancel_subagent`（工具）、`/subagent_cancel <child-id>`（slash 命令）或运行中子代理工具卡片上的 `[Cancel]` 按钮取消——三者都经由共享 `SubagentManager` 的 cancel handles 翻转子代理的协作取消标志。当父级退出（TUI 退出 / driver 循环结束）时，`cancel_all()` 翻转所有存活 handle，后台子代理一起停止而非成为孤儿。（headless 在退出时永远没有存活的后台子代理：那里 `run_in_background` 已退化为同步。） |
 | 无 worktree 删除 | 隔离泳道现在可通过 `worktree_remove { name }` 清理（执行 `git worktree remove`、删除跟踪记录、拒绝运行中子 agent 的泳道与脏工作树）。已合并的 backing 分支 `wt/<name>` 会被自动删除；未合并分支保留以便提交可恢复 |

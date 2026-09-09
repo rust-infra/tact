@@ -116,7 +116,7 @@ pub struct MarketplaceCatalog {
 }
 
 impl MarketplaceCatalog {
-    /// Parses Claude-compatible marketplace JSON without inspecting plugin manifests.
+    /// Parses marketplace JSON without inspecting plugin manifests.
     pub fn parse(content: &str, marketplace_root: &Path) -> Result<Self> {
         let raw: RawCatalog =
             serde_json::from_str(content).context("failed to parse marketplace catalog")?;
@@ -526,7 +526,7 @@ fn replace_directory(temporary: &Path, destination: &Path, backup: &Path) -> Res
 }
 
 fn catalog_path(root: &Path) -> PathBuf {
-    let claude_path = root.join(".claude-plugin").join(MARKETPLACE_FILE);
+    let claude_path = root.join(".codex-plugin").join(MARKETPLACE_FILE);
     if claude_path.exists() {
         claude_path
     } else {

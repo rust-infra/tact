@@ -83,7 +83,7 @@ Before connecting, remember: **Host owns the big picture, Client owns one connec
 
 ### Step 1: Configuration — tell the Host which Servers to connect
 
-Before startup, the Host must know how to launch each Server. Tact reads `.claude-plugin/plugin.json`:
+Before startup, the Host must know how to launch each Server. Tact reads `.codex-plugin/plugin.json`:
 
 ```json
 {
@@ -102,7 +102,7 @@ Meaning: run `command` as a subprocess—that process is the MCP Server.
 
 Code: `PluginLoader::scan` scans directories, parses the manifest, and builds server names like `{plugin}__{server}` (e.g. `demo__postgres`).
 
-**Installed marketplace plugins** are also scanned at startup: `installed_plugin_mcp_servers` walks every plugin cache root, reading both `.claude-plugin/plugin.json` `mcpServers` and a Claude project-style `.mcp.json` at the plugin root, and names servers `plugin__<plugin>__<server>`. Only stdio servers are connected; `http` / `url` entries are skipped with a warning (Tact has no remote MCP transport yet).
+**Installed marketplace plugins** are also scanned at startup: `installed_plugin_mcp_servers` walks every plugin cache root, reading both `.codex-plugin/plugin.json` `mcpServers` and a Claude project-style `.mcp.json` at the plugin root, and names servers `plugin__<plugin>__<server>`. Only stdio servers are connected; `http` / `url` entries are skipped with a warning (Tact has no remote MCP transport yet).
 
 ### Step 2: Transport — start the Server process
 
@@ -423,7 +423,7 @@ sequenceDiagram
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| Config scan | `crates/tact/src/mcp/mod.rs` — `PluginLoader` | Read `.claude-plugin/plugin.json` |
+| Config scan | `crates/tact/src/mcp/mod.rs` — `PluginLoader` | Read `.codex-plugin/plugin.json` |
 | Connect & handshake | `McpClient::connect` | stdio spawn + rmcp `serve()` |
 | Tool discovery | `McpClient::fetch_tools` | `tools/list` |
 | Tool execution | `McpClient::call_tool` | `tools/call` |

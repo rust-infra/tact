@@ -117,8 +117,6 @@ pub struct AgentRuntime {
     /// Cached project-directory snapshot, computed once per session so the
     /// deterministic output doesn't churn the DeepSeek prefix KV-cache.
     pub cached_dir_snapshot: Option<String>,
-    /// Cached `CLAUDE.md` assembly (once per session) for a stable prompt prefix.
-    pub cached_claude_md: Option<String>,
     /// Cached `AGENTS.md` assembly (once per session) for a stable prompt prefix.
     pub cached_agents_md: Option<String>,
     /// Total tokens from the most recent LLM usage report (`0` = none yet).
@@ -216,7 +214,6 @@ impl Agent {
                 last_message_db_id: 0,
                 llm_call_last_message_id: 0,
                 cached_dir_snapshot: None,
-                cached_claude_md: None,
                 cached_agents_md: None,
                 last_token_total: 0,
                 provider_state: None,
@@ -1779,9 +1776,6 @@ impl Agent {
                 }
             })
             .memory(self.load_memory_prompt()?)
-            .claude_md(cached_md_section(&mut self.runtime.cached_claude_md, || {
-                assemble_claude_md_prompt(workdir, &self.agent_settings.instruction_sources)
-            }))
             .additional(cached_md_section(&mut self.runtime.cached_agents_md, || {
                 assemble_agents_md_prompt(workdir, &self.agent_settings.instruction_sources)
             }))
@@ -2001,70 +1995,6 @@ fn cached_md_section(cached: &mut Option<String>, compute: impl FnOnce() -> Stri
     value
 }
 
-fn assemble_claude_md_prompt(
-    workdir: &Path,
-    sources: &crate::config::InstructionSources,
-) -> String {
-    if !sources.claude_user && !sources.claude_project && !sources.claude_subdir {
-        return String::new();
-    }
-
-    let mut file_sources = Vec::new();
-
-    if sources.claude_user {
-        let user_claude =
-            crate::consts::TactPath::home_claude_dir().map(|home| home.join("CLAUDE.md"));
-        if let Some(path) = user_claude
-            && let Ok(content) = std::fs::read_to_string(&path)
-        {
-            file_sources.push((
-                "user global (~/.claude/CLAUDE.md)".to_string(),
-                content.trim().to_string(),
-            ));
-        }
-    }
-
-    if sources.claude_project {
-        let project_claude = workdir.join("CLAUDE.md");
-        if let Ok(content) = std::fs::read_to_string(&project_claude) {
-            file_sources.push((
-                "project root (CLAUDE.md)".to_string(),
-                content.trim().to_string(),
-            ));
-        }
-    }
-
-    if sources.claude_subdir
-        && let Ok(cwd) = std::env::current_dir()
-        && cwd != workdir
-    {
-        let subdir_claude = cwd.join("CLAUDE.md");
-        if let Ok(content) = std::fs::read_to_string(&subdir_claude) {
-            file_sources.push((
-                format!("subdir ({}/CLAUDE.md)", cwd.display()),
-                content.trim().to_string(),
-            ));
-        }
-    }
-
-    if file_sources.is_empty() {
-        return String::new();
-    }
-
-    let mut lines = vec!["## CLAUDE.md instructions".to_string(), String::new()];
-    for (label, content) in file_sources {
-        lines.push(format!("### From {}", label));
-        lines.push(String::new());
-        lines.push(content);
-        lines.push(String::new());
-    }
-    lines.join("\n").trim().to_string()
-}
-
-/// Assemble project `AGENTS.md` for the system-prompt `additional` section.
-///
-/// Looks at the agent workdir and, when different, the process cwd — matching
-/// the local CLAUDE.md discovery paths (without a user-global file).
 fn assemble_agents_md_prompt(
     workdir: &Path,
     sources: &crate::config::InstructionSources,
@@ -4334,33 +4264,8 @@ mod tests {
     fn assemble_agents_md_prompt_skipped_when_disabled() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "# Rules\n").unwrap();
-        let sources =
-            crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()]))
-                .unwrap();
+        let sources = crate::config::InstructionSources { agents_md: false };
         assert!(assemble_agents_md_prompt(dir.path(), &sources).is_empty());
-    }
-
-    #[test]
-    fn assemble_claude_md_prompt_skipped_when_disabled() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "# Claude rules\n").unwrap();
-        assert!(
-            assemble_claude_md_prompt(dir.path(), &crate::config::InstructionSources::default())
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn assemble_claude_md_prompt_reads_project_when_enabled() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "# Claude rules\n").unwrap();
-        let sources =
-            crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()]))
-                .unwrap();
-        let rendered = assemble_claude_md_prompt(dir.path(), &sources);
-        assert!(rendered.starts_with("## CLAUDE.md instructions"));
-        assert!(rendered.contains("### From project root (CLAUDE.md)"));
-        assert!(rendered.contains("Claude rules"));
     }
 
     #[test]

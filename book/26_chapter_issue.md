@@ -31,6 +31,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-09 — Adopt the Codex plugin/ecosystem; remove Claude-directory compatibility
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact/src/plugin/{install,hooks,marketplace,store,model}.rs`, `crates/tact/src/mcp/mod.rs`, `crates/tact/src/consts.rs`, `crates/tact/src/skill/mod.rs`, `crates/tact/src/config/instruction_sources.rs`, `crates/tact/src/prompt/{mod.rs,system_prompt_template.md,responses_system_prompt_template.md}`, `crates/tact/src/agent/mod.rs`; design `docs/superpowers/plans/2026-09-09-codex-plugin-compat-and-memory.md`; Ch 2, 3, 4, 8, 9, 12, 18 |
+
+**Symptom / motivation:** Tact maintained two plugin ecosystems (Claude `.claude-plugin` and the Codex family). Both share the same command-hook kernel (subprocess + stdin JSON + `CLAUDE_PLUGIN_ROOT`), but maintaining two manifest/discovery systems is not worth it; Codex's layout is the cleaner, actively-maintained spec, and agentmemory ships `.codex-plugin`, so Codex-only still consumes it. Claude-directory compat (`.claude-plugin`, `.claude/`, `CLAUDE.md`, `.claude/skills`) was legacy surface.
+
+**Decision:** Standardise on the Codex plugin system and remove Claude-directory compatibility outright (not gated): plugin manifest dir is `.codex-plugin/plugin.json`; skill roots are `.tact/skills` → `~/.tact/skills` → `~/.agents/skills` (`.claude/skills` gone); `home_claude_dir()` / `claude_dir()` removed; `CLAUDE.md` instruction injection removed so `[agent].instruction_sources` only accepts `agents_md`; system-prompt `# Additional context` no longer carries a claude_md branch. `CLAUDE_PLUGIN_ROOT` env name is **kept** (Codex's own hook engine injects it); Claude/Anthropic as an **LLM provider and `claude-*` model names are untouched**; `~/.agents` is kept.
+
+**Behavior after:** Plugins are discovered only through `.codex-plugin/plugin.json` (+ default `hooks/hooks.json`). Project skills load from `.tact/skills` (plus `~/.tact/skills`, `~/.agents/skills`); a `.claude/skills` dir under the workdir is ignored. Only `AGENTS.md` is injected as an instruction file; a `claude_md*` value in `instruction_sources` is rejected. Users migrating from `.claude-plugin` must re-point to codex layouts.
+
+---
+
 ## 1. 2026-09-08 — Remove permission-prompt timeout; fix the "missed popup" desync instead
 
 | Field | Value |

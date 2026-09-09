@@ -15,7 +15,7 @@ Do not confuse this with [Team Coordination](./14_chapter_team.md) — `spawn_te
 |----------|------------|------------------------|
 | Entry | TUI / headless `agent_loop` | Parent calls `spawn_subagent` during tool execution |
 | Conversation history | Full session context | Single user prompt only (no parent messages) |
-| System prompt | Dynamic Tera template (skills, memory, CLAUDE.md) | Fixed static string |
+| System prompt | Dynamic Tera template (skills, memory, AGENTS.md) | Fixed static string |
 | Native tools | `toolset()` (~40 tools) | `subagent_toolset()` (5 tools) |
 | MCP tools | Loaded from config | **None** (`MCPToolRouter::new()`) |
 | Hooks | Parent's registered hooks | Empty hook list |
@@ -175,7 +175,7 @@ You are a principal reviewer. …
 </skill>
 ```
 
-`build_system_prompt()` returns this string verbatim every turn — no skill summaries, memory injection, CLAUDE.md, or directory snapshot. See [System Prompt](./04_chapter_prompt.md) for how the main agent differs.
+`build_system_prompt()` returns this string verbatim every turn — no skill summaries, memory injection, AGENTS.md, or directory snapshot. See [System Prompt](./04_chapter_prompt.md) for how the main agent differs.
 
 Compaction and recovery **do** still run inside the subagent loop ([Context Compaction](./05_chapter_compact.md), [Error Recovery](./06_chapter_recovery.md)): `micro_compact`, `compact_history`, transport retries, and continuation messages apply to the subagent's private `runtime.context`.
 
@@ -270,7 +270,7 @@ See [Team Coordination](./14_chapter_team.md).
 | No nested `spawn_subagent` | By design in toolset (5 tools), so workers cannot decompose further |
 | No MCP on subagents | External tools unavailable inside workers |
 | No parent hooks | PreToolUse / PostToolUse policies do not wrap subagent tools |
-| Static prompt only | No skills/memory/CLAUDE.md unless the parent copies them into `prompt` |
+| Static prompt only | No skills/memory/AGENTS.md unless the parent copies them into `prompt` |
 | `description` ignored | JSON field has no runtime effect |
 | Separate cancel flag | Parent `/cancel` aborts the main task only. A **running background subagent** is cancelled via `cancel_subagent` (tool), `/subagent_cancel <child-id>` (slash), or the `[Cancel]` button on the live subagent tool card — all flip the child's cooperative flag via the shared `SubagentManager` cancel handles. When the parent exits (TUI quit / driver loop end), `cancel_all()` flips every live handle so background subagents stop instead of becoming orphans. (Headless never has live background children at exit: `run_in_background` degrades to synchronous there.) |
 | No worktree removal | Isolated lanes can now be cleaned up with `worktree_remove { name }` (runs `git worktree remove`, deletes the tracking record, refuses a running subagent's lane and a dirty tree). A fully-merged backing branch `wt/<name>` is auto-deleted; unmerged branches are kept so commits stay recoverable |

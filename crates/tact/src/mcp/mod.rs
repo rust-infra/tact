@@ -5,7 +5,7 @@
 //!
 //! ## Architecture
 //!
-//! - [`PluginLoader`] scans `.claude-plugin/plugin.json` manifests in
+//! - [`PluginLoader`] scans `.codex-plugin/plugin.json` manifests in
 //!   configured search directories.  Each manifest declares MCP servers.
 //! - [`McpClient`] connects to an MCP server over stdio transport using
 //!   the [`rmcp`] crate, fetches its tool list, and proxies calls.
@@ -80,7 +80,7 @@ impl PluginLoader {
         let mut loaded = Vec::new();
 
         for dir in &self.search_dirs {
-            let manifest_path = dir.join(".claude-plugin").join("plugin.json");
+            let manifest_path = dir.join(".codex-plugin").join("plugin.json");
             if !manifest_path.exists() {
                 continue;
             }
@@ -144,7 +144,7 @@ impl McpProjectConfig {
 }
 
 /// Scans the installed-plugin cache for MCP servers declared by plugins:
-/// `.claude-plugin/plugin.json` `mcpServers` and a project-style `.mcp.json`
+/// `.codex-plugin/plugin.json` `mcpServers` and a project-style `.mcp.json`
 /// at the plugin root. Returns `(server_name, config)` pairs where
 /// `server_name = "plugin__<plugin_id>__<server>"` — the same prefix scheme as
 /// the cwd [`PluginLoader`].
@@ -163,7 +163,7 @@ fn collect_plugin_mcp_servers(
 ) -> Result<()> {
     let prefix = |name: &str| format!("plugin__{}__{}", root.plugin_id, name);
 
-    let manifest_path = root.root.join(".claude-plugin").join("plugin.json");
+    let manifest_path = root.root.join(".codex-plugin").join("plugin.json");
     if manifest_path.is_file() {
         let raw = fs::read_to_string(&manifest_path)
             .with_context(|| format!("failed to read {}", manifest_path.display()))?;
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn plugin_loader_scans_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        let plugin_dir = tmp.path().join(".claude-plugin");
+        let plugin_dir = tmp.path().join(".codex-plugin");
         std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(
             plugin_dir.join("plugin.json"),
@@ -795,9 +795,9 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let plugin_home = PluginHome::from_home(home.path());
         let plugin_root = plugin_home.cache.join("acme/demo/abc123");
-        std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
         std::fs::write(
-            plugin_root.join(".claude-plugin/plugin.json"),
+            plugin_root.join(".codex-plugin/plugin.json"),
             r#"{ "name": "demo", "mcpServers": { "fromManifest": { "command": "cat" } } }"#,
         )
         .unwrap();

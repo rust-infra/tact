@@ -160,7 +160,7 @@ async fn load_skill_reads_skill_file() {
 
     let (updates, _work_dir) =
         run_single_task_with_setup(mock, "load skill", PermissionMode::Auto, |dir| {
-            let skill_dir = dir.join(".claude/skills").join("rust_style");
+            let skill_dir = dir.join(".tact/skills").join("rust_style");
             std::fs::create_dir_all(&skill_dir).unwrap();
             std::fs::write(
             skill_dir.join("SKILL.md"),

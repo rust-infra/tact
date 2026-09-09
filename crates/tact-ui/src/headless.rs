@@ -88,9 +88,8 @@ async fn run_headless_locked(
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
     let subagent_manager = SharedSubagentManager::new(SubagentManager::new(&db_path).await?);
-    // Memory is user-global (`~/.tact/memory`, like Claude Code's `~/.claude`)
-    // so it persists across projects. Project-local `.tact/memory` is only the
-    // fallback when `$HOME` is unset.
+    // Memory is user-global (`~/.tact/memory`) so it persists across projects.
+    // Project-local `.tact/memory` is only the fallback when `$HOME` is unset.
     let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
         TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
     )?));

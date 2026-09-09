@@ -40,16 +40,10 @@ Skill loading policy. Do not call `load_skill` for greetings, small talk, or ord
 {{memory_guidance}}
 {% endif -%}
 
-{% if claude_md or additional -%}
+{% if additional -%}
 # Additional context
 
-{% if claude_md -%}
-{{claude_md}}
-
-{% endif -%}
-{% if additional -%}
 {{additional}}
-{% endif -%}
 {% endif -%}
 
 {% if memory or dynamic_context -%}

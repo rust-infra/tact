@@ -162,7 +162,7 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 ### Claude Code 插件命令 hook
 
-已安装的 marketplace 插件可通过 `.claude-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把它们注册到 `Agent` 上，覆盖十三个映射事件：
+已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把它们注册到 `Agent` 上，覆盖十三个映射事件：
 
 - `SessionStart` — matcher 与 `"startup"` 匹配；`systemPrompt` 输出仅记录日志、**不应用**（v1）。
 - `UserPromptSubmit` — matcher 匹配 prompt 文本；`additionalContext` 输出追加到用户 prompt。

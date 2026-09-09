@@ -161,7 +161,7 @@ Multiple hooks of the same type compose: all must return `Continue` unless one `
 
 ### Claude Code plugin command hooks
 
-Installed marketplace plugins can declare command hooks through `.claude-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks` (in `crates/tact/src/plugin/hooks.rs`) registers them on the `Agent` builder in `interactive.rs` / `headless.rs` for the thirteen mapped events:
+Installed marketplace plugins can declare command hooks through `.codex-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks` (in `crates/tact/src/plugin/hooks.rs`) registers them on the `Agent` builder in `interactive.rs` / `headless.rs` for the thirteen mapped events:
 
 - `SessionStart` — matcher is matched against `"startup"`; `systemPrompt` output is logged but **not applied** (v1).
 - `UserPromptSubmit` — matcher against the prompt text; `additionalContext` output is appended to the user prompt.

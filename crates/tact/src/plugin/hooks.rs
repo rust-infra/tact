@@ -1,6 +1,6 @@
-//! Claude Code plugin hooks: parsing, command execution, and registration.
+//! Plugin command hooks: parsing, command execution, and registration.
 //!
-//! Claude plugins declare hooks through `.claude-plugin/plugin.json`'s
+//! Codex plugins declare hooks through `.codex-plugin/plugin.json`'s
 //! `hooks` field, which points at a hooks JSON file of the form:
 //!
 //! ```json
@@ -256,6 +256,18 @@ async fn run_process(
     payload: &Value,
     timeout_secs: Option<u64>,
 ) -> Result<String> {
+    // Inject the Codex/Claude-Code hook-protocol env vars into the subprocess:
+    //   - `CLAUDE_PLUGIN_ROOT` = absolute plugin cache root (the dir holding
+    //     `.codex-plugin/`, `hooks/`, `skills/`, …). Hook scripts read it to
+    //     locate their own resources; it is also the value substituted for the
+    //     `${CLAUDE_PLUGIN_ROOT}` placeholder in the command string (see
+    //     [`expand_plugin_root`]).
+    //   - `CLAUDE_PROJECT_DIR` = the agent's current working directory, so a
+    //     hook knows which project scope it is running in.
+    // The variable names intentionally keep the `CLAUDE_` prefix: that is the
+    // standard Codex/Claude-Code hook engine injects, so third-party plugin
+    // scripts work unchanged inside tact. Only the manifest dir was renamed to
+    // `.codex-plugin`; these env names are part of the cross-tool hook ABI.
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -424,6 +436,13 @@ struct RawHookSpecificOutput {
 
 /// Expands `${CLAUDE_PLUGIN_ROOT}` (and `$CLAUDE_PLUGIN_ROOT`) in a command
 /// string to the plugin cache root.
+///
+/// Codex/Claude-Code plugins write commands like
+/// `node "${CLAUDE_PLUGIN_ROOT}/hooks/x.js"` because the revision-hashed cache
+/// path is unknowable ahead of time. We resolve the placeholder at spawn time
+/// so the hook needs no separate discovery step; the same value is also made
+/// available to the subprocess as the `CLAUDE_PLUGIN_ROOT` env var (see
+/// [`run_process`]).
 fn expand_plugin_root(command: &str, plugin_root: &Path) -> String {
     let root = plugin_root.to_string_lossy();
     command
@@ -448,9 +467,8 @@ fn matcher_matches(matcher: Option<&str>, subject: &str) -> bool {
 }
 
 /// Resolves a plugin's hooks file path, honouring both the manifest `hooks`
-/// field and Claude Code's default discovery path `hooks/hooks.json` (several
-/// official marketplace plugins omit the manifest field and rely on the
-/// default).
+/// field and the default discovery path `hooks/hooks.json` (several official
+/// marketplace plugins omit the manifest field and rely on the default).
 fn resolve_hooks_path(root: &Path, manifest: &HookManifest) -> Option<PathBuf> {
     if let Some(relative) = manifest.hooks.as_ref() {
         let candidate = root.join(relative);
@@ -472,7 +490,7 @@ fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
     let store = PluginStore::new(home.clone());
     let mut out = Vec::new();
     for root in store.installed_plugin_roots()? {
-        let manifest_path = root.root.join(".claude-plugin").join("plugin.json");
+        let manifest_path = root.root.join(".codex-plugin").join("plugin.json");
         if !manifest_path.is_file() {
             continue;
         }
@@ -1579,10 +1597,10 @@ mod tests {
         let home = tempdir().unwrap();
         let plugin_home = PluginHome::from_home(home.path());
         let plugin_root = plugin_home.cache.join("acme/demo/abc123");
-        std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
         std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
         std::fs::write(
-            plugin_root.join(".claude-plugin/plugin.json"),
+            plugin_root.join(".codex-plugin/plugin.json"),
             r#"{ "name": "demo" }"#,
         )
         .unwrap();
@@ -1651,10 +1669,10 @@ mod tests {
         let home = tempdir().unwrap();
         let plugin_home = PluginHome::from_home(home.path());
         let plugin_root = plugin_home.cache.join("acme/demo/abc123");
-        std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
         std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
         std::fs::write(
-            plugin_root.join(".claude-plugin/plugin.json"),
+            plugin_root.join(".codex-plugin/plugin.json"),
             r#"{ "name": "demo" }"#,
         )
         .unwrap();

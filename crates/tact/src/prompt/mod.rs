@@ -22,10 +22,6 @@ pub struct SystemPrompt {
     #[builder(default)]
     memory: Option<String>,
 
-    /// CLAUDE.md instructions loaded from the current environment.
-    #[builder(default)]
-    claude_md: Option<String>,
-
     /// Dynamic context that should be refreshed each render.
     #[builder(default)]
     dynamic_context: Option<String>,
@@ -115,12 +111,6 @@ impl SystemPrompt {
         self
     }
 
-    /// Sets the CLAUDE.md section.
-    pub fn with_claude_md(&mut self, claude_md: impl Into<String>) -> &mut Self {
-        self.claude_md = Some(claude_md.into());
-        self
-    }
-
     /// Sets the dynamic context section.
     pub fn with_dynamic_context(&mut self, dynamic_context: impl Into<String>) -> &mut Self {
         self.dynamic_context = Some(dynamic_context.into());
@@ -152,7 +142,6 @@ impl From<String> for SystemPrompt {
             role: None,
             skills_available: None,
             memory: None,
-            claude_md: None,
             dynamic_context: None,
             memory_guidance: None,
             guidelines: Vec::new(),
@@ -169,7 +158,6 @@ impl From<&'static str> for SystemPrompt {
             role: None,
             skills_available: None,
             memory: None,
-            claude_md: None,
             dynamic_context: None,
             memory_guidance: None,
             guidelines: Vec::new(),
@@ -186,7 +174,6 @@ impl From<SystemPrompt> for SystemPromptBuilder {
             role: Some(val.role),
             skills_available: Some(val.skills_available),
             memory: Some(val.memory),
-            claude_md: Some(val.claude_md),
             dynamic_context: Some(val.dynamic_context),
             memory_guidance: Some(val.memory_guidance),
             guidelines: Some(val.guidelines),
@@ -203,7 +190,6 @@ impl From<Prompt> for SystemPrompt {
             role: None,
             skills_available: None,
             memory: None,
-            claude_md: None,
             dynamic_context: None,
             memory_guidance: None,
             guidelines: Vec::new(),
@@ -220,7 +206,6 @@ impl Default for SystemPrompt {
             role: None,
             skills_available: None,
             memory: None,
-            claude_md: None,
             dynamic_context: None,
             memory_guidance: None,
             guidelines: Vec::new(),
@@ -289,7 +274,6 @@ impl Into<Prompt> for SystemPrompt {
             role,
             skills_available,
             memory,
-            claude_md,
             dynamic_context,
             memory_guidance,
             guidelines,
@@ -302,7 +286,6 @@ impl Into<Prompt> for SystemPrompt {
             .with_context_value("role", role)
             .with_context_value("skills_available", skills_available)
             .with_context_value("memory", memory)
-            .with_context_value("claude_md", claude_md)
             .with_context_value("dynamic_context", dynamic_context)
             .with_context_value("memory_guidance", memory_guidance)
             .with_context_value("guidelines", guidelines)
@@ -434,11 +417,10 @@ mod tests {
         SystemPrompt::builder()
             .role("Senior Rust engineer")
             .skills_available("- bash\n- read_file")
-            .claude_md("# Project rules\n\nUse Rust.")
             .add_guideline("Keep functions small")
             .add_constraint("Never expose secrets")
             .memory_guidance("Save user preferences")
-            .additional("Extra context here")
+            .additional("# Project rules\n\nUse Rust.")
             .memory("You previously discussed async runtime")
             .dynamic_context("Current file: src/prompt/mod.rs")
             .build()
@@ -462,12 +444,11 @@ mod tests {
         assert!(output.contains("- Never expose secrets"));
         assert!(output.contains("# Memory guidance"));
         assert!(output.contains("# Additional context"));
-        assert!(output.contains("Extra context here"));
         let additional = output.find("# Additional context").unwrap();
         let project_rules = output.find("# Project rules").unwrap();
         assert!(
             project_rules > additional,
-            "CLAUDE.md content should render inside Additional context"
+            "additional content should render inside Additional context"
         );
         assert!(output.contains("=== DYNAMIC_BOUNDARY ==="));
         assert!(output.contains("## Memory"));

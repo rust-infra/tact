@@ -16,7 +16,7 @@
 | **Skills** | 当前可用能力。 |
 | **Guidelines** | 完成任务的最佳实践（软约束，例如先理解目标再行动）。 |
 | **Constraints** | Agent 必须遵守的硬性操作限制（例如用工具而非猜测、何时停止）。 |
-| **CLAUDE.md** / **AGENTS.md** | 工作区可选项目指令文件（默认仅 `AGENTS.md`；见 `[agent].instruction_sources`）。 |
+| **AGENTS.md** | 工作区可选项目指令文件（默认仅 `AGENTS.md`；见 `[agent].instruction_sources`）。 |
 | **Memory** | 以往对话学到的持久事实。 |
 | **Dynamic context** | 实时计算的项目快照（文件树、近期变更等）。 |
 
@@ -54,7 +54,6 @@ crates/tact/src/prompt/system_prompt_template.md
 
 # Additional context
 
-<claude_md>    {# optional #}
 <additional>   {# AGENTS.md #}
 
 === DYNAMIC_BOUNDARY ===
@@ -71,7 +70,6 @@ crates/tact/src/prompt/system_prompt_template.md
 |----|------|--------|
 | `role` | 硬编码 agent 身份 | 静态 |
 | `skills_available` | skill 注册表 | 基本静态 |
-| `claude_md` | `CLAUDE.md`（可选；在 `# Additional context` 下） | 每会话静态 |
 | `guidelines` / `constraints` | agent 默认值 | 静态 |
 | `memory_guidance` | 常量提示文本 | 静态 |
 | `additional` | `AGENTS.md`（默认；在 `# Additional context` 下） | 每会话静态 |
@@ -116,39 +114,28 @@ let prompt = SystemPrompt::builder()
     .constraints([...])
     .skills_available(self.tool_context.skill_registry.describe_available())
     .memory(self.load_memory_prompt()?)
-    .claude_md(cached_md_section(&mut cached_claude_md, || assemble_claude_md_prompt(workdir, &instruction_sources)))
     .additional(cached_md_section(&mut cached_agents_md, || assemble_agents_md_prompt(workdir, &instruction_sources)))
     .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot))
     .memory_guidance(MEMORY_GUIDANCE.trim())
     .build()?;
 ```
 
-`build_system_prompt()` 在**每个任务**开始时调用一次，位于 `agent_loop` 顶部、回合循环开始之前。同一渲染字符串在该任务内每次 LLM 请求复用，使提示词在回合间字节稳定，利于前缀 KV 缓存。`memory` 与 `dynamic_context` 在下一任务开始时重新求值；启用的指令文件（`AGENTS.md` / `CLAUDE.md`）与目录快照**每会话组装一次**并缓存。
+`build_system_prompt()` 在**每个任务**开始时调用一次，位于 `agent_loop` 顶部、回合循环开始之前。同一渲染字符串在该任务内每次 LLM 请求复用，使提示词在回合间字节稳定，利于前缀 KV 缓存。`memory` 与 `dynamic_context` 在下一任务开始时重新求值；启用的指令文件（`AGENTS.md`）与目录快照**每会话组装一次**并缓存。
 
 ### 3.3 指令文件来源（`instruction_sources`）
 
-默认仅注入 **`AGENTS.md`**。`CLAUDE.md` 通过 `config.toml` 可选启用。二者渲染在同一 `# Additional context` 节（启用时 CLAUDE 块在前，随后 AGENTS）。
+仅注入 **`AGENTS.md`**，渲染在 `# Additional context` 节内。
 
 ```toml
 [agent]
 # 默认 — 仅 AGENTS.md
 instruction_sources = ["agents_md"]
-
-# Claude Code 风格 — 两套文件
-instruction_sources = ["agents_md", "claude_md"]
-
-# 细粒度 CLAUDE 路径
-instruction_sources = ["agents_md", "claude_md_user", "claude_md_project"]
 ```
 
 
 | Key | 文件 |
 |-----|------|
 | `agents_md` | `<workdir>/AGENTS.md`、可选 `<cwd>/AGENTS.md` |
-| `claude_md` | 下面三个 CLAUDE 路径全部 |
-| `claude_md_user` | `~/.claude/CLAUDE.md` |
-| `claude_md_project` | `<workdir>/CLAUDE.md` |
-| `claude_md_subdir` | cwd ≠ workdir 时的 `<cwd>/CLAUDE.md` |
 
 
 ---
@@ -170,7 +157,7 @@ instruction_sources = ["agents_md", "claude_md_user", "claude_md_project"]
 
 ## 5. 动态边界与 KV 缓存
 
-LLM 提供商可在多次调用间**缓存**长提示词的前缀。系统提示词顶部的稳定节（role、guidelines、constraints、CLAUDE.md）非常适合缓存。
+LLM 提供商可在多次调用间**缓存**长提示词的前缀。系统提示词顶部的稳定节（role、guidelines、constraints、AGENTS.md）非常适合缓存。
 
 这一行：
 

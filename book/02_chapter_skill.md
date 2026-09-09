@@ -29,7 +29,6 @@ graph TB
         T["workdir/.tact/skills/*/SKILL.md"]
         U["~/.tact/skills/*/SKILL.md"]
         A["~/.agents/skills/*/SKILL.md"]
-        P["workdir/.claude/skills/*/SKILL.md"]
         C["agent.skill_dirs from config"]
         I["~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md"]
     end
@@ -77,12 +76,11 @@ Discovery roots:
 | Project-local | `<workdir>/.tact/skills/` | Per-repo tact skills |
 | User | `~/.tact/skills/` | Personal skills across projects |
 | Global agents | `~/.agents/skills/` | Shared agents skills |
-| Project (Claude) | `<workdir>/.claude/skills/` | Team / repo skills (Claude-compatible) |
 | Config extras | `[agent].skill_dirs` | Extra roots from TOML (relative to workdir; `~` ok) |
 | Installed plugin | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/` | Installed plugin playbooks |
 | Installed plugin commands | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/commands/*.md` | Legacy Claude slash commands |
 
-Load order: project-local → user → global agents → Claude project → **config `skill_dirs`** → installed plugins. **Same standalone name: later wins**. Installed plugin skills always use a `plugin:skill` name, so they cannot replace standalone skills.
+Load order: project-local → user → global agents → **config `skill_dirs`** → installed plugins. **Same standalone name: later wins**. Installed plugin skills always use a `plugin:skill` name, so they cannot replace standalone skills.
 
 Legacy `commands/*.md` files load into the same registry **after** a plugin's `skills/` (Claude Code treats both layouts identically — only the file layout differs), so a same-named command wins over the skill. Command names come from the file stem: `commands/commit.md` → `/plugin:commit`.
 
@@ -254,7 +252,7 @@ Separate from the model calling `load_skill` mid-turn.
 
 | Aspect | Skills | Memory |
 |--------|--------|--------|
-| Location | `.tact/skills/` + `~/.tact/skills/` + `.claude/skills/` (+ optional `skill_dirs`) | `~/.tact/memory/` (user-global) |
+| Location | `.tact/skills/` + `~/.tact/skills/` + `~/.agents/skills/` (+ optional `skill_dirs`) | `~/.tact/memory/` (user-global) |
 | Format | `SKILL.md` + optional frontmatter | `{name}.md` + required frontmatter |
 | Prompt injection | Summaries always; body on demand / slash | Full content every turn (dynamic section) |
 | Write path | Edit files on disk (no agent tool) | `save_memory` tool |

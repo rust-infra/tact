@@ -935,7 +935,7 @@ mod lifecycle_tests {
     }
 
     fn write_skill(work_dir: &std::path::Path, name: &str) {
-        let skill_dir = work_dir.join(".claude/skills").join(name);
+        let skill_dir = work_dir.join(".tact/skills").join(name);
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),

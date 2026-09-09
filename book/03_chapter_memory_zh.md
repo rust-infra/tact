@@ -2,7 +2,7 @@
 
 > 语言：[中文](./03_chapter_memory_zh.md) · [English](./03_chapter_memory.md)
 
-本章说明 Tact 如何在对话上下文之外存储**长期事实**：用户偏好、纠正、项目约束与参考 URL。记忆是 `~/.tact/memory/` 下带 YAML frontmatter 的 Markdown 文件——一个**用户级全局**目录，跨所有项目共享（类似 Claude Code 用户级 `~/.claude` 状态）。每轮注入系统提示词，并可通过 `save_memory` 原生工具在运行时写入。
+本章说明 Tact 如何在对话上下文之外存储**长期事实**：用户偏好、纠正、项目约束与参考 URL。记忆是 `~/.tact/memory/` 下带 YAML frontmatter 的 Markdown 文件——一个**用户级全局**目录，跨所有项目共享。每轮注入系统提示词，并可通过 `save_memory` 原生工具在运行时写入。
 
 记忆如何融入提示词组装与动态边界，见 [系统提示词](./04_chapter_prompt_zh.md)。写入工具见 [工具系统](./07_chapter_tool_zh.md)。
 

@@ -153,7 +153,7 @@ pub struct AgentRuntime {
     pub last_message_db_id: i64,
     /// `persist_llm_call` 运行时的 `last_message_db_id`（assistant 行之前）。
     pub llm_call_last_message_id: i64,
-    // … cached_dir_snapshot, cached_claude_md, cached_agents_md
+    // … cached_dir_snapshot, cached_agents_md
 }
 ```
 

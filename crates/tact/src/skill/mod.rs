@@ -6,7 +6,6 @@
 //! - project-local: `<workdir>/.tact/skills/`
 //! - user:          `~/.tact/skills/`
 //! - global:        `~/.agents/skills/`
-//! - project:       `<workdir>/.claude/skills/`
 //! - config:        `[agent].skill_dirs` (in listed order)
 //!
 //! Each file has optional YAML frontmatter for `name` and `description`
@@ -529,14 +528,22 @@ mod tests {
     }
 
     #[test]
-    fn loads_from_project_claude_skills_dir() {
+    fn claude_project_skills_dir_is_not_scanned() {
+        // Claude-directory compatibility was removed; `<workdir>/.claude/skills`
+        // must not be picked up as a project skill root.
         let dir = tempdir().unwrap();
-        let project_skills = dir.path().join(".claude/skills");
-        write_skill(&project_skills, "deploy", "Deploy playbook", "step 1");
+        write_skill(
+            &dir.path().join(".claude/skills"),
+            "deploy",
+            "Deploy playbook",
+            "step 1",
+        );
 
         let registry = get_skill_registry(dir.path()).unwrap();
-        assert!(registry.skills().contains_key("deploy"));
-        assert!(registry.load_full_text("deploy").contains("step 1"));
+        assert!(
+            !registry.skills().contains_key("deploy"),
+            "legacy .claude/skills must not be scanned after claude-dir removal"
+        );
     }
 
     #[test]
@@ -562,22 +569,6 @@ mod tests {
 
         let registry = get_skill_registry(dir.path()).unwrap();
         assert!(!registry.skills().contains_key("old"));
-    }
-
-    #[test]
-    fn project_skill_overrides_tact_skills_same_name() {
-        let dir = tempdir().unwrap();
-        write_skill(&dir.path().join(".tact/skills"), "style", "tact", "TACT");
-        write_skill(
-            &dir.path().join(".claude/skills"),
-            "style",
-            "project",
-            "PROJECT",
-        );
-
-        let registry = get_skill_registry(dir.path()).unwrap();
-        assert!(registry.load_full_text("style").contains("PROJECT"));
-        assert!(!registry.load_full_text("style").contains("TACT"));
     }
 
     #[test]
@@ -736,7 +727,7 @@ mod tests {
         );
 
         write_skill(
-            &dir.path().join(".claude/skills"),
+            &dir.path().join(".tact/skills"),
             &unique,
             "Deploy",
             "v1 body",

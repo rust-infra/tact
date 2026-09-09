@@ -70,7 +70,7 @@ pub fn test_context(name: &str) -> ToolContext {
 
     ToolContext {
         skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
-            root_dir.join(".claude/skills")
+            root_dir.join(".tact/skills")
         ]))),
         subagent_start_hooks: Vec::new(),
         subagent_stop_hooks: Vec::new(),
@@ -113,14 +113,14 @@ pub fn write_workspace_file(work_dir: &Path, path: &str, content: &str) {
 }
 
 pub fn install_skill(work_dir: &Path, name: &str, body: &str) -> SharedSkillRegistry {
-    let skill_dir = work_dir.join(".claude/skills").join(name);
+    let skill_dir = work_dir.join(".tact/skills").join(name);
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
         skill_dir.join("SKILL.md"),
         format!("---\nname: {name}\ndescription: test skill\n---\n\n{body}"),
     )
     .unwrap();
-    let mut registry = SkillRegistry::new([work_dir.join(".claude/skills")]);
+    let mut registry = SkillRegistry::new([work_dir.join(".tact/skills")]);
     registry.load_skills().unwrap();
     Arc::new(Mutex::new(registry))
 }

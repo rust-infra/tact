@@ -68,7 +68,6 @@ mod input_limit_tests {
 
 /// Directories under the workdir.  Kept private; accessed via [`TactPath`].
 const TACT_DIR: &str = ".tact";
-const CLAUDE_DIR: &str = ".claude";
 const AGENTS_DIR: &str = ".agents";
 const MEMORY_DIR: &str = "memory";
 const SKILL_DIR: &str = "skills";
@@ -121,24 +120,13 @@ impl TactPath {
         self.tact_dir().join("tact.db")
     }
 
-    /// `<workdir>/.claude`
-    pub fn claude_dir(&self) -> PathBuf {
-        self.workdir.join(CLAUDE_DIR)
-    }
-
-    /// `<workdir>/.claude/skills` — Claude Code–compatible project skills.
-    pub fn skills_dir(&self) -> PathBuf {
-        self.claude_dir().join(SKILL_DIR)
-    }
-
     /// `<workdir>/.tact/skills` — project-local tact skills.
     pub fn tact_skills_dir(&self) -> PathBuf {
         self.tact_dir().join(SKILL_DIR)
     }
 
     /// Skill roots in load order (later entries win on name clash):
-    /// `<workdir>/.tact/skills` → `~/.tact/skills` → `~/.agents/skills` →
-    /// `<workdir>/.claude/skills`.
+    /// `<workdir>/.tact/skills` → `~/.tact/skills` → `~/.agents/skills`.
     ///
     /// Callers may append config `[agent].skill_dirs` after these.
     pub fn skill_search_dirs(&self) -> Vec<PathBuf> {
@@ -149,7 +137,6 @@ impl TactPath {
         if let Some(home) = Self::home_agents_dir() {
             dirs.push(home.join(SKILL_DIR));
         }
-        dirs.push(self.skills_dir());
         dirs
     }
 
@@ -196,8 +183,7 @@ impl TactPath {
     }
 
     /// `$HOME/.tact/memory` — user-global persistent memory directory, shared
-    /// across all projects (the `.tact` analogue of Claude Code's user-level
-    /// `~/.claude` state).
+    /// across all projects (the tact analogue of a user-level global store).
     pub fn home_memory_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(|home| Self::home_memory_dir_for(Path::new(&home)))
     }
@@ -207,11 +193,6 @@ impl TactPath {
     #[must_use]
     pub fn home_memory_dir_for(home: &Path) -> PathBuf {
         home.join(TACT_DIR).join(MEMORY_DIR)
-    }
-
-    /// `$HOME/.claude` — global claude config directory.
-    pub fn home_claude_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(CLAUDE_DIR))
     }
 
     /// `$HOME/.agents` — global agents config directory.

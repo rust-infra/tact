@@ -31,6 +31,21 @@
 
 ---
 
+## 1. 2026-09-09 — 采用 Codex 插件/生态；移除 Claude 目录兼容
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact/src/plugin/{install,hooks,marketplace,store,model}.rs`、`crates/tact/src/mcp/mod.rs`、`crates/tact/src/consts.rs`、`crates/tact/src/skill/mod.rs`、`crates/tact/src/config/instruction_sources.rs`、`crates/tact/src/prompt/{mod.rs,system_prompt_template.md,responses_system_prompt_template.md}`、`crates/tact/src/agent/mod.rs`；设计见 `docs/superpowers/plans/2026-09-09-codex-plugin-compat-and-memory.md`；Ch 2、3、4、8、9、12、18 |
+
+**症状 / 动机:** Tact 长期维护两套插件生态（Claude 的 `.claude-plugin` 与 Codex 家族）。两者共享同一命令-hook 内核（子进程 + stdin JSON + `CLAUDE_PLUGIN_ROOT`），但维护两套 manifest/发现系统并不划算；Codex 布局是更干净、仍在积极维护的规范，且 agentmemory 自带 `.codex-plugin`，因此仅 Codex 也能接入它。Claude 目录兼容（`.claude-plugin`、`.claude/`、`CLAUDE.md`、`.claude/skills`）属遗留表面。
+
+**决策:** 以 Codex 插件系统为规范，并**彻底移除**（而非 gated）Claude 目录兼容：插件 manifest 目录改为 `.codex-plugin/plugin.json`；技能根为 `.tact/skills` → `~/.tact/skills` → `~/.agents/skills`（删除 `.claude/skills`）；删除 `home_claude_dir()` / `claude_dir()`；移除 `CLAUDE.md` 指令注入，`[agent].instruction_sources` 仅接受 `agents_md`；系统提示 `# Additional context` 不再携带 claude_md 分支。**保留** `CLAUDE_PLUGIN_ROOT` 环境变量名（Codex 自己的 hook 引擎也注入它）；Claude/Anthropic 作为 **LLM provider 与 `claude-*` 模型名不受影响**；保留 `~/.agents`。
+
+**改后行为:** 插件仅通过 `.codex-plugin/plugin.json`（+ 默认 `hooks/hooks.json`）发现。项目技能从 `.tact/skills` 加载（另含 `~/.tact/skills`、`~/.agents/skills`）；工作目录下的 `.claude/skills` 会被忽略。仅注入 `AGENTS.md` 作为指令文件；`instruction_sources` 中出现 `claude_md*` 会被拒绝。从 `.claude-plugin` 迁移的用户需改用 codex 布局。
+
+---
+
 ## 1. 2026-09-08 — 移除权限弹窗超时；改为修复「弹窗被错过」的失同步
 
 | Field | Value |

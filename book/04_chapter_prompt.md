@@ -15,7 +15,7 @@ The system prompt is not a single string of rules. It is an assembly of several 
 | **Skills** | What capabilities are available right now. |
 | **Guidelines** | Soft best practices for completing the task well (e.g., understand the goal before acting). |
 | **Constraints** | Hard operational limits the agent must follow (e.g., use tools instead of guessing, when to stop). |
-| **CLAUDE.md** / **AGENTS.md** | Optional project instruction files from the workspace (default: `AGENTS.md` only; see `[agent].instruction_sources`). |
+| **AGENTS.md** | Optional project instruction file from the workspace (default: `AGENTS.md` only; see `[agent].instruction_sources`). |
 | **Memory** | Persistent facts learned from previous conversations. |
 | **Dynamic context** | Freshly computed project snapshot (file tree, recent changes, etc.). |
 
@@ -53,7 +53,6 @@ The final output follows this order:
 
 # Additional context
 
-<claude_md>    {# optional #}
 <additional>   {# AGENTS.md #}
 
 === DYNAMIC_BOUNDARY ===
@@ -70,7 +69,6 @@ The final output follows this order:
 | ---------------------------- | --------------------------------------------------------- | ------------------ |
 | `role`                       | hard-coded agent identity                                 | static             |
 | `skills_available`           | skill registry                                            | mostly static      |
-| `claude_md`                  | `CLAUDE.md` (optional; under `# Additional context`)      | static per session |
 | `guidelines` / `constraints` | agent defaults                                            | static             |
 | `memory_guidance`            | constant prompt text                                      | static             |
 | `additional`                 | `AGENTS.md` (default; under `# Additional context`)       | static per session |
@@ -115,39 +113,28 @@ let prompt = SystemPrompt::builder()
     .constraints([...])
     .skills_available(self.tool_context.skill_registry.describe_available())
     .memory(self.load_memory_prompt()?)
-    .claude_md(cached_md_section(&mut cached_claude_md, || assemble_claude_md_prompt(workdir, &instruction_sources)))
     .additional(cached_md_section(&mut cached_agents_md, || assemble_agents_md_prompt(workdir, &instruction_sources)))
     .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot))
     .memory_guidance(MEMORY_GUIDANCE.trim())
     .build()?;
 ```
 
-`build_system_prompt()` is called **once per task**, at the top of `agent_loop` before the turn loop starts. The same rendered string is reused for every LLM request within that task, keeping the prompt byte-stable across turns for prefix KV-caching. `memory` and `dynamic_context` are re-evaluated at the start of the next task; enabled instruction files (`AGENTS.md` / `CLAUDE.md`) and the directory snapshot are assembled **once per session** and cached.
+`build_system_prompt()` is called **once per task**, at the top of `agent_loop` before the turn loop starts. The same rendered string is reused for every LLM request within that task, keeping the prompt byte-stable across turns for prefix KV-caching. `memory` and `dynamic_context` are re-evaluated at the start of the next task; the enabled instruction file (`AGENTS.md`) and the directory snapshot are assembled **once per session** and cached.
 
 ### 3.3 Instruction file sources (`instruction_sources`)
 
-By default only **`AGENTS.md`** is injected. `CLAUDE.md` is opt-in via `config.toml`. Both render inside the same `# Additional context` section (CLAUDE block first when enabled, then AGENTS).
+Only **`AGENTS.md`** is injected, rendered inside the `# Additional context` section.
 
 ```toml
 [agent]
 # Default — AGENTS.md only
 instruction_sources = ["agents_md"]
-
-# Claude Code style — both file families
-instruction_sources = ["agents_md", "claude_md"]
-
-# Fine-grained CLAUDE paths
-instruction_sources = ["agents_md", "claude_md_user", "claude_md_project"]
 ```
 
 
-| Key                 | Files                                             |
-| ------------------- | ------------------------------------------------- |
-| `agents_md`         | `<workdir>/AGENTS.md`, optional `<cwd>/AGENTS.md` |
-| `claude_md`         | All three CLAUDE paths below                      |
-| `claude_md_user`    | `~/.claude/CLAUDE.md`                             |
-| `claude_md_project` | `<workdir>/CLAUDE.md`                             |
-| `claude_md_subdir`  | `<cwd>/CLAUDE.md` when cwd ≠ workdir              |
+| Key         | Files                                             |
+| ----------- | ------------------------------------------------- |
+| `agents_md` | `<workdir>/AGENTS.md`, optional `<cwd>/AGENTS.md` |
 
 
 ---
@@ -169,7 +156,7 @@ In normal Tact usage (`tact-ui` / headless), the agent starts in `Dynamic` mode.
 
 ## 5. The Dynamic Boundary and KV-Cache
 
-LLM providers can **cache** the prefix of a long prompt across calls. The stable sections at the top of the system prompt (role, guidelines, constraints, CLAUDE.md) are perfect for caching.
+LLM providers can **cache** the prefix of a long prompt across calls. The stable sections at the top of the system prompt (role, guidelines, constraints, AGENTS.md) are perfect for caching.
 
 The line:
 
