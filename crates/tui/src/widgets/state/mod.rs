@@ -201,6 +201,15 @@ pub struct App {
     pub(crate) dirty: bool,
     /// Internal clipboard buffer (used when system clipboard is unavailable).
     pub(crate) clipboard_buffer: String,
+    /// Long-lived native clipboard handle (lazily created on first copy).
+    ///
+    /// On Linux (X11/Wayland) the app that copies is the *owner* of the
+    /// CLIPBOARD selection and must keep serving it for other programs to be
+    /// able to paste. Creating and dropping an `arboard::Clipboard` per copy
+    /// releases that ownership immediately, so the text would only survive if
+    /// a clipboard manager happened to grab it — hence we must hold one
+    /// instance for the whole lifetime of the TUI instead.
+    pub(crate) system_clipboard: Option<arboard::Clipboard>,
     /// Current task start time (for bottom status bar timer).
     pub(crate) task_start_time: Option<chrono::DateTime<chrono::Local>>,
     /// Frozen elapsed seconds from the most recent submitted prompt.

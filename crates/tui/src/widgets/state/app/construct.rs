@@ -113,6 +113,7 @@ impl App {
             should_quit: false,
             dirty: true,
             clipboard_buffer: String::new(),
+            system_clipboard: None,
             task_start_time: None,
             last_prompt_elapsed_secs: None,
             task_done_time: None,

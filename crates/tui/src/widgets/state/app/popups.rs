@@ -15,6 +15,17 @@ impl App {
         self.copy_text_inner(text, false);
     }
 
+    /// True when a native clipboard write succeeded via [`Self::system_clipboard`].
+    fn write_system_clipboard(&mut self, text: &str) -> bool {
+        if self.system_clipboard.is_none() {
+            self.system_clipboard = Clipboard::new().ok();
+        }
+        match &mut self.system_clipboard {
+            Some(clip) => clip.set_text(text.to_owned()).is_ok(),
+            None => false,
+        }
+    }
+
     fn copy_text_inner(&mut self, text: &str, include_preview: bool) {
         let preview: String = text.chars().take(40).collect();
         let copied = |template: &str| {
@@ -25,9 +36,11 @@ impl App {
             }
         };
 
-        if let Ok(mut clip) = Clipboard::new()
-            && clip.set_text(text).is_ok()
-        {
+        // Prefer the native clipboard. The `Clipboard` is kept alive for the
+        // whole app lifetime (see `system_clipboard`) because on Linux the
+        // copier owns the selection and must keep serving it; dropping the
+        // handle per-copy would make the text unpastable elsewhere.
+        if self.write_system_clipboard(text) {
             let msgs = self.msgs();
             self.add_system_message(copied(msgs.copied_tmpl));
             return;

@@ -17,7 +17,7 @@ license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1.0"
-arboard = "3"
+arboard = { version = "3", features = ["wayland-data-control"] }
 async-openai = "0.20"
 bytes = "1"
 async-openai-responses = { package = "async-openai-local", git = "https://github.com/rust-infra/async-openai.git", branch = "feat/tact", version = "0.41.3", features = ["responses", "byot"] }
