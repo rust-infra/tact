@@ -17,10 +17,13 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarState},
 };
 
+use unicode_width::UnicodeWidthStr;
+
 use super::PopupMouseSurface;
 use crate::{
     render::{
         ctx::RenderCtx,
+        input::truncate_to_width,
         render_md::render_markdown_tui,
         selectable_text::{PopupLayoutCache, layout_all_display_rows},
     },
@@ -45,6 +48,24 @@ pub fn prepare_subagent_popup(
 ) {
     let tool_id = &popup.tool_id;
     let is_live = tools.active.iter().any(|a| a.tool_id == *tool_id);
+    // The full original prompt (`arg_full`) is prepended to the body in both
+    // the live transcript and the completed summary, so its length must be
+    // included in the cheap fingerprint for the cache-freshness check.
+    let prompt_len = if is_live {
+        tools
+            .active
+            .iter()
+            .find(|a| a.tool_id == *tool_id)
+            .map(|a| a.output.arg_full.trim().len())
+            .unwrap_or(0)
+    } else {
+        tools
+            .blocks
+            .iter()
+            .find(|b| b.tool_id == *tool_id)
+            .map(|b| b.output.arg_full.trim().len())
+            .unwrap_or(0)
+    };
     // Cheap fingerprint (byte length) so we can skip the clone + full re-wrap
     // when neither the content nor the body width changed.
     let content_len = if is_live {
@@ -59,9 +80,9 @@ pub fn prepare_subagent_popup(
             .blocks
             .iter()
             .find(|b| b.tool_id == *tool_id)
-            .and_then(|b| b.output.detail_full.as_ref().map(String::len))
+            .and_then(|b| b.output.detail_full.as_ref().map(|d| d.len()))
             .unwrap_or(0)
-    };
+    } + prompt_len;
     if content_len == 0 {
         return;
     }
@@ -74,7 +95,35 @@ pub fn prepare_subagent_popup(
         return;
     }
 
-    let source = if is_live {
+    // Prepend the original user prompt to the body so it stays visible in
+    // both the live transcript and the completed summary instead of being
+    // lost — the popup body otherwise only shows the subagent's stream/output.
+    // `arg_full` holds the full prompt.
+    //
+    // Use a plain `Prompt:` label (not Markdown `#` heading / `---` rule) so
+    // the live transcript (plain lines) and the completed view (Markdown) look
+    // consistent.
+    let prompt_header = if is_live {
+        tools
+            .active
+            .iter()
+            .find(|a| a.tool_id == *tool_id)
+            .map(|a| a.output.arg_full.trim())
+            .filter(|p| !p.is_empty())
+            .map(|p| format!("Prompt:\n{p}\n\n"))
+            .unwrap_or_default()
+    } else {
+        tools
+            .blocks
+            .iter()
+            .find(|b| b.tool_id == *tool_id)
+            .map(|b| b.output.arg_full.trim())
+            .filter(|p| !p.is_empty())
+            .map(|p| format!("Prompt:\n{p}\n\n"))
+            .unwrap_or_default()
+    };
+
+    let body = if is_live {
         tools
             .active
             .iter()
@@ -89,7 +138,8 @@ pub fn prepare_subagent_popup(
             .and_then(|b| b.output.detail_full.clone())
             .unwrap_or_default()
     };
-    if source.is_empty() {
+    let source = format!("{prompt_header}{body}");
+    if source.trim().is_empty() {
         return;
     }
 
@@ -166,6 +216,14 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
     } else {
         format!(" {} ({} lines) ", title, cache.line_count)
     };
+    // The subagent prompt can be extremely long and ratatui would hard-clip the
+    // title row at the popup width, leaving an unreadable mid-sentence tail.
+    // Truncate the title to the available title-row width so it reads cleanly.
+    // Title row is: "{header} [x]" inside the 2-cell border; `header` already
+    // carries its own leading/trailing spaces.
+    let available = (popup_area.width.saturating_sub(2) as usize)
+        .saturating_sub(UnicodeWidthStr::width(" [x]"));
+    let header = truncate_to_width(&header, available);
 
     let footer: &[super::FooterHint] = &[
         super::FooterHint {
@@ -212,4 +270,140 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
     surface.body_area = body_area;
     surface.hit_rows = hit_rows;
     surface
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use ratatui::text::Line;
+
+    use crate::{
+        state::{ActiveToolBlock, ToolState},
+        theme::{Theme, ThemeName},
+        widgets::tool_widget::{ToolLayout, ToolPhase, ToolRenderOutput},
+    };
+
+    use super::*;
+
+    fn render_output(arg_full: &str) -> ToolRenderOutput {
+        ToolRenderOutput {
+            title_line: Line::from("53. Subagent"),
+            title_raw: "53. Subagent".into(),
+            phase: ToolPhase::Running,
+            permission_label: None,
+            error_message: None,
+            duration_us: Some(1),
+            size_bytes: None,
+            tool_name: "spawn_subagent".into(),
+            use_diff_gutter: false,
+            arg_summary: String::new(),
+            arg_full: arg_full.into(),
+            layout: ToolLayout {
+                visual_rows: 1,
+                preview_lines: 0,
+                has_detail_card: false,
+            },
+            detail_title: None,
+            detail_preview: Vec::new(),
+            detail_total_lines: 0,
+            detail_full: None,
+            card_bottom: String::new(),
+            subagent_model: None,
+            subagent_tokens: None,
+            visual_kind: tact_protocol::ToolVisualKind::Subagent,
+        }
+    }
+
+    fn live_tools(arg_full: &str, body: &str) -> ToolState {
+        let mut live = tact_protocol::ToolOutputBuffer::new_full(100_000);
+        if !body.is_empty() {
+            live.push_chunks(&[tact_protocol::ToolOutputChunk::stdout(body)]);
+        }
+        ToolState {
+            active: vec![ActiveToolBlock {
+                phys_idx: 0,
+                tool_id: "sa-1".into(),
+                output: render_output(arg_full),
+                live_output: live,
+                started_at: Instant::now(),
+                subagent_child_id: None,
+            }],
+            blocks: Vec::new(),
+            popup: None,
+        }
+    }
+
+    #[test]
+    fn live_layout_prepends_prompt_to_transcript() {
+        let theme = Theme::from(ThemeName::Ink);
+        let prompt = "Research bitcoin price and report USD.";
+        let tools = live_tools(prompt, "looking up price…\n$78,629");
+        let mut popup = SubagentPopup {
+            title: "53. Subagent".into(),
+            scroll: 0,
+            tool_id: "sa-1".into(),
+            cached_markdown: None,
+            selection: None,
+            layout_cache: None,
+        };
+
+        prepare_subagent_popup(&mut popup, &tools, &theme, 60);
+
+        let cache = popup.layout_cache.expect("live layout must be built");
+        assert!(
+            cache.raw_text.contains(prompt),
+            "prompt must appear in live body, got:\n{}",
+            cache.raw_text
+        );
+        assert!(
+            cache.raw_text.contains("looking up price"),
+            "live transcript body must be preserved, got:\n{}",
+            cache.raw_text
+        );
+    }
+
+    fn completed_tools(arg_full: &str, detail: &str) -> ToolState {
+        let mut output = render_output(arg_full);
+        output.phase = ToolPhase::Success;
+        output.detail_full = Some(detail.into());
+        ToolState {
+            active: Vec::new(),
+            blocks: vec![crate::state::ToolBlock {
+                phys_idx: 0,
+                tool_id: "sa-1".into(),
+                output,
+            }],
+            popup: None,
+        }
+    }
+
+    #[test]
+    fn completed_layout_prepends_prompt_to_summary() {
+        let theme = Theme::from(ThemeName::Ink);
+        let prompt = "Summarize the codebase.";
+        let tools = completed_tools(prompt, "found 3 crates, all Rust.");
+        let mut popup = SubagentPopup {
+            title: "53. Subagent".into(),
+            scroll: 0,
+            tool_id: "sa-1".into(),
+            cached_markdown: None,
+            selection: None,
+            layout_cache: None,
+        };
+
+        prepare_subagent_popup(&mut popup, &tools, &theme, 60);
+
+        let cache = popup.layout_cache.expect("completed layout must be built");
+        assert!(
+            cache.raw_text.contains(prompt),
+            "prompt must appear in completed body, got:\n{}",
+            cache.raw_text
+        );
+        assert!(
+            cache.raw_text.contains("found 3 crates"),
+            "completed summary body must be preserved, got:\n{}",
+            cache.raw_text
+        );
+    }
 }
