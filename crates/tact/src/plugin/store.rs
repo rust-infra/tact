@@ -590,7 +590,11 @@ mod tests {
         );
         // Migrated, and the legacy file is deliberately left in place so an
         // older binary sharing this home keeps working.
-        assert!(home.path().join(".tact/plugins/state/installed.json").is_file());
+        assert!(
+            home.path()
+                .join(".tact/plugins/state/installed.json")
+                .is_file()
+        );
         assert!(home.path().join(".tact/plugins/installed.json").is_file());
     }
 
@@ -603,7 +607,11 @@ mod tests {
             .save_marketplaces(&super::MarketplaceState::with_builtin())
             .unwrap();
 
-        assert!(home.path().join(".tact/plugins/state/marketplaces.json").is_file());
+        assert!(
+            home.path()
+                .join(".tact/plugins/state/marketplaces.json")
+                .is_file()
+        );
         assert!(!home.path().join(".tact/plugins/marketplaces.json").exists());
     }
 }

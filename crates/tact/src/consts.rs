@@ -79,8 +79,7 @@ mod tact_path_tests {
         let project = workdir.join(".tact/skills");
 
         let position = |needle: &Path| {
-            dirs
-                .iter()
+            dirs.iter()
                 .position(|dir| dir == needle)
                 .unwrap_or_else(|| panic!("{} missing from {dirs:?}", needle.display()))
         };

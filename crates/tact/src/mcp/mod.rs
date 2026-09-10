@@ -34,14 +34,8 @@
 //! plugin is a distributable bundle, not a config convention — their servers
 //! keep manifest-prefixed names and are never how a user is told to configure
 //! MCP directly.
- 
-use std::{
-    collections::HashMap,
-    fs,
-    path::Path,
-    process::Stdio,
-    sync::Arc,
-};
+
+use std::{collections::HashMap, fs, path::Path, process::Stdio, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use futures_util::{
@@ -1448,7 +1442,11 @@ mod tests {
             .iter()
             .find(|s| s.name == "native")
             .expect("project .tact/mcp.json is read");
-        assert!(native.source.ends_with(".tact/mcp.json"), "{}", native.source);
+        assert!(
+            native.source.ends_with(".tact/mcp.json"),
+            "{}",
+            native.source
+        );
         assert!(
             !servers.iter().any(|s| s.name == "ignored"),
             "a cwd .mcp.json must not be read: {servers:?}",
