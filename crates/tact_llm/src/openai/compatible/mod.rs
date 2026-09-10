@@ -207,10 +207,26 @@ pub(crate) const STREAM_OPTIONS_WITH_USAGE: StreamOptions = StreamOptions {
     include_usage: Some(true),
 };
 
+/// Deserialize a nullable JSON array into an empty `Vec`.
+///
+/// Some OpenAI-compatible streaming endpoints emit `null` for array-typed
+/// fields (notably `choices` or `delta.tool_calls`) instead of omitting them
+/// or sending `[]`. Serde's `#[serde(default)]` only covers *missing* fields,
+/// so an explicit `null` would otherwise abort the stream with a
+/// `serialization error: invalid type: null, expected a sequence`.
+fn deserialize_null_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Top-level SSE chunk from an OpenAI-compatible streaming chat completion.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct StreamChunk {
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
     choices: Vec<StreamChoice>,
     usage: Option<StreamUsage>,
 }
@@ -228,6 +244,7 @@ struct StreamDelta {
     content: Option<String>,
     #[serde(rename = "reasoning_content")]
     reasoning_content: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
     tool_calls: Vec<StreamToolCallDelta>,
 }
 
@@ -515,7 +532,17 @@ impl OpenAiAdapter {
                         break;
                     }
 
-                    let chunk: StreamChunk = serde_json::from_str(&msg.data)?;
+                    let chunk: StreamChunk = match serde_json::from_str(&msg.data) {
+                        Ok(chunk) => chunk,
+                        Err(error) => {
+                            tracing::debug!(
+                                error = %error,
+                                data = %msg.data,
+                                "OpenAI-compatible SSE chunk failed to deserialize; logging the raw chunk for diagnostics"
+                            );
+                            return Err(error.into());
+                        }
+                    };
 
                     // ── choices ──
                     for choice in &chunk.choices {
@@ -887,6 +914,21 @@ mod tests {
             Some("tact-sess-chat"),
             "x-opencode-session must equal the session id"
         );
+    }
+
+    #[test]
+    fn stream_chunk_accepts_null_array_fields() {
+        // Some OpenAI-compatible endpoints send explicit `null` instead of
+        // omitting the field / using `[]`; that must not abort the stream.
+        let chunk: StreamChunk = serde_json::from_str(r#"{"choices":null}"#).unwrap();
+        assert!(chunk.choices.is_empty());
+
+        let chunk: StreamChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{"tool_calls":null}}],"usage":null}"#)
+                .unwrap();
+        assert!(chunk.usage.is_none());
+        assert_eq!(chunk.choices.len(), 1);
+        assert!(chunk.choices[0].delta.tool_calls.is_empty());
     }
 
     #[tokio::test]
