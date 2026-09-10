@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-10 — `default-features = false` on `tracing-subscriber` finally takes effect
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `Cargo.toml`, `crates/tact-ui/Cargo.toml`, `crates/tact-ui/src/main.rs` (`init_logging`); supersedes part of `24150b08` |
+
+**Symptom / motivation:** The 2026-09-08 fix that routed MCP logs into `tracing` and kept them out of the TUI also tried to drop `tracing-subscriber`'s default features, writing `tracing-subscriber = { workspace = true, default-features = false }` in `crates/tact-ui/Cargo.toml`. Cargo **ignores `default-features` when a dependency is inherited from the workspace** — it only emits a warning — so `ansi` and `tracing-log` stayed enabled. `tracing-log` being on makes `registry().init()` install the global `log` bridge, so every `log::` record from a dependency (rmcp's MCP handshake, reqwest, …) was forwarded into Tact's daily log file as a field-less line: exactly the noise the earlier fix was meant to remove. `ansi` was equally useless here, since `init_logging` writes to a file with `.with_ansi(false)`.
+
+**Decision:** Put the feature selection in the one place Cargo honours — the workspace dependency — and let the member inherit it verbatim: `tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }` in the root `Cargo.toml`, with `crates/tact-ui/Cargo.toml` reduced to `{ workspace = true }`. `fmt` and `env-filter` are the only features `init_logging` actually uses; `ansi` and `tracing-log` are now absent from the resolved graph.
+
+**Behavior after:** Dependency `log` records no longer reach Tact's log file — `.tact/logs/tact-<date>.log` carries only events emitted through `tracing` by Tact crates. `RUST_LOG` filtering is unchanged (`EnvFilter` is still built from the environment), and the interactive TUI still never installs a terminal fmt layer. Verified with `cargo tree -e features -i tracing-subscriber`, which no longer lists `ansi` or `tracing-log`, plus `cargo test -p tact --lib` (751 passed) and `cargo check -p tact-ui --all-targets`.
+
+**Pointers:** `Cargo.toml` (`[workspace.dependencies] tracing-subscriber`); `crates/tact-ui/Cargo.toml`; `crates/tact-ui/src/main.rs` (`init_logging`). Superseded commit: `24150b08`.
+
+---
+
 ## 1. 2026-09-10 — MCP gains a native config file; plugin state and skill roots converge
 
 | Field | Value |

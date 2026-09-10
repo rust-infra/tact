@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-10 — `tracing-subscriber` 的 `default-features = false` 终于生效
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `Cargo.toml`、`crates/tact-ui/Cargo.toml`、`crates/tact-ui/src/main.rs`（`init_logging`）；取代 `24150b08` 的一部分 |
+
+**症状 / 动机:** 2026-09-08 那次「把 MCP 日志导入 `tracing`、不让它进 TUI」的修复，同时也想关掉 `tracing-subscriber` 的默认 feature，于是在 `crates/tact-ui/Cargo.toml` 里写成 `tracing-subscriber = { workspace = true, default-features = false }`。但**依赖从 workspace 继承时，Cargo 会忽略 `default-features`** —— 只会给一条 warning —— 因此 `ansi` 与 `tracing-log` 实际一直开着。`tracing-log` 开着会让 `registry().init()` 安装全局 `log` bridge，于是依赖里每一条 `log::` 记录（rmcp 的 MCP 握手、reqwest 等）都会被转发进 Tact 的每日日志文件，成为没有字段的行：正是上一次修复想消掉的噪声。`ansi` 在这里同样无用，因为 `init_logging` 写文件时用的是 `.with_ansi(false)`。
+
+**决策:** 把 feature 选择放到 Cargo 唯一会尊重的位置 —— workspace 依赖 —— 让成员原样继承：根 `Cargo.toml` 写 `tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }`，`crates/tact-ui/Cargo.toml` 简化为 `{ workspace = true }`。`fmt` 与 `env-filter` 是 `init_logging` 真正用到的全部 feature；`ansi` 与 `tracing-log` 已从解析后的依赖图中消失。
+
+**改后行为:** 依赖的 `log` 记录不再进入 Tact 的日志文件 —— `.tact/logs/tact-<date>.log` 只包含 Tact 各 crate 通过 `tracing` 发出的事件。`RUST_LOG` 过滤行为不变（`EnvFilter` 仍从环境读取），交互式 TUI 也仍然不会安装终端 fmt layer。已用 `cargo tree -e features -i tracing-subscriber` 验证（结果中不再有 `ansi` 或 `tracing-log`），并跑过 `cargo test -p tact --lib`（751 通过）与 `cargo check -p tact-ui --all-targets`。
+
+**指针:** `Cargo.toml`（`[workspace.dependencies] tracing-subscriber`）；`crates/tact-ui/Cargo.toml`；`crates/tact-ui/src/main.rs`（`init_logging`）。被取代的提交：`24150b08`。
+
+---
+
 ## 1. 2026-09-10 — MCP 有了原生配置文件；插件状态与技能根目录收敛
 
 | Field | Value |
