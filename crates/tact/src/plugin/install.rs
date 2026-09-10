@@ -442,11 +442,13 @@ fn copy_git_tree_entries(
 /// Validates a staged plugin candidate and returns its feature surface.
 ///
 /// A plugin is installable when it contributes at least one supported feature:
-/// `skills/*/SKILL.md`, `commands/*.md`, `agents/*.md`, declared hooks, or an
-/// MCP server configuration (`.mcp.json` or plugin.json `mcpServers`). This
-/// deliberately replaces the old hard requirement for a `skills/` directory,
-/// which blocked command-only / agent-only / hook-only / MCP-only plugins from
-/// the official marketplace.
+/// `skills/*/SKILL.md`, `commands/*.md`, declared hooks, or an MCP server
+/// configuration (`.mcp.json` or plugin.json `mcpServers`). This deliberately
+/// replaces the old hard requirement for a `skills/` directory, which blocked
+/// command-only / hook-only / MCP-only plugins from the official marketplace.
+///
+/// Declarative agents are no longer a feature, so an `agents/`-only plugin has
+/// no supported surface and is rejected like any other empty plugin.
 fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<PluginFeatures> {
     let manifest = read_compatibility_manifest(candidate)?;
     if let Some(name) = manifest.name

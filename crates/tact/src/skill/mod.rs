@@ -1,12 +1,16 @@
 //! Skill (custom instruction) loading.
 //!
 //! Skills are markdown files (`SKILL.md`) nested in subdirectories under one or
-//! more skill roots. Discovery order (later wins on name clash):
+//! more skill roots. Roots are scanned in ascending precedence — a later root
+//! wins on a name clash:
 //!
-//! - project-local: `<workdir>/.tact/skills/`
-//! - user:          `~/.tact/skills/`
-//! - global:        `~/.agents/skills/`
-//! - config:        `[agent].skill_dirs` (in listed order)
+//! - global:  `~/.agents/skills/`   (Codex compatibility root)
+//! - user:    `~/.tact/skills/`
+//! - project: `<workdir>/.tact/skills/`
+//! - config:  `[agent].skill_dirs`  (appended last, in listed order)
+//!
+//! Installed plugin roots load after all of these, into their own
+//! `plugin:skill` namespace.
 //!
 //! Each file has optional YAML frontmatter for `name` and `description`
 //! (Agent Skills–compatible). Bodies are unrestricted; TUI slash invoke may
