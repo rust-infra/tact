@@ -6,7 +6,7 @@ use tact::{
     config::CliArgs,
     consts::TactPath,
     hook::HookControl,
-    mcp::load_mcp_router,
+    mcp::load_mcp_router_with_report,
     memory::memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
     store::DynSessionStore,
@@ -294,7 +294,13 @@ async fn build_agent_for_interactive(
     let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
         TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
     )?));
-    let mcp_router = load_mcp_router().await?;
+    let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
+    // MCP problems are collected, never fatal (one broken server must not stop
+    // startup), so surface them here — otherwise a typo'd command or an
+    // ignored override would be silent. A clean load emits nothing.
+    for line in mcp_report.notice_lines() {
+        let _ = agent_tx.send(AgentUpdate::Info(line));
+    }
 
     let mut tools = toolset();
     // Annotate `spawn_subagent` with the current subagent skill-card catalog

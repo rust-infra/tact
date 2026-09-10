@@ -9,7 +9,18 @@ pub const MAX_INPUT_CHARS: usize = 500_000;
 /// Home-directory paths used by the plugin marketplace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginHome {
+    /// `$HOME` — the root every discovered compatibility path resolves against.
+    ///
+    /// Stored explicitly so path derivation never depends on the depth of
+    /// [`Self::root`].
+    pub home: PathBuf,
+    /// `$HOME/.tact/plugins` — plugin root, holding derived directories only.
     pub root: PathBuf,
+    /// `$HOME/.tact/plugins/state` — `installed.json`, `marketplaces.json`.
+    ///
+    /// Kept apart from [`Self::cache`]: state is a few KB and worth backing up,
+    /// while the cache is hundreds of MB and disposable.
+    pub state: PathBuf,
     pub marketplaces: PathBuf,
     pub cache: PathBuf,
 }
@@ -26,6 +37,8 @@ impl PluginHome {
     pub fn from_home(home: &Path) -> Self {
         let root = home.join(".tact").join("plugins");
         Self {
+            home: home.to_path_buf(),
+            state: root.join("state"),
             marketplaces: root.join("marketplaces"),
             cache: root.join("cache"),
             root,
@@ -41,7 +54,7 @@ pub fn exceeds_input_char_limit(char_count: usize) -> bool {
 
 #[cfg(test)]
 mod tact_path_tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::TactPath;
 
@@ -51,6 +64,37 @@ mod tact_path_tests {
             TactPath::home_memory_dir_for(Path::new("/home/alice")),
             Path::new("/home/alice/.tact/memory")
         );
+    }
+
+    #[test]
+    fn tact_skill_root_outranks_the_agents_compatibility_root() {
+        // Asserts on relative positions rather than mutating `HOME`, so this
+        // stays safe alongside tests that run in parallel.
+        let workdir = PathBuf::from("/proj");
+        let dirs = TactPath::new(&workdir).skill_search_dirs();
+        let home = std::env::var_os("HOME").expect("HOME is set for tests");
+
+        let agents = PathBuf::from(&home).join(".agents/skills");
+        let tact = PathBuf::from(&home).join(".tact/skills");
+        let project = workdir.join(".tact/skills");
+
+        let position = |needle: &Path| {
+            dirs
+                .iter()
+                .position(|dir| dir == needle)
+                .unwrap_or_else(|| panic!("{} missing from {dirs:?}", needle.display()))
+        };
+
+        // Later wins, so these must be strictly increasing.
+        assert!(
+            position(&agents) < position(&tact),
+            "Tact's own root must beat the Codex compatibility root: {dirs:?}"
+        );
+        assert!(
+            position(&tact) < position(&project),
+            "the project root must beat every user root: {dirs:?}"
+        );
+        assert_eq!(dirs.len(), 3);
     }
 }
 
@@ -75,6 +119,10 @@ const SKILL_DIR: &str = "skills";
 /// Sub-directory names used under `.tact/`.  Available through [`TactPath`] methods.
 const TRANSCRIPT_SUBDIR: &str = "transcripts";
 const TOOL_RESULTS_SUBDIR: &str = "tool-results";
+
+/// Tact's native MCP server declaration file, read from `.tact/` at both
+/// project and user scope.
+const MCP_CONFIG_FILE: &str = "mcp.json";
 
 /// Centralised path abstraction for all tact directories.
 ///
@@ -126,17 +174,22 @@ impl TactPath {
     }
 
     /// Skill roots in load order (later entries win on name clash):
-    /// `<workdir>/.tact/skills` → `~/.tact/skills` → `~/.agents/skills`.
+    /// `~/.agents/skills` → `~/.tact/skills` → `<workdir>/.tact/skills`.
+    ///
+    /// The Codex compatibility root comes first so it loses to Tact's own root
+    /// and to the project root — a project skill always wins, and Tact's
+    /// canonical root always beats the foreign one.
     ///
     /// Callers may append config `[agent].skill_dirs` after these.
     pub fn skill_search_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs = vec![self.tact_skills_dir()];
-        if let Some(home) = Self::home_tact_dir() {
-            dirs.push(home.join(SKILL_DIR));
-        }
+        let mut dirs = Vec::new();
         if let Some(home) = Self::home_agents_dir() {
             dirs.push(home.join(SKILL_DIR));
         }
+        if let Some(home) = Self::home_tact_dir() {
+            dirs.push(home.join(SKILL_DIR));
+        }
+        dirs.push(self.tact_skills_dir());
         dirs
     }
 
@@ -158,6 +211,14 @@ impl TactPath {
         self.tact_dir().join(TRANSCRIPT_SUBDIR)
     }
 
+    /// `<workdir>/.tact/mcp.json` — project-scoped MCP server declarations.
+    ///
+    /// Preferred over every compatibility source (`.mcp.json`,
+    /// `.codex-plugin/plugin.json`), which are read only as read-only inputs.
+    pub fn mcp_config_path(&self) -> PathBuf {
+        self.tact_dir().join(MCP_CONFIG_FILE)
+    }
+
     /// `<workdir>/.tact/tool-results`
     pub fn tool_results_dir(&self) -> PathBuf {
         self.tact_dir().join(TOOL_RESULTS_SUBDIR)
@@ -175,6 +236,14 @@ impl TactPath {
     /// `$HOME/.tact/settings.json` — global permission settings.
     pub fn home_settings_path() -> Option<PathBuf> {
         Self::home_tact_dir().map(|dir| dir.join("settings.json"))
+    }
+
+    /// `$HOME/.tact/mcp.json` — user-global MCP server declarations.
+    ///
+    /// Lower precedence than the project file: a project entry of the same
+    /// server name overrides it.
+    pub fn home_mcp_config_path() -> Option<PathBuf> {
+        Self::home_tact_dir().map(|dir| dir.join(MCP_CONFIG_FILE))
     }
 
     /// `$HOME/.tact` — global tact config directory.

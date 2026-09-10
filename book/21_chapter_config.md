@@ -347,7 +347,11 @@ tact-ui headless "Summarize this repo"
 Plugin management lives under `tact plugin` / `/plugin`: `list` prints each
 installed plugin with a feature summary (`skills=N commands=M hooks mcp`),
 and `install` / `uninstall` / `update` / `reload` manage the
-revision-locked cache under `~/.tact/plugins`. Marketplace commands
+revision-locked cache under `~/.tact/plugins`. Plugin **state**
+(`installed.json`, `marketplaces.json`) lives separately in
+`~/.tact/plugins/state/`; legacy copies at the plugin root are still read and
+migrated on first use, so an older binary sharing the same home keeps working.
+Marketplace commands
 (`tact plugin marketplace add|list|update|remove`) manage Git/catalog
 sources plus discovered Codex local marketplaces at
 `~/.agents/plugins/marketplace.json` and
@@ -359,7 +363,10 @@ prefers a matching discovered Codex marketplace and falls back to
 `claude-plugins-official`. Installed plugin content contributes skills
 (`plugin:<name>`), `commands/*.md` slash commands, MCP servers, and lifecycle
 hooks — see Ch 2,
-8, 9, 12.
+8, 9, 12. MCP servers are declared in `~/.tact/mcp.json` (user) or
+`<workdir>/.tact/mcp.json` (project) — one filename per scope, with no
+cwd-level manifest or `.mcp.json` read; installed plugins still contribute
+servers — see Ch 8.
 
 Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.
 

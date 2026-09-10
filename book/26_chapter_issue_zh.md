@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-10 — MCP 有了原生配置文件；插件状态与技能根目录收敛
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/mcp/mod.rs`、`crates/tact/src/consts.rs`、`crates/tact/src/plugin/store.rs`、`crates/tact-ui/src/{interactive,headless}.rs`；设计见 `docs/superpowers/specs/2026-09-10-path-convergence-design.md`；计划见 `docs/superpowers/plans/2026-09-10-path-convergence.md` |
+
+**症状 / 动机:** MCP 配置散落在三套生态里，没有 Tact 自己的位置。项目的 server 只能来自 cwd 级的 `.codex-plugin/plugin.json`，全局作用域则要走一遍 marketplace → install → cache；既没有 `~/.tact/mcp.json`，也完全没有项目级的 MCP 文件。另外三个缺陷叠加：cwd manifest 使用**另一套**命名（`{plugin}__{server}`），与插件提供的 server 命名不一致，同一个概念有了两个答案；插件根的 `.mcp.json` 会被读取，而工作目录下的同名文件却被静默忽略；server 连接失败只记 `tracing::debug!`，`command` 写错完全没有用户可见信号；`~/.tact/plugins/` 把几 KB 的状态和几百 MB 的 cache 混在一起。此外 `skill_search_dirs` 返回 `[workdir/.tact/skills, ~/.tact/skills, ~/.agents/skills]` 且后者覆盖前者，导致 Codex 兼容根反而压过 Tact 自己的根。
+
+**决策:** 给 MCP 一个原生 `mcp.json`，两个作用域各一个 —— `~/.tact/mcp.json`（用户）与 `<workdir>/.tact/mcp.json`（项目）；沿用所有 MCP 客户端都接受的 `mcpServers` 结构，按 server 名让项目覆盖用户。在这里声明的 server 直接以 map key 命名，工具名因此恰好是 `mcp__<key>__<tool>`，不带 manifest 前缀。项目作用域**只有一个**文件名：Tact 现在既不读 cwd 的 `.mcp.json`，也不读 cwd 的 `.codex-plugin/plugin.json`，因此「这个项目的 server 声明在哪」只有一个答案，也不再有「某个目录算不算 plugin」的解释问题。`PluginLoader` 随该来源一并删除——它没有其他调用方。只有已安装的 marketplace 插件仍提供 server，并保留 `plugin__<plugin>__<server>` 命名，因为插件是可分发的包而非配置约定。解析优先级：`~/.tact/mcp.json` → `<workdir>/.tact/mcp.json` → 已安装插件。解析过程不再丢弃失败，而是返回 `McpLoadReport`（connected / failures / shadowed / skipped_remote）。插件状态迁到 `~/.tact/plugins/state/`，保留旧路径读取与一次性尽力迁移。技能根重排为 `[~/.agents/skills, ~/.tact/skills, <workdir>/.tact/skills]`，项目始终优先、Tact 始终压过 Codex。`PluginHome` 改为显式保存 `home` 与 `state`，不再用 `root.parent().parent()` 推导 `$HOME`。
+
+**改后行为:** 添加 MCP server 只需一个文件（项目级或用户级），不必再走 marketplace 往返，也不存在「该用哪个项目文件」的歧义。server 丢失时只需检查两处：`~/.tact/mcp.json` 与 `.tact/mcp.json`。server 出问题会在启动时给出可见提示（TUI 走 `AgentUpdate::Info`，headless 走 stderr），指明 server 名与错误；一切正常时保持安静。连接失败仍不致命，单个坏 server 不会阻止 agent 启动。来源之间的覆盖会被上报，不再静默。远程（`http`/`sse`）与缺少 `command` 的条目按「已跳过」上报，不再中断解析。cwd manifest 解析失败不再可能中断启动，因为它已不被读取。插件状态写入 `state/`，旧文件只读保留，使共享同一 home 的旧版二进制仍可用。同名用户技能同时存在于 `~/.tact/skills` 与 `~/.agents/skills` 时，现在解析到 `~/.tact/skills` 的内容 —— 这是有意的优先级反转。
+
+**指针:** `crates/tact/src/mcp/mod.rs`（`McpConfigFile`、`McpLoadReport`、`collect_sourced_servers`、`resolve_servers`、`load_mcp_router_with_report`）；`crates/tact/src/consts.rs`（`TactPath::{mcp_config_path, home_mcp_config_path}`、`skill_search_dirs`、`PluginHome::{home, state}`）；`crates/tact/src/plugin/store.rs`（`state_file`、`read_state`）；`crates/tact-ui/src/{interactive,headless}.rs`。测试：`mcp_config_file_reads_servers_and_missing_is_none`、`mcp_config_file_parse_error_names_the_path`、`later_source_overrides_earlier_by_server_name`、`non_conflicting_sources_merge`、`remote_and_commandless_entries_are_skipped_not_fatal`、`native_config_key_is_the_server_name_without_a_prefix`、`project_mcp_json_is_read_and_a_cwd_dot_mcp_json_is_not`、`load_report_*`、`plugin_home_exposes_explicit_home_state_and_cache_paths`、`new_state_location_wins_when_both_exist`、`legacy_state_is_read_and_migrated_to_state_dir`、`state_is_written_to_the_state_directory`、`tact_skill_root_outranks_the_agents_compatibility_root`。
+
+---
+
 ## 1. 2026-09-10 — 权限提示改为从共享 pending-UI broker reconcile
 
 | Field | Value |

@@ -83,11 +83,12 @@ Before connecting, remember: **Host owns the big picture, Client owns one connec
 
 ### Step 1: Configuration — tell the Host which Servers to connect
 
-Before startup, the Host must know how to launch each Server. Tact reads `.codex-plugin/plugin.json`:
+Before startup, the Host must know how to launch each Server.
+
+**Preferred: Tact's native `mcp.json`.** Two locations, both optional — `~/.tact/mcp.json` (user) and `<workdir>/.tact/mcp.json` (project). The shape is the same Claude-compatible one every MCP client accepts:
 
 ```json
 {
-  "name": "demo",
   "mcpServers": {
     "postgres": {
       "command": "node",
@@ -98,11 +99,38 @@ Before startup, the Host must know how to launch each Server. Tact reads `.codex
 }
 ```
 
-Meaning: run `command` as a subprocess—that process is the MCP Server.
+Meaning: run `command` as a subprocess—that process is the MCP Server. A server declared here is named by its map key **verbatim**, so its agent-side tool names are exactly `mcp__postgres__<tool>` with no manifest prefix — the most predictable naming available, and the reason to prefer this file.
 
-Code: `PluginLoader::scan` scans directories, parses the manifest, and builds server names like `{plugin}__{server}` (e.g. `demo__postgres`).
+A project entry overrides a user entry **by server name**; non-colliding entries from both are merged. A malformed `mcp.json` is a hard error naming the path (a user-authored config that cannot be parsed must not be ignored silently), unlike a broken server, which is only reported.
 
-**Installed marketplace plugins** are also scanned at startup: `installed_plugin_mcp_servers` walks every plugin cache root, reading both `.codex-plugin/plugin.json` `mcpServers` and a Claude project-style `.mcp.json` at the plugin root, and names servers `plugin__<plugin>__<server>`. Only stdio servers are connected; `http` / `url` entries are skipped with a warning (Tact has no remote MCP transport yet).
+**All sources**, lowest precedence first. Entry 3 is an installed marketplace plugin — a distributable *bundle*, read-only, keeping its own manifest-prefixed naming and never how a user is told to configure MCP:
+
+| # | Source | Server name |
+|---|--------|-------------|
+| 1 | `~/.tact/mcp.json` | map key |
+| 2 | `<workdir>/.tact/mcp.json` | map key |
+| 3 | installed plugins | `plugin__<plugin>__<server>` |
+
+Two files, one rule: **user scope is `~/.tact/mcp.json`, project scope is `<workdir>/.tact/mcp.json`.** Tact reads no cwd-level Codex manifest and no cwd `.mcp.json`, so "where does this project declare its servers?" has exactly one answer.
+
+**Installed marketplace plugins** are scanned at startup by `installed_plugin_mcp_servers`, which reads both `.codex-plugin/plugin.json` `mcpServers` and a `.mcp.json` at the plugin root. Those belong to the plugin *bundle* format — the same filenames are deliberately **not** read at the working directory.
+
+Only stdio servers are connected. `http` / `sse` / `url` entries — and stdio entries missing a `command` — are reported as **skipped**, never treated as a hard error, because Tact has no remote MCP transport yet.
+
+Code: `McpConfigFile::read` (`mcp.json`), `installed_plugin_mcp_servers` (plugins), `collect_sourced_servers` and `resolve_servers` (precedence), all in `crates/tact/src/mcp/mod.rs`.
+
+### Step 1b: What happens when a Server is misconfigured
+
+Resolution produces an `McpLoadReport` instead of discarding failures:
+
+| Field | Meaning |
+|-------|---------|
+| `connected` | server name + tool count for each success |
+| `failures` | server name + error for each failed connection |
+| `shadowed` | server name + the lower-precedence source it displaced |
+| `skipped_remote` | servers dropped for an unsupported transport |
+
+A **connection failure is never fatal** — one broken server must not stop the agent from starting. But it is no longer silent either: `notice_lines()` renders one line per fact, delivered as `AgentUpdate::Info` in the TUI and to stderr in headless mode. A clean load produces no output at all, so the notice only appears when there is something to act on.
 
 ### Step 2: Transport — start the Server process
 
@@ -222,10 +250,16 @@ Code: `McpClient::fetch_tools` → `service.peer().list_all_tools()`.
 After listing tools, the Host **merges them into the Agent’s tool table**. Tact prefixes names to avoid collisions across Servers:
 
 ```
-mcp__<plugin>__<server>__<tool>
+mcp__<server>__<tool>
 ```
 
-Example: `mcp__demo__postgres__query`
+The `<server>` part depends on where the server was declared. A server from native `mcp.json` uses its map key verbatim:
+
+Example (native `mcp.json`, key `postgres`): `mcp__postgres__query`
+
+An installed plugin keeps its manifest prefix, so its names are longer:
+
+Example (plugin `demo`, server `postgres`): `mcp__demo__postgres__query`
 
 ```rust
 // build_tool_specs
@@ -423,7 +457,10 @@ sequenceDiagram
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| Config scan | `crates/tact/src/mcp/mod.rs` — `PluginLoader` | Read `.codex-plugin/plugin.json` |
+| Config scan | `crates/tact/src/mcp/mod.rs` — `McpConfigFile` | Read `~/.tact/mcp.json` and `<workdir>/.tact/mcp.json` |
+| Plugin servers | `installed_plugin_mcp_servers` | Read installed plugin bundles |
+| Source precedence | `collect_sourced_servers`, `resolve_servers` | Layer all sources, report overrides |
+| Load report | `McpLoadReport` | Surface failures / overrides / skipped instead of `debug!` |
 | Connect & handshake | `McpClient::connect` | stdio spawn + rmcp `serve()` |
 | Tool discovery | `McpClient::fetch_tools` | `tools/list` |
 | Tool execution | `McpClient::call_tool` | `tools/call` |
@@ -435,15 +472,26 @@ sequenceDiagram
 
 ### 6.1 Tool naming and routing
 
+A server from native `mcp.json`:
+
+```
+mcp__postgres__query
+  │     │         └── tool (Server-internal name)
+  │     └── server (key in mcp.json)
+  └── fixed prefix marking an MCP tool
+```
+
+A server contributed by an installed plugin keeps its manifest layer:
+
 ```
 mcp__demo__postgres__query
   │      │        │      └── tool (Server-internal name)
-  │      │        └── server (key in manifest mcpServers)
+  │      │        └── server (key in plugin manifest mcpServers)
   │      └── plugin (manifest name)
   └── fixed prefix marking an MCP tool
 ```
 
-`MCPToolRouter::call` parses the name → finds the client → sends `tools/call` with the Server-internal tool name.
+`MCPToolRouter::call` parses the name → finds the client → sends `tools/call` with the Server-internal tool name. The parse splits on the **last** `__`, so a server name may itself contain `__` (as plugin-prefixed names do).
 
 ### 6.2 Parallel vs serial
 
@@ -498,7 +546,7 @@ stdio fits local plugins: zero config, low latency. Remote MCP services can use 
 
 | Step | Action | JSON-RPC method |
 |------|--------|-----------------|
-| 1 | Read config | (Host-local) |
+| 1 | Read config (`mcp.json`, then installed plugins) | (Host-local) |
 | 2 | Start Server process | (stdio transport) |
 | 3 | Handshake | `initialize` + `notifications/initialized` |
 | 4 | Discover tools | `tools/list` |
@@ -520,7 +568,9 @@ stdio fits local plugins: zero config, low latency. Remote MCP services can use 
 |-----|--------|
 | **No `tools/list_changed` handling** | Tool list fixed at connect; no `ClientHandler` or loop refresh |
 | **Resources / prompts** | Protocol primitives exist; Tact only wires Tools today |
-| **HTTP transport** | stdio only via `TokioChildProcess` |
+| **HTTP transport** | stdio only via `TokioChildProcess`; `http`/`sse` entries are reported as skipped |
+| **Per-tool permission granularity** | Every MCP tool resolves to `CapabilityRisk::High`; `normalize_mcp_capability` ignores both server and tool |
+| **No typed env interpolation** | `mcp.json` `env` values are literal; no `${VAR}` expansion |
 
 ---
 

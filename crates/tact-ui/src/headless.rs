@@ -6,7 +6,7 @@ use tact::{
     config::CliArgs,
     consts::TactPath,
     extract_text,
-    mcp::load_mcp_router,
+    mcp::load_mcp_router_with_report,
     memory::memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
     store::DynSessionStore,
@@ -93,7 +93,12 @@ async fn run_headless_locked(
     let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
         TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
     )?));
-    let mcp_router = load_mcp_router().await?;
+    let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
+    // Headless has no TUI channel; stderr keeps a broken server observable
+    // instead of silently missing its tools. A clean load prints nothing.
+    for line in mcp_report.notice_lines() {
+        eprintln!("[mcp] {line}");
+    }
 
     let mut tools = toolset();
     // Annotate `spawn_subagent` with the current subagent skill-card catalog

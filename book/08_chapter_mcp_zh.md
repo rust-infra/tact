@@ -84,11 +84,12 @@ Tact 目前**仅**使用 stdio（见 `McpClient::connect`）。
 
 ### Step 1：配置——告诉 Host 要连哪些 Server
 
-启动前，Host 必须知道如何拉起每个 Server。Tact 读取 `.codex-plugin/plugin.json`：
+启动前，Host 必须知道如何拉起每个 Server。
+
+**首选：Tact 原生的 `mcp.json`。** 两个位置，都可选——`~/.tact/mcp.json`（用户级）与 `<workdir>/.tact/mcp.json`（项目级）。结构与所有 MCP 客户端通用的 Claude 格式一致：
 
 ```json
 {
-  "name": "demo",
   "mcpServers": {
     "postgres": {
       "command": "node",
@@ -99,11 +100,38 @@ Tact 目前**仅**使用 stdio（见 `McpClient::connect`）。
 }
 ```
 
-含义：以子进程运行 `command`——该进程就是 MCP Server。
+含义：以子进程运行 `command`——该进程就是 MCP Server。在这里声明的 server 直接以 map key **原样命名**，因此 agent 侧工具名恰为 `mcp__postgres__<tool>`，不带 manifest 前缀——这是可预测性最好的命名方式，也是优先使用该文件的原因。
 
-代码：`PluginLoader::scan` 扫描目录、解析 manifest，构建形如 `{plugin}__{server}` 的服务器名（例如 `demo__postgres`）。
+项目级条目按 **server 名**覆盖用户级条目；两者不冲突的条目会合并。`mcp.json` 解析失败是硬错误并会指明路径（用户手写的配置无法解析时不能被静默忽略）；这与"server 连不上"不同，后者只上报。
 
-**已安装的 marketplace 插件**同样在启动时被扫描：`installed_plugin_mcp_servers` 遍历每个插件缓存根，读取 `.codex-plugin/plugin.json` 的 `mcpServers` 与插件根下 Claude 项目风格的 `.mcp.json`，服务器命名为 `plugin__<plugin>__<server>`。只连接 stdio 服务器；`http` / `url` 类型跳过并告警（Tact 尚无远程 MCP 传输）。
+**全部来源**，优先级自低到高。第 3 项是已安装的 marketplace 插件——可分发的**包**，只读，保留各自带 manifest 前缀的命名，永远不是引导用户配置 MCP 的方式：
+
+| # | 来源 | 服务器名 |
+|---|------|----------|
+| 1 | `~/.tact/mcp.json` | map key |
+| 2 | `<workdir>/.tact/mcp.json` | map key |
+| 3 | 已安装插件 | `plugin__<plugin>__<server>` |
+
+两个文件，一条规则：**用户级是 `~/.tact/mcp.json`，项目级是 `<workdir>/.tact/mcp.json`。** Tact 不读取 cwd 级 Codex manifest，也不读取 cwd 的 `.mcp.json`，"这个项目的 server 声明在哪"因此只有一个答案。
+
+**已安装的 marketplace 插件**在启动时由 `installed_plugin_mcp_servers` 扫描：它读取 `.codex-plugin/plugin.json` 的 `mcpServers` 与插件根下的 `.mcp.json`。这些属于插件**包**格式——同样的文件名在工作目录下刻意**不**读取。
+
+只连接 stdio 服务器。`http` / `sse` / `url` 条目，以及缺少 `command` 的 stdio 条目，都会按**已跳过**上报，而不会被当作硬错误——因为 Tact 尚无远程 MCP 传输。
+
+代码：`McpConfigFile::read`（`mcp.json`）、`installed_plugin_mcp_servers`（插件）、`collect_sourced_servers` 与 `resolve_servers`（优先级），均在 `crates/tact/src/mcp/mod.rs`。
+
+### Step 1b：Server 配置错误时会发生什么
+
+解析过程返回 `McpLoadReport`，而不是丢弃失败：
+
+| 字段 | 含义 |
+|------|------|
+| `connected` | 每个成功连接的 server 名与工具数 |
+| `failures` | 每个连接失败的 server 名与错误 |
+| `shadowed` | server 名，以及被它顶掉的那个更低优先级来源 |
+| `skipped_remote` | 因传输方式不支持而被丢弃的 server |
+
+**连接失败绝不致命**——单个坏 server 不应阻止 agent 启动。但它也不再静默：`notice_lines()` 为每条事实渲染一行，在 TUI 中以 `AgentUpdate::Info` 交付，headless 模式写入 stderr。一切正常时不产生任何输出，因此提示只在确有需要处理的事情时出现。
 
 ### Step 2：传输——启动 Server 进程
 
@@ -223,10 +251,16 @@ Client (Tact)                    Server (node server.js)
 列出工具后，Host **合并进 Agent 的工具表**。Tact 给名称加前缀以避免跨 Server 冲突：
 
 ```
-mcp__<plugin>__<server>__<tool>
+mcp__<server>__<tool>
 ```
 
-示例：`mcp__demo__postgres__query`
+其中 `<server>` 取决于声明位置。来自原生 `mcp.json` 的 server 直接使用其 map key：
+
+示例（原生 `mcp.json`，key 为 `postgres`）：`mcp__postgres__query`
+
+已安装插件的 server 保留 manifest 前缀，名字因此更长：
+
+示例（插件 `demo`，server `postgres`）：`mcp__demo__postgres__query`
 
 ```rust
 // build_tool_specs
@@ -424,7 +458,10 @@ sequenceDiagram
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 配置扫描 | `crates/tact/src/mcp/mod.rs` — `PluginLoader` | 读 `.codex-plugin/plugin.json` |
+| 配置扫描 | `crates/tact/src/mcp/mod.rs` — `McpConfigFile` | 读 `~/.tact/mcp.json` 与 `<workdir>/.tact/mcp.json` |
+| 插件服务器 | `installed_plugin_mcp_servers` | 读取已安装插件包 |
+| 来源优先级 | `collect_sourced_servers`、`resolve_servers` | 分层合并所有来源并上报覆盖 |
+| 加载报告 | `McpLoadReport` | 把失败 / 覆盖 / 跳过暴露出来，而非 `debug!` |
 | 连接与握手 | `McpClient::connect` | stdio spawn + rmcp `serve()` |
 | 工具发现 | `McpClient::fetch_tools` | `tools/list` |
 | 工具执行 | `McpClient::call_tool` | `tools/call` |
@@ -436,15 +473,26 @@ sequenceDiagram
 
 ### 6.1 工具命名与路由
 
+来自原生 `mcp.json` 的 server：
+
+```
+mcp__postgres__query
+  │     │         └── tool（Server 内部名）
+  │     └── server（mcp.json 的 key）
+  └── 固定前缀，标记 MCP 工具
+```
+
+由已安装插件提供的 server 会保留 manifest 那一层：
+
 ```
 mcp__demo__postgres__query
   │      │        │      └── tool（Server 内部名）
-  │      │        └── server（manifest mcpServers 的 key）
+  │      │        └── server（插件 manifest mcpServers 的 key）
   │      └── plugin（manifest name）
   └── 固定前缀，标记 MCP 工具
 ```
 
-`MCPToolRouter::call` 解析名称 → 找 client → 用 Server 内部工具名发 `tools/call`。
+`MCPToolRouter::call` 解析名称 → 找 client → 用 Server 内部工具名发 `tools/call`。解析按**最后一个** `__` 切分，因此 server 名本身可以包含 `__`（带插件前缀的名字正是如此）。
 
 ### 6.2 并行 vs 串行
 
@@ -499,7 +547,7 @@ stdio 适合本地插件：零配置、低延迟。远程 MCP 可用 Streamable 
 
 | 步骤 | 动作 | JSON-RPC 方法 |
 |------|------|----------------|
-| 1 | 读配置 | （Host 本地） |
+| 1 | 读配置（`mcp.json`，再读已安装插件） | （Host 本地） |
 | 2 | 启动 Server 进程 | （stdio 传输） |
 | 3 | 握手 | `initialize` + `notifications/initialized` |
 | 4 | 发现工具 | `tools/list` |
@@ -521,7 +569,9 @@ stdio 适合本地插件：零配置、低延迟。远程 MCP 可用 Streamable 
 |------|------|
 | **无 `tools/list_changed` 处理** | 工具列表在连接时固定；无 `ClientHandler` 或循环内刷新 |
 | **Resources / prompts** | 协议原语存在；Tact 今天只接 Tools |
-| **HTTP 传输** | 仅通过 `TokioChildProcess` 的 stdio |
+| **HTTP 传输** | 仅通过 `TokioChildProcess` 的 stdio；`http`/`sse` 条目按已跳过上报 |
+| **按工具的权限粒度** | 所有 MCP 工具都解析为 `CapabilityRisk::High`；`normalize_mcp_capability` 忽略 server 与 tool 两者 |
+| **无类型化环境变量插值** | `mcp.json` 的 `env` 值是字面量；不支持 `${VAR}` 展开 |
 
 ---
 
