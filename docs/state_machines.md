@@ -10,6 +10,8 @@ Full documentation: **[book/25_chapter_protocol.md](../book/25_chapter_protocol.
 
 Covers `AgentUpdate` / `UserCommand` / `AccountUpdate` channels, plan step lifecycle, TUI `Status` / `InputMode` state diagrams, message categories, and typical ordering (incl. sequence diagram).
 
+Interactive TUI mode adds a pull side-channel: the shared `UiResponder` exposes an ordered pending snapshot, and `App::reconcile_pending_ui()` derives `InputMode::Select` from it. `RequestSelect` remains a wake-up hint; the legacy event-driven path is used when no broker is attached.
+
 Files: `crates/protocol/src/agent.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tact/src/agent/tool_dispatch.rs`
 
 ---
@@ -29,7 +31,7 @@ pub(crate) enum Status {
 }
 ```
 
-`RequestSelect` switches `InputMode` to `Select` while `Status` stays `Executing`. Full diagrams: [book/25_chapter_protocol.md](../book/25_chapter_protocol.md) §4.
+A pending select switches `InputMode` to `Select` while `Status` stays `Executing`. In interactive mode the popup is derived from the shared pending snapshot; in legacy/headless mode `AgentUpdate::RequestSelect` is the activation edge. Full diagrams: [book/25_chapter_protocol.md](../book/25_chapter_protocol.md) §4.
 
 ### State transitions
 
@@ -99,9 +101,9 @@ stateDiagram-v2
     Insert --> FilePicker: @
     FilePicker --> Insert: Enter / Esc
 
-    Normal --> Select: AgentUpdate::RequestSelect
+    Normal --> Select: pending != empty (RequestSelect hint)
     Select --> Normal: Enter / Esc
-    note right of Select: Status stays Executing
+    note right of Select: Status stays Executing; broker snapshot is authoritative
 ```
 
 ### Mode-specific behavior
@@ -234,7 +236,7 @@ See [`ARCHITECTURE.md`](../ARCHITECTURE.md#3-permission-system) for the full dia
 1. `normalize_capability(tool, input)` computes `CapabilityRisk` (`Read`, `Write`, `High`).
 2. Rules from global and project settings are merged into one effective policy (project loaded second; both scopes participate equally).
 3. `PermissionManager::check(tool_name, risk, input)` evaluates settings rules with `deny > ask > allow` precedence, then applies the mode.
-4. If `Ask`, the TUI shows a `RequestSelect` popup or the headless runtime denies.
+4. If `Ask`, the TUI reconciles a select popup from the broker snapshot (or legacy `RequestSelect`) for the user; the headless runtime denies.
 5. User choice transitions the in-memory allowlist and, when **Always allow this tool** is selected, persists the generated parameter-aware rule to the project settings file.
 
 ### Scope merge and soft failure
@@ -347,21 +349,21 @@ See [`tool_rendering.md`](./tool_rendering.md) for the full tool UI design.
 
 ## 8. Select Popup State
 
-File: `crates/tui/src/widgets/state/select_popup.rs`
+File: `crates/agent_tui_kit/src/state/select_popup.rs`
 
-The select popup has its own implicit state machine managed through the `respond` oneshot channel.
+The select popup has an implicit state machine. In interactive mode it is derived from `UiResponder::snapshot()`; the broker's `respond()` removes the pending entry. In legacy/headless mode it is driven by the `RequestSelect` event and the `respond` oneshot channel.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Inactive: new()
-    Inactive --> Active: set(prompt, options, respond)
+    Inactive --> Active: pending snapshot contains request
     Active --> Confirmed: confirm() sends Some(idx)
     Active --> Cancelled: cancel() sends None
-    Confirmed --> Inactive: respond channel consumed
-    Cancelled --> Inactive: respond channel consumed
+    Confirmed --> Inactive: broker respond / channel consumed
+    Cancelled --> Inactive: broker respond / channel consumed
 ```
 
-`RequestSelect` from the agent activates the popup; `Enter` confirms and `Esc` cancels, both returning the UI to `InputMode::Normal`.
+A pending request activates the popup (broker snapshot in interactive mode, `RequestSelect` in legacy mode); `Enter` confirms and `Esc` cancels, both returning the UI to `InputMode::Normal`.
 
 ---
 
@@ -416,6 +418,6 @@ All three are reset to zero when the corresponding recovery path succeeds or whe
 | `PermissionBehavior` | `crates/tact/src/permission/mod.rs` | Risk classification + mode | Approve/deny/ask for each tool call. |
 | `HookControl` | `crates/tact/src/hook/mod.rs` | Hook return value | Permit or veto agent operations. |
 | `StepStatus` | `crates/protocol/src/agent.rs` | Tool execution result | Per-step success/failure display. |
-| `SelectPopup` | `crates/tui/src/widgets/state/select_popup.rs` | `RequestSelect` + keys | User option selection popup. |
+| `SelectPopup` | `crates/agent_tui_kit/src/state/select_popup.rs` | pending snapshot / `RequestSelect` + keys | User option selection popup. |
 | `StreamState` / `ThinkingState` | `crates/tui/src/widgets/state/stream_state.rs` / `thinking_state.rs` | Stream chunks | Parse Markdown/code/thinking output. |
 | `RecoveryState` | `crates/tact/src/recovery.rs` | LLM errors | Auto-recovery from transport/context errors. |

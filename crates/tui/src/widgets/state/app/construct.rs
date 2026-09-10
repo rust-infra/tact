@@ -124,6 +124,7 @@ impl App {
             select: SelectPopup::default(),
             select_kind: SelectKind::Agent,
             pending_agent_selects: VecDeque::new(),
+            pending_ui: None,
             file_picker: FilePicker::new(),
             slash_command: SlashCommandState::default(),
             registry,

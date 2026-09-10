@@ -120,12 +120,10 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                 match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                     SelectKind::Agent => {
                         if let Some(id) = request_id {
-                            let _ = app.user_cmd_tx.send(UserCommand::UiResponse(
-                                UiResponse::MultiSelect {
-                                    request_id: id,
-                                    choices: Some(idxs),
-                                },
-                            ));
+                            app.respond_ui(UiResponse::MultiSelect {
+                                request_id: id,
+                                choices: Some(idxs),
+                            });
                         }
                         if log_confirm {
                             let msgs = app.msgs();
@@ -165,12 +163,10 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
             match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                 SelectKind::Agent => {
                     if let Some(id) = request_id {
-                        let _ = app
-                            .user_cmd_tx
-                            .send(UserCommand::UiResponse(UiResponse::Select {
-                                request_id: id,
-                                choice: Some(idx),
-                            }));
+                        app.respond_ui(UiResponse::Select {
+                            request_id: id,
+                            choice: Some(idx),
+                        });
                     }
                     if log_confirm {
                         let msgs = app.msgs();
@@ -292,7 +288,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             let was_agent = app.select.request_id.is_some();
             if let Some(response) = app.select.cancel() {
-                let _ = app.user_cmd_tx.send(UserCommand::UiResponse(response));
+                app.respond_ui(response);
             }
             let msgs = app.msgs();
             match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
@@ -361,6 +357,13 @@ fn strip_current_marker(label: &str) -> String {
 /// current agent-originated select is confirmed or cancelled so concurrent
 /// subagent permission prompts are served one at a time instead of hanging.
 fn dequeue_next_agent_select(app: &mut App) {
+    // Broker mode: the broker snapshot is the queue. Reconcile picks the next
+    // request (if any) and keeps the legacy VecDeque unused.
+    if app.pending_ui.is_some() {
+        app.reconcile_pending_ui();
+        return;
+    }
+
     let Some(req) = app.pending_agent_selects.pop_front() else {
         return;
     };
@@ -1085,6 +1088,69 @@ thinking_budget = {thinking_budget}
             "log_confirm should render selection in the log: {:?}",
             app.log.items
         );
+    }
+
+    #[test]
+    fn broker_mode_enter_wakes_registered_waiter() {
+        let mut app = make_app();
+        let (tx, mut user_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.user_cmd_tx = tx;
+        let responder = tact::ui_responder::UiResponder::new();
+        app.set_pending_ui(responder.clone());
+
+        let (request_id, mut waiter) = responder.register_select(
+            "Allow write?".into(),
+            vec!["Allow once".into(), "Deny".into()],
+            false,
+        );
+        app.reconcile_pending_ui();
+        assert_eq!(app.select.request_id, Some(request_id));
+
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+
+        match waiter.try_recv() {
+            Ok(UiResponse::Select {
+                request_id: id,
+                choice: Some(0),
+            }) => assert_eq!(id, request_id),
+            other => panic!("expected broker Select response, got {other:?}"),
+        }
+        assert!(responder.snapshot().is_empty());
+        assert!(
+            user_rx.try_recv().is_err(),
+            "broker mode must not fall back to UserCommand::UiResponse"
+        );
+    }
+
+    #[test]
+    fn broker_mode_cancel_answers_pending_select_with_none() {
+        let mut app = make_app();
+        let (tx, mut user_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.user_cmd_tx = tx;
+        let responder = tact::ui_responder::UiResponder::new();
+        app.set_pending_ui(responder.clone());
+
+        let (request_id, mut waiter) = responder.register_select(
+            "Allow write?".into(),
+            vec!["Allow once".into(), "Deny".into()],
+            false,
+        );
+        app.reconcile_pending_ui();
+        assert_eq!(app.select.request_id, Some(request_id));
+
+        app.cancel_task();
+
+        match waiter.try_recv() {
+            Ok(UiResponse::Select {
+                request_id: id,
+                choice: None,
+            }) => assert_eq!(id, request_id),
+            other => panic!("expected cancelled broker Select response, got {other:?}"),
+        }
+        match user_rx.try_recv() {
+            Ok(UserCommand::Cancel) => {}
+            other => panic!("expected UserCommand::Cancel, got {other:?}"),
+        }
     }
 
     #[test]

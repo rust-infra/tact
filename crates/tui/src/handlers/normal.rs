@@ -134,7 +134,7 @@ pub(crate) fn handle_normal_mode(
             // (pending) messages are NOT touched — dropping them is the
             // `[Cancel]` button's job.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
-                let _ = _user_cmd_tx.send(UserCommand::Cancel);
+                app.cancel_task();
             }
         }
         KeyCode::Char('t') => {

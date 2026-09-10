@@ -30,6 +30,22 @@
 ---
 
 ---
+## 1. 2026-09-10 — 权限提示改为从共享 pending-UI broker reconcile
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/ui_responder.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/handlers/select.rs`、`crates/tact-ui/src/interactive.rs`；Ch 25 §4.3；`docs/state_machines.md` §2/§8 |
+
+**症状 / 动机:** 权限提示可能永久停在 `Running`：唯一的 `AgentUpdate::RequestSelect` 事件丢失，或在另一条 update 重置 `input_mode` 时被处理。此前的 `restore_pending_select_mode` 只修了已知的 `SessionStats` 失同步；事件本身仍是唯一真相来源，一旦它丢失或 TUI 没处理到，`UiResponder` 的等待者就没有任何东西能回答。交互式 `edit_file` 提示也命中同类问题；实际观察到某一步停在 Running 约 30 分钟，文件未写入，也没有产生 `tool_result`。
+
+**决策:** 不改 protocol 类型，改为让 in-process `UiResponder` 成为权威的 pending-request registry。`register_select` / `register_multi` 在发出既有 `RequestSelect` hint 之前记录 `PendingUiRequest` 元数据；`snapshot()` 返回有序 pending 集合；`respond()` 原子移除并唤醒等待者；`withdraw()` 处理取消/丢弃。TUI 在每次 agent update 与 poll tick 后从 `snapshot()` reconcile `InputMode::Select`，把 `RequestSelect` 降级为 wake-up hint，并在交互模式下直接经 broker 回答。没有 broker 的 headless/tests 仍以 `RequestSelect` 为权威。若等待 future 被丢弃，`PendingRequestGuard` 会 withdraw，避免被中止的工具留下幽灵弹窗。
+
+**变更后行为:** 丢失或重复的 `RequestSelect` 不再让工具卡在 Running：TUI 会拉取 pending snapshot 并显示弹窗。多个提示（并发 subagent / `ask_user`）按 request id 排队在 broker 中，而不是单独的 `VecDeque`。Enter/Esc 直接回答 broker；`/cancel` 会先用 `None` 回答当前提示，再发送 `UserCommand::Cancel`；等待者被 abort 会移除 pending entry。`tact_protocol` enum 与 wire shape 未变；这是 in-process reconciliation 层，后续做 server transport 前应提升为带版本的 snapshot protocol。
+
+**指针:** `crates/tact/src/ui_responder.rs`（`PendingUiRequest`、`snapshot`、`respond`、`withdraw`、`PendingRequestGuard`）；`crates/tui/src/widgets/state/app/agent.rs`（`reconcile_pending_ui`）；`crates/tui/src/handlers/select.rs`；`crates/tact-ui/src/interactive.rs`；`crates/tui/src/lib.rs`；Ch 25 §4.3；`docs/state_machines.md` §2/§8。测试：`ui_responder::tests::*`、`broker_snapshot_*`、`broker_mode_enter_wakes_registered_waiter`、`broker_mode_cancel_answers_pending_select_with_none`。
+
+---
 
 ## 1. 2026-09-09 — 最后 subagent 完成后，subagent sticky 不再残留展开
 

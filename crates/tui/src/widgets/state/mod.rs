@@ -251,6 +251,10 @@ pub struct App {
     /// Agent-originated selects queued behind the currently-open one
     /// (concurrent subagents asking for permission simultaneously).
     pub(crate) pending_agent_selects: VecDeque<AgentSelectRequest>,
+    /// Authoritative in-process pending UI requests. When set, the TUI
+    /// reconciles its select popup from this snapshot instead of treating
+    /// individual `RequestSelect` events as the source of truth.
+    pub(crate) pending_ui: Option<tact::ui_responder::UiResponder>,
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
     pub(crate) slash_command: SlashCommandState,

@@ -363,7 +363,7 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             // abort. Queued (pending) messages are NOT touched — dropping
             // them is the `[Cancel]` button's job.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
-                let _ = app.user_cmd_tx.send(UserCommand::Cancel);
+                app.cancel_task();
             } else {
                 app.flash_msg = Some((
                     app.msgs().cancel_noop_msg.to_string(),

@@ -30,6 +30,22 @@ Newest entries first. Each entry should include:
 ---
 
 ---
+## 1. 2026-09-10 — Permission prompts reconcile from a shared pending-UI broker
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/ui_responder.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/handlers/select.rs`, `crates/tact-ui/src/interactive.rs`; Ch 25 §4.3; `docs/state_machines.md` §2/§8 |
+
+**Symptom / motivation:** A permission prompt could remain `Running` forever when its single `AgentUpdate::RequestSelect` event was lost or handled while another update reset `input_mode`. The previous `restore_pending_select_mode` fix covered the known `SessionStats` desync, but the event itself was still the only source of truth: if it was dropped, or the TUI did not process it, the `UiResponder` waiter had nothing that could answer it. The same failure class hit interactive `edit_file` prompts; one observed step sat in Running for roughly 30 minutes without writing the file or producing a `tool_result`.
+
+**Decision:** Keep the protocol types unchanged and make the in-process `UiResponder` the authoritative pending-request registry. `register_select` / `register_multi` record `PendingUiRequest` metadata before emitting the existing `RequestSelect` hint; `snapshot()` returns the ordered pending set; `respond()` atomically removes and wakes the waiter; `withdraw()` handles cancellation/drop. The TUI reconciles `InputMode::Select` from `snapshot()` after every agent update and on poll ticks, treating `RequestSelect` as a wake-up hint and answering directly through the broker when interactive. `RequestSelect` remains authoritative for headless/tests when no broker is attached. `PendingRequestGuard` withdraws a request if its waiter future is abandoned, so an aborted tool cannot leave a ghost popup.
+
+**Behavior after:** A lost or duplicated `RequestSelect` no longer leaves a tool stuck in Running: the TUI pulls the pending snapshot and surfaces the popup. Multiple prompts (concurrent subagents / `ask_user`) queue by request id in the broker rather than a separate `VecDeque`. Enter/Esc answer the broker directly; `/cancel` answers the active prompt with `None` before sending `UserCommand::Cancel`; aborting a waiter removes its pending entry. The `tact_protocol` enum and wire shape are unchanged; this is an in-process reconciliation layer intended to be promoted to a versioned snapshot protocol before a server transport is added.
+
+**Pointers:** `crates/tact/src/ui_responder.rs` (`PendingUiRequest`, `snapshot`, `respond`, `withdraw`, `PendingRequestGuard`); `crates/tui/src/widgets/state/app/agent.rs` (`reconcile_pending_ui`); `crates/tui/src/handlers/select.rs`; `crates/tact-ui/src/interactive.rs`; `crates/tui/src/lib.rs`; Ch 25 §4.3; `docs/state_machines.md` §2/§8. Tests: `ui_responder::tests::*`, `broker_snapshot_*`, `broker_mode_enter_wakes_registered_waiter`, `broker_mode_cancel_answers_pending_select_with_none`.
+
+---
 
 ## 1. 2026-09-09 — Subagent sticky no longer stays open after the last subagent finishes
 

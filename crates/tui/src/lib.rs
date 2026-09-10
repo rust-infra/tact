@@ -94,6 +94,9 @@ pub(crate) fn should_repaint(app: &App) -> bool {
 /// - Idle: dirty only when bottom-bar `Up` whole-second changes (≤1 redraw/s).
 /// - Done: no-op here — `should_repaint` already force-draws for the 2s highlight.
 pub(crate) fn on_poll_timeout(app: &mut App) {
+    // Pull-based fallback: if a RequestSelect hint was lost, the broker
+    // snapshot still contains the pending request and this tick surfaces it.
+    app.reconcile_pending_ui();
     match app.status {
         Status::Idle => {
             let secs = chrono::Local::now()
@@ -138,6 +141,9 @@ pub struct TuiConfig {
     /// Shared session store used to inspect persisted request payloads.
     pub session_store: tact::store::DynSessionStore,
     pub skill_registry: tact::skill::SharedSkillRegistry,
+    /// Authoritative in-process pending UI request broker. The TUI reconciles
+    /// from `snapshot()` instead of trusting a single `RequestSelect` event.
+    pub pending_ui: tact::ui_responder::UiResponder,
     /// Voice-to-text settings (independent of LLM providers).
     pub voice: tact::config::VoiceSettings,
     /// Keyboard shortcut to start/stop voice recording (e.g. "ctrl+g").
@@ -167,6 +173,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
         skill_registry,
         session_store,
+        pending_ui,
         voice,
         voice_parsed_keybind,
     } = cfg;
@@ -199,6 +206,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
     );
 
+    app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
     app.model_context_window = model_context_window;

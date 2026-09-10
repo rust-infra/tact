@@ -28,6 +28,8 @@ graph LR
 
 所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`AgentUpdate` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
 
+交互模式下，共享的 `UiResponder` 还会暴露一个有序 pending snapshot；TUI 从该 snapshot reconcile `InputMode::Select`，并把 `RequestSelect` / `RequestMultiSelect` 当作 wake-up hint。没有 broker 的 headless/tests 仍以该事件为权威。
+
 ---
 
 ## 2. 核心类型
@@ -294,6 +296,8 @@ flowchart LR
 
 权限提示使用独立输入模式状态机。`RequestSelect` **不**添加 `Status` variant — select popup 打开时状态栏仍可读 `Executing`。
 
+在交互/broker 模式下，`Select` 由 `pending != empty` 推导；`RequestSelect` 事件只负责唤醒 TUI，`UiResponder::snapshot()` 才是权威。下面的 event-driven 转换描述没有 broker 的 legacy/headless 路径。
+
 ```mermaid
 stateDiagram-v2
     [*] --> Normal: startup
@@ -307,7 +311,8 @@ stateDiagram-v2
 
     note right of Select
         到达时 Status = Executing。
-        request_id → 反向命令通道上的 UiResponse
+        Broker 模式：由 pending snapshot 推导。
+        Legacy：RequestSelect → UiResponse。
     end note
 ```
 
@@ -337,7 +342,7 @@ stateDiagram-v2
 |------|----------|------------|
 | **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`TaskCancelled`、`Error`、`RequestSelect`、`TasksChanged` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
 | **仅元数据** | `TokenUsage(TokenUsageInfo)`、`ModelInfo(ModelCallParams)` | 仅更新状态栏；保留 loading placeholder；**不**关闭已开 thinking 区域 |
-| **请求–响应** | `RequestSelect { request_id }`、`RequestMultiSelect { request_id }` | 经共享 `UiResponder`（反向 `UiResponse`）阻塞等待用户选择 |
+| **请求–响应** | `RequestSelect { request_id }`、`RequestMultiSelect { request_id }` | Broker 模式：`snapshot()` 是权威，`RequestSelect*` 仅作 wake-up hint。Legacy/headless：经共享 `UiResponder`（反向 `UiResponse`）阻塞等待用户选择。 |
 
 Thinking 生命周期显式：`ThinkingChunk::Started` 打开区域，`Delta` 追加文本，`Finished` flush 并折叠。安全网：其他内容产出非 thinking 更新仍会在区域仍开时调用 `flush_and_close_thinking()`。`TokenUsage` / `ModelInfo` 从不关闭 thinking（可能 mid-stream 到达）。
 

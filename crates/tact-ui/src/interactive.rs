@@ -92,6 +92,10 @@ async fn run_interactive_locked(
     let (plugin_tx, plugin_request_rx) = tokio::sync::mpsc::unbounded_channel();
     let (plugin_event_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
     let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    // One broker is shared by the agent (registration/waiter) and the TUI
+    // (snapshot/reconcile). This remains an in-process transport: no protocol
+    // enum or channel type is embedded in `tact_protocol`.
+    let ui_responder = tact::ui_responder::UiResponder::new();
     let _plugin_worker = match tact::consts::PluginHome::from_environment() {
         Some(plugin_home) => {
             tact::plugin::spawn_worker(plugin_home, plugin_request_rx, plugin_event_tx)
@@ -124,6 +128,7 @@ async fn run_interactive_locked(
     let model_max_tokens = tact::config::settings().agent.max_tokens;
     let model_thinking_budget = tact::config::settings().agent.thinking_budget;
     let account_enabled = account::is_supported();
+    let tui_ui_responder = ui_responder.clone();
     let tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
             Some(account_rx)
@@ -140,6 +145,7 @@ async fn run_interactive_locked(
             input_history_entries: input_history,
             session_id,
             session_store,
+            pending_ui: tui_ui_responder,
             history_save_tx,
             theme,
             model_context_window,
@@ -209,6 +215,7 @@ async fn run_interactive_locked(
         agent_session_id,
         agent_session_store,
         work_dir,
+        ui_responder,
     )
     .await
     {
@@ -265,6 +272,7 @@ async fn build_agent_for_interactive(
     session_id: String,
     session_store: DynSessionStore,
     work_dir: std::path::PathBuf,
+    ui_responder: tact::ui_responder::UiResponder,
 ) -> anyhow::Result<Agent> {
     let client = get_llm_client().await?;
     let mode = permission_mode_from_config();
@@ -304,7 +312,7 @@ async fn build_agent_for_interactive(
         worktree_manager,
         subagent_manager,
         ui_tx: Some(agent_tx.clone()),
-        ui_responder: tact::ui_responder::UiResponder::new(),
+        ui_responder,
         progress_reporter: tact::tool::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
