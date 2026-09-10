@@ -1,3 +1,10 @@
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
 use tact::{
     config::{CliCommand, init},
     consts::TactPath,
@@ -12,19 +19,15 @@ use tracing_subscriber::prelude::*;
 async fn main() -> anyhow::Result<()> {
     let mut args = init()?;
 
-    if tact::config::settings().tokio_console {
-        if args.command.is_none() {
-            // The normal interactive UI owns the terminal. Install only the
-            // tokio-console layer here; console_subscriber::init() also adds
-            // a fmt layer that writes tracing events (including rmcp's MCP
-            // handshake logs) into the TUI when RUST_LOG enables them.
-            tracing_subscriber::registry()
-                .with(console_subscriber::spawn())
-                .init();
-        } else {
-            console_subscriber::init();
+    let tokio_console = tact::config::settings().tokio_console;
+    if tokio_console || std::env::var_os("RUST_LOG").is_some() {
+        let log_path = init_logging(tokio_console);
+        if tokio_console {
+            eprintln!("[tokio-console] listening on http://127.0.0.1:6669");
+            if let Some(log_path) = log_path {
+                eprintln!("[tokio-console] tracing log: {}", log_path.display());
+            }
         }
-        eprintln!("[tokio-console] listening on http://127.0.0.1:6669");
     }
 
     // Self-upgrade does not need a session store or provider config.
@@ -63,4 +66,117 @@ async fn main() -> anyhow::Result<()> {
     }
 
     run_interactive(args, tact_path, session_store, lock_registry).await
+}
+
+fn init_logging(tokio_console: bool) -> Option<PathBuf> {
+    // The interactive TUI owns stdout/stderr; never install a terminal fmt
+    // layer. `console_subscriber::spawn()` supplies the live tokio-console
+    // layer when requested, while the optional fmt layer writes tracing events
+    // to a date-rotated file. `RUST_LOG` controls verbosity (for example
+    // `RUST_LOG=tact_llm=debug`).
+    let log_dir = open_log_dir();
+    let path = log_dir
+        .as_ref()
+        .map(|dir| daily_log_path(dir, &current_date_string()));
+    let file_layer = log_dir.map(|dir| {
+        // Touch today's file so it exists even before the first trace event.
+        let _ = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(daily_log_path(&dir, &current_date_string()));
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(DailyLogMakeWriter::new(dir))
+            .with_filter(tracing_subscriber::EnvFilter::from_default_env())
+    });
+    let console_layer = tokio_console.then(console_subscriber::spawn);
+
+    tracing_subscriber::registry()
+        .with(console_layer)
+        .with(file_layer)
+        .init();
+
+    path
+}
+
+fn open_log_dir() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let log_dir = TactPath::new(cwd).tact_dir().join("logs");
+    std::fs::create_dir_all(&log_dir).ok()?;
+    Some(log_dir)
+}
+
+fn current_date_string() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+fn daily_log_path(log_dir: &Path, date: &str) -> PathBuf {
+    log_dir.join(format!("tact-{date}.log"))
+}
+
+#[derive(Clone)]
+struct DailyLogMakeWriter {
+    dir: PathBuf,
+    state: Arc<Mutex<DailyLogState>>,
+}
+
+struct DailyLogState {
+    date: String,
+    file: Option<File>,
+}
+
+impl DailyLogMakeWriter {
+    fn new(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            state: Arc::new(Mutex::new(DailyLogState {
+                date: String::new(),
+                file: None,
+            })),
+        }
+    }
+}
+
+struct DailyLogWriter {
+    inner: DailyLogMakeWriter,
+}
+
+impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a> for DailyLogMakeWriter {
+    type Writer = DailyLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        DailyLogWriter {
+            inner: self.clone(),
+        }
+    }
+}
+
+impl Write for DailyLogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let today = current_date_string();
+        let Ok(mut state) = self.inner.state.lock() else {
+            return Ok(buf.len());
+        };
+
+        if state.date != today {
+            let path = daily_log_path(&self.inner.dir, &today);
+            state.file = OpenOptions::new().create(true).append(true).open(path).ok();
+            state.date = today;
+        }
+
+        match state.file.as_mut() {
+            Some(file) => file.write(buf),
+            None => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let Ok(mut state) = self.inner.state.lock() else {
+            return Ok(());
+        };
+        match state.file.as_mut() {
+            Some(file) => file.flush(),
+            None => Ok(()),
+        }
+    }
 }

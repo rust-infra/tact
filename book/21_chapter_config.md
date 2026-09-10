@@ -349,8 +349,16 @@ installed plugin with a feature summary (`skills=N commands=M hooks mcp`),
 and `install` / `uninstall` / `update` / `reload` manage the
 revision-locked cache under `~/.tact/plugins`. Marketplace commands
 (`tact plugin marketplace add|list|update|remove`) manage Git/catalog
-sources. Installed plugin content contributes skills (`plugin:<name>`),
-`commands/*.md` slash commands, MCP servers, and lifecycle hooks — see Ch 2,
+sources plus discovered Codex local marketplaces at
+`~/.agents/plugins/marketplace.json` and
+nearest repo `.agents/plugins/marketplace.json`. Two built-in Git
+marketplaces are always registered: `claude-plugins-official` and the OpenAI
+Codex catalog `openai-curated` (`github.com/openai/plugins`). A bare
+`plugin install <name>`
+prefers a matching discovered Codex marketplace and falls back to
+`claude-plugins-official`. Installed plugin content contributes skills
+(`plugin:<name>`), `commands/*.md` slash commands, MCP servers, and lifecycle
+hooks — see Ch 2,
 8, 9, 12.
 
 Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.

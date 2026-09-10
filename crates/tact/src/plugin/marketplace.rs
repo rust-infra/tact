@@ -14,6 +14,7 @@ use super::{
 };
 use crate::consts::PluginHome;
 
+/// The `marketplace.json` file name a local marketplace root may hold.
 const MARKETPLACE_FILE: &str = "marketplace.json";
 
 /// A plugin location normalized from a marketplace catalog entry.
@@ -75,6 +76,13 @@ impl PluginSource {
                 path,
                 reference: sha.or(reference),
             });
+        }
+        if source == "local" {
+            if reference.is_some() || sha.is_some() {
+                bail!("local plugin source cannot specify ref");
+            }
+            let path = path.context("local plugin source must specify a path field")?;
+            return Ok(Self::Relative(normalize_relative(&path)?));
         }
         if is_relative_source(&source) {
             let source = match path {
@@ -179,6 +187,15 @@ impl MarketplaceService {
 
     /// Retrieves a source and records it under the name declared by its catalog.
     pub async fn add_catalog_source(&self, source: MarketplaceSource) -> Result<String> {
+        if let MarketplaceSource::LocalPath(root) = &source {
+            let catalog = self.catalog_at_local(root)?;
+            validate_marketplace_name(&catalog.name)?;
+            let mut marketplaces = self.store.load_marketplaces()?;
+            marketplaces.add(&catalog.name, source)?;
+            self.store.save_marketplaces(&marketplaces)?;
+            return Ok(catalog.name);
+        }
+
         fs::create_dir_all(&self.home.marketplaces)?;
         let candidate = self
             .home
@@ -187,6 +204,7 @@ impl MarketplaceService {
         let refreshed = match &source {
             MarketplaceSource::GitUrl(url) => self.refresh_git(url, &candidate),
             MarketplaceSource::CatalogUrl(url) => self.refresh_catalog_url(url, &candidate).await,
+            MarketplaceSource::LocalPath(_) => unreachable!("handled above"),
         };
         if let Err(error) = refreshed {
             let _ = fs::remove_dir_all(&candidate);
@@ -229,15 +247,41 @@ impl MarketplaceService {
 
     /// Reads a previously refreshed marketplace catalog.
     pub fn catalog(&self, name: &str) -> Result<MarketplaceCatalog> {
+        Ok(self.catalog_with_root(name)?.0)
+    }
+
+    /// Reads a marketplace catalog and returns the root used to resolve
+    /// relative plugin sources.
+    pub fn catalog_with_root(&self, name: &str) -> Result<(MarketplaceCatalog, PathBuf)> {
+        let state = self.store.load_marketplaces()?;
+        let record = state.get(name).cloned();
+
+        if let Some(MarketplaceSource::LocalPath(root)) = record.as_ref().map(|r| &r.source) {
+            let catalog = self.catalog_at_local(root)?;
+            return Ok((catalog, root.clone()));
+        }
+
         let root = self.marketplace_path(name)?;
         self.restore_interrupted_replacement(&root)?;
+        if record.is_none() && !root.exists() {
+            bail!("unknown marketplace {name}");
+        }
         self.ensure_marketplace_root_is_contained(&root)?;
-        self.catalog_at(&root)
+        let catalog = self.catalog_at(&root)?;
+        Ok((catalog, root))
     }
 
     fn catalog_at(&self, root: &Path) -> Result<MarketplaceCatalog> {
         self.ensure_marketplace_root_is_contained(root)?;
-        let path = catalog_path(root);
+        self.read_catalog_at(root)
+    }
+
+    fn catalog_at_local(&self, root: &Path) -> Result<MarketplaceCatalog> {
+        self.read_catalog_at(root)
+    }
+
+    fn read_catalog_at(&self, root: &Path) -> Result<MarketplaceCatalog> {
+        let path = super::marketplace_catalog_path(root);
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read marketplace catalog {}", path.display()))?;
         MarketplaceCatalog::parse(&content, root)
@@ -256,6 +300,7 @@ impl MarketplaceService {
         match &record.source {
             MarketplaceSource::GitUrl(url) => self.refresh_git(url, &destination),
             MarketplaceSource::CatalogUrl(url) => self.refresh_catalog_url(url, &destination).await,
+            MarketplaceSource::LocalPath(_) => Ok(()),
         }
     }
 
@@ -324,7 +369,7 @@ impl MarketplaceService {
 
     fn activate_candidate(&self, candidate: &Path, destination: &Path) -> Result<()> {
         self.ensure_marketplace_root_is_contained(candidate)?;
-        let catalog = catalog_path(candidate);
+        let catalog = super::marketplace_catalog_path(candidate);
         let content = fs::read_to_string(&catalog).with_context(|| {
             format!(
                 "failed to read candidate marketplace catalog {}",
@@ -525,15 +570,6 @@ fn replace_directory(temporary: &Path, destination: &Path, backup: &Path) -> Res
         .with_context(|| format!("failed to remove previous marketplace {}", backup.display()))
 }
 
-fn catalog_path(root: &Path) -> PathBuf {
-    let claude_path = root.join(".codex-plugin").join(MARKETPLACE_FILE);
-    if claude_path.exists() {
-        claude_path
-    } else {
-        root.join(MARKETPLACE_FILE)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fs, os::unix::fs::symlink};
@@ -599,6 +635,28 @@ mod tests {
         assert_eq!(
             catalog.plugins["superpowers"].source,
             PluginSource::Relative("plugins/superpowers".into())
+        );
+    }
+
+    #[test]
+    fn parses_codex_local_plugin_source() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("plugins/demo")).unwrap();
+        let catalog = MarketplaceCatalog::parse(
+            r#"{
+                "name":"codex-local",
+                "plugins":[{
+                    "name":"demo",
+                    "source":{"source":"local","path":"./plugins/demo"}
+                }]
+            }"#,
+            root.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            catalog.plugins["demo"].source,
+            PluginSource::Relative("plugins/demo".into())
         );
     }
 

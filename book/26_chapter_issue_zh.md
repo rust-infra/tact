@@ -30,6 +30,8 @@
 ---
 
 ---
+
+
 ## 1. 2026-09-10 — 权限提示改为从共享 pending-UI broker reconcile
 
 | Field | Value |
@@ -44,6 +46,40 @@
 **变更后行为:** 丢失或重复的 `RequestSelect` 不再让工具卡在 Running：TUI 会拉取 pending snapshot 并显示弹窗。多个提示（并发 subagent / `ask_user`）按 request id 排队在 broker 中，而不是单独的 `VecDeque`。Enter/Esc 直接回答 broker；`/cancel` 会先用 `None` 回答当前提示，再发送 `UserCommand::Cancel`；等待者被 abort 会移除 pending entry。`tact_protocol` enum 与 wire shape 未变；这是 in-process reconciliation 层，后续做 server transport 前应提升为带版本的 snapshot protocol。
 
 **指针:** `crates/tact/src/ui_responder.rs`（`PendingUiRequest`、`snapshot`、`respond`、`withdraw`、`PendingRequestGuard`）；`crates/tui/src/widgets/state/app/agent.rs`（`reconcile_pending_ui`）；`crates/tui/src/handlers/select.rs`；`crates/tact-ui/src/interactive.rs`；`crates/tui/src/lib.rs`；Ch 25 §4.3；`docs/state_machines.md` §2/§8。测试：`ui_responder::tests::*`、`broker_snapshot_*`、`broker_mode_enter_wakes_registered_waiter`、`broker_mode_cancel_answers_pending_select_with_none`。
+
+---
+
+## 1. 2026-09-10 — 发现 Codex 本地 marketplace，支持 plugin install/list
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/plugin/{model,store,marketplace,install,mod}.rs`、`crates/tact-ui/src/plugin_cli.rs`；设计见 `docs/superpowers/specs/2026-09-10-codex-marketplace-design.md`；计划见 `docs/superpowers/plans/2026-09-10-codex-marketplace.md` |
+
+**症状 / 动机:** Tact 已采用 Codex 的 plugin manifest/hooks/MCP 布局，但 marketplace 发现仍只暴露硬编码的 Claude 官方 Git marketplace。Codex personal marketplace（`~/.agents/plugins/marketplace.json`）不会出现在 `tact-ui plugin marketplace list`；Codex 的 `source: "local"` catalog entry 无法解析；不带 `@marketplace` 的 `plugin install <name>` 也仍默认到 `claude-plugins-official`。
+
+**决策:** 发现 `$HOME/.agents/plugins/marketplace.json` 与 最近的祖先目录 `.agents/plugins/marketplace.json`；把它们以非持久化的 `MarketplaceSource::LocalPath` 记录加入 marketplace state；支持 Codex `source: "local"`，并将插件路径按 marketplace root 解析。裸安装现在优先扫描已发现的 Codex marketplace，找不到才回退到 `claude-plugins-official`；本地 marketplace 的 update 只重新读取 catalog，不做网络刷新。
+
+**改后行为:** `tact-ui plugin marketplace list` 会先显示 Codex 本地 marketplace，再显示旧官方 marketplace；`tact-ui plugin install build-ios-apps` 可不带 `@marketplace` 直接从用户 Codex marketplace 安装；`plugin marketplace update <codex-local-name>` 会从磁盘重读 catalog。Claude 官方 marketplace 仍作为兼容 fallback 保留。
+
+**指针:** `crates/tact/src/plugin/model.rs`（`LocalPath`、discovered state）、`crates/tact/src/plugin/store.rs`（Codex marketplace 发现）、`crates/tact/src/plugin/marketplace.rs`（`source: "local"`、catalog path）、`crates/tact/src/plugin/install.rs`（本地 source root）、`crates/tact/src/plugin/mod.rs`（默认安装解析）；测试 `parses_codex_local_plugin_source`、`load_marketplaces_discovers_codex_personal_marketplace`、`install_from_codex_local_marketplace_resolves_relative_to_home`、`install_without_marketplace_prefers_discovered_codex_marketplace`。
+
+---
+
+## 1. 2026-09-10 — Seed the OpenAI Codex marketplace as a built-in
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/plugin/{model,install,hooks}.rs`；测试 `codex_manifest_accepts_string_mcp_servers_and_inline_hooks`、`parses_inline_manifest_hooks`；Ch 21 §plugin |
+
+**症状 / 动机:** Tact 只有 `claude-plugins-official` 一个内置 marketplace。OpenAI 的 Codex 官方目录 `github.com/openai/plugins`（catalog `openai-curated`）无法开箱即用；而且其 manifest 并不内联 `mcpServers`/`hooks`——`mcpServers` 是相对文件路径 `"./.mcp.json"`，`hooks` 可能是内联对象——导致安装阶段解析失败。
+
+**决策:** 将 `openai-curated`（源码 `https://github.com/openai/plugins.git`）注册为第二个内置 marketplace，与 `claude-plugins-official` 一样受保护、不可 replace/remove，并在 load/deserialize 时恢复。安装器与 hooks 的 manifest 解析改为同时接受“内联值”与“相对文件路径”两种 Codex 形状，缺失声明的文件不算 feature。`mcp` 特征只用于安装校验；运行期仍只连接 stdio server，远程（http/url）MCP 与 `apps` 连接器由 Tact 之外的东西消费。
+
+**改后行为:** `plugin marketplace list` 默认显示 `claude-plugins-official` 与 `openai-curated`；`plugin install linear@openai-curated`（及不带后缀时回退到已发现 Codex marketplace）可安装 OpenAI 目录中 57 个插件（剩余为纯 `apps` 连接器——`mcpServers`/`skills` 为空）。`openai/plugins` 中的远程 HTTP MCP 插件能安装但运行期跳过其 MCP。
+
+**指针:** `crates/tact/src/plugin/model.rs`（`OPENAI_MARKETPLACE`、`BUILTIN_MARKETPLACES`、`is_builtin_marketplace`、`builtin_record`）、`crates/tact/src/plugin/install.rs`（`PluginManifest`、`manifest_declares_file_or_inline`）、`crates/tact/src/plugin/hooks.rs`（`inline_hooks`、`load_installed_hooks`）。
 
 ---
 

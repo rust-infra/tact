@@ -14,7 +14,7 @@ use super::{
     CatalogPlugin, InstalledPlugin, MarketplaceService, PluginFeatures, PluginSource, PluginStore,
     validate_marketplace_name,
 };
-use crate::{consts::PluginHome, mcp::McpServerConfig};
+use crate::consts::PluginHome;
 
 /// Installs marketplace plugins into a revision-locked local cache.
 #[derive(Clone, Debug)]
@@ -57,16 +57,21 @@ impl PluginInstaller {
     pub fn install(&self, plugin_id: &str, marketplace_id: &str) -> Result<InstalledPlugin> {
         validate_plugin_id(plugin_id)?;
         validate_marketplace_name(marketplace_id)?;
-        let catalog = match self.marketplace_service.catalog(marketplace_id) {
+        let (catalog, marketplace_root) = match self
+            .marketplace_service
+            .catalog_with_root(marketplace_id)
+        {
             Ok(catalog) => catalog,
             Err(_) => {
-                super::block_on_async(self.marketplace_service.update_marketplace(marketplace_id))?
+                super::block_on_async(self.marketplace_service.update_marketplace(marketplace_id))?;
+                self.marketplace_service.catalog_with_root(marketplace_id)?
             }
         };
         let plugin = catalog.plugins.get(plugin_id).with_context(|| {
             format!("unknown plugin {plugin_id} in marketplace {marketplace_id}")
         })?;
-        let (source, revision, fetched_directory) = self.resolve_source(plugin, marketplace_id)?;
+        let (source, revision, fetched_directory) =
+            self.resolve_source(plugin, &marketplace_root)?;
         let result = self.install_source(plugin_id, marketplace_id, &source, &revision);
         if let Some(directory) = fetched_directory {
             let _ = fs::remove_dir_all(directory);
@@ -98,16 +103,21 @@ impl PluginInstaller {
         // previously fetched catalog when the refresh fails so the command still
         // reports the current revision instead of erroring on transient network
         // trouble.
-        let catalog = match super::block_on_async(
+        let (catalog, marketplace_root) = match super::block_on_async(
             self.marketplace_service.update_marketplace(&marketplace_id),
         ) {
-            Ok(catalog) => catalog,
-            Err(_) => self.marketplace_service.catalog(&marketplace_id)?,
+            Ok(_) => self
+                .marketplace_service
+                .catalog_with_root(&marketplace_id)?,
+            Err(_) => self
+                .marketplace_service
+                .catalog_with_root(&marketplace_id)?,
         };
         let plugin = catalog.plugins.get(plugin_id).with_context(|| {
             format!("unknown plugin {plugin_id} in marketplace {marketplace_id}")
         })?;
-        let (source, revision, fetched_directory) = self.resolve_source(plugin, &marketplace_id)?;
+        let (source, revision, fetched_directory) =
+            self.resolve_source(plugin, &marketplace_root)?;
 
         let result = if revision == installed.revision {
             Ok(PluginUpdateResult::UpToDate { installed })
@@ -221,16 +231,23 @@ impl PluginInstaller {
         result
     }
 
+    #[cfg(test)]
+    fn marketplace_root(&self, marketplace_id: &str) -> PathBuf {
+        self.home.marketplaces.join(marketplace_id)
+    }
+
     fn resolve_source(
         &self,
         plugin: &CatalogPlugin,
-        marketplace_id: &str,
+        marketplace_root: &Path,
     ) -> Result<(ResolvedPluginSource, String, Option<PathBuf>)> {
         match &plugin.source {
             PluginSource::Relative(relative) => {
-                let root = self.marketplace_root(marketplace_id);
-                let root = root.canonicalize().with_context(|| {
-                    format!("failed to resolve marketplace root {}", root.display())
+                let root = marketplace_root.canonicalize().with_context(|| {
+                    format!(
+                        "failed to resolve marketplace root {}",
+                        marketplace_root.display()
+                    )
                 })?;
                 let source = root.join(relative).canonicalize().with_context(|| {
                     format!(
@@ -292,10 +309,6 @@ impl PluginInstaller {
                 ))
             }
         }
-    }
-
-    fn marketplace_root(&self, marketplace_id: &str) -> PathBuf {
-        self.home.marketplaces.join(marketplace_id)
     }
 }
 
@@ -468,16 +481,11 @@ fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<Plugin
         }
     }
 
-    features.has_hooks = manifest
-        .hooks
-        .as_ref()
-        .is_some_and(|hooks| candidate.join(hooks).is_file())
-        || candidate.join("hooks").join("hooks.json").is_file();
+    features.has_hooks =
+        manifest_declares_file_or_inline(candidate, manifest.hooks.as_ref(), "hooks/hooks.json");
 
-    features.has_mcp = manifest
-        .mcp_servers
-        .is_some_and(|servers| !servers.is_empty())
-        || candidate.join(".mcp.json").is_file();
+    features.has_mcp =
+        manifest_declares_file_or_inline(candidate, manifest.mcp_servers.as_ref(), ".mcp.json");
 
     if features.is_empty() {
         bail!(
@@ -487,6 +495,24 @@ fn validate_plugin_candidate(candidate: &Path, plugin_id: &str) -> Result<Plugin
     }
 
     Ok(features)
+}
+
+/// Resolves a Codex manifest field that may name a file or inline its content.
+///
+/// A string is treated as a repository-relative path and must exist; an object
+/// counts when non-empty; anything else (including an absent field) falls back
+/// to the conventional default path.
+fn manifest_declares_file_or_inline(
+    candidate: &Path,
+    value: Option<&serde_json::Value>,
+    default_relative: &str,
+) -> bool {
+    let declared = match value {
+        Some(serde_json::Value::String(path)) => candidate.join(path).is_file(),
+        Some(serde_json::Value::Object(map)) => !map.is_empty(),
+        _ => false,
+    };
+    declared || candidate.join(default_relative).is_file()
 }
 
 /// Reads the Codex plugin manifest (`.codex-plugin/plugin.json`).
@@ -508,9 +534,12 @@ fn read_compatibility_manifest(candidate: &Path) -> Result<PluginManifest> {
 
 /// Codex plugin manifest, parsed for install-time validation.
 ///
-/// `hooks` is a repository-relative path to a hooks JSON file; it is only
-/// validated for existence here — hook execution happens at runtime (see
-/// `crates/tact/src/plugin/hooks.rs`).
+/// `hooks` and `mcpServers` follow the Codex convention of naming a
+/// repository-relative file (`"hooks": "./hooks/hooks.json"`,
+/// `"mcpServers": "./.mcp.json"`), but inline values are accepted too: some
+/// manifests embed the hook matchers or the server map directly. Both shapes
+/// are only validated here — hook/MCP execution happens at runtime (see
+/// `crates/tact/src/plugin/hooks.rs` and `crates/tact/src/mcp/mod.rs`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PluginManifest {
@@ -528,9 +557,9 @@ struct PluginManifest {
     #[allow(dead_code)]
     author: Option<serde_json::Value>,
     #[serde(default)]
-    hooks: Option<String>,
+    hooks: Option<serde_json::Value>,
     #[serde(default)]
-    mcp_servers: Option<std::collections::HashMap<String, McpServerConfig>>,
+    mcp_servers: Option<serde_json::Value>,
 }
 
 fn git_revision(repository_root: &Path) -> Result<String> {
@@ -575,7 +604,9 @@ mod tests {
     use git2::{Repository, Signature};
     use tempfile::TempDir;
 
-    use super::{PluginInstaller, PluginUpdateResult, validate_plugin_id};
+    use super::{
+        PluginInstaller, PluginUpdateResult, validate_plugin_candidate, validate_plugin_id,
+    };
     use crate::{
         consts::PluginHome,
         plugin::{InstalledPlugin, MarketplaceService, MarketplaceSource, PluginStore},
@@ -691,6 +722,44 @@ mod tests {
         assert!(installed.cache_path.join("skills/check/SKILL.md").exists());
         assert_eq!(installed.revision.len(), 40);
         assert_eq!(installed.skill_count, 1);
+    }
+
+    #[test]
+    fn install_from_codex_local_marketplace_resolves_relative_to_home() {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".agents/plugins")).unwrap();
+        fs::create_dir_all(home.path().join("plugins/demo/.codex-plugin")).unwrap();
+        fs::create_dir_all(home.path().join("plugins/demo/skills/check")).unwrap();
+        fs::write(
+            home.path().join(".agents/plugins/marketplace.json"),
+            r#"{
+                "name":"codex-local",
+                "plugins":[{
+                    "name":"demo",
+                    "source":{"source":"local","path":"./plugins/demo"}
+                }]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            home.path().join("plugins/demo/.codex-plugin/plugin.json"),
+            r#"{"name":"demo","version":"0.1.0"}"#,
+        )
+        .unwrap();
+        fs::write(
+            home.path().join("plugins/demo/skills/check/SKILL.md"),
+            "---
+name: check
+---
+",
+        )
+        .unwrap();
+
+        let installer = PluginInstaller::new(PluginHome::from_home(home.path()));
+        let installed = installer.install("demo", "codex-local").unwrap();
+
+        assert_eq!(installed.marketplace, "codex-local");
+        assert!(installed.cache_path.join("skills/check/SKILL.md").is_file());
     }
 
     #[test]
@@ -832,6 +901,50 @@ mod tests {
 
         assert!(installed.has_mcp);
         assert_eq!(installed.skill_count, 0);
+    }
+
+    #[test]
+    fn codex_manifest_accepts_string_mcp_servers_and_inline_hooks() {
+        // OpenAI/Codex plugins name the MCP config file instead of inlining the
+        // server map, and may write `"hooks": {}`.
+        let candidate = tempfile::tempdir().unwrap();
+        fs::create_dir_all(candidate.path().join(".codex-plugin")).unwrap();
+        fs::write(
+            candidate.path().join(".codex-plugin/plugin.json"),
+            r#"{
+                "name": "linear",
+                "mcpServers": "./.mcp.json",
+                "hooks": {}
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            candidate.path().join(".mcp.json"),
+            r#"{"mcpServers":{"linear":{"type":"http","url":"https://mcp.linear.app/mcp"}}}"#,
+        )
+        .unwrap();
+
+        let features = validate_plugin_candidate(candidate.path(), "linear").unwrap();
+
+        assert!(features.has_mcp);
+        assert!(!features.has_hooks);
+    }
+
+    #[test]
+    fn codex_manifest_rejects_a_missing_declared_mcp_file() {
+        let candidate = tempfile::tempdir().unwrap();
+        fs::create_dir_all(candidate.path().join(".codex-plugin")).unwrap();
+        fs::write(
+            candidate.path().join(".codex-plugin/plugin.json"),
+            r#"{ "name": "linear", "mcpServers": "./.mcp.json" }"#,
+        )
+        .unwrap();
+
+        let error = validate_plugin_candidate(candidate.path(), "linear")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("no supported feature"), "{error}");
     }
 
     #[test]

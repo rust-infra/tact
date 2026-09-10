@@ -301,7 +301,7 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
 tact-ui headless "Summarize this repo"
 ```
 
-插件管理在 `tact plugin` / `/plugin` 下：`list` 打印每个已安装插件的功能摘要（`skills=N commands=M hooks mcp`），`install` / `uninstall` / `update` / `reload` 管理 `~/.tact/plugins` 下的修订锁定缓存。Marketplace 命令（`tact plugin marketplace add|list|update|remove`）管理 Git/catalog 源。已安装插件内容贡献 skills（`plugin:<name>`）、`commands/*.md` 斜杠命令、MCP 服务器与生命周期 hook——见 Ch 2、8、9、12。
+插件管理在 `tact plugin` / `/plugin` 下：`list` 打印每个已安装插件的功能摘要（`skills=N commands=M hooks mcp`），`install` / `uninstall` / `update` / `reload` 管理 `~/.tact/plugins` 下的修订锁定缓存。Marketplace 命令（`tact plugin marketplace add|list|update|remove`）管理 Git/catalog 源，并会发现 `~/.agents/plugins/marketplace.json` 与 最近的仓库 `.agents/plugins/marketplace.json` 下的 Codex 本地 marketplace。始终注册两个内置 Git marketplace：`claude-plugins-official` 与 OpenAI Codex 目录 `openai-curated`（`github.com/openai/plugins`）。不带 `@marketplace` 的 `plugin install <name>` 优先匹配已发现的 Codex marketplace，找不到才回退到 `claude-plugins-official`。已安装插件内容贡献 skills（`plugin:<name>`）、`commands/*.md` 斜杠命令、MCP 服务器与生命周期 hook——见 Ch 2、8、9、12。
 
 两个入口点均通过 `crates/tact-ui/src/permission.rs` 中的 `permission_mode_from_config()` 读取 `permission_mode`。
 

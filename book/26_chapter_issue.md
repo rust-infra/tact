@@ -30,6 +30,8 @@ Newest entries first. Each entry should include:
 ---
 
 ---
+
+
 ## 1. 2026-09-10 — Permission prompts reconcile from a shared pending-UI broker
 
 | Field | Value |
@@ -44,6 +46,40 @@ Newest entries first. Each entry should include:
 **Behavior after:** A lost or duplicated `RequestSelect` no longer leaves a tool stuck in Running: the TUI pulls the pending snapshot and surfaces the popup. Multiple prompts (concurrent subagents / `ask_user`) queue by request id in the broker rather than a separate `VecDeque`. Enter/Esc answer the broker directly; `/cancel` answers the active prompt with `None` before sending `UserCommand::Cancel`; aborting a waiter removes its pending entry. The `tact_protocol` enum and wire shape are unchanged; this is an in-process reconciliation layer intended to be promoted to a versioned snapshot protocol before a server transport is added.
 
 **Pointers:** `crates/tact/src/ui_responder.rs` (`PendingUiRequest`, `snapshot`, `respond`, `withdraw`, `PendingRequestGuard`); `crates/tui/src/widgets/state/app/agent.rs` (`reconcile_pending_ui`); `crates/tui/src/handlers/select.rs`; `crates/tact-ui/src/interactive.rs`; `crates/tui/src/lib.rs`; Ch 25 §4.3; `docs/state_machines.md` §2/§8. Tests: `ui_responder::tests::*`, `broker_snapshot_*`, `broker_mode_enter_wakes_registered_waiter`, `broker_mode_cancel_answers_pending_select_with_none`.
+
+---
+
+## 1. 2026-09-10 — Discover Codex local marketplaces for plugin install/list
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/plugin/{model,store,marketplace,install,mod}.rs`, `crates/tact-ui/src/plugin_cli.rs`; design `docs/superpowers/specs/2026-09-10-codex-marketplace-design.md`; plan `docs/superpowers/plans/2026-09-10-codex-marketplace.md` |
+
+**Symptom / motivation:** Tact adopted Codex plugin manifests/hooks/MCP, but marketplace discovery still exposed only the hardcoded Claude official Git marketplace. A Codex personal marketplace at `~/.agents/plugins/marketplace.json` was invisible to `tact-ui plugin marketplace list`; Codex `source: "local"` catalog entries could not be parsed; and a bare `plugin install <name>` defaulted to `claude-plugins-official`.
+
+**Decision:** Discover Codex local marketplaces from `$HOME/.agents/plugins/marketplace.json` and the nearest ancestor `.agents/plugins/marketplace.json`, store their roots as non-persisted `MarketplaceSource::LocalPath` records, and resolve `source: "local"` plugin paths relative to the marketplace root. Bare installs now scan discovered Codex marketplaces first and fall back to `claude-plugins-official`; local marketplace update re-reads the catalog instead of fetching.
+
+**Behavior after:** `tact-ui plugin marketplace list` shows Codex local marketplaces before the legacy official marketplace; `tact-ui plugin install build-ios-apps` can install from the user's Codex marketplace without an explicit `@marketplace`; `plugin marketplace update <codex-local-name>` refreshes from disk. The Claude official marketplace remains available as fallback.
+
+**Pointers:** `crates/tact/src/plugin/model.rs` (`LocalPath`, discovered state), `crates/tact/src/plugin/store.rs` (Codex marketplace discovery), `crates/tact/src/plugin/marketplace.rs` (`source: "local"`, catalog path), `crates/tact/src/plugin/install.rs` (local source root), `crates/tact/src/plugin/mod.rs` (default install resolution); tests `parses_codex_local_plugin_source`, `load_marketplaces_discovers_codex_personal_marketplace`, `install_from_codex_local_marketplace_resolves_relative_to_home`, `install_without_marketplace_prefers_discovered_codex_marketplace`.
+
+---
+
+## 1. 2026-09-10 — Seed the OpenAI Codex marketplace as a built-in
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/plugin/{model,install,hooks}.rs`; tests `codex_manifest_accepts_string_mcp_servers_and_inline_hooks`, `parses_inline_manifest_hooks`; Ch 21 §plugin |
+
+**Symptom / motivation:** Tact only had one built-in marketplace, `claude-plugins-official`. OpenAI's official Codex catalog `github.com/openai/plugins` (catalog `openai-curated`) was not available out of the box, and its plugins could not install because the Codex manifests do not inline `mcpServers`/`hooks`: `mcpServers` is a relative file path `"./.mcp.json"` and `hooks` may be an inline object, both of which the installer rejected.
+
+**Decision:** Register `openai-curated` (source `https://github.com/openai/plugins.git`) as a second built-in marketplace, protected like `claude-plugins-official` (cannot be replaced/removed) and restored on load/deserialize. The installer and hooks manifest parsers now accept both inline values and relative file paths for `mcpServers`/`hooks`; a missing declared file does not count as a feature. `mcp` features remain install-time validation only — runtime still connects stdio servers, while remote (`http`/`url`) MCP and `apps`-connector manifests that Tact does not interpret are not install blockers.
+
+**Behavior after:** `plugin marketplace list` shows `claude-plugins-official` and `openai-curated` by default; `plugin install linear@openai-curated` (and bare installs that fall back to a discovered Codex marketplace) can install 57 of the OpenAI catalog's plugins (the rest are pure `apps` connectors with no `mcpServers`/`skills`). Remote-HTTP-MCP plugins from `openai/plugins` install but their MCP is skipped at runtime.
+
+**Pointers:** `crates/tact/src/plugin/model.rs` (`OPENAI_MARKETPLACE`, `BUILTIN_MARKETPLACES`, `is_builtin_marketplace`, `builtin_record`), `crates/tact/src/plugin/install.rs` (`PluginManifest`, `manifest_declares_file_or_inline`), `crates/tact/src/plugin/hooks.rs` (`inline_hooks`, `load_installed_hooks`).
 
 ---
 

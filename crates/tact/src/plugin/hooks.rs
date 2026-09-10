@@ -466,11 +466,11 @@ fn matcher_matches(matcher: Option<&str>, subject: &str) -> bool {
     }
 }
 
-/// Resolves a plugin's hooks file path, honouring both the manifest `hooks`
+/// Resolves a plugin's hooks file path, honouring the manifest `hooks` string
 /// field and the default discovery path `hooks/hooks.json` (several official
 /// marketplace plugins omit the manifest field and rely on the default).
 fn resolve_hooks_path(root: &Path, manifest: &HookManifest) -> Option<PathBuf> {
-    if let Some(relative) = manifest.hooks.as_ref() {
+    if let Some(serde_json::Value::String(relative)) = manifest.hooks.as_ref() {
         let candidate = root.join(relative);
         if candidate.is_file() {
             return Some(candidate);
@@ -483,6 +483,25 @@ fn resolve_hooks_path(root: &Path, manifest: &HookManifest) -> Option<PathBuf> {
     }
     let default = root.join("hooks").join("hooks.json");
     default.is_file().then_some(default)
+}
+
+/// Parses an inlined manifest `hooks` map (`"hooks": { "SessionStart": [...] }`).
+///
+/// Codex plugins may embed the matcher map instead of naming a hooks file; the
+/// inline map is the same shape as a hooks file's `hooks` object.
+fn inline_hooks(manifest: &HookManifest) -> Option<HooksFile> {
+    let serde_json::Value::Object(map) = manifest.hooks.as_ref()? else {
+        return None;
+    };
+    let hooks =
+        match serde_json::from_value::<HashMap<String, Vec<HookMatcher>>>(map.clone().into()) {
+            Ok(hooks) => hooks,
+            Err(error) => {
+                warn!("plugin manifest has unparseable inline hooks: {error}");
+                return None;
+            }
+        };
+    Some(HooksFile { hooks })
 }
 
 /// Loads every installed plugin's hooks file.
@@ -506,25 +525,39 @@ fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
                 continue;
             }
         };
-        let Some(hooks_path) = resolve_hooks_path(&root.root, &manifest) else {
+        let Some(hooks) = load_installed_hooks(&root.root, &manifest) else {
             continue;
         };
-        match HooksFile::from_file(&hooks_path) {
-            Ok(hooks) => out.push(InstalledHooks {
-                plugin_root: root.root,
-                hooks,
-            }),
-            Err(error) => warn!("plugin {} hooks file skipped: {error:#}", root.plugin_id),
-        }
+        out.push(InstalledHooks {
+            plugin_root: root.root,
+            hooks,
+        });
     }
     Ok(out)
+}
+
+/// Loads one installed plugin's hooks, preferring an inline manifest map and
+/// otherwise reading the manifest-named or default hooks file.
+fn load_installed_hooks(root: &Path, manifest: &HookManifest) -> Option<HooksFile> {
+    if let Some(hooks) = inline_hooks(manifest) {
+        return Some(hooks);
+    }
+    let hooks_path = resolve_hooks_path(root, manifest)?;
+    match HooksFile::from_file(&hooks_path) {
+        Ok(hooks) => Some(hooks),
+        Err(error) => {
+            warn!("plugin hooks at {} skipped: {error:#}", root.display());
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HookManifest {
+    /// Either a repository-relative hooks file path or an inline matcher map.
     #[serde(default)]
-    hooks: Option<String>,
+    hooks: Option<serde_json::Value>,
 }
 
 struct InstalledHooks {
@@ -1126,6 +1159,41 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn parses_inline_manifest_hooks() {
+        let manifest: HookManifest = serde_json::from_str(
+            r#"{
+                "hooks": {
+                    "SessionStart": [{
+                        "hooks": [{ "type": "command", "command": "echo hi" }]
+                    }]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let hooks = inline_hooks(&manifest).unwrap();
+
+        assert_eq!(hooks.commands_for(HookEventKind::SessionStart).len(), 1);
+    }
+
+    #[test]
+    fn empty_inline_manifest_hooks_yield_no_commands() {
+        let manifest: HookManifest = serde_json::from_str(r#"{"hooks":{}}"#).unwrap();
+
+        let hooks = inline_hooks(&manifest).unwrap();
+
+        assert!(hooks.commands_for(HookEventKind::SessionStart).is_empty());
+    }
+
+    #[test]
+    fn string_manifest_hooks_are_not_inline() {
+        let manifest: HookManifest =
+            serde_json::from_str(r#"{"hooks":"./hooks/hooks.json"}"#).unwrap();
+
+        assert!(inline_hooks(&manifest).is_none());
+    }
 
     #[test]
     fn parses_claude_hooks_file() {
