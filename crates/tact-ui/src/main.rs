@@ -62,6 +62,13 @@ async fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        Some(CliCommand::Mcp { command }) => {
+            if let Err(e) = tact_ui::mcp_cli::run_mcp_cli(command).await {
+                eprintln!("Error: {e:#}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         _ => {}
     }
 

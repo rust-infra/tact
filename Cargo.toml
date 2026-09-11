@@ -44,7 +44,13 @@ syntect = "5.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls"] }
 reqwest-eventsource = "0.6"
-rmcp = { version = "0.17.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "0.17.0", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+    "auth",
+] }
 schemars = "1.0"
 secrecy = "0.8"
 secrecy10 = { package = "secrecy", version = "0.10.3" }

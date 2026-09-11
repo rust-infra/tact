@@ -110,6 +110,107 @@ pub enum CliCommand {
         #[command(subcommand)]
         command: PluginSubcommand,
     },
+    /// Inspect and configure MCP servers
+    Mcp {
+        #[command(subcommand)]
+        command: McpSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum McpSubcommand {
+    /// List every configured MCP server and its status
+    ///
+    /// Connects to all servers (like startup does), then prints each one as
+    /// connected / needs authorization / failed / skipped.
+    List,
+    /// Show one configured MCP server in detail
+    ///
+    /// Connects to that server only — never the rest of the configuration —
+    /// and prints its transport, source, status and tool list.
+    ///
+    /// Example: `tact-ui mcp get deepwiki`
+    Get {
+        /// Server name as declared in `mcp.json`
+        name: String,
+    },
+    /// Add an MCP server to `mcp.json`
+    ///
+    /// Exactly one transport is required: `--url` for a remote Streamable HTTP
+    /// server, or `--command` for a local stdio server. The project file
+    /// (`<workdir>/.tact/mcp.json`) is written unless `--user` is given.
+    ///
+    /// Example: `tact-ui mcp add deepwiki --url https://mcp.deepwiki.com/mcp`
+    /// — add `--oauth` when the server requires authorization, and
+    /// `--force` to replace an existing declaration of the same name.
+    Add {
+        /// Server name; the key under `mcpServers`
+        name: String,
+        /// Remote Streamable HTTP endpoint
+        #[arg(long, value_name = "URL", conflicts_with = "command")]
+        url: Option<String>,
+        /// Local stdio server command
+        #[arg(long, value_name = "COMMAND", conflicts_with = "url")]
+        command: Option<String>,
+        /// Argument passed to the stdio command (repeatable)
+        #[arg(long = "arg", value_name = "ARG", requires = "command")]
+        args: Vec<String>,
+        /// Environment variable for the stdio command, NAME=VALUE (repeatable)
+        ///
+        /// The value is visible in `ps` and shell history; prefer a variable
+        /// the command can read from elsewhere when it holds a secret.
+        #[arg(long = "env", value_name = "NAME=VALUE", requires = "command")]
+        env: Vec<String>,
+        /// Extra request header for a remote server, NAME:VALUE (repeatable)
+        ///
+        /// The value is visible in `ps` and shell history; prefer a static
+        /// token the server can read from the environment when it is secret.
+        #[arg(long = "header", value_name = "NAME:VALUE", requires = "url")]
+        header: Vec<String>,
+        /// Declare OAuth 2.0 (authorize afterwards with `mcp login`)
+        #[arg(long, requires = "url")]
+        oauth: bool,
+        /// Write `$HOME/.tact/mcp.json` instead of the project file
+        #[arg(long)]
+        user: bool,
+        /// Replace an existing server with the same name
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove an MCP server from `mcp.json`
+    ///
+    /// Only the declaration is deleted; stored OAuth credentials are kept (use
+    /// `mcp logout` to delete those).
+    ///
+    /// Example: `tact-ui mcp remove deepwiki --user`
+    Remove {
+        /// Server name as declared in `mcp.json`
+        name: String,
+        /// Remove from `$HOME/.tact/mcp.json` instead of the project file
+        #[arg(long)]
+        user: bool,
+    },
+    /// Authorize a remote MCP server (OAuth), and remember the token
+    ///
+    /// Prints the authorization URL, then waits for the browser redirect on a
+    /// loopback port. The token is stored so later sessions connect silently.
+    ///
+    /// Example: `tact-ui mcp login linear`
+    #[command(visible_alias = "auth")]
+    Login {
+        /// Server name as declared in `mcp.json`
+        server: String,
+    },
+    /// Delete the stored OAuth credentials for a server
+    ///
+    /// The next connection to that server will need `mcp login` again. Works
+    /// even if the server is no longer declared.
+    ///
+    /// Example: `tact-ui mcp logout linear`
+    Logout {
+        /// Server name whose credentials should be deleted
+        server: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

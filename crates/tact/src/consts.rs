@@ -123,6 +123,11 @@ const TOOL_RESULTS_SUBDIR: &str = "tool-results";
 /// project and user scope.
 const MCP_CONFIG_FILE: &str = "mcp.json";
 
+/// User-global MCP support directory under `~/.tact/`, holding per-server
+/// OAuth credential files at `<MCP_DIR>/<MCP_OAUTH_DIR>/<server>.json`.
+const MCP_DIR: &str = "mcp";
+const MCP_OAUTH_DIR: &str = "oauth";
+
 /// Centralised path abstraction for all tact directories.
 ///
 /// Construct with [`TactPath::new`] (any workdir) or [`TactPath::from_cwd`].
@@ -212,8 +217,9 @@ impl TactPath {
 
     /// `<workdir>/.tact/mcp.json` — project-scoped MCP server declarations.
     ///
-    /// Preferred over every compatibility source (`.mcp.json`,
-    /// `.codex-plugin/plugin.json`), which are read only as read-only inputs.
+    /// The only project-scoped source Tact reads: a cwd-level `.mcp.json` or
+    /// `.codex-plugin/plugin.json` is **not** consulted (installed plugins are
+    /// read from the plugin cache instead).
     pub fn mcp_config_path(&self) -> PathBuf {
         self.tact_dir().join(MCP_CONFIG_FILE)
     }
@@ -243,6 +249,15 @@ impl TactPath {
     /// server name overrides it.
     pub fn home_mcp_config_path() -> Option<PathBuf> {
         Self::home_tact_dir().map(|dir| dir.join(MCP_CONFIG_FILE))
+    }
+
+    /// `$HOME/.tact/mcp/oauth` — per-server OAuth credential directory.
+    ///
+    /// One JSON file per authorized server (named after the server), holding
+    /// the token response plus its client id and grant time so tokens can be
+    /// refreshed across sessions without re-running the browser flow.
+    pub fn home_mcp_oauth_dir() -> Option<PathBuf> {
+        Self::home_tact_dir().map(|dir| dir.join(MCP_DIR).join(MCP_OAUTH_DIR))
     }
 
     /// `$HOME/.tact` — global tact config directory.

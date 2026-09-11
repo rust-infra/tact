@@ -24,6 +24,9 @@ pub struct TactTomlConfig {
 
     /// Voice-to-text input settings (independent of LLM providers).
     pub voice: VoiceTomlConfig,
+
+    /// MCP client settings (OAuth registration identity).
+    pub mcp: McpTomlConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -213,9 +216,53 @@ pub struct ToolsTomlConfig {
     pub rtk_filter: Option<bool>,
 }
 
+/// `[mcp]` section of `config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct McpTomlConfig {
+    /// `client_name` sent when Tact registers itself with an OAuth provider
+    /// (`mcp.oauth_client_name`). Per-server `auth.clientName` overrides it.
+    pub oauth_client_name: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Resolved runtime settings
 // ---------------------------------------------------------------------------
+
+/// Resolved `[mcp]` settings.
+#[derive(Debug, Clone)]
+pub struct McpSettings {
+    /// Value sent as `client_name` during OAuth dynamic client registration.
+    ///
+    /// Some providers gate registration on this *exact string* rather than
+    /// verifying the client: Figma's registration endpoint answers `200` for
+    /// `"Codex"` and `403` for `"Tact"` with an otherwise identical request.
+    /// The default is therefore `"Codex"`, which is what makes OAuth work
+    /// against providers that only admit clients they already know.
+    ///
+    /// Be aware of what that means in practice: the provider, and the consent
+    /// screen shown to the user, will say "Codex" rather than "Tact". Set
+    /// `mcp.oauth_client_name = "Tact"` to identify honestly and accept that
+    /// allowlisting providers will refuse registration.
+    pub oauth_client_name: String,
+}
+
+impl McpSettings {
+    /// Default registration name — see [`McpSettings::oauth_client_name`].
+    pub const DEFAULT_OAUTH_CLIENT_NAME: &'static str = "Codex";
+    /// Honest self-identification, for users who prefer it.
+    pub const TACT_OAUTH_CLIENT_NAME: &'static str = "Tact";
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        // Not the derived default: an empty `client_name` is rejected by every
+        // provider, so the type's fallback must be the real default.
+        Self {
+            oauth_client_name: Self::DEFAULT_OAUTH_CLIENT_NAME.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct LlmSettings {
@@ -365,6 +412,7 @@ pub struct ResolvedConfig {
     pub ui: UiSettings,
     pub tools: ToolSettings,
     pub voice: VoiceSettings,
+    pub mcp: McpSettings,
     pub permission_mode: Option<String>,
     pub tokio_console: bool,
     /// Path of the TOML file loaded at startup (for optional `/model` persist).

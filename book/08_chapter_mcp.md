@@ -67,9 +67,9 @@ The same JSON-RPC messages travel over different physical channels:
 | Transport | Use case | Notes |
 |-----------|----------|-------|
 | **stdio** | Local subprocess | Client spawns Server; JSON lines on `stdin`/`stdout`; no network overhead |
-| **Streamable HTTP** | Remote services | HTTP POST + optional SSE; OAuth and other auth |
+| **Streamable HTTP** | Remote services | HTTP POST + optional SSE; static headers and OAuth 2.0 |
 
-Tact currently uses **stdio** only (see `McpClient::connect`).
+Tact uses **both**: an entry with `command` is spawned over stdio, an entry with `url` is a remote Streamable HTTP server (see `McpClient::connect` and `remote::serve_remote`).
 
 ---
 
@@ -115,9 +115,39 @@ Two files, one rule: **user scope is `~/.tact/mcp.json`, project scope is `<work
 
 **Installed marketplace plugins** are scanned at startup by `installed_plugin_mcp_servers`, which reads both `.codex-plugin/plugin.json` `mcpServers` and a `.mcp.json` at the plugin root. Those belong to the plugin *bundle* format — the same filenames are deliberately **not** read at the working directory.
 
-Only stdio servers are connected. `http` / `sse` / `url` entries — and stdio entries missing a `command` — are reported as **skipped**, never treated as a hard error, because Tact has no remote MCP transport yet.
+Each entry declares exactly one transport: `command` (local stdio) or `url` (remote Streamable HTTP, optionally with `headers` and `auth`). `command` wins if both are present. An entry with neither is reported as **skipped**, never treated as a hard error.
 
-Code: `McpConfigFile::read` (`mcp.json`), `installed_plugin_mcp_servers` (plugins), `collect_sourced_servers` and `resolve_servers` (precedence), all in `crates/tact/src/mcp/mod.rs`.
+**Managing servers from the CLI.** Six subcommands, split by what they are allowed to touch — `list`/`get` connect, `add`/`remove` write `mcp.json`, `login`/`logout` own the stored credentials:
+
+| Command | Connects? | Writes config? | Credentials? |
+|---------|-----------|----------------|--------------|
+| `mcp list` | all servers | no | no |
+| `mcp get <name>` | that server only | no | no |
+| `mcp add <name> …` | no | yes | no |
+| `mcp remove <name>` | no | yes | no (kept) |
+| `mcp login <name>` | yes (OAuth flow) | no | writes |
+| `mcp logout <name>` | no | no | deletes |
+
+```sh
+tact-ui mcp list                              # every server + status
+tact-ui mcp get deepwiki                      # transport, source, status, tools
+tact-ui mcp add deepwiki --url https://mcp.deepwiki.com/mcp      # remote (no auth)
+tact-ui mcp add linear --url https://mcp.linear.app/mcp --oauth   # remote + OAuth
+tact-ui mcp add local  --command npx --arg -y --arg some-mcp-server
+tact-ui mcp remove local                      # declaration only
+tact-ui mcp login linear                      # browser flow, token stored
+tact-ui mcp logout linear                     # token deleted
+```
+
+`add`/`remove` target the project file (`.tact/mcp.json`) unless `--user` is given. `add --force` replaces an existing declaration of the same name; without it a name clash is an error rather than a silent overwrite, and `remove` of an unknown name is an error rather than a no-op — it tells you which file the server *is* declared in (`retry with --user`) or that a plugin contributes it. When the scope you edited is not the one that wins, `add` says so and names the winning file, because a higher-precedence declaration would otherwise make the command a silent no-op. Writes are atomic (a uniquely named temp file + rename, preserving the original file's permissions) and edit the **raw JSON document**, so keys Tact does not model — including keys on unrelated servers — survive; removing the last server leaves an empty `mcpServers` object, which reads back as "no servers". `remove` keeps stored credentials (a re-added server should keep working); `logout` is what deletes them, and it needs no configured server, so credentials can be cleaned up after a declaration is gone.
+
+Names, URLs, header names and header values are validated up front. Server names are additionally refused if they contain whitespace, control characters or a path separator: a name is also the `<server>` segment of `mcp__<server>__<tool>` and the file name of the OAuth credential (`~/.tact/mcp/oauth/<server>.json`), so `mcp logout <name>` must never be pointable at an arbitrary file. Header/env *values* are never echoed or logged (they commonly carry secrets), and `add` never connects. A repeated `--header`/`--env` name is an error rather than a silent last-one-wins.
+
+`mcp list` also prints an **Overridden declarations** section naming the losing and winning files whenever a name is declared more than once — overrides decide what `remove` changing behavior even means, so they must not be silent.
+
+`mcp get` is the focused counterpart to `mcp list`: it connects to **one** server, so inspecting a single entry never spawns or dials the rest of the configuration, and it prints the tool names as the agent must call them (`mcp__<server>__<tool>`). Both views share one status vocabulary (`connected (N tools)` / `needs authorization` / `failed`) so they cannot drift.
+
+Code: `McpConfigFile::read` (`mcp.json`), `installed_plugin_mcp_servers` (plugins), `collect_sourced_servers` and `resolve_servers` (precedence), `validate_server_name`, `resolved_server_for`, `inspect_server`, `connect_server`, all in `crates/tact/src/mcp/mod.rs`; the write side (`McpServerDraft`, `McpConfigScope`, `add_mcp_server`, `remove_mcp_server`) in `crates/tact/src/mcp/edit.rs`; credential deletion (`forget_credentials`) in `crates/tact/src/mcp/remote.rs`; the CLI handlers in `crates/tact-ui/src/mcp_cli.rs`.
 
 ### Step 1b: What happens when a Server is misconfigured
 
@@ -128,9 +158,37 @@ Resolution produces an `McpLoadReport` instead of discarding failures:
 | `connected` | server name + tool count for each success |
 | `failures` | server name + error for each failed connection |
 | `shadowed` | server name + the lower-precedence source it displaced |
-| `skipped_remote` | servers dropped for an unsupported transport |
+| `skipped_remote` | servers dropped for an unsupported/incomplete transport |
+| `pending_auth` | remote OAuth servers with no usable credential yet (declared `auth`, an expired non-refreshable token, or a server that answered 401) |
 
 A **connection failure is never fatal** — one broken server must not stop the agent from starting. But it is no longer silent either: `notice_lines()` renders one line per fact, delivered as `AgentUpdate::Info` in the TUI and to stderr in headless mode. A clean load produces no output at all, so the notice only appears when there is something to act on.
+
+**Pending authorization never blocks startup.** A remote server that needs OAuth is listed as `pending_auth` and skipped, whether it declared `auth` or was discovered to need it by answering 401; run `/mcp auth <server>` to complete the browser flow, after which the MCP router is reloaded in place.
+
+### Step 1c: Remote servers and OAuth
+
+A remote entry looks like this:
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "X-Api-Key": "..." },
+      "auth": { "type": "oauth", "scopes": ["tools.read"] }
+    }
+  }
+}
+```
+
+- Transport is the MCP **Streamable HTTP** client (`rmcp`), so session management and SSE reconnection are handled by the SDK. `type: "http" | "sse"` is advisory; Tact does not speak the legacy 2024-11-05 HTTP+SSE endpoint.
+- `headers` is static auth for simple deployments. Header values are never logged; invalid header names/values are dropped with a warning.
+- `auth.type = "oauth"` runs the MCP-standard OAuth 2.0 authorization-code + PKCE flow (SEP-985): protected-resource/RFC 8414 metadata discovery, dynamic client registration, a loopback redirect (`127.0.0.1`, ephemeral port unless `callbackPort` is set), then automatic token refresh. `clientId` skips dynamic registration for a pre-registered client.
+- `auth` is **optional even for a server that requires OAuth**: a server that answers 401 is detected (rmcp's "Auth required") and upgraded to *pending authorization*, and `/mcp auth <server>` will run the flow anyway. Declaring `auth` simply pre-answers the question, and lets startup predict pending status without a network call.
+- Tokens are persisted per server at `~/.tact/mcp/oauth/<server>.json` (`0600` on Unix). If refresh is impossible the server returns to `pending_auth`. A stored token is honoured whether or not `auth` was declared, so authorizing a server once keeps working.
+- **Registration is gated on the client *name*, and the name is configurable.** DCR (RFC 7591) is how a generic MCP client registers itself, and a provider may answer the registration endpoint with `403` for names it does not recognise. Figma is a measured example — the same registration body returns `200` for `client_name: "Codex"` and `403` for `"Tact"` (exact table in the FAQ). Tact therefore registers as `mcp.oauth_client_name`, default **`"Codex"`**, with a per-server `auth.clientName` override; the name actually sent is logged at `info` and named in any failure, because the provider and the consent screen see it. Set `oauth_client_name = "Tact"` to identify honestly and accept that allowlisting providers refuse. Discovery otherwise succeeds — the authorization server for Figma is `https://api.figma.com` — so a refusal lands on the last step and looks transient. Beyond the name, the error names three routes: a client you registered yourself via `auth.clientId` (+ `callbackPort`, so the redirect URI stays stable), a provider-issued static token in `headers`, or the provider's local server (Figma ships one at `http://127.0.0.1:3845/mcp`, needing no OAuth). A confidential client's *secret* cannot be supplied yet — rmcp's stored credentials carry only the `client_id`.
+- **Loopback endpoints bypass the environment proxy.** With `http_proxy`/`all_proxy` exported, reqwest would send `http://127.0.0.1:…` to the proxy too, so a local server never saw the request and the failure read as `Unexpected content type: None`. `127.0.0.0/8`, `localhost` and `::1` now get a proxy-free HTTP client; every other host keeps the environment proxy, since that is what makes a remote server reachable in a restricted network. (The OAuth manager still builds its own client, so discovery for a *loopback* server would use the proxy — irrelevant for the Figma desktop server, which needs no OAuth.)
+- Startup performs no interactive work: with no credential the server is reported as pending, so the agent never waits on a browser. `/mcp auth <server>` (`/mcp login <server>` also works) runs the flow, prints the authorization URL, and hot-reloads the MCP router on success. Headless users have the same capabilities as CLI subcommands — `tact-ui mcp list` connects and reports, `tact-ui mcp get <name>` inspects one server, `tact-ui mcp add`/`remove` edit `mcp.json`, and `tact-ui mcp login`/`logout` manage stored credentials; see Step 1.
 
 ### Step 2: Transport — start the Server process
 
@@ -144,7 +202,7 @@ Client (Tact)                    Server (node server.js)
     │ ◄───────────────────────────────── │
 ```
 
-Code: `McpClient::connect` spawns via `TokioChildProcess`, then `handler.serve(transport)` establishes the rmcp session.
+Code: `McpClient::connect` spawns via `TokioChildProcess`, then `handler.serve(transport)` establishes the rmcp session. (This step is stdio-specific; a `url` entry instead builds a Streamable HTTP transport in `remote::serve_remote` — see Step 1c.)
 
 At this point the process is running, but the **protocol session is not ready yet**.
 
@@ -538,7 +596,40 @@ To the LLM, they are the same—both are function-calling tools. The Agent uses 
 
 ### Q: Why not HTTP transport?
 
-stdio fits local plugins: zero config, low latency. Remote MCP services can use Streamable HTTP; Tact does not implement that path yet, but rmcp can be extended.
+stdio fits local plugins: zero config, low latency. Remote MCP services use **Streamable HTTP**, which Tact supports with static headers or OAuth 2.0 (`url` entries in `mcp.json`).
+
+### Q: Why did `mcp login` fail with `HTTP 403 Forbidden` on Figma before, and what changed?
+
+Registration is gated on the **client name**, so Tact now registers as `"Codex"` by default (`mcp.oauth_client_name`). Measured against the live endpoint with an otherwise byte-identical registration body:
+
+| `client_name` sent | registration result |
+|---|---|
+| `Codex` | `200` (+ fresh `client_id`/`client_secret` each run) |
+| `Claude Code` | `200` |
+| `Tact` | `403 Forbidden` |
+| `Cursor` | `403 Forbidden` |
+| `Visual Studio Code` | `403 Forbidden` |
+| `codex` (lowercase) | `403 Forbidden` |
+
+Codex itself registers dynamically like Tact does — its plugin's `.mcp.json` declares no `client_id`, and each run gets a different one — so the name is the only difference. Because the default is now `"Codex"`, `tact-ui mcp login figma` reaches the authorization URL.
+
+```toml
+[mcp]
+oauth_client_name = "Codex"   # default; set "Tact" to identify honestly
+```
+
+Per-server override, when only one provider needs a different answer:
+
+```json
+{ "mcpServers": { "figma": { "url": "https://mcp.figma.com/mcp",
+                             "auth": { "type": "oauth", "clientName": "Codex" } } } }
+```
+
+Be aware of the trade-off: the provider, and the consent screen shown to you, sees `"Codex"` rather than `"Tact"`. Tact does not hide this — the name actually used is logged at `info` (`client_name=…`) and named in any registration failure. Setting `oauth_client_name = "Tact"` identifies honestly, and allowlisting providers then refuse registration with an explanation plus alternatives.
+
+### Q: A provider still refuses registration — what then?
+
+The measurement above is specific to the names Figma admits. Another provider may gate on different values, or refuse registration outright (some do not advertise a registration endpoint at all). The failure message names the name Tact sent and both override points, and the remaining options are: register a client with the provider yourself and set `auth.clientId` (plus a pinned `callbackPort`), supply a provider-issued static token in `headers`, or run the provider's local server if it ships one (`tact-ui mcp add figma-desktop --url http://127.0.0.1:3845/mcp` — no OAuth needed). Each failure is logged with the server name, provider URL, the client name sent, and whether a registration endpoint was advertised, so `RUST_LOG=tact=debug` shows the full trail. Accepted registrations show what is being granted: a `client_id` + `client_secret` with `token_endpoint_auth_method: "none"`.
 
 ---
 
@@ -568,7 +659,9 @@ stdio fits local plugins: zero config, low latency. Remote MCP services can use 
 |-----|--------|
 | **No `tools/list_changed` handling** | Tool list fixed at connect; no `ClientHandler` or loop refresh |
 | **Resources / prompts** | Protocol primitives exist; Tact only wires Tools today |
-| **HTTP transport** | stdio only via `TokioChildProcess`; `http`/`sse` entries are reported as skipped |
+| **Legacy HTTP+SSE** | `type: "sse"` maps to Streamable HTTP; the deprecated 2024-11-05 HTTP+SSE endpoint is not implemented |
+| **OAuth device flow / mTLS** | Only the authorization-code + PKCE flow is implemented; no device code, client certificates, or enterprise SSO |
+| **Client secrets / allowlisted providers** | Only self-registration (DCR) and public-client `clientId` are supported; a provider that refuses DCR *and* needs a client secret (Figma's remote server) cannot be authorized from Tact — the error names the alternatives |
 | **Per-tool permission granularity** | Every MCP tool resolves to `CapabilityRisk::High`; `normalize_mcp_capability` ignores both server and tool |
 | **No typed env interpolation** | `mcp.json` `env` values are literal; no `${VAR}` expansion |
 

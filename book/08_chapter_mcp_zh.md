@@ -68,9 +68,9 @@ graph TB
 | 传输 | 用例 | 说明 |
 |------|------|------|
 | **stdio** | 本地子进程 | Client spawn Server；`stdin`/`stdout` 上 JSON 行；无网络开销 |
-| **Streamable HTTP** | 远程服务 | HTTP POST + 可选 SSE；OAuth 等认证 |
+| **Streamable HTTP** | 远程服务 | HTTP POST + 可选 SSE；静态 header 与 OAuth 2.0 |
 
-Tact 目前**仅**使用 stdio（见 `McpClient::connect`）。
+Tact **两者都支持**：带 `command` 的条目录用 stdio 启动，带 `url` 的条目是远程 Streamable HTTP server（见 `McpClient::connect` 与 `remote::serve_remote`）。
 
 ---
 
@@ -116,9 +116,39 @@ Tact 目前**仅**使用 stdio（见 `McpClient::connect`）。
 
 **已安装的 marketplace 插件**在启动时由 `installed_plugin_mcp_servers` 扫描：它读取 `.codex-plugin/plugin.json` 的 `mcpServers` 与插件根下的 `.mcp.json`。这些属于插件**包**格式——同样的文件名在工作目录下刻意**不**读取。
 
-只连接 stdio 服务器。`http` / `sse` / `url` 条目，以及缺少 `command` 的 stdio 条目，都会按**已跳过**上报，而不会被当作硬错误——因为 Tact 尚无远程 MCP 传输。
+每个条目只声明一种传输：`command`（本地 stdio）或 `url`（远程 Streamable HTTP，可选 `headers` 与 `auth`）。两者同时存在时 `command` 优先。两者都没有的条目按**已跳过**上报，绝不当作硬错误。
 
-代码：`McpConfigFile::read`（`mcp.json`）、`installed_plugin_mcp_servers`（插件）、`collect_sourced_servers` 与 `resolve_servers`（优先级），均在 `crates/tact/src/mcp/mod.rs`。
+**从命令行管理 server。** 六个子命令按「允许触碰什么」划分——`list`/`get` 负责连接，`add`/`remove` 负责写 `mcp.json`，`login`/`logout` 负责已存凭据：
+
+| 命令 | 是否连接 | 是否写配置 | 是否动凭据 |
+|------|----------|------------|------------|
+| `mcp list` | 全部 server | 否 | 否 |
+| `mcp get <name>` | 仅该 server | 否 | 否 |
+| `mcp add <name> …` | 否 | 是 | 否 |
+| `mcp remove <name>` | 否 | 是 | 否（保留） |
+| `mcp login <name>` | 是（OAuth 流程） | 否 | 写入 |
+| `mcp logout <name>` | 否 | 否 | 删除 |
+
+```sh
+tact-ui mcp list                              # 每个 server 及其状态
+tact-ui mcp get deepwiki                      # 传输方式、来源、状态、工具
+tact-ui mcp add deepwiki --url https://mcp.deepwiki.com/mcp      # 远程（无需认证）
+tact-ui mcp add linear --url https://mcp.linear.app/mcp --oauth   # 远程 + OAuth
+tact-ui mcp add local  --command npx --arg -y --arg some-mcp-server
+tact-ui mcp remove local                      # 只删声明
+tact-ui mcp login linear                      # 浏览器流程，token 落盘
+tact-ui mcp logout linear                     # 删除 token
+```
+
+`add`/`remove` 默认作用于项目文件（`.tact/mcp.json`），加 `--user` 则作用于用户文件。`add --force` 覆盖同名声明；不加时同名是报错而非静默覆盖。`remove` 一个不存在的名字也是报错而非无声成功——它会告知该 server **究竟**声明在哪个文件（`retry with --user`），或说明它由插件提供。当所编辑的作用域并非最终生效的那个时，`add` 会明确提示并指名胜出的文件，否则更高优先级的声明会让这条命令变成静默的空操作。写入是原子的（唯一命名的临时文件 + rename，并保留原文件权限），并且直接编辑**原始 JSON 文档**，因此 Tact 未建模的键——包括其他 server 上的键——都会保留；删除最后一个 server 会留下空的 `mcpServers` 对象，读回来即「无 server」。`remove` 保留已存凭据（重新添加的 server 应当继续可用），删除凭据由 `logout` 负责，且它不要求 server 仍被声明，因此声明删掉后仍可清理凭据。
+
+名称、URL、header 名与 header 值都会预先校验。server 名还会额外拒绝空白、控制字符与路径分隔符：名称同时是 `mcp__<server>__<tool>` 的 `<server>` 段与 OAuth 凭据文件名（`~/.tact/mcp/oauth/<server>.json`），因此 `mcp logout <name>` 绝不能被指向任意文件。header/env 的**值**绝不回显或记录日志（它们常含密钥），且 `add` 绝不发起连接。重复的 `--header`/`--env` 名会报错，而不是静默地后者覆盖前者。
+
+当一个名字被多处声明时，`mcp list` 还会打印 **Overridden declarations** 段，指明被覆盖与最终生效的文件——覆盖关系决定了 `remove` 究竟改变了什么行为，因此不能是静默的。
+
+`mcp get` 是 `mcp list` 的聚焦版本：它只连接**一个** server，因此查看单个条目不会启动或拨号其余配置，并打印 agent 实际必须调用的工具名（`mcp__<server>__<tool>`）。两个视图共用同一套状态措辞（`connected (N tools)` / `needs authorization` / `failed`），因此不会出现说法漂移。
+
+代码：`McpConfigFile::read`（`mcp.json`）、`installed_plugin_mcp_servers`（插件）、`collect_sourced_servers` 与 `resolve_servers`（优先级）、`validate_server_name`、`resolved_server_for`、`inspect_server`、`connect_server`，均在 `crates/tact/src/mcp/mod.rs`；写入侧（`McpServerDraft`、`McpConfigScope`、`add_mcp_server`、`remove_mcp_server`）在 `crates/tact/src/mcp/edit.rs`；凭据删除（`forget_credentials`）在 `crates/tact/src/mcp/remote.rs`；CLI 处理逻辑在 `crates/tact-ui/src/mcp_cli.rs`。
 
 ### Step 1b：Server 配置错误时会发生什么
 
@@ -129,9 +159,37 @@ Tact 目前**仅**使用 stdio（见 `McpClient::connect`）。
 | `connected` | 每个成功连接的 server 名与工具数 |
 | `failures` | 每个连接失败的 server 名与错误 |
 | `shadowed` | server 名，以及被它顶掉的那个更低优先级来源 |
-| `skipped_remote` | 因传输方式不支持而被丢弃的 server |
+| `skipped_remote` | 因传输方式不支持/不完整而被丢弃的 server |
+| `pending_auth` | 尚无可用凭据的远程 OAuth server（声明了 `auth`、token 过期且不可刷新，或服务器返回 401） |
 
 **连接失败绝不致命**——单个坏 server 不应阻止 agent 启动。但它也不再静默：`notice_lines()` 为每条事实渲染一行，在 TUI 中以 `AgentUpdate::Info` 交付，headless 模式写入 stderr。一切正常时不产生任何输出，因此提示只在确有需要处理的事情时出现。
+
+**待授权不会阻塞启动。** 需要 OAuth 的远程 server 会被列为 `pending_auth` 并跳过——无论它是声明了 `auth`，还是因返回 401 而被识别；运行 `/mcp auth <server>` 完成浏览器流程，成功后 MCP router 会原地热重载。
+
+### Step 1c：远程 Server 与 OAuth
+
+远程条目的形态：
+
+```json
+{
+  "mcpServers": {
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "X-Api-Key": "..." },
+      "auth": { "type": "oauth", "scopes": ["tools.read"] }
+    }
+  }
+}
+```
+
+- 传输使用 MCP **Streamable HTTP** 客户端（`rmcp`），会话管理与 SSE 重连由 SDK 处理。`type: "http" | "sse"` 仅为提示；Tact 不支持 2024-11-05 的旧版 HTTP+SSE 端点。
+- `headers` 用于简单部署的静态认证。header 值从不写日志；非法 header 名/值会带警告丢弃。
+- `auth.type = "oauth"` 走 MCP 标准的 OAuth 2.0 授权码 + PKCE 流程（SEP-985）：受保护资源/RFC 8414 元数据发现、动态客户端注册、本地回环重定向（`127.0.0.1`，除非设置 `callbackPort` 否则用临时端口），并自动刷新 token。`clientId` 用于预注册客户端、跳过动态注册。
+- 即使服务器需要 OAuth，`auth` 也是**可选的**：返回 401 的服务器会被识别（rmcp 的 "Auth required"）并升级为**待授权**，`/mcp auth <server>` 依然能跑完整流程。声明 `auth` 只是预先回答这个问题，并让启动阶段无需网络就能预判待授权状态。
+- token 按 server 持久化在 `~/.tact/mcp/oauth/<server>.json`（Unix 下 `0600`）。若无法刷新，该 server 回到 `pending_auth`。无论是否声明过 `auth`，已存 token 都会被采用，因此授权一次后持续有效。
+- **注册按客户端*名称*放行，而该名称可配置。** DCR（RFC 7591）是通用 MCP 客户端自我注册的方式，而 provider 可能对不认识的名字让注册端点返回 `403`。Figma 是可复现实例——完全相同的注册请求体，`client_name: "Codex"` 返回 `200`，`"Tact"` 返回 `403`（精确对照表见 FAQ）。因此 Tact 以 `mcp.oauth_client_name` 注册，默认 **`"Codex"`**，并支持 per-server 的 `auth.clientName` 覆盖；实际发送的名称会以 `info` 级别记入日志，也会出现在任何失败提示中，因为 provider 与授权同意页看到的就是它。设为 `oauth_client_name = "Tact"` 则如实标识，并接受白名单类 provider 拒绝注册。除此以外发现阶段是成功的——Figma 的授权服务器为 `https://api.figma.com`——所以被拒会落在最后一步，看起来像临时故障。除名称之外，报错还给出三条路线：自行注册客户端并用 `auth.clientId`（同时固定 `callbackPort` 以保持 redirect URI 稳定）、使用 provider 签发的静态 token 放在 `headers`，或运行 provider 的本地 server（Figma 提供 `http://127.0.0.1:3845/mcp`，无需 OAuth）。目前仍无法提供机密客户端的 **client secret**——rmcp 存储的凭据只有 `client_id`。
+- **回环端点绕过环境代理。** 导出 `http_proxy`/`all_proxy` 时，reqwest 会把 `http://127.0.0.1:…` 也发给代理，于是本地 server 根本收不到请求，失败还表现为 `Unexpected content type: None`。现在 `127.0.0.0/8`、`localhost` 与 `::1` 使用无代理的 HTTP 客户端；其他 host 仍保留环境代理，因为在受限网络中正是代理让远程 server 可达。（OAuth 管理器仍自建客户端，因此针对**回环** server 的发现阶段会走代理——对无需 OAuth 的 Figma 桌面 server 无影响。）
+- 启动阶段不做任何交互：没有凭据时只报告 pending，agent 绝不等待浏览器。`/mcp auth <server>`（`/mcp login <server>` 亦可）执行流程、打印授权 URL，成功后热重载 MCP router。headless 用户拥有同一组能力的 CLI 子命令——`tact-ui mcp list` 连接并报告，`tact-ui mcp get <name>` 查看单个 server，`tact-ui mcp add`/`remove` 编辑 `mcp.json`，`tact-ui mcp login`/`logout` 管理已存凭据；见 Step 1。
 
 ### Step 2：传输——启动 Server 进程
 
@@ -145,7 +203,7 @@ Client (Tact)                    Server (node server.js)
     │ ◄───────────────────────────────── │
 ```
 
-代码：`McpClient::connect` 经 `TokioChildProcess` spawn，然后 `handler.serve(transport)` 建立 rmcp 会话。
+代码：`McpClient::connect` 经 `TokioChildProcess` spawn，然后 `handler.serve(transport)` 建立 rmcp 会话。（本步专指 stdio；`url` 条目改由 `remote::serve_remote` 构建 Streamable HTTP 传输——见 Step 1c。）
 
 此时进程已在跑，但**协议会话尚未就绪**。
 
@@ -539,7 +597,40 @@ Tact 侧在 `plugin.json` 声明 `command` / `args` / `env` 即可接入。
 
 ### Q：为什么不用 HTTP 传输？
 
-stdio 适合本地插件：零配置、低延迟。远程 MCP 可用 Streamable HTTP；Tact 尚未实现该路径，但可扩展 rmcp。
+stdio 适合本地插件：零配置、低延迟。远程 MCP 服务使用 **Streamable HTTP**，Tact 已支持，可用静态 header 或 OAuth 2.0（`mcp.json` 的 `url` 条目）。
+
+### Q：以前 `mcp login` 对 Figma 报 `HTTP 403 Forbidden`，现在为什么可以了？
+
+因为注册按**客户端名称**放行，所以 Tact 现在默认以 `"Codex"` 注册（`mcp.oauth_client_name`）。对线上端点实测（其余请求体完全一致）：
+
+| 发送的 `client_name` | 注册结果 |
+|---|---|
+| `Codex` | `200`（每次运行都得到新的 `client_id`/`client_secret`） |
+| `Claude Code` | `200` |
+| `Tact` | `403 Forbidden` |
+| `Cursor` | `403 Forbidden` |
+| `Visual Studio Code` | `403 Forbidden` |
+| `codex`（小写） | `403 Forbidden` |
+
+Codex 本身也像 Tact 一样做动态注册——其插件的 `.mcp.json` 没有 `client_id`，且每次运行得到的都不同——所以名称是唯一差别。由于默认值现为 `"Codex"`，`tact-ui mcp login figma` 能够走到授权 URL。
+
+```toml
+[mcp]
+oauth_client_name = "Codex"   # 默认；设为 "Tact" 可如实标识
+```
+
+仅当某个 provider 需要不同答案时，用 per-server 覆盖：
+
+```json
+{ "mcpServers": { "figma": { "url": "https://mcp.figma.com/mcp",
+                             "auth": { "type": "oauth", "clientName": "Codex" } } } }
+```
+
+请注意其代价：provider 以及展示给你的授权同意页看到的是 `"Codex"` 而非 `"Tact"`。Tact 不隐藏这一点——实际使用的名称会以 `info` 级别写入日志（`client_name=…`），并出现在任何注册失败的提示中。设为 `oauth_client_name = "Tact"` 则如实标识，此时白名单类 provider 会拒绝注册并给出说明与替代方案。
+
+### Q：某个 provider 依然拒绝注册，怎么办？
+
+上面的实测只针对 Figma 认可的名称。别的 provider 可能按不同取值放行，或者干脆拒绝注册（有些根本不声明注册端点）。失败提示会写明 Tact 发送的名称以及两个覆盖点；其余可选方案是：自行在 provider 处注册客户端并设置 `auth.clientId`（同时固定 `callbackPort`）、使用 provider 签发的静态 token 放在 `headers`，或在 provider 自带本地 server 时改用它（`tact-ui mcp add figma-desktop --url http://127.0.0.1:3845/mcp`，无需 OAuth）。每次失败都会记录 server 名、provider URL、发送的客户端名称以及是否声明了注册端点，`RUST_LOG=tact=debug` 可看到完整轨迹。注册成功则说明获得了什么：`client_id` + `client_secret` 以及 `token_endpoint_auth_method: "none"`。
 
 ---
 
@@ -569,7 +660,9 @@ stdio 适合本地插件：零配置、低延迟。远程 MCP 可用 Streamable 
 |------|------|
 | **无 `tools/list_changed` 处理** | 工具列表在连接时固定；无 `ClientHandler` 或循环内刷新 |
 | **Resources / prompts** | 协议原语存在；Tact 今天只接 Tools |
-| **HTTP 传输** | 仅通过 `TokioChildProcess` 的 stdio；`http`/`sse` 条目按已跳过上报 |
+| **旧版 HTTP+SSE** | `type: "sse"` 映射到 Streamable HTTP；已废弃的 2024-11-05 HTTP+SSE 端点未实现 |
+| **OAuth 设备码 / mTLS** | 只实现授权码 + PKCE 流程；无设备码、客户端证书或企业 SSO |
+| **客户端密钥 / 白名单 provider** | 只支持自我注册（DCR）与公共客户端的 `clientId`；若 provider 既拒绝 DCR 又要求 client secret（Figma 远程 server），则无法在 Tact 内完成授权——报错会指明替代方案 |
 | **按工具的权限粒度** | 所有 MCP 工具都解析为 `CapabilityRisk::High`；`normalize_mcp_capability` 忽略 server 与 tool 两者 |
 | **无类型化环境变量插值** | `mcp.json` 的 `env` 值是字面量；不支持 `${VAR}` 展开 |
 

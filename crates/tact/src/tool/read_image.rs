@@ -188,6 +188,7 @@ mod tests {
                 rtk_filter: false,
             },
             voice: crate::config::VoiceSettings::disabled_defaults(),
+            mcp: crate::config::McpSettings::default(),
             permission_mode: None,
             tokio_console: false,
             config_path: None,

@@ -965,6 +965,7 @@ mod tests {
                 rtk_filter: false,
             },
             voice: tact::config::VoiceSettings::disabled_defaults(),
+            mcp: tact::config::McpSettings::default(),
             permission_mode: None,
             tokio_console: false,
             config_path: None,

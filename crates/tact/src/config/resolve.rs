@@ -6,8 +6,8 @@ use super::{
     cli::CliArgs,
     instruction_sources::InstructionSources,
     types::{
-        AgentSettings, LlmSettings, ResolvedConfig, SubagentSettings, TactTomlConfig, ToolSettings,
-        UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
+        AgentSettings, LlmSettings, McpSettings, ResolvedConfig, SubagentSettings, TactTomlConfig,
+        ToolSettings, UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
     },
 };
 
@@ -72,6 +72,34 @@ fn validate_voice_keybind(raw: &str) -> anyhow::Result<()> {
             raw
         ),
     }
+}
+
+/// Resolves `[mcp]` settings.
+///
+/// An empty or whitespace-only `oauth_client_name` falls back to the default
+/// rather than sending a blank name, which every provider would reject.
+fn resolve_mcp(toml_cfg: &TactTomlConfig) -> McpSettings {
+    let configured = toml_cfg
+        .mcp
+        .oauth_client_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+
+    let oauth_client_name = match configured {
+        Some(name) => name.to_string(),
+        None => McpSettings::DEFAULT_OAUTH_CLIENT_NAME.to_string(),
+    };
+    if oauth_client_name != McpSettings::TACT_OAUTH_CLIENT_NAME {
+        // Worth a line in the log: providers see this name on their consent
+        // screens and in their audit trails, so "who did Tact claim to be?" is
+        // a question the log should answer.
+        tracing::debug!(
+            oauth_client_name = %oauth_client_name,
+            "MCP OAuth registration identity"
+        );
+    }
+    McpSettings { oauth_client_name }
 }
 
 fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
@@ -532,6 +560,7 @@ pub(super) fn resolve_non_llm_settings(
             rtk_filter,
         },
         voice,
+        mcp: resolve_mcp(toml_cfg),
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -736,6 +765,7 @@ pub(super) fn resolve_config(
             rtk_filter,
         },
         voice,
+        mcp: resolve_mcp(toml_cfg),
         permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -860,6 +890,39 @@ max_tokens = {subagent_max_tokens}
         assert_eq!(cfg.voice.model, "latest_long");
         assert_eq!(cfg.voice.language.as_deref(), Some("en-US"));
         assert_eq!(cfg.voice.max_duration_secs, 42);
+    }
+
+    #[test]
+    fn resolve_mcp_oauth_client_name_defaults_to_codex_and_is_overridable() {
+        // Default: the value providers such as Figma admit.
+        let (args, toml_cfg) = empty_cli_args_with_openai();
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(
+            cfg.mcp.oauth_client_name,
+            McpSettings::DEFAULT_OAUTH_CLIENT_NAME
+        );
+
+        // Configured value wins, and is trimmed.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.oauth_client_name = Some("  MyAgent  ".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.oauth_client_name, "MyAgent");
+
+        // Blank falls back to the default rather than sending an empty name.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.oauth_client_name = Some("   ".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(
+            cfg.mcp.oauth_client_name,
+            McpSettings::DEFAULT_OAUTH_CLIENT_NAME
+        );
+
+        // `McpSettings::default()` must agree with the resolver, since it is
+        // the fallback when config is not installed.
+        assert_eq!(
+            McpSettings::default().oauth_client_name,
+            McpSettings::DEFAULT_OAUTH_CLIENT_NAME
+        );
     }
 
     #[test]

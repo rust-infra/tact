@@ -69,6 +69,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("skills", "List available skills"),
     ("skill-reload", "Reload skills from disk"),
     ("plugin", "Manage plugins and marketplaces"),
+    (
+        "mcp",
+        "Authorize remote MCP servers (usage: /mcp auth <server>)",
+    ),
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
     ("stats", "Show session statistics"),

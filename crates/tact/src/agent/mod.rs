@@ -34,7 +34,7 @@ use crate::{
         TaskCompletedFn, UserPromptSubmitFn,
     },
     invoke_hooks,
-    mcp::MCPToolRouter,
+    mcp::{MCPToolRouter, McpLoadReport},
     memory::MEMORY_GUIDANCE,
     permission::PermissionManager,
     prompt::{SystemPrompt, responses_prompt_template},
@@ -183,22 +183,9 @@ impl Agent {
         // native `/responses/compact` endpoint instead. MCP tools are kept
         // unchanged.
         let provider_kind = ProviderKind::OpenAi;
-        let native_specs = if matches!(client, LlmProvider::OpenAiResponses(_)) {
-            tools
-                .tool_specs()
-                .into_iter()
-                .filter(|spec| spec.name != "compact")
-                .collect()
-        } else {
-            tools.tool_specs()
-        };
-        let cached_tool_specs: Vec<ToolSpec> = native_specs
-            .into_iter()
-            .chain(mcp_router.all_tools())
-            .collect();
         let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         tool_context.cancel_flag = cancel_flag.clone();
-        Self {
+        let mut agent = Self {
             runtime: AgentRuntime {
                 client,
                 context: Vec::new(),
@@ -229,8 +216,10 @@ impl Agent {
             turns_taken: 0,
             agent_settings: crate::config::settings().agent.clone(),
             provider_kind,
-            cached_tool_specs,
-        }
+            cached_tool_specs: Vec::new(),
+        };
+        agent.rebuild_cached_tool_specs();
+        agent
     }
 
     /// Override the provider kind used for Responses compaction routing
@@ -239,6 +228,48 @@ impl Agent {
     pub fn with_provider_kind(mut self, provider_kind: ProviderKind) -> Self {
         self.provider_kind = provider_kind;
         self
+    }
+
+    /// Rebuild the cached tool specs from the native tools plus the current
+    /// MCP router. Called after any MCP router replacement.
+    fn rebuild_cached_tool_specs(&mut self) {
+        let native_specs = if matches!(self.runtime.client, LlmProvider::OpenAiResponses(_)) {
+            self.tools
+                .tool_specs()
+                .into_iter()
+                .filter(|spec| spec.name != "compact")
+                .collect()
+        } else {
+            self.tools.tool_specs()
+        };
+        self.cached_tool_specs = native_specs
+            .into_iter()
+            .chain(self.mcp_router.all_tools())
+            .collect();
+    }
+
+    /// Reload every MCP server from disk and rebuild the tool list.
+    ///
+    /// Used after an interactive OAuth authorization (`/mcp auth <server>`) so
+    /// the newly authorized remote server becomes usable without restarting.
+    /// The previous connections are shut down first; failures are reported, not
+    /// propagated, mirroring startup semantics.
+    pub async fn reload_mcp_router(&mut self) -> McpLoadReport {
+        self.mcp_router.disconnect_all().await;
+        match crate::mcp::load_mcp_router_with_report().await {
+            Ok((router, report)) => {
+                self.mcp_router = router;
+                self.rebuild_cached_tool_specs();
+                report
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to reload MCP servers");
+                McpLoadReport {
+                    failures: vec![("mcp".to_owned(), format!("{error:#}"))],
+                    ..McpLoadReport::default()
+                }
+            }
+        }
     }
 
     /// Override agent-loop settings (used by integration tests with custom config).
@@ -2101,6 +2132,7 @@ mod tests {
                     rtk_filter: false,
                 },
                 voice: crate::config::VoiceSettings::disabled_defaults(),
+                mcp: crate::config::McpSettings::default(),
                 permission_mode: None,
                 tokio_console: false,
                 config_path: None,

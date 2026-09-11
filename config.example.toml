@@ -251,3 +251,19 @@ api_key = ""
 # (default: false). Opt-in only: enabling this sends command output to an
 # external process — review rtk's privacy guarantees first.
 # rtk_filter = true
+
+[mcp]
+# `client_name` sent when Tact registers itself with an OAuth MCP provider
+# (RFC 7591 dynamic client registration). Default: "Codex".
+#
+# Some providers gate registration on this exact string instead of verifying the
+# client. Figma's remote server is the measured example: an identical request
+# returns 200 for "Codex" and 403 for "Tact", so the default is what makes OAuth
+# work there. The trade-off is that the provider — and the consent screen shown
+# to you — sees "Codex" rather than "Tact".
+#
+# Set to "Tact" to identify honestly; allowlisting providers will then refuse
+# registration (Tact will say so and offer alternatives).
+# Per-server override: `auth.clientName` in mcp.json, e.g.
+#   { "mcpServers": { "figma": { "url": "...", "auth": { "type": "oauth", "clientName": "Codex" } } } }
+# oauth_client_name = "Codex"

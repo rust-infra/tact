@@ -364,8 +364,74 @@ async fn handle_user_command_with_account(
         UserCommand::SetModel(model) => {
             agent.set_model(model);
         }
+        UserCommand::McpAuth { server } => {
+            // Stream progress lines instead of buffering them: the URL is
+            // reported *before* the flow blocks on the browser redirect, so
+            // buffering would hide it for the whole round-trip — and forever,
+            // if the user never authorizes, since the callback only times out.
+            let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            // `authorize_server` requires a `Send` notify closure, which rules
+            // out capturing `&Agent` directly; the channel decouples the two.
+            let mut notify = move |line: &str| {
+                let _ = line_tx.send(line.to_owned());
+            };
+            let result = stream_auth_progress(
+                tact::mcp::authorize_server(&server, &mut notify),
+                line_rx,
+                |line| agent.emit_update(AgentUpdate::Info(line)),
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    agent.emit_update(AgentUpdate::Info(format!(
+                        "Authorized MCP server {server}; reloading MCP servers..."
+                    )));
+                    let report = agent.reload_mcp_router().await;
+                    for line in report.notice_lines() {
+                        agent.emit_update(AgentUpdate::Info(line));
+                    }
+                    agent.emit_update(AgentUpdate::Info(format!(
+                        "MCP reload complete ({} server(s) connected)",
+                        report.connected.len()
+                    )));
+                }
+                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                    format!("MCP authorization failed for {server}: {error:#}"),
+                ))),
+            }
+        }
         _ => {}
     }
+}
+
+/// Awaits `auth` while forwarding its progress lines to `emit` as they arrive.
+///
+/// The authorization URL is the one line that matters, and
+/// `authorize_server` produces it *before* blocking on the loopback callback —
+/// waiting for the future to resolve before showing it would hide the URL for
+/// the whole browser round-trip, and for good if the user never authorizes.
+///
+/// Any lines still queued when the flow finishes are drained afterwards, so a
+/// URL delivered in the same poll that completes the flow is never dropped.
+async fn stream_auth_progress<F>(
+    auth: F,
+    mut line_rx: UnboundedReceiver<String>,
+    mut emit: impl FnMut(String),
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    tokio::pin!(auth);
+    let output = loop {
+        tokio::select! {
+            output = &mut auth => break output,
+            Some(line) = line_rx.recv() => emit(line),
+        }
+    };
+    while let Ok(line) = line_rx.try_recv() {
+        emit(line);
+    }
+    output
 }
 
 #[cfg(test)]
@@ -677,5 +743,85 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), loop_handle)
             .await
             .expect("command loop must finish");
+    }
+
+    /// The URL must reach the user while the flow is *still* waiting for the
+    /// browser, which is exactly what the old buffer-then-flush version broke.
+    #[tokio::test]
+    async fn auth_progress_reaches_the_user_before_the_flow_finishes() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use std::time::Duration;
+
+        use super::stream_auth_progress;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (line_tx, line_rx) = unbounded_channel::<String>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_in_task = Arc::clone(&finished);
+        let auth = async move {
+            line_tx
+                .send("https://example.test/authorize?state=abc".to_string())
+                .expect("receiver alive");
+            // Block like the real flow does on the loopback callback.
+            let _ = release_rx.await;
+            finished_in_task.store(true, Ordering::SeqCst);
+        };
+
+        let (seen_tx, mut seen_rx) = unbounded_channel::<String>();
+        let progress = stream_auth_progress(auth, line_rx, move |line| {
+            let _ = seen_tx.send(line);
+        });
+        tokio::pin!(progress);
+
+        // The line arrives while the flow is still pending.
+        let line = tokio::select! {
+            line = seen_rx.recv() => line.expect("progress channel open"),
+            _ = &mut progress => panic!("flow completed before the URL was released"),
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                panic!("URL must be emitted without waiting for the callback")
+            }
+        };
+        assert_eq!(line, "https://example.test/authorize?state=abc");
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "the URL must be emitted before the authorization flow completes"
+        );
+
+        release_tx.send(()).expect("auth future alive");
+        tokio::time::timeout(Duration::from_millis(500), progress)
+            .await
+            .expect("flow completes once released");
+        assert!(finished.load(Ordering::SeqCst));
+    }
+
+    /// A line produced in the same poll that completes the flow must not be
+    /// lost to the `select!` race.
+    #[tokio::test]
+    async fn auth_progress_drains_lines_sent_at_completion() {
+        use std::time::Duration;
+
+        use super::stream_auth_progress;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (line_tx, line_rx) = unbounded_channel::<String>();
+        let auth = async move {
+            line_tx.send("last".to_string()).expect("receiver alive");
+        };
+
+        let (seen_tx, mut seen_rx) = unbounded_channel::<String>();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            stream_auth_progress(auth, line_rx, move |line| {
+                let _ = seen_tx.send(line);
+            }),
+        )
+        .await
+        .expect("flow completes");
+
+        assert_eq!(seen_rx.recv().await.as_deref(), Some("last"));
     }
 }

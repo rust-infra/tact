@@ -32,6 +32,191 @@
 ---
 
 
+## 1. 2026-09-11 — `/mcp auth` 可容忍杂散回环请求，且 token 交换有超时上限
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/remote.rs`（`await_oauth_callback`、`handle_callback_request`、`read_request_head`、`percent_decode`、`hex_nibble`、`redact_query_value`、`OAUTH_TOKEN_EXCHANGE_TIMEOUT`、`OAUTH_CALLBACK_PATH`、`MAX_REQUEST_BYTES`）；Ch 8 §Step 1c |
+
+**现象 / 动机：** 回环回调监听只 `accept()` 一次，且把任何不带 `code` + `state` 的请求都当成致命错误。于是一次浏览器预取、一个 `favicon.ico` 探测、手动访问 `http://127.0.0.1:<port>/`，甚至本地端口扫描，都能抢先占掉这一次 `accept()`；流程随即以 "authorization callback did not carry a code and state" 退出，稍后真正到达的重定向再也读不到——用户只好把锅甩给 provider，而实际上是本地流程坏了。同一条路径上还有三个缺陷：请求头只用一次 `read()` 读取，请求头若被拆进多个 TCP 分片就会解析出空查询，得到同一个假错误；`percent_decode` 按字节偏移切 `&str`，当畸形转义后紧跟多字节 UTF-8 字符（`?code=%aé`）时，会在 TUI 轮询的 future 内 panic（"byte index N is not a char boundary"），直接终止 driver 任务；而 `session.handle_callback`（token POST）完全裸 await、没有超时，provider 接受连接却不回应时 `/mcp auth` 会永久挂住。此外，授权链接以 `info` 级别连查询串一起记入日志，把一次性 CSRF `state` 持久化了下来。
+
+**决策：** 让回调监听既宽容又有界，并且不再记录链接中的秘密部分。`await_oauth_callback` 改为循环 `accept()`：只有命中 `OAUTH_CALLBACK_PATH` 且带 `code` + `state` 的请求才结束流程；带 `error` 的请求才算失败（并把 `error_description` 一并带出）；其余请求回一段简短响应后忽略，同时在整体 300 秒 `OAUTH_CALLBACK_TIMEOUT` 内继续等待。请求头用 `read_request_head` 重组，直到遇到结束空行、EOF 或 8 KiB 的 `MAX_REQUEST_BYTES` 上限。`percent_decode` 改为经 `hex_nibble` 按字节处理，畸形转义退化为字面字符而不再 panic。token 交换外层包上 `tokio::time::timeout(OAUTH_TOKEN_EXCHANGE_TIMEOUT, …)`（新增的本地 60 秒上限），token 端点卡住时会以可处理错误返回。`redact_query_value(&url, "state")` 只把 `state` 的值替换为 `[redacted]`，URL 其余部分（端点、`client_id`）保持可读，便于排查。
+
+**行为变化：** 杂散或畸形的 localhost 请求不再中止 `/mcp auth`；监听会在同一个 300 秒窗口内继续等待真正的重定向。拒绝时会报告 provider 的 `error_description`，而不只是 `error=access_denied`。畸形百分号转义不会再 panic 掉 driver。token 交换卡住会在 60 秒后失败而不是永久挂起。`RUST_LOG=tact=info` 中授权链接显示为 `state=[redacted]`。
+
+**指针：** `crates/tact/src/mcp/remote.rs`。测试：`mcp::remote::tests::{a_stray_connection_before_the_callback_is_ignored,a_fragmented_request_head_is_reassembled,callback_listener_surfaces_denied_authorization,a_denial_reports_the_error_description,a_malformed_escape_on_the_callback_path_is_not_fatal,malformed_percent_escapes_degrade_instead_of_panicking,the_csrf_state_is_redacted_before_logging,callback_listener_times_out_without_a_request}`。
+
+---
+
+## 1. 2026-09-11 — 改写 `mcp.json` 保留文件权限、临时文件名唯一，并容忍 BOM
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/edit.rs`（`read_document`、`write_document`）；`crates/tact/src/mcp/remote.rs`（`write_private`、`create_dir_private`）；`crates/tact-ui/src/mcp_cli.rs`（`add`、`remove`） |
+
+**现象 / 动机：** `mcp.json` 合法地保存机密（`headers` —— 常见的是 `Authorization: Bearer …` —— 以及 `env`），所以用户可能用 `chmod 600` 加固它。改写时用 `fs::write` 写同目录临时文件，这会按 umask 默认值（通常 0644）创建，然后 `rename` 覆盖原文件——把一个 0600 文件静默放宽成 0644，把这些 header/env 值暴露给本机其他用户。临时文件名固定为 `mcp.json.tmp`，因此同一作用域内两个并发 `mcp add` 会互相交错、截断对方的字节，其中一个新增会丢失。带 UTF-8 BOM（Windows 上常见）保存的 `mcp.json` 解析失败，导致每次编辑都被 "fix or remove it" 挡住。OAuth 凭据存储有同一类问题：token 文件先写、之后再 `chmod 0600`，中间存在 0644 窗口；其父目录按 umask 默认值创建，暴露了已授权 server 的集合。
+
+**决策：** 要么经私有句柄写入，要么在文件可见之前恢复权限；同时让临时文件名不会撞车。`write_document` 生成唯一同目录临时文件（`mcp.json.<pid>.<nanos>.tmp`），在 `rename` 之前用 `set_permissions` 把原文件的 `Permissions` 复制过去；rename 失败时删除临时文件。`read_document` 解析前剥离开头的 `\u{feff}`。`remote.rs` 中 `create_dir_private` 用 `DirBuilder::mode(0o700)` 建凭据目录，`write_private` 用 `OpenOptions::mode(0o600)` 打开 token 文件，因此它从未以更宽松的模式存在过。
+
+**行为变化：** `chmod 600 ~/.tact/mcp.json` 在执行 `tact-ui mcp add …`/`remove` 后仍是 0600。同一作用域的并发编辑不再互相覆盖临时文件，失败时也不会留下 `.tmp` 残留。带 BOM 的配置可以编辑，而不再被报为不可解析。`~/.tact/mcp/oauth` 为 0700，其 token 文件创建即 0600。
+
+**指针：** `crates/tact/src/mcp/edit.rs`（`read_document`、`write_document`），`crates/tact/src/mcp/remote.rs`（`create_dir_private`、`write_private`）。测试：`mcp::edit::tests::{rewriting_preserves_the_file_mode,the_written_file_has_no_leftover_temp_sibling,a_leading_bom_does_not_block_editing}`；`mcp::remote::tests::file_credential_store_round_trips_and_clears`。
+
+---
+
+## 1. 2026-09-11 — `mcp add`/`mcp list` 遵循作用域优先级，重复的凭据 flag 被拒绝
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/mod.rs`（`resolve_servers`）；`crates/tact-ui/src/mcp_cli.rs`（`add`、`parse_pairs`、`scope_hint`）；Ch 8 §`tact-ui mcp` |
+
+**现象 / 动机：** 三个作用域与入参相关的 bug。(a) 项目文件已声明 `foo` 时，`tact-ui mcp add foo --user` 仍打印 "Added MCP server 'foo' in ~/.tact/mcp.json"——但加载器是项目覆盖用户，实际生效的 server 没有变化，用户收到的是一个空操作的成功提示。(b) 某个 server 名在一个作用域里没有可用的 `command`/`url`、在另一个作用域里声明有效时，它既被推入 `skipped_remote` 又被解析进 `order`，于是 `mcp list` 会列出两次、计数两次（一个 server 却显示 "2 MCP server(s) configured"）。(c) `--header A:1 --header A:2`（`--env` 同理）静默只保留最后一个值——正是凭据类 flag 最不该有的那种无声意外。
+
+**决策：** 如实报告遮蔽而不是假装成功；把跳过列表与实际解析出的 server 去重；重复的 flag 名直接报错。`add` 把写入路径与 `mcp::resolved_server_for(name)` 比较，若另一来源胜出，就打印警告、指名胜出的文件，并说明该改动在那条声明移除前不会生效。`resolve_servers` 在排序/去重前执行 `skipped_remote.retain(|name| !index_of.contains_key(name))`，因此一个名字要么被跳过、要么被配置，不会两者兼具。`parse_pairs` 在名字被重复插入时报错，且不回显任何值。
+
+**行为变化：** `mcp add` 不再为加载器到不了的声明谎报成功；它会指名真正生效的文件。`mcp list` 每个 server 只列出、计数一次。重复的 `--header`/`--env` 名会以 `--header NAME was given more than once` 失败，而不是丢掉某个值。
+
+**指针：** `crates/tact/src/mcp/mod.rs`（`resolve_servers`），`crates/tact-ui/src/mcp_cli.rs`（`add`、`parse_pairs`）。测试：`mcp::tests::a_name_configured_in_another_scope_is_not_also_reported_as_skipped`；`mcp_cli::tests::{a_repeated_pair_name_is_rejected,malformed_pairs_fail_without_echoing_the_value,pair_parsing_trims_the_name_and_value}`。
+
+---
+
+## 1. 2026-09-11 — `/mcp auth` 现在会在等待浏览器期间就显示 OAuth 链接
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-ui/src/driver.rs`（`stream_auth_progress`、`UserCommand::McpAuth` 分支）、`crates/tact/src/mcp/remote.rs`（`authorize_remote_server`、`OAUTH_CALLBACK_TIMEOUT`）；Ch 8 §Step 1c |
+
+**现象 / 动机：** `/mcp auth figma` 只打印了 `Starting MCP authorization for figma (watch for the URL below)...`，之后就再无输出——提示里承诺的链接始终不出现，用户没有可点击的东西，命令看起来像卡死。流程本身并不慢：`authorize_remote_server` 是在阻塞等待回环回调**之前**就通过 `notify` 上报链接的，但 driver 把这些行收进 `Vec`，直到 future 结束才一次性刷出。而该 future 最早也要等用户完成授权后才结束（此时链接已毫无用处），最晚则要等满 300 秒的 `OAUTH_CALLBACK_TIMEOUT`——也就是说，唯一重要的那一行在结构上根本无法及时到达。CLI 路径（`tact-ui mcp login`）不受影响，只是因为它在自己的 `notify` 里直接打印。
+
+**决策：** 进度行实时流式送往 UI，不再缓冲。`authorize_server` 要求 notify 闭包为 `Send`，因此闭包内不能捕获 `&Agent`；用一个无界 channel 解耦两者——闭包负责发送每一行，`stream_auth_progress` 在授权 future 与接收端之间 `select`，一旦有行到达就立刻以 `AgentUpdate::Info` 发出。流程结束时仍留在队列里的行会在 `select!` 之后补收，因此在「同一次 poll 里既产生链接又结束流程」的情况下链接不会被竞态丢掉。
+
+**行为变化：** 只要 `authorize_server` 产出授权链接，就会立刻以 `Info` 更新发出——此时流程仍阻塞在等待重定向，用户无需等命令结束就有链接可点。授权语义不变：回调监听仍保持 300 秒，期间该命令会占用 driver 的用户命令循环。由于链接走的是普通的 `Info` 更新，它会出现在会话记录里，而不是一次性的浮层。
+
+**指针：** `crates/tact-ui/src/driver.rs`（`stream_auth_progress`、`UserCommand::McpAuth`）。测试：`crates/tact-ui/src/driver.rs` 单元测试 `driver::tests::{auth_progress_reaches_the_user_before_the_flow_finishes,auth_progress_drains_lines_sent_at_completion}`；端到端回归 `crates/tact-ui/tests/mcp_auth_url_progress.rs`——用 `wiremock` 起一个模拟 OAuth provider 驱动 `handle_user_command`，在旧的缓冲实现下会失败。相关：Ch 8 §Step 1c（本次改动恢复的正是该处已记录的 `/mcp auth` 行为）。
+
+---
+
+
+## 1. 2026-09-11 — `mcp.oauth_client_name`：OAuth 注册身份，默认 `Codex`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/config/{types,resolve}.rs`（`McpTomlConfig`、`McpSettings`、`resolve_mcp`）、`crates/tact/src/mcp/remote.rs`（`OauthRequestParameters`、`oauth_parameters`、`registration_message`、`authorize_remote_server`）、`config.example.toml`；Ch 8 §Step 1c + FAQ（双语） |
+
+**症状 / 动机：** 原因查明后（Figma 按精确 `client_name` 对动态客户端注册放行，接受 `"Codex"` 而拒绝 `"Tact"`），`tact-ui mcp login figma` 依然不可用：该名称是硬编码常量，无法修改，因此知道答案的用户也无从下手。Figma 的远程 server（官方推荐、功能最全）无法从 Tact 使用。
+
+**决策：** 把注册名称做成配置——`config.toml` 中的 `[mcp] oauth_client_name`，默认 `"Codex"`；并为「只有某个 provider 需要不同答案」这一常见情形提供 `mcp.json` per-server 的 `auth.clientName` 覆盖。默认值的选择使 OAuth 对只接受已知客户端的 provider 开箱可用；`McpSettings::TACT_OAUTH_CLIENT_NAME` 记录如实的替代值（`"Tact"`），且 `config.example.toml` 与书中都明确写出代价：provider 与展示给用户的授权同意页看到的是 `"Codex"` 而非 `"Tact"`。Tact 不隐藏实际使用的名称——它会与其他 OAuth 进度日志一起以 `info` 级别记录（`client_name=…`），并出现在任何注册失败提示中，同时给出两个覆盖点。`oauth_parameters` 原本返回 3 元组，增至 4 元后改为具名的 `OauthRequestParameters`，并提供 `effective_client_name()`：按 per-server 覆盖 → 配置默认 → 内置默认解析，且把空白覆盖视为未设置（任何 provider 都会拒绝空的 `client_name`）。`McpSettings` 手写 `Default` 而非派生，因为空名称是错误的兜底值。`resolve_mcp` 会去除配置值的首尾空白，纯空白则回退默认。
+
+**行为变化：** 无需任何配置，`tact-ui mcp login figma` 即可到达授权 URL（已对线上 Figma 端点验证）。任何接受已知客户端名称的 provider 都可以通过设置该名称打通。`mcp.oauth_client_name = "Tact"` 恢复如实标识，白名单类 provider 随后会以可操作的提示拒绝。per-server 的 `clientName` 优先于全局默认（已验证：全局 `"Tact"` + per-server `"Codex"` 成功）。实际使用的名称可在 `RUST_LOG=tact=debug`/`info` 日志中看到。
+
+**指针：** `crates/tact/src/config/types.rs`（`McpTomlConfig`、`McpSettings::{DEFAULT_OAUTH_CLIENT_NAME,TACT_OAUTH_CLIENT_NAME,Default}`）、`crates/tact/src/config/resolve.rs`（`resolve_mcp`）、`crates/tact/src/mcp/remote.rs`（`OauthRequestParameters::effective_client_name`、`oauth_parameters`、`registration_message`、`authorize_remote_server`）；`crates/tact-ui/src/test_support.rs`、`crates/tui/src/handlers/select.rs`、`crates/tact/src/{agent/mod.rs,tool/read_image.rs}`、`crates/tact-ui/tests/recovery_compaction.rs`（测试配置字面量新增必填 `mcp` 字段）。测试：`config::resolve::tests::resolve_mcp_oauth_client_name_defaults_to_codex_and_is_overridable`、`mcp::remote::tests::{oauth_parameters_default_when_auth_is_not_declared,the_registration_name_falls_back_to_the_configured_default,refused_registration_explains_the_options_not_just_the_status}`。文档：Ch 8 §Step 1c + FAQ 对照表 + `config.example.toml` 新增 `[mcp]` 段；`README.md`。
+
+---
+
+## 1. 2026-09-11 — Figma 的 OAuth 拦截是按客户端名称白名单，不是 bug
+
+| Field | Value |
+|-------|-------|
+| **Type** | docs + bugfix（报错文案） |
+| **Related** | `crates/tact/src/mcp/remote.rs`（`OAUTH_CLIENT_NAME`、`registration_message`）；Ch 8 §Step 1c + FAQ（双语） |
+
+**症状 / 动机：** `codex mcp add figma --url https://mcp.figma.com/mcp` 能成功认证，而 `tact-ui mcp login figma` 在动态客户端注册处以 `HTTP 403 Forbidden` 失败。这个反差用上一条记录里的措辞（「provider 只接受已知客户端」）无法解释——它没说 provider 究竟按什么判定，而 Codex 明显能通过。
+
+**排查：** Codex 内置 `figma@codex-marketplace-global` 插件，其 `.mcp.json` 是普通远程条目（没有 `client_id`），且每次 `codex mcp add` 得到的 `client_id` 都不同——说明 Codex 与 Tact 一样在做动态注册。差别在请求体：`AuthorizationSession::new(..., Some("Tact"), None)` 发送 `client_name: "Tact"`，Codex 发送 `"Codex"`。向 `https://api.figma.com/v1/oauth/mcp/register` 发送其余部分完全一致的注册请求体，得到干净且可复现的分界：`Codex` → `200`（连续三次，每次新的 `client_id` + `client_secret`，`token_endpoint_auth_method: "none"`），`Claude Code` → `200`；而 `Tact`、`Cursor`、`Visual Studio Code` 与小写 `codex` → `403`。因此 Figma 是按**精确的客户端名称字符串**对动态注册放行，与其文档中的 MCP catalog 一致。发现阶段与流程其余部分都正常。
+
+**决策：** Tact 坚持以自己的名称注册并如实报告被拒。发送 `"Codex"` 确实能让注册通过，但那等于向 provider 谎报客户端身份，且依赖另一个产品的授权资格，因此不做——即便藏在配置开关后也不做。替代做法是：常量 `OAUTH_CLIENT_NAME` 统一命名客户端；报错现在明确指出注册常按客户端名称放行、Tact 以 `"Tact"` 注册；并给出三条而非两条路线（自行注册的 `auth.clientId`、`headers` 中的静态 token，或 provider 自带的本地 server——Figma 是 `http://127.0.0.1:3845/mcp`，无需 OAuth）。实测对照表记入 Ch 8 FAQ，避免日后重复排查。
+
+**行为变化：** 对接受 Tact 注册的 provider 无任何变化；此后 `mcp login` 失败时会给出指明「客户端名称」这一关卡的说明，用户可以据此行动（自行注册、改用 token、或改用本地 server）而不是反复重试。代码中不存在任何冒充路径。另有已知缺口保持不变并已写在原因旁：机密客户端的 `client_secret` 仍无法提供，因为 rmcp 的 `StoredCredentials` 只持久化 `client_id`。
+
+**指针：** `crates/tact/src/mcp/remote.rs`（`OAUTH_CLIENT_NAME`、`registration_message`、`authorize_remote_server`）。测试：`mcp::remote::tests::{refused_registration_explains_the_options_not_just_the_status,a_missing_registration_endpoint_does_not_blame_the_client_name}`。文档：Ch 8 §Step 1c 条目 + FAQ 对照表（双语）。方法：对比 `codex mcp` 与线上 Figma 端点，并通过受控注册请求定位到 `client_name` 这一分界。
+
+---
+
+## 1. 2026-09-11 — 回环 MCP server 不再被送进环境代理
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/remote.rs`（`http_client_for`、`is_loopback_url`、`serve_remote`）、`crates/tact/Cargo.toml`（`reqwest13`）；Ch 8 §Step 1c + 缺口（双语） |
+
+**症状 / 动机：** 当导出了 `http_proxy` / `all_proxy` 时，Tact 会把**回环** MCP 请求也发进代理。除非另行指定，reqwest 对所有 host 都遵循这些环境变量，于是 `http://127.0.0.1:3845/mcp`（Figma 桌面 server）永远到不了本地 server：响应来自代理，而代理错误页没有 `Content-Type`，因此失败表现为极具误导性的 `Unexpected content type: None`，而不是「connection refused」。用同一 server 在「导出代理 / 不导出代理」下对比即可确认（`Unexpected content type: None` 对 `error sending request`）；再起一个本地监听器，报错变成 `Some("text/plain")`——即该监听器自己的 content type——证明请求终于到达本地。这个问题重要，是因为对拒绝 OAuth 注册的 provider（Figma）所给出的官方替代方案正是一个回环 URL，而本仓库的开发环境恰好导出了这些变量。
+
+**决策：** 显式构建传输层 HTTP 客户端，并在端点为回环时禁用代理。通过 `StreamableHttpClientTransport::with_client` 传入 `reqwest13::Client::builder().no_proxy().build()`，得到的类型与原先 `from_config` 完全相同（`StreamableHttpClientTransport<reqwest::Client>`），其余逻辑不变。非回环端点仍用 `Client::default()`，因此保留环境代理——在受限网络里，代理正是远程 MCP server 可达的原因。回环判定刻意基于字符串（`127.0.0.0/8`、`localhost`、`::1`，并处理端口、userinfo、路径与查询串）：URL 来自用户配置，为了识别 `localhost` 而引入解析器或 DNS 只会凭空增加失败模式。`localhost.evil.com` 与 `127.0.0.1.evil.com` 会被正确判定为**非**回环。构建无代理客户端失败时回退到默认客户端并打警告，使连接尝试不中断，同时在日志中说明此后可能失败的原因。另有一处限制如实写明而非隐藏：OAuth 管理器会自建客户端，因此针对回环 server 的发现/注册仍会走环境代理——对无需 OAuth 的 Figma 桌面 server 无影响。
+
+**行为变化：** 导出代理时本地 MCP server 可用；而真正不存在的 server 会报告连接失败而不是代理状态码。远程 server 不受影响，仍走代理。`crates/tact` 新增依赖 `reqwest13`（rmcp 0.17 使用的同一版本；它原有的 0.12 crate 不满足 `StreamableHttpClient for reqwest::Client` 的实现）。
+
+**指针：** `crates/tact/src/mcp/remote.rs`（`http_client_for`、`is_loopback_url`、`serve_remote`）。测试：`mcp::remote::tests::{loopback_urls_are_recognized_so_they_can_bypass_a_proxy,remote_urls_keep_using_the_environment_proxy}`。文档：Ch 8 §Step 1c 条目、缺口表（双语）、`README.md`。实网：导出代理的情况下 `cargo test -p tact --test live_remote_mcp -- --ignored` 仍通过。
+
+---
+
+## 1. 2026-09-11 — OAuth 客户端注册被拒时，现在会说明该怎么办
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/remote.rs`（`registration_error`、`registration_message`、`registration_reason`、`authorize_remote_server`）；Ch 8 §Step 1c + FAQ（双语） |
+
+**症状 / 动机：** 对拒绝动态客户端注册的 provider 授权时，报错既不说原因也不给出路：
+
+```
+Error: MCP authorization failed for figma: OAuth client registration failed for figma:
+Registration failed: Dynamic registration failed: Registration failed: HTTP 403 Forbidden: Forbidden
+```
+
+这里的 provider 是 Figma：其远程 server（`https://mcp.figma.com/mcp`）只接受其 MCP catalog 中的客户端（VS Code、Cursor、Claude Code），因此 `https://api.figma.com/v1/oauth/mcp/register` 会对其他任何客户端返回 `403`。发现阶段是成功的——授权服务器为 `https://api.figma.com`，其元数据声明了 `client_secret_basic`/`client_secret_post`，但**没有**公共客户端的 `none`——所以流程是在最后一步失败，而这个状态码看起来像临时网络问题。已针对线上端点验证：带代理与不带代理、加 `Authorization: Bearer`、表单编码 body、空 body，结果一律 `403`，即服务端策略而非请求形状问题。`mcp list` 也正确地把该 server 显示为 `needs authorization`，所以死路只存在于报错文案里。
+
+**决策：** 在流程仍持有 metadata 的那一处识别 `AuthError::RegistrationFailed`，用「原因 + 两条真正出路」取代原始错误链。提示会区分「声明了注册端点但拒绝了我们」与「从未声明注册端点」（后者 rmcp 报 `Dynamic client registration not supported`），并打印具体的 redirect URI——设置了 `callbackPort` 时即为固定的 `http://127.0.0.1:<callbackPort>/callback`，因为这正是 provider 在接受手工注册客户端时要你填写的东西。rmcp 会把自己的错误包两层，因此 `registration_reason` 会剥掉重复的 `Registration failed:` / `Dynamic registration failed:` 前缀，只留信息量最大的尾部；若 rmcp 改了措辞，前缀不再匹配就会原样展示完整文本，属于降级而非误报。失败会连同 server 名、provider URL 以及是否声明了注册端点一起写入日志（绝不记录 token），符合该子系统既有的排障约定。此改动**刻意不声称**能修好 Figma：任何客户端侧改动都做不到，文档现在也如实说明，并指向无需 OAuth 的桌面 server（`http://127.0.0.1:3845/mcp`）。
+
+**行为变化：** `tact-ui mcp login figma`（以及共用同一代码路径的 `/mcp auth figma`）会打印 `OAuth client registration failed for figma: HTTP 403 Forbidden: Forbidden`，随后是原因、重试无用的说明，以及可选方案：自行注册 OAuth 客户端并设置 `auth.clientId` 与固定的 `callbackPort`，或通过 `headers` 提供 provider 签发的静态 token。支持 DCR 的 provider 不受影响——新分支只在 `RegistrationFailed` 时进入。机密客户端的 **client secret** 仍无法提供（rmcp 的 `StoredCredentials` 只带 `client_id`，刷新时会丢失），这一点现已作为已知缺口写明，而不是静默限制。
+
+**指针：** `crates/tact/src/mcp/remote.rs`（`registration_error`、`registration_message`、`registration_reason`、`authorize_remote_server` 中对 `has_registration_endpoint` 的捕获、OAuth metadata 的 `debug` 日志）。测试：`mcp::remote::tests::{registration_reason_unwraps_rmcps_nested_wrapping,refused_registration_explains_the_options_not_just_the_status,missing_registration_endpoint_reads_differently_from_a_refusal}`。文档：Ch 8 §Step 1c 条目 + FAQ 条目 + 缺口表行（双语）。实网检查：`cargo test -p tact --test live_remote_mcp -- --ignored` 仍通过（DCR provider 不受影响）。
+
+---
+
+## 1. 2026-09-11 — `tact-ui mcp`：完整的 CLI MCP server 管理
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/mcp/edit.rs`（新增）、`crates/tact/src/mcp/{mod,remote}.rs`、`crates/tact/src/config/cli.rs`（`McpSubcommand`）、`crates/tact-ui/src/mcp_cli.rs`、`crates/tui/src/handlers/mcp.rs`；计划 `docs/superpowers/plans/2026-09-11-remote-mcp.md` |
+
+**症状 / 动机：** CLI 能查看（`mcp list`）与授权（`mcp auth`）server，却无法创建、删除或取消授权——声明 server 仍只能手写 `mcp.json`，而该格式容易写错（远程与 stdio 的键不同、`auth` 拼写、引号），headless 用户也没有任何界面可以帮忙。凭据更是完全没有删除路径：一旦授权就永久授权，`~/.tact/mcp/oauth/<server>.json` 只能手工删除。此外 `mcp list` 会连接**全部** server，查看单个条目也会启动并拨号其余配置。
+
+**决策：** 按「各自负责的副作用」拆分为六个子命令，任何命令都不会悄悄做两件事：`list`（全部 server，连接）、`get <name>`（单个 server，只连接它）、`add`（写配置，绝不连接）、`remove`（写配置，保留凭据）、`login`（OAuth 流程，写凭据；保留 `auth` 作为可见别名）、`logout`（删除凭据，绝不连接）。`tact-ui mcp add <name> --url <URL> [--oauth] [--header N:V]…` / `--command <CMD> [--arg A]… [--env N=V]…` 覆盖两种传输；clap 强制 `--url` 与 `--command` 互斥，且 `--arg`/`--env`/`--header`/`--oauth` 各自依赖对应传输。`--user` 选择 home 文件而非项目文件；`add --force` 覆盖，而 `remove` 一个不存在的名字是报错而非无声空操作——消息会指出该 server **究竟**声明在哪个文件（`retry with --user`），或说明它由插件提供。校验（名称字符集、URL scheme、HTTP header 名**与值**）在任何写入之前完成。配置写入**直接编辑原始 JSON 文档**而不经 `McpConfigFile` 往返，因此未知键与其他 server 都会保留；写入是原子的（临时文件 + rename），无法解析的文件会报错而不是被覆盖。删除最后一个 server 会留下空的 `mcpServers` 对象（可预测的编辑，读回来仍是「无 server」）。server 名还会额外拒绝空白、控制字符与路径分隔符：名称同时是 `mcp__<server>__<tool>` 的 `<server>` 段与凭据文件名，因此 `mcp logout <name>` 绝不能指向任意文件——`oauth_credential_path` 现在直接拒绝不安全的名称，这也顺带加固了 `login`/`auth` 面对恶意 `mcp.json` 键的情形。TUI 接受 `/mcp login <server>` 作为 `/mcp auth <server>` 的别名；两个视图通过抽出的 `connected_text`/`needs_auth_text`/`failed_text` 共用同一套状态措辞。`mcp list` 还会打印 **Overridden declarations** 段，指明被覆盖与最终生效的文件——覆盖关系决定了「删掉一条声明」究竟改变了什么。header 与 env 的**值**绝不回显或写日志。
+
+**行为变化：** `tact-ui mcp add figma --url https://mcp.figma.com/mcp` 会创建或扩充 `.tact/mcp.json`，并打印路径与新条目的传输方式；`--oauth` 还会打印后续的 `tact-ui mcp login figma` 提示。`mcp get figma` 打印传输方式、来源、状态，以及 agent 实际必须调用的工具名（`mcp__figma__<tool>`），且只连接该 server。`mcp remove` 只删除一条声明；名字在别处时它会指出该去哪里找。`mcp logout` 删除凭据文件，无凭据时幂等成功，且声明已被删除后依然可用。重复添加同名条目会报错，除非给出 `--force`。Tact 未建模的键在往返后保留；对象键以排序后的 pretty JSON 重新序列化，因此手写格式的文件会在首次写入时被重新格式化一次。
+
+**指针：** `crates/tact/src/mcp/edit.rs`（`McpConfigScope`、`McpDraftTransport`、`McpServerDraft::{new,transport_kind}`、`add_mcp_server`、`RemovedMcpServer`、`remove_mcp_server`、`read_document`、`write_document`、`validate_remote_url`）；`crates/tact/src/mcp/mod.rs`（`is_safe_server_name`、`validate_server_name`、`McpServerStatus`、`McpServerInspection`、`ConnectOutcome`、`connect_server`、`resolved_server_for`、`inspect_server`、重构后的 `load_mcp_router_with_report_inner`）；`crates/tact/src/mcp/remote.rs`（`oauth_credential_path` 加固、`forget_credentials`）；`crates/tact/src/config/cli.rs`（`McpSubcommand::{List,Get,Add,Remove,Login,Logout}`）；`crates/tact-ui/src/mcp_cli.rs`（`get_server`、`render_server_detail`、`status_text`、`remove`、`scope_hint`、`scope_of`、`add`、`draft_from_args`、`parse_pairs`、`logout`）；`crates/tui/src/handlers/mcp.rs`。测试：`mcp::edit::tests::{creates_a_project_file_for_a_remote_server,writes_oauth_declaration_for_remote_server,writes_stdio_entry_with_args_and_env,adding_a_second_server_keeps_unknown_keys_and_the_first_server,refuses_to_replace_without_force_and_replaces_with_it,an_unparseable_file_is_never_overwritten,a_flat_mcp_servers_value_is_rejected,written_entries_load_back_through_the_reader,the_written_file_has_no_leftover_temp_sibling,invalid_names_and_transports_are_rejected_before_writing,project_scope_targets_the_workdir_and_user_scope_the_home_dir,remove_deletes_only_that_entry_and_keeps_everything_else,removing_the_last_server_leaves_an_empty_but_valid_config,remove_reports_an_absent_name_instead_of_succeeding_silently,an_unsafe_server_name_is_rejected_by_both_add_and_remove}`、`mcp::remote::tests::{an_unsafe_server_name_never_derives_a_credential_path,forgetting_credentials_rejects_an_unsafe_name_before_touching_disk,forgetting_a_missing_credential_is_not_an_error}`、`mcp_cli::tests::{overridden_declarations_name_the_file_that_wins,a_report_without_overrides_has_no_override_section,detail_view_shows_transport_source_status_and_qualified_tool_names,detail_view_reuses_the_list_wording_for_pending_and_failed_servers,detail_view_never_prints_an_empty_tool_list_as_success,scope_of_maps_the_user_flag,a_url_becomes_a_remote_draft_with_headers_and_oauth,a_command_becomes_a_stdio_draft_with_args_and_env,neither_or_both_transports_are_rejected,malformed_pairs_fail_without_echoing_the_value,pair_parsing_trims_the_name_and_value}`、`tui::handlers::mcp::tests::mcp_login_is_an_alias_for_auth`。文档：Ch 8 Step 1 + Step 1c（双语）、Ch 21 插件段（双语）、`README.md`。
+
+---
+
+## 1. 2026-09-11 — 远程 MCP server：Streamable HTTP + OAuth 2.0
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/mcp/{mod,remote}.rs`、`crates/tact/src/consts.rs`、`crates/tact/src/agent/mod.rs`（`reload_mcp_router`）、`crates/protocol/src/agent.rs`（`UserCommand::McpAuth`）、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/mcp.rs`、`crates/agent_tui_kit/src/i18n.rs`；设计 `docs/superpowers/specs/2026-09-11-remote-mcp-design.md`；计划 `docs/superpowers/plans/2026-09-11-remote-mcp.md` |
+
+**症状 / 动机：** Tact 的 MCP 客户端只会说 stdio。`McpProjectConfig` 早已解析 `type: "http" | "sse"` 与 `url`，但 `resolve_servers` 把每个远程条目塞进 `skipped_remote` 后丢弃，因此 `{ "url": … }` server 既不连接，也只留一句简短的「已跳过」。2026-09-10 接入的 `openai-curated` 目录把这个缺口具体化：MCP server 为远程的插件可以安装却永远用不了。远程 MCP 端点通常还要求 OAuth（MCP 2025-06-18 / SEP-985），所以只做传输也不足以让其可用。
+
+**决策：** 基于 `rmcp` 的 Streamable HTTP 客户端与其 OAuth 支持，打通远程条目的全链路，并保留既有 `McpService` 抽象，使路由、命名与权限完全不变。条目要么是 `command`（stdio），要么是 `url`（远程），可选 `headers`（静态认证）与 `auth: { "type": "oauth", … }`。两者同时存在时 `command` 优先；两者都没有的条目按已跳过上报。OAuth 采用授权码 + PKCE 流程：元数据发现、动态客户端注册（除非提供 `clientId`）、`127.0.0.1` 回环重定向；token 按 server 持久化在 `~/.tact/mcp/oauth/<server>.json`（`0600`）并自动刷新。启动绝不等待浏览器：声明了 OAuth 但没有可用凭据的 server 记为 `pending_auth`（`MCP server <name> needs authorization — run /mcp auth <name>`），既不连接也不算失败。`/mcp auth <server>` 执行流程、打印授权 URL，随后热重载 MCP router（`Agent::reload_mcp_router`），无需重启。各关键步骤仅记录 server 名、URL 与 header **名**——token 值从不写日志。
+
+即使服务器需要 OAuth，也**不要求**声明 `auth`。实网测试发现：对 Linear（需要 OAuth）只写 `url` 时，暴露出来的是一句晦涩的 `Auth required` 连接失败，因此现在会识别 401 并升级为 `pending_auth`。rmcp 用 `StreamableHttpError::AuthRequired` 表达它，但该变体承载的类型既未实现 `Display` 也未实现 `Error`，且 `ClientInitializeError::TransportError` 没有用 `#[source]` 串接它，因此无法 downcast；可命中的是 `ClientInitializeError` 本身（已针对 rmcp 0.17 验证），所以 `is_auth_required_error` 匹配该传输变体并检查 rmcp 的 `"Auth required"` 文案——无法识别时退化为普通失败，绝不误报。为避免提示指向死路，另一半同样必要：`/mcp auth` 在未声明 `auth` 时也能工作（默认动态注册、无 scope、临时端口），且无论是否声明过 `auth`，已存凭据都会被采用。
+
+交互式 TUI 通过 `/mcp auth <server>` 使用这套能力；headless 用户没有 TUI，因此同一对能力以 CLI 子命令形式暴露：`tact-ui mcp list` 与启动完全一致地解析并连接，然后打印每个 server 的传输方式、来源与状态（connected / needs authorization / failed / skipped）；`tact-ui mcp auth <server>` 执行流程、打印 URL，结束后重新列出以便立即看到结果。两者都注册为不调用 LLM 的命令，因此不需要 provider 配置或 API key。`mcp list` 也覆盖了本工作原先推迟的 `/mcp status` 面；TUI 内部状态仍来自启动时的提示。
+
+**行为变化：** `{ "url": … }` / `type: "http"` 的 server 会被连接而非跳过；`skipped_remote` 现在只表示传输不受支持或不完整。已安装插件也可提供远程 server。OAuth server 只出现一条待授权提示——无论是声明了 `auth` 还是被 401 识别——`/mcp auth <server>` 之后其工具在同一会话内即可用，后续会话无需再授权。过期且无法刷新的 token 回到 `pending_auth` 而不是表现为连接失败。连接失败依旧绝不致命。
+
+**指针：** `crates/tact/src/mcp/remote.rs`（`McpRemoteConfig`、`McpAuthConfig`、`serve_remote`、`resolve_remote_auth`、`stored_access_token_at`、`oauth_parameters`、`is_auth_required_error`、`authorize_remote_server`、`FileCredentialStore`、`await_oauth_callback`、`percent_decode`）；`crates/tact/src/mcp/mod.rs`（`McpTransportConfig`、`McpTransportKind`、`ConfiguredServer`、`to_transport`、`resolve_servers`、`ResolvedServers::configured`、`load_mcp_router_with_report`、`remote_config_for`、`authorize_server`、`McpLoadReport::{configured,pending_auth,notice_lines}`）；`crates/tact-ui/src/mcp_cli.rs`（`run_mcp_cli`、`render_report`、`status_for`）；`crates/tact/src/config/cli.rs`（`McpSubcommand`）；`crates/tact/src/agent/mod.rs`（`rebuild_cached_tool_specs`、`reload_mcp_router`）；`crates/tact/src/consts.rs`（`home_mcp_oauth_dir`）。测试：`remote_config_parses_url_headers_and_oauth`、`invalid_header_names_are_dropped_from_the_transport_config`、`oauth_token_becomes_the_bearer_auth_header`、`file_credential_store_round_trips_and_clears`、`callback_listener_{extracts_code_and_state,surfaces_denied_authorization,times_out_without_a_request}`、`commandless_entries_are_skipped_not_fatal_while_remote_entries_connect`、`remote_entry_with_oauth_needs_authorization_without_credentials`、`load_report_renders_pending_authorization`、`auth_required_detection_ignores_unrelated_errors`、`undeclared_auth_still_uses_a_stored_credential`、`oauth_parameters_default_when_auth_is_not_declared`、`mcp_cli::tests::{empty_report_explains_how_to_configure,renders_each_server_with_its_status,skipped_servers_are_listed_even_though_they_are_not_configured,a_server_with_no_recorded_outcome_is_not_reported_as_healthy}`。公网远程 server 的实网（可选）端到端检查：`crates/tact/tests/live_remote_mcp.rs`（`cargo test -p tact --test live_remote_mcp -- --ignored --nocapture`），覆盖 DeepWiki + Cloudflare Docs 连接并暴露 `mcp__<key>__*` 工具、Linear 的 401 被升级为 `pending_auth`、以及声明与不声明 `auth` 两种情况下都能产出授权 URL（对真实 provider 验证发现、动态注册与 PKCE S256）。文档：Ch 8 §3.2/Step 1b/1c/FAQ/缺口（双语）、Ch 21 插件段（双语）。
+
+---
+
+
 ## 1. 2026-09-10 — `tracing-subscriber` 的 `default-features = false` 终于生效
 
 | Field | Value |

@@ -390,7 +390,14 @@ hooks — see Ch 2,
 8, 9, 12. MCP servers are declared in `~/.tact/mcp.json` (user) or
 `<workdir>/.tact/mcp.json` (project) — one filename per scope, with no
 cwd-level manifest or `.mcp.json` read; installed plugins still contribute
-servers — see Ch 8.
+servers. An entry is either local (`command`, spawned over stdio) or remote
+(`url`, Streamable HTTP), optionally with static `headers` or
+`auth: { "type": "oauth", ... }`; OAuth tokens are stored per server under
+`~/.tact/mcp/oauth/` and authorized with `/mcp auth <server>` (interactive) or
+`tact-ui mcp login <server>` (CLI). The CLI manages the whole lifecycle —
+`tact-ui mcp list` (every server with transport and status), `get <name>` (one
+server, its tools), `add`/`remove` (`--user` for the home file, `--force` to
+replace), `login`/`logout` (stored credentials) — see Ch 8.
 
 Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.
 

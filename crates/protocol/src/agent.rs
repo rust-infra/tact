@@ -455,6 +455,10 @@ pub enum UserCommand {
     /// or the TUI tool-card cancel button). The driver flips the child's
     /// cooperative cancel flag and marks its run record Cancelled.
     CancelSubagent { child_id: String },
+    /// Run the interactive OAuth authorization flow for a remote MCP server
+    /// (triggered by `/mcp auth <server>`). On success the driver reloads the
+    /// MCP router so the server becomes usable without restarting.
+    McpAuth { server: String },
     /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
     /// (see [`UiResponse`]). Routed by the driver to the shared responder.
     UiResponse(UiResponse),

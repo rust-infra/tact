@@ -81,6 +81,9 @@ impl TryFrom<UserCommand> for Command {
             // Cancellation is handled by the driver (it owns the manager's
             // cancel handles), not a host command for the kit.
             UserCommand::CancelSubagent { .. } => Err(()),
+            // OAuth authorization for a remote MCP server is a Tact driver
+            // flow (loopback callback + router reload), not a kit command.
+            UserCommand::McpAuth { .. } => Err(()),
             // Responses to agent-originated selects flow on the reverse command
             // channel; they are not host commands and never map to `Command`.
             UserCommand::UiResponse(_) => Err(()),

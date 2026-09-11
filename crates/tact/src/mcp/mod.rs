@@ -61,6 +61,23 @@ use crate::{
     tool::copy_tool_spec,
 };
 
+mod edit;
+mod remote;
+pub use edit::*;
+pub use remote::*;
+
+/// How the client reaches one MCP server.
+///
+/// Tact supports local subprocess servers (`command`) and remote Streamable
+/// HTTP servers (`url`, optionally with OAuth), resolved per entry.
+#[derive(Debug, Clone)]
+pub enum McpTransportConfig {
+    /// Local subprocess over stdio.
+    Stdio(McpServerConfig),
+    /// Remote Streamable HTTP (optionally OAuth-authorized).
+    Remote(McpRemoteConfig),
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
@@ -107,28 +124,119 @@ impl McpConfigFile {
     }
 }
 
+/// Whether `name` is safe to use as a single path component.
+///
+/// A server name is not only a map key: it becomes a segment of every agent
+/// tool name (`mcp__<server>__<tool>`) and the file name of the OAuth
+/// credential (`<name>.json`). A name containing a path separator or `..`
+/// would let a config file — or a CLI argument such as `mcp logout <name>` —
+/// reach outside the directory it belongs to.
+#[must_use]
+pub fn is_safe_server_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name
+            .chars()
+            .any(|c| c == '/' || c == '\\' || c.is_control())
+}
+
+/// Validates a server name supplied by a user (config key or CLI argument).
+///
+/// Whitespace is refused because the name is also an argument to
+/// `/mcp auth <name>`, where it would split into two arguments. Underscores are
+/// allowed: plugin-contributed servers are already named `plugin__id__name`.
+pub fn validate_server_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("server name must not be empty");
+    }
+    if name.trim() != name {
+        bail!("server name '{name}' must not have leading or trailing whitespace");
+    }
+    if name.chars().any(char::is_whitespace) {
+        bail!("server name '{name}' must not contain whitespace");
+    }
+    if name.chars().any(char::is_control) {
+        bail!("server name '{name}' must not contain control characters");
+    }
+    if !is_safe_server_name(name) {
+        bail!("server name '{name}' must not contain a path separator");
+    }
+    Ok(())
+}
+
+/// How a configured server will be reached, for diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpTransportKind {
+    /// Local subprocess: the command that will be spawned.
+    Stdio { command: String },
+    /// Remote Streamable HTTP endpoint.
+    Remote { url: String, oauth: bool },
+}
+
+impl std::fmt::Display for McpTransportKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stdio { command } => write!(formatter, "stdio  {command}"),
+            Self::Remote { url, oauth } => {
+                write!(formatter, "remote {url}")?;
+                if *oauth {
+                    write!(formatter, " (oauth)")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A server that survived resolution, with the source it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredServer {
+    pub name: String,
+    pub transport: McpTransportKind,
+    /// Where the declaration was read from (a file path or "installed plugin").
+    pub source: String,
+}
+
 /// What happened while resolving every configured MCP server.
 ///
 /// A clean load leaves every field empty; callers render a notice only when at
 /// least one is non-empty, so the common case stays quiet.
 #[derive(Debug, Clone, Default)]
 pub struct McpLoadReport {
+    /// Every server that survived resolution, sorted by name.
+    ///
+    /// Unlike the fields below this is *not* a problem list — it describes the
+    /// full configuration, so `tact-ui mcp list` can show servers that loaded
+    /// cleanly alongside the ones that did not.
+    pub configured: Vec<ConfiguredServer>,
     /// Server name and tool count for each successful connection.
     pub connected: Vec<(String, usize)>,
     /// Server name and error for each failed connection.
     pub failures: Vec<(String, String)>,
     /// Server name and the lower-precedence source it displaced.
     pub shadowed: Vec<(String, String)>,
-    /// Server names skipped because they declare a remote transport.
+    /// Server names skipped because they declare an unsupported/incomplete
+    /// transport (currently a remote entry without a `url`, or a stdio entry
+    /// without a `command`).
     pub skipped_remote: Vec<String>,
+    /// Remote servers that declare OAuth but have no stored credential yet.
+    ///
+    /// These are not failures: startup proceeds and the user authorizes them
+    /// later with `/mcp auth <name>`.
+    pub pending_auth: Vec<String>,
 }
 
 impl McpLoadReport {
-    /// True when nothing noteworthy happened (no failures, overrides, or
-    /// skipped servers). `connected` alone does not count as noteworthy.
+    /// True when nothing noteworthy happened (no failures, overrides, skipped
+    /// servers, or pending authorizations). `connected` alone does not count
+    /// as noteworthy.
     #[must_use]
     pub fn is_quiet(&self) -> bool {
-        self.failures.is_empty() && self.shadowed.is_empty() && self.skipped_remote.is_empty()
+        self.failures.is_empty()
+            && self.shadowed.is_empty()
+            && self.skipped_remote.is_empty()
+            && self.pending_auth.is_empty()
     }
 
     /// One-line-per-fact summary lines for display. Empty when quiet.
@@ -138,16 +246,92 @@ impl McpLoadReport {
         for (server, error) in &self.failures {
             lines.push(format!("MCP server {server} failed to connect: {error}"));
         }
+        for server in &self.pending_auth {
+            lines.push(format!(
+                "MCP server {server} needs authorization — run /mcp auth {server}"
+            ));
+        }
         for (server, source) in &self.shadowed {
             lines.push(format!("MCP server {server} overrides {source}"));
         }
         if !self.skipped_remote.is_empty() {
             lines.push(format!(
-                "MCP servers skipped (remote transport unsupported): {}",
+                "MCP servers skipped (unsupported transport): {}",
                 self.skipped_remote.join(", ")
             ));
         }
         lines
+    }
+}
+
+/// Connection state of one server, as observed by [`inspect_server`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpServerStatus {
+    /// The server answered and its tools were fetched.
+    Connected,
+    /// Remote OAuth server with no usable credential — actionable, not an
+    /// error.
+    PendingAuthorization,
+    /// The connection failed; carries the rendered error.
+    Failed(String),
+}
+
+/// One server, described and connected in isolation.
+///
+/// Unlike [`McpLoadReport`], which describes the whole configuration, this is
+/// the `mcp get <name>` view of a single server — including its tool list,
+/// which the aggregate report does not carry.
+#[derive(Debug, Clone)]
+pub struct McpServerInspection {
+    pub server: ConfiguredServer,
+    pub status: McpServerStatus,
+    /// Short tool names (as the server reports them, without the
+    /// `mcp__<server>__` prefix). Empty unless [`McpServerStatus::Connected`].
+    pub tools: Vec<String>,
+}
+
+/// What one connection attempt produced.
+enum ConnectOutcome {
+    Connected(McpClient),
+    NeedsAuthorization,
+    Failed(String),
+}
+
+/// Connects one server, classifying the outcome.
+///
+/// A remote server that is *known* to need OAuth is not contacted at all (the
+/// credential file is enough to decide), and a 401 without a declared `auth` is
+/// upgraded to the actionable pending state rather than reported as a failure.
+/// Shared by the full-config load and the single-server `get` view so both
+/// classify identically.
+async fn connect_server(name: &str, config: McpTransportConfig) -> ConnectOutcome {
+    if let McpTransportConfig::Remote(remote) = &config
+        && remote.needs_authorization(name)
+    {
+        tracing::info!(
+            mcp_server = %name,
+            "remote MCP server needs OAuth authorization; run `mcp login`"
+        );
+        return ConnectOutcome::NeedsAuthorization;
+    }
+    match McpClient::try_new(name.to_string(), config).await {
+        Ok(client) => ConnectOutcome::Connected(client),
+        Err(err)
+            if err
+                .downcast_ref::<remote::AuthorizationRequired>()
+                .is_some()
+                || remote::is_auth_required_error(&err) =>
+        {
+            tracing::info!(
+                mcp_server = %name,
+                "remote MCP server needs (re)authorization; run `mcp login`"
+            );
+            ConnectOutcome::NeedsAuthorization
+        }
+        Err(err) => {
+            tracing::warn!(mcp_server = %name, error = %err, "MCP server connection failed");
+            ConnectOutcome::Failed(format!("{err:#}"))
+        }
     }
 }
 
@@ -159,13 +343,19 @@ pub struct PluginManifest {
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
-    pub mcp_servers: HashMap<String, McpServerConfig>,
+    pub mcp_servers: HashMap<String, McpProjectConfig>,
 }
 
-/// Claude project-level MCP configuration (`.mcp.json`) entry.
+/// MCP server entry in `mcp.json` / a plugin `.mcp.json`.
 ///
-/// Tact only connects stdio servers today; `http` / `url` entries are skipped
-/// with a warning (the client has no remote transport yet).
+/// Exactly one transport is expected:
+///
+/// - `command` — local subprocess over stdio;
+/// - `url` (optionally with `type: "http" | "sse"`) — remote Streamable HTTP,
+///   with optional static `headers` and OAuth (`auth`).
+///
+/// `command` wins when both are present, so a stdio entry is never
+/// reinterpreted as remote.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpProjectConfig {
@@ -179,10 +369,16 @@ pub struct McpProjectConfig {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// Extra request headers for remote servers (static auth goes here).
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// OAuth declaration for remote servers.
+    #[serde(default)]
+    pub auth: Option<McpAuthConfig>,
 }
 
 impl McpProjectConfig {
-    /// Whether this entry declares a transport Tact cannot speak.
+    /// Whether this entry declares a remote (Streamable HTTP) transport.
     #[must_use]
     pub fn is_remote(&self) -> bool {
         matches!(self.server_type.as_deref(), Some("http") | Some("sse")) || self.url.is_some()
@@ -201,6 +397,28 @@ impl McpProjectConfig {
             env: self.env.clone(),
         })
     }
+
+    /// Converts an entry to its transport config.
+    ///
+    /// `command` wins over `url` when both are present; an entry with neither
+    /// (or a remote entry without a `url`) is unsupported and returns `None`,
+    /// which the resolver reports as skipped rather than silently dropping.
+    #[must_use]
+    pub fn to_transport(&self) -> Option<McpTransportConfig> {
+        if let Some(command) = &self.command {
+            return Some(McpTransportConfig::Stdio(McpServerConfig {
+                command: command.clone(),
+                args: self.args.clone(),
+                env: self.env.clone(),
+            }));
+        }
+        let url = self.url.clone()?;
+        Some(McpTransportConfig::Remote(McpRemoteConfig {
+            url,
+            headers: self.headers.clone(),
+            auth: self.auth.clone(),
+        }))
+    }
 }
 
 /// Scans the installed-plugin cache for MCP servers declared by plugins:
@@ -212,7 +430,7 @@ impl McpProjectConfig {
 /// distributable package, so its bundle-relative `.mcp.json` and manifest are
 /// read here — but never at the working directory, where `.tact/mcp.json` is
 /// the single answer.
-pub fn installed_plugin_mcp_servers(home: &PluginHome) -> Result<Vec<(String, McpServerConfig)>> {
+pub fn installed_plugin_mcp_servers(home: &PluginHome) -> Result<Vec<(String, McpProjectConfig)>> {
     let store = PluginStore::new(home.clone());
     let mut servers = Vec::new();
     for root in store.installed_plugin_roots()? {
@@ -223,7 +441,7 @@ pub fn installed_plugin_mcp_servers(home: &PluginHome) -> Result<Vec<(String, Mc
 
 fn collect_plugin_mcp_servers(
     root: &PluginRoot,
-    servers: &mut Vec<(String, McpServerConfig)>,
+    servers: &mut Vec<(String, McpProjectConfig)>,
 ) -> Result<()> {
     let prefix = |name: &str| format!("plugin__{}__{}", root.plugin_id, name);
 
@@ -256,14 +474,16 @@ fn collect_plugin_mcp_servers(
             .with_context(|| format!("failed to read {}", mcp_path.display()))?;
         let configs: HashMap<String, McpProjectConfig> = serde_json::from_str(&raw)?;
         for (name, config) in configs {
-            match config.to_stdio() {
-                Some(server) => servers.push((prefix(&name), server)),
-                None => tracing::debug!(
-                    "plugin {} MCP server {} uses an unsupported transport (http/url); skipped",
+            if config.to_transport().is_none() {
+                // Unsupported entries are reported by the resolver (it knows
+                // the final server name), not dropped here.
+                tracing::debug!(
+                    "plugin {} MCP server {} has no usable transport",
                     root.plugin_id,
                     name
-                ),
+                );
             }
+            servers.push((prefix(&name), config));
         }
     }
 
@@ -353,7 +573,10 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    pub async fn try_new(server_name: impl Into<String>, config: McpServerConfig) -> Result<Self> {
+    pub async fn try_new(
+        server_name: impl Into<String>,
+        config: McpTransportConfig,
+    ) -> Result<Self> {
         let server_name = server_name.into();
         let running = Self::connect(&server_name, config).await?;
         let service: Arc<dyn McpService> = Arc::new(RealMcpService::new(running));
@@ -399,8 +622,14 @@ impl McpClient {
 
     async fn connect(
         server_name: &str,
-        config: McpServerConfig,
+        config: McpTransportConfig,
     ) -> Result<RunningService<RoleClient, ()>> {
+        let config = match config {
+            McpTransportConfig::Stdio(config) => config,
+            McpTransportConfig::Remote(remote) => {
+                return remote::serve_remote(server_name, &remote).await;
+            }
+        };
         let command = config.command;
         let args = config.args;
         let env = config.env;
@@ -698,13 +927,7 @@ fn collect_sourced_servers(cwd: &Path) -> Result<Vec<SourcedServer>> {
             servers.push(SourcedServer {
                 name,
                 source: format!("installed plugin ({})", home.root.display()),
-                config: McpProjectConfig {
-                    server_type: None,
-                    command: Some(config.command),
-                    args: config.args,
-                    env: config.env,
-                    url: None,
-                },
+                config,
             });
         }
     }
@@ -714,21 +937,51 @@ fn collect_sourced_servers(cwd: &Path) -> Result<Vec<SourcedServer>> {
 
 /// Outcome of layering every declared source into one connect list.
 struct ResolvedServers {
-    /// Servers to connect, in declaration order.
-    servers: Vec<(String, McpServerConfig)>,
+    /// Servers to connect, in declaration order, with the source they came from.
+    servers: Vec<(String, McpTransportConfig, String)>,
     /// Overridden server name and the source it displaced.
     shadowed: Vec<(String, String)>,
     /// Servers dropped for an unsupported or incomplete transport.
     skipped_remote: Vec<String>,
 }
 
+impl ResolvedServers {
+    /// Describes each server for diagnostics (`tact-ui mcp list`).
+    ///
+    /// Sorted by name: `mcp.json` is parsed into a `HashMap`, so there is no
+    /// meaningful declaration order to preserve and an unstable listing would
+    /// make repeated runs needlessly hard to compare.
+    fn configured(&self) -> Vec<ConfiguredServer> {
+        let mut described: Vec<ConfiguredServer> = self
+            .servers
+            .iter()
+            .map(|(name, transport, source)| ConfiguredServer {
+                name: name.clone(),
+                transport: match transport {
+                    McpTransportConfig::Stdio(config) => McpTransportKind::Stdio {
+                        command: config.command.clone(),
+                    },
+                    McpTransportConfig::Remote(remote) => McpTransportKind::Remote {
+                        url: remote.url.clone(),
+                        oauth: remote.auth.is_some(),
+                    },
+                },
+                source: source.clone(),
+            })
+            .collect();
+        described.sort_by(|a, b| a.name.cmp(&b.name));
+        described
+    }
+}
+
 /// Resolves declared servers into the final connect list.
 ///
 /// Later declarations win by server name; every displaced declaration is
-/// recorded so the override is visible rather than silent. Remote-transport
-/// entries are dropped here with a report entry, never a hard error.
+/// recorded so the override is visible rather than silent. An entry with no
+/// usable transport (neither `command` nor `url`) is dropped with a report
+/// entry, never a hard error.
 fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
-    let mut order: Vec<(String, McpServerConfig, String)> = Vec::new();
+    let mut order: Vec<(String, McpTransportConfig, String)> = Vec::new();
     let mut index_of: HashMap<String, usize> = HashMap::new();
     let mut shadowed: Vec<(String, String)> = Vec::new();
     let mut skipped_remote: Vec<String> = Vec::new();
@@ -739,34 +992,49 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
         config,
     } in servers
     {
-        if config.is_remote() {
-            skipped_remote.push(name);
-            continue;
-        }
-        let Some(stdio) = config.to_stdio() else {
-            // A stdio entry without a `command`: report, do not abort.
+        let Some(transport) = config.to_transport() else {
+            // No `command` and no `url`: report, do not abort.
+            tracing::warn!(
+                mcp_server = %name,
+                source = %source,
+                "MCP server has neither a command nor a url; skipped"
+            );
             skipped_remote.push(name);
             continue;
         };
+        match transport {
+            McpTransportConfig::Stdio(_) => tracing::debug!(
+                mcp_server = %name, source = %source, transport = "stdio",
+                "resolved MCP server"
+            ),
+            McpTransportConfig::Remote(ref remote) => tracing::debug!(
+                mcp_server = %name, source = %source, transport = "streamable-http",
+                url = %remote.url,
+                oauth = remote.auth.is_some(),
+                "resolved MCP server"
+            ),
+        }
         match index_of.get(&name) {
             Some(&existing) => {
                 shadowed.push((name.clone(), order[existing].2.clone()));
-                order[existing] = (name, stdio, source);
+                order[existing] = (name, transport, source);
             }
             None => {
                 index_of.insert(name.clone(), order.len());
-                order.push((name, stdio, source));
+                order.push((name, transport, source));
             }
         }
     }
 
+    // A name skipped in one scope can still be declared usefully by another
+    // (project wins over user). It is only "skipped" when nothing usable was
+    // declared for it anywhere, otherwise the report would list — and count —
+    // the same server twice.
+    skipped_remote.retain(|name| !index_of.contains_key(name));
     skipped_remote.sort();
     skipped_remote.dedup();
     ResolvedServers {
-        servers: order
-            .into_iter()
-            .map(|(name, config, _source)| (name, config))
-            .collect(),
+        servers: order,
         shadowed,
         skipped_remote,
     }
@@ -775,12 +1043,23 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
 /// Loads every configured MCP server and reports what happened.
 ///
 /// Connection failures are collected, never propagated: one broken server must
-/// not prevent the agent from starting.
-pub async fn load_mcp_router_with_report() -> Result<(MCPToolRouter, McpLoadReport)> {
+/// not prevent the agent from starting. A remote server that declares OAuth
+/// but has no stored credential is reported as *pending authorization* and not
+/// connected, so startup never blocks on a browser round-trip.
+///
+/// Returns a boxed future: the transport futures built here are deeply nested
+/// generics, and boxing keeps the `Send` bound resolvable at this boundary
+/// instead of overflowing the trait solver at every caller's `tokio::spawn`.
+pub fn load_mcp_router_with_report() -> BoxFuture<'static, Result<(MCPToolRouter, McpLoadReport)>> {
+    load_mcp_router_with_report_inner().boxed()
+}
+
+async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadReport)> {
     let cwd = std::env::current_dir()?;
     let resolved = resolve_servers(collect_sourced_servers(&cwd)?);
 
     let mut report = McpLoadReport {
+        configured: resolved.configured(),
         shadowed: resolved.shadowed,
         skipped_remote: resolved.skipped_remote,
         ..McpLoadReport::default()
@@ -788,30 +1067,29 @@ pub async fn load_mcp_router_with_report() -> Result<(MCPToolRouter, McpLoadRepo
 
     let mut router = MCPToolRouter::new();
     let mut connections = FuturesUnordered::new();
-    for (server_name, config) in resolved.servers {
+    for (server_name, config, _source) in resolved.servers {
         connections.push(async move {
-            let result = McpClient::try_new(server_name.clone(), config).await;
-            (server_name, result)
+            let outcome = connect_server(&server_name, config).await;
+            (server_name, outcome)
         });
     }
-    while let Some((server_name, result)) = connections.next().await {
-        match result {
-            Ok(client) => {
+    while let Some((server_name, outcome)) = connections.next().await {
+        match outcome {
+            ConnectOutcome::Connected(client) => {
                 let tools = client.list_tools().len();
                 tracing::debug!(mcp_server = %server_name, tools, "MCP server connected");
                 report.connected.push((server_name.clone(), tools));
                 router.register_client(client);
             }
-            Err(err) => {
-                tracing::warn!(mcp_server = %server_name, error = %err, "MCP server connection failed");
-                report.failures.push((server_name, format!("{err:#}")));
-            }
+            ConnectOutcome::NeedsAuthorization => report.pending_auth.push(server_name),
+            ConnectOutcome::Failed(error) => report.failures.push((server_name, error)),
         }
     }
 
     report.connected.sort_by(|a, b| a.0.cmp(&b.0));
     report.failures.sort_by(|a, b| a.0.cmp(&b.0));
     report.shadowed.sort_by(|a, b| a.0.cmp(&b.0));
+    report.pending_auth.sort();
     Ok((router, report))
 }
 
@@ -822,6 +1100,96 @@ pub async fn load_mcp_router_with_report() -> Result<(MCPToolRouter, McpLoadRepo
 pub async fn load_mcp_router() -> Result<MCPToolRouter> {
     let (router, _report) = load_mcp_router_with_report().await?;
     Ok(router)
+}
+
+/// Resolves every declared source against the current working directory.
+fn resolve_current() -> Result<ResolvedServers> {
+    let cwd = std::env::current_dir()?;
+    Ok(resolve_servers(collect_sourced_servers(&cwd)?))
+}
+
+/// Looks up one resolved server exactly as the loader would see it.
+///
+/// Returns `Ok(None)` for a name that is not declared anywhere, which lets a
+/// CLI distinguish a typo from a connection failure — the same distinction
+/// `mcp list` makes. The returned [`ConfiguredServer::source`] says which file
+/// (or plugin) the declaration came from, so `mcp remove` can explain where a
+/// server actually lives before failing.
+pub fn resolved_server_for(
+    server_name: &str,
+) -> Result<Option<(ConfiguredServer, McpTransportConfig)>> {
+    let resolved = resolve_current()?;
+    let described = resolved
+        .configured()
+        .into_iter()
+        .find(|server| server.name == server_name);
+    let transport = resolved
+        .servers
+        .into_iter()
+        .find(|(name, _, _)| name == server_name)
+        .map(|(_, transport, _)| transport);
+    Ok(match (described, transport) {
+        (Some(server), Some(transport)) => Some((server, transport)),
+        _ => None,
+    })
+}
+
+/// Connects one server and reports its state, without touching the others.
+///
+/// `mcp get <name>` uses this so inspecting a single server never spawns or
+/// dials the rest of the configuration. Returns `Ok(None)` for an unknown name.
+pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspection>> {
+    let Some((server, transport)) = resolved_server_for(server_name)? else {
+        return Ok(None);
+    };
+    let (status, tools) = match connect_server(server_name, transport).await {
+        ConnectOutcome::Connected(client) => {
+            let tools = client
+                .list_tools()
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            (McpServerStatus::Connected, tools)
+        }
+        ConnectOutcome::NeedsAuthorization => (McpServerStatus::PendingAuthorization, Vec::new()),
+        ConnectOutcome::Failed(error) => (McpServerStatus::Failed(error), Vec::new()),
+    };
+    Ok(Some(McpServerInspection {
+        server,
+        status,
+        tools,
+    }))
+}
+
+/// Looks up the resolved remote config for a server by its final name.
+///
+/// Uses the same sources and precedence as [`load_mcp_router_with_report`], so
+/// `/mcp auth <name>` can only authorize a server the loader would also try to
+/// connect. Returns `Ok(None)` for an unknown name or a non-remote server.
+pub fn remote_config_for(server_name: &str) -> Result<Option<McpRemoteConfig>> {
+    Ok(resolve_current()?
+        .servers
+        .into_iter()
+        .find_map(|(name, config, _source)| match config {
+            McpTransportConfig::Remote(remote) if name == server_name => Some(remote),
+            _ => None,
+        }))
+}
+
+/// Runs the interactive OAuth flow for a configured remote server.
+///
+/// `notify` receives human-facing progress lines (above all the authorization
+/// URL the user must open). Distinct from [`remote::authorize_remote_server`],
+/// this resolves the server's config first and fails clearly for unknown or
+/// non-remote names.
+pub async fn authorize_server(
+    server_name: &str,
+    notify: &mut (dyn FnMut(&str) + Send),
+) -> Result<()> {
+    let Some(config) = remote_config_for(server_name)? else {
+        bail!("no remote MCP server named {server_name} is configured");
+    };
+    remote::authorize_remote_server(server_name, &config, notify).await
 }
 
 fn join_mcp_content(content: &[rmcp::model::Content]) -> String {
@@ -856,8 +1224,9 @@ mod tests {
 
     use super::{
         MCPToolRouter, McpClient, McpConfigFile, McpLoadReport, McpProjectConfig, McpServerConfig,
-        McpToolName, MockMcpService, PluginManifest, RealMcpService, SourcedServer,
-        collect_sourced_servers, drain_mcp_stderr, installed_plugin_mcp_servers, resolve_servers,
+        McpToolName, McpTransportConfig, MockMcpService, PluginManifest, RealMcpService,
+        SourcedServer, collect_sourced_servers, drain_mcp_stderr, installed_plugin_mcp_servers,
+        resolve_servers,
     };
     use crate::{
         consts::PluginHome,
@@ -897,7 +1266,10 @@ mod tests {
 
         assert_eq!(manifest.name, "demo");
         assert_eq!(manifest.version.as_deref(), Some("1.0.0"));
-        assert_eq!(manifest.mcp_servers["echo"].command, expected.command);
+        assert_eq!(
+            manifest.mcp_servers["echo"].command.as_deref(),
+            Some(expected.command.as_str())
+        );
         assert_eq!(manifest.mcp_servers["echo"].args, expected.args);
         assert_eq!(manifest.mcp_servers["echo"].env, expected.env);
     }
@@ -1015,21 +1387,27 @@ mod tests {
         let names: Vec<_> = servers.iter().map(|(name, _)| name.as_str()).collect();
         assert!(names.contains(&"plugin__demo__fromManifest"));
         assert!(names.contains(&"plugin__demo__fromDotMcp"));
+        // Remote plugin servers are real servers now, not dropped entries.
         assert!(
-            !names.contains(&"plugin__demo__remote"),
-            "http server must be skipped"
+            names.contains(&"plugin__demo__remote"),
+            "http server must be kept"
         );
         let (_, from_manifest) = servers
             .iter()
             .find(|(name, _)| name == "plugin__demo__fromManifest")
             .unwrap();
-        assert_eq!(from_manifest.command, "cat");
+        assert_eq!(from_manifest.command.as_deref(), Some("cat"));
         let (_, from_dot_mcp) = servers
             .iter()
             .find(|(name, _)| name == "plugin__demo__fromDotMcp")
             .unwrap();
-        assert_eq!(from_dot_mcp.command, "node");
+        assert_eq!(from_dot_mcp.command.as_deref(), Some("node"));
         assert_eq!(from_dot_mcp.args, vec!["srv.js"]);
+        let (_, remote) = servers
+            .iter()
+            .find(|(name, _)| name == "plugin__demo__remote")
+            .unwrap();
+        assert_eq!(remote.url.as_deref(), Some("https://mcp.example.com/api"));
     }
 
     #[test]
@@ -1271,8 +1649,28 @@ mod tests {
                 args: Vec::new(),
                 env: Default::default(),
                 url: None,
+                headers: Default::default(),
+                auth: None,
             },
         }
+    }
+
+    /// A name skipped in one scope can still be declared by another; it must be
+    /// reported once (as configured), not also as skipped.
+    #[test]
+    fn a_name_configured_in_another_scope_is_not_also_reported_as_skipped() {
+        let mut broken = sourced("shared", "~/.tact/mcp.json", "/bin/unused");
+        broken.config.command = None;
+        let working = sourced("shared", "./.tact/mcp.json", "/bin/project");
+
+        let resolved = resolve_servers(vec![broken, working]);
+
+        assert_eq!(resolved.servers.len(), 1);
+        assert!(
+            resolved.skipped_remote.is_empty(),
+            "configured name was also listed as skipped: {:?}",
+            resolved.skipped_remote
+        );
     }
 
     #[test]
@@ -1315,7 +1713,10 @@ mod tests {
         ]);
 
         assert_eq!(resolved.servers.len(), 1);
-        assert_eq!(resolved.servers[0].1.command, "/bin/project");
+        assert!(matches!(
+            &resolved.servers[0].1,
+            McpTransportConfig::Stdio(config) if config.command == "/bin/project"
+        ));
         assert_eq!(
             resolved.shadowed,
             vec![("shared".to_owned(), "~/.tact/mcp.json".to_owned())]
@@ -1330,13 +1731,17 @@ mod tests {
             sourced("project-only", "./.tact/mcp.json", "/bin/project"),
         ]);
 
-        let names: Vec<&str> = resolved.servers.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = resolved
+            .servers
+            .iter()
+            .map(|(n, _, _)| n.as_str())
+            .collect();
         assert_eq!(names, vec!["user-only", "project-only"]);
         assert!(resolved.shadowed.is_empty());
     }
 
     #[test]
-    fn remote_and_commandless_entries_are_skipped_not_fatal() {
+    fn commandless_entries_are_skipped_not_fatal_while_remote_entries_connect() {
         let remote = SourcedServer {
             name: "hosted".to_owned(),
             source: "~/.tact/mcp.json".to_owned(),
@@ -1346,6 +1751,8 @@ mod tests {
                 args: Vec::new(),
                 env: Default::default(),
                 url: Some("https://example.invalid/mcp".to_owned()),
+                headers: Default::default(),
+                auth: None,
             },
         };
         let commandless = SourcedServer {
@@ -1357,16 +1764,26 @@ mod tests {
                 args: Vec::new(),
                 env: Default::default(),
                 url: None,
+                headers: Default::default(),
+                auth: None,
             },
         };
 
         let resolved = resolve_servers(vec![remote, commandless]);
 
-        assert!(resolved.servers.is_empty());
         assert_eq!(
-            resolved.skipped_remote,
-            vec!["hosted".to_owned(), "typo".to_owned()]
+            resolved
+                .servers
+                .iter()
+                .map(|(name, _, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hosted"]
         );
+        assert!(matches!(
+            &resolved.servers[0].1,
+            McpTransportConfig::Remote(remote) if remote.url == "https://example.invalid/mcp"
+        ));
+        assert_eq!(resolved.skipped_remote, vec!["typo".to_owned()]);
     }
 
     #[test]
@@ -1409,19 +1826,89 @@ mod tests {
         assert!(lines[0].contains("broken"), "{lines:?}");
     }
 
+    /// Sorted by name: `mcp.json` is parsed into a `HashMap`, so the listing
+    /// must not inherit its random iteration order.
+    #[test]
+    fn configured_servers_are_sorted_by_name() {
+        let mut resolved = resolve_servers(vec![
+            sourced("zeta", "~/.tact/mcp.json", "/bin/z"),
+            sourced("alpha", "~/.tact/mcp.json", "/bin/a"),
+            sourced("mid", "~/.tact/mcp.json", "/bin/m"),
+        ]);
+        resolved.servers.reverse();
+
+        let names: Vec<String> = resolved
+            .configured()
+            .into_iter()
+            .map(|server| server.name)
+            .collect();
+        assert_eq!(names, vec!["alpha", "mid", "zeta"]);
+    }
+
     #[test]
     fn load_report_renders_overrides_and_skipped_servers() {
         let report = McpLoadReport {
-            connected: Vec::new(),
-            failures: Vec::new(),
             shadowed: vec![("shared".to_owned(), "~/.tact/mcp.json".to_owned())],
             skipped_remote: vec!["hosted".to_owned()],
+            ..McpLoadReport::default()
         };
 
         let lines = report.notice_lines();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("overrides"), "{lines:?}");
         assert!(lines[1].contains("hosted"), "{lines:?}");
+    }
+
+    #[test]
+    fn load_report_renders_pending_authorization() {
+        let report = McpLoadReport {
+            pending_auth: vec!["hosted".to_owned()],
+            ..McpLoadReport::default()
+        };
+
+        assert!(!report.is_quiet());
+        let lines = report.notice_lines();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("needs authorization"), "{lines:?}");
+        assert!(lines[0].contains("/mcp auth hosted"), "{lines:?}");
+    }
+
+    #[test]
+    fn remote_entry_with_oauth_needs_authorization_without_credentials() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "url": "https://mcp.example.com/mcp",
+                "auth": { "type": "oauth" }
+            }"#,
+        )
+        .unwrap();
+        let McpTransportConfig::Remote(remote) = config.to_transport().expect("remote") else {
+            panic!("expected remote transport");
+        };
+        // No `~/.tact/mcp/oauth/<name>.json` exists for this random name.
+        assert!(remote.needs_authorization("tact-mcp-oauth-test-missing"));
+    }
+
+    #[test]
+    fn command_wins_over_url_when_both_are_present() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "url": "https://mcp.example.com/mcp"
+            }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            config.to_transport(),
+            Some(McpTransportConfig::Stdio(stdio)) if stdio.command == "node"
+        ));
+    }
+
+    #[test]
+    fn entry_without_command_or_url_has_no_transport() {
+        let config: McpProjectConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.to_transport().is_none());
     }
 
     #[test]
