@@ -171,6 +171,14 @@ model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
+# Extra skill roots (optional). Each should contain */SKILL.md.
+# Relative paths resolve against the workdir; ~ expands to $HOME.
+# Loaded after the built-in roots; later entries win on a same-name clash.
+# skill_dirs = ["~/shared-skills", "./vendor/skills"]
+# Project instruction files injected into the system prompt (default: ["agents_md"]).
+# instruction_sources = ["agents_md"]
+# Inject full skill bodies into every system prompt (default: false).
+# skill_body_auto_inject = false
 
 [ui]
 theme = "ink"
@@ -250,6 +258,9 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `instruction_sources` | `["agents_md"]` | — |
+| `skill_dirs` | empty (no extra roots) | — |
+| `skill_body_auto_inject` | `false` | — |
 | `tools.bash_timeout_secs` | `1_800` (`0` disables) | — |
 | `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | — (token size only; does not enable vision) |
@@ -262,6 +273,16 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `voice.language` | `zh` | Google examples: `zh-CN`, `en-US` |
 | `voice.max_duration_secs` | `300` (openai/whisper_cpp, valid `1..=600`) / `60` (google, valid `1..=60`) | — |
 | `voice.voice_keybind` | unset (mouse-only) | `ctrl+<char>` (e.g. `ctrl+g`) |
+
+### `[agent]` — skill roots, instruction files, body injection
+
+Three `[agent]` fields shape what reaches the prompt beyond the built-in roots and defaults.
+
+`skill_dirs` adds extra skill roots. Each entry must be a directory containing `*/SKILL.md`; relative paths resolve against the **workdir**, `~` expands to `$HOME`, and blank entries are skipped. The roots are appended after the three built-in ones (`~/.agents/skills`, `~/.tact/skills`, `<workdir>/.tact/skills`) in listed order, so a configured root beats every built-in root on a same-name clash; a resolved path that is already present is dropped as a duplicate. Scanning is recursive, exactly like the built-in roots. `/skill-reload` re-reads them without a restart. See [Ch 2](./02_chapter_skill.md).
+
+`instruction_sources` selects which project instruction files are injected into the system prompt. `agents_md` is the only accepted value (default `["agents_md"]`); an empty list, or any other value such as `claude_md`, fails config resolution. See [Ch 4](./04_chapter_prompt.md).
+
+`skill_body_auto_inject` chooses between descriptions and bodies. With `false` (the default) every turn carries only skill names and descriptions from `describe_available()`, and a full body arrives on demand through the `load_skill` tool. With `true` every skill body is injected into every system prompt — exact, but paid for on each call, so prefer the default unless a skill must be in context unconditionally. `--skill-body-auto-inject` is the CLI equivalent.
 
 ### `[voice]` — speech-to-text input (macOS-first)
 
@@ -333,6 +354,9 @@ CLI-only overrides:
 | `-m` / `--permission-mode` | `[permission].mode` |
 | `--model-context-window`, `--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |
+| `--skill-body-auto-inject` | `[agent].skill_body_auto_inject` (enable only; no `--no-` form) |
+| `--no-micro-compact` | `[agent].micro_compact_enabled` (disable only) |
+| `--tokio-console` | enables the tokio-console debugging subscriber (no TOML field) |
 | `--theme` | `[ui].theme` |
 | `--brave-search-api-key` | `[tools]` |
 | `--session`, `--resume-last`, `--list-sessions` | session store (not in TOML). `--resume-last` and `--list-sessions` pass `list_sessions(Some(root_dir))` so only sessions for the current workdir appear. |

@@ -698,7 +698,10 @@ fn plugin_subagent_stop_hooks_with_home(
 /// Applies every installed plugin's command hooks to an agent builder.
 ///
 /// Hooks are appended after any existing Rust closures, per plugin in
-/// installation order. A `block` output from `PreToolUse` / `PostToolUse` /
+/// `<marketplace>/<plugin>` key order — the order of `installed.json`'s
+/// `BTreeMap`, not installation time.
+///
+/// A `block` output from `PreToolUse` / `PostToolUse` /
 /// `Stop` / `PreCompact` propagates through [`HookControl`]; `UserPromptSubmit`
 /// appends `additionalContext` to the prompt; `SessionStart`'s `systemPrompt`
 /// output is logged but not applied (unsupported in v1); `SessionEnd` /

@@ -156,6 +156,14 @@ model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
+# 额外 skill 根目录（可选）。每个目录下应包含 */SKILL.md。
+# 相对路径按 workdir 解析；~ 展开为 $HOME。
+# 在内建根之后加载；同名冲突时靠后的条目胜出。
+# skill_dirs = ["~/shared-skills", "./vendor/skills"]
+# 注入系统提示的项目指令文件（默认 ["agents_md"]）。
+# instruction_sources = ["agents_md"]
+# 每轮都把 skill 全文注入系统提示（默认 false）。
+# skill_body_auto_inject = false
 
 [ui]
 theme = "ink"
@@ -184,7 +192,6 @@ bash_timeout_secs = 1800
 
 可选 `models` 是 TUI `/model` slash 命令的**主要**候选列表（仅限同一 provider）。在会话中首次使用 `/model` 时，兼容 OpenAI 的 provider（`openai` / `deepseek` / `kimi`）也会调用 `GET {base_url}/models`，并将不在 config 列表中的 id 附加到末尾（config 的顺序和重复 id 优先）。API 结果按 `(base_url, api_key)` 在进程内缓存。如果 config 和 API 均未提供任何候选，`/model` 打印提示而非打开选择器。选择模型立即生效；可选写回已加载配置文件中该 provider 的 `model` 字段。
 
-可选 `protocol` 默认为 `chat_completions`。`responses` 对 `openai` 与 `deepseek` provider 有效；配置 resolve 会拒绝 Anthropic 或 Kimi 使用该值。DeepSeek 配 `responses` 时复用与 OpenAI 相同的 Responses 适配器，指向其配置的 `base_url`（含自动 `context_management` 压缩与 reasoning effort；显式 `/responses/compact` 取决于端点支持——DeepSeek 目前未实现，错误会如实透传而不回退）。此字段没有 CLI override。
 可选 `protocol` 默认为 `chat_completions`。`responses` 对 `openai` 与 `deepseek` provider 有效；配置 resolve 会拒绝 Anthropic 或 Kimi 使用该值。DeepSeek 配 `responses` 时复用与 OpenAI 相同的 Responses 适配器，指向其配置的 `base_url`（含自动 `context_management` 压缩与 reasoning effort；显式 `/responses/compact` 取决于端点支持——DeepSeek 目前未实现，显式压缩会回落本地摘要流水线）。此字段没有 CLI override。
 
 可选 `reasoning_effort` 对 `openai`、`deepseek` 与 `kimi` provider 有效，接受
@@ -216,6 +223,9 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `instruction_sources` | `["agents_md"]` | — |
+| `skill_dirs` | 空（无额外根） | — |
+| `skill_body_auto_inject` | `false` | — |
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
 | `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
@@ -228,6 +238,16 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `voice.language` | `zh` | Google 示例：`zh-CN`、`en-US` |
 | `voice.max_duration_secs` | `300`（openai/whisper_cpp，有效 `1..=600`）/ `60`（google，有效 `1..=60`） | — |
 | `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`） |
+
+### `[agent]` — skill 根目录、指令文件、全文注入
+
+三个 `[agent]` 字段决定除内建根与默认值之外还有什么进入提示。
+
+`skill_dirs` 追加额外 skill 根目录。每个条目必须是一个包含 `*/SKILL.md` 的目录；相对路径按 **workdir** 解析，`~` 展开为 `$HOME`，空白条目被跳过。这些根按列出顺序追加在三个内建根（`~/.agents/skills`、`~/.tact/skills`、`<workdir>/.tact/skills`）之后，因此同名冲突时配置根胜过所有内建根；解析后与已有路径重复的条目会被丢弃。扫描方式与内建根完全一致，均为递归。`/skill-reload` 可重新读取，无需重启。见 [Ch 2](./02_chapter_skill_zh.md)。
+
+`instruction_sources` 选择注入系统提示的项目指令文件。`agents_md` 是唯一可接受的值（默认 `["agents_md"]`）；空列表，或 `claude_md` 等任何其他值，都会导致配置 resolve 失败。见 [Ch 4](./04_chapter_prompt_zh.md)。
+
+`skill_body_auto_inject` 在「描述」与「全文」之间二选一。`false`（默认）时每轮只带 `describe_available()` 产出的 skill 名称与描述，全文按需经 `load_skill` 工具取得。`true` 时每个 skill 全文都会注入每一轮系统提示——精确，但每次调用都要付出代价，除非某个 skill 必须无条件在上下文中，否则建议保持默认。CLI 等价开关为 `--skill-body-auto-inject`。
 
 ### `[voice]` — 语音转文字输入（macOS 优先）
 
@@ -290,6 +310,9 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
 | `-m` / `--permission-mode` | `[permission].mode` |
 | `--model-context-window`、`--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |
+| `--skill-body-auto-inject` | `[agent].skill_body_auto_inject`（仅开启，无 `--no-` 形式） |
+| `--no-micro-compact` | `[agent].micro_compact_enabled`（仅关闭） |
+| `--tokio-console` | 启用 tokio-console 调试 subscriber（无对应 TOML 字段） |
 | `--theme` | `[ui].theme` |
 | `--brave-search-api-key` | `[tools]` |
 | `--session`、`--resume-last`、`--list-sessions` | session store（不在 TOML 中）。`--resume-last` 与 `--list-sessions` 传 `list_sessions(Some(root_dir))`，仅显示当前工作目录的 session。 |

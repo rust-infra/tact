@@ -181,6 +181,8 @@ Each hook entry is a shell command (`sh -c` on Unix, `commandWindows` ignored fo
 
 Hooks execute in declaration order after any Rust closures registered earlier; a `Block` short-circuits.
 
+Stacking several plugins makes that order concrete. Plugins are visited in `<marketplace>/<plugin>` key order — the order of `installed.json`'s `BTreeMap`, i.e. lexicographic, **not** installation time — and within one plugin in the order its hooks file (or inline manifest map) declares matchers for that event. There is no priority field: cross-plugin order is fixed by that key, while the order you control is the declaration order inside one plugin.
+
 ---
 
 ## 7. The `invoke_hooks!` Macro
@@ -263,7 +265,7 @@ When wired, session hooks will be the right place for one-time setup: warming ca
 | No hooks inside parallel waves | Avoids data races on shared agent state while tools borrow routers immutably. |
 | First `Block` wins | Predictable, easy-to-reason-about veto semantics. |
 | Errors fail the step | Hook bugs surface as tool failures, not silent no-ops. |
-| Registration order = run order | Document hook priority when stacking multiple plugins. |
+| Registration order = run order | Hook priority when stacking plugins is `<marketplace>/<plugin>` key order (see §6); there is no priority field to set. |
 
 Do **not** perform permission UI inside hooks — use `PermissionManager` and the existing `RequestSelect` flow instead.
 

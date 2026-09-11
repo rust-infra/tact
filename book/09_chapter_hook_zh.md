@@ -182,6 +182,8 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 插件 hook 在既有 Rust 闭包之后按声明顺序执行；`Block` 短路。
 
+堆叠多个插件时该顺序是确定的。插件按 `<marketplace>/<plugin>` 键序访问——即 `installed.json` 的 `BTreeMap` 顺序，字典序，**不是**安装时间；同一插件内部按 hooks 文件（或 manifest 内联映射）中该事件 matcher 的声明顺序。没有 priority 字段：跨插件顺序由该键固定，你能控制的是单个插件内部的声明顺序。
+
 ---
 
 ## 7. `invoke_hooks!` 宏
@@ -264,7 +266,7 @@ Fn(&LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
 | 并行波次内无 hooks | tool 不可变借用 router 时，避免共享 agent 状态的数据竞争。 |
 | 首个 `Block` 生效 | 可预测、易推理的否决语义。 |
 | 错误即步骤失败 | hook bug 表现为 tool 失败，而非静默 no-op。 |
-| 注册顺序 = 运行顺序 | 堆叠多个插件时文档化 hook 优先级。 |
+| 注册顺序 = 运行顺序 | 堆叠插件时 hook 优先级为 `<marketplace>/<plugin>` 键序（见 §6）；没有 priority 字段可设。 |
 
 **不要**在 hooks 里做权限 UI——用 `PermissionManager` 与现有 `RequestSelect` 流程。
 
