@@ -278,7 +278,9 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
      `claude-sonnet-4-6` → `1_000_000`；`claude-opus-4-20250514` /
      `claude-sonnet-4-20250514` / `claude-haiku-4-5` / `claude-haiku-4-20250514`
      → `200_000`。
-   - DeepSeek：`deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-reasoner` →
+   - DeepSeek：任意 `deepseek-v4-*` id（前缀匹配，因此实验 / 视觉后缀如
+     `deepseek-v4-flash-version-exp`、`deepseek-v4-flash-vision-exp` 均被覆盖）、
+     无版本号的网关别名 `deepseek-flash`，以及 `deepseek-reasoner` →
      `1_000_000`；Kimi：`k3-256k` → `256_000`。
    命中时同时覆盖 CLI 标志与 TOML 文件，因此过时的
    手工窗口不会低估已知模型（否则会触发过早自动压缩）。

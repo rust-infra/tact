@@ -148,7 +148,9 @@ mode = "default"
 #   claude-opus-4-7 / claude-opus-4-6 / claude-sonnet-4-6 -> 1000000 (API + Claude Code)
 #   claude-opus-4-20250514 / claude-sonnet-4-20250514 / claude-haiku-4-5 /
 #   claude-haiku-4-20250514 -> 200000
-#   deepseek-v4-pro / deepseek-v4-flash / deepseek-reasoner -> 1000000
+#   deepseek-v4-* (any suffix, e.g. deepseek-v4-pro, deepseek-v4-flash,
+#   deepseek-v4-flash-version-exp, deepseek-v4-flash-vision-exp), the
+#   gateway alias deepseek-flash, and deepseek-reasoner -> 1000000
 #   k3-256k -> 256000
 # Setting this value is therefore only effective for models without a
 # built-in mapping.

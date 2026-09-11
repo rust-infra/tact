@@ -32,6 +32,24 @@
 ---
 
 
+## 1. 2026-09-11 — `deepseek-v4-*` 实验变体使用 1M 窗口，不再落到 200K 默认值
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs`（`model_context_window_for_model`）；`config.example.toml`；Ch 21 §5、Ch 5 设置表 |
+
+**现象 / 动机：** 模型→上下文窗口映射按精确 id 匹配 DeepSeek V4（`deepseek-v4-pro`、`deepseek-v4-flash`、`deepseek-reasoner`）。任何带后缀的变体——`deepseek-v4-flash-version-exp`、`deepseek-v4-flash-vision-exp`——都匹配不到，落到 `200_000` 默认值。底栏 `ctx` 计量因此对真实 1M 的模型显示 `…/200K`，派生的自动压缩阈值（窗口的 80%）在 ~160k 而非 ~800k 处触发，压缩掉本还有大量余量的会话。
+
+**决策：** 改为按前缀匹配 DeepSeek V4 家族（`model.starts_with("deepseek-v4-")`），取代固定 id 列表，使实验 / 视觉 / 重发后缀都继承家族窗口。无版本号的网关别名 `deepseek-flash` 与 `deepseek-reasoner` 保留显式 1M 分支。该映射仍保持对 CLI/TOML 的最高优先级。
+
+**改后行为：** 所有 `deepseek-v4-*` id 均解析为 `1_000_000` token 窗口，包括 `deepseek-v4-flash-version-exp` 与 `deepseek-v4-flash-vision-exp`；`deepseek-flash`（OpenAI 兼容网关别名）与 `deepseek-reasoner` 同样解析为 1M。`ctx` 计量与 80% 自动压缩阈值随之生效。手工 `model_context_window` 仍只对无内置映射的模型生效。
+
+**指针：** `crates/tact/src/config/resolve.rs`（`model_context_window_for_model`）。测试：`config::resolve::tests::resolve_model_context_window_maps_deepseek_v4_variants`。
+
+---
+
+
 ## 1. 2026-09-11 — `/mcp auth` 可容忍杂散回环请求，且 token 交换有超时上限
 
 | Field | Value |

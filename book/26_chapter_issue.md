@@ -32,6 +32,24 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-11 — `deepseek-v4-*` experiment variants get the 1M window, not the 200K default
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`); `config.example.toml`; Ch 21 §5, Ch 5 settings tables |
+
+**Symptom / motivation:** The model→context-window mapping matched DeepSeek V4 by exact id (`deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`). Any suffixed variant — `deepseek-v4-flash-version-exp`, `deepseek-v4-flash-vision-exp` — missed every arm and fell through to the `200_000` default. The bottom-bar `ctx` meter then showed `…/200K` for a real 1M model, and the derived auto-compaction threshold (80% of the window) fired around ~160k instead of ~800k, compacting sessions that had plenty of room left.
+
+**Decision:** Match the DeepSeek V4 family by prefix (`model.starts_with("deepseek-v4-")`) instead of a fixed id list, so experiment/vision/respin suffixes inherit the family window. The unversioned gateway alias `deepseek-flash` and `deepseek-reasoner` keep explicit 1M arms. The mapping keeps its highest-priority position over CLI/TOML.
+
+**Behavior after:** Every `deepseek-v4-*` id resolves to a `1_000_000`-token window, including `deepseek-v4-flash-version-exp` and `deepseek-v4-flash-vision-exp`; `deepseek-flash` (OpenAI-compatible gateway alias) and `deepseek-reasoner` also resolve to 1M. The `ctx` meter and 80% auto-compact threshold follow. Manual `model_context_window` still only applies to models without a built-in mapping.
+
+**Pointers:** `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`). Test: `config::resolve::tests::resolve_model_context_window_maps_deepseek_v4_variants`.
+
+---
+
+
 ## 1. 2026-09-11 — `/mcp auth` survives stray loopback traffic, and the token exchange is bounded
 
 | Field | Value |

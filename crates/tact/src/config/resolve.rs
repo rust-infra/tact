@@ -602,8 +602,13 @@ fn model_context_window_for_model(model: &str) -> Option<usize> {
         | "claude-sonnet-4-20250514"
         | "claude-haiku-4-5"
         | "claude-haiku-4-20250514" => Some(200_000),
-        // DeepSeek V4 family — 1M default.
-        "deepseek-v4-pro" | "deepseek-v4-flash" | "deepseek-reasoner" => Some(1_000_000),
+        // DeepSeek V4 family — 1M default. Ids can carry experiment/vision
+        // suffixes (e.g. `deepseek-v4-flash-vision-exp`), so match the family
+        // prefix rather than a fixed id list. `deepseek-flash` is the
+        // unversioned alias OpenAI-compatible gateways expose for the same V4
+        // Flash model; `deepseek-reasoner` is the official reasoning id.
+        _ if model.starts_with("deepseek-v4-") => Some(1_000_000),
+        "deepseek-flash" | "deepseek-reasoner" => Some(1_000_000),
         // Kimi — k3-256k.
         "k3-256k" => Some(256_000),
         _ => None,
@@ -1789,6 +1794,35 @@ model = "deepseek-v4-pro"
         args.model_context_window = Some(128_000);
         let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.model_context_window, 1_000_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_maps_deepseek_v4_variants() {
+        // Experiment / vision suffixes must not fall through to the 200K
+        // default: every `deepseek-v4-*` id is a 1M-window model.
+        for model in [
+            "deepseek-v4-flash-version-exp",
+            "deepseek-v4-flash-vision-exp",
+            "deepseek-v4-pro-2026",
+            "deepseek-flash",
+        ] {
+            let toml_cfg: TactTomlConfig = toml::from_str(&format!(
+                r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "{model}"
+"#
+            ))
+            .unwrap();
+            let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+            assert_eq!(
+                resolved.agent.model_context_window, 1_000_000,
+                "expected 1M window for {model}"
+            );
+        }
     }
 
     #[test]

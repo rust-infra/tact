@@ -318,8 +318,11 @@ Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](
      `claude-sonnet-4-6` → `1_000_000`; `claude-opus-4-20250514` /
      `claude-sonnet-4-20250514` / `claude-haiku-4-5` / `claude-haiku-4-20250514`
      → `200_000`.
-   - DeepSeek: `deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-reasoner` →
-     `1_000_000`; Kimi: `k3-256k` → `256_000`.
+   - DeepSeek: any `deepseek-v4-*` id (prefix match, so experiment / vision
+     suffixes such as `deepseek-v4-flash-version-exp` and
+     `deepseek-v4-flash-vision-exp` are covered), the unversioned gateway alias
+     `deepseek-flash`, and `deepseek-reasoner` → `1_000_000`; Kimi:
+     `k3-256k` → `256_000`.
    A match overrides both the CLI flag and the TOML file, so a stale manual
    window can never under-report a well-known model (which would trigger
    premature auto-compaction).
