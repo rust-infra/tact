@@ -154,6 +154,7 @@ impl McpLoadReport {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginManifest {
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub version: Option<String>,
@@ -230,9 +231,18 @@ fn collect_plugin_mcp_servers(
     if manifest_path.is_file() {
         let raw = fs::read_to_string(&manifest_path)
             .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-        if let Ok(manifest) = serde_json::from_str::<PluginManifest>(&raw) {
-            for (name, config) in manifest.mcp_servers {
-                servers.push((prefix(&name), config));
+        match serde_json::from_str::<PluginManifest>(&raw) {
+            Ok(manifest) => {
+                for (name, config) in manifest.mcp_servers {
+                    servers.push((prefix(&name), config));
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "plugin {} manifest at {} is unparseable as MCP manifest: {error}",
+                    root.plugin_id,
+                    manifest_path.display()
+                );
             }
         }
     }
