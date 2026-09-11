@@ -32,6 +32,26 @@
 ---
 
 
+## 1. 2026-09-11 — 压缩不再产生孤立的 `role: tool` 消息
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/compact/mod.rs`（`build_compacted_history`、`without_tool_results`）；`crates/tact_llm/src/convert.rs`（`drop_orphaned_tool_messages`）；Ch 5 |
+
+**Symptom / motivation:** 自动压缩之后，下一个 OpenAI 兼容（chat-completions）请求被 provider 以 400 拒绝：`Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`。Harness 风格的 user turn 会把 tool result 和 image 混在同一个消息里（`[ToolResult, Image]`，例如读取 PNG 的截图工具）。`is_real_user_message` 因为其中的 image 而把它判定为真实用户消息，于是 Codex 风格重建会**原样保留**它，却同时丢掉了产出该结果的 assistant `tool_use` turn。被保留的 block 随后被转换成一条没有父级 `tool_calls` 的 `role: tool` 线上消息，OpenAI 兼容 provider 会因此拒绝整个请求。把触发问题的 transcript 用旧的重建逻辑回放，正好产生 6 条这样的孤立消息；在重启 session 之前请求一直失败。
+
+**Decision:** 两层防护，与已有的正向防护（`sanitize_assistant_messages`，用于剔除结果缺失的 tool call）对称：
+1. **重建时剥离 tool result** — `build_compacted_history` 让每个保留的 user 消息经过 `without_tool_results`，移除 `ToolResult` block、保留其余内容（text/image）。如果一条消息只有 tool result，则整条跳过，而不是变成空 turn。
+2. **线上转换作为最后防线** — `drop_orphaned_tool_messages` 删除所有父级 assistant `tool_calls` 不存在的 `role: tool` 消息；它会先向前跨越一段连续的 tool 消息再查找父级，因此并行 tool call（一个 assistant turn → N 个结果）不会被误删。
+
+**Behavior after:** 压缩后的上下文再也不会出现没有对应 assistant turn 的 tool result。保留的 harness turn 保留其 image 与 text；纯 tool result 的 turn 随其父级一起消失。若将来仍有其他路径产生孤立消息，请求仍会发出（并打印一条带 `tool_call_id` 的 `tracing::warn`），而不是以 400 失败。
+
+**Pointers:** `crates/tact/src/compact/mod.rs`（`without_tool_results`、`build_compacted_history`）；`crates/tact_llm/src/convert.rs`（`drop_orphaned_tool_messages`）。测试：`compact::tests::build_compacted_history_drops_tool_results_from_retained_harness_turns`、`compact::tests::build_compacted_history_skips_pure_tool_result_turns`、`convert::tests::orphan_tool_messages_without_preceding_tool_calls_are_dropped`、`convert::tests::tool_message_with_preceding_tool_calls_is_kept`。
+
+---
+
+
 ## 1. 2026-09-11 — `deepseek-v4-*` 实验变体使用 1M 窗口，不再落到 200K 默认值
 
 | Field | Value |

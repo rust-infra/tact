@@ -392,8 +392,45 @@ pub fn collect_user_messages(messages: &[Message]) -> Vec<Message> {
     kept
 }
 
+/// Removes `ToolResult` blocks from a retained user message.
+///
+/// Compaction drops the assistant `tool_use` turn but may keep a *harness-style*
+/// user turn that mixes a tool result with an image (`[ToolResult, Image]`):
+/// those are "real user" turns by [`is_real_user_message`] because of the image,
+/// yet they carry a `tool_result`. Retaining such a block verbatim produces a
+/// `role: tool` wire message with no preceding assistant `tool_calls`, which
+/// OpenAI-compatible providers reject with
+/// `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`.
+///
+/// Returns `None` when the message held nothing but tool results, so the caller
+/// can skip it entirely.
+fn without_tool_results(message: &Message) -> Option<Message> {
+    let MessageContent::Blocks { content } = &message.content else {
+        return Some(message.clone());
+    };
+    if !content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+    {
+        return Some(message.clone());
+    }
+    let kept: Vec<ContentBlock> = content
+        .iter()
+        .filter(|block| !matches!(block, ContentBlock::ToolResult { .. }))
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(Message::new_blocks(Role::User, kept).with_kind(message.kind()))
+}
+
 /// Rebuild compacted history: recent real user messages (token budget from the
 /// tail) followed by a single summary user message.
+///
+/// Retained user messages are stripped of `tool_result` blocks: their producing
+/// assistant `tool_use` turn was dropped by compaction, so keeping the results
+/// would emit orphaned `role: tool` wire messages (a provider 400).
 ///
 /// When a single user message exceeds the remaining budget, its **tail** is
 /// kept (most recent content within that turn).
@@ -409,17 +446,20 @@ pub fn build_compacted_history(
             if remaining == 0 {
                 break;
             }
-            let tokens = user_message_tokens(message);
+            let Some(message) = without_tool_results(message) else {
+                continue;
+            };
+            let tokens = user_message_tokens(&message);
             if tokens <= remaining {
-                selected.push(message.clone());
+                selected.push(message);
                 remaining = remaining.saturating_sub(tokens);
-            } else if let Some(text) = user_text_content(message) {
+            } else if let Some(text) = user_text_content(&message) {
                 selected.push(Message::new_text(
                     Role::User,
                     take_last_tokens(text, remaining),
                 ));
                 break;
-            } else if let Some(truncated) = block_text_tail(message, remaining) {
+            } else if let Some(truncated) = block_text_tail(&message, remaining) {
                 selected.push(truncated);
                 break;
             }
@@ -891,6 +931,74 @@ mod tests {
             tact_llm::MessageContent::Text { content } if content == "ghij"
         ));
         assert_eq!(take_last_tokens("abcdefghij", 1), "ghij");
+    }
+
+    #[test]
+    fn build_compacted_history_drops_tool_results_from_retained_harness_turns() {
+        // Regression: a harness-style user turn that mixes a tool result with an
+        // image counts as a "real user" message, but its producing assistant
+        // tool_use turn is dropped by compaction. Retaining the tool_result
+        // emitted an orphaned `role: tool` wire message, which OpenAI-compatible
+        // providers reject with "Messages with role 'tool' must be a response to
+        // a preceding message with 'tool_calls'".
+        let harness_turn = Message::new_blocks(
+            Role::User,
+            vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_img".into(),
+                    content: "<path>shot.png</path>".into(),
+                },
+                ContentBlock::Image {
+                    source: ImageSource {
+                        type_: "base64".into(),
+                        media_type: "image/png".into(),
+                        data: "aGVsbG8=".into(),
+                    },
+                },
+            ],
+        );
+        let history = build_compacted_history(
+            std::slice::from_ref(&harness_turn),
+            "sum".into(),
+            KEEP_USER_MESSAGE_TOKENS,
+        );
+        // Retained user turn + summary, and no tool_result survives.
+        assert_eq!(history.len(), 2);
+        assert!(matches!(
+            &history[0].content,
+            tact_llm::MessageContent::Blocks { content }
+                if matches!(&content[..], [ContentBlock::Image { .. }])
+        ));
+        assert!(
+            history.iter().all(|message| !matches!(
+                &message.content,
+                tact_llm::MessageContent::Blocks { content }
+                    if content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+            )),
+            "no retained message may carry a tool_result"
+        );
+    }
+
+    #[test]
+    fn build_compacted_history_skips_pure_tool_result_turns() {
+        // A tool-result-only turn has no content left after stripping, so the
+        // whole message is skipped instead of becoming an empty user turn.
+        let only_result = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "dump".into(),
+            }],
+        );
+        let history = build_compacted_history(
+            std::slice::from_ref(&only_result),
+            "sum".into(),
+            KEEP_USER_MESSAGE_TOKENS,
+        );
+        assert_eq!(history.len(), 1, "only the summary survives");
+        assert!(history[0].is_summary());
     }
 
     #[test]

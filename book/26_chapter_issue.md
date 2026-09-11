@@ -32,6 +32,26 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-11 — Compaction no longer emits orphaned `role: tool` messages
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/compact/mod.rs` (`build_compacted_history`, `without_tool_results`); `crates/tact_llm/src/convert.rs` (`drop_orphaned_tool_messages`); Ch 5 |
+
+**Symptom / motivation:** After an auto-compact, the next OpenAI-compatible (chat-completions) request failed with a provider 400: `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`. Harness-style user turns mix a tool result with an image (`[ToolResult, Image]` — e.g. a screenshot tool that reads a PNG). `is_real_user_message` classifies those as real user turns because of the image, so the Codex-style rebuild retained them **verbatim** while dropping the assistant `tool_use` turn that produced the result. The retained block then converted to a wire `role: tool` message with no parent `tool_calls` list, and OpenAI-compatible providers reject the whole request. Replaying the triggering transcript through the old rebuild produced exactly 6 such orphans; the request failed until the session was restarted.
+
+**Decision:** Two layers, mirroring the existing forward-direction guard (`sanitize_assistant_messages`, which strips tool calls whose results are missing):
+1. **Rebuild strips tool results** — `build_compacted_history` runs each retained user message through `without_tool_results`, which removes `ToolResult` blocks and keeps the rest (text/image). A message that held *only* tool results is skipped entirely rather than becoming an empty turn.
+2. **Wire conversion is the last line of defense** — `drop_orphaned_tool_messages` deletes any `role: tool` message whose parent assistant `tool_calls` is absent, walking back over a run of consecutive tool messages first so parallel tool calls (one assistant turn → N results) are not falsely dropped.
+
+**Behavior after:** A compacted context never carries a tool result without its producing assistant turn. Retained harness turns keep their images and text; pure tool-result turns vanish with their parent. If some future path produces an orphan anyway, the request is still sent (with a `tracing::warn` naming the dropped `tool_call_id`) instead of failing with a 400.
+
+**Pointers:** `crates/tact/src/compact/mod.rs` (`without_tool_results`, `build_compacted_history`); `crates/tact_llm/src/convert.rs` (`drop_orphaned_tool_messages`). Tests: `compact::tests::build_compacted_history_drops_tool_results_from_retained_harness_turns`, `compact::tests::build_compacted_history_skips_pure_tool_result_turns`, `convert::tests::orphan_tool_messages_without_preceding_tool_calls_are_dropped`, `convert::tests::tool_message_with_preceding_tool_calls_is_kept`.
+
+---
+
+
 ## 1. 2026-09-11 — `deepseek-v4-*` experiment variants get the 1M window, not the 200K default
 
 | Field | Value |
