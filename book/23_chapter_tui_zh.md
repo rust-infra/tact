@@ -366,9 +366,10 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 - 完整的 ```mermaid fenced block 在主日志区渲染为**终端图**，不再生成 code card。
 - 支持的图类型跟随固定的 `ratatui-markdown` Mermaid 渲染器（flowchart/graph、pie、gantt、stateDiagram、classDiagram、quadrantChart、block）。`sequenceDiagram` 使用 Tact 自有渲染器（`mermaid_sequence.rs`），以正确处理别名、`+/-` 激活简写以及 CJK/宽字符标签对齐；不支持的图类型回退为代码。
-- 流式渲染会缓冲整个 block 直到闭合 fence；渲染成功时 diagram 行直接拼接进日志，**不创建 code card**。fence 正文保留在 `MermaidBlock` 中，供双击打开源码弹窗。
-- **双击**任意 diagram 行 → Mermaid 弹窗；弹窗内 **`y`** 复制 Mermaid 源码。主区选区 / Normal **`y`** 仍复制可见 ASCII 图。
-- 无效或不支持的 Mermaid 回退到普通 code block/card，原始源码仍可读。
+- 流式渲染会缓冲整个 block 直到闭合 fence；渲染成功时 diagram 行直接拼接进日志，**不创建 code card**。fence 正文保留在 `MermaidBlock` 中，供双击打开弹窗。
+- **双击**任意 diagram 行 → Mermaid 弹窗。自 2026-09-11 起，弹窗默认显示**已渲染的图**，并以弹窗宽度（约占 frame 的 80%）而非更窄的日志面板重新排版，因此密集的 flowchart 也能看清；**`Tab`** 在渲染图与原始 fence 正文之间切换。两种视图下 **`y`** 均复制 Mermaid 源码。主区选区 / Normal **`y`** 仍复制可见 ASCII 图。
+- 无法渲染的图（例如 pinned 渲染器不解析的 Mermaid `style` / `classDef` / `linkStyle`）会在弹窗中显示源码，并明确标注「does not render」，而不是静默显示空白。
+- 无效或不支持的 Mermaid 在日志区回退到普通 code block/card，原始源码仍可读。
 - 普通显式语言 fence（```rust 等）保留原有 code-card 行为。
 - 宽度变化与视口滚动沿用现有 log 布局/缓存行为——diagram 行一旦拼接即为普通日志行。
 
@@ -385,7 +386,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 | Thinking detail | 双击 thinking card；相邻有序列表项以空行分隔 | `popups/thinking_popup.rs` |
 | Tool/file detail | 双击 tool card | `popups/diff_popup.rs` |
 | Code detail | 双击 code card | `popups/code_popup.rs` |
-| Mermaid source | 双击已渲染的 Mermaid 图 | `popups/mermaid_popup.rs` |
+| Mermaid 图 / 源码 | 双击已渲染的 Mermaid 图；默认显示渲染图，`Tab` 切换到源码 | `popups/mermaid_popup.rs` |
 
 Popups 通常占终端约 80%×80%，记录 `app.mouse.*_popup_area` 供点击外部关闭，显示 `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` 提示。`diff_popup` 经 `cached_content` 懒加载全文 — 热路径 `render()` 内无文件 I/O。
 

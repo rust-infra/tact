@@ -929,3 +929,162 @@ fn toggle_theme_renders_changed_message_in_log() {
         "theme toggle should produce visible log update, got:\n{text}"
     );
 }
+
+#[test]
+fn mermaid_popup_opens_on_rendered_diagram_not_source() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    assert_eq!(app.mermaid_blocks.len(), 1);
+
+    app.open_mermaid_popup(0);
+    let popup = app.mermaid_popup.as_ref().expect("popup open");
+    assert_eq!(
+        popup.view,
+        agent_tui_kit::state::MermaidPopupView::Diagram,
+        "popup must open on the rendered diagram"
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("Alice") && text.contains("Bob"),
+        "diagram art missing from popup: {text}"
+    );
+    assert!(
+        !text.contains("sequenceDiagram"),
+        "raw Mermaid source leaked while in diagram view: {text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_tab_switches_to_source_and_back() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.open_mermaid_popup(0);
+
+    app.toggle_mermaid_popup_view();
+    let source_text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        source_text.contains("sequenceDiagram"),
+        "source view must show the fence body: {source_text}"
+    );
+    assert_eq!(
+        app.mermaid_popup.as_ref().unwrap().view,
+        agent_tui_kit::state::MermaidPopupView::Source
+    );
+
+    app.toggle_mermaid_popup_view();
+    let diagram_text = render_main_area_text(&mut app, 100, 30);
+    assert_eq!(
+        app.mermaid_popup.as_ref().unwrap().view,
+        agent_tui_kit::state::MermaidPopupView::Diagram
+    );
+    assert!(
+        !diagram_text.contains("sequenceDiagram"),
+        "toggling back must restore the diagram: {diagram_text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_falls_back_to_source_and_labels_unsupported_syntax() {
+    // `style` statements are not supported by the upstream renderer. The log
+    // already falls back to a code card, so register the block the way a
+    // rendered diagram would be and drive the popup directly.
+    let mut app = make_app();
+    app.mermaid_blocks
+        .push(crate::widgets::state::MermaidBlock {
+            start_idx: 0,
+            end_idx: 1,
+            source: "flowchart TD\n    A[Start] --> B[Done]\n    style B fill:#ddffdd".into(),
+        });
+    app.open_mermaid_popup(0);
+
+    assert_eq!(
+        app.mermaid_popup.as_ref().unwrap().view,
+        agent_tui_kit::state::MermaidPopupView::Diagram,
+        "popup still opens in diagram mode; the renderer downgrades it"
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("flowchart TD") && text.contains("style B"),
+        "unrenderable diagram must show its source instead of blank art: {text}"
+    );
+    assert!(
+        text.contains("does not render"),
+        "fallback must explain why no diagram is shown: {text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_renders_diagram_at_wider_width_than_log() {
+    // The popup's value is width: it re-lays out the diagram against ~80% of
+    // the frame instead of the narrower log panel.
+    let source = "flowchart TD\n    A[Context too large] --> B[collect user messages]\n    B --> C[rebuild history]";
+    let mut app = make_app();
+    app.mermaid_blocks
+        .push(crate::widgets::state::MermaidBlock {
+            start_idx: 0,
+            end_idx: 1,
+            source: source.into(),
+        });
+    app.open_mermaid_popup(0);
+
+    let text = render_main_area_text(&mut app, 120, 30);
+    assert!(
+        text.contains("Context") && text.contains("collect user messages"),
+        "diagram node labels missing from popup: {text}"
+    );
+    assert!(
+        !text.contains("flowchart TD"),
+        "diagram view must not leak the fence header: {text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_paints_theme_bg_across_its_area() {
+    // AGENTS.md: a render unit must paint its own bg over its full area, or
+    // ratatui's cell diffing leaves stale styled cells behind.
+    let mut app = make_app();
+    app.mermaid_blocks
+        .push(crate::widgets::state::MermaidBlock {
+            start_idx: 0,
+            end_idx: 1,
+            source: "sequenceDiagram\n  Alice->>Bob: Hello".into(),
+        });
+    app.open_mermaid_popup(0);
+
+    let theme_bg = app.theme.bg;
+    let terminal = crate::render::test_harness::render_main_area_terminal(&mut app, 100, 30);
+    let buffer = terminal.backend().buffer();
+    let expected = theme_bg;
+
+    // The popup is 80% of the frame, centered.
+    let popup_x = (100u16 * 20) / 100;
+    let popup_y = (30u16 * 20) / 100;
+    let mut offenders = 0;
+    for y in popup_y..(30 - popup_y) {
+        for x in popup_x..(100 - popup_x) {
+            let cell = &buffer[(x, y)];
+            if cell.bg != expected {
+                offenders += 1;
+                if offenders <= 3 {
+                    eprintln!(
+                        "non-bg cell at ({x},{y}): {:?} {:?}",
+                        cell.symbol(),
+                        cell.bg
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        offenders, 0,
+        "popup area must be fully painted with theme bg"
+    );
+}

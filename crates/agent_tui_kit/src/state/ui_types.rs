@@ -82,11 +82,60 @@ pub struct CodePopup {
     pub scroll: u16,
 }
 
-/// Mermaid source popup (double-click a rendered diagram in the log).
+/// Which representation the Mermaid popup shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MermaidPopupView {
+    /// Rendered terminal diagram, re-laid out at the popup's (wider) width.
+    #[default]
+    Diagram,
+    /// Original fence body, so it can be read/copied verbatim.
+    Source,
+}
+
+impl MermaidPopupView {
+    /// Cycles [`Diagram`](Self::Diagram) → [`Source`](Self::Source) → ….
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Diagram => Self::Source,
+            Self::Source => Self::Diagram,
+        }
+    }
+
+    /// Footer label for the key that switches *to the other* view.
+    #[must_use]
+    pub fn toggle_label(self) -> &'static str {
+        match self {
+            Self::Diagram => " source ",
+            Self::Source => " diagram ",
+        }
+    }
+}
+
+/// Mermaid popup (double-click a rendered diagram in the log).
+///
+/// Opens on the rendered [`Diagram`](MermaidPopupView::Diagram) at the popup's
+/// width — wider than the log panel, so dense flowcharts stay readable — with
+/// `Tab` switching to the [`Source`](MermaidPopupView::Source) fence body for
+/// copying.
 #[derive(Debug, Clone)]
 pub struct MermaidPopup {
     pub block_idx: usize,
     pub scroll: u16,
+    /// Diagram vs. raw source (`Tab`).
+    pub view: MermaidPopupView,
+}
+
+impl MermaidPopup {
+    /// Creates a popup for `block_idx`, opened on the rendered diagram.
+    #[must_use]
+    pub fn new(block_idx: usize) -> Self {
+        Self {
+            block_idx,
+            scroll: 0,
+            view: MermaidPopupView::default(),
+        }
+    }
 }
 
 /// System-prompt / session-stats popup state.

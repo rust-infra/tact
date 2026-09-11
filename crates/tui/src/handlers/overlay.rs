@@ -25,6 +25,7 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Esc => app.close_overlay_popup(),
         KeyCode::Char('y') => app.copy_overlay_popup(),
+        KeyCode::Tab if app.mermaid_popup.is_some() => app.toggle_mermaid_popup_view(),
         KeyCode::Char('j') | KeyCode::Down => app.overlay_popup_scroll_down(),
         KeyCode::Char('k') | KeyCode::Up => app.overlay_popup_scroll_up(),
         KeyCode::Char('G')
@@ -153,5 +154,67 @@ mod tests {
         });
         assert!(handle_overlay_key(&mut app, key(KeyCode::Char('g'))));
         assert_eq!(app.code_popup.as_ref().unwrap().scroll, 0);
+    }
+}
+
+#[cfg(test)]
+mod mermaid_view_tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::render::test_harness::make_app;
+    use agent_tui_kit::state::MermaidPopupView;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn tab_toggles_mermaid_popup_between_diagram_and_source() {
+        let mut app = make_app();
+        app.open_mermaid_popup(0); // no blocks registered → no popup
+        assert!(app.mermaid_popup.is_none());
+
+        app.mermaid_blocks
+            .push(crate::widgets::state::MermaidBlock {
+                start_idx: 0,
+                end_idx: 1,
+                source: "sequenceDiagram\n  Alice->>Bob: Hello".into(),
+            });
+        app.open_mermaid_popup(0);
+        assert_eq!(
+            app.mermaid_popup.as_ref().unwrap().view,
+            MermaidPopupView::Diagram
+        );
+
+        assert!(handle_overlay_key(&mut app, key(KeyCode::Tab)));
+        assert_eq!(
+            app.mermaid_popup.as_ref().unwrap().view,
+            MermaidPopupView::Source
+        );
+
+        assert!(handle_overlay_key(&mut app, key(KeyCode::Tab)));
+        assert_eq!(
+            app.mermaid_popup.as_ref().unwrap().view,
+            MermaidPopupView::Diagram
+        );
+    }
+
+    #[test]
+    fn tab_is_ignored_when_no_mermaid_popup_is_open() {
+        let mut app = make_app();
+        app.thinking_mut().popup = Some(crate::widgets::state::ThinkingPopup {
+            phys_idx: 0,
+            title: "t".into(),
+            scroll: 3,
+            selection: None,
+            selection_text: String::new(),
+        });
+        assert!(handle_overlay_key(&mut app, key(KeyCode::Tab)));
+        assert_eq!(
+            app.thinking_mut().popup.as_ref().unwrap().scroll,
+            3,
+            "Tab must not disturb other overlays"
+        );
     }
 }

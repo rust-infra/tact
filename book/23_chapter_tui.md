@@ -411,9 +411,10 @@ pub(crate) trait Renderable {
 
 - A complete ```mermaid fenced block is rendered as a **terminal diagram** in the main log instead of a code card.
 - Supported diagram types follow the pinned `ratatui-markdown` Mermaid renderer (flowchart/graph, pie, gantt, stateDiagram, classDiagram, quadrantChart, block). `sequenceDiagram` uses Tact's own renderer (`mermaid_sequence.rs`) so aliases, `+/-` activation shorthand, and CJK/wide labels stay aligned; unsupported diagram types fall back to code.
-- Streaming buffers the whole block until its closing fence; when rendering succeeds, the diagram lines are spliced into the log directly and **no code card** is created. The fence body is retained in a `MermaidBlock` so double-click can open a source popup.
-- **Double-click** any diagram row → Mermaid popup; popup **`y`** copies the Mermaid source. Log selection / Normal **`y`** still copies the visible ASCII diagram.
-- Invalid or unsupported Mermaid falls back to the normal code block/card, so the original source stays readable.
+- Streaming buffers the whole block until its closing fence; when rendering succeeds, the diagram lines are spliced into the log directly and **no code card** is created. The fence body is retained in a `MermaidBlock` so double-click can open the popup.
+- **Double-click** any diagram row → Mermaid popup. Since 2026-09-11 the popup opens on the **rendered diagram**, re-laid out at the popup's width (~80% of the frame) rather than the narrower log panel, so dense flowcharts stay readable; **`Tab`** switches to the raw fence body and back. **`y`** copies the Mermaid source in either view. Log selection / Normal **`y`** still copies the visible ASCII diagram.
+- A diagram that cannot be rendered (e.g. Mermaid `style` / `classDef` / `linkStyle`, which the pinned renderer does not parse) shows its source in the popup with an explicit "does not render" note instead of silent blank art.
+- Invalid or unsupported Mermaid falls back to the normal code block/card in the log, so the original source stays readable.
 - Ordinary explicit-language fences (```rust and similar) keep their existing code-card behavior.
 - Width changes and viewport scrolling use the existing log layout/cache behavior — once spliced in, diagram lines are ordinary log lines.
 
@@ -430,7 +431,7 @@ pub(crate) trait Renderable {
 | Thinking detail | double-click thinking card; adjacent ordered-list items have blank-row separation | `popups/thinking_popup.rs` |
 | Tool/file detail | double-click tool card | `popups/diff_popup.rs` |
 | Code detail | double-click code card | `popups/code_popup.rs` |
-| Mermaid source | double-click rendered Mermaid diagram | `popups/mermaid_popup.rs` |
+| Mermaid diagram / source | double-click rendered Mermaid diagram; opens on the rendered diagram, `Tab` toggles to source | `popups/mermaid_popup.rs` |
 
 Popups typically occupy ~80%×80% of the terminal, record `app.mouse.*_popup_area` for click-outside-to-close, and show `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` hints. `diff_popup` lazy-loads full content via `cached_content` — no file I/O inside hot `render()` paths.
 

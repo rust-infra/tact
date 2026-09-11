@@ -32,6 +32,28 @@
 ---
 
 
+## 1. 2026-09-11 — Mermaid 弹窗显示渲染后的图，无法渲染时也会说明原因
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/popups/mermaid_popup.rs`；`crates/agent_tui_kit/src/state/ui_types.rs`（`MermaidPopupView`、`MermaidPopup::new`）；`crates/tui/src/handlers/overlay.rs`；Ch 23 §6.7 |
+
+**Symptom / motivation:** 日志面板虽然会渲染 Mermaid 图，但只能在日志栏的宽度下渲染；而双击弹窗原本**只用来复制源码**，从不显示图。密集的 flowchart（agent 自己画的图通常如此）在主区域被挤压得难以阅读，弹窗又没有提供更好的视图。更糟的是，使用 Mermaid `style` / `classDef` / `linkStyle` 的 fence 会静默失败：上游 `ratatui-markdown` 的 grammar 只接受 `chain` / `nodedef` / `comment` 语句，于是整个 block 回退为原始代码，且没有任何提示说明原因。
+
+**Decision:** 把弹窗定位成图的「宽视图」，而不是源码查看器。
+1. 弹窗状态新增 `MermaidPopupView { Diagram, Source }`，默认 `Diagram`；复用已有的 `scroll` 字段。
+2. 弹窗改用 `render_mermaid_block` 以弹窗自身宽度（`centered_popup_area`，约占 frame 的 80%）重新渲染 fence 正文，而不是显示原始行——这个宽度（而非日志面板宽度）正是弹窗的价值所在。
+3. `Tab` 在两个视图间切换（overlay 弹窗内此前未绑定该键），并把 `scroll` 重置为 0，因为两个视图高度不同。两种视图下 `y` 均复制源码。
+4. 当图视图无法渲染时，弹窗会降级到源码视图，**并**明确打印一行提示，使语法不支持的 fence 可被诊断，而不是看起来像一张空图。
+
+**Behavior after:** 双击图会在约 80% frame 宽度下以渲染后的形式打开；`Tab` 显示源码；`y` 复制；`Esc` 关闭。无法渲染的 Mermaid 会显示其源码，并附上 `⚠ this diagram does not render (unsupported syntax) — showing source`。主区域渲染行为不变。
+
+**Pointers:** `crates/agent_tui_kit/src/render/popups/mermaid_popup.rs`；`crates/agent_tui_kit/src/state/ui_types.rs`（`MermaidPopupView`、`MermaidPopup::new`）；`crates/tui/src/widgets/state/app/popups.rs`（`open_mermaid_popup`、`toggle_mermaid_popup_view`）；`crates/tui/src/handlers/overlay.rs`（`Tab`）。测试：`render_gap_tests::mermaid_popup_opens_on_rendered_diagram_not_source`、`mermaid_popup_tab_switches_to_source_and_back`、`mermaid_popup_falls_back_to_source_and_labels_unsupported_syntax`、`mermaid_popup_renders_diagram_at_wider_width_than_log`、`mermaid_popup_paints_theme_bg_across_its_area`；`handlers::overlay::mermaid_view_tests::*`。
+
+---
+
+
 ## 1. 2026-09-11 — 压缩不再产生孤立的 `role: tool` 消息
 
 | Field | Value |

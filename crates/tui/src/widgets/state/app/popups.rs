@@ -795,15 +795,25 @@ impl App {
 
     // ========== Mermaid Popup ==========
 
-    /// Open the Mermaid source popup for a rendered diagram block.
+    /// Open the Mermaid popup for a rendered diagram block.
+    ///
+    /// Opens on the rendered diagram (re-laid out at the popup's wider width);
+    /// `Tab` switches to the raw fence body.
     pub(crate) fn open_mermaid_popup(&mut self, block_idx: usize) {
         if block_idx < self.mermaid_blocks.len()
             && !self.mermaid_blocks[block_idx].source.is_empty()
         {
-            self.mermaid_popup = Some(MermaidPopup {
-                block_idx,
-                scroll: 0,
-            });
+            self.mermaid_popup = Some(MermaidPopup::new(block_idx));
+        }
+    }
+
+    /// Switch the Mermaid popup between the rendered diagram and its source.
+    pub(crate) fn toggle_mermaid_popup_view(&mut self) {
+        if let Some(popup) = self.mermaid_popup.as_mut() {
+            popup.view = popup.view.toggled();
+            // The two views have different heights, so a stale scroll offset
+            // would land past the end; the renderer clamps, so just re-anchor.
+            popup.scroll = 0;
         }
     }
 

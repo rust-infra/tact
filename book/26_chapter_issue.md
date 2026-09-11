@@ -32,6 +32,28 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-11 — The Mermaid popup shows the rendered diagram, and says when it cannot render
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/popups/mermaid_popup.rs`; `crates/agent_tui_kit/src/state/ui_types.rs` (`MermaidPopupView`, `MermaidPopup::new`); `crates/tui/src/handlers/overlay.rs`; Ch 23 §6.7 |
+
+**Symptom / motivation:** The log panel renders Mermaid diagrams, but only at the log column's width, and the double-click popup existed solely to **copy the source** — it never showed the diagram. Dense flowcharts (the common case for agent-authored diagrams) were cramped and hard to read in the main area, and the popup offered no better view. Worse, a fence using Mermaid `style` / `classDef` / `linkStyle` silently failed: the upstream `ratatui-markdown` grammar only accepts `chain` / `nodedef` / `comment` statements, so the whole block fell back to raw code with no indication of why.
+
+**Decision:** Make the popup the wide view of the diagram rather than a source viewer.
+1. `MermaidPopupView { Diagram, Source }` is added to the popup state, defaulting to `Diagram`; the existing `scroll` field is reused.
+2. The popup re-renders the fence body through `render_mermaid_block` at the popup's own width (`centered_popup_area`, ~80% of the frame) instead of showing raw lines — that width, not the log panel's, is the point of the popup.
+3. `Tab` toggles between the two views (theme-agnostic, not currently bound inside overlay popups) and re-anchors `scroll` to 0, since the views have different heights. `y` still copies the source in both views.
+4. When the diagram view cannot render, the popup downgrades to the source view **and** prints an explicit header note, so an unsupported-syntax fence is diagnosable instead of looking like an empty diagram.
+
+**Behavior after:** Double-clicking a diagram opens it rendered at ~80% of the frame width; `Tab` shows the source; `y` copies it; `Esc` closes. Unrenderable Mermaid shows its source plus `⚠ this diagram does not render (unsupported syntax) — showing source`. Main-area rendering is unchanged.
+
+**Pointers:** `crates/agent_tui_kit/src/render/popups/mermaid_popup.rs`; `crates/agent_tui_kit/src/state/ui_types.rs` (`MermaidPopupView`, `MermaidPopup::new`); `crates/tui/src/widgets/state/app/popups.rs` (`open_mermaid_popup`, `toggle_mermaid_popup_view`); `crates/tui/src/handlers/overlay.rs` (`Tab`). Tests: `render_gap_tests::mermaid_popup_opens_on_rendered_diagram_not_source`, `mermaid_popup_tab_switches_to_source_and_back`, `mermaid_popup_falls_back_to_source_and_labels_unsupported_syntax`, `mermaid_popup_renders_diagram_at_wider_width_than_log`, `mermaid_popup_paints_theme_bg_across_its_area`; `handlers::overlay::mermaid_view_tests::*`.
+
+---
+
+
 ## 1. 2026-09-11 — Compaction no longer emits orphaned `role: tool` messages
 
 | Field | Value |
