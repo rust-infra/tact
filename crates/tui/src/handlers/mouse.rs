@@ -1088,11 +1088,11 @@ mod tests {
 
     #[test]
     fn mouse_wheel_over_select_popup_steps_selection() {
-        use crate::widgets::state::SelectKind;
+        use crate::widgets::state::{ModelTarget, SelectKind};
 
         let mut app = make_app();
         app.input_mode = crate::widgets::state::InputMode::Select;
-        app.select_kind = SelectKind::ModelPick;
+        app.select_kind = SelectKind::ModelPick(ModelTarget::Main);
         app.select.set_local(
             "Select model".into(),
             (0..30).map(|i| format!("model-{i:02}")).collect(),

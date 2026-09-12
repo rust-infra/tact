@@ -282,6 +282,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
             app.handle_plugin_event(event);
         }
         app.drain_voice_events();
+        // Apply any completed off-loop background tasks (git branch, skills).
+        app.poll_background_tasks();
 
         // Only repaint when the dirty flag is true or in Done state, avoiding pointless
         // high-frequency refreshes while idle.
@@ -483,6 +485,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
 
     // Restore terminal state before exiting
     let exit_msg = app.msgs().exit_bye.to_string();
+    app.abort_background_tasks();
     app.shutdown_voice().await;
     drop(app);
     disable_raw_mode()?;

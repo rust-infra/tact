@@ -369,19 +369,11 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "skill-reload" => {
-            match refresh_skills(app) {
-                Ok(count) => {
-                    let msg = app
-                        .msgs()
-                        .skill_reloaded_tmpl
-                        .replace("{}", &count.to_string());
-                    app.add_system_message(msg);
-                }
-                Err(err) => {
-                    let msg = app.msgs().skill_reload_failed_tmpl.replace("{}", &err);
-                    app.add_system_message(msg);
-                }
-            }
+            // Off-loop: the reload scans the filesystem; the loop reports the
+            // outcome via the background-task poll.
+            app.start_skills_reload(
+                crate::widgets::state::app::background::SkillsReloadSource::Command,
+            );
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
@@ -605,12 +597,21 @@ fn skills_table_markdown(
 }
 
 /// Reload skills from disk into the shared registry (agent + TUI).
-pub(crate) fn refresh_skills(app: &mut App) -> Result<usize, String> {
-    let mut reg = tact::skill::lock_skills(&app.skill_registry);
+///
+/// Heavy: scans the filesystem while holding the registry mutex, so callers run
+/// it inside `spawn_blocking` (see `App::start_skills_reload`). Kept synchronous
+/// and lock-scoped: no lock is ever held across an `.await`.
+pub(crate) fn reload_skills(
+    registry: &tact::skill::SharedSkillRegistry,
+    work_dir: &std::path::Path,
+) -> Result<crate::widgets::state::app::background::SkillsSnapshot, String> {
+    use crate::widgets::state::app::background::SkillsSnapshot;
+
+    let mut reg = tact::skill::lock_skills(registry);
     // Keep search roots in sync with the current workdir (tests may set work_dir late).
-    *reg = tact::skill::get_skill_registry(&app.work_dir).map_err(|e| e.to_string())?;
-    app.skills_description = reg.describe_available();
-    app.skills_data = reg
+    *reg = tact::skill::get_skill_registry(work_dir).map_err(|e| e.to_string())?;
+    let description = reg.describe_available();
+    let data = reg
         .skills()
         .values()
         .map(|doc| crate::widgets::state::SkillEntry {
@@ -619,9 +620,7 @@ pub(crate) fn refresh_skills(app: &mut App) -> Result<usize, String> {
             body: doc.body.clone(),
         })
         .collect();
-    // Skill list affects log highlighting; force visual-cache rebuild.
-    app.log_scroll.visual_cache_ver = 0;
-    Ok(app.skills_data.len())
+    Ok(SkillsSnapshot { description, data })
 }
 
 /// Open the `/permission` SelectPopup from palette / slash command.

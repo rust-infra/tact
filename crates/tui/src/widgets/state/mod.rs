@@ -80,33 +80,47 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("background", "Check background task status"),
 ];
 
+/// Which agent a `/model` flow targets: the main agent or the configured
+/// subagent. The two-step model/effort/budget flow is expressed once and
+/// parameterized by this, instead of as two parallel variant families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelTarget {
+    Main,
+    Subagent,
+}
+
 /// Why the select popup is open (agent permission vs `/model` flow).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SelectKind {
     /// Agent `RequestSelect` — confirm emits a `UiResponse` on the command channel.
     Agent,
     /// `/model` first step — choose a model before applying either value.
-    ModelPick,
-    /// `/model` second step (effort-semantic models: openai/deepseek/kimi k3)
-    /// — choose a reasoning effort before applying. `efforts` = selectable
-    /// tiers for this model (mapped or provider default).
+    /// `target` selects the main agent or the subagent flow.
+    ModelPick(ModelTarget),
+    /// Second step (effort-semantic models: openai/deepseek/kimi k3) — choose a
+    /// reasoning effort before applying. `efforts` = selectable tiers for this
+    /// model (mapped or provider default).
     ModelProfileEffortPick {
+        target: ModelTarget,
         model: String,
         efforts: Vec<tact_llm::OpenAiReasoningEffort>,
     },
-    /// `/model` second step — choose a thinking budget before applying.
-    /// `budgets` = selectable tiers for this model (mapped or default 5).
+    /// Second step — choose a thinking budget before applying. `budgets` =
+    /// selectable tiers for this model (mapped or default 5).
     ThinkBudgetPick {
+        target: ModelTarget,
         model: String,
         budgets: Vec<usize>,
     },
     /// Optional combined "save to config?" prompt after session application.
     PersistModelAndBudget {
+        target: ModelTarget,
         model: String,
         thinking_budget: usize,
     },
     /// Optional "save model + reasoning effort to config?" prompt.
     PersistModelAndEffort {
+        target: ModelTarget,
         model: String,
         effort: tact_llm::OpenAiReasoningEffort,
     },
@@ -114,24 +128,6 @@ pub(crate) enum SelectKind {
     ViewSystemPrompt,
     /// `/permission` picker — choose Default / Plan / Auto.
     PermissionModePick,
-    /// `/model-subagent` flow
-    SubagentModelPick,
-    SubagentModelProfileEffortPick {
-        model: String,
-        efforts: Vec<tact_llm::OpenAiReasoningEffort>,
-    },
-    SubagentThinkBudgetPick {
-        model: String,
-        budgets: Vec<usize>,
-    },
-    SubagentPersistModelAndBudget {
-        model: String,
-        thinking_budget: usize,
-    },
-    SubagentPersistModelAndEffort {
-        model: String,
-        effort: tact_llm::OpenAiReasoningEffort,
-    },
 }
 
 /// A queued agent-originated select (`RequestSelect` / `RequestMultiSelect`)
@@ -228,6 +224,10 @@ pub struct App {
     pub(crate) last_uptime_tick_secs: Option<i64>,
     /// Last git branch refresh time (throttle to avoid running `git` too often).
     pub(crate) last_git_refresh: Option<std::time::Instant>,
+    /// In-flight off-loop git-branch refresh (join handle + result receiver).
+    pub(crate) git_branch_task: Option<app::background::GitBranchTask>,
+    /// In-flight off-loop skills reload (join handle + result receiver).
+    pub(crate) skills_task: Option<app::background::SkillsTask>,
     /// Current working directory.
     pub(crate) workspace_dir: String,
     /// Completed LLM code block overlays.
