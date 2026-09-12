@@ -32,6 +32,26 @@
 ---
 
 
+## 1. 2026-09-12 — ctx 百分比前置到底栏，进度条移除
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；第 23 章 §6.6 |
+
+**症状 / 动机：** 同日的第 2 行瘦身（见下一条）删掉了 ctx 的 `pct%` 却保留了 `■`/`·` 进度条，于是显示为 `ctx [▍···] 45K/1M`。要回答这个段存在的唯一问题——"离自动压缩还有多远"——读者得自己心算除法，而进度条不过把这个百分比用字符又画了一遍。
+
+**决策：** 反转那次瘦身中 ctx 的部分：仍然遵守**一个值只留一种渲染**，但选择另一种编码：
+1. **彻底删除进度条**——`render_usage_bar`、`partial_block_char`、`■`/`·`/半格字符常量与 `USAGE_BAR_WIDTH` 全部删除。顶栏的步骤进度（`render_progress_bar`，`█`/`░`）是另一个 widget，未受影响。
+2. **恢复百分比并前置**——`format_context_meter` 现渲染 `ctx 4% 45K/1M`。绝对 `used/window` 保留：比率无法替代它来自的两个计数；它也是小数值唯一的区分方式（590/200K 渲染为 `0%`）。
+3. **把 `▣` 缓存段移到紧接 `ctx` 之后**、回合计数之前——两者都是会话级比率，现在挨着读。push 顺序变为 `model → out → think → ctx → cache → turns → timing`；`fit_row_spans` 从末尾开始丢弃，因此存活顺序变为 `ctx > cache > 回合 > 耗时`（缓存与回合计数对调）。
+
+**Behavior after：** 第 2 行渲染为 `deepseek-v4  out 73.1K  think high  ctx 4% 45K/1M  ▣ 30%  ⟳ 12  ⇅ 3  ⏱ 02:05 avg 01:45`——**86 列**（原 90）。顺序与 100 列预算分别由 `bottom_bar_orders_cache_before_turn_counters` 与 `bottom_bar_fits_every_segment_in_100_columns` 锁定；`format_context_meter_leads_with_the_percentage` 断言进度条字符不会回归。
+
+**Pointers：** `crates/agent_tui_kit/src/render/bar.rs`（`format_context_meter`、`context_usage_pct`、第 2 行 `DropGroup` push 顺序）；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；第 23 章 §6.6。
+
+---
+
 ## 1. 2026-09-12 — 已 drain 的子代理结果不再触发空的唤醒轮
 
 | Field | Value |
@@ -60,7 +80,7 @@
 
 **Decision：** 按**一个值只留一种渲染**的规则，把第 2 行压到 **90 列且不丢失任何独立信息**：
 1. **删除 `∑ₜₒₖ {total}` 段**——与 `ctx` 进度条的 `used` 重复。精确整数仍可在每轮后的任务 stats 块与 `/stats` 中看到，因此丢掉的只是重复渲染。`ICON_TOKENS` / `format_token_total` 一并删除。
-2. **删除 ctx 段的 `pct%`**（同一规则）——它是紧邻的 `used/window` 的纯函数——并把**进度条从 10 格压到 6 格**，因为进度条的精确值同样已被给出两次，它只需传达直观感受。该段由 **24 列降到 17 列（−29%）**，同时仍能区分接近阈值的用量（85% 时 `[■■■▍]` vs 4% 时 `[▍···]`）。`format_context_meter` 现渲染 `ctx [▍···] 45K/1M`。
+2. **删除 ctx 段的 `pct%`**（同一规则）——它是紧邻的 `used/window` 的纯函数——并把**进度条从 10 格压到 6 格**，因为进度条的精确值同样已被给出两次，它只需传达直观感受。该段由 **24 列降到 17 列（−29%）**，同时仍能区分接近阈值的用量（85% 时 `[■■■▍]` vs 4% 时 `[▍···]`）。`format_context_meter` 当时渲染为 `ctx [▍···] 45K/1M`——**同日即被取代**（见最新一条）：进度条删除、百分比恢复，改为 `ctx 4% 45K/1M`。
 3. **`max_out_token` → `out`**（中文 `输出`），与相邻 `ctx` / `think` 的简写程度一致。
 4. **`▣ cache% 30%` → `▣ 30%`**——图标加 `%` 已足够标识该数字。
 5. **`⟳ 12 turns ⇅ 3 turns` → `⟳ 12 ⇅ 3`**——两个计数都去掉 `turns` 文字；相邻的图标对读作一个"回合"数值。
@@ -68,7 +88,7 @@
 
 随之失效的 i18n 字段（`bottom_cache_pct`、`bottom_turns`、`bottom_llm_turns`）被移除，而非留作陈旧字段。`render_usage_bar` 的单元测试改为从 `USAGE_BAR_WIDTH` 推导期望宽度，不再硬编码内宽 8，因此下次改宽度不会再连带打断它们。
 
-**Behavior after：** 所有段都填充时，整行在 90 列内渲染完毕（`deepseek-v4  out 73.1K  think high  ctx [▍···] 45K/1M  ⟳ 12  ⇅ 3  ▣ 30%  ⏱ 02:05 avg 01:45`），普通终端不再丢段。丢弃顺序为 `ctx > 回合 > 缓存 > 耗时`。宽度预算测试（`bottom_bar_fits_every_segment_in_100_columns`）会在将来某段把行推回约 100 列以上时失败——正是本次修掉的那种失效模式。
+**Behavior after：** 所有段都填充时，整行在 90 列内渲染完毕（`deepseek-v4  out 73.1K  think high  ctx [▍···] 45K/1M  ⟳ 12  ⇅ 3  ▣ 30%  ⏱ 02:05 avg 01:45`），普通终端不再丢段。丢弃顺序为 `ctx > 回合 > 缓存 > 耗时`。宽度预算测试（`bottom_bar_fits_every_segment_in_100_columns`）会在将来某段把行推回约 100 列以上时失败——正是本次修掉的那种失效模式。（行宽、丢弃顺序以及下文提到的 ctx 进度条辅助函数均在同日稍后被改动，见最新一条。）
 
 **Pointers：** `crates/agent_tui_kit/src/render/bar.rs`（`USAGE_BAR_WIDTH`、`format_context_meter`、`format_cache_pct`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`、第 2 行 group 推入顺序；已删除 `ICON_TOKENS`/`format_token_total`）；`crates/agent_tui_kit/src/i18n.rs`（`bottom_out`、`bottom_avg`；移除三个字段）；`crates/tui/src/render/bar.rs`（`bottom_bar_fits_every_segment_in_100_columns`）；`docs/token_usage_schema.md`；Ch 23 §6.6。
 

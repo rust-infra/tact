@@ -34,18 +34,6 @@ const ICON_LLM_TURNS: &str = "⇅";
 const ICON_ELAPSED: &str = "⏱";
 const SEP_ROW1: &str = " │ ";
 const SEP_ROW2: &str = "  ";
-const BAR_FILLED: char = '■'; // U+25A0
-const BAR_EMPTY: char = '·'; // U+00B7
-
-/// Partial block characters from 1/8 to 7/8 width (U+258F … U+2589).
-/// Low usage clamps to at least `▍` — see `partial_block_char`.
-const PARTIAL_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-
-/// Total cells of the context gauge, brackets included (inner width is
-/// `USAGE_BAR_WIDTH - 2`). Narrowed 10 → 6 on 2026-09-12: the gauge only needs
-/// to convey a rough at-a-glance sense, because the exact `used/window` figure
-/// renders right next to it.
-const USAGE_BAR_WIDTH: u16 = 6;
 
 /// Short elapsed label for the status bar during active runs.
 ///
@@ -66,7 +54,6 @@ pub fn format_task_elapsed(
     format!("⏱ {} {}", msgs.bottom_elapsed, mm_ss)
 }
 
-/// Render a text-based usage progress bar like `[█████░░░░░]`.
 /// Format a quota number for display; `None` (no numeric cap) renders as `∞`.
 fn format_quota_value(value: Option<f64>) -> String {
     match value {
@@ -78,52 +65,6 @@ fn format_quota_value(value: Option<f64>) -> String {
             }
         }
         None => "∞".to_string(),
-    }
-}
-
-fn render_usage_bar(pct: f64) -> String {
-    let inner_width = USAGE_BAR_WIDTH.saturating_sub(2) as usize;
-    let exact = (pct / 100.0) * inner_width as f64;
-    let full_blocks = exact.floor() as usize;
-    let fractional = exact - full_blocks as f64;
-
-    let mut bar = String::from("[");
-    // Full blocks
-    for _ in 0..full_blocks.min(inner_width) {
-        bar.push(BAR_FILLED);
-    }
-    // Boundary partial block + remaining empty
-    if full_blocks < inner_width {
-        if fractional > 0.0 {
-            bar.push(partial_block_char(fractional));
-            for _ in (full_blocks + 1)..inner_width {
-                bar.push(BAR_EMPTY);
-            }
-        } else {
-            for _ in full_blocks..inner_width {
-                bar.push(BAR_EMPTY);
-            }
-        }
-    }
-    bar.push(']');
-    bar
-}
-
-/// Map a fraction (0, 1] to the closest partial-block character.
-///
-/// Any positive fraction paints at least `▍` (3/8). Terminal fonts often
-/// render `▏`/`▎` as a hairline that reads as empty next to `·`, so 1% of a
-/// large context window looked like no progress despite the numeric label.
-fn partial_block_char(frac: f64) -> char {
-    if frac <= 0.0 {
-        return BAR_EMPTY;
-    }
-    // frac is (0, 1]; map to 1..=8, then floor at 3 for visibility.
-    let idx = ((frac * 8.0).round() as usize).clamp(3, 8);
-    match idx {
-        3..=7 => PARTIAL_BLOCKS[idx - 1],
-        8 => BAR_FILLED,
-        _ => PARTIAL_BLOCKS[2], // ▍
     }
 }
 
@@ -240,19 +181,18 @@ fn format_cache_pct(hit: u64, miss: u64) -> String {
     }
 }
 
-/// Context usage meter: `"ctx [■···] 6.6K/1M"`.
+/// Context usage meter: `"ctx 4% 45K/1M"` — percentage first, then the absolute
+/// used/window.
 ///
-/// The percentage was dropped on 2026-09-12. The segment had encoded the same
-/// ratio three times — gauge, `pct%`, and `used/window` — and `pct` is a pure
-/// function of the two numbers rendered right beside it. This mirrors the
-/// `∑ₜₒₖ` removal (one value, one rendering); the gauge stays because it carries
-/// the at-a-glance "how close am I to auto-compact" sense that the raw ratio
-/// does not.
+/// Same-day (2026-09-12) revision of the row-2 compaction: the `■`/`·` gauge was
+/// dropped and `pct%` restored. `45K/1M` alone made the reader do the division to
+/// answer "how close am I to auto-compact"; the percentage answers it directly,
+/// and the gauge only restated that same percentage as glyphs. The absolute
+/// `used/window` stays — a ratio cannot replace the two counts it came from.
 fn format_context_meter(label: &str, used: u32, window: usize) -> String {
     let pct = context_usage_pct(used, window);
-    let bar = render_usage_bar(pct as f64);
     format!(
-        "{label} {bar} {}/{}",
+        "{label} {pct}% {}/{}",
         format_tokens_compact(used as u64),
         format_tokens_compact(window as u64)
     )
@@ -518,10 +458,9 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             ],
         });
     }
-    // Drop order from end: timing → cache → turns → ctx. Push order *is*
-    // survival priority, so `ctx` survives longest and the turn counters sit
-    // between `ctx` and `cache` (the `∑ₜₒₖ` segment this used to bracket was
-    // removed as a duplicate of the ctx meter's `used` number).
+    // Display order: ctx → cache → turns → timing. Push order *is* survival
+    // priority and `fit_row_spans` drops from the end, so the drop order is the
+    // reverse: timing → turns → cache → ctx, i.e. `ctx` survives longest.
     row2_groups.push(DropGroup {
         droppable: true,
         spans: vec![
@@ -533,14 +472,14 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         droppable: true,
         spans: vec![
             Span::styled(SEP_ROW2.to_string(), dim),
-            Span::styled(turn_str, secondary),
+            Span::styled(cache_str, secondary),
         ],
     });
     row2_groups.push(DropGroup {
         droppable: true,
         spans: vec![
             Span::styled(SEP_ROW2.to_string(), dim),
-            Span::styled(cache_str, secondary),
+            Span::styled(turn_str, secondary),
         ],
     });
     if let Some(timing) = turn_timing {
@@ -755,90 +694,6 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
 mod render_tests {
     use tact_protocol::BalanceEntry;
 
-    use super::render_usage_bar;
-
-    /// Build the expected gauge for a fill ratio without hard-coding the
-    /// constant, so narrowing `USAGE_BAR_WIDTH` does not break every test here.
-    fn expected_bar(full: usize, partial: Option<char>) -> String {
-        let inner = (super::USAGE_BAR_WIDTH as usize) - 2;
-        let mut s = String::from("[");
-        for _ in 0..full {
-            s.push(super::BAR_FILLED);
-        }
-        if let Some(c) = partial {
-            s.push(c);
-        }
-        while s.chars().count() - 1 < inner {
-            s.push(super::BAR_EMPTY);
-        }
-        s.push(']');
-        s
-    }
-
-    #[test]
-    fn render_usage_bar_scales_to_width() {
-        let inner = (super::USAGE_BAR_WIDTH as usize) - 2;
-        assert_eq!(render_usage_bar(0.0), expected_bar(0, None));
-        assert_eq!(render_usage_bar(100.0), expected_bar(inner, None));
-        // Half full: floor(inner/2) full blocks, remainder empty.
-        assert_eq!(render_usage_bar(50.0), expected_bar(inner / 2, None));
-    }
-
-    #[test]
-    fn render_usage_bar_uses_mid_height_glyphs() {
-        // The gauge must never use the heavy block glyphs of the *other*
-        // progress bar (`render_progress_bar` uses █/░); this one is mid-height.
-        for pct in [0.0, 25.0, 50.0, 75.0, 100.0] {
-            let bar = super::render_usage_bar(pct);
-            assert!(
-                !bar.contains('█') && !bar.contains('░'),
-                "pct {pct} used heavy glyphs: {bar}"
-            );
-            assert_eq!(
-                bar.chars().filter(|c| *c == '[').count(),
-                1,
-                "pct {pct}: {bar}"
-            );
-            assert_eq!(
-                bar.chars().count(),
-                super::USAGE_BAR_WIDTH as usize,
-                "pct {pct}: {bar}"
-            );
-        }
-    }
-
-    #[test]
-    fn render_usage_bar_partial_block_at_low_percent() {
-        // 1% → at least ▍ (hairline ▏ was effectively invisible in terminals)
-        let bar = super::render_usage_bar(1.0);
-        assert_eq!(bar, expected_bar(0, Some('▍')));
-        assert_ne!(bar, expected_bar(0, None), "1% must differ from 0%");
-        // Sub-1% still shows the minimum visible partial (not empty)
-        assert_eq!(super::render_usage_bar(0.5), bar);
-    }
-
-    #[test]
-    fn render_usage_bar_partials_widen_with_percent() {
-        // On a 4-cell inner gauge these land on distinct partial glyphs; keep
-        // the progression check relative so a width change cannot mis-assert.
-        let mut seen = Vec::new();
-        for pct in [1.0, 10.0, 20.0, 30.0, 40.0] {
-            let bar = super::render_usage_bar(pct);
-            // `[` + inner cells + `]` == USAGE_BAR_WIDTH
-            assert_eq!(
-                bar.chars().count(),
-                super::USAGE_BAR_WIDTH as usize,
-                "width drifted for {pct}%: {bar}"
-            );
-            seen.push(bar);
-        }
-        let unique: std::collections::HashSet<_> = seen.iter().collect();
-        assert!(
-            unique.len() > 1,
-            "partial glyphs must vary across percentages, got {seen:?}"
-        );
-    }
-
     #[test]
     fn format_max_out_tokens_labeled() {
         assert_eq!(
@@ -941,28 +796,24 @@ mod render_tests {
     }
 
     #[test]
-    fn format_context_meter_labeled() {
+    fn format_context_meter_leads_with_the_percentage() {
         let s = super::format_context_meter("ctx", 0, 1_000_000);
-        assert!(s.starts_with("ctx ["), "got {s}");
+        assert!(s.starts_with("ctx 0%"), "got {s}");
         assert!(s.contains("0/1M"), "got {s}");
         assert!(
-            !s.contains('%'),
-            "percentage is derivable from used/window and must not be rendered: {s}"
+            !s.contains('[') && !s.contains(']'),
+            "the gauge was dropped on 2026-09-12 — percentage only: {s}"
         );
         assert!(
-            !s.contains('█') && !s.contains('░'),
-            "old glyphs present: {s}"
-        );
-        assert!(
-            s.contains('·') || s.contains('■'),
-            "expected mid-height glyphs: {s}"
+            !s.contains('■') && !s.contains('·') && !s.contains('▍'),
+            "gauge glyphs must not survive: {s}"
         );
     }
 
     #[test]
-    fn context_meter_reports_used_and_window_without_the_percentage() {
+    fn context_meter_reports_percentage_before_used_and_window() {
         let s = super::format_context_meter("ctx", 45_000, 1_000_000);
-        assert_eq!(s, "ctx [▍···] 45K/1M");
+        assert_eq!(s, "ctx 4% 45K/1M");
     }
 
     #[test]

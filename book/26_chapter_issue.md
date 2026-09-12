@@ -32,6 +32,26 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-12 — The ctx percentage leads the bottom bar; the gauge is gone
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`; `crates/tui/src/render/bar.rs`; `docs/token_usage_schema.md`; Ch 23 §6.6 |
+
+**Symptom / motivation:** The same-day row-2 compaction (entry below) had removed the ctx meter's `pct%` and kept the `■`/`·` gauge, leaving `ctx [▍···] 45K/1M`. Answering the question the segment exists for — "how close am I to auto-compact?" — required doing the division mentally, and the gauge only restated that same percentage as glyphs.
+
+**Decision:** Reverse the ctx part of that compaction, keeping the *one value, one rendering* rule but picking the other encoding:
+1. **Dropped the gauge entirely** — `render_usage_bar`, `partial_block_char`, the `■`/`·`/partial-block glyph constants and `USAGE_BAR_WIDTH` were deleted. The top status bar's step progress (`render_progress_bar`, `█`/`░`) is a different widget and is untouched.
+2. **Restored the percentage, first** — `format_context_meter` now renders `ctx 4% 45K/1M`. The absolute `used/window` stays, because a ratio cannot replace the two counts it came from; it is also what disambiguates small values (590/200K renders as `0%`).
+3. **Moved the `▣` cache segment to sit directly after `ctx`**, before the turn counters — both are session-wide ratios, so they now read together. Push order became `model → out → think → ctx → cache → turns → timing`; `fit_row_spans` drops from the end, so survival became `ctx > cache > turns > timing` (cache and the turn counters swapped).
+
+**Behavior after:** Row 2 renders `deepseek-v4  out 73.1K  think high  ctx 4% 45K/1M  ▣ 30%  ⟳ 12  ⇅ 3  ⏱ 02:05 avg 01:45` — **86 columns** (was 90). Order and the 100-column budget are pinned by `bottom_bar_orders_cache_before_turn_counters` and `bottom_bar_fits_every_segment_in_100_columns`; `format_context_meter_leads_with_the_percentage` asserts the gauge glyphs never come back.
+
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`format_context_meter`, `context_usage_pct`, row-2 `DropGroup` push order); `crates/tui/src/render/bar.rs`; `docs/token_usage_schema.md`; Ch 23 §6.6.
+
+---
+
 ## 1. 2026-09-12 — A drained subagent result no longer spawns an empty wake-up turn
 
 | Field | Value |
@@ -60,7 +80,7 @@ Newest entries first. Each entry should include:
 
 **Decision:** Cut row 2 to **90 columns with no loss of distinct information**, by the rule *one value, one rendering*:
 1. **Deleted the `∑ₜₒₖ {total}` segment** — redundant with the `ctx` meter's `used`. The exact integer is still available in the task-stats block after each turn and in `/stats`, so only its duplicate rendering is lost. `ICON_TOKENS` / `format_token_total` were removed with it.
-2. **Deleted the ctx meter's `pct%`** (same rule) — it is a pure function of the `used/window` rendered immediately beside it — and **narrowed the gauge 10 → 6 cells**, since the gauge's exact value is also given twice over and it only needs to convey an at-a-glance sense. That segment went **24 → 17 columns (−29%)** while still distinguishing near-limit usage (`[■■■▍]` at 85% vs `[▍···]` at 4%). `format_context_meter` now renders `ctx [▍···] 45K/1M`.
+2. **Deleted the ctx meter's `pct%`** (same rule) — it is a pure function of the `used/window` rendered immediately beside it — and **narrowed the gauge 10 → 6 cells**, since the gauge's exact value is also given twice over and it only needs to convey an at-a-glance sense. That segment went **24 → 17 columns (−29%)** while still distinguishing near-limit usage (`[■■■▍]` at 85% vs `[▍···]` at 4%). `format_context_meter` was left rendering `ctx [▍···] 45K/1M` — **superseded the same day** (see the newest entry): the gauge was dropped and the percentage restored, giving `ctx 4% 45K/1M`.
 3. **`max_out_token` → `out`** in both languages (ZH `输出`), matching the shorthand level of the neighbouring `ctx` / `think` labels.
 4. **`▣ cache% 30%` → `▣ 30%`** — the glyph plus `%` already identify the number.
 5. **`⟳ 12 turns ⇅ 3 turns` → `⟳ 12 ⇅ 3`** — the word was dropped from both counters; the adjacent glyph pair reads as one "turns" figure.
@@ -68,7 +88,7 @@ Newest entries first. Each entry should include:
 
 The now-unused i18n fields (`bottom_cache_pct`, `bottom_turns`, `bottom_llm_turns`) were removed rather than left stale. The `render_usage_bar` unit tests were rewritten to derive expected widths from `USAGE_BAR_WIDTH` instead of hard-coding 8 inner cells, so the next width change cannot break them.
 
-**Behavior after:** With every segment populated the full row renders in 90 columns (`deepseek-v4  out 73.1K  think high  ctx [▍···] 45K/1M  ⟳ 12  ⇅ 3  ▣ 30%  ⏱ 02:05 avg 01:45`), so ordinary terminals no longer drop segments. The drop order is `ctx > turns > cache > timing`. A width-budget test (`bottom_bar_fits_every_segment_in_100_columns`) fails if a future segment pushes the row back over ~100 columns — the exact failure mode this change fixed.
+**Behavior after:** With every segment populated the full row renders in 90 columns (`deepseek-v4  out 73.1K  think high  ctx [▍···] 45K/1M  ⟳ 12  ⇅ 3  ▣ 30%  ⏱ 02:05 avg 01:45`), so ordinary terminals no longer drop segments. The drop order is `ctx > turns > cache > timing`. A width-budget test (`bottom_bar_fits_every_segment_in_100_columns`) fails if a future segment pushes the row back over ~100 columns — the exact failure mode this change fixed. (Row width, drop order, and the ctx gauge helpers named below were all changed later the same day; see the newest entry.)
 
 **Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`USAGE_BAR_WIDTH`, `format_context_meter`, `format_cache_pct`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`, row-2 group push order; `ICON_TOKENS`/`format_token_total` removed); `crates/agent_tui_kit/src/i18n.rs` (`bottom_out`, `bottom_avg`; three fields removed); `crates/tui/src/render/bar.rs` (`bottom_bar_fits_every_segment_in_100_columns`); `docs/token_usage_schema.md`; Ch 23 §6.6.
 

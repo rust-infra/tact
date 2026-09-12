@@ -88,20 +88,16 @@ mod render_tests {
         assert!(lines.len() >= 2, "expected 2 rows, got:\n{text}");
         let row2 = lines[1];
         assert!(
-            row2.contains("mock-model") && row2.contains("ctx [") && row2.contains("590/200K"),
-            "row 2 should show model + labeled meter + used/window, got:\n{row2}"
+            row2.contains("mock-model") && row2.contains("ctx 0% 590/200K"),
+            "row 2 should show model + ctx percentage + used/window, got:\n{row2}"
         );
         assert!(
-            !row2.contains('%'),
-            "the ctx percentage is derivable from used/window and must not render, got:\n{row2}"
+            !row2.contains('[') && !row2.contains(']'),
+            "the ctx gauge was dropped on 2026-09-12, got:\n{row2}"
         );
         assert!(
-            row2.contains('[') && row2.contains(']'),
-            "row 2 should include progress bar brackets, got:\n{row2}"
-        );
-        assert!(
-            !row2.contains('█') && !row2.contains('░'),
-            "row 2 should use mid-height bar glyphs, got:\n{row2}"
+            !row2.contains('█') && !row2.contains('░') && !row2.contains('▍'),
+            "old gauge glyphs must not survive, got:\n{row2}"
         );
     }
 
@@ -145,7 +141,7 @@ mod render_tests {
             "elapsed/uptime must not appear on row 2, got:\n{row2}"
         );
         assert!(
-            row2.contains("ctx [") && row2.contains("42/"),
+            row2.contains("ctx ") && row2.contains('%') && row2.contains("42/"),
             "token usage should stay on row 2 via the ctx meter, got:\n{row2}"
         );
     }
@@ -244,10 +240,11 @@ mod render_tests {
     /// Width budget: with every row-2 segment populated, nothing may be
     /// dropped at a 100-column terminal.
     ///
-    /// The 2026-09-12 compaction got the full row down to 97 columns (from
+    /// The 2026-09-12 compaction got the full row down to 90 columns (from
     /// ~138) by removing the `∑ₜₒₖ` segment — whose value was a second format
     /// of the same `token_total` the ctx meter already renders — plus the
-    /// `max_out_token`/`cache%`/`turns` word labels. This test is the guard:
+    /// `max_out_token`/`cache%`/`turns` word labels. Replacing the ctx gauge
+    /// with the percentage the same day took it to 86. This test is the guard:
     /// if a future segment pushes the row past ~100 columns it will start
     /// silently dropping segments on ordinary terminals, which is the exact
     /// problem this compaction fixed.
@@ -279,7 +276,7 @@ mod render_tests {
             "deepseek-v4",
             "out 73.1K",
             "think high",
-            "ctx [",
+            "ctx 4% 45K/1M",
             "⟳",
             "⇅",
             "▣",
@@ -291,6 +288,55 @@ mod render_tests {
                 "row 2 dropped {marker:?} at 100 columns (budget exceeded), got:\n{row2}"
             );
         }
+    }
+
+    /// Segment order on row 2: `ctx` → cache → turns → timing.
+    ///
+    /// Requested 2026-09-12: the cache percentage reads directly after the ctx
+    /// meter (both are session-wide ratios), with the turn counters pushed after
+    /// them. Position is asserted, not just presence — row 2 is built by pushing
+    /// groups in survival order, so a reorder is invisible to the presence-only
+    /// tests above, and `fit_row_spans` changes which of them survive at narrow
+    /// widths.
+    #[test]
+    fn bottom_bar_orders_cache_before_turn_counters() {
+        let mut app = make_app();
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().token_total = 45_000;
+        app.status_bar_mut().token_cache_hit = 30;
+        app.status_bar_mut().token_cache_miss = 70;
+        app.status_bar_mut().turn_user = 12;
+        app.status_bar_mut().turn_llm = 3;
+        app.status_bar_mut().turn_last_secs = Some(125);
+        app.status_bar_mut().turn_done = 2;
+        app.status_bar_mut().turn_total_secs = 210;
+        app.model_context_window = 1_000_000;
+
+        let backend = TestBackend::new(200, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 200, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        let row2 = text.lines().nth(1).unwrap_or_default().to_string();
+        let pos = |needle: &str| {
+            row2.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from row 2:\n{row2}"))
+        };
+        let ctx_at = pos("ctx ");
+        let cache_at = pos("▣");
+        let turn_at = pos("⟳");
+        let timing_at = pos("⏱");
+        assert!(ctx_at < cache_at, "cache must follow ctx, got:\n{row2}");
+        assert!(
+            cache_at < turn_at,
+            "turn counters must follow cache, got:\n{row2}"
+        );
+        assert!(
+            turn_at < timing_at,
+            "turn timing must stay last, got:\n{row2}"
+        );
     }
 
     #[test]

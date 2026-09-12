@@ -223,8 +223,8 @@ This means consecutive multi-turn conversations typically achieve high cache hit
   `100/(100+pct)`, e.g. `high` → `73K` on a 128K envelope). Budget-semantic
   models (Anthropic-style `thinking_budget`) keep a separate thinking
   envelope, so the full `max_tokens` is shown.
-- **Context meter** — `ctx [■■··] used/window` (the `pct` was dropped on
-  2026-09-12; see below), where `used` is the latest main-loop
+- **Context meter** — `ctx {pct}% used/window` (e.g. `ctx 4% 45K/1M`), where
+  `used` is the latest main-loop
   `TokenUsageInfo.total` and `window` is `model_context_window`.
   Subagent LLM calls persist under their own `sessions.id` (linked via
   `sessions.ref_id`); subagent `TokenUsage` is **not** forwarded to the shared
@@ -247,13 +247,13 @@ This means consecutive multi-turn conversations typically achieve high cache hit
   cancelled turns count, synthetic separators do not. Frozen values only — live
   in-flight elapsed stays on the top status bar.
 
-**The ctx segment was triple-encoded (compacted 2026-09-12):** it used to be
-`ctx [▍·······] 4% 45K/1M` — the same ratio as gauge, `4%`, and `used/window`.
-The percentage was dropped (it is a pure function of the two numbers rendered
-beside it) and the gauge was narrowed 10 → 6 cells (its exact value is given
-twice over, so it only needs to convey an at-a-glance sense). The segment went
-from 24 to **17 columns**; the gauge still distinguishes near-limit usage
-(`[■■■▍]` at 85% vs `[▍···]` at 4%).
+**The ctx segment leads with the percentage, gauge dropped (2026-09-12):** it was
+`ctx [▍·······] 4% 45K/1M` (the same ratio encoded three times), was compacted to
+`ctx [▍···] 45K/1M`, and is now `ctx 4% 45K/1M`. The gauge was dropped because it
+only restated the percentage as glyphs, and `used/window` made the reader do the
+division to answer "how close am I to auto-compact". The absolute counts stay: a
+ratio cannot replace the two counts it came from. The segment went 24 → 17 → **14
+columns**.
 
 **No `∑ₜₒₖ` segment (removed 2026-09-12):** the previous `∑ₜₒₖ {total}` read the
 same `StatusBarState.token_total` that the `ctx` meter renders as `used`, so it
@@ -261,10 +261,10 @@ was a second format of one number (precise integer vs compact). It was removed
 to free the row; the exact integer remains in the task-stats block and `/stats`.
 
 These segments are droppable on narrow terminals. Push order on the row is
-`model → out → think → ctx → turns → cache → timing`, and
+`model → out → think → ctx → cache → turns → timing`, and
 `fit_row_spans` removes the last droppable first, so survival is
-`ctx > turns > cache > timing`. With every segment populated the full row is
-**90 columns**, enforced by
+`ctx > cache > turns > timing`. With every segment populated the full row is
+**86 columns**, enforced by
 `render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`.
 
 **Subagent tool-card display:** A subagent's model name and token total
