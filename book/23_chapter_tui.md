@@ -161,6 +161,7 @@ The TUI consumes updates in `crates/tui/src/widgets/state/app/agent.rs` → `han
 | `ToolProgress` | Update the matching active tool's 1→3 line live tail |
 | `RequestSelect` | Permission popup ([Ch 10](./10_chapter_permission.md)) |
 | `TokenUsage` | Status bar counters |
+| `TurnStats` | Status bar turn counters (per-task LLM turns; cap carried but not rendered) |
 | `ModelInfo` | Model name / limits display |
 | `TaskComplete` | Mark task done, enable follow-up input |
 | `Error` | Error banner with `AgentErrorKind` |
@@ -395,7 +396,11 @@ pub(crate) trait Renderable {
 
 **Bottom bar** (`render_bottom_bar`, always 2 rows):
 - Row 1: cwd, uptime (`⊙ Up` / `运行`), git branch (`⎇`), optional account (`¤ …` for DeepSeek / Kimi). Segments joined with ` │ `. Prompt elapsed lives on the **task-end separator** (not the bottom bar).
-- Row 2: model name, `max_out_token` (the effective text-output budget: `max_tokens` minus the reasoning share for effort-semantic models — e.g. `max_out_token 73K` at `high` effort on a 128K envelope — while budget-semantic models keep the full `max_tokens` since their thinking envelope is separate), `think high`/`思考 high` (effort) or `think 32K`/`思考 32K` (budget; the two are mutually exclusive — a stale budget is never shown next to an effort), `ctx` meter with `■`/`·` fill, `∑ₜₒₖ` last-call total, `▣ cache%`/`缓存%`. Segments joined with two spaces. Narrow terminals drop cache → uptime → path → ∑ → ctx first.
+- Row 2: model name, `out` (the effective text-output budget: `max_tokens` minus the reasoning share for effort-semantic models — e.g. `out 73K` at `high` effort on a 128K envelope — while budget-semantic models keep the full `max_tokens` since their thinking envelope is separate), `think high`/`思考 high` (effort) or `think 32K`/`思考 32K` (budget; the two are mutually exclusive — a stale budget is never shown next to an effort), `ctx` meter with `■`/`·` fill (`ctx [▍···] 45K/1M` — gauge plus used/window, no percentage), turn counters (`⟳ 12` for session user turns, plus `⇅ 3` for the current task's agent-loop turns — hidden until the first LLM call of the task), `▣` cache hit rate, and turn timing (`⏱ 02:05` for the last completed turn plus `avg 01:45`/`均 01:45` across the session; the average is omitted until a turn completes). Segments joined with two spaces. Narrow terminals drop timing → cache → turns → ctx first, i.e. `ctx` survives longest.
+
+**Row-2 compaction (2026-09-12):** adding the turn segments pushed row 2 to ~138 columns, so segments began dropping on ordinary terminals. The row was cut to **90 columns** with no loss of distinct information. The governing rule is *one value, one rendering*: (1) the `∑ₜₒₖ {total}` segment was **deleted** — it read the same `StatusBarState.token_total` the `ctx` meter renders as its `used` figure (the exact integer survives in the task-stats block and `/stats`); (2) the ctx meter's `pct%` was **deleted** for the same reason — it is a pure function of the `used/window` rendered beside it — and the gauge was narrowed 10 → 6 cells, taking that segment from 24 to 17 columns while keeping its at-a-glance near-limit reading (`[■■■▍]` vs `[▍···]`); (3) `max_out_token` → `out`; (4) `cache%` → bare `▣ 30%`; (5) the `turns` word was dropped from both counters, leaving `⟳ 12 ⇅ 3`. The width budget is pinned by `bottom_bar_fits_every_segment_in_100_columns`.
+
+**Turn counters and timing (2026-09-12):** `⟳` counts user turns dispatched this session — incremented at the single dispatch choke point (`handlers/skills.rs::dispatch_user_task`, which also serves queued flushes and skill dispatch) and seeded on resume by counting persisted user messages in `load_history`. `⇅` counts agent-loop iterations for the current task: the agent emits `AgentUpdate::TurnStats { turns_taken, max_turns }` once per loop iteration (`crates/tact/src/agent/mod.rs`), the kit's `StatusBarComponent` stores it, and the shell resets it at dispatch. `max_turns` is plumbed into `StatusBarState.turn_llm_cap` but deliberately **not rendered** — only `spawn_subagent` ever sets a cap, so a main-agent bottom bar would never show one. Timing accumulates in `add_task_end_separator` (`widgets/state/app/popups.rs`), the only place that actually freezes `task_start_time`; cancelled turns count, synthetic separators (no start time) do not. Live in-flight elapsed stays on the top status bar — the bottom bar shows only frozen values.
 
 **Input** (`render_input_box`): rounded border in `Insert` mode; up to 3 content rows; long lines soft-wrap at character boundaries (`wrap_line`, CJK double-width aware — `Paragraph` stays unwrapped and draws exactly those rows) and the caret/scroll follow the wrapped rows (`caret_in_wrapped`); CJK-aware cursor width; approval banner when `WaitingForUser`. Palette mode uses `render_command_line`. When `[voice].enabled = true`, a **centered** title-bar button (separate `Block` title from the left input label, so the top border stays visible between them) records microphone audio (macOS permission required), sends WAV to the configured transcription service, and inserts the returned text at the cursor (`Esc` cancels). Optional `[voice].voice_keybind` toggles the same control from the keyboard; only an exact match is consumed. See [Ch 21](./21_chapter_config.md) and `crates/tact/src/voice/`.
 
@@ -552,7 +557,7 @@ Physical rows are append-only during normal streaming; `splice_msgs` / `drain_ms
 | **`Info`** | System message line(s) | Markdown if no system prefix |
 | **`Error`** | System error line (fatal) | Flushes stream on fatal |
 | **`TaskComplete`** | Task-end separator only | Does **not** re-append summary text (already streamed); scroll to bottom |
-| **`TokenUsage` / `ModelInfo`** | *(none)* | Status bar only |
+| **`TokenUsage` / `TurnStats` / `ModelInfo`** | *(none)* | Status bar only |
 
 **StreamChunk parsing** deserves extra detail because one token batch can produce heterogeneous rows:
 

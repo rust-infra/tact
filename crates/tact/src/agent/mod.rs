@@ -730,6 +730,10 @@ impl Agent {
             // Turn cap: bounds a runaway subagent. Count a turn per loop
             // iteration (one LLM call) and stop once the cap is exceeded.
             self.turns_taken += 1;
+            self.emit_update(AgentUpdate::TurnStats {
+                turns_taken: self.turns_taken,
+                max_turns: self.max_turns,
+            });
             if let Some(max) = self.max_turns
                 && self.turns_taken > max
             {
@@ -3795,6 +3799,97 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(agent.turns_taken, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_emits_turn_stats_each_iteration() {
+        ensure_config();
+        let context = test_context("agent_loop_turn_stats");
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("done")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent = agent.with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        // Drain without blocking: the loop has returned, so every emitted
+        // update is already queued.
+        let mut stats = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::TurnStats {
+                turns_taken,
+                max_turns,
+            } = update
+            {
+                stats.push((turns_taken, max_turns));
+            }
+        }
+        assert_eq!(
+            stats,
+            vec![(1, None)],
+            "one TurnStats per loop iteration, carrying the (absent) main-agent cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_turn_stats_carries_the_cap_and_counts_the_capped_turn() {
+        ensure_config();
+        let context = test_context("agent_loop_turn_stats_capped");
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("done")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_max_turns(Some(1));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent = agent.with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        let mut stats = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::TurnStats {
+                turns_taken,
+                max_turns,
+            } = update
+            {
+                stats.push((turns_taken, max_turns));
+            }
+        }
+        assert_eq!(
+            stats,
+            vec![(1, Some(1))],
+            "the cap is reported and the counted turn is the one that trips it"
+        );
     }
 
     #[tokio::test]

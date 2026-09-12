@@ -32,6 +32,53 @@
 ---
 
 
+## 1. 2026-09-12 — 底栏第 2 行瘦身到 90 列预算
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`；`crates/agent_tui_kit/src/i18n.rs`；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；Ch 23 §6.6 |
+
+**Symptom / motivation：** 新增回合计数与回合耗时后，第 2 行涨到约 138 列，普通终端上 `fit_row_spans` 开始静默丢段——这一行被塞满了。审计内容后发现同一个比例或数值被渲染了两三遍：`∑ₜₒₖ {total}` 与 `ctx` 进度条的 `used` 都读 `StatusBarState.token_total`；而 ctx 段自身又把比例同时编码成进度条、`pct%` 和 `used/window` 三种形式。
+
+**Decision：** 按**一个值只留一种渲染**的规则，把第 2 行压到 **90 列且不丢失任何独立信息**：
+1. **删除 `∑ₜₒₖ {total}` 段**——与 `ctx` 进度条的 `used` 重复。精确整数仍可在每轮后的任务 stats 块与 `/stats` 中看到，因此丢掉的只是重复渲染。`ICON_TOKENS` / `format_token_total` 一并删除。
+2. **删除 ctx 段的 `pct%`**（同一规则）——它是紧邻的 `used/window` 的纯函数——并把**进度条从 10 格压到 6 格**，因为进度条的精确值同样已被给出两次，它只需传达直观感受。该段由 **24 列降到 17 列（−29%）**，同时仍能区分接近阈值的用量（85% 时 `[■■■▍]` vs 4% 时 `[▍···]`）。`format_context_meter` 现渲染 `ctx [▍···] 45K/1M`。
+3. **`max_out_token` → `out`**（中文 `输出`），与相邻 `ctx` / `think` 的简写程度一致。
+4. **`▣ cache% 30%` → `▣ 30%`**——图标加 `%` 已足够标识该数字。
+5. **`⟳ 12 turns ⇅ 3 turns` → `⟳ 12 ⇅ 3`**——两个计数都去掉 `turns` 文字；相邻的图标对读作一个"回合"数值。
+6. **`⏱ 02:05 · avg 01:45` → `⏱ 02:05 avg 01:45`**——去掉分隔点。
+
+随之失效的 i18n 字段（`bottom_cache_pct`、`bottom_turns`、`bottom_llm_turns`）被移除，而非留作陈旧字段。`render_usage_bar` 的单元测试改为从 `USAGE_BAR_WIDTH` 推导期望宽度，不再硬编码内宽 8，因此下次改宽度不会再连带打断它们。
+
+**Behavior after：** 所有段都填充时，整行在 90 列内渲染完毕（`deepseek-v4  out 73.1K  think high  ctx [▍···] 45K/1M  ⟳ 12  ⇅ 3  ▣ 30%  ⏱ 02:05 avg 01:45`），普通终端不再丢段。丢弃顺序为 `ctx > 回合 > 缓存 > 耗时`。宽度预算测试（`bottom_bar_fits_every_segment_in_100_columns`）会在将来某段把行推回约 100 列以上时失败——正是本次修掉的那种失效模式。
+
+**Pointers：** `crates/agent_tui_kit/src/render/bar.rs`（`USAGE_BAR_WIDTH`、`format_context_meter`、`format_cache_pct`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`、第 2 行 group 推入顺序；已删除 `ICON_TOKENS`/`format_token_total`）；`crates/agent_tui_kit/src/i18n.rs`（`bottom_out`、`bottom_avg`；移除三个字段）；`crates/tui/src/render/bar.rs`（`bottom_bar_fits_every_segment_in_100_columns`）；`docs/token_usage_schema.md`；Ch 23 §6.6。
+
+---
+
+## 1. 2026-09-12 — TUI 底栏显示回合计数与回合耗时
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/protocol/src/agent.rs`（`AgentUpdate::TurnStats`）；`crates/tact/src/agent/mod.rs`（`agent_loop`）；`crates/agent_tui_kit/src/state/status_bar_state.rs`；`crates/agent_tui_kit/src/components/status_bar.rs`；`crates/agent_tui_kit/src/render/bar.rs`；`crates/tui/src/handlers/skills.rs`；`crates/tui/src/widgets/state/app/popups.rs`；`docs/token_usage_schema.md`；Ch 23 §6.6 |
+
+**Symptom / motivation：** 底栏此前只报告 token、缓存命中率与上下文占用，对**回合**一无所知。唯一的耗时显示是 task-end 分隔线上冻结的 `⏱ mm:ss` 以及任务结束 stats 块——都是历史日志行，不是实时计数。会话跑了多少回合、当前任务占用了多少次 agent-loop 迭代、平均每回合耗时多久，全都看不到。
+
+**Decision：** 在底栏第 2 行新增三个计数，全部来自内存中已有的数据（无新持久化、无 schema 变更）：
+1. `AgentUpdate::TurnStats { turns_taken, max_turns }` 由 `agent_loop` 在 `self.turns_taken += 1` 之后每次循环发一次——与 `TokenUsage` 同频，不增加事件量。kit 的 `StatusBarComponent` 认领它；shell 在派发时重置 `turn_llm`。
+2. 会话用户回合（`⟳`）在唯一派发入口 `handlers/skills.rs::dispatch_user_task` 计数（同时服务排队刷新与 skill 派发）；断点续传时由 `load_history` 统计已持久化的 user 消息播种。
+3. 回合耗时在 `add_task_end_separator` 累计——这是**唯一**真正冻结 `task_start_time` 的位置（`freeze_last_prompt_cost` 在其后运行、永远看到 `None`），因此不会重复计数。被取消的回合计入（其墙钟时间是真实的）；合成分隔线（无 start time）不计入。
+4. `TurnStats` 在 `coordinator_prepass` 中登记为**按次调用的元数据**，与 `TokenUsage`/`ModelInfo` 同级。它在回合计间隙、loading 转圈仍在时到达，若不登记就会走内容门、让转圈在循环刚开始时消失（回归测试：`turn_stats_is_metadata_and_keeps_the_loading_placeholder`）。
+5. `max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**：只有 `spawn_subagent` 会设置 cap，主 agent 也没有 CLI flag 或 TUI 接线，底栏永远不可能显示 `/cap`。因此渲染裸 `⇅ {n}`；字段保留，以便将来为主 agent 加 cap 时立即可用。
+
+**Behavior after：** 第 2 行显示 `⟳ 12 轮 ⇅ 3 轮次  ∑ₜₒₖ …  ▣ 缓存% 5%  ⏱ 02:05 · 均 01:45`（英文对应 `⟳ 12 turns ⇅ 3 turns … ⏱ 02:05 · avg 01:45`）。任务的首次 LLM 调用前隐藏 `⇅` 段；回合完成前隐藏 `avg`；尚无回合完成时隐藏整个耗时组。运行中的实时耗时仍只在顶栏——底栏只显示冻结值。窄终端下新段可被丢弃，存活顺序 `ctx > 回合 > ∑ₜₒₖ > 缓存 > 耗时`，原有 `ctx > ∑ > cache` 优先级不变。*（同日稍后已被取代——本条记录的是回合统计刚落地时的状态；当前 90 列的行见上方"第 2 行瘦身"条目。）*
+
+**Pointers：** `crates/protocol/src/agent.rs`（`AgentUpdate::TurnStats`）；`crates/tact/src/agent/mod.rs`（`agent_loop` 发送）；`crates/agent_tui_kit/src/state/status_bar_state.rs`（`turn_user`、`turn_llm`、`turn_llm_cap`、`turn_last_secs`、`turn_done`、`turn_total_secs`）；`crates/agent_tui_kit/src/render/bar.rs`（`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`）；`crates/tui/src/widgets/state/app/popups.rs`（`add_task_end_separator`）；`crates/tui/src/widgets/state/app/messages.rs`（`load_history` 播种）；spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`；Ch 23 §6.6；`docs/token_usage_schema.md`。
+
+---
+
 ## 1. 2026-09-11 — Mermaid 弹窗显示渲染后的图，无法渲染时也会说明原因
 
 | Field | Value |

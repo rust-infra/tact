@@ -42,7 +42,7 @@ sequenceDiagram
 
 **分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands、task DAG）。
 
-**组件注册表（whole-App 切换，2026-08-23）：** kit 的组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` / `subagent_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）、`SubagentsChanged`（subagent panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
+**组件注册表（whole-App 切换，2026-08-23）：** kit 的组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` / `subagent_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`TurnStats`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）、`SubagentsChanged`（subagent panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
 
 ---
 
@@ -134,6 +134,7 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 | `ToolProgress` | 更新匹配 active tool 的 1→3 行 live tail |
 | `RequestSelect` | 权限 popup（[Ch 10](./10_chapter_permission.md)） |
 | `TokenUsage` | 状态栏计数 |
+| `TurnStats` | 状态栏回合计数（当前任务的 LLM 回合；cap 携带但不渲染） |
 | `ModelInfo` | 模型名 / 限制显示 |
 | `TaskComplete` | 标记任务完成，启用后续输入 |
 | `Error` | 带 `AgentErrorKind` 的错误横幅 |
@@ -350,7 +351,11 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
 - 第 1 行：cwd、运行（`⊙ 运行` / `Up`）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
-- 第 2 行：模型名、`max_out_token`（真正留给输出的额度：effort 语义模型从 `max_tokens` 中扣除 reasoning 份额——如 128K 信封 + `high` effort 显示 `max_out_token 73K`；budget 语义模型的 thinking 走独立信封，因此仍显示完整 `max_tokens`）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
+- 第 2 行：模型名、`输出`（真正留给输出的额度：effort 语义模型从 `max_tokens` 中扣除 reasoning 份额——如 128K 信封 + `high` effort 显示 `out 73K`；budget 语义模型的 thinking 走独立信封，因此仍显示完整 `max_tokens`）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、带 `■`/`·` 填充的 `ctx` 进度（`ctx [▍···] 45K/1M`——进度条 + used/window，不再显示百分比）、回合计数（`⟳ 12` = 会话用户回合，以及 `⇅ 3` = 当前任务的 agent-loop 回合——任务的首次 LLM 调用前隐藏）、`▣` 缓存命中率，以及回合耗时（`⏱ 02:05` = 上一完成回合，加 `均 01:45` = 会话平均；回合完成前不显示平均）。段落用两个空格连接。窄终端优先丢弃：耗时 → 缓存 → 回合 → ctx——即 `ctx` 存活最久。
+
+**第 2 行瘦身（2026-09-12）：** 新增回合段后第 2 行涨到约 138 列，普通终端已开始丢段。该行被压到 **90 列**，且不丢失任何独立信息。遵循的规则是**一个值只留一种渲染**：(1) **删除** `∑ₜₒₖ {total}` 段——它读的是 `ctx` 进度条已渲染为 `used` 的同一个 `StatusBarState.token_total`（精确整数仍保留在任务 stats 块与 `/stats` 中）；(2) 同理**删除** ctx 的 `pct%`——它是紧邻的 `used/window` 的纯函数——并把进度条从 10 格压到 6 格，该段由 24 列降到 17 列，同时保留"接近阈值"的直观可读性（`[■■■▍]` vs `[▍···]`）；(3) `max_out_token` → `out`；(4) `cache%` → 裸 `▣ 30%`；(5) 两个计数都去掉 `turns` 文字，只剩 `⟳ 12 ⇅ 3`。宽度预算由 `bottom_bar_fits_every_segment_in_100_columns` 锁定。
+
+**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时仍只在顶栏——底栏只显示冻结值。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
 
@@ -486,8 +491,8 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 
 `handle_agent_update`（`widgets/state/app/agent.rs`）是 agent 事件写入 log 行的唯一 writer。每次 update 设 `dirty = true`。match 前两个全局门：
 
-1. **Thinking gate** — 产出内容的 update *除* `ThinkingChunk` / `TokenUsage` / `ModelInfo` / `ToolProgress` 外，若 thinking 区域仍开则调用 `flush_and_close_thinking()` 作安全网。优先显式 `ThinkingChunk::Finished`。
-2. **Loading gate** — 多数 update 调用 `remove_loading_placeholder()`。信息性或类元数据 update（`TokenUsage`、`ModelInfo`、`ToolProgress`）跳过移除。Legacy `PlanGenerated` handler 也跳过，但 agent 从不发出 — loading 行路径 inactive。
+1. **Thinking gate** — 产出内容的 update *除* `ThinkingChunk` / `TokenUsage` / `ModelInfo` / `TurnStats` / `ToolProgress` 外，若 thinking 区域仍开则调用 `flush_and_close_thinking()` 作安全网。优先显式 `ThinkingChunk::Finished`。
+2. **Loading gate** — 多数 update 调用 `remove_loading_placeholder()`。信息性或类元数据 update（`TokenUsage`、`ModelInfo`、`TurnStats`、`ToolProgress`）跳过移除。Legacy `PlanGenerated` handler 也跳过，但 agent 从不发出 — loading 行路径 inactive。
 
 **当前 agent 路径：** `StepAdded` 仅更新内部 `app.plan.steps`（无 log 行、无专用面板）。`StepStarted` 创建 tool placeholder 并驱动 `Planning → Executing`。当前运行勿期望 `PlanGenerated`。
 
@@ -507,7 +512,7 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | **`Info`** | 系统消息行 | 无系统前缀则 Markdown |
 | **`Error`** | 系统错误行（fatal） | Fatal 时 flush stream |
 | **`TaskComplete`** | 仅 task-end separator | **不**重追加摘要文本（已流式）；scroll 到底 |
-| **`TokenUsage` / `ModelInfo`** | *（无）* | 仅状态栏 |
+| **`TokenUsage` / `TurnStats` / `ModelInfo`** | *（无）* | 仅状态栏 |
 
 **StreamChunk 解析** 需额外细节，因单批 token 可产出异构行：
 
@@ -539,7 +544,7 @@ ThinkingChunk::Started →  在 phys_idx 保留 direct-card placeholder 行
 ThinkingChunk::Delta   →  追加 active content；渲染 1→2→3 行 tail
 ThinkingChunk::Finished→  在同一 phys_idx 完成为 ThinkingBlock { summary, content, markdown }
 StreamChunk / Step*    →  若漏 Finished 则 safety-close
-TokenUsage / ModelInfo →  不关闭 thinking
+TokenUsage / ModelInfo / TurnStats →  不关闭 thinking
 ```
 
 Active card body 从一行增长到三行，之后保持最新三行 tail。关闭时原地变为一行 summary；完整内容保留在 state，供 detail popup 与 copy 使用。

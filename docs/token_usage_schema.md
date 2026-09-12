@@ -215,23 +215,57 @@ This means consecutive multi-turn conversations typically achieve high cache hit
 
 **TUI bottom-bar usage display:** The second row shows:
 
-- **Max output tokens** — `max_out_token {n}`, the effective text-output
+- **Max output tokens** — `out {n}` (labelled `max_out_token` before the
+  2026-09-12 compaction), the effective text-output
   budget. For effort-semantic models (openai / deepseek / kimi k3) reasoning
   shares the same `max_tokens` envelope, so the reasoning share is subtracted
   (same tier convention as the compaction reserve: text = envelope ×
   `100/(100+pct)`, e.g. `high` → `73K` on a 128K envelope). Budget-semantic
   models (Anthropic-style `thinking_budget`) keep a separate thinking
   envelope, so the full `max_tokens` is shown.
-- **Context meter** — `ctx [■■··] pct used/window`, where `used` is the latest
-  main-loop `TokenUsageInfo.total` and `window` is `model_context_window`.
+- **Context meter** — `ctx [■■··] used/window` (the `pct` was dropped on
+  2026-09-12; see below), where `used` is the latest main-loop
+  `TokenUsageInfo.total` and `window` is `model_context_window`.
   Subagent LLM calls persist under their own `sessions.id` (linked via
   `sessions.ref_id`); subagent `TokenUsage` is **not** forwarded to the shared
   UI channel — the bottom bar reflects the main agent only.
-- **Last-call total** — `∑ₜₒₖ {total}` from the **same** `TokenUsageInfo.total`
-  (precise integer; droppable when narrow).
-- **Cache hit rate** — `▣ 缓存%` / `▣ cache%` plus `pct%` or `--`, from
+- **Cache hit rate** — `▣ pct%` or `▣ --` (the `cache%` label was dropped in
+  the 2026-09-12 compaction: `▣` plus `%` already identify the number), from
   `prompt_cache_hit_tokens / (hit + miss)` on that latest call. Counts cover the
   entire prompt (system, tools, history), not only the latest user message.
+- **Turn counters** — `⟳ {n}` for user turns dispatched this session
+  (seeded from persisted user messages on resume) and `⇅ {n}` for the
+  current task's agent-loop iterations, from `AgentUpdate::TurnStats`
+  (`{ turns_taken, max_turns }`, emitted once per loop iteration). The `⇅`
+  segment is hidden until the task's first LLM call. `max_turns` is carried into
+  `StatusBarState.turn_llm_cap` but **not rendered**: only `spawn_subagent` sets
+  a cap, so the main-agent bar would never show one. The `turns` word label was
+  dropped in the compaction; the glyph pair carries it (see Ch 23 §6.6).
+- **Turn timing** — `⏱ {mm:ss}` for the most recently finished turn plus
+  `avg {mm:ss}` across the session. Accumulated in
+  `add_task_end_separator` (the only place that freezes `task_start_time`);
+  cancelled turns count, synthetic separators do not. Frozen values only — live
+  in-flight elapsed stays on the top status bar.
+
+**The ctx segment was triple-encoded (compacted 2026-09-12):** it used to be
+`ctx [▍·······] 4% 45K/1M` — the same ratio as gauge, `4%`, and `used/window`.
+The percentage was dropped (it is a pure function of the two numbers rendered
+beside it) and the gauge was narrowed 10 → 6 cells (its exact value is given
+twice over, so it only needs to convey an at-a-glance sense). The segment went
+from 24 to **17 columns**; the gauge still distinguishes near-limit usage
+(`[■■■▍]` at 85% vs `[▍···]` at 4%).
+
+**No `∑ₜₒₖ` segment (removed 2026-09-12):** the previous `∑ₜₒₖ {total}` read the
+same `StatusBarState.token_total` that the `ctx` meter renders as `used`, so it
+was a second format of one number (precise integer vs compact). It was removed
+to free the row; the exact integer remains in the task-stats block and `/stats`.
+
+These segments are droppable on narrow terminals. Push order on the row is
+`model → out → think → ctx → turns → cache → timing`, and
+`fit_row_spans` removes the last droppable first, so survival is
+`ctx > turns > cache > timing`. With every segment populated the full row is
+**90 columns**, enforced by
+`render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`.
 
 **Subagent tool-card display:** A subagent's model name and token total
 are shown on the tool card's meta row (e.g. `🤖 deepseek-v3 · ⚡ 4.2K`)

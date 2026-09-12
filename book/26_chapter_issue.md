@@ -32,6 +32,53 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-12 — Bottom-bar row 2 compacted to a 90-column budget
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`; `crates/agent_tui_kit/src/i18n.rs`; `crates/tui/src/render/bar.rs`; `docs/token_usage_schema.md`; Ch 23 §6.6 |
+
+**Symptom / motivation:** Adding the turn counters and turn timing pushed row 2 to ~138 columns, so on ordinary terminals `fit_row_spans` began silently dropping segments — the row was "full". Auditing the content found the same ratio or value rendered two or three times over: `∑ₜₒₖ {total}` and the `ctx` meter's `used` both read `StatusBarState.token_total`, and the ctx meter separately encoded its ratio as a gauge, a `pct%`, *and* `used/window`.
+
+**Decision:** Cut row 2 to **90 columns with no loss of distinct information**, by the rule *one value, one rendering*:
+1. **Deleted the `∑ₜₒₖ {total}` segment** — redundant with the `ctx` meter's `used`. The exact integer is still available in the task-stats block after each turn and in `/stats`, so only its duplicate rendering is lost. `ICON_TOKENS` / `format_token_total` were removed with it.
+2. **Deleted the ctx meter's `pct%`** (same rule) — it is a pure function of the `used/window` rendered immediately beside it — and **narrowed the gauge 10 → 6 cells**, since the gauge's exact value is also given twice over and it only needs to convey an at-a-glance sense. That segment went **24 → 17 columns (−29%)** while still distinguishing near-limit usage (`[■■■▍]` at 85% vs `[▍···]` at 4%). `format_context_meter` now renders `ctx [▍···] 45K/1M`.
+3. **`max_out_token` → `out`** in both languages (ZH `输出`), matching the shorthand level of the neighbouring `ctx` / `think` labels.
+4. **`▣ cache% 30%` → `▣ 30%`** — the glyph plus `%` already identify the number.
+5. **`⟳ 12 turns ⇅ 3 turns` → `⟳ 12 ⇅ 3`** — the word was dropped from both counters; the adjacent glyph pair reads as one "turns" figure.
+6. **`⏱ 02:05 · avg 01:45` → `⏱ 02:05 avg 01:45`** — dropped the separator.
+
+The now-unused i18n fields (`bottom_cache_pct`, `bottom_turns`, `bottom_llm_turns`) were removed rather than left stale. The `render_usage_bar` unit tests were rewritten to derive expected widths from `USAGE_BAR_WIDTH` instead of hard-coding 8 inner cells, so the next width change cannot break them.
+
+**Behavior after:** With every segment populated the full row renders in 90 columns (`deepseek-v4  out 73.1K  think high  ctx [▍···] 45K/1M  ⟳ 12  ⇅ 3  ▣ 30%  ⏱ 02:05 avg 01:45`), so ordinary terminals no longer drop segments. The drop order is `ctx > turns > cache > timing`. A width-budget test (`bottom_bar_fits_every_segment_in_100_columns`) fails if a future segment pushes the row back over ~100 columns — the exact failure mode this change fixed.
+
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`USAGE_BAR_WIDTH`, `format_context_meter`, `format_cache_pct`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`, row-2 group push order; `ICON_TOKENS`/`format_token_total` removed); `crates/agent_tui_kit/src/i18n.rs` (`bottom_out`, `bottom_avg`; three fields removed); `crates/tui/src/render/bar.rs` (`bottom_bar_fits_every_segment_in_100_columns`); `docs/token_usage_schema.md`; Ch 23 §6.6.
+
+---
+
+## 1. 2026-09-12 — TUI bottom bar shows turn counts and turn timing
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/protocol/src/agent.rs` (`AgentUpdate::TurnStats`); `crates/tact/src/agent/mod.rs` (`agent_loop`); `crates/agent_tui_kit/src/state/status_bar_state.rs`; `crates/agent_tui_kit/src/components/status_bar.rs`; `crates/agent_tui_kit/src/render/bar.rs`; `crates/tui/src/handlers/skills.rs`; `crates/tui/src/widgets/state/app/popups.rs`; `docs/token_usage_schema.md`; Ch 23 §6.6 |
+
+**Symptom / motivation:** The bottom bar reported tokens, cache rate and context usage but nothing about *turns*. The only timing surface was the frozen `⏱ mm:ss` on the task-end separator and the post-task stats block — historical log rows, never a live counter. There was no way to see how many turns a session had run, how many agent-loop iterations the current task was taking, or how long turns were taking on average.
+
+**Decision:** Add three counters to bottom-bar row 2, all derived from data already in memory (no new persistence, no schema change):
+1. `AgentUpdate::TurnStats { turns_taken, max_turns }` is emitted once per agent-loop iteration from `agent_loop`, right after `self.turns_taken += 1` — same cadence as `TokenUsage`, so no new event volume. The kit's `StatusBarComponent` claims it; the shell resets `turn_llm` at dispatch.
+2. Session user turns (`⟳`) are counted at the single dispatch choke point, `handlers/skills.rs::dispatch_user_task` (which also serves queued flushes and skill dispatch), and seeded on resume by counting persisted user messages in `load_history`.
+3. Turn timing accumulates in `add_task_end_separator`, the **only** place that actually freezes `task_start_time` (`freeze_last_prompt_cost` runs after it and always sees `None`), so a turn cannot be counted twice. Cancelled turns count — their wall time is real; synthetic separators (no start time) do not.
+4. `TurnStats` is registered as **per-call metadata** in `coordinator_prepass`, alongside `TokenUsage`/`ModelInfo`. It fires between turns while the loading spinner is up, so without this it would run the content gates and make the spinner vanish the moment the loop starts (regression test: `turn_stats_is_metadata_and_keeps_the_loading_placeholder`).
+5. `max_turns` is plumbed into `StatusBarState.turn_llm_cap` but deliberately **not rendered**: only `spawn_subagent` ever sets a cap and there is no CLI flag or TUI wiring for it, so a main-agent bar could never show `/cap`. Bare `⇅ {n}` renders instead; the field is kept so the segment is ready if a main-agent cap is ever added.
+
+**Behavior after:** Row 2 shows `⟳ 12 turns ⇅ 3 turns  ∑ₜₒₖ …  ▣ cache% 5%  ⏱ 02:05 · avg 01:45` (`⟳ 12 轮 ⇅ 3 轮次 … ⏱ 02:05 · 均 01:45`). The `⇅` segment is hidden until the task's first LLM call; `avg` is hidden until a turn completes; the whole timing group is hidden while no turn has finished. Live in-flight elapsed stays on the top status bar — the bottom bar shows only frozen values. On narrow terminals the new segments are droppable with survival order `ctx > turns > ∑ₜₒₖ > cache > timing`, preserving the pre-existing `ctx > ∑ > cache` priority. *(Superseded later the same day — this entry records the state when turn stats first shipped; see the row-2 compaction entry above for the current 90-column row.)*
+
+**Pointers:** `crates/protocol/src/agent.rs` (`AgentUpdate::TurnStats`); `crates/tact/src/agent/mod.rs` (`agent_loop` emit); `crates/agent_tui_kit/src/state/status_bar_state.rs` (`turn_user`, `turn_llm`, `turn_llm_cap`, `turn_last_secs`, `turn_done`, `turn_total_secs`); `crates/agent_tui_kit/src/render/bar.rs` (`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`); `crates/tui/src/widgets/state/app/popups.rs` (`add_task_end_separator`); `crates/tui/src/widgets/state/app/messages.rs` (`load_history` seeding); spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`; Ch 23 §6.6; `docs/token_usage_schema.md`.
+
+---
+
 ## 1. 2026-09-11 — The Mermaid popup shows the rendered diagram, and says when it cannot render
 
 | Field | Value |

@@ -270,6 +270,14 @@ pub enum AgentUpdate {
     Error(AgentErrorKind),
     /// Token usage stats
     TokenUsage(TokenUsageInfo),
+    /// Agent-loop turn counter for the current task, emitted once per loop
+    /// iteration (one LLM call). `max_turns` is the loop cap when the agent
+    /// has one (`Agent::max_turns`; `None` = unbounded, which is the case for
+    /// the main agent — only subagents set it today).
+    TurnStats {
+        turns_taken: u32,
+        max_turns: Option<u32>,
+    },
     /// Model call parameters (name, max_tokens, thinking budget, etc.)
     ModelInfo(ModelCallParams),
     /// Informational notice (does not change state)

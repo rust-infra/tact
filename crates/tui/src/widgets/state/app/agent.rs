@@ -485,12 +485,13 @@ impl App {
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed_tail(tasks, reason);
             }
-            // TokenUsage / ModelInfo → StatusBarComponent (dispatch).
+            // TokenUsage / ModelInfo / TurnStats → StatusBarComponent (dispatch).
             // ToolMeta → ToolComponent (dispatch).
             // StreamChunk → StreamComponent parse + apply_stream_events.
             // SubagentsChanged → SubagentPanelComponent (registry dispatch).
             AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
             | AgentUpdate::SubagentsChanged { .. } => {}
@@ -510,6 +511,7 @@ impl App {
         match update {
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
+            | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::ToolProgress { .. } => {}
@@ -517,6 +519,7 @@ impl App {
         }
         match update {
             AgentUpdate::TokenUsage(_)
+            | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::ToolProgress { .. } => {}
@@ -1813,6 +1816,75 @@ mod lifecycle_tests {
             joined.contains("150 tokens (prompt 100 · completion 50 · cache 10 · reasoning 5)"),
             "token part missing: {joined}"
         );
+    }
+
+    #[test]
+    fn turn_stats_update_reaches_status_bar() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::TurnStats {
+            turns_taken: 2,
+            max_turns: None,
+        });
+        assert_eq!(app.status_bar_mut().turn_llm, 2);
+        assert_eq!(app.status_bar_mut().turn_llm_cap, None);
+    }
+
+    #[test]
+    fn turn_stats_is_metadata_and_keeps_the_loading_placeholder() {
+        // `TurnStats` fires once per agent-loop iteration — i.e. at the start of
+        // the task and between turns, while the loading spinner is up. It is
+        // per-call metadata (same class as `TokenUsage`/`ModelInfo`), so it must
+        // not run the content-update gates: dropping the spinner here would make
+        // it vanish the moment the loop starts.
+        let mut app = make_app();
+        app.status = Status::Planning;
+        app.append_blank(crate::widgets::state::LogItemKind::SystemTool);
+        app.loading_idx = Some(app.log.items.len().saturating_sub(1));
+
+        app.handle_agent_update(AgentUpdate::TurnStats {
+            turns_taken: 1,
+            max_turns: None,
+        });
+
+        assert!(
+            app.loading_idx.is_some(),
+            "metadata update must keep the loading placeholder"
+        );
+    }
+
+    #[test]
+    fn completed_turns_accumulate_timing_and_average() {
+        let mut app = make_app();
+        // Two finished turns with distinct, easily-summed wall clocks.
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(60));
+        app.add_task_end_separator();
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(180));
+        app.add_task_end_separator();
+
+        let bar = app.status_bar_mut();
+        assert_eq!(bar.turn_done, 2, "both turns must be counted");
+        assert!(
+            bar.turn_total_secs >= 238 && bar.turn_total_secs <= 245,
+            "total turn seconds should sum both turns, got {}",
+            bar.turn_total_secs
+        );
+        assert!(
+            bar.turn_last_secs.is_some_and(|s| (178..=185).contains(&s)),
+            "last turn should be the second (180s) one, got {:?}",
+            bar.turn_last_secs
+        );
+    }
+
+    #[test]
+    fn synthetic_separator_does_not_accumulate_turn_timing() {
+        let mut app = make_app();
+        // No start time (the `add_task_end_separator` else-branch path).
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_end_separator();
+        let bar = app.status_bar_mut();
+        assert_eq!(bar.turn_done, 0, "no start time ⇒ no completed turn");
+        assert_eq!(bar.turn_total_secs, 0);
+        assert_eq!(bar.turn_last_secs, None);
     }
 
     #[test]

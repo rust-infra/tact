@@ -57,6 +57,14 @@ impl Component for StatusBarComponent {
                 self.state.token_reasoning = usage.reasoning_tokens;
                 true
             }
+            AgentUpdate::TurnStats {
+                turns_taken,
+                max_turns,
+            } => {
+                self.state.turn_llm = *turns_taken;
+                self.state.turn_llm_cap = *max_turns;
+                true
+            }
             AgentUpdate::ModelInfo(params) => {
                 self.state.model_name = params.model.clone();
                 self.state.model_max_tokens = params.max_tokens;
@@ -138,6 +146,36 @@ mod tests {
         assert_eq!(comp.state().token_total, 590);
         assert_eq!(comp.state().token_cache_hit, 50);
         assert_eq!(comp.state().token_reasoning, 20);
+    }
+
+    #[test]
+    fn turn_stats_updates_loop_counter_and_cap() {
+        let mut comp = StatusBarComponent::new("main");
+        let (mut log, mut pending, mut events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+        );
+        let dirty = comp.on_update(
+            &AgentUpdate::TurnStats {
+                turns_taken: 3,
+                max_turns: Some(50),
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
+        );
+        assert!(dirty);
+        assert_eq!(comp.state().turn_llm, 3);
+        assert_eq!(comp.state().turn_llm_cap, Some(50));
+        // Unbounded (main-agent) runs report `None` and must clear any stale cap.
+        comp.on_update(
+            &AgentUpdate::TurnStats {
+                turns_taken: 4,
+                max_turns: None,
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
+        );
+        assert_eq!(comp.state().turn_llm, 4);
+        assert_eq!(comp.state().turn_llm_cap, None);
     }
 
     #[test]

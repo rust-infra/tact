@@ -382,6 +382,15 @@ impl App {
                 .num_seconds()
                 .max(0);
             self.last_prompt_elapsed_secs = Some(s);
+            // Turn timing: this is the ONLY place that actually freezes elapsed
+            // (the later `freeze_last_prompt_cost` always sees `None`), so
+            // accumulate here exactly once per finished turn. Cancelled turns
+            // count too — their wall time is real. Do not accumulate in the
+            // `else` branch below (synthetic separators have no start time).
+            let bar = self.status_bar_mut();
+            bar.turn_last_secs = Some(s as u64);
+            bar.turn_done = bar.turn_done.saturating_add(1);
+            bar.turn_total_secs = bar.turn_total_secs.saturating_add(s as u64);
             s
         } else {
             self.last_prompt_elapsed_secs.unwrap_or(0)

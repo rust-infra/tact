@@ -144,7 +144,13 @@ impl App {
                         continue;
                     }
                     match msg.role {
-                        Role::User => self.add_user_message(content.clone()),
+                        Role::User => {
+                            // Seed the session turn counter: persisted user
+                            // messages are the only durable record of past
+                            // turns (no dedicated store query needed).
+                            self.status_bar_mut().turn_user += 1;
+                            self.add_user_message(content.clone());
+                        }
                         Role::Assistant => self.append_markdown(content.clone()),
                     }
                     continue;
@@ -163,6 +169,8 @@ impl App {
                     if texts.is_empty() {
                         continue;
                     }
+                    // Seed the session turn counter (see the Text branch above).
+                    self.status_bar_mut().turn_user += 1;
                     self.add_user_message(texts.join("\n"));
                 }
                 Role::Assistant => {
@@ -360,6 +368,42 @@ impl App {
 mod tests {
     use super::*;
     use crate::render::test_harness::make_app;
+
+    #[test]
+    fn load_history_seeds_session_turn_counter() {
+        let mut app = make_app();
+        app.load_history(vec![
+            tact_llm::Message::new_text(tact_llm::Role::User, "first".to_string()),
+            tact_llm::Message::new_text(tact_llm::Role::Assistant, "answer".to_string()),
+            tact_llm::Message::new_text(tact_llm::Role::User, "second".to_string()),
+        ]);
+
+        assert_eq!(
+            app.status_bar_mut().turn_user,
+            2,
+            "each persisted user message should seed one turn"
+        );
+        assert_eq!(
+            app.status_bar_mut().turn_llm,
+            0,
+            "resume must not invent in-flight LLM turns"
+        );
+    }
+
+    #[test]
+    fn load_history_skips_blank_user_text_when_seeding_turns() {
+        let mut app = make_app();
+        app.load_history(vec![
+            tact_llm::Message::new_text(tact_llm::Role::User, "   ".to_string()),
+            tact_llm::Message::new_text(tact_llm::Role::User, "real".to_string()),
+        ]);
+
+        assert_eq!(
+            app.status_bar_mut().turn_user,
+            1,
+            "blank user text is skipped for display and must not count as a turn"
+        );
+    }
 
     #[test]
     fn add_system_message_applies_semantic_colors() {

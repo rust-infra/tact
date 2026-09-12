@@ -25,9 +25,13 @@ const PROGRESS_BAR_WIDTH: u16 = 15;
 const ICON_UPTIME: &str = "⊙";
 const ICON_BRANCH: &str = "⎇";
 const ICON_BALANCE: &str = "¤";
-/// U+2211 + subscript t/o/k (U+209C U+2092 U+2096).
-const ICON_TOKENS: &str = "∑ₜₒₖ";
 const ICON_CACHE: &str = "▣";
+/// U+27F3 — session user turns.
+const ICON_TURNS: &str = "⟳";
+/// U+21C5 — LLM turns (agent-loop iterations) in the current task.
+const ICON_LLM_TURNS: &str = "⇅";
+/// Wall-clock turn timing (same glyph as `format_task_elapsed`).
+const ICON_ELAPSED: &str = "⏱";
 const SEP_ROW1: &str = " │ ";
 const SEP_ROW2: &str = "  ";
 const BAR_FILLED: char = '■'; // U+25A0
@@ -37,7 +41,11 @@ const BAR_EMPTY: char = '·'; // U+00B7
 /// Low usage clamps to at least `▍` — see `partial_block_char`.
 const PARTIAL_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
-const USAGE_BAR_WIDTH: u16 = 10;
+/// Total cells of the context gauge, brackets included (inner width is
+/// `USAGE_BAR_WIDTH - 2`). Narrowed 10 → 6 on 2026-09-12: the gauge only needs
+/// to convey a rough at-a-glance sense, because the exact `used/window` figure
+/// renders right next to it.
+const USAGE_BAR_WIDTH: u16 = 6;
 
 /// Short elapsed label for the status bar during active runs.
 ///
@@ -217,31 +225,68 @@ fn format_quota_window(window: &tact_protocol::UsageQuotaWindow) -> String {
     }
 }
 
-/// Format cache hit percentage: `"▣ cache% 45%"` or `"▣ cache% --"`.
-fn format_cache_pct(hit: u64, miss: u64, label: &str) -> String {
+/// Format cache hit percentage: `"▣ 45%"` or `"▣ --"` before the first sample.
+///
+/// The `cache%` label was dropped in the 2026-09-12 bottom-bar compaction: the
+/// `▣` glyph plus the `%` sign already identify the number, and the row had no
+/// space to spare.
+fn format_cache_pct(hit: u64, miss: u64) -> String {
     let total = hit + miss;
     if total == 0 {
-        format!("{ICON_CACHE} {label} --")
+        format!("{ICON_CACHE} --")
     } else {
         let pct = hit.saturating_mul(100).checked_div(total).unwrap_or(0);
-        format!("{ICON_CACHE} {label} {pct}%")
+        format!("{ICON_CACHE} {pct}%")
     }
 }
 
-/// Context usage meter: `"ctx [■■····] 0% 6.6K/1M"`.
+/// Context usage meter: `"ctx [■···] 6.6K/1M"`.
+///
+/// The percentage was dropped on 2026-09-12. The segment had encoded the same
+/// ratio three times — gauge, `pct%`, and `used/window` — and `pct` is a pure
+/// function of the two numbers rendered right beside it. This mirrors the
+/// `∑ₜₒₖ` removal (one value, one rendering); the gauge stays because it carries
+/// the at-a-glance "how close am I to auto-compact" sense that the raw ratio
+/// does not.
 fn format_context_meter(label: &str, used: u32, window: usize) -> String {
     let pct = context_usage_pct(used, window);
     let bar = render_usage_bar(pct as f64);
     format!(
-        "{label} {bar} {pct}% {}/{}",
+        "{label} {bar} {}/{}",
         format_tokens_compact(used as u64),
         format_tokens_compact(window as u64)
     )
 }
 
-/// Last-call total tokens: `"∑ₜₒₖ 6584"`.
-fn format_token_total(total: u32) -> String {
-    format!("{ICON_TOKENS} {total}")
+/// Format whole seconds as `mm:ss` (matches the task-end separator convention).
+fn format_mm_ss(secs: u64) -> String {
+    format!("{:02}:{:02}", secs / 60, secs % 60)
+}
+
+/// Session user turns: `"⟳ 12"`. The `turns` word was dropped in the
+/// 2026-09-12 compaction — the glyph carries the meaning and the pair
+/// `⟳ 12 ⇅ 3` reads as one "turns" figure (see Ch 23 §6.6).
+fn format_turn_user(count: u32) -> String {
+    format!("{ICON_TURNS} {count}")
+}
+
+/// Current-task LLM turns: `"⇅ 3"`.
+fn format_turn_llm(count: u32) -> String {
+    format!("{ICON_LLM_TURNS} {count}")
+}
+
+/// Turn timing group: `"⏱ 01:05 avg 00:42"`, or just `"⏱ 01:05"` before any
+/// turn has completed (no average to show).
+fn format_turn_timing(last: u64, done: u32, total: u64, avg_label: &str) -> String {
+    let head = format!("{ICON_ELAPSED} {}", format_mm_ss(last));
+    if done == 0 {
+        head
+    } else {
+        format!(
+            "{head} {avg_label} {}",
+            format_mm_ss(total / u64::from(done))
+        )
+    }
 }
 
 /// Context usage vs model_context_window.
@@ -424,12 +469,31 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         ctx.status_bar.token_total,
         ctx.model_context_window,
     );
-    let token_str = format_token_total(ctx.status_bar.token_total);
+    // NOTE: the old `∑ₜₒₖ {total}` segment was removed on 2026-09-12 — it read
+    // the same `token_total` the ctx meter renders, so it was a second format of
+    // one number. The exact integer is still available in the task-stats block
+    // and `/stats`; the meter keeps the compact `used/window`.
     let cache_str = format_cache_pct(
         ctx.status_bar.token_cache_hit.into(),
         ctx.status_bar.token_cache_miss.into(),
-        msgs.bottom_cache_pct,
     );
+    // Turn counters: session user turns + current-task LLM turns. The LLM
+    // segment stays hidden until the first loop iteration of this task.
+    let mut turn_str = format_turn_user(ctx.status_bar.turn_user);
+    if ctx.status_bar.turn_llm > 0 {
+        turn_str.push_str(SEP_ROW2);
+        turn_str.push_str(&format_turn_llm(ctx.status_bar.turn_llm));
+    }
+    // Frozen last/average turn wall-clock (live in-flight elapsed lives on the
+    // top status bar via `format_task_elapsed`).
+    let turn_timing = ctx.status_bar.turn_last_secs.map(|last| {
+        format_turn_timing(
+            last,
+            ctx.status_bar.turn_done,
+            ctx.status_bar.turn_total_secs,
+            msgs.bottom_avg,
+        )
+    });
 
     #[allow(clippy::vec_init_then_push)]
     let mut row2_groups: Vec<DropGroup> = vec![DropGroup {
@@ -454,7 +518,10 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             ],
         });
     }
-    // Drop order from end: cache → ∑ → ctx
+    // Drop order from end: timing → cache → turns → ctx. Push order *is*
+    // survival priority, so `ctx` survives longest and the turn counters sit
+    // between `ctx` and `cache` (the `∑ₜₒₖ` segment this used to bracket was
+    // removed as a duplicate of the ctx meter's `used` number).
     row2_groups.push(DropGroup {
         droppable: true,
         spans: vec![
@@ -466,7 +533,7 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         droppable: true,
         spans: vec![
             Span::styled(SEP_ROW2.to_string(), dim),
-            Span::styled(token_str, secondary),
+            Span::styled(turn_str, secondary),
         ],
     });
     row2_groups.push(DropGroup {
@@ -476,6 +543,15 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             Span::styled(cache_str, secondary),
         ],
     });
+    if let Some(timing) = turn_timing {
+        row2_groups.push(DropGroup {
+            droppable: true,
+            spans: vec![
+                Span::styled(SEP_ROW2.to_string(), dim),
+                Span::styled(timing, secondary),
+            ],
+        });
+    }
 
     fit_row_spans(area.width, &mut row1_groups);
     fit_row_spans(area.width, &mut row2_groups);
@@ -681,36 +757,86 @@ mod render_tests {
 
     use super::render_usage_bar;
 
+    /// Build the expected gauge for a fill ratio without hard-coding the
+    /// constant, so narrowing `USAGE_BAR_WIDTH` does not break every test here.
+    fn expected_bar(full: usize, partial: Option<char>) -> String {
+        let inner = (super::USAGE_BAR_WIDTH as usize) - 2;
+        let mut s = String::from("[");
+        for _ in 0..full {
+            s.push(super::BAR_FILLED);
+        }
+        if let Some(c) = partial {
+            s.push(c);
+        }
+        while s.chars().count() - 1 < inner {
+            s.push(super::BAR_EMPTY);
+        }
+        s.push(']');
+        s
+    }
+
     #[test]
     fn render_usage_bar_scales_to_width() {
-        assert_eq!(render_usage_bar(0.0), "[········]");
-        assert_eq!(render_usage_bar(50.0), "[■■■■····]");
-        assert_eq!(render_usage_bar(100.0), "[■■■■■■■■]");
+        let inner = (super::USAGE_BAR_WIDTH as usize) - 2;
+        assert_eq!(render_usage_bar(0.0), expected_bar(0, None));
+        assert_eq!(render_usage_bar(100.0), expected_bar(inner, None));
+        // Half full: floor(inner/2) full blocks, remainder empty.
+        assert_eq!(render_usage_bar(50.0), expected_bar(inner / 2, None));
     }
 
     #[test]
     fn render_usage_bar_uses_mid_height_glyphs() {
-        assert_eq!(super::render_usage_bar(0.0), "[········]");
-        assert_eq!(super::render_usage_bar(50.0), "[■■■■····]");
-        assert_eq!(super::render_usage_bar(100.0), "[■■■■■■■■]");
+        // The gauge must never use the heavy block glyphs of the *other*
+        // progress bar (`render_progress_bar` uses █/░); this one is mid-height.
+        for pct in [0.0, 25.0, 50.0, 75.0, 100.0] {
+            let bar = super::render_usage_bar(pct);
+            assert!(
+                !bar.contains('█') && !bar.contains('░'),
+                "pct {pct} used heavy glyphs: {bar}"
+            );
+            assert_eq!(
+                bar.chars().filter(|c| *c == '[').count(),
+                1,
+                "pct {pct}: {bar}"
+            );
+            assert_eq!(
+                bar.chars().count(),
+                super::USAGE_BAR_WIDTH as usize,
+                "pct {pct}: {bar}"
+            );
+        }
     }
 
     #[test]
     fn render_usage_bar_partial_block_at_low_percent() {
         // 1% → at least ▍ (hairline ▏ was effectively invisible in terminals)
         let bar = super::render_usage_bar(1.0);
-        assert_eq!(bar, "[▍·······]");
-        assert_ne!(bar, "[········]", "1% must differ from 0%");
+        assert_eq!(bar, expected_bar(0, Some('▍')));
+        assert_ne!(bar, expected_bar(0, None), "1% must differ from 0%");
         // Sub-1% still shows the minimum visible partial (not empty)
-        let bar_half = super::render_usage_bar(0.5);
-        assert_eq!(bar_half, "[▍·······]");
-        // 6% and 10% show progressively wider partial blocks
-        let bar6 = super::render_usage_bar(6.0);
-        let bar10 = super::render_usage_bar(10.0);
-        assert_eq!(bar6, "[▌·······]");
-        assert_eq!(bar10, "[▊·······]");
-        assert_ne!(bar6, bar, "6% must differ from 1%");
-        assert_ne!(bar10, bar6, "10% must differ from 6%");
+        assert_eq!(super::render_usage_bar(0.5), bar);
+    }
+
+    #[test]
+    fn render_usage_bar_partials_widen_with_percent() {
+        // On a 4-cell inner gauge these land on distinct partial glyphs; keep
+        // the progression check relative so a width change cannot mis-assert.
+        let mut seen = Vec::new();
+        for pct in [1.0, 10.0, 20.0, 30.0, 40.0] {
+            let bar = super::render_usage_bar(pct);
+            // `[` + inner cells + `]` == USAGE_BAR_WIDTH
+            assert_eq!(
+                bar.chars().count(),
+                super::USAGE_BAR_WIDTH as usize,
+                "width drifted for {pct}%: {bar}"
+            );
+            seen.push(bar);
+        }
+        let unique: std::collections::HashSet<_> = seen.iter().collect();
+        assert!(
+            unique.len() > 1,
+            "partial glyphs must vary across percentages, got {seen:?}"
+        );
     }
 
     #[test]
@@ -807,18 +933,22 @@ mod render_tests {
     }
 
     #[test]
-    fn format_cache_pct_with_label() {
-        assert_eq!(super::format_cache_pct(0, 0, "缓存%"), "▣ 缓存% --");
-        assert_eq!(super::format_cache_pct(30, 70, "cache%"), "▣ cache% 30%");
-        assert_eq!(super::format_cache_pct(100, 0, "缓存%"), "▣ 缓存% 100%");
+    fn format_cache_pct_is_label_free() {
+        // Compacted 2026-09-12: `▣` + `%` already identify the number.
+        assert_eq!(super::format_cache_pct(0, 0), "▣ --");
+        assert_eq!(super::format_cache_pct(30, 70), "▣ 30%");
+        assert_eq!(super::format_cache_pct(100, 0), "▣ 100%");
     }
 
     #[test]
     fn format_context_meter_labeled() {
         let s = super::format_context_meter("ctx", 0, 1_000_000);
         assert!(s.starts_with("ctx ["), "got {s}");
-        assert!(s.contains("0%"), "got {s}");
         assert!(s.contains("0/1M"), "got {s}");
+        assert!(
+            !s.contains('%'),
+            "percentage is derivable from used/window and must not be rendered: {s}"
+        );
         assert!(
             !s.contains('█') && !s.contains('░'),
             "old glyphs present: {s}"
@@ -830,17 +960,57 @@ mod render_tests {
     }
 
     #[test]
-    fn format_token_total_icon() {
-        assert_eq!(super::format_token_total(6584), "∑ₜₒₖ 6584");
+    fn context_meter_reports_used_and_window_without_the_percentage() {
+        let s = super::format_context_meter("ctx", 45_000, 1_000_000);
+        assert_eq!(s, "ctx [▍···] 45K/1M");
     }
 
     #[test]
-    fn sigma_tok_unicode_width_is_sane() {
-        let w = unicode_width::UnicodeWidthStr::width(super::ICON_TOKENS);
-        assert!(
-            (1..=8).contains(&w),
-            "∑ₜₒₖ width {w} looks pathological; consider ∑_tok fallback"
+    fn format_turn_counters_are_label_free() {
+        // Compacted 2026-09-12: the `turns` word is gone; the glyph carries it.
+        assert_eq!(super::format_turn_user(12), "⟳ 12");
+        assert_eq!(super::format_turn_user(3), "⟳ 3");
+        assert_eq!(super::format_turn_llm(3), "⇅ 3");
+        assert_eq!(super::format_turn_llm(7), "⇅ 7");
+    }
+
+    #[test]
+    fn format_turn_timing_last_and_average() {
+        // 2 completed turns totalling 210s → last 125s, average 01:45.
+        assert_eq!(
+            super::format_turn_timing(125, 2, 210, "avg"),
+            "⏱ 02:05 avg 01:45"
         );
+    }
+
+    #[test]
+    fn format_turn_timing_omits_average_before_any_turn_completes() {
+        // last_secs is set but no turn has been counted yet → no average.
+        assert_eq!(super::format_turn_timing(65, 0, 0, "avg"), "⏱ 01:05");
+    }
+
+    #[test]
+    fn format_turn_timing_hour_scale_stays_mm_ss() {
+        // Per-turn wall clock, not uptime: 3661s → 61:01, never an `h` field.
+        assert_eq!(
+            super::format_turn_timing(3661, 1, 3661, "均"),
+            "⏱ 61:01 均 61:01"
+        );
+    }
+
+    #[test]
+    fn turn_bar_icons_are_narrow() {
+        // The bottom bar packs these glyphs into a dense row (next to the
+        // ambiguous-width `ctx`/`out` labels). Wide icons would push the row
+        // over budget and silently drop segments, so pin them to one cell.
+        for icon in [
+            super::ICON_TURNS,
+            super::ICON_LLM_TURNS,
+            super::ICON_ELAPSED,
+        ] {
+            let w = unicode_width::UnicodeWidthStr::width(icon);
+            assert_eq!(w, 1, "icon {icon:?} should be one cell wide, got {w}");
+        }
     }
 
     #[test]
@@ -853,15 +1023,15 @@ mod render_tests {
     }
     #[test]
     fn format_cache_pct_before_first_sample() {
-        assert_eq!(super::format_cache_pct(0, 0, "cache%"), "▣ cache% --");
+        assert_eq!(super::format_cache_pct(0, 0), "▣ --");
     }
     #[test]
     fn format_cache_pct_with_data() {
-        assert_eq!(super::format_cache_pct(30, 70, "cache%"), "▣ cache% 30%");
+        assert_eq!(super::format_cache_pct(30, 70), "▣ 30%");
     }
     #[test]
     fn format_cache_pct_full_hit() {
-        assert_eq!(super::format_cache_pct(100, 0, "cache%"), "▣ cache% 100%");
+        assert_eq!(super::format_cache_pct(100, 0), "▣ 100%");
     }
     #[test]
     fn format_balance_entry_renders() {
