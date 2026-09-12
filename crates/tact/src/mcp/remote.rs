@@ -68,6 +68,14 @@ const OAUTH_TOKEN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Loopback path the OAuth provider redirects back to.
 const OAUTH_CALLBACK_PATH: &str = "/callback";
 
+/// Ceiling on the remote `initialize` handshake.
+///
+/// The HTTP client is built without a total request timeout — a slow but
+/// healthy server must not be cut off mid-request — so the handshake needs its
+/// own bound, or a server that accepts the connection and never answers would
+/// hang startup forever.
+const REMOTE_INIT_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Authentication declared on a remote MCP server entry.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -217,8 +225,14 @@ pub async fn serve_remote(
     tracing::info!(mcp_server = %server_name, url = %config.url, "connecting remote MCP server");
     let transport =
         StreamableHttpClientTransport::with_client(http_client_for(&config.url), transport_config);
-    ().serve(transport)
+    tokio::time::timeout(REMOTE_INIT_TIMEOUT, ().serve(transport))
         .await
+        .with_context(|| {
+            format!(
+                "remote MCP server {server_name} did not complete the handshake within {}s",
+                REMOTE_INIT_TIMEOUT.as_secs()
+            )
+        })?
         .with_context(|| format!("failed to initialize remote MCP client for server {server_name}"))
 }
 

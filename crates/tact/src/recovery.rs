@@ -78,6 +78,10 @@ pub fn is_prompt_too_long_error(error_text: &str) -> bool {
 
 /// Returns `true` if the error string matches a known transient transport
 /// failure pattern (timeout, rate limit, connection reset, etc.).
+///
+/// Prefer [`is_transient_llm_error`] when the typed error is still available:
+/// string matching cannot tell a retryable 503 from a permanent 400, and it
+/// depends on the provider's English prose.
 pub fn is_transient_transport_error(error_text: &str) -> bool {
     [
         "timeout",
@@ -95,6 +99,68 @@ pub fn is_transient_transport_error(error_text: &str) -> bool {
     ]
     .iter()
     .any(|needle| error_text.contains(needle))
+}
+
+/// Whether an HTTP status code describes a failure worth retrying.
+///
+/// `429` / `408` (rate limit, request timeout) and every `5xx` are transient;
+/// other `4xx` (400 malformed request, 401/403 credential or authorization,
+/// 404) are permanent — retrying them only burns the user's quota.
+pub fn is_transient_http_status(status: u16) -> bool {
+    status == 429 || status == 408 || (500..600).contains(&status)
+}
+
+/// Classification of a failed LLM call for the recovery loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// Prompt exceeded the model's context window; compact and retry.
+    PromptTooLong,
+    /// Retryable transport/rate-limit failure; back off and retry.
+    Transient,
+    /// Everything else — surface to the caller.
+    Permanent,
+}
+
+/// Message-based fallback classification, used for errors whose type carries
+/// no status (transport failures arrive as `reqwest` prose).
+fn classify_text(error_text: &str) -> FailureKind {
+    let lowered = error_text.to_lowercase();
+    if is_prompt_too_long_error(&lowered) {
+        FailureKind::PromptTooLong
+    } else if is_transient_transport_error(&lowered) {
+        FailureKind::Transient
+    } else {
+        FailureKind::Permanent
+    }
+}
+
+/// Classifies an [`LlmError`](tact_llm::LlmError), preferring its typed fields.
+///
+/// `HttpError` carries the real HTTP status, so a 429/5xx is retried while a
+/// 400/401/403/404 fails fast instead of burning the user's quota. Other
+/// variants carry no status and fall back to message matching.
+pub fn classify_llm_error(error: &tact_llm::LlmError) -> FailureKind {
+    if let tact_llm::LlmError::HttpError { status, .. } = error {
+        if is_transient_http_status(*status) {
+            return FailureKind::Transient;
+        }
+        // A non-transient status can still be recoverable: an over-long prompt
+        // is usually reported as a 400.
+        return match classify_text(&error.to_string()) {
+            FailureKind::PromptTooLong => FailureKind::PromptTooLong,
+            _ => FailureKind::Permanent,
+        };
+    }
+    classify_text(&error.to_string())
+}
+
+/// Classifies a boxed error, downcasting to [`tact_llm::LlmError`] when the
+/// typed cause survived (see `Agent::stream_message`).
+pub fn classify_error(error: &anyhow::Error) -> FailureKind {
+    match error.downcast_ref::<tact_llm::LlmError>() {
+        Some(llm_error) => classify_llm_error(llm_error),
+        None => classify_text(&error.to_string()),
+    }
 }
 
 /// Exponential back-off delay with millisecond jitter.
@@ -129,6 +195,75 @@ pub fn error_summary(error_text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn http_error(status: u16, body: &str) -> tact_llm::LlmError {
+        tact_llm::LlmError::HttpError {
+            status,
+            body: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn http_status_classification_retries_only_transient_codes() {
+        for status in [408, 429, 500, 502, 503, 504] {
+            assert_eq!(
+                classify_llm_error(&http_error(status, "busy")),
+                FailureKind::Transient,
+                "{status} should be retryable"
+            );
+        }
+    }
+
+    /// The whole point of the typed classification: a permanent client error
+    /// must not be retried just because its body happens to read like a
+    /// transient one.
+    #[test]
+    fn permanent_client_errors_are_not_retried() {
+        for status in [400, 401, 403, 404, 422] {
+            assert_eq!(
+                classify_llm_error(&http_error(status, "rate limit exceeded")),
+                FailureKind::Permanent,
+                "{status} must not be retried"
+            );
+        }
+    }
+
+    /// An over-long prompt is usually a 400, and the recovery loop fixes it by
+    /// compacting rather than retrying verbatim.
+    #[test]
+    fn overlong_prompt_on_a_400_is_recoverable() {
+        assert_eq!(
+            classify_llm_error(&http_error(400, "context length exceeded")),
+            FailureKind::PromptTooLong
+        );
+    }
+
+    #[test]
+    fn transport_textual_errors_still_classify() {
+        assert_eq!(
+            classify_llm_error(&tact_llm::LlmError::Request("connection reset".into())),
+            FailureKind::Transient
+        );
+        assert_eq!(
+            classify_llm_error(&tact_llm::LlmError::Auth("bad key".into())),
+            FailureKind::Permanent
+        );
+    }
+
+    /// `Agent::stream_message` preserves the typed error, so the downcast path
+    /// is what the recovery loop actually exercises.
+    #[test]
+    fn boxed_errors_are_classified_through_the_typed_cause() {
+        let boxed = anyhow::Error::from(http_error(429, "slow down"));
+        assert_eq!(classify_error(&boxed), FailureKind::Transient);
+
+        let stringified = anyhow::anyhow!("api error (429): slow down");
+        assert_eq!(
+            classify_error(&stringified),
+            FailureKind::Permanent,
+            "without the type there is nothing to distinguish a 429 from prose"
+        );
+    }
 
     #[test]
     fn is_transient_matches_http_request_failed() {

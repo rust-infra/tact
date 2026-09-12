@@ -37,6 +37,23 @@
 
 use std::{collections::HashMap, fs, path::Path, process::Stdio, sync::Arc};
 
+/// Ceiling on the MCP `initialize` handshake.
+///
+/// Deliberately generous: stdio servers are commonly launched through
+/// `npx -y …`, which may download a package on a cold cache. The purpose is to
+/// bound a *hung* server — startup awaits every configured server, so one that
+/// never answers would otherwise wedge the whole session.
+const MCP_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Ceiling on `tools/list` for one server.
+const MCP_LIST_TOOLS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Ceiling on a single `tools/call`.
+///
+/// Generous on purpose: some MCP tools are legitimately long-running, so this
+/// only stops an unbounded hang from wedging the agent loop.
+const MCP_CALL_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 use anyhow::{Context, Result, bail};
 use futures_util::{
     StreamExt,
@@ -736,15 +753,26 @@ impl McpClient {
             });
         }
 
-        ().serve(transport)
+        tokio::time::timeout(MCP_INIT_TIMEOUT, ().serve(transport))
             .await
+            .with_context(|| {
+                format!(
+                    "MCP server {server_name} did not complete the handshake within {}s",
+                    MCP_INIT_TIMEOUT.as_secs()
+                )
+            })?
             .with_context(|| format!("failed to initialize MCP client for server {server_name}"))
     }
 
     async fn fetch_tools(server_name: &str, service: &dyn McpService) -> Result<Vec<McpTool>> {
-        service
-            .list_all_tools()
+        tokio::time::timeout(MCP_LIST_TOOLS_TIMEOUT, service.list_all_tools())
             .await
+            .with_context(|| {
+                format!(
+                    "MCP server {server_name} did not list its tools within {}s",
+                    MCP_LIST_TOOLS_TIMEOUT.as_secs()
+                )
+            })?
             .with_context(|| format!("failed to list tools from {server_name}"))
     }
 
@@ -759,16 +787,23 @@ impl McpClient {
             }
         };
 
-        let result = self
-            .service
-            .call_tool(CallToolRequestParams {
+        let result = tokio::time::timeout(
+            MCP_CALL_TOOL_TIMEOUT,
+            self.service.call_tool(CallToolRequestParams {
                 meta: None,
                 name: tool_name.to_string().into(),
                 arguments,
                 task: None,
-            })
-            .await
-            .with_context(|| format!("failed to call MCP tool {tool_name}"))?;
+            }),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "MCP tool {tool_name} did not return within {}s",
+                MCP_CALL_TOOL_TIMEOUT.as_secs()
+            )
+        })?
+        .with_context(|| format!("failed to call MCP tool {tool_name}"))?;
 
         Ok(join_mcp_content(&result.content))
     }

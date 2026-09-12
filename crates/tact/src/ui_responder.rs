@@ -29,6 +29,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::utils::LockExt;
 use tact_protocol::{AgentUpdate, UiResponse};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
@@ -144,8 +145,7 @@ impl UiResponder {
         let mut requests: Vec<_> = self
             .inner
             .pending
-            .lock()
-            .expect("ui responder lock poisoned")
+            .lock_recover()
             .values()
             .map(|entry| entry.request.clone())
             .collect();
@@ -160,12 +160,7 @@ impl UiResponder {
     /// affect any other pending request.
     pub fn respond(&self, response: UiResponse) -> bool {
         let request_id = response.request_id();
-        let entry = self
-            .inner
-            .pending
-            .lock()
-            .expect("ui responder lock poisoned")
-            .remove(&request_id);
+        let entry = self.inner.pending.lock_recover().remove(&request_id);
         match entry {
             Some(entry) => {
                 let _ = entry.tx.send(response);
@@ -180,8 +175,7 @@ impl UiResponder {
     pub fn withdraw(&self, request_id: u64) -> bool {
         self.inner
             .pending
-            .lock()
-            .expect("ui responder lock poisoned")
+            .lock_recover()
             .remove(&request_id)
             .is_some()
     }
@@ -268,11 +262,7 @@ impl UiResponder {
     /// gone so the agent task can finish instead of deadlocking on an answer
     /// that never arrives.
     pub fn shutdown(&self) {
-        self.inner
-            .pending
-            .lock()
-            .expect("ui responder lock poisoned")
-            .clear();
+        self.inner.pending.lock_recover().clear();
     }
 
     fn register(
@@ -293,8 +283,7 @@ impl UiResponder {
         };
         self.inner
             .pending
-            .lock()
-            .expect("ui responder lock poisoned")
+            .lock_recover()
             .insert(request_id, PendingEntry { request, tx });
         (request_id, rx)
     }

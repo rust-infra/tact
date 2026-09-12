@@ -32,6 +32,142 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-12 — MCP handshake and tool calls are bounded by timeouts
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/mod.rs`; `crates/tact/src/mcp/remote.rs` |
+
+**Symptom / motivation:** The MCP loader awaits *every* server connection before returning, and neither the initialize handshake nor `tools/list` nor `tools/call` had a deadline. One hung third-party server therefore wedged `tact` startup forever, with no timeout, no error, and no way to tell which server was at fault — remote servers were worse, since only the OAuth legs (`OAUTH_CALLBACK_TIMEOUT`, `OAUTH_TOKEN_EXCHANGE_TIMEOUT`) were bounded.
+
+**Decision:** Added three named deadlines and applied them at the blocking awaits: `MCP_INIT_TIMEOUT` (60 s) for the initialize handshake on both the stdio and remote transports, `MCP_LIST_TOOLS_TIMEOUT` (30 s) for `tools/list`, and `MCP_CALL_TOOL_TIMEOUT` (600 s) for `tools/call`. A tool call is bounded generously rather than tightly: a long-running server-side tool is legitimate work, whereas an unbounded wait is not.
+
+**Behavior after:** A server that never completes its handshake is reported as a timeout failure and removed from the router instead of blocking startup; the same applies per call. Every timeout names its own duration in the error message.
+
+**Pointers:** `crates/tact/src/mcp/mod.rs` (`MCP_INIT_TIMEOUT`, `MCP_LIST_TOOLS_TIMEOUT`, `MCP_CALL_TOOL_TIMEOUT`); `crates/tact/src/mcp/remote.rs` (`REMOTE_INIT_TIMEOUT`).
+
+---
+
+## 1. 2026-09-12 — A hook subprocess is killed when its timeout expires
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/plugin/hooks.rs` |
+
+**Symptom / motivation:** Plugin command hooks spawn `sh -c` with a 60 s timeout. On expiry the `wait_with_output` future was dropped, which detaches the child rather than killing it: the hook was reported as timed out while its process kept running and kept holding the stdout/stderr pipes the parent had already moved on from. Leaked hook processes accumulated across a session, and a hook that outlived its timeout could still mutate the worktree after Tact had decided it had failed.
+
+**Decision:** Set `.kill_on_drop(true)` on the spawned command so dropping the future terminates the child. `tool/bash.rs` and `tool/background.rs` already did this; the hook path was the outlier.
+
+**Behavior after:** A hook that exceeds its timeout is terminated, not orphaned. No process outlives the tool result that reports it.
+
+**Pointers:** `crates/tact/src/plugin/hooks.rs`.
+
+---
+
+## 1. 2026-09-12 — A poisoned lock no longer aborts the process
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/utils/lock.rs`; `crates/tact_llm/src/lock.rs` |
+
+**Symptom / motivation:** 42 production sites took a lock with `.lock().expect("… lock poisoned")` or `.write().unwrap()`. Every one of those locks guards a cache, a counter, a registry or a config snapshot — none guards an invariant that a panic could leave torn. So an unrelated panic while a lock happened to be held escalated a recoverable state glitch into a process abort; in the TUI that tears down the entire session and loses the in-flight turn, rather than degrading the one subsystem that misbehaved.
+
+**Decision:** Added `LockExt::lock_recover` and `RwLockExt::{read_recover, write_recover}` (`utils/lock.rs`; mirrored as `tact_llm::lock`, since the two crates cannot share a module), which use `PoisonError::into_inner` instead of panicking. Safety argument: Rust guarantees the guarded data is still memory-safe after a poisoning panic; at worst it is logically stale, and for a counter/cache/registry that is precisely the case the next read already tolerates. All 42 sites were migrated across `agent/mod.rs`, `agent/tool_dispatch.rs`, `config/mod.rs`, `ui_responder.rs`, `store/sqlite.rs`, `voice/recorder.rs`, `prompt/mod.rs`, `tact_llm/provider.rs`, `tact_llm/models.rs` and `tact-ui/driver.rs`.
+
+**Behavior after:** A poisoned lock degrades to "the guarded value may be one update stale", never to an abort. The remaining intentional panics are uninitialized-global invariants (`LLM provider not initialized; call tact_llm::init_provider first`), which are not lock state and are left alone.
+
+**Pointers:** `crates/tact/src/utils/lock.rs`; `crates/tact_llm/src/lock.rs`.
+
+---
+
+## 1. 2026-09-12 — A subagent inherits its provider's compaction routing
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/mod.rs` (`Agent::provider_kind`, `Agent::new`); `crates/tact_llm/src/provider.rs` (`current_provider_kind`) |
+
+**Symptom / motivation:** `Agent::provider_kind` was initialised to a hardcoded `ProviderKind::OpenAi` and only corrected when a caller chained `.with_provider_kind(…)`. `tact-ui` does that for the top-level agent; `tool/subagent.rs` does not. A subagent therefore claimed to be OpenAI regardless of the real provider, and since the local `compact` tool is stripped from Responses tool sets, a DeepSeek subagent on a Responses-protocol endpoint would route compaction to `POST /responses/compact` — an endpoint DeepSeek does not implement.
+
+**Decision:** Made the field `Option<ProviderKind>`: `None` (the default) means "inherit from the live provider", and `Agent::provider_kind()` resolves it lazily, falling back to OpenAI only when no provider has been installed. Added `tact_llm::current_provider_kind()` for this — a non-panicking sibling of `read_provider`, which would have aborted on the pre-`init_provider` paths. It reports a generic OpenAI-compatible endpoint pointed at DeepSeek as `DeepSeek`, matching `is_deepseek`.
+
+**Behavior after:** Routing follows the actually-configured provider for every agent, including subagents. An explicit `.with_provider_kind(…)` still wins. Nothing changes when no provider is installed (tests).
+
+**Pointers:** `crates/tact/src/agent/mod.rs`; `crates/tact_llm/src/provider.rs`.
+
+---
+
+## 1. 2026-09-12 — Retries are decided by HTTP status, not by error prose
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/recovery.rs` (`FailureKind`, `classify_error`, `classify_llm_error`); `crates/tact/src/agent/mod.rs` (`stream_message`, `retry_compaction_call`) |
+
+**Symptom / motivation:** Two compounding defects. (1) The retry decider matched on `error.to_string()` against English substrings (`timeout`, `rate limit`, …), while `LlmError::HttpError { status, .. }` — the only variant carrying a status code — was ignored. A 429 and a 400 were indistinguishable, so a permanently malformed request could be retried with back-off until the budget ran out. (2) `Agent::stream_message` wrapped the typed error with `anyhow::anyhow!("{e}")`, stringifying it *before* the recovery loop ever saw it, and the loop's exit path re-wrapped again with `anyhow::anyhow!(error)`. The type was unrecoverable by the time the decision was made, and the cause chain was flattened for every caller up the stack.
+
+**Decision:** Added `is_transient_http_status` (408/429/5xx are retryable; other 4xx are not), `FailureKind { PromptTooLong, Transient, Permanent }`, and two classifiers: `classify_llm_error(&LlmError)` and `classify_error(&anyhow::Error)`, the latter downcasting to `LlmError` when the typed cause survived. `stream_message` now preserves the error via `anyhow::Error::from`, and the loop propagates it unchanged. A non-transient status is still checked for an over-long prompt, because that is normally reported as a 400 and *is* recoverable — by compacting, not by retrying verbatim. The duplicated retry/back-off/emit block in the two compaction paths became `Agent::retry_compaction_call`, which now classifies instead of substring-matching.
+
+**Behavior after:** 429/408/5xx back off and retry; 400/401/403/404 fail fast without burning quota; a 400 reporting an over-long context triggers compaction. Errors reaching callers keep their type and chain.
+
+**Pointers:** `crates/tact/src/recovery.rs`; `crates/tact/src/agent/mod.rs`.
+
+---
+
+## 1. 2026-09-12 — Worktree names are validated before becoming paths and refs
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/worktree/mod.rs` (`validate_worktree_name`) |
+
+**Symptom / motivation:** A worktree name is used twice: joined onto `<repo>/.worktrees` and interpolated into the `wt/<name>` branch ref. Nothing validated it. The only thing preventing escape was that `git worktree add` happens to reject ref-invalid names — git's rule, not Tact's, and not applied to the path.
+
+**Decision:** Added `validate_worktree_name`, called from `WorktreeManager::create` before the store is touched: ASCII alphanumerics plus `-`, `_`, `.` and `/`; ≤ 100 characters; must start with an alphanumeric; no `..`, no `//`, no `.lock` path component, no trailing `/` or `.`. The "starts with an alphanumeric" rule came from the test suite, not from theory: the first draft allowed `/abs`, and `Path::join` with an absolute path *replaces* the base, so the name would have escaped `.worktrees` entirely.
+
+**Behavior after:** A hazardous name is rejected with a specific message naming the offending character or pattern, before any path or ref is constructed. `subagent-<id>` and `feat/thing`-style names are unaffected.
+
+**Pointers:** `crates/tact/src/worktree/mod.rs`.
+
+---
+
+## 1. 2026-09-12 — SQLite runs in WAL, and a message insert is atomic
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/store/sqlite.rs` (`connect_with_pragmas`); `crates/tact/src/store/session_store/sqlite.rs` (`append_message`) |
+
+**Symptom / motivation:** Every domain store (sessions, tasks, background, team, worktrees) shares one `<workdir>/.tact/tact.db`, opened with the default rollback journal. Readers and writers therefore blocked each other, which the TUI feels directly: it reads session history while the agent appends to it. Separately, `append_message` issued the `messages` insert and the `sessions.updated_at` bump as two independent statements, so a failure between them left a persisted message whose session looked stale.
+
+**Decision:** Configure the pool through `SqliteConnectOptions` rather than a one-shot `PRAGMA`: `journal_mode = WAL`, `synchronous = NORMAL` (corruption-safe in WAL and avoids an fsync per commit; kept at `FULL` under the rollback journal), and `busy_timeout = 5 s`. Falling back rather than failing: switching a database *into* WAL needs an exclusive lock that `busy_timeout` cannot wait on, so a concurrent opener can legitimately fail the switch — that case logs a warning and retries with the default journal instead of refusing to start. `append_message` now runs both statements in one transaction.
+
+**Behavior after:** Readers proceed while a writer holds the lock. WAL is persisted in the database file, so existing databases are converted on the next open. A failed message write leaves no partial state.
+
+**Pointers:** `crates/tact/src/store/sqlite.rs`; `crates/tact/src/store/session_store/sqlite.rs`.
+
+---
+
+## 1. 2026-09-12 — Anthropic token counters saturate instead of truncating
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/anthropic/mod.rs` (`usage_from_json`, `clamp_token_count`) |
+
+**Symptom / motivation:** Eight sites converted wire token counts with `as u32`, which wraps. A provider (or a proxy, or a corrupted body) reporting more than `u32::MAX` prompt tokens would silently become a small plausible number, under-reporting usage in the bottom bar and in the persisted accounting. `total: prompt + completion` could also overflow and panic in a debug build. The Chat Completions path already saturated and the Responses path already validated with `try_from`; Anthropic was the outlier.
+
+**Decision:** Added `clamp_token_count` (saturating) plus `usage_field` / `usage_reasoning_tokens` / `usage_from_json` helpers, replacing all eight conversions and the duplicated inline extraction in both the streaming and non-streaming paths.
+
+**Behavior after:** An out-of-range counter saturates at `u32::MAX`; `total` saturates rather than overflowing. The three adapters now agree on out-of-range behaviour.
+
+**Pointers:** `crates/tact_llm/src/anthropic/mod.rs`.
+
+---
+
 ## 1. 2026-09-12 — The ctx percentage leads the bottom bar; the gauge is gone
 
 | Field | Value |

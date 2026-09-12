@@ -277,6 +277,10 @@ async fn run_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // On timeout the `wait_with_output` future is dropped; without this the
+        // `sh -c` child is merely detached and keeps running (and holding its
+        // stdio pipes) after the hook has been reported as timed out.
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("failed to spawn hook command: {command}"))?;
 

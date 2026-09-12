@@ -20,6 +20,7 @@ use crate::{
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, TaskOperation, ToolDomain, ToolRouter,
     },
+    utils::RwLockExt,
 };
 
 /// A resolved tool — either native (with owned metadata copy) or MCP.
@@ -100,12 +101,95 @@ fn truncate_tool_arg_summary(s: &str) -> String {
     )
 }
 
+/// The `arg_full` cap for Task-domain titles. Larger than
+/// [`MAX_TOOL_ARG_SUMMARY_CHARS`] because a task title is already prose, not a
+/// raw JSON argument dump.
+const TASK_SUMMARY_CHARS: usize = 240;
+
+/// Reads a string field, mapping absent/non-string to `""`.
+fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
+    input.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// `(arg_full, arg_summary)` for a static [`ArgumentSummaryPolicy`].
+fn arg_pair_for(policy: ArgumentSummaryPolicy, input: &serde_json::Value) -> (String, String) {
+    let full = tool_arg_full(policy, input);
+    let summary = truncate_tool_arg_summary(&full);
+    (full, summary)
+}
+
+/// `(arg_full, arg_summary)` for a Task-domain tool.
+///
+/// The title depends on the task record *before* and *after* the call
+/// ([`crate::task::format_task_tool_title`] prefers `after`), which no static
+/// [`ArgumentSummaryPolicy`] can express.
+fn task_arg_pair(
+    op: TaskOperation,
+    input: &serde_json::Value,
+    before: Option<&crate::task::TaskRecord>,
+    after: Option<&crate::task::TaskRecord>,
+) -> (String, String) {
+    let full = crate::task::format_task_tool_title(op, input, before, after);
+    let summary = if full.chars().count() <= TASK_SUMMARY_CHARS {
+        full.clone()
+    } else {
+        format!(
+            "{}...",
+            full.chars()
+                .take(TASK_SUMMARY_CHARS.saturating_sub(3))
+                .collect::<String>()
+        )
+    };
+    (full, summary)
+}
+
+/// `(arg_full, arg_summary)` for a resolved tool, dispatching to
+/// [`task_arg_pair`] for Task-domain tools and [`arg_pair_for`] otherwise.
+fn arg_pair(
+    resolved: &ResolvedTool,
+    input: &serde_json::Value,
+    before: Option<&crate::task::TaskRecord>,
+    after: Option<&crate::task::TaskRecord>,
+) -> (String, String) {
+    if let ResolvedTool::Native { metadata } = resolved
+        && let ToolDomain::Task(op) = metadata.domain
+    {
+        return task_arg_pair(op, input, before, after);
+    }
+    let policy = match resolved {
+        ResolvedTool::Native { metadata } => metadata.argument_summary,
+        _ => ArgumentSummaryPolicy::Json,
+    };
+    arg_pair_for(policy, input)
+}
+
+/// The task a Task-domain call reads back through `task_id` (used for both the
+/// pre-call snapshot and the post-call one).
+async fn task_by_id(
+    manager: &crate::task::SharedTaskManager,
+    input: &serde_json::Value,
+) -> Option<crate::task::TaskRecord> {
+    let id = input.get("task_id").and_then(|v| v.as_u64())?;
+    manager.get(id).await.ok()
+}
+
+/// The record a `TaskOperation::Create` call just created, identified by
+/// subject because the store assigns the id.
+async fn task_created(
+    manager: &crate::task::SharedTaskManager,
+    input: &serde_json::Value,
+) -> Option<crate::task::TaskRecord> {
+    let subject = str_field(input, "subject");
+    manager.list().await.ok().and_then(|list| {
+        list.into_iter()
+            .filter(|t| t.subject == subject)
+            .max_by_key(|t| t.id)
+    })
+}
+
 // ── Argument formatting from metadata ────────────────────────────────────
 
 fn tool_arg_full(policy: ArgumentSummaryPolicy, input: &serde_json::Value) -> String {
-    fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
-        input.get(key).and_then(|v| v.as_str()).unwrap_or("")
-    }
     fn patch_title(input: &serde_json::Value) -> String {
         let patch = str_field(input, "patch");
         let dry = input
@@ -141,9 +225,6 @@ fn tool_detail_content(
     input: &serde_json::Value,
     exec_output: &str,
 ) -> Option<String> {
-    fn str_field<'a>(input: &'a serde_json::Value, key: &str) -> &'a str {
-        input.get(key).and_then(|v| v.as_str()).unwrap_or("")
-    }
     match detail {
         DetailPolicy::None => None,
         DetailPolicy::Result => Some(exec_output.to_string()),
@@ -328,12 +409,48 @@ fn make_presentation_for(
 
 // ── Main dispatch ────────────────────────────────────────────────────────
 
+/// Phase-1 result: every tool use in the assistant turn, resolved to a native
+/// or MCP tool and run through the permission pipeline.
+struct Preflight {
+    prepared: Vec<PreparedTool>,
+    /// The cancel flag fired while walking the tool uses; the rest are stubbed
+    /// out as cancelled, so nothing may be executed.
+    cancelled: bool,
+}
+
 impl Agent {
+    /// Executes every `ToolUse` block in `content`.
+    ///
+    /// Returns the assembled `ToolResult` blocks (in call order) plus a pending
+    /// manual-compaction focus when a `compact` call succeeded.
+    ///
+    /// Three phases: [`Agent::preflight_tool_calls`] resolves and authorizes
+    /// each call sequentially, [`Agent::run_tool_waves`] executes the runnable
+    /// ones in conflict-free waves, and [`build_tool_results`] reassembles the
+    /// outputs back into call order.
     pub async fn execute_tool_call(
         &mut self,
         content: &[ContentBlock],
     ) -> Result<(Vec<ContentBlock>, Option<String>)> {
-        // Phase 1: sequential pre-flight
+        let preflight = self.preflight_tool_calls(content).await?;
+        if preflight.cancelled {
+            return Ok((build_tool_results(preflight.prepared, vec![]), None));
+        }
+        let (outputs, manual_compact) = self.run_tool_waves(&preflight.prepared).await?;
+        Ok((
+            build_tool_results(preflight.prepared, outputs),
+            manual_compact,
+        ))
+    }
+
+    /// Phase 1 — sequential pre-flight.
+    ///
+    /// Each tool use is counted, resolved (native → MCP → unknown), formatted
+    /// for display, and run through the `PreToolUse` hook + permission
+    /// pipeline. Sequential by design: a permission prompt must be answered
+    /// before the next call is resolved, and an "always allow" granted here has
+    /// to apply to the calls that follow in the same turn.
+    async fn preflight_tool_calls(&mut self, content: &[ContentBlock]) -> Result<Preflight> {
         let mut prepared: Vec<PreparedTool> = Vec::new();
         for block in content {
             let ContentBlock::ToolUse { id, name, input } = block else {
@@ -342,19 +459,17 @@ impl Agent {
             *self
                 .runtime
                 .stats
-                .write()
-                .unwrap()
+                .write_recover()
                 .tool_counts
                 .entry(name.clone())
                 .or_insert(0) += 1;
-            if self
-                .runtime
-                .cancel_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 self.append_cancelled_tool_uses(&mut prepared, content);
-                return Ok((build_tool_results(prepared, vec![]), None));
+                return Ok(Preflight {
+                    prepared,
+                    cancelled: true,
+                });
             }
 
             let step_idx = self.next_step_idx();
@@ -407,39 +522,9 @@ impl Agent {
                 },
             };
 
-            // Argument formatting
-            let (arg_full, arg_summary) = match &resolved {
-                ResolvedTool::Native { metadata }
-                    if matches!(metadata.domain, ToolDomain::Task(_)) =>
-                {
-                    let op = match metadata.domain {
-                        ToolDomain::Task(op) => op,
-                        _ => unreachable!(),
-                    };
-                    let full = crate::task::format_task_tool_title(op, input, None, None);
-                    const TASK_SUMMARY_CHARS: usize = 240;
-                    if full.chars().count() <= TASK_SUMMARY_CHARS {
-                        (full.clone(), full)
-                    } else {
-                        let s = format!(
-                            "{}...",
-                            full.chars()
-                                .take(TASK_SUMMARY_CHARS.saturating_sub(3))
-                                .collect::<String>()
-                        );
-                        (full, s)
-                    }
-                }
-                _ => {
-                    let policy = match &resolved {
-                        ResolvedTool::Native { metadata } => metadata.argument_summary,
-                        _ => ArgumentSummaryPolicy::Json,
-                    };
-                    let full = tool_arg_full(policy, input);
-                    let summary = truncate_tool_arg_summary(&full);
-                    (full, summary)
-                }
-            };
+            // Argument formatting. No task record yet — pre-flight only knows
+            // the call's input.
+            let (arg_full, arg_summary) = arg_pair(&resolved, input, None, None);
 
             let step_description = if arg_summary.is_empty() {
                 name.clone()
@@ -618,13 +703,12 @@ impl Agent {
                 }
             };
 
+            // Pre-call snapshot of the task a Task-domain call is about to
+            // touch, so phase 2 can render a before→after title.
             let task_before = match &resolved {
                 ResolvedTool::Native { metadata } => match metadata.domain {
                     ToolDomain::Task(TaskOperation::Update | TaskOperation::Get) => {
-                        match input.get("task_id").and_then(|v| v.as_u64()) {
-                            Some(id) => self.tool_context.task_manager.get(id).await.ok(),
-                            None => None,
-                        }
+                        task_by_id(&self.tool_context.task_manager, input).await
                     }
                     _ => None,
                 },
@@ -654,7 +738,27 @@ impl Agent {
         // task can push its summary back for re-injection.
         self.tool_context.subagent_results = Some(self.runtime.pending_subagent_results.clone());
 
-        // Phase 2: execute in conflict-free waves
+        Ok(Preflight {
+            prepared,
+            cancelled: false,
+        })
+    }
+
+    /// Phase 2 — execute the runnable calls in conflict-free waves.
+    ///
+    /// Returns the per-call outputs (indexed like `prepared`; `None` for calls
+    /// that were skipped or never reached) plus the pending manual-compaction
+    /// focus.
+    ///
+    /// Calls are grouped so that tools with overlapping resource footprints
+    /// never run concurrently ([`super::tool_schedule::waves_grouped`]). A
+    /// cancel request is honoured at wave boundaries only: dropping
+    /// `FuturesUnordered` cancels the not-yet-polled calls, while an in-flight
+    /// tool is allowed to finish.
+    async fn run_tool_waves(
+        &mut self,
+        prepared: &[PreparedTool],
+    ) -> Result<(Vec<Option<ExecResult>>, Option<String>)> {
         let run_indices: Vec<usize> = prepared
             .iter()
             .enumerate()
@@ -680,13 +784,9 @@ impl Agent {
         let mut manual_compact = None;
 
         for wave in super::tool_schedule::waves_grouped(&resources) {
-            if self
-                .runtime
-                .cancel_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                return Ok((build_tool_results(prepared, outputs), manual_compact));
+                return Ok((outputs, manual_compact));
             }
             let mut futures = FuturesUnordered::new();
             for &pos in &wave {
@@ -784,67 +884,25 @@ impl Agent {
                 let summary = exec_output.chars().take(200).collect::<String>();
                 let task_before = prepared[pi].task_before.clone();
 
-                let (arg_full, arg_summary) = match &prep.resolved {
-                    ResolvedTool::Native { metadata }
-                        if matches!(metadata.domain, ToolDomain::Task(_)) =>
-                    {
-                        let op = match metadata.domain {
-                            ToolDomain::Task(op) => op,
-                            _ => unreachable!(),
-                        };
-                        let after = match op {
-                            TaskOperation::Create => {
-                                let subject = prep_input
-                                    .get("subject")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                self.tool_context
-                                    .task_manager
-                                    .list()
-                                    .await
-                                    .ok()
-                                    .and_then(|list| {
-                                        list.into_iter()
-                                            .filter(|t| t.subject == subject)
-                                            .max_by_key(|t| t.id)
-                                    })
-                            }
-                            TaskOperation::Update | TaskOperation::Get => {
-                                match prep_input.get("task_id").and_then(|v| v.as_u64()) {
-                                    Some(id) => self.tool_context.task_manager.get(id).await.ok(),
-                                    None => None,
-                                }
-                            }
-                            _ => None,
-                        };
-                        let full = crate::task::format_task_tool_title(
-                            op,
-                            &prep_input,
-                            task_before.as_ref(),
-                            after.as_ref(),
-                        );
-                        const TASK_SUMMARY_CHARS: usize = 240;
-                        let s = if full.chars().count() <= TASK_SUMMARY_CHARS {
-                            full.clone()
-                        } else {
-                            format!(
-                                "{}...",
-                                full.chars()
-                                    .take(TASK_SUMMARY_CHARS.saturating_sub(3))
-                                    .collect::<String>()
-                            )
-                        };
-                        (full, s)
-                    }
-                    _ => {
-                        let policy = match &prep.resolved {
-                            ResolvedTool::Native { metadata } => metadata.argument_summary,
-                            _ => ArgumentSummaryPolicy::Json,
-                        };
-                        let full = tool_arg_full(policy, &prep_input);
-                        (full.clone(), truncate_tool_arg_summary(&full))
-                    }
+                // Post-call task state, so the title can render before→after.
+                let task_after = match &prep.resolved {
+                    ResolvedTool::Native { metadata } => match metadata.domain {
+                        ToolDomain::Task(TaskOperation::Create) => {
+                            task_created(&self.tool_context.task_manager, &prep_input).await
+                        }
+                        ToolDomain::Task(TaskOperation::Update | TaskOperation::Get) => {
+                            task_by_id(&self.tool_context.task_manager, &prep_input).await
+                        }
+                        _ => None,
+                    },
+                    _ => None,
                 };
+                let (arg_full, arg_summary) = arg_pair(
+                    &prep.resolved,
+                    &prep_input,
+                    task_before.as_ref(),
+                    task_after.as_ref(),
+                );
 
                 let detail_policy = match &prep.resolved {
                     ResolvedTool::Native { metadata } => metadata.presentation.detail,
@@ -898,41 +956,7 @@ impl Agent {
                         .or_else(|| Some(String::new()));
                 }
 
-                if succeeded {
-                    *self
-                        .runtime
-                        .stats
-                        .write()
-                        .unwrap()
-                        .tool_success_counts
-                        .entry(prep_name.clone())
-                        .or_insert(0) += 1;
-                } else {
-                    *self
-                        .runtime
-                        .stats
-                        .write()
-                        .unwrap()
-                        .tool_failure_counts
-                        .entry(prep_name.clone())
-                        .or_insert(0) += 1;
-                }
-                *self
-                    .runtime
-                    .stats
-                    .write()
-                    .unwrap()
-                    .tool_total_durations_ms
-                    .entry(prep_name.clone())
-                    .or_insert(0) += duration_us / 1000;
-                *self
-                    .runtime
-                    .stats
-                    .write()
-                    .unwrap()
-                    .tool_timing_counts
-                    .entry(prep_name.clone())
-                    .or_insert(0) += 1;
+                self.record_tool_stats(&prep_name, succeeded, duration_us);
                 outputs[pi] = Some(ExecResult {
                     content: exec_output,
                     status: final_status,
@@ -943,8 +967,7 @@ impl Agent {
             for duration_us in pending_durations_us {
                 self.runtime
                     .stats
-                    .write()
-                    .unwrap()
+                    .write_recover()
                     .tool_durations_ms
                     .push(duration_us / 1000);
             }
@@ -953,7 +976,7 @@ impl Agent {
             }
         }
 
-        Ok((build_tool_results(prepared, outputs), manual_compact))
+        Ok((outputs, manual_compact))
     }
 
     fn append_cancelled_tool_uses(
@@ -1072,6 +1095,54 @@ mod tests {
             &serde_json::json!({"command": "git status"}),
         );
         assert_eq!(full, "git status");
+    }
+
+    #[test]
+    fn arg_pair_for_returns_full_and_bounded_summary() {
+        let (full, summary) = arg_pair_for(
+            ArgumentSummaryPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "x".repeat(200)}),
+        );
+        assert_eq!(full.chars().count(), 200);
+        assert_eq!(summary.chars().count(), MAX_TOOL_ARG_SUMMARY_CHARS);
+        assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn arg_pair_routes_task_domain_through_task_title() {
+        let router = crate::tool::toolset();
+        let metadata = router.resolve("task_update").unwrap().metadata();
+        let resolved = ResolvedTool::Native { metadata };
+        let (full, summary) = arg_pair(
+            &resolved,
+            &serde_json::json!({"task_id": 7, "status": "completed"}),
+            None,
+            None,
+        );
+        assert_eq!(summary, full, "a short task title needs no truncation");
+        assert!(!full.is_empty());
+    }
+
+    #[test]
+    fn arg_pair_uses_json_for_unknown_tools() {
+        let resolved = ResolvedTool::Unknown {
+            name: "nope".into(),
+        };
+        let (full, _) = arg_pair(&resolved, &serde_json::json!({"a": 1}), None, None);
+        assert_eq!(full, "{\"a\":1}");
+    }
+
+    #[test]
+    fn task_arg_pair_truncates_long_titles() {
+        let (full, summary) = task_arg_pair(
+            TaskOperation::Create,
+            &serde_json::json!({"subject": "s".repeat(400)}),
+            None,
+            None,
+        );
+        assert!(full.chars().count() > TASK_SUMMARY_CHARS);
+        assert_eq!(summary.chars().count(), TASK_SUMMARY_CHARS);
+        assert!(summary.ends_with("..."));
     }
 
     fn prepared_spawn_subagent(worktree: bool) -> PreparedTool {

@@ -23,6 +23,35 @@ use tact_protocol::UserCommand;
 
 use crate::widgets::state::{App, InputMode, SelectKind, Status};
 
+/// Whether the active sticky panel (task / subagent) currently accepts scroll
+/// input — the panel must be on screen and its sticky tab expanded.
+///
+/// Shared by the keyboard (`normal`) and wheel (`mouse`) paths so the two can
+/// never disagree about what is scrollable.
+pub(crate) fn sticky_scrollable(app: &App) -> bool {
+    crate::render::task_panel::sticky_host_visible(app)
+        && crate::render::task_panel::sticky_tab_expanded(
+            app,
+            crate::render::task_panel::active_sticky_tab(app),
+        )
+}
+
+/// Scroll the active sticky domain's panel by `delta` rows (signed, clamped
+/// at zero).
+pub(crate) fn scroll_active_sticky(app: &mut App, delta: isize) {
+    use agent_tui_kit::state::StickyTab;
+    let tab = crate::render::task_panel::active_sticky_tab(app);
+    let scroll = match tab {
+        StickyTab::Tasks => &mut app.task_panel_mut().scroll,
+        StickyTab::Subagent => &mut app.subagent_panel_mut().scroll,
+    };
+    *scroll = if delta < 0 {
+        scroll.saturating_sub(delta.unsigned_abs())
+    } else {
+        scroll.saturating_add(delta as usize)
+    };
+}
+
 /// Returns the byte index of the previous char boundary before `cursor`.
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
     let cursor = s.floor_char_boundary(cursor.min(s.len()));

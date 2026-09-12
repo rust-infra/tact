@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::utils::LockExt;
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use cpal::SampleFormat;
@@ -122,11 +123,11 @@ fn record_blocking(
         return Ok(None);
     }
 
-    if let Some(msg) = err_flag.lock().expect("err lock").take() {
+    if let Some(msg) = err_flag.lock_recover().take() {
         bail!("microphone stream error: {msg}; check microphone access in macOS System Settings");
     }
 
-    let raw = samples.lock().expect("samples lock").clone();
+    let raw = samples.lock_recover().clone();
     if raw.is_empty() {
         return Ok(Some(Vec::new()));
     }

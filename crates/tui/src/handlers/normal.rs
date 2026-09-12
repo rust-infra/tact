@@ -2,39 +2,8 @@ use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::{scroll_active_sticky, sticky_scrollable};
 use crate::widgets::state::{App, InputMode, Status};
-
-fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app)
-        && crate::render::task_panel::sticky_tab_expanded(
-            app,
-            crate::render::task_panel::active_sticky_tab(app),
-        )
-}
-
-/// Move the active sticky domain's scroll by `delta` rows (signed).
-fn scroll_active_sticky(app: &mut App, delta: isize) {
-    use agent_tui_kit::state::StickyTab;
-    let tab = crate::render::task_panel::active_sticky_tab(app);
-    match tab {
-        StickyTab::Tasks => {
-            let p = app.task_panel_mut();
-            if delta < 0 {
-                p.scroll = p.scroll.saturating_sub(delta.unsigned_abs());
-            } else {
-                p.scroll = p.scroll.saturating_add(delta as usize);
-            }
-        }
-        StickyTab::Subagent => {
-            let p = app.subagent_panel_mut();
-            if delta < 0 {
-                p.scroll = p.scroll.saturating_sub(delta.unsigned_abs());
-            } else {
-                p.scroll = p.scroll.saturating_add(delta as usize);
-            }
-        }
-    }
-}
 
 pub(crate) fn handle_normal_mode(
     app: &mut App,

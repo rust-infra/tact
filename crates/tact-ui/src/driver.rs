@@ -2,7 +2,7 @@
 
 use std::{path::Path, sync::atomic::Ordering};
 
-use tact::{Agent, extract_text, hook::HookControl};
+use tact::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
 use tact_llm::{Message, Role};
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
 use tokio::{
@@ -111,7 +111,7 @@ pub async fn run_command_loop_with_account(
                 // Immediate snapshot: does NOT wait for the running task —
                 // stats live in an Arc<RwLock<SessionStats>> shared with the
                 // agent, so /stats responds instantly even mid-run.
-                let stats_text = stats.read().expect("session stats lock poisoned").summary();
+                let stats_text = stats.read_recover().summary();
                 if let Some(tx) = &ui_tx {
                     let _ = tx.send(AgentUpdate::SessionStats(stats_text));
                 }

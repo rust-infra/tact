@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use secrecy::{ExposeSecret, SecretString};
 
+use crate::lock::LockExt;
 use crate::provider::{ProviderInfo, get_provider, try_active_credential_provider};
 use crate::types::ProviderKind;
 use crate::{ApiKeyProvider, CredentialProvider, ProviderProfile, SharedHttpClient};
@@ -106,7 +107,7 @@ async fn ensure_api_model_ids_for_credentials(
     http: &SharedHttpClient,
 ) -> Vec<String> {
     {
-        let guard = CACHE.lock().expect("models cache poisoned");
+        let guard = CACHE.lock_recover();
         if let Some(c) = guard.as_ref()
             && c.base_url == base_url
             && c.api_key.expose_secret().as_str() == secret.expose_secret().as_str()
@@ -115,7 +116,7 @@ async fn ensure_api_model_ids_for_credentials(
         }
     }
     let ids = fetch_model_ids(base_url, secret.expose_secret(), http).await;
-    let mut guard = CACHE.lock().expect("models cache poisoned");
+    let mut guard = CACHE.lock_recover();
     *guard = Some(ModelsCache {
         base_url: base_url.to_string(),
         api_key: secret.clone(),
@@ -126,12 +127,12 @@ async fn ensure_api_model_ids_for_credentials(
 
 /// Clear the process models cache (tests / harnesses).
 pub fn clear_models_cache_for_tests() {
-    *CACHE.lock().expect("models cache poisoned") = None;
+    *CACHE.lock_recover() = None;
 }
 
 /// Seed the process models cache (tests / harnesses).
 pub fn seed_models_cache_for_tests(base_url: &str, api_key: &str, ids: Vec<String>) {
-    *CACHE.lock().expect("models cache poisoned") = Some(ModelsCache {
+    *CACHE.lock_recover() = Some(ModelsCache {
         base_url: base_url.to_string(),
         api_key: SecretString::from(api_key.to_string()),
         ids,

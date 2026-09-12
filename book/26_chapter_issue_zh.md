@@ -32,6 +32,142 @@
 ---
 
 
+## 1. 2026-09-12 — MCP 握手与工具调用都有超时上界
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/mod.rs`；`crates/tact/src/mcp/remote.rs` |
+
+**症状 / 动机：** MCP 加载器在返回前会等待*每一个*服务器连接，而 initialize 握手、`tools/list`、`tools/call` 三者都没有截止时间。因此只要有一个第三方服务器卡住，`tact` 启动就会永久挂起——没有超时、没有报错，也看不出是哪个服务器的问题；远端服务器更糟，只有 OAuth 那两段（`OAUTH_CALLBACK_TIMEOUT`、`OAUTH_TOKEN_EXCHANGE_TIMEOUT`）有上界。
+
+**决策：** 新增三个具名截止时间，施加在阻塞式 await 上：`MCP_INIT_TIMEOUT`（60 秒）用于 stdio 与远端两种传输的 initialize 握手，`MCP_LIST_TOOLS_TIMEOUT`（30 秒）用于 `tools/list`，`MCP_CALL_TOOL_TIMEOUT`（600 秒）用于 `tools/call`。工具调用给得宽松而非紧凑：服务器侧的长任务本来是合理工作，无界等待才不是。
+
+**改后行为：** 握手永远完不成的服务器会以超时失败上报并从 router 中移除，而不是阻塞启动；每次调用同理。每个超时错误都会在消息里标明自己的时长。
+
+**Pointers：** `crates/tact/src/mcp/mod.rs`（`MCP_INIT_TIMEOUT`、`MCP_LIST_TOOLS_TIMEOUT`、`MCP_CALL_TOOL_TIMEOUT`）；`crates/tact/src/mcp/remote.rs`（`REMOTE_INIT_TIMEOUT`）。
+
+---
+
+## 1. 2026-09-12 — 钩子子进程超时后被真正杀死
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/plugin/hooks.rs` |
+
+**症状 / 动机：** 插件命令钩子以 60 秒超时 spawn `sh -c`。超时后 `wait_with_output` future 被 drop，这只会让子进程脱离而非杀死它：钩子被上报为超时，进程却继续运行并继续占用父进程早已不再读取的 stdout/stderr 管道。泄漏的钩子进程会随会话累积，而一个超时后仍存活的钩子还能在 Tact 判定其失败之后继续改动工作区。
+
+**决策：** 在 spawn 的命令上设置 `.kill_on_drop(true)`，使 future 被 drop 时终止子进程。`tool/bash.rs` 与 `tool/background.rs` 早已如此，钩子路径是唯一的例外。
+
+**改后行为：** 超过超时的钩子被终止而非变成孤儿。不会有进程比上报它的那条工具结果活得更久。
+
+**Pointers：** `crates/tact/src/plugin/hooks.rs`。
+
+---
+
+## 1. 2026-09-12 — 锁中毒不再中止进程
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/utils/lock.rs`；`crates/tact_llm/src/lock.rs` |
+
+**症状 / 动机：** 有 42 处生产代码用 `.lock().expect("… lock poisoned")` 或 `.write().unwrap()` 获取锁。这些锁守护的无非是缓存、计数器、注册表或配置快照，没有一个守护的是"panic 后可能被撕裂"的不变量。于是别处的 panic 恰好在持锁时发生，就把一次可恢复的状态抖动升级成进程中止；在 TUI 里这等于拆掉整个会话并丢掉进行中的回合，而不是只降级出问题的那个子系统。
+
+**决策：** 新增 `LockExt::lock_recover` 与 `RwLockExt::{read_recover, write_recover}`（`utils/lock.rs`；并以 `tact_llm::lock` 镜像一份，因为两个 crate 无法共享模块），用 `PoisonError::into_inner` 取代 panic。安全性论证：Rust 保证中毒 panic 之后被守护的数据仍是内存安全的；最坏情况只是逻辑上陈旧，而对计数器 / 缓存 / 注册表来说，那恰好是下一次读取本就要处理的状况。42 处全部迁移：`agent/mod.rs`、`agent/tool_dispatch.rs`、`config/mod.rs`、`ui_responder.rs`、`store/sqlite.rs`、`voice/recorder.rs`、`prompt/mod.rs`、`tact_llm/provider.rs`、`tact_llm/models.rs`、`tact-ui/driver.rs`。
+
+**改后行为：** 锁中毒退化为"被守护的值可能少更新一次"，永不退化为中止。保留的少量 panic 属于全局未初始化不变量（`LLM provider not initialized; call tact_llm::init_provider first`），那不是锁状态，故不动。
+
+**Pointers：** `crates/tact/src/utils/lock.rs`；`crates/tact_llm/src/lock.rs`。
+
+---
+
+## 1. 2026-09-12 — 子代理继承其 provider 的压缩路由
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/mod.rs`（`Agent::provider_kind`、`Agent::new`）；`crates/tact_llm/src/provider.rs`（`current_provider_kind`） |
+
+**症状 / 动机：** `Agent::provider_kind` 初始化为硬编码的 `ProviderKind::OpenAi`，只有当调用方链上 `.with_provider_kind(…)` 时才被纠正。`tact-ui` 对顶层 agent 会这么做，`tool/subagent.rs` 不会。于是子代理无论真实 provider 是什么都自认 OpenAI；而由于 Responses 的工具集会剔除本地 `compact` 工具，一个走 Responses 协议的 DeepSeek 子代理会把压缩路由到 `POST /responses/compact`——一个 DeepSeek 并未实现的端点。
+
+**决策：** 字段改为 `Option<ProviderKind>`：`None`（默认）表示"继承当前 provider"，由 `Agent::provider_kind()` 惰性解析，仅在尚未安装 provider 时回退到 OpenAI。为此新增 `tact_llm::current_provider_kind()`——`read_provider` 的非 panic 版本，否则它在 `init_provider` 之前的路径上会直接中止。它把指向 DeepSeek 的通用 OpenAI 兼容端点报告为 `DeepSeek`，与 `is_deepseek` 一致。
+
+**改后行为：** 路由跟随实际配置的 provider，包括子代理。显式 `.with_provider_kind(…)` 仍然优先。未安装 provider 时（测试）行为不变。
+
+**Pointers：** `crates/tact/src/agent/mod.rs`；`crates/tact_llm/src/provider.rs`。
+
+---
+
+## 1. 2026-09-12 — 重试由 HTTP 状态码决定，而非错误文案
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/recovery.rs`（`FailureKind`、`classify_error`、`classify_llm_error`）；`crates/tact/src/agent/mod.rs`（`stream_message`、`retry_compaction_call`） |
+
+**症状 / 动机：** 两个缺陷叠加。(1) 重试判定基于 `error.to_string()` 与英文子串（`timeout`、`rate limit`…）匹配，而唯一携带状态码的变体 `LlmError::HttpError { status, .. }` 被忽略。429 与 400 无法区分，于是一个永久畸形的请求也能一路退避重试到预算耗尽。(2) `Agent::stream_message` 用 `anyhow::anyhow!("{e}")` 包装类型化错误，在恢复逻辑看到它*之前*就字符串化了；退出路径又用 `anyhow::anyhow!(error)` 再包一层。类型在做决定时已不可恢复，且对上层所有调用方而言错误链被压平了。
+
+**决策：** 新增 `is_transient_http_status`（408/429/5xx 可重试，其余 4xx 不可）、`FailureKind { PromptTooLong, Transient, Permanent }`，以及两个分类器：`classify_llm_error(&LlmError)` 与 `classify_error(&anyhow::Error)`，后者在类型化原因仍存活时向下转型到 `LlmError`。`stream_message` 改用 `anyhow::Error::from` 保留错误，循环原样向上传播。非瞬时的状态码仍会检查是否为超长 prompt——那通常以 400 上报且*确实*可恢复，但恢复方式是压缩而非原样重试。两条压缩路径里重复的重试 / 退避 / 上报块合并为 `Agent::retry_compaction_call`，且它现在走分类而非子串匹配。
+
+**改后行为：** 429/408/5xx 退避重试；400/401/403/404 立即失败、不消耗配额；上报超长上下文的 400 触发压缩。到达调用方的错误保留其类型与错误链。
+
+**Pointers：** `crates/tact/src/recovery.rs`；`crates/tact/src/agent/mod.rs`。
+
+---
+
+## 1. 2026-09-12 — worktree 名称在变成路径与 ref 之前先校验
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/worktree/mod.rs`（`validate_worktree_name`） |
+
+**症状 / 动机：** worktree 名称被用两次：拼接到 `<repo>/.worktrees` 之下，以及插入 `wt/<name>` 分支 ref。此前没有任何校验。唯一阻止逃逸的是 `git worktree add` 恰巧会拒绝非法 ref 名——那是 git 的规则而非 Tact 的，而且并不作用于路径。
+
+**决策：** 新增 `validate_worktree_name`，在 `WorktreeManager::create` 里、触碰 store 之前调用：ASCII 字母数字加 `-`、`_`、`.`、`/`；不超过 100 字符；必须以字母数字开头；不允许 `..`、`//`、`.lock` 路径分量、结尾的 `/` 或 `.`。"必须以字母数字开头"这条来自测试而非推想：初版允许了 `/abs`，而 `Path::join` 遇到绝对路径会*替换*基路径，名称将直接逃出 `.worktrees`。
+
+**改后行为：** 危险名称在构造任何路径或 ref 之前就被拒绝，错误信息点明违规字符或模式。`subagent-<id>` 与 `feat/thing` 这类名称不受影响。
+
+**Pointers：** `crates/tact/src/worktree/mod.rs`。
+
+---
+
+## 1. 2026-09-12 — SQLite 启用 WAL，单条消息写入原子化
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/store/sqlite.rs`（`connect_with_pragmas`）；`crates/tact/src/store/session_store/sqlite.rs`（`append_message`） |
+
+**症状 / 动机：** 所有领域 store（sessions、tasks、background、team、worktrees）共用同一个 `<workdir>/.tact/tact.db`，并以默认的 rollback journal 打开。读写因此互相阻塞，而 TUI 直接受此影响：它在 agent 追加的同时读取会话历史。另外 `append_message` 把 `messages` 插入与 `sessions.updated_at` 更新作为两条独立语句发出，二者之间失败就会留下一条"已落库但会话看起来仍是旧的"消息。
+
+**决策：** 改用 `SqliteConnectOptions` 配置连接池，而非一次性 `PRAGMA`：`journal_mode = WAL`、`synchronous = NORMAL`（在 WAL 下不会损坏，且免去每次提交的 fsync；rollback journal 下仍保持 `FULL`）、`busy_timeout = 5 秒`。选择回退而非失败：把数据库切换*进* WAL 需要 `busy_timeout` 无法等待的排他锁，因此并发打开者确实可能切换失败——这种情况记录告警后用默认 journal 重试，而不是拒绝启动。`append_message` 现在把两条语句放进同一事务。
+
+**改后行为：** 写者持锁时读者仍可继续。WAL 持久化在数据库文件中，已有数据库会在下次打开时转换。消息写入失败不留部分状态。
+
+**Pointers：** `crates/tact/src/store/sqlite.rs`；`crates/tact/src/store/session_store/sqlite.rs`。
+
+---
+
+## 1. 2026-09-12 — Anthropic token 计数饱和而非截断
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/anthropic/mod.rs`（`usage_from_json`、`clamp_token_count`） |
+
+**症状 / 动机：** 有 8 处用 `as u32` 转换线上 token 计数，会回绕。provider（或代理、或损坏的响应体）上报超过 `u32::MAX` 的 prompt token 时，会静默变成一个小而看似合理的数字，使底栏展示与持久化记账都少报用量。`total: prompt + completion` 还可能溢出并在 debug 构建下 panic。Chat Completions 路径本就饱和处理、Responses 路径本就用 `try_from` 校验，Anthropic 是异类。
+
+**决策：** 新增 `clamp_token_count`（饱和）以及 `usage_field` / `usage_reasoning_tokens` / `usage_from_json` 辅助函数，替换全部 8 处转换，并合并流式与非流式两路中重复的内联提取。
+
+**改后行为：** 越界计数饱和到 `u32::MAX`；`total` 饱和而非溢出。三个适配器在越界行为上现已一致。
+
+**Pointers：** `crates/tact_llm/src/anthropic/mod.rs`。
+
+---
+
 ## 1. 2026-09-12 — ctx 百分比前置到底栏，进度条移除
 
 | Field | Value |
@@ -2304,7 +2440,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-## 2. 2026-07-27 — Ink 主题 + 统一弹窗外框
 ## 2. 2026-07-27 — Ink 主题 + 统一弹出层 Chrome
 
 | 字段 | 值 |

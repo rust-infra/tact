@@ -309,21 +309,10 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 let pending_lines = app.pending_display_lines();
                 let input_height = input_lines + 2 + pending_lines;
                 let bottom_height = 2u16;
-                let log_area = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1),
-                        Constraint::Min(1),
-                        Constraint::Length(input_height),
-                        Constraint::Length(bottom_height),
-                    ])
-                    .split(size)[1];
-                if size != last_size {
-                    last_size = size;
-                    app.log_scroll.state =
-                        ScrollbarState::new(app.log.items.len().saturating_sub(1));
-                }
-                app.log_scroll.height = log_area.height.saturating_sub(2);
+                // One layout for the whole frame: the log rect the scrollbar
+                // maths reads and the rects the renderers draw into must come
+                // from the same `split`, or editing one constraint list would
+                // silently desync the two.
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -333,6 +322,13 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                         Constraint::Length(bottom_height),
                     ])
                     .split(size);
+                let log_area = chunks[1];
+                if size != last_size {
+                    last_size = size;
+                    app.log_scroll.state =
+                        ScrollbarState::new(app.log.items.len().saturating_sub(1));
+                }
+                app.log_scroll.height = log_area.height.saturating_sub(2);
                 render_status_bar(f, chunks[0], &app);
                 render_main_area(f, chunks[1], &mut app);
                 render_input_box(f, chunks[2], &mut app);

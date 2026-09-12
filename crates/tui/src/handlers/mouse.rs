@@ -3,6 +3,7 @@
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use tact_protocol::UserCommand;
 
+use super::{scroll_active_sticky, sticky_scrollable};
 use crate::widgets::state::{
     App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition, VoicePhase,
     VoiceStartResult,
@@ -111,37 +112,6 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
     } else if hit.in_log {
         app.mouse.in_task_panel = false;
         app.scroll_log_down(crate::widgets::state::app::scroll::WHEEL_CELL_STEP);
-    }
-}
-
-fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app)
-        && crate::render::task_panel::sticky_tab_expanded(
-            app,
-            crate::render::task_panel::active_sticky_tab(app),
-        )
-}
-
-/// Scroll the active sticky domain by `delta` rows (clamped to >= 0).
-fn scroll_active_sticky(app: &mut App, delta: isize) {
-    let tab = crate::render::task_panel::active_sticky_tab(app);
-    match tab {
-        agent_tui_kit::state::StickyTab::Tasks => {
-            let scroll = app.task_panel_mut();
-            if delta < 0 {
-                scroll.scroll = scroll.scroll.saturating_sub(delta.unsigned_abs());
-            } else {
-                scroll.scroll = scroll.scroll.saturating_add(delta as usize);
-            }
-        }
-        agent_tui_kit::state::StickyTab::Subagent => {
-            let scroll = app.subagent_panel_mut();
-            if delta < 0 {
-                scroll.scroll = scroll.scroll.saturating_sub(delta.unsigned_abs());
-            } else {
-                scroll.scroll = scroll.scroll.saturating_add(delta as usize);
-            }
-        }
     }
 }
 

@@ -26,6 +26,7 @@ pub use types::{
     VisionImageTomlConfig, VoiceProvider, VoiceSettings, VoiceTomlConfig,
 };
 
+use crate::utils::RwLockExt;
 use tact_llm::OpenAiReasoningEffort;
 
 static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);
@@ -146,7 +147,7 @@ pub fn builtin_model_profiles() -> std::collections::HashMap<String, ModelProfil
 /// Install resolved settings for the process. Must be called once at startup.
 pub fn install(config: types::ResolvedConfig) {
     tact_llm::init_provider(config.llm.provider_info());
-    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    let mut guard = SETTINGS.write_recover();
     assert!(
         guard.is_none(),
         "tact config must be installed exactly once"
@@ -156,7 +157,7 @@ pub fn install(config: types::ResolvedConfig) {
 
 /// Install non-LLM settings for commands that never call the model (e.g. `--list-sessions`).
 pub fn install_without_llm(config: types::ResolvedConfig) {
-    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    let mut guard = SETTINGS.write_recover();
     assert!(
         guard.is_none(),
         "tact config must be installed exactly once"
@@ -167,8 +168,7 @@ pub fn install_without_llm(config: types::ResolvedConfig) {
 /// Access the installed runtime settings.
 pub fn settings() -> types::ResolvedConfig {
     SETTINGS
-        .read()
-        .expect("tact config lock poisoned")
+        .read_recover()
         .as_ref()
         .expect("tact config not installed; call tact::config::init() first")
         .clone()
@@ -184,7 +184,7 @@ pub fn settings() -> types::ResolvedConfig {
 #[cfg(feature = "test-support")]
 pub fn install_or_override(config: types::ResolvedConfig) {
     tact_llm::init_provider(config.llm.provider_info());
-    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    let mut guard = SETTINGS.write_recover();
     *guard = Some(config);
 }
 
@@ -196,7 +196,7 @@ pub fn try_settings() -> Option<types::ResolvedConfig> {
 /// Update the in-memory active model (keeps status/help in sync; the running
 /// agent is updated via `UserCommand::SetModel`).
 pub fn update_llm_model(model: String) {
-    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    let mut guard = SETTINGS.write_recover();
     if let Some(cfg) = guard.as_mut() {
         cfg.llm.model = model.clone();
         cfg.agent.model = model;
@@ -217,7 +217,7 @@ pub fn update_llm_model(model: String) {
 /// `thinking_budget` (otherwise the bottom bar would show `think high(32K)`
 /// with a meaningless budget for an effort-semantic model).
 pub fn update_llm_model_and_reasoning_effort(model: String, effort: Option<OpenAiReasoningEffort>) {
-    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    let mut guard = SETTINGS.write_recover();
     if let Some(cfg) = guard.as_mut() {
         cfg.llm.model = model.clone();
         cfg.agent.model = model;
@@ -235,7 +235,7 @@ pub fn update_llm_model_and_reasoning_effort(model: String, effort: Option<OpenA
 /// Budget and effort semantics are mutually exclusive, so setting a budget
 /// clears any stale `reasoning_effort`.
 pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usize) {
-    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    let mut guard = SETTINGS.write_recover();
     if let Some(cfg) = guard.as_mut() {
         cfg.llm.model = model.clone();
         cfg.agent.model = model;
@@ -252,7 +252,7 @@ pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usiz
 
 /// Update the in-memory subagent model and thinking budget.
 pub fn update_subagent_model(model: String, thinking_budget: usize) {
-    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    let mut guard = SETTINGS.write_recover();
     if let Some(cfg) = guard.as_mut()
         && let Some(sa) = cfg.agent.subagent.as_mut()
     {
@@ -264,7 +264,7 @@ pub fn update_subagent_model(model: String, thinking_budget: usize) {
 
 /// Update the in-memory subagent reasoning effort (session level).
 pub fn update_subagent_reasoning_effort(effort: Option<OpenAiReasoningEffort>) {
-    let mut guard = SETTINGS.write().expect("tact config lock poisoned");
+    let mut guard = SETTINGS.write_recover();
     if let Some(cfg) = guard.as_mut()
         && let Some(sa) = cfg.agent.subagent.as_mut()
     {

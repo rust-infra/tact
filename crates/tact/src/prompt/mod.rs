@@ -3,6 +3,7 @@ use std::{
     sync::{LazyLock, RwLock},
 };
 
+use crate::utils::RwLockExt;
 use anyhow::{Context as _, Result};
 use derive_builder::Builder;
 use tera::Tera;
@@ -324,7 +325,7 @@ impl Prompt {
     ///
     /// Errors if the `Tera` instance cannot be extended.
     pub fn extend(other: &Tera) -> Result<()> {
-        let mut swiftide_tera = TERA.write().unwrap();
+        let mut swiftide_tera = TERA.write_recover();
         swiftide_tera.extend(other)?;
         Ok(())
     }

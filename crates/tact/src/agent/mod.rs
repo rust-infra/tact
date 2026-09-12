@@ -39,14 +39,15 @@ use crate::{
     permission::PermissionManager,
     prompt::{SystemPrompt, responses_prompt_template},
     recovery::{
-        MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS, MAX_CONTINUATION_ATTEMPTS,
-        MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay, continuation_message, error_summary,
-        is_prompt_too_long_error, is_transient_transport_error,
+        FailureKind, MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS,
+        MAX_CONTINUATION_ATTEMPTS, MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay,
+        classify_error, classify_llm_error, continuation_message, error_summary,
     },
     stats::SessionStats,
     store::DynSessionStore,
     subagent::SubagentResult,
     tool::{ToolContext, ToolRouter},
+    utils::{LockExt, RwLockExt},
 };
 
 enum CompactRebuildMode {
@@ -161,11 +162,10 @@ pub struct Agent {
     pub turns_taken: u32,
     /// Snapshot of agent settings at construction; avoids parallel tests racing on global config.
     agent_settings: AgentSettings,
-    /// Provider kind captured at construction (or overridden via
-    /// [`Self::with_provider_kind`]); lets Responses routing distinguish
-    /// OpenAI (native compaction) from DeepSeek (local summary fallback)
-    /// without reading process-global provider state.
-    provider_kind: ProviderKind,
+    /// Compaction-routing provider kind, when set explicitly via
+    /// [`Self::with_provider_kind`]. `None` means "inherit from the live
+    /// provider" — see [`Self::provider_kind`].
+    provider_kind: Option<ProviderKind>,
     cached_tool_specs: Vec<ToolSpec>,
 }
 
@@ -199,7 +199,13 @@ impl Agent {
         // user `/compact` command and automatic triggers dispatch to the
         // native `/responses/compact` endpoint instead. MCP tools are kept
         // unchanged.
-        let provider_kind = ProviderKind::OpenAi;
+        //
+        // Routing kind is left unset: it is resolved lazily from the live
+        // provider so a subagent (which never calls `with_provider_kind`)
+        // inherits its parent's routing instead of silently defaulting to
+        // OpenAI and calling a `/responses/compact` endpoint that DeepSeek
+        // does not implement.
+        let provider_kind = None;
         let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         tool_context.cancel_flag = cancel_flag.clone();
         let mut agent = Self {
@@ -243,8 +249,20 @@ impl Agent {
     /// (OpenAI → native `/responses/compact`; DeepSeek → local summary
     /// fallback because its endpoint lacks the endpoint).
     pub fn with_provider_kind(mut self, provider_kind: ProviderKind) -> Self {
-        self.provider_kind = provider_kind;
+        self.provider_kind = Some(provider_kind);
         self
+    }
+
+    /// The provider kind compaction is routed by.
+    ///
+    /// Explicitly set kinds ([`Self::with_provider_kind`]) win; otherwise the
+    /// live provider is consulted, falling back to OpenAI when no provider has
+    /// been installed (tests that never call `init_provider`).
+    fn provider_kind(&self) -> ProviderKind {
+        self.provider_kind
+            .clone()
+            .or_else(tact_llm::current_provider_kind)
+            .unwrap_or(ProviderKind::OpenAi)
     }
 
     /// Rebuild the cached tool specs from the native tools plus the current
@@ -698,6 +716,35 @@ impl Agent {
         idx
     }
 
+    /// Whether the user asked the run to stop.
+    ///
+    /// Checked at turn and wave boundaries; a tool call already in flight is
+    /// deliberately not interrupted.
+    fn cancel_requested(&self) -> bool {
+        self.runtime
+            .cancel_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Records one tool result into the session stats.
+    ///
+    /// All four counters live behind the same lock, so they are updated in one
+    /// acquisition instead of one per counter.
+    fn record_tool_stats(&self, name: &str, succeeded: bool, duration_us: u64) {
+        let key = name.to_string();
+        let mut stats = self.runtime.stats.write_recover();
+        if succeeded {
+            *stats.tool_success_counts.entry(key.clone()).or_insert(0) += 1;
+        } else {
+            *stats.tool_failure_counts.entry(key.clone()).or_insert(0) += 1;
+        }
+        *stats
+            .tool_total_durations_ms
+            .entry(key.clone())
+            .or_insert(0) += duration_us / 1000;
+        *stats.tool_timing_counts.entry(key).or_insert(0) += 1;
+    }
+
     /// The main agent conversation loop.
     ///
     /// 1. Builds the system prompt and primes the context.
@@ -757,11 +804,7 @@ impl Agent {
                 self.emit_update(AgentUpdate::Info(format!("max_turns ({max}) reached")));
                 return Ok(());
             }
-            if self
-                .runtime
-                .cancel_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok(());
             }
@@ -798,11 +841,7 @@ impl Agent {
             // (not `runtime.context.push()`) persists the synthetic message so
             // the on-disk transcript stays consistent.
             let pending: Vec<SubagentResult> = {
-                let mut queue = self
-                    .runtime
-                    .pending_subagent_results
-                    .lock()
-                    .expect("pending_subagent_results lock poisoned");
+                let mut queue = self.runtime.pending_subagent_results.lock_recover();
                 queue.drain(..).collect()
             };
             for result in pending {
@@ -849,75 +888,73 @@ impl Agent {
                 .map(|s| s.chars().count() as u64)
                 .unwrap_or(0);
             {
-                let mut stats = self
-                    .runtime
-                    .stats
-                    .write()
-                    .expect("session stats lock poisoned");
+                let mut stats = self.runtime.stats.write_recover();
                 stats.prompt_count += 1;
                 stats.total_prompt_chars += prompt_chars;
             }
             let llm_call_start = std::time::Instant::now();
 
-            let (content, stop_reason, token_usage, request_body, state_update) = match self
-                .stream_message(&request)
-                .await
-            {
-                Ok(result) => {
-                    self.runtime.recovery_state.transport_attempts = 0;
-                    result
-                }
-                Err(error) => {
-                    let error_text = error.to_string().to_lowercase();
-                    if is_prompt_too_long_error(&error_text)
-                        && self.runtime.recovery_state.compact_attempts < MAX_COMPACT_ATTEMPTS
-                    {
-                        self.runtime.recovery_state.compact_attempts += 1;
-                        self.emit_update(AgentUpdate::Info(format!(
-                            "[Recovery] compact ({}/{}): context too large",
-                            self.runtime.recovery_state.compact_attempts, MAX_COMPACT_ATTEMPTS
-                        )));
-                        self.compact_history_with_trigger(CompactTrigger::Recovery, None)
-                            .await?;
-                        continue;
+            let (content, stop_reason, token_usage, request_body, state_update) =
+                match self.stream_message(&request).await {
+                    Ok(result) => {
+                        self.runtime.recovery_state.transport_attempts = 0;
+                        result
                     }
+                    Err(error) => {
+                        match classify_error(&error) {
+                            FailureKind::PromptTooLong
+                                if self.runtime.recovery_state.compact_attempts
+                                    < MAX_COMPACT_ATTEMPTS =>
+                            {
+                                self.runtime.recovery_state.compact_attempts += 1;
+                                self.emit_update(AgentUpdate::Info(format!(
+                                    "[Recovery] compact ({}/{}): context too large",
+                                    self.runtime.recovery_state.compact_attempts,
+                                    MAX_COMPACT_ATTEMPTS
+                                )));
+                                self.compact_history_with_trigger(CompactTrigger::Recovery, None)
+                                    .await?;
+                                continue;
+                            }
+                            FailureKind::Transient
+                                if self.runtime.recovery_state.transport_attempts
+                                    < MAX_TRANSPORT_ATTEMPTS =>
+                            {
+                                let delay =
+                                    backoff_delay(self.runtime.recovery_state.transport_attempts);
+                                self.runtime.recovery_state.transport_attempts += 1;
+                                let summary = error_summary(
+                                    &error
+                                        .chain()
+                                        .map(|cause| cause.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(": "),
+                                );
+                                self.emit_update(AgentUpdate::Info(format!(
+                                    "[Recovery] backoff ({}/{}): retrying in {:.1}s — {summary}",
+                                    self.runtime.recovery_state.transport_attempts,
+                                    MAX_TRANSPORT_ATTEMPTS,
+                                    delay.as_secs_f64()
+                                )));
+                                tokio::time::sleep(delay).await;
+                                continue;
+                            }
+                            _ => {}
+                        }
 
-                    if is_transient_transport_error(&error_text)
-                        && self.runtime.recovery_state.transport_attempts < MAX_TRANSPORT_ATTEMPTS
-                    {
-                        let delay = backoff_delay(self.runtime.recovery_state.transport_attempts);
-                        self.runtime.recovery_state.transport_attempts += 1;
-                        let summary = error_summary(
-                            &error
-                                .chain()
-                                .map(|cause| cause.to_string())
-                                .collect::<Vec<_>>()
-                                .join(": "),
-                        );
-                        self.emit_update(AgentUpdate::Info(format!(
-                            "[Recovery] backoff ({}/{}): retrying in {:.1}s — {summary}",
-                            self.runtime.recovery_state.transport_attempts,
-                            MAX_TRANSPORT_ATTEMPTS,
-                            delay.as_secs_f64()
-                        )));
-                        tokio::time::sleep(delay).await;
-                        continue;
+                        // Propagate the original error: `anyhow!(error)` would
+                        // re-wrap it as a Display string, dropping both the
+                        // typed cause and the chain for callers up the stack.
+                        return Err(error);
                     }
-
-                    return Err(anyhow::anyhow!(error));
-                }
-            };
+                };
 
             // ── Stats: after LLM call ──
             let response_chars = serde_json::to_string(&content)
                 .map(|s| s.chars().count() as u64)
                 .unwrap_or(0);
             {
-                let mut stats = self
-                    .runtime
-                    .stats
-                    .write()
-                    .expect("session stats lock poisoned");
+                let mut stats = self.runtime.stats.write_recover();
                 stats.llm_call_durations.push(llm_call_start.elapsed());
                 stats.total_response_chars += response_chars;
                 for block in &content {
@@ -929,11 +966,7 @@ impl Agent {
             }
 
             if let Some(ref usage) = token_usage {
-                self.runtime
-                    .stats
-                    .write()
-                    .expect("session stats lock poisoned")
-                    .record_token_usage(usage);
+                self.runtime.stats.write_recover().record_token_usage(usage);
                 self.runtime.last_token_total = usage.total;
             }
             self.runtime.llm_call_last_message_id = self.runtime.last_message_db_id;
@@ -1056,11 +1089,7 @@ impl Agent {
                 }
             }
 
-            if self
-                .runtime
-                .cancel_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok(());
             }
@@ -1096,7 +1125,11 @@ impl Agent {
             .client
             .stream_message(request, self.runtime.provider_state.as_ref(), ui_tx)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            // Keep the typed `LlmError` as the root cause: the recovery loop
+            // classifies retries on `LlmError::HttpError.status`, and
+            // stringifying here would erase it (and the error chain) before
+            // the retry decision is made.
+            .map_err(anyhow::Error::from)?;
         Ok((
             response.blocks,
             response.stop_reason,
@@ -1275,7 +1308,8 @@ impl Agent {
             }
         }
 
-        let result = if self.is_openai_responses() && self.provider_kind != ProviderKind::DeepSeek {
+        let result = if self.is_openai_responses() && self.provider_kind() != ProviderKind::DeepSeek
+        {
             self.compact_responses_native().await
         } else {
             self.compact_history_local(focus).await
@@ -1326,20 +1360,9 @@ impl Agent {
             {
                 Ok(response) => break response,
                 Err(error) => {
-                    let error_text = error.to_string();
-                    if retry_attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
-                        || !is_transient_transport_error(&error_text.to_lowercase())
-                    {
+                    if !self.retry_compaction_call(&error, &mut retry_attempt).await {
                         return Err(anyhow::Error::from(error));
                     }
-                    retry_attempt = retry_attempt.saturating_add(1);
-                    let delay = backoff_delay(retry_attempt.saturating_sub(1));
-                    let summary = error_summary(&error_text);
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
-                        delay.as_secs_f64()
-                    )));
-                    tokio::time::sleep(delay).await;
                 }
             }
         };
@@ -1371,16 +1394,7 @@ impl Agent {
         self.runtime.provider_state = Some(ProviderConversationState::OpenAiResponses(
             candidate_state.clone(),
         ));
-        self.runtime.first_message_db_id = 0;
-        self.runtime.last_message_db_id = 0;
-        self.runtime.llm_call_last_message_id = 0;
-        self.runtime.last_token_total = 0;
-        self.runtime.compact_state.has_compacted = true;
-        self.runtime
-            .stats
-            .write()
-            .expect("session stats lock poisoned")
-            .compactions += 1;
+        self.finish_compaction(None);
 
         // Informational status only: item count and a bounded compaction id
         // prefix. Never expose the opaque encrypted content, and never echo
@@ -1439,7 +1453,7 @@ impl Agent {
             .context("summary output token budget does not fit u32")?
         };
         let reasoning_reserve = summary_text_max_tokens
-            .saturating_mul(compact_summary_reasoning_reserve_percent(&self.provider_kind) as u32)
+            .saturating_mul(compact_summary_reasoning_reserve_percent(&self.provider_kind()) as u32)
             .div_ceil(100);
         // Wire `max_tokens`: text plus the reasoning reserve. The text portion
         // keeps its classic budget; the reserve only covers providers that
@@ -1529,19 +1543,11 @@ impl Agent {
             extra_body: None,
         }));
         // ── Stats: before compaction LLM call ──
-        self.runtime
-            .stats
-            .write()
-            .expect("session stats lock poisoned")
-            .prompt_count += 1;
+        self.runtime.stats.write_recover().prompt_count += 1;
         let compact_prompt_chars = serde_json::to_string(&initial_request)
             .map(|s| s.chars().count() as u64)
             .unwrap_or(0);
-        self.runtime
-            .stats
-            .write()
-            .expect("session stats lock poisoned")
-            .total_prompt_chars += compact_prompt_chars;
+        self.runtime.stats.write_recover().total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
 
         // Summarization call with two independent recovery axes:
@@ -1599,20 +1605,9 @@ impl Agent {
                     break (response.stop_reason, response.usage, response.request_body);
                 }
                 Err(error) => {
-                    let error_text = error.to_string();
-                    if retry_attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
-                        || !is_transient_transport_error(&error_text.to_lowercase())
-                    {
+                    if !self.retry_compaction_call(&error, &mut retry_attempt).await {
                         return Err(anyhow::Error::from(error));
                     }
-                    retry_attempt = retry_attempt.saturating_add(1);
-                    let delay = backoff_delay(retry_attempt.saturating_sub(1));
-                    let summary = error_summary(&error_text);
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
-                        delay.as_secs_f64()
-                    )));
-                    tokio::time::sleep(delay).await;
                 }
             }
         };
@@ -1623,11 +1618,7 @@ impl Agent {
             .map(|s| s.chars().count() as u64)
             .unwrap_or(0);
         {
-            let mut stats = self
-                .runtime
-                .stats
-                .write()
-                .expect("session stats lock poisoned");
+            let mut stats = self.runtime.stats.write_recover();
             stats.llm_call_durations.push(compact_start.elapsed());
             stats.total_response_chars += compact_response_chars;
             for block in &blocks {
@@ -1638,11 +1629,7 @@ impl Agent {
             }
         }
         if let Some(ref usage) = token_usage {
-            self.runtime
-                .stats
-                .write()
-                .expect("session stats lock poisoned")
-                .record_token_usage(usage);
+            self.runtime.stats.write_recover().record_token_usage(usage);
             // Do NOT assign usage.total to last_token_total: that figure is for
             // the summarization request (large history prompt), not the size of
             // the replacement context below.
@@ -1757,21 +1744,59 @@ impl Agent {
         }
         // Context and persistence now agree, so future messages start a new
         // message-id window and compaction state can be committed.
+        self.finish_compaction(Some(summary));
+        Ok(())
+    }
+
+    /// Commits the runtime bookkeeping shared by every compaction path.
+    ///
+    /// The message-id window is reset because the persisted history now starts
+    /// over, and `last_token_total` is zeroed so the next `should_auto_compact`
+    /// check sees the *new* small context rather than the pre-compact or
+    /// summarizer-prompt totals.
+    ///
+    /// `summary` is the Codex-style handoff summary, remembered for the next
+    /// user turn. `None` leaves the previous one in place — the Responses path
+    /// keeps its own opaque compaction state instead.
+    fn finish_compaction(&mut self, summary: Option<String>) {
         self.runtime.first_message_db_id = 0;
         self.runtime.last_message_db_id = 0;
         self.runtime.llm_call_last_message_id = 0;
-        self.runtime.compact_state.has_compacted = true;
-        self.runtime.compact_state.last_summary = Some(summary);
-        // Reset so the next should_auto_compact check reflects the new small
-        // context (via token estimate / next main-loop TokenUsage), not the
-        // pre-compact or summarizer-prompt totals.
         self.runtime.last_token_total = 0;
-        self.runtime
-            .stats
-            .write()
-            .expect("session stats lock poisoned")
-            .compactions += 1;
-        Ok(())
+        self.runtime.compact_state.has_compacted = true;
+        if summary.is_some() {
+            self.runtime.compact_state.last_summary = summary;
+        }
+        self.runtime.stats.write_recover().compactions += 1;
+    }
+
+    /// Retry policy shared by both compaction summarizer call paths.
+    ///
+    /// Returns `false` when the caller must surface the error — the attempt
+    /// budget is exhausted, or the failure is not retryable. Otherwise it
+    /// bumps `attempt`, sleeps the back-off and emits the retry notice.
+    ///
+    /// Classification goes through [`classify_llm_error`], so a permanent
+    /// (400/401/403/404) failure is never retried.
+    async fn retry_compaction_call(
+        &mut self,
+        error: &tact_llm::LlmError,
+        attempt: &mut u32,
+    ) -> bool {
+        if *attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
+            || classify_llm_error(error) != FailureKind::Transient
+        {
+            return false;
+        }
+        *attempt += 1;
+        let delay = backoff_delay(attempt.saturating_sub(1));
+        let summary = error_summary(&error.to_string());
+        self.emit_update(AgentUpdate::Info(format!(
+            "[compact retry {attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
+            delay.as_secs_f64()
+        )));
+        tokio::time::sleep(delay).await;
+        true
     }
 
     fn remember_recent_file(&mut self, path: &str) {
