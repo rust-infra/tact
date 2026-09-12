@@ -214,8 +214,9 @@ let exec = if is_mcp {
 Tact 只能显示命令实际写入 pipe 的字节；不会添加 PTY、注入 `stdbuf` 或改写
 pipeline 来绕过应用缓冲。
 
-墙钟超时默认 1,800 秒；`[tools].bash_timeout_secs = 0` 禁用超时。超时或取消
-在 Unix 终止 shell process group；在非 Unix 终止 child 并 abort 本地 pipe reader，
+墙钟超时默认 1,800 秒；`[tools].bash_timeout_secs = 0` 禁用超时。每次调用的
+`timeout` 参数（秒）可覆盖该次调用的配置值，`timeout = 0` 表示本次调用禁用超时。
+超时或取消在 Unix 终止 shell process group；在非 Unix 终止 child 并 abort 本地 pipe reader，
 避免继承的 handle 让调用一直等待。两条路径都会排空已入队输出，并在返回前 flush 进度。
 进程非 0 退出也会使工具失败（`StepStatus::Failed`），并附带已捕获的 stdout/stderr
 作为 partial output，供模型继续阅读命令输出。

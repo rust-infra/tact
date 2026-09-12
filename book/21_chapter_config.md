@@ -397,7 +397,9 @@ servers. An entry is either local (`command`, spawned over stdio) or remote
 (`url`, Streamable HTTP), optionally with static `headers` or
 `auth: { "type": "oauth", ... }`; OAuth tokens are stored per server under
 `~/.tact/mcp/oauth/` and authorized with `/mcp auth <server>` (interactive) or
-`tact-ui mcp login <server>` (CLI). The CLI manages the whole lifecycle —
+`tact-ui mcp login <server>` (CLI); `/mcp list` shows the configured servers and
+their live status in the TUI (idle-only, never reconnects). The CLI manages the
+whole lifecycle —
 `tact-ui mcp list` (every server with transport and status), `get <name>` (one
 server, its tools), `add`/`remove` (`--user` for the home file, `--force` to
 replace), `login`/`logout` (stored credentials) — see Ch 8.

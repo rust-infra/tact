@@ -84,6 +84,9 @@ impl TryFrom<UserCommand> for Command {
             // OAuth authorization for a remote MCP server is a Tact driver
             // flow (loopback callback + router reload), not a kit command.
             UserCommand::McpAuth { .. } => Err(()),
+            // Listing MCP servers reads the agent's live router, which only
+            // the Tact driver owns; not a kit command.
+            UserCommand::McpList => Err(()),
             // Responses to agent-originated selects flow on the reverse command
             // channel; they are not host commands and never map to `Command`.
             UserCommand::UiResponse(_) => Err(()),

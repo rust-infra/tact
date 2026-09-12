@@ -218,7 +218,9 @@ at most 4 KiB each). The final normalized capture is independently capped at
 a PTY, inject `stdbuf`, or rewrite pipelines to bypass application buffering.
 
 The wall-clock timeout defaults to 1,800 seconds; `[tools].bash_timeout_secs =
-0` disables it. Timeout or cancellation kills the shell process group on Unix.
+0` disables it. A per-call `timeout` argument (seconds) overrides the
+configured value for that invocation, and `timeout = 0` disables the timeout
+for that call. Timeout or cancellation kills the shell process group on Unix.
 On non-Unix it kills the child and aborts the local pipe readers so inherited
 handles cannot keep the call open. Both paths drain already-queued output and
 flush progress before returning. A non-zero process exit also fails the tool

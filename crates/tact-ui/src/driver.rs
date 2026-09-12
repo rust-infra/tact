@@ -414,6 +414,19 @@ async fn handle_user_command_with_account(
                 ))),
             }
         }
+        UserCommand::McpList => {
+            // Live view: describe what the agent's *current* router holds.
+            // Never reload here — a reconnect would drop live stdio children
+            // and duplicate remote dials just to print a table.
+            match tact::mcp::describe_servers(&agent.mcp_router.server_summaries()) {
+                Ok(views) => agent.emit_update(AgentUpdate::MdInfo(
+                    crate::mcp_cli::render_live_listing(&views),
+                )),
+                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                    format!("MCP list failed: {error:#}"),
+                ))),
+            }
+        }
         _ => {}
     }
 }
@@ -636,6 +649,24 @@ mod tests {
             }
         }
         assert!(saw_error, "QueryBackground with unknown id must emit Error");
+    }
+
+    #[tokio::test]
+    async fn mcp_list_emits_the_live_listing_without_reconnecting() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(&mut agent, UserCommand::McpList, &work_dir).await;
+
+        let mut saw_md = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::MdInfo(md) = update {
+                assert!(md.contains("MCP Servers"), "md: {md}");
+                saw_md = true;
+            }
+        }
+        assert!(saw_md, "McpList must emit MdInfo with the server listing");
     }
 
     #[tokio::test(flavor = "multi_thread")]

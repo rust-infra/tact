@@ -198,6 +198,90 @@ pub struct ConfiguredServer {
     pub source: String,
 }
 
+/// Describes how a resolved transport is reached, for diagnostics.
+fn transport_kind(transport: &McpTransportConfig) -> McpTransportKind {
+    match transport {
+        McpTransportConfig::Stdio(config) => McpTransportKind::Stdio {
+            command: config.command.clone(),
+        },
+        McpTransportConfig::Remote(remote) => McpTransportKind::Remote {
+            url: remote.url.clone(),
+            oauth: remote.auth.is_some(),
+        },
+    }
+}
+
+/// One configured server's status against a **live** connection set.
+///
+/// Unlike [`McpServerStatus`] (which comes from connecting), this is derived
+/// from the clients an agent already holds, so classifying a server never
+/// dials it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpLiveStatus {
+    /// A live client exists; carries the tool count it reported.
+    Connected { tools: usize },
+    /// Remote OAuth server with no stored credential — actionable with
+    /// `/mcp auth <name>`, not an error.
+    NeedsAuthorization,
+    /// Configured but absent from the live set: it was not connected at
+    /// startup (a connection failure, or a contact that never happened).
+    NotConnected,
+}
+
+/// One configured server together with its live status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerView {
+    pub server: ConfiguredServer,
+    pub status: McpLiveStatus,
+}
+
+/// Describes every configured server against the given live connections.
+///
+/// `connected` is the `(server, tool count)` list an agent's router reports.
+/// **Read-only**: nothing is dialled, so this is cheap and safe to call while
+/// a task is in flight — unlike [`load_mcp_router_with_report`], which would
+/// duplicate (or, for stdio servers, contend with) the live connections.
+///
+/// Returns an error only when the configuration on disk cannot be resolved
+/// (an unparseable `mcp.json`); a missing file is simply an empty listing.
+pub fn describe_servers(connected: &[(String, usize)]) -> Result<Vec<McpServerView>> {
+    Ok(describe_resolved(resolve_current()?, connected))
+}
+
+/// Pure core of [`describe_servers`], separated so classification is testable
+/// without reading the working directory.
+fn describe_resolved(
+    resolved: ResolvedServers,
+    connected: &[(String, usize)],
+) -> Vec<McpServerView> {
+    let mut views: Vec<McpServerView> = resolved
+        .servers
+        .iter()
+        .map(|(name, transport, source)| {
+            let status = if let Some((_, tools)) = connected.iter().find(|(n, _)| n == name) {
+                McpLiveStatus::Connected { tools: *tools }
+            } else if matches!(
+                transport,
+                McpTransportConfig::Remote(remote) if remote.needs_authorization(name)
+            ) {
+                McpLiveStatus::NeedsAuthorization
+            } else {
+                McpLiveStatus::NotConnected
+            };
+            McpServerView {
+                server: ConfiguredServer {
+                    name: name.clone(),
+                    transport: transport_kind(transport),
+                    source: source.clone(),
+                },
+                status,
+            }
+        })
+        .collect();
+    views.sort_by(|a, b| a.server.name.cmp(&b.server.name));
+    views
+}
+
 /// What happened while resolving every configured MCP server.
 ///
 /// A clean load leaves every field empty; callers render a notice only when at
@@ -957,15 +1041,7 @@ impl ResolvedServers {
             .iter()
             .map(|(name, transport, source)| ConfiguredServer {
                 name: name.clone(),
-                transport: match transport {
-                    McpTransportConfig::Stdio(config) => McpTransportKind::Stdio {
-                        command: config.command.clone(),
-                    },
-                    McpTransportConfig::Remote(remote) => McpTransportKind::Remote {
-                        url: remote.url.clone(),
-                        oauth: remote.auth.is_some(),
-                    },
-                },
+                transport: transport_kind(transport),
                 source: source.clone(),
             })
             .collect();
@@ -1211,7 +1287,11 @@ fn join_mcp_content(content: &[rmcp::model::Content]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+    use std::{
+        borrow::Cow,
+        collections::{BTreeMap, HashMap},
+        sync::Arc,
+    };
 
     use rmcp::{
         ErrorData as McpError, ServerHandler, ServiceExt,
@@ -1223,10 +1303,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MCPToolRouter, McpClient, McpConfigFile, McpLoadReport, McpProjectConfig, McpServerConfig,
-        McpToolName, McpTransportConfig, MockMcpService, PluginManifest, RealMcpService,
-        SourcedServer, collect_sourced_servers, drain_mcp_stderr, installed_plugin_mcp_servers,
-        resolve_servers,
+        MCPToolRouter, McpAuthConfig, McpClient, McpConfigFile, McpLiveStatus, McpLoadReport,
+        McpProjectConfig, McpServerConfig, McpToolName, McpTransportConfig, MockMcpService,
+        PluginManifest, RealMcpService, SourcedServer, collect_sourced_servers, describe_resolved,
+        drain_mcp_stderr, installed_plugin_mcp_servers, resolve_servers,
     };
     use crate::{
         consts::PluginHome,
@@ -1947,6 +2027,99 @@ mod tests {
         assert!(
             !servers.iter().any(|s| s.name == "ignored"),
             "a cwd .mcp.json must not be read: {servers:?}",
+        );
+    }
+
+    fn sourced_config(name: &str, config: McpProjectConfig) -> SourcedServer {
+        SourcedServer {
+            name: name.to_string(),
+            source: "/tmp/mcp.json".to_string(),
+            config,
+        }
+    }
+
+    fn stdio_config(command: &str) -> McpProjectConfig {
+        McpProjectConfig {
+            server_type: None,
+            command: Some(command.to_string()),
+            args: Vec::new(),
+            env: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            auth: None,
+        }
+    }
+
+    fn oauth_remote_config(url: &str) -> McpProjectConfig {
+        McpProjectConfig {
+            server_type: Some("http".to_string()),
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+            url: Some(url.to_string()),
+            headers: HashMap::new(),
+            auth: Some(McpAuthConfig::Oauth {
+                client_id: None,
+                client_name: None,
+                scopes: Vec::new(),
+                callback_port: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn describe_resolved_classifies_against_the_live_connection_set() {
+        let resolved = resolve_servers(vec![
+            sourced_config("ok", stdio_config("/bin/ok")),
+            // A random name so the machine running the tests has no stored
+            // credential at ~/.tact/mcp/oauth/<name>.json.
+            sourced_config(
+                "tact-mcp-live-test-missing",
+                oauth_remote_config("https://example.invalid/mcp"),
+            ),
+            sourced_config("broken", stdio_config("/bin/broken")),
+        ]);
+
+        let views = describe_resolved(resolved, &[("ok".to_string(), 3), ("extra".to_string(), 1)]);
+
+        let status = |name: &str| {
+            views
+                .iter()
+                .find(|v| v.server.name == name)
+                .unwrap_or_else(|| panic!("{name} missing from {views:?}"))
+                .status
+                .clone()
+        };
+        assert_eq!(status("ok"), McpLiveStatus::Connected { tools: 3 });
+        assert_eq!(
+            status("tact-mcp-live-test-missing"),
+            McpLiveStatus::NeedsAuthorization
+        );
+        assert_eq!(status("broken"), McpLiveStatus::NotConnected);
+        // A live client wins over the credential heuristic: a server that is
+        // actually connected can never be reported as needing authorization.
+        assert_eq!(views.len(), 3, "live-only servers are not listed");
+        // Sorted by name, matching the loader's `configured()` order.
+        let names: Vec<&str> = views.iter().map(|v| v.server.name.as_str()).collect();
+        assert_eq!(names, ["broken", "ok", "tact-mcp-live-test-missing"]);
+    }
+
+    #[test]
+    fn describe_resolved_lists_a_connected_oauth_server_as_connected() {
+        // Precedence guard: the connected check must run before the
+        // needs-authorization heuristic, or a working server would be shown
+        // as pending once its credential file is the deciding factor.
+        let resolved = resolve_servers(vec![sourced_config(
+            "tact-mcp-live-test-missing",
+            oauth_remote_config("https://example.invalid/mcp"),
+        )]);
+
+        let views = describe_resolved(resolved, &[("tact-mcp-live-test-missing".to_string(), 7)]);
+
+        assert_eq!(
+            views[0].status,
+            McpLiveStatus::Connected { tools: 7 },
+            "{views:?}"
         );
     }
 }

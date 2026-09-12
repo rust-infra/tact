@@ -71,7 +71,7 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("plugin", "Manage plugins and marketplaces"),
     (
         "mcp",
-        "Authorize remote MCP servers (usage: /mcp auth <server>)",
+        "Manage MCP servers (usage: /mcp auth <server> | /mcp list)",
     ),
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),

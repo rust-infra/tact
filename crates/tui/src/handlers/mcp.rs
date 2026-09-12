@@ -1,13 +1,15 @@
-//! `/mcp` slash command: authorize remote MCP servers.
+//! `/mcp` slash command: authorize and inspect remote MCP servers.
 //!
-//! Only `auth` is handled here — the actual OAuth round-trip (loopback
-//! listener + token persistence + router reload) lives in the driver so it can
-//! own the agent while it runs.
+//! This module recognizes the `auth`/`login` and `list` forms and delegates the
+//! work to the driver: the OAuth round-trip (loopback listener + token
+//! persistence + router reload) needs to own the agent while it runs, and
+//! `list` is answered there because only the driver can see the agent's live
+//! MCP router.
 
 use tact_protocol::UserCommand;
 
 use super::CommandExecOutcome;
-use crate::widgets::state::App;
+use crate::widgets::state::{App, Status};
 
 pub(crate) fn handle_mcp_command(app: &mut App) -> CommandExecOutcome {
     let parts: Vec<&str> = app.input.split_whitespace().collect();
@@ -19,6 +21,21 @@ pub(crate) fn handle_mcp_command(app: &mut App) -> CommandExecOutcome {
             let started = app.msgs().mcp_auth_started_tmpl.replace("{}", &server);
             app.add_system_message(started);
             let _ = app.user_cmd_tx.send(UserCommand::McpAuth { server });
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        ["/mcp", "list"] => {
+            // Idle-only: the driver serializes non-fast commands behind an
+            // in-flight turn, so a busy agent would show the table only after
+            // the turn finished — flash the busy hint instead, like `/compact`.
+            if matches!(app.status, Status::Planning | Status::Executing { .. }) {
+                let msg = app.msgs().input_busy_msg.to_string();
+                app.flash_msg = Some((msg, std::time::Instant::now()));
+            } else {
+                let _ = app.user_cmd_tx.send(UserCommand::McpList);
+            }
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
@@ -47,7 +64,7 @@ mod tests {
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     use super::handle_mcp_command;
-    use crate::widgets::state::App;
+    use crate::widgets::state::{App, Status};
 
     fn make_app() -> (App, UnboundedReceiver<UserCommand>) {
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
@@ -115,5 +132,40 @@ mod tests {
         assert!(!outcome.clear_input);
         assert_eq!(app.input, "/mcp ");
         assert!(rx.try_recv().is_err(), "no command should be sent");
+    }
+
+    #[test]
+    fn mcp_list_queues_a_listing_request_when_idle() {
+        let (mut app, mut rx) = make_app();
+        app.input = "/mcp list".into();
+
+        let outcome = handle_mcp_command(&mut app);
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(matches!(
+            rx.try_recv().expect("command sent"),
+            UserCommand::McpList
+        ));
+    }
+
+    #[test]
+    fn mcp_list_flashes_busy_instead_of_queueing_while_a_task_runs() {
+        let (mut app, mut rx) = make_app();
+        app.input = "/mcp list".into();
+        app.status = Status::Executing {
+            current_step: 0,
+            total: 1,
+        };
+
+        let outcome = handle_mcp_command(&mut app);
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(
+            rx.try_recv().is_err(),
+            "a busy agent must not queue the listing"
+        );
+        assert!(app.flash_msg.is_some(), "the busy hint should be flashed");
     }
 }

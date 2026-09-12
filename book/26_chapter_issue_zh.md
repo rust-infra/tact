@@ -96,6 +96,45 @@
 
 ---
 
+## 1. 2026-09-11 — `bash` 支持按次传入 `timeout`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/tool/bash.rs`（`BashInput::timeout`、`resolve_timeout_secs`）；Ch 7 §8 |
+
+**Symptom / motivation：** bash 的墙钟时限此前只能由配置决定（`[tools].bash_timeout_secs`，默认 1,800 秒）。一次长时间构建无法延长它，想要**收紧**上限的 agent 也无从表达；而且未知 JSON 字段会在反序列化时被丢弃，模型自行编造的 `timeout` 只会被静默忽略而非生效。
+
+**Decision：** 在 `BashInput` 上新增可选字段 `timeout`（秒；serde 别名 `timeout_secs`），由 `resolve_timeout_secs(input_timeout, ctx.bash_timeout_secs)` 解析。按次传入的值优先：`Some(0)` 表示本次调用禁用时限，`None` 继承配置值（包括配置中的 `0` 禁用）。
+
+**Behavior after：** `{"command": "cargo build", "timeout": 600}` 无论配置如何都把该次调用限制在 10 分钟；`"timeout": 0` 表示本次调用不设墙钟上限（用户取消仍然生效）。失败信息报告实际生效的时限：`Timeout (<n>s)`。
+
+**Pointers：** `crates/tact/src/tool/bash.rs`（`BashInput`、`resolve_timeout_secs`、`bash`）；测试 `tool::bash::tests::{resolve_timeout_prefers_input_then_config,bash_input_timeout_overrides_configured,bash_input_timeout_zero_disables_configured_timeout}`；Ch 7 §8。
+
+---
+
+
+## 1. 2026-09-11 — `/mcp list` 在 TUI 内提供实时的 MCP server 视图，且不重连
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/protocol/src/agent.rs`（`UserCommand::McpList`）；`crates/tact/src/mcp/mod.rs`（`McpLiveStatus`、`McpServerView`、`describe_servers`）；`crates/tact-ui/src/mcp_cli.rs`（`render_live_listing`）；`crates/tact-ui/src/driver.rs`；`crates/tui/src/handlers/mcp.rs`；Ch 8 §Step 1c |
+
+**Symptom / motivation：** 此前只能在 shell 里列出 MCP server——`tact-ui mcp list`——而该命令会逐个连接所有已配置的 server。在运行中的 TUI 里无法看到 agent 实际持有哪些 server，因此启动时连接失败的 server、或因等待 OAuth 而挂起的远程 server，除了重启就没有按需查看的途径。
+
+**Decision：** 在既有 `/mcp` slash 命令下新增第二个子命令 `/mcp list`，由 driver 回答。
+1. `UserCommand::McpList` 承载请求。`tui::handlers::mcp` **仅在空闲时**发送；任务处于 `Planning`/`Executing` 时只 flash 忙碌提示——driver 会把普通命令排到进行中的轮次之后，若入队则要等该轮结束才显示表格。
+2. `tact::mcp::describe_servers(connected)` 在不发起连接的前提下，把每个已配置 server 与**实时**连接集合对照分类：router 持有则为 `Connected { tools }`，远程 OAuth 且无可用凭据为 `NeedsAuthorization`，其余为 `NotConnected`。connected 判断优先，因此可用的 server 绝不会被凭据启发式误标。
+3. driver 通过 `render_live_listing` 将结果渲染为 `AgentUpdate::MdInfo`，日志中因此显示一张 Markdown 表格（server / transport / source / status），与 `/skills` 走同一个 `MarkdownCell`。单元格会转义 `|` 与换行，因为 source 路径由用户控制。
+
+**Behavior after：** `/mcp list` 打印每个已配置 server 的实时状态与工具数。它**绝不**发起连接，因此不会重复远程连接、也不会与运行中的 stdio 子进程争用——这与仍会连接并报告最新状态的 `tact-ui mcp list` 不同。配置为空时会说明应当在哪里声明 server。
+
+**Pointers：** `crates/protocol/src/agent.rs`（`UserCommand::McpList`）；`crates/tact/src/mcp/mod.rs`（`transport_kind`、`McpLiveStatus`、`McpServerView`、`describe_servers`、`describe_resolved`）；`crates/tact-ui/src/mcp_cli.rs`（`render_live_listing`）；`crates/tact-ui/src/driver.rs`（`UserCommand::McpList` 分支）；`crates/tui/src/handlers/mcp.rs`；`crates/agent_tui_kit/src/bridge.rs`（`TryFrom<UserCommand>`）。测试：`mcp::tests::{describe_resolved_classifies_against_the_live_connection_set,describe_resolved_lists_a_connected_oauth_server_as_connected}`；`mcp_cli::tests::{live_listing_has_a_row_per_server_with_its_status,live_listing_explains_how_to_configure_when_empty,live_listing_escapes_pipes_so_a_source_path_cannot_break_the_table}`；`driver::tests::mcp_list_emits_the_live_listing_without_reconnecting`；`handlers::mcp::tests::{mcp_list_queues_a_listing_request_when_idle,mcp_list_flashes_busy_instead_of_queueing_while_a_task_runs}`。
+
+---
+
+
 ## 1. 2026-09-11 — Mermaid 弹窗显示渲染后的图，无法渲染时也会说明原因
 
 | Field | Value |

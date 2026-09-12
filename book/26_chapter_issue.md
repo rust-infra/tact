@@ -96,6 +96,45 @@ The now-unused i18n fields (`bottom_cache_pct`, `bottom_turns`, `bottom_llm_turn
 
 ---
 
+## 1. 2026-09-11 — `bash` accepts a per-call `timeout`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/tool/bash.rs` (`BashInput::timeout`, `resolve_timeout_secs`); Ch 7 §8 |
+
+**Symptom / motivation:** The bash wall-clock limit was config-only (`[tools].bash_timeout_secs`, default 1,800 s). One long build could not extend it, an agent that wanted a *tighter* bound had no way to ask, and because unknown JSON fields deserialize away, a `timeout` the model invented was silently ignored instead of applied.
+
+**Decision:** Add an optional `timeout` field (seconds; serde alias `timeout_secs`) to `BashInput`, resolved by `resolve_timeout_secs(input_timeout, ctx.bash_timeout_secs)`. The per-call value wins: `Some(0)` disables the limit for that call, `None` inherits the configured value (including a configured `0` disable).
+
+**Behavior after:** `{"command": "cargo build", "timeout": 600}` caps that invocation at 10 minutes regardless of config; `"timeout": 0` runs without a wall-clock limit (user cancellation still applies). The failure text reports the effective limit, `Timeout (<n>s)`.
+
+**Pointers:** `crates/tact/src/tool/bash.rs` (`BashInput`, `resolve_timeout_secs`, `bash`); tests `tool::bash::tests::{resolve_timeout_prefers_input_then_config,bash_input_timeout_overrides_configured,bash_input_timeout_zero_disables_configured_timeout}`; Ch 7 §8.
+
+---
+
+
+## 1. 2026-09-11 — `/mcp list` gives the TUI a live MCP server view without reconnecting
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/protocol/src/agent.rs` (`UserCommand::McpList`); `crates/tact/src/mcp/mod.rs` (`McpLiveStatus`, `McpServerView`, `describe_servers`); `crates/tact-ui/src/mcp_cli.rs` (`render_live_listing`); `crates/tact-ui/src/driver.rs`; `crates/tui/src/handlers/mcp.rs`; Ch 8 §Step 1c |
+
+**Symptom / motivation:** MCP servers could only be listed from the shell — `tact-ui mcp list` — and that command dials every configured server. Inside a running TUI there was no way to see which servers the agent actually had, so a server that failed at startup, or a remote one waiting on OAuth, had no on-demand answer short of restarting.
+
+**Decision:** Add `/mcp list` as a second subcommand of the existing `/mcp` slash entry, answered by the driver.
+1. `UserCommand::McpList` carries the request. `tui::handlers::mcp` sends it **only when idle**; while `Planning`/`Executing` it flashes the busy hint, because the driver serializes ordinary commands behind an in-flight turn — queueing would show the table only after the turn ended.
+2. `tact::mcp::describe_servers(connected)` classifies every configured server against the **live** connection set without dialling: `Connected { tools }` when the router holds it, `NeedsAuthorization` for a remote OAuth server with no usable credential, otherwise `NotConnected`. The connected check runs first, so a working server is never mislabelled by the credential heuristic.
+3. The driver renders the views via `render_live_listing` into `AgentUpdate::MdInfo`, so the log shows a Markdown table (server / transport / source / status) through the same `MarkdownCell` as `/skills`. Cell values escape `|` and newlines, since a source path is user-controlled.
+
+**Behavior after:** `/mcp list` prints a table of every configured server with its live status and tool count. It **never** opens a connection, so it cannot duplicate a remote dial or contend with a live stdio child — unlike `tact-ui mcp list`, which still connects and reports fresh status. An empty configuration explains where to declare servers.
+
+**Pointers:** `crates/protocol/src/agent.rs` (`UserCommand::McpList`); `crates/tact/src/mcp/mod.rs` (`transport_kind`, `McpLiveStatus`, `McpServerView`, `describe_servers`, `describe_resolved`); `crates/tact-ui/src/mcp_cli.rs` (`render_live_listing`); `crates/tact-ui/src/driver.rs` (`UserCommand::McpList` arm); `crates/tui/src/handlers/mcp.rs`; `crates/agent_tui_kit/src/bridge.rs` (`TryFrom<UserCommand>`). Tests: `mcp::tests::{describe_resolved_classifies_against_the_live_connection_set,describe_resolved_lists_a_connected_oauth_server_as_connected}`; `mcp_cli::tests::{live_listing_has_a_row_per_server_with_its_status,live_listing_explains_how_to_configure_when_empty,live_listing_escapes_pipes_so_a_source_path_cannot_break_the_table}`; `driver::tests::mcp_list_emits_the_live_listing_without_reconnecting`; `handlers::mcp::tests::{mcp_list_queues_a_listing_request_when_idle,mcp_list_flashes_busy_instead_of_queueing_while_a_task_runs}`.
+
+---
+
+
 ## 1. 2026-09-11 — The Mermaid popup shows the rendered diagram, and says when it cannot render
 
 | Field | Value |

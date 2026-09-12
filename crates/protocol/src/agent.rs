@@ -467,6 +467,10 @@ pub enum UserCommand {
     /// (triggered by `/mcp auth <server>`). On success the driver reloads the
     /// MCP router so the server becomes usable without restarting.
     McpAuth { server: String },
+    /// List the configured MCP servers with their live status (triggered by
+    /// `/mcp list`). The driver renders it from the agent's **already-connected**
+    /// router, so it never reconnects and cannot disturb in-flight work.
+    McpList,
     /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
     /// (see [`UiResponse`]). Routed by the driver to the shared responder.
     UiResponse(UiResponse),
