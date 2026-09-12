@@ -170,6 +170,23 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Whether a background subagent result is waiting to be re-injected.
+    ///
+    /// The driver consults this before submitting a subagent-finished wake-up
+    /// turn: such a turn only exists to drain the queue into the parent's
+    /// context, so an empty queue means a previous turn already delivered the
+    /// summary and the extra turn would have nothing to review.
+    pub fn has_pending_subagent_results(&self) -> bool {
+        self.runtime
+            .pending_subagent_results
+            .lock()
+            .map(|queue| !queue.is_empty())
+            // A poisoned lock leaves the queue contents unknown; fall back to
+            // the previous always-wake behaviour rather than silently
+            // swallowing a completion.
+            .unwrap_or(true)
+    }
+
     pub fn new(
         client: LlmProvider,
         mut tool_context: ToolContext,

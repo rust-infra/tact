@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-12 — A drained subagent result no longer spawns an empty wake-up turn
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-ui/src/driver.rs` (`spawn_wakeup_task`); `crates/tact/src/agent/mod.rs` (`Agent::has_pending_subagent_results`); Ch 12 |
+
+**Symptom:** a background subagent's `SubagentFinishedNotification` whose summary had *already* been drained and injected by the in-flight turn still spawned a wake-up turn. The queue was empty, so nothing was injected, and the parent received only the bare prompt `A background subagent finished. Review its result below.` — with no result below it. The user saw an extra turn whose only content was a notification with no payload, and the model had to answer a prompt that promised content it never got.
+
+**Decision:** gate the wake-up on the queue. `Agent::has_pending_subagent_results()` exposes whether `pending_subagent_results` is non-empty, and `spawn_wakeup_task` returns early when it is empty — a wake-up turn exists only to deliver queued results into the parent's context, so an empty queue means a previous turn already delivered the summary. The notification prompt also points at `check_subagent` as the fallback retrieval path instead of promising a result "below". The driver's retention logic is unchanged: a notification arriving mid-turn is still retained until that turn's `JoinHandle` completes, and a result enqueued after the turn's final drain still wakes the parent.
+
+**Behavior after:** a completion whose summary is still queued wakes the parent and is delivered in that turn; a completion whose summary was already drained is a no-op (no extra turn, no wasted LLM request); a poisoned queue lock falls back to the previous always-wake behavior rather than swallowing a completion.
+
+**Pointers:** `crates/tact-ui/src/driver.rs` (`spawn_wakeup_task`, `run_command_loop_with_account`); `crates/tact/src/agent/mod.rs` (`has_pending_subagent_results`, `agent_loop` drain); driver tests `subagent_finished_notification_is_not_lost_when_parent_finishes` and `subagent_notification_with_empty_queue_does_not_wake_parent`; Ch 12.
+
+---
+
 ## 1. 2026-09-12 — Bottom-bar row 2 compacted to a 90-column budget
 
 | Field | Value |

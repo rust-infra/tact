@@ -192,12 +192,26 @@ fn spawn_wakeup_task(
     if active.is_some() {
         return;
     }
+    // A wake-up turn only delivers queued results into the parent's context.
+    // If a turn that just finished already drained the queue, the summary is
+    // already in context and this turn would be empty — skip it entirely.
+    if !agent
+        .as_ref()
+        .is_some_and(Agent::has_pending_subagent_results)
+    {
+        return;
+    }
     let Some(mut task_agent) = agent.take() else {
         return;
     };
     let work_dir = image_work_dir.to_path_buf();
     *active = Some(tokio::spawn(async move {
-        let prompt = "A background subagent finished. Review its result below.".to_string();
+        // The queued result reaches the model during the drain below, so it
+        // may legitimately not appear verbatim as a result "below"; point at
+        // `check_subagent` as the fallback way to retrieve it.
+        let prompt = "A background subagent finished. Review its result below \
+                      (or call check_subagent if none is shown)."
+            .to_string();
         handle_user_command(&mut task_agent, UserCommand::SubmitTask(prompt), &work_dir).await;
         task_agent
     }));
@@ -646,6 +660,9 @@ mod tests {
         });
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        // Share the parent's result queue so the test can enqueue the child's
+        // summary exactly as the real async child does.
+        let pending = agent.runtime.pending_subagent_results.clone();
         let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 
@@ -660,6 +677,16 @@ mod tests {
         .await
         .expect("parent task should start");
 
+        // The child enqueues its summary before emitting the notification, so
+        // the wake-up turn's drain is guaranteed to see it.
+        pending
+            .lock()
+            .unwrap()
+            .push_back(tact::subagent::SubagentResult {
+                child_id: "child-1".into(),
+                summary: "finished".into(),
+                success: true,
+            });
         // The notification arrives while the parent turn is still running.
         user_cmd_tx
             .send(UserCommand::SubagentFinishedNotification {
@@ -684,6 +711,76 @@ mod tests {
 
         wait_result.expect("queued wake-up should run after the parent finishes");
         assert_eq!(completions, 2);
+    }
+
+    /// A notification whose result an earlier turn already drained must not
+    /// spawn an empty wake-up turn: the summary is already in the parent's
+    /// context, so the extra turn would have nothing to review.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagent_notification_with_empty_queue_does_not_wake_parent() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Duration;
+
+        install_test_config();
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_rx = release.clone();
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let calls_rx = calls.clone();
+        let mock = MockClient::with_responder(move |_request, _idx| {
+            calls_rx.fetch_add(1, Ordering::Relaxed);
+            while !release_rx.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok((
+                vec![text_block("parent done")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
+
+        user_cmd_tx
+            .send(UserCommand::SubmitTask("parent task".into()))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while calls.load(Ordering::Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("parent task should start");
+
+        // The queue is deliberately left empty: this models a turn that already
+        // drained and injected the summary.
+        user_cmd_tx
+            .send(UserCommand::SubagentFinishedNotification {
+                child_id: "child-1".into(),
+                summary: "already delivered".into(),
+                success: true,
+            })
+            .unwrap();
+        release.store(true, Ordering::Relaxed);
+
+        // Give a wrongly-spawned wake-up turn time to reach the client.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(user_cmd_tx);
+        let _ = loop_handle.await;
+
+        let mut completions = 0;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::TaskComplete(_) = update {
+                completions += 1;
+            }
+        }
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "an empty queue must not trigger a wake-up request"
+        );
+        assert_eq!(completions, 1, "only the parent turn should complete");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-12 — 已 drain 的子代理结果不再触发空的唤醒轮
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-ui/src/driver.rs`（`spawn_wakeup_task`）；`crates/tact/src/agent/mod.rs`（`Agent::has_pending_subagent_results`）；Ch 12 |
+
+**Symptom:** 后台子代理的 `SubagentFinishedNotification` 到达时，若其结果**已被**进行中的轮次 drain 并注入，driver 仍会提交一个唤醒轮。此时队列为空，没有任何内容被注入，父级只收到那句光秃秃的 prompt `A background subagent finished. Review its result below.` —— 而「below」之下什么都没有。用户看到多出来的一轮，其全部内容是没有任何载荷的通知；模型则必须回答一个承诺了内容、却从未收到内容的 prompt。
+
+**Decision:** 用队列作为唤醒的门控。`Agent::has_pending_subagent_results()` 暴露 `pending_subagent_results` 是否非空，`spawn_wakeup_task` 在为空时提前返回 —— 唤醒轮的唯一职责就是把已入队的结果投递进父级上下文；队列为空即意味着上一轮已经投递过该 summary。同时把通知 prompt 指向 `check_subagent` 作为兜底取回路径，而不再承诺「below」。driver 的保留逻辑不变：轮次进行中到达的通知仍会保留到该轮 `JoinHandle` 完成；在最后一次 drain 之后才入队的结果仍会唤醒父级。
+
+**Behavior after:** summary 仍在队列中的完成事件会唤醒父级并在该轮投递；summary 已被 drain 的完成事件成为 no-op（不产生额外轮次、不浪费 LLM 请求）；队列锁 poisoned 时回退到此前「总是唤醒」的行为，而不是吞掉一次完成事件。
+
+**Pointers:** `crates/tact-ui/src/driver.rs`（`spawn_wakeup_task`、`run_command_loop_with_account`）；`crates/tact/src/agent/mod.rs`（`has_pending_subagent_results`、`agent_loop` drain）；driver 测试 `subagent_finished_notification_is_not_lost_when_parent_finishes`、`subagent_notification_with_empty_queue_does_not_wake_parent`；Ch 12。
+
+---
+
 ## 1. 2026-09-12 — 底栏第 2 行瘦身到 90 列预算
 
 | Field | Value |
