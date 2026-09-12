@@ -32,6 +32,29 @@
 ---
 
 
+## 1. 2026-09-12 — `/model` 流程合二为一，TUI 不再在 UI 线程上 fork git
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tui/src/widgets/state/mod.rs`（`ModelTarget`）；`crates/tui/src/handlers/select.rs`；`crates/tui/src/widgets/state/app/background.rs`（新增） |
+
+**症状 / 动机：** 两个彼此独立的问题。
+
+(1) `SelectKind` 把 `/model` 流程承载了两遍：五个 `Subagent*` 变体镜像主 agent 的变体（`SubagentModelProfileEffortPick` 对 `ModelProfileEffortPick` 等等），并由 `handlers/select.rs` 里三个大型并行 match 重复处理。其中一个 match 以一个 12 变体的 OR-pattern 收尾，而该 match 同时还有通配分支——于是新增变体时若忘记处理，会静默落入通配分支而不是编译失败。
+
+(2) 两个阻塞操作跑在事件循环上：`App::maybe_refresh_git_branch` 会 fork `git branch --show-current`（虽被节流到 5 秒，但仍在 UI 线程上启动进程）；`refresh_skills` 取 `std::sync::Mutex` 后持锁遍历文件系统。两者都没有被持有句柄，因此关闭时无法中止。
+
+**决策：**(1) 用 `ModelTarget { Main, Subagent }` 参数化 model/effort/budget 流程，五个重复变体通过 `target` 字段折叠进共享变体——`SelectKind` 从 13 个减到 8 个变体，五个重复的 `*_subagent_*` 辅助函数删除，三个并行 match 合并为一个分发。剩余的 OR-pattern 现在覆盖所在 match 的全部变体且该 match 无通配分支，因此新增变体会编译失败而非静默穿透。
+
+(2) 两个操作迁到新文件 `app/background.rs` 中用 `tokio::task::spawn_blocking` 执行，各自把 `JoinHandle` 与 `oneshot::Receiver` 存入 `App`（`git_branch_task` / `skills_task`）。`poll_background_tasks` 每轮循环应用结果，`abort_background_tasks` 在关闭时执行。git 刷新保留 5 秒节流且带 in-flight 门控（绝不每帧新建任务）。`reload_skills` 是同步且锁作用域受限的，因此不存在跨 `.await` 持锁。无 tokio runtime 时两者回退为内联执行，从而保持既有测试可用。
+
+**改后行为：** `/model` 与 `/model-subagent` 行为完全不变——相同弹窗、顺序、文案与结果状态；两个测试锁定了重复变体族原本承载的按 target 差异（subagent 预算流程使用 subagent 持久化模板；subagent effort 选择写入 `agent.subagent.reasoning_effort`）。状态栏 git 分支与技能列表现在都在 UI 线程之外刷新。已知且有意保留的不对称（现已加注释说明）：subagent 的 **effort** 流程与主 agent 共用持久化/仅会话模板，而预算流程有专门的 subagent 文案。
+
+**Pointers：** `crates/tui/src/widgets/state/mod.rs`；`crates/tui/src/handlers/select.rs`；`crates/tui/src/widgets/state/app/background.rs`。
+
+---
+
 ## 1. 2026-09-12 — Responses 流事件改由 SDK 枚举分类，不再手写清单
 
 | Field | Value |

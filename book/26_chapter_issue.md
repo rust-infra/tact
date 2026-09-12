@@ -32,6 +32,29 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-12 — One `/model` flow instead of two, and the TUI stops forking git on the UI thread
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tui/src/widgets/state/mod.rs` (`ModelTarget`); `crates/tui/src/handlers/select.rs`; `crates/tui/src/widgets/state/app/background.rs` (new) |
+
+**Symptom / motivation:** Two independent problems.
+
+(1) `SelectKind` carried the `/model` flow twice: five `Subagent*` variants mirroring the main-agent ones (`SubagentModelProfileEffortPick` vs `ModelProfileEffortPick`, and so on), re-matched by three large parallel blocks in `handlers/select.rs`. One of those blocks ended in a 12-variant OR-pattern placed inside a match that also had a wildcard arm — so forgetting a variant when adding a new one would have silently fallen through rather than failing to compile.
+
+(2) Two blocking operations ran on the event loop: `App::maybe_refresh_git_branch` forked `git branch --show-current` (throttled to 5 s, but still a process spawn on the UI thread), and `refresh_skills` took a `std::sync::Mutex` and walked the filesystem while holding it. Neither task was tracked, so shutdown could not stop either one.
+
+**Decision:** (1) `ModelTarget { Main, Subagent }` parameterizes the model/effort/budget flow, and the five duplicate variants collapse into the shared ones via a `target` field — `SelectKind` goes 13 → 8 variants, the five duplicate `*_subagent_*` helpers are gone, and the three parallel matches become one dispatch. The remaining OR-pattern now covers every variant of a match with no wildcard arm, so a new variant is a compile error instead of a silent fallthrough.
+
+(2) Both operations moved to `tokio::task::spawn_blocking` in a new `app/background.rs`, each storing a `JoinHandle` plus a `oneshot::Receiver` in `App` (`git_branch_task` / `skills_task`). `poll_background_tasks` applies results each loop iteration and `abort_background_tasks` runs on shutdown. The git refresh keeps its 5 s throttle and is in-flight-gated (never a new task per frame). `reload_skills` is synchronous and lock-scoped, so no lock is held across an `.await`. When no tokio runtime is present both fall back to running inline, which keeps the existing tests working.
+
+**Behavior after:** `/model` and `/model-subagent` behave exactly as before — same popups, order, labels and resulting state; two tests pin the target-specific behavior the duplicate families used to encode (the subagent budget flow uses subagent persist templates, and the subagent effort pick writes `agent.subagent.reasoning_effort`). The status bar's git branch and the skill list now refresh off the UI thread. Known asymmetry, preserved and now commented: the subagent **effort** flow shares the main-agent persist/session-only templates, unlike the budget flow, which has dedicated subagent strings.
+
+**Pointers:** `crates/tui/src/widgets/state/mod.rs`; `crates/tui/src/handlers/select.rs`; `crates/tui/src/widgets/state/app/background.rs`.
+
+---
+
 ## 1. 2026-09-12 — Responses stream events are classified by the SDK enum, not a hand-written list
 
 | Field | Value |
