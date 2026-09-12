@@ -32,6 +32,48 @@
 ---
 
 
+## 1. 2026-09-12 — Responses 流事件改由 SDK 枚举分类，不再手写清单
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact_llm/src/openai/responses/mod.rs`（`sdk_event_types`、`parse_stream_event_with_raw`） |
+
+**症状 / 动机：** `parse_stream_event_with_raw` 在反序列化*之前*，用事件 `type` 与一份 23 条 `"response.*"` 字面量白名单做字符串匹配，来决定是否消费该 SSE 事件。而 vendored SDK 的 `ResponseStreamEvent` 枚举实际建模了 48 种类型，因此那份清单只是手工维护的子集，还得同时和另外两处保持一致（`stream.rs` 的 match 分支、`wire.rs` 的输出项表）。凡是 SDK 后续版本才认识的类型、或当初写清单时遗漏的类型，都会在状态机看到它之前被静默丢弃——既无日志也无报错。
+
+**决策：** 直接问 serde。对于内部标记（internally tagged）枚举，unknown-variant 错误会枚举出全部合法 tag，因此 `sdk_event_types()` 在运行时从枚举自身派生出完整且权威的集合（`LazyLock`，用假 tag 做一次探测反序列化）。它会随 SDK 升级自动跟进，无需镜像清单。白名单已删除，判断改为 `sdk_knows_event(type)`。
+
+该派生**仅**用于区分两种情况："本构建未建模的类型"（丢弃——对更新版服务器的前向兼容）与"SDK *确实*建模的类型的畸形载荷"（仍为硬错误）。它**不**决定 Tact 关心哪些事件：那仍是 `stream.rs` 的 `ResponsesStreamState::apply`，即流语义的唯一真相来源。
+
+归一化（`normalize_stream_event_json`）仍在反序列化之前执行，因为它在修复类型化解析器本会拒绝的线格式；现在它只按真正需要修复的两类事件触发（`output_item.{added,done}` 与终态 `completed`/`incomplete`/`failed`）。
+
+**改后行为：** SDK 建模的每个事件都会到达状态机；`stream.rs` 照旧忽略 Tact 不使用的那些。SDK 枚举之外的事件类型仍被丢弃而非让整条流失败。已建模事件的畸形载荷仍报错。由于派生集合是从错误信息里解析出来的，`sdk_event_types_are_derived_from_the_enum` 锁定了派生仍然有效——否则 serde 措辞一变就会让集合静默变空，从而杀死所有流。
+
+**Pointers：** `crates/tact_llm/src/openai/responses/mod.rs`；`crates/tact_llm/src/openai/responses/stream.rs`；`crates/tact_llm/src/openai/responses/wire.rs`。
+
+---
+
+## 1. 2026-09-12 — 配置只剩一个编排器，权限设置只剩一处加载
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs`（`resolve_non_llm`、`NonLlmSettings`）；`crates/tact/src/permission/settings.rs`（`PermissionSettings::load`） |
+
+**症状 / 动机：** 两处重复，其中一处还会崩溃。(1) `resolve_non_llm_settings` 与 `resolve_config` 各自解析同一批约 45 行的非 LLM 设置（通知、快照、微压缩、技能目录、指令来源、主题、视觉、bash 超时/nice、RTK 过滤、权限模式），且各持一份优先级链——于是改动优先级必须改两遍，否则两条路径会静默分歧。(2) `PermissionSettings::load` 与 `load_from` 的合并块逐字节相同。
+
+此外非 LLM 路径用 `.expect("invalid instruction_sources in config")` 解析 `[agent].instruction_sources`。那是从 `main` 可达的库代码，于是配置键写错会让进程 panic 中止，而不是指出出错的键。
+
+**决策：** 抽出 `NonLlmSettings` + `resolve_non_llm(args, toml_cfg) -> Result<NonLlmSettings>`，两条路径共用，并在解析处一次性写明优先级顺序。`.expect` 改为 `Err`，`resolve_non_llm_settings` 随之返回 `Result`，`config/mod.rs` 中的调用方用 `?` 传播。`PermissionSettings::load` 变为一行委托给 `load_from`。
+
+有一处差异被**有意保留**未合并：畸形 `[voice]` 在完整路径上是致命的（`resolve_voice(...)?`），在非 LLM 路径上则告警降级（该路径服务的是从不录音的子命令）。合并它会改变行为，因此 `voice` 仍在各调用点解析，并附注说明原因。
+
+**改后行为：** 优先级不变（`CLI 参数 > TOML > 内置默认`；`--no-notifications` / `--no-micro-compact` 是绝对的，不再读取 TOML 值）。两条路径现在共用同一实现，不会漂移。错误的 `[agent].instruction_sources` 会报 `invalid [agent].instruction_sources: …` 而非 panic。权限规则合并语义不变，并由 `load_from_unions_global_then_project_deduplicating` 锁定：全局规则在前、项目规则追加、去重——不存在按层覆盖，因为优先级是在匹配时决定的（`deny > ask > allow`）。
+
+**Pointers：** `crates/tact/src/config/resolve.rs`；`crates/tact/src/permission/settings.rs`；`crates/tact/src/config/mod.rs`。
+
+---
+
 ## 1. 2026-09-12 — MCP 握手与工具调用都有超时上界
 
 | Field | Value |

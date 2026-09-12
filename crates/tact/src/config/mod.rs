@@ -359,7 +359,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
             &args,
             &toml_cfg,
             config_path,
-        ));
+        )?);
         return Ok(args);
     }
 

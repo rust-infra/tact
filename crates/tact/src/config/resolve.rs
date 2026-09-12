@@ -461,11 +461,39 @@ fn resolve_subagent(
     }))
 }
 
-pub(super) fn resolve_non_llm_settings(
-    args: &CliArgs,
-    toml_cfg: &TactTomlConfig,
-    config_path: Option<std::path::PathBuf>,
-) -> ResolvedConfig {
+/// Every setting that does not depend on a usable LLM configuration.
+///
+/// Extracted so the two resolution entry points cannot drift apart:
+/// [`resolve_non_llm_settings`] (subcommands that never talk to a model, so an
+/// invalid `[llm]` section must not stop them) and [`resolve_config`] (the full
+/// path) both take all of these through the same precedence chain —
+/// **CLI flag > TOML > built-in default**.
+struct NonLlmSettings {
+    notifications_enabled: bool,
+    snapshot_max_items: usize,
+    micro_compact_enabled: bool,
+    skill_body_auto_inject: bool,
+    skill_dirs: Vec<String>,
+    instruction_sources: InstructionSources,
+    theme: String,
+    vision_image: VisionImageSettings,
+    bash_timeout_secs: u64,
+    bash_nice: i32,
+    rtk_filter: bool,
+    permission_mode: Option<String>,
+    mcp: McpSettings,
+}
+
+/// Resolves the non-LLM half of the configuration.
+///
+/// Precedence, per field: an explicit CLI flag wins, then the TOML value, then
+/// the built-in default. The two negating flags (`--no-notifications`,
+/// `--no-micro-compact`) are absolute: when set they force the feature off and
+/// the TOML value is not consulted.
+///
+/// Returns `Err` for a malformed `[agent].instruction_sources`; callers decide
+/// whether that is fatal (it is not for subcommands that never build a prompt).
+fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<NonLlmSettings> {
     let notifications_enabled = if args.no_notifications {
         false
     } else {
@@ -490,9 +518,12 @@ pub(super) fn resolve_non_llm_settings(
 
     let skill_dirs = toml_cfg.agent.skill_dirs.clone();
 
+    // Unlike the old `.expect()` here, a bad value is reported to the caller.
+    // This is library code reached from `main`, where a panic aborts the
+    // process instead of naming the offending config key.
     let instruction_sources =
         InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
-            .expect("invalid instruction_sources in config");
+            .map_err(|e| anyhow::anyhow!("invalid [agent].instruction_sources: {e}"))?;
 
     let theme = args
         .theme
@@ -519,12 +550,34 @@ pub(super) fn resolve_non_llm_settings(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
-    let voice = resolve_voice(toml_cfg).unwrap_or_else(|err| {
-        tracing::warn!(error = %err, "invalid voice configuration; voice input disabled");
-        VoiceSettings::disabled_defaults()
-    });
+    Ok(NonLlmSettings {
+        notifications_enabled,
+        snapshot_max_items,
+        micro_compact_enabled,
+        skill_body_auto_inject,
+        skill_dirs,
+        instruction_sources,
+        theme,
+        vision_image,
+        bash_timeout_secs,
+        bash_nice,
+        rtk_filter,
+        permission_mode,
+        mcp: resolve_mcp(toml_cfg),
+    })
+}
 
-    ResolvedConfig {
+pub(super) fn resolve_non_llm_settings(
+    args: &CliArgs,
+    toml_cfg: &TactTomlConfig,
+    config_path: Option<std::path::PathBuf>,
+) -> anyhow::Result<ResolvedConfig> {
+    let non_llm = resolve_non_llm(args, toml_cfg)?;
+
+    Ok(ResolvedConfig {
+        // Placeholder identity: this path exists for subcommands that never
+        // build a request (`--list-sessions`, `plugin`, `mcp`, `upgrade`), so
+        // an unusable `[llm]` section must not stop them.
         llm: LlmSettings {
             provider: ProviderKind::OpenAi,
             protocol: OpenAiProtocol::default(),
@@ -542,29 +595,34 @@ pub(super) fn resolve_non_llm_settings(
             max_tokens: 8_000,
             thinking_budget: 0,
             model_context_window: 200_000,
-            notifications_enabled,
-            snapshot_max_items,
-            micro_compact_enabled,
-            skill_body_auto_inject,
-            skill_dirs,
-            instruction_sources,
+            notifications_enabled: non_llm.notifications_enabled,
+            snapshot_max_items: non_llm.snapshot_max_items,
+            micro_compact_enabled: non_llm.micro_compact_enabled,
+            skill_body_auto_inject: non_llm.skill_body_auto_inject,
+            skill_dirs: non_llm.skill_dirs,
+            instruction_sources: non_llm.instruction_sources,
             subagent: None,
         },
         ui: UiSettings {
-            theme,
-            vision_image,
+            theme: non_llm.theme,
+            vision_image: non_llm.vision_image,
         },
         tools: ToolSettings {
-            bash_timeout_secs,
-            bash_nice,
-            rtk_filter,
+            bash_timeout_secs: non_llm.bash_timeout_secs,
+            bash_nice: non_llm.bash_nice,
+            rtk_filter: non_llm.rtk_filter,
         },
-        voice,
-        mcp: resolve_mcp(toml_cfg),
-        permission_mode,
+        // A malformed `[voice]` warns and degrades to disabled here: this path
+        // serves subcommands that never record audio, so it must not fail.
+        voice: resolve_voice(toml_cfg).unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "invalid voice configuration; voice input disabled");
+            VoiceSettings::disabled_defaults()
+        }),
+        mcp: non_llm.mcp,
+        permission_mode: non_llm.permission_mode,
         tokio_console: args.tokio_console,
         config_path,
-    }
+    })
 }
 
 /// Returns the context window (total input + output tokens) for a known model id.
@@ -661,58 +719,9 @@ pub(super) fn resolve_config(
         );
     }
 
-    let notifications_enabled = if args.no_notifications {
-        false
-    } else {
-        args.notifications
-            .or(toml_cfg.agent.notifications_enabled)
-            .unwrap_or(true)
-    };
-
-    let snapshot_max_items = args
-        .snapshot_max_items
-        .or(toml_cfg.agent.snapshot_max_items)
-        .unwrap_or(80);
-
-    let micro_compact_enabled = if args.no_micro_compact {
-        false
-    } else {
-        toml_cfg.agent.micro_compact_enabled.unwrap_or(false)
-    };
-
-    let skill_body_auto_inject =
-        args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
-
-    let skill_dirs = toml_cfg.agent.skill_dirs.clone();
-
-    let instruction_sources =
-        InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    let theme = args
-        .theme
-        .clone()
-        .or_else(|| toml_cfg.ui.theme.clone())
-        .unwrap_or_else(|| "ink".to_string());
-
-    let vision_image = resolve_vision_image(toml_cfg);
-
-    let bash_timeout_secs = toml_cfg
-        .tools
-        .bash_timeout_secs
-        .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
-
-    let bash_nice = toml_cfg
-        .tools
-        .bash_nice
-        .unwrap_or(ToolSettings::DEFAULT_BASH_NICE);
-
-    let rtk_filter = toml_cfg.tools.rtk_filter.unwrap_or(false);
-
-    let permission_mode = args
-        .permission_mode
-        .clone()
-        .or_else(|| toml_cfg.permission.mode.clone());
+    // Identical precedence chain to `resolve_non_llm_settings` — shared so the
+    // two paths cannot drift.
+    let non_llm = resolve_non_llm(args, toml_cfg)?;
 
     let subagent = resolve_subagent(toml_cfg, max_tokens, thinking_budget, model_context_window)?;
 
@@ -752,26 +761,26 @@ pub(super) fn resolve_config(
             max_tokens,
             thinking_budget,
             model_context_window,
-            notifications_enabled,
-            snapshot_max_items,
-            micro_compact_enabled,
-            skill_body_auto_inject,
-            skill_dirs,
-            instruction_sources,
+            notifications_enabled: non_llm.notifications_enabled,
+            snapshot_max_items: non_llm.snapshot_max_items,
+            micro_compact_enabled: non_llm.micro_compact_enabled,
+            skill_body_auto_inject: non_llm.skill_body_auto_inject,
+            skill_dirs: non_llm.skill_dirs,
+            instruction_sources: non_llm.instruction_sources,
             subagent,
         },
         ui: UiSettings {
-            theme,
-            vision_image,
+            theme: non_llm.theme,
+            vision_image: non_llm.vision_image,
         },
         tools: ToolSettings {
-            bash_timeout_secs,
-            bash_nice,
-            rtk_filter,
+            bash_timeout_secs: non_llm.bash_timeout_secs,
+            bash_nice: non_llm.bash_nice,
+            rtk_filter: non_llm.rtk_filter,
         },
         voice,
-        mcp: resolve_mcp(toml_cfg),
-        permission_mode,
+        mcp: non_llm.mcp,
+        permission_mode: non_llm.permission_mode,
         tokio_console: args.tokio_console,
         config_path,
     })
@@ -1345,7 +1354,7 @@ instruction_sources = ["agents_md"]
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert!(resolved.agent.instruction_sources.agents_md);
     }
 
@@ -1358,7 +1367,7 @@ skill_dirs = ["~/shared-skills", "./vendor/skills"]
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(
             resolved.agent.skill_dirs,
             vec!["~/shared-skills".to_string(), "./vendor/skills".to_string()]
@@ -1376,7 +1385,7 @@ jpeg_quality = 70
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert!(!resolved.ui.vision_image.compress);
         assert_eq!(resolved.ui.vision_image.max_edge, 1024);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 70);
@@ -1392,18 +1401,19 @@ jpeg_quality = 0
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.ui.vision_image.max_edge, 4096);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 1);
     }
 
     #[test]
     fn bash_timeout_defaults_to_thirty_minutes_and_zero_is_preserved() {
-        let default = resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None);
+        let default =
+            resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None).unwrap();
         assert_eq!(default.tools.bash_timeout_secs, 1_800);
 
         let cfg: TactTomlConfig = toml::from_str("[tools]\nbash_timeout_secs = 0\n").unwrap();
-        let disabled = resolve_non_llm_settings(&empty_cli_args(), &cfg, None);
+        let disabled = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
         assert_eq!(disabled.tools.bash_timeout_secs, 0);
     }
 
@@ -1713,7 +1723,7 @@ api_key = "sk-test"
         let mut args = empty_cli_args();
         args.list_sessions = true;
         args.theme = Some("nord".to_string());
-        let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default(), None);
+        let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default(), None).unwrap();
         assert_eq!(resolved.ui.theme, "nord");
         assert!(resolved.llm.api_key.is_empty());
     }

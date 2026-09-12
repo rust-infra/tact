@@ -166,6 +166,52 @@ fn normalize_stream_event_json(mut event: Value) -> Value {
     event
 }
 
+/// Every event `type` the vendored SDK's `ResponseStreamEvent` enum accepts.
+///
+/// Derived from serde itself rather than hand-maintained: for an internally
+/// tagged enum, the unknown-variant error enumerates every valid tag, so this
+/// set follows the enum automatically when the SDK is bumped. That matters
+/// because the alternative — a hand-written list of the events Tact acts on —
+/// silently drifts from the enum, and an event the SDK learned about but the
+/// list did not is dropped without a trace.
+///
+/// This is only used to tell "a type the SDK does not model" (drop it: a
+/// newer server may emit events this Tact build predates) apart from "a
+/// malformed payload for a type the SDK *does* model" (a real error worth
+/// surfacing). It deliberately does not decide which events Tact acts on —
+/// that is `stream.rs`'s `ResponsesStreamState::apply`, the single source of
+/// truth for stream semantics.
+fn sdk_event_types() -> &'static std::collections::HashSet<String> {
+    static TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
+        std::sync::LazyLock::new(|| {
+            let probe = serde_json::json!({ "type": EVENT_TYPE_PROBE });
+            let error = serde_json::from_value::<ResponseStreamEvent>(probe)
+                .expect_err("the probe type must not deserialize");
+            let message = error.to_string();
+            // "unknown variant `…`, expected one of `a`, `b`, …"
+            message
+                .split_once("expected one of ")
+                .map(|(_, list)| {
+                    list.split("`, `")
+                        .map(|entry| entry.trim_matches(|c: char| c == '`' || c.is_whitespace()))
+                        .filter(|entry| !entry.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+    &TYPES
+}
+
+/// The bogus tag used to make serde enumerate the enum's variants. NUL is not
+/// a valid event type and cannot collide with a real one.
+const EVENT_TYPE_PROBE: &str = "\u{0}tact-event-type-probe";
+
+/// Whether the SDK models this stream event type at all.
+fn sdk_knows_event(event_type: &str) -> bool {
+    sdk_event_types().contains(event_type)
+}
+
 struct ParsedStreamEvent {
     event: ResponseStreamEvent,
     raw_output_items: Option<Vec<Value>>,
@@ -177,33 +223,13 @@ fn parse_stream_event_with_raw(event: Value) -> Result<Option<ParsedStreamEvent>
             "missing field `type` in OpenAI Responses stream event".to_string(),
         ));
     };
-    let consumed = matches!(
-        event_type.as_str(),
-        "error"
-            | "response.created"
-            | "response.queued"
-            | "response.in_progress"
-            | "response.content_part.added"
-            | "response.content_part.done"
-            | "response.output_text.done"
-            | "response.refusal.done"
-            | "response.reasoning_summary_part.added"
-            | "response.reasoning_summary_part.done"
-            | "response.reasoning_summary_text.done"
-            | "response.reasoning_text.done"
-            | "response.function_call_arguments.delta"
-            | "response.function_call_arguments.done"
-            | "response.reasoning_summary_text.delta"
-            | "response.reasoning_text.delta"
-            | "response.output_text.delta"
-            | "response.refusal.delta"
-            | "response.output_item.added"
-            | "response.output_item.done"
-            | "response.completed"
-            | "response.incomplete"
-            | "response.failed"
-    );
-    if !consumed {
+    // Forward compatibility: a newer server may emit an event type this build
+    // does not model. Drop it rather than failing the whole stream — but only
+    // when the SDK genuinely has no such type; a malformed payload for a type
+    // the SDK *does* model is still a hard error, caught by the deserialize
+    // below. Previously this was a hardcoded list of the 23 events Tact acts
+    // on, which silently dropped any event the SDK learned about afterwards.
+    if !sdk_knows_event(&event_type) {
         return Ok(None);
     }
 
@@ -659,6 +685,7 @@ impl LlmClient for OpenAiResponsesAdapter {
 mod tests {
     use super::stream::ResponsesStreamState;
     use super::{normalize_stream_event_json, parse_stream_event, parse_stream_event_with_raw};
+    use crate::LlmError;
     use crate::{
         ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
         StopReason, Thinking, ThinkingType, Tool,
@@ -936,6 +963,85 @@ mod tests {
         .unwrap();
 
         assert!(event.is_some());
+    }
+
+    /// The known-type set is parsed out of serde's unknown-variant error, so a
+    /// serde wording change would silently empty it — and an empty set means
+    /// every event is dropped, i.e. a silently dead stream. Pin the derivation
+    /// itself.
+    #[test]
+    fn sdk_event_types_are_derived_from_the_enum() {
+        let types = super::sdk_event_types();
+        assert!(
+            types.len() > 20,
+            "deriving the SDK event types from serde produced {} entries; \
+             the unknown-variant message format likely changed",
+            types.len()
+        );
+        // One member from each family the stream state machine depends on.
+        for expected in [
+            "response.created",
+            "response.output_item.added",
+            "response.output_text.delta",
+            "response.completed",
+            "response.failed",
+            "error",
+        ] {
+            assert!(
+                types.contains(expected),
+                "{expected} missing from the derived SDK event types"
+            );
+        }
+    }
+
+    /// The behaviour that replaced the old 23-literal allowlist.
+    #[test]
+    fn unknown_event_types_are_dropped_and_known_ones_parsed() {
+        // Not modelled by the SDK at all — a newer server, or a proxy.
+        let name = "response.future.event";
+        assert!(!super::sdk_knows_event(name));
+        assert!(
+            parse_stream_event(serde_json::json!({
+                "type": name,
+                "sequence_number": 1,
+                "payload": {"ignored": true},
+            }))
+            .unwrap()
+            .is_none(),
+            "an event the SDK does not model must be dropped, not error"
+        );
+
+        // Modelled by the SDK: consumed even though Tact's state machine does
+        // not act on this particular one. Under the old allowlist it was
+        // dropped before deserialization.
+        let name = "response.code_interpreter_call.in_progress";
+        assert!(super::sdk_knows_event(name));
+        assert!(
+            parse_stream_event(serde_json::json!({
+                "type": name,
+                "sequence_number": 2,
+                "item_id": "ci-1",
+                "output_index": 0,
+            }))
+            .unwrap()
+            .is_some(),
+            "an event the SDK models must reach the state machine"
+        );
+    }
+
+    /// A malformed payload for a type the SDK *does* model is a real error, and
+    /// must not be silently swallowed by the unknown-type tolerance.
+    #[test]
+    fn malformed_known_event_is_still_an_error() {
+        let error = parse_stream_event(serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": 42,
+        }))
+        .expect_err("a malformed known event must error");
+        assert!(
+            matches!(error, LlmError::StreamParse(_)),
+            "expected a StreamParse error, got {error:?}"
+        );
     }
 
     #[test]

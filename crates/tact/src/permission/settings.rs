@@ -367,54 +367,7 @@ impl PermissionSettings {
     /// union-merged across both layers, with precedence semantics handled
     /// at match time).
     pub fn load(tact_path: &TactPath) -> Self {
-        let project_path = tact_path.settings_path();
-
-        // Load global layer.
-        let (_global_doc, global_allow, global_ask, global_deny) =
-            Self::load_file(Self::global_path().as_deref());
-
-        // Load project layer.
-        let (project_doc, project_allow, project_ask, project_deny) =
-            Self::load_file(Some(&project_path));
-
-        // Merge: project rules extend global rules (union).
-        let mut allow_rules = global_allow;
-        let mut ask_rules = global_ask;
-        let mut deny_rules = global_deny;
-
-        for r in project_allow {
-            if !allow_rules.contains(&r) {
-                allow_rules.push(r);
-            }
-        }
-        for r in project_ask {
-            if !ask_rules.contains(&r) {
-                ask_rules.push(r);
-            }
-        }
-        for r in project_deny {
-            if !deny_rules.contains(&r) {
-                deny_rules.push(r);
-            }
-        }
-
-        // Use the project document if it was loaded; otherwise default to `{}`.
-        // Critically, a missing/malformed project file does NOT copy the
-        // global raw document, so that a subsequent persist writes a fresh
-        // project file rather than inheriting global-only fields/rules.
-        let project_doc = project_doc.unwrap_or(Value::Object(Map::new()));
-
-        // Build cached effective rules before moving the rule vectors.
-        let cached = EffectiveRules::from_lists(&allow_rules, &ask_rules, &deny_rules);
-
-        Self {
-            project_path,
-            project_doc,
-            allow_rules,
-            ask_rules,
-            deny_rules,
-            cached_effective: cached,
-        }
+        Self::load_from(&tact_path.settings_path(), Self::global_path().as_deref())
     }
 
     ///
@@ -1441,6 +1394,59 @@ mod tests {
         );
         assert_eq!(
             effective.action("bash", &serde_json::json!({"command": "anything"})),
+            RuleAction::Deny
+        );
+    }
+
+    /// `load` is now a thin delegate to `load_from`; this pins the precedence it
+    /// passes through, so the collapse cannot silently reorder the layers.
+    ///
+    /// The implemented contract is: **global rules first, then project rules,
+    /// unioned with dedup**. There is no per-layer override — a project `allow`
+    /// does not cancel a global `deny`. Precedence is decided at match time
+    /// (`deny > ask > allow`), which is why rule *order* is not what protects
+    /// the user.
+    #[test]
+    fn load_from_unions_global_then_project_deduplicating() {
+        let dir = tempfile::tempdir().unwrap();
+
+        std::fs::write(
+            dir.path().join("global.json"),
+            r#"{"permissions": {"allow": ["read_file", "bash"], "deny": ["write_file"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("project.json"),
+            r#"{"permissions": {"allow": ["bash", "edit_file"], "ask": ["write_file"]}}"#,
+        )
+        .unwrap();
+
+        let settings = PermissionSettings::load_from(
+            &dir.path().join("project.json"),
+            Some(&dir.path().join("global.json")),
+        );
+
+        assert_eq!(
+            settings.allow_rules(),
+            &[
+                "read_file".to_string(),
+                "bash".to_string(),
+                "edit_file".to_string()
+            ],
+            "global rules first, project rules appended, duplicates dropped"
+        );
+        assert_eq!(settings.deny_rules(), &["write_file".to_string()]);
+        assert_eq!(settings.ask_rules(), &["write_file".to_string()]);
+
+        // Layer order does not cancel the union: both a global deny and a
+        // project ask for the same tool survive, and deny wins at match time.
+        let effective = EffectiveRules::from_lists(
+            settings.allow_rules(),
+            settings.ask_rules(),
+            settings.deny_rules(),
+        );
+        assert_eq!(
+            effective.action("write_file", &serde_json::json!({"path": "x"})),
             RuleAction::Deny
         );
     }

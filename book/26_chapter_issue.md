@@ -32,6 +32,48 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-12 — Responses stream events are classified by the SDK enum, not a hand-written list
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact_llm/src/openai/responses/mod.rs` (`sdk_event_types`, `parse_stream_event_with_raw`) |
+
+**Symptom / motivation:** `parse_stream_event_with_raw` decided whether to consume an SSE event by string-matching its `type` against a hardcoded allowlist of 23 `"response.*"` literals, *before* deserializing. The vendored SDK's `ResponseStreamEvent` enum models 48 types, so the list was a hand-maintained subset that had to stay in sync with two other places by hand (`stream.rs`'s match arms, and `wire.rs`'s output-item table). An event the SDK learned about in a later version — or one that was simply forgotten when the list was written — was dropped before the state machine ever saw it, with no log and no error.
+
+**Decision:** Ask serde. For an internally tagged enum, the unknown-variant error enumerates every valid tag, so `sdk_event_types()` derives the complete, authoritative set at runtime from the enum itself (`LazyLock`, one probe deserialization of a bogus tag). It follows SDK bumps automatically instead of needing a mirror. The allowlist is gone; the decision is now `sdk_knows_event(type)`.
+
+The derivation is deliberately used only to separate "a type this build does not model" (drop it — forward compatibility with a newer server) from "a malformed payload for a type the SDK *does* model" (still a hard error). It does **not** decide which events Tact acts on: that remains `stream.rs`'s `ResponsesStreamState::apply`, the single source of truth for stream semantics.
+
+Normalization (`normalize_stream_event_json`) still runs before deserialization, because it repairs wire shapes the typed parser would otherwise reject; it is now keyed on the two event categories that actually need repair (`output_item.{added,done}`, and the terminal `completed`/`incomplete`/`failed`).
+
+**Behavior after:** Every event the SDK models reaches the state machine; `stream.rs` ignores the ones Tact does not use, exactly as before. An event type outside the SDK's enum is still dropped rather than failing the stream. A malformed known event still errors. Since the derived set is parsed out of an error message, `sdk_event_types_are_derived_from_the_enum` pins that the derivation still works — otherwise a serde wording change would silently empty the set and kill every stream.
+
+**Pointers:** `crates/tact_llm/src/openai/responses/mod.rs`; `crates/tact_llm/src/openai/responses/stream.rs`; `crates/tact_llm/src/openai/responses/wire.rs`.
+
+---
+
+## 1. 2026-09-12 — One config orchestrator, and permission settings load in one place
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs` (`resolve_non_llm`, `NonLlmSettings`); `crates/tact/src/permission/settings.rs` (`PermissionSettings::load`) |
+
+**Symptom / motivation:** Two duplications, one of them with a crash. (1) `resolve_non_llm_settings` and `resolve_config` each resolved the same ~45 lines of non-LLM settings (notifications, snapshots, micro-compaction, skill dirs, instruction sources, theme, vision, bash timeout/nice, RTK filter, permission mode) with their own copy of the precedence chain — so a change to precedence had to be made twice or the two paths silently disagreed. (2) `PermissionSettings::load` and `load_from` had byte-identical merge blocks.
+
+Additionally the non-LLM path resolved `[agent].instruction_sources` with `.expect("invalid instruction_sources in config")`. That is library code reached from `main`, so a typo in a config key aborted the process with a panic instead of naming the offending key.
+
+**Decision:** Extracted `NonLlmSettings` + `resolve_non_llm(args, toml_cfg) -> Result<NonLlmSettings>`, used by both paths, with the precedence order documented once at the resolution site. The `.expect` became a `Err`, and `resolve_non_llm_settings` now returns `Result`; its caller in `config/mod.rs` propagates with `?`. `PermissionSettings::load` became a one-line delegate to `load_from`.
+
+One difference was deliberately **not** merged: a malformed `[voice]` is fatal on the full path (`resolve_voice(...)?`) but warns-and-degrades on the non-LLM path (which serves subcommands that never record audio). Collapsing it would have changed behavior, so `voice` stays resolved at each call site with a comment saying why.
+
+**Behavior after:** Precedence is unchanged (`CLI flag > TOML > built-in default`; `--no-notifications` / `--no-micro-compact` are absolute and skip the TOML value). Both paths now share one implementation, so they cannot drift. A bad `[agent].instruction_sources` reports `invalid [agent].instruction_sources: …` instead of panicking. Permission rule merge semantics are unchanged and now pinned by `load_from_unions_global_then_project_deduplicating`: global rules come first, project rules are appended, duplicates dropped — there is no per-layer override, because precedence is decided at match time (`deny > ask > allow`).
+
+**Pointers:** `crates/tact/src/config/resolve.rs`; `crates/tact/src/permission/settings.rs`; `crates/tact/src/config/mod.rs`.
+
+---
+
 ## 1. 2026-09-12 — MCP handshake and tool calls are bounded by timeouts
 
 | Field | Value |
