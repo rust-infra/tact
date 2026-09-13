@@ -353,7 +353,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
 - 第 1 行：cwd、运行（`⊙ 运行` / `Up`）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
-- 第 2 行：模型名、`输出`（真正留给输出的额度：effort 语义模型从 `max_tokens` 中扣除 reasoning 份额——如 128K 信封 + `high` effort 显示 `out 73K`；budget 语义模型的 thinking 走独立信封，因此仍显示完整 `max_tokens`）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、`ctx` 用量（`ctx 4% 45K/1M`——百分比在前，绝对 used/window 在后；进度条已于 2026-09-12 去掉，因为它只是把百分比用字符又画了一遍）、`▣` 缓存命中率、回合计数（`⟳ 12` = 会话用户回合，以及 `⇅ 3` = 当前任务的 agent-loop 回合——任务的首次 LLM 调用前隐藏），以及回合耗时（`⏱ 02:05` = 上一完成回合，加 `均 01:45` = 会话平均；回合完成前不显示平均）。段落用两个空格连接。窄终端优先丢弃：耗时 → 回合 → 缓存 → ctx——即 `ctx` 存活最久。
+- 第 2 行：模型名、`输出`（真正留给输出的额度：effort 语义模型从 `max_tokens` 中扣除 reasoning 份额——如 128K 信封 + `high` effort 显示 `out 73K`；budget 语义模型的 thinking 走独立信封，因此仍显示完整 `max_tokens`；判定"独立信封"的是**非零**预算，所以 `None` 与 `Some(0)` 都表示"thinking 关闭"、都要扣——见 2026-09-13 条目）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、`ctx` 用量（`ctx 4% 45K/1M`——百分比在前，绝对 used/window 在后；进度条已于 2026-09-12 去掉，因为它只是把百分比用字符又画了一遍）、`▣` 缓存命中率、回合计数（`⟳ 12` = 会话用户回合，以及 `⇅ 3` = 当前任务的 agent-loop 回合——任务的首次 LLM 调用前隐藏），以及回合耗时（`⏱ 02:05` = 上一完成回合，加 `均 01:45` = 会话平均；回合完成前不显示平均）。段落用两个空格连接。窄终端优先丢弃：耗时 → 回合 → 缓存 → ctx——即 `ctx` 存活最久。
 
 **第 2 行瘦身（2026-09-12）：** 新增回合段后第 2 行涨到约 138 列，普通终端已开始丢段。该行被压到 **90 列**，且不丢失任何独立信息（同日 ctx 调整后为 86 列）。遵循的规则是**一个值只留一种渲染**：(1) **删除** `∑ₜₒₖ {total}` 段——它读的是 `ctx` 段已渲染为 `used` 的同一个 `StatusBarState.token_total`（精确整数仍保留在任务 stats 块与 `/stats` 中）；(2) `max_out_token` → `out`；(3) `cache%` → 裸 `▣ 30%`；(4) 两个计数都去掉 `turns` 文字，只剩 `⟳ 12 ⇅ 3`。宽度预算由 `bottom_bar_fits_every_segment_in_100_columns` 锁定。
 

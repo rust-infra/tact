@@ -32,7 +32,8 @@
 [llm]
 provider = "deepseek"
 
-# Optional globals (overridable per provider entry, then by CLI flags)
+# Optional globals (overridable per provider entry, then by CLI flags;
+# `max_tokens` is also overridden by [agent].max_tokens)
 # max_tokens = 8000
 # thinking_budget = 0  # off by default; set to e.g. 8000 to enable
 
@@ -134,11 +135,20 @@ mode = "default"
 # Agent runtime
 # ---------------------------------------------------------------------------
 [agent]
+# Max output tokens for the main agent.
+#
+# Resolution priority (highest first): --max-tokens > [llm.providers.<active>]
+# entry > this key > [llm] global max_tokens > default 8000 (32000 for Kimi
+# K2.x). Set this when you switch providers often and want one number to apply
+# to all of them; set it per provider when the providers need different caps.
+# Subagents without their own [agent.subagent].max_tokens inherit this value.
+# max_tokens = 64000
+
 # Model context window in tokens (must exceed max_tokens when nonzero;
 # auto-compaction + TUI usage meter; default: 200000).
 #
-# Resolution priority (highest first): built-in model→window mapping >
-# this file / --model-context-window > default 200000. Known mappings
+# Resolution priority (highest first): --model-context-window >
+# this key > built-in model→window mapping > default 200000. Known mappings
 # (per official model docs, 2026-08):
 #   gpt-5.6 / gpt-5.6-luna / gpt-5.6-terra / gpt-5.6-sol / gpt-5.5 -> 1050000
 #   gpt-5.4 -> 1000000
@@ -152,8 +162,10 @@ mode = "default"
 #   deepseek-v4-flash-version-exp, deepseek-v4-flash-vision-exp), the
 #   gateway alias deepseek-flash, and deepseek-reasoner -> 1000000
 #   k3-256k -> 256000
-# Setting this value is therefore only effective for models without a
-# built-in mapping.
+# The mapping is only a fallback: setting this key always wins, so a stale
+# value for a long-context model can under-report its real window and trigger
+# premature auto-compaction. Comment the key out to use the mapping instead
+# (an explicit 0 means "unknown window": it disables the window, not falls back).
 # model_context_window = 200000
 
 # Max entries in the system-prompt project structure snapshot (default: 80)
@@ -179,7 +191,9 @@ mode = "default"
 # instead of the main agent's provider. References a key from
 # [llm.providers.*]; model and token overrides are optional.
 [agent.subagent]
-# Required: references [llm.providers.<name>], e.g. "deepseek" or "openai".
+# Required when any override below is set — without it the section is rejected
+# at startup instead of being silently ignored.
+# References [llm.providers.<name>], e.g. "deepseek" or "openai".
 # provider = "deepseek"
 # Optional model override (otherwise uses the provider's default model).
 # model = "deepseek-chat"

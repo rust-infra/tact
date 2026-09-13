@@ -91,7 +91,8 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 |------|--------|
 | `api_key` / `model` | CLI → 条目（必填） |
 | `base_url` | CLI → 条目 → `ProviderKind::default_base_url()` |
-| `max_tokens` / `thinking_budget` | CLI → 条目 → `[llm]` 全局 → 代码默认值 |
+| `max_tokens` | CLI → 条目 → `[agent]` → `[llm]` 全局 → 代码默认值 |
+| `thinking_budget` | CLI → 条目 → `[llm]` 全局 → 代码默认值 |
 | `protocol` | 条目 → 默认 `chat_completions` |
 | `reasoning_effort` | entry（openai / deepseek / kimi / 自定义）→ provider 默认（模型相关） |
 
@@ -152,6 +153,7 @@ base_url = "https://api.anthropic.com"   # anthropic 必填
 mode = "default"           # default | plan | auto
 
 [agent]
+max_tokens = 64000         # 活跃 provider 条目未设置时的回退值
 model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
@@ -164,6 +166,16 @@ micro_compact_enabled = true
 # instruction_sources = ["agents_md"]
 # 每轮都把 skill 全文注入系统提示（默认 false）。
 # skill_body_auto_inject = false
+
+# Subagent LLM 配置（可选）。配置后 spawn_subagent 改用该 provider/模型，
+# 而不是主 agent 的。只要设置了下面任一覆盖项，`provider` 就是必填；
+# 凭证与端点取自该条目。
+# [agent.subagent]
+# provider = "deepseek"       # 必填；[llm.providers.*] 中的键
+# model = "deepseek-chat"     # 可选；否则用该条目的 model
+# max_tokens = 8000           # 可选；否则用该条目的，再用主 agent 的
+# thinking_budget = 0         # 可选；否则用该条目的，再用主 agent 的
+# reasoning_effort = "high"   # 可选；否则用该条目的（openai/deepseek/kimi k3）
 
 [ui]
 theme = "ink"
@@ -219,7 +231,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 |------|------|----------------|
 | `max_tokens` | 8_000 | 32_000 |
 | `thinking_budget` | 32_000 | — |
-| `model_context_window` | 200_000 | —（tokens；全局；模型→窗口映射会覆盖文件配置，见下文） |
+| `model_context_window` | 200_000 | —（tokens；全局；解析顺序见下文） |
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
@@ -249,6 +261,47 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 
 `skill_body_auto_inject` 在「描述」与「全文」之间二选一。`false`（默认）时每轮只带 `describe_available()` 产出的 skill 名称与描述，全文按需经 `load_skill` 工具取得。`true` 时每个 skill 全文都会注入每一轮系统提示——精确，但每次调用都要付出代价，除非某个 skill 必须无条件在上下文中，否则建议保持默认。CLI 等价开关为 `--skill-body-auto-inject`。
 
+### `[agent.subagent]` — 给 `spawn_subagent` 单独的 provider/模型
+
+可选。配置后 `spawn_subagent` 改用该 provider，而不是主 agent 的，因此可以用便宜/快的模型驱动
+worker，主循环仍用自己的模型。该段**引用**既有 provider 条目，不重复配置凭证：
+`base_url`、`api_key`、`protocol` 均取自被引用的 `[llm.providers.<name>]` 条目。
+
+只要设置了任一覆盖项，`provider` 就是必填。缺 `provider` 会在 resolve 阶段报错并给出修法；
+provider 名称不存在则报错并列出可用键。完全没有任何覆盖项的段——键全被注释掉的遗留表头，
+`config.example.toml` 里即是这种形状——保持静默 no-op，因此永远不会阻断启动。
+
+| 字段 | 解析顺序 |
+|------|---------|
+| `provider` | 设置任一覆盖项时必填；必须是 `[llm.providers.*]` 中的键 |
+| `model` | `[agent.subagent].model` → 被引用条目的 `model`；两者都没有则报错 |
+| `max_tokens` | `[agent.subagent].max_tokens` → 被引用条目的 → **主 agent 已解析的 `max_tokens`**（subagent 模型属 Kimi K2.x 时则回退 `32_000`） |
+| `thinking_budget` | `[agent.subagent].thinking_budget` → 被引用条目的 → 主 agent 已解析的值 |
+| `reasoning_effort` | `[agent.subagent].reasoning_effort` → 被引用条目的（openai / deepseek / kimi k3 语义） |
+
+最后一级刻意采用**主 agent 已解析的值**，而非字面默认 8_000：因此调高 `[agent] max_tokens`
+（见 §3）也会同时调高所有未覆盖该项的 subagent。有两点容易想当然出错，因为 subagent 这条链
+**不是**主 agent 那条：
+
+- `--max-tokens` 只能**间接**影响 subagent——它先改变主 agent 的解析结果，再由最后一级继承。
+  没有办法只给主 agent 设 `max_tokens`。
+- `[llm].max_tokens`（`[llm]` 全局）这条链**完全不读**。它只能通过"主 agent 恰好落到这一级"
+  再由最后一级间接传入。
+
+`[llm.providers.<被引用>].max_tokens` **会**被读到——注意是 `provider` 指定的那个条目，
+不是活跃条目。因此某个 provider 条目一旦设了 `max_tokens`，所有指向它的 subagent 都会被该值封顶
+（上表第 2 级），即使 subagent 段根本没提 `max_tokens`。
+
+resolve 阶段的校验：
+
+- `thinking_budget` 必须严格小于 subagent 自己的 `max_tokens`。
+- 被引用的 **DeepSeek** 条目上 `protocol = "responses"` 会被拒绝——与主 agent 同属不受支持的组合。
+- 被引用条目的 `responses_compact_threshold` 会被复用，但需按 *subagent 自己的* `max_tokens` 与共享窗口重新校验（原本适配主 agent 较小预算的阈值未必适配 subagent）。条目未设置该项时，阈值由 subagent 的 `max_tokens` 推导；非 Responses 协议与零窗口解析为无阈值。
+
+`model_context_window` **不**按 subagent 区分：worker 调用与主 agent 共享窗口。
+`/model-subagent` 选择器的候选列表来自被引用条目的 `models`，在其中选定模型或思考预算会写回
+`[agent.subagent].model` 及其预算/effort 键。运行时一侧见 [Ch 12](./12_chapter_subagent_zh.md)。
+
 ### `[voice]` — 语音转文字输入（macOS 优先）
 
 API 密钥与端点独立于 `[llm.providers.*]`。`provider = "openai"`（默认）将音频发往
@@ -266,9 +319,11 @@ Cloud 项目中启用 Speech-to-Text API。Google API key 模式不支持 Servic
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
 
-`model_context_window` 按三级优先级解析（从高到低）：
+`model_context_window` 按四级优先级解析（从高到低）：
 
-1. **模型→窗口映射** — 以解析后的模型 id 为键的内置查找表，数值依据官方模型文档（2026-08）：
+1. **CLI `--model-context-window`**。
+2. **TOML `[agent].model_context_window`**。
+3. **模型→窗口映射** — 以解析后的模型 id 为键的内置查找表，数值依据官方模型文档（2026-08）：
    - OpenAI：`gpt-5.6` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol` /
      `gpt-5.5` → `1_050_000`；`gpt-5.4` → `1_000_000`；`gpt-5` / `gpt-5.1` /
      `gpt-5.2` / `gpt-5.3` / `gpt-5.3-codex` / `gpt-5.4-mini` → `400_000`；
@@ -282,10 +337,11 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
      `deepseek-v4-flash-version-exp`、`deepseek-v4-flash-vision-exp` 均被覆盖）、
      无版本号的网关别名 `deepseek-flash`，以及 `deepseek-reasoner` →
      `1_000_000`；Kimi：`k3-256k` → `256_000`。
-   命中时同时覆盖 CLI 标志与 TOML 文件，因此过时的
-   手工窗口不会低估已知模型（否则会触发过早自动压缩）。
-2. **CLI `--model-context-window` / TOML `[agent].model_context_window`**。
-3. **默认 `200_000`**。
+   该映射只是**回退**值，仅用于用户未配置的模型：显式的 CLI 标志或 `[agent]` 配置优先。
+   代价是真实的——为长上下文模型留下的过时手工窗口会低估真实窗口，从而触发
+   **过早自动压缩**，因此应删除该键，而不是留着过期值。显式 `0` 不构成回退：它保留下文
+   所述的"禁用/未知窗口"语义。
+4. **默认 `200_000`**。
 
 合并 CLI 与 TOML 值后，若非零 `model_context_window` 小于或等于
 `max_tokens`，配置会立即报错：输出预留必须给输入留下空间。窗口为零时保留现有的
@@ -308,7 +364,8 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
 |------|--------|
 | `--provider` | 选择活跃 `llm.providers.*` 条目（`ProviderKind`） |
 | `--model`、`--api-key`、`--base-url` | 覆盖该条目字段 |
-| `--max-tokens`、`--thinking-budget` | CLI → 条目 → `[llm]` 全局 → 默认值 |
+| `--max-tokens` | CLI → 条目 → `[agent]` → `[llm]` 全局 → 默认值 |
+| `--thinking-budget` | CLI → 条目 → `[llm]` 全局 → 默认值 |
 | `-m` / `--permission-mode` | `[permission].mode` |
 | `--model-context-window`、`--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |

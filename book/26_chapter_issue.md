@@ -32,6 +32,69 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-13 — Explicit config beats the built-in model→window table, and a subagent section can no longer be dropped in silence
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs` (`resolve_config`, `resolve_subagent`); `config.example.toml`; [Ch 21](./21_chapter_config.md) §3 |
+
+**Symptom / motivation:** Two instances of one class of bug — configuration that *looks* applied but never reaches a request.
+
+1. `model_context_window` resolved as mapping > CLI > file, so the built-in model→window table **overrode both** the CLI flag and `[agent].model_context_window`. A user who deliberately set a window for a model with a built-in mapping had their value ignored. The documented rationale was safety (a stale manual window cannot under-report a well-known model), but the effect contradicted the project's "config wins" rule, and the same file could set `max_tokens` (honored) and `model_context_window` (ignored) side by side.
+2. `resolve_subagent` returned `Ok(None)` as soon as `provider` was absent, so `[agent.subagent] max_tokens = 64000` with `provider` commented out silently did nothing. A `tracing::warn!` would not have helped here: logging is only installed when `RUST_LOG`/tokio-console is set, and config resolution runs earlier (`init()` in `crates/tact-ui/src/main.rs`), so the warning would never be printed.
+
+**Decision:** (1) `model_context_window` now resolves CLI > `[agent]` > mapping > default `200_000`: the built-in table is a **fallback for unconfigured models**, not an override. The safety trade-off is documented instead of enforced — a stale manual window can under-report a long-context model and trigger premature auto-compaction, so the key should be deleted rather than left outdated. An explicit `0` still means "disabled/unknown window" and is *not* a fallback to the mapping. (2) A `[agent.subagent]` section that sets `model` / `max_tokens` / `thinking_budget` / `reasoning_effort` without `provider` is now a **hard resolve error** naming the fix, because `provider` is documented as required and the alternative is silently ignoring the overrides. A section with no overrides at all (a leftover header whose keys are all commented out) stays a silent no-op, so the guard does not fire on harmless templates.
+
+**Behavior after:** Setting `[agent] model_context_window = 128000` for `deepseek-v4-pro` (built-in 1M) now yields 128,000, and `--model-context-window` wins over both. A config carrying subagent overrides without `provider` fails to start with `[agent.subagent] sets overrides but \`provider\` is missing, so the whole section is ignored. … Set \`provider\` to a key from [llm.providers.*], or remove the section.` — surfacing a class of error that previously required reading the resolve source to notice.
+
+**Pointers:** `resolve_config` + `resolve_subagent` in `crates/tact/src/config/resolve.rs`; tests `resolve_model_context_window_toml_overrides_mapping`, `resolve_model_context_window_cli_overrides_toml_and_mapping`, `resolve_model_context_window_mapping_is_the_fallback`, `subagent_overrides_without_provider_errors`, `subagent_empty_section_without_provider_is_ignored`; [Ch 21](./21_chapter_config.md) §3.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — The bar's `out` budget no longer changes on the first prompt of a session
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs` (`format_max_out_tokens`); `crates/tact/src/agent/mod.rs` (`emit_model_status`, in-turn `ModelInfo`); [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** The bottom bar's `out` segment showed one value at startup and a larger one after the first prompt was sent, on an unchanged configuration. `out` is the *effective* text-output budget: for effort-semantic models (openai / deepseek / kimi k3) reasoning shares the `max_tokens` envelope, so the reasoning share is subtracted (`max_tokens × 100/(100+pct)`), while a budget-semantic model (Anthropic-style `thinking_budget`) keeps a separate envelope and shows the full value. The discriminator was `thinking_budget.is_some()`, but the two producers encode "thinking off" differently: the `/model` path emits `None` (`(budget > 0).then_some(..)`) while the in-turn request path emits `Some(0)` — it maps the always-present `Thinking` struct from `with_thinking`. So the first prompt of a session flipped the renderer from "shared envelope" to "separate envelope" and `out` went from the subtracted value to the full `max_tokens`, e.g. `36.6K` → `64K` on a 64000 envelope at `high`.
+
+**Decision:** The discriminator becomes a **non-zero** budget — `thinking_budget.is_some_and(|b| b > 0)`. `Some(0)` and `None` both mean "thinking off", i.e. shared-envelope semantics, so both subtract and render identically. Fixing it in the renderer (rather than aligning the in-turn emitter with `emit_model_status`) also covers the compaction-summary emitter, which sends `thinking_budget: None` with a small `max_tokens` and would otherwise still be able to flip the segment mid-session. The `think` segment already filtered on `> 0`, which is why only `out` moved.
+
+**Behavior after:** `out` stays put across a session boundary for a given config: on a 64000 envelope at `high` effort it reads `36.6K` before and after the first prompt, instead of `36.6K` → `64K`. A genuinely budget-semantic model (`thinking_budget > 0`) still shows the full `max_tokens`.
+
+**Pointers:** `format_max_out_tokens` in `crates/agent_tui_kit/src/render/bar.rs`; test `format_max_out_tokens_zero_budget_subtracts_effort_share`; [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — `[agent].max_tokens` becomes a real level in the output-budget chain
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/types.rs` (`AgentTomlConfig::max_tokens`); `crates/tact/src/config/resolve.rs` (`resolve_config`); `config.example.toml`; [Ch 21](./21_chapter_config.md) §3 |
+
+**Symptom / motivation:** `[agent] max_tokens = 64000` did nothing. `AgentTomlConfig` had no such field, and the struct is `#[serde(default)]` **without** `deny_unknown_fields`, so serde discarded the key silently — no error, no warning. The chain was `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[llm].max_tokens` > default 8000, so a config that only set `[agent] max_tokens` ran at 8000 while *looking* configured. Observed live: a config carrying `[agent] max_tokens = 64000` (file mtime 14:32) whose requests at 14:34 went out with `"max_tokens": 8000`, and no `token_usages.request_body` row in the project DB had ever held 64000. The same file's `[agent.subagent] max_tokens = 64000` was inert for a second reason — `resolve_subagent` returns `Ok(None)` when the section has no `provider`.
+
+**Decision:** `[agent].max_tokens` becomes a supported key and takes the slot **between the provider entry and the `[llm]` global**: `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[agent].max_tokens` > `[llm].max_tokens` > default (8000; 32000 for Kimi K2.x). It sits *above* the `[llm]` global so it stays live for users who also set the global — the reverse order would have reproduced the exact "configured but ignored" trap this fix removes. The `[llm]` global is retained so existing configs keep resolving. The `model_context_window` validator no longer names `llm.max_tokens` in its message, because the value can now originate from three places.
+
+**Behavior after:** A config that only sets `[agent] max_tokens = 64000` runs at 64000 on every provider whose entry omits `max_tokens`; a provider entry still wins over it, and `--max-tokens` still wins over all. A subagent without `[agent.subagent].max_tokens` inherits the resolved main value, `[agent]` level included. The window validator now reports `invalid token limits: max_tokens (N) must be less than agent.model_context_window (M)`.
+
+**Pointers:** `resolve_config` in `crates/tact/src/config/resolve.rs`; tests `agent_max_tokens_overrides_global`, `per_provider_max_tokens_overrides_agent`, `cli_max_tokens_overrides_agent`, `subagent_inherits_agent_max_tokens`; [Ch 21](./21_chapter_config.md) §3 precedence table + §4 schema.
+
+---
+
+---
+
+
 ## 1. 2026-09-13 — Compaction summarizer uses an effort bucket + staged ladder instead of a fixed reserve
 
 | Field | Value |
@@ -1668,6 +1731,8 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Decision | Add `model_context_window_for_model(model)` in `resolve.rs` and resolve the window as: **model→window mapping (highest) → CLI/TOML → default `200_000`**. Values follow official model docs (2026-08): OpenAI `gpt-5.6` family + `gpt-5.5` → `1_050_000`, `gpt-5.4` → `1_000_000`, `gpt-5`…`gpt-5.3`/`gpt-5.4-mini` → `400_000`, `gpt-4o` family → `128_000`; Anthropic (API + Claude Code) `claude-sonnet-5`/`claude-fable-5`/`claude-opus-5`/`claude-opus-4-8`/`claude-opus-4-7`/`claude-opus-4-6`/`claude-sonnet-4-6` → `1_000_000`, `claude-sonnet-4-20250514`/`claude-opus-4-20250514`/`claude-haiku-4-5`/`claude-haiku-4-20250514` → `200_000`; DeepSeek V4 → `1_000_000`, `k3-256k` → `256_000`. A mapping match deliberately overrides user file config so a stale manual window can never under-report a well-known model. |
 | Behavior after | The `ctx` bottom-bar meter and the derived auto-compact threshold (80% of window) use the mapped window for the mapped models. GPT-5.6/5.5 models show `…/1.05M`, Claude 1M models (incl. Claude Code ids) `…/1M`, DeepSeek V4 `…/1M`, GPT-5.x `…/400K`, GPT-4o `…/128K`, `k3-256k` `…/256K`. Manual `model_context_window` only takes effect for models without a built-in mapping. The nonzero `model_context_window > max_tokens` validation still applies to the resolved value. |
 | Pointers | `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`, resolution at ~`:587`); `config.example.toml` `[agent]`; book [Ch 21](./21_chapter_config.md) §5, [Ch 5](./05_chapter_compact.md) §settings tables. |
+
+*(Superseded 2026-09-13 — the precedence was inverted: an explicit CLI flag or `[agent]` value now wins, and the mapping is only a fallback for unconfigured models. See the newest entry, which also keeps the "stale manual window under-reports a long-context model" trade-off as documentation rather than enforcement.)*
 
 ---
 

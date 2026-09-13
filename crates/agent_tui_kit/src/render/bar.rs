@@ -107,6 +107,13 @@ fn format_model_name(name: &str) -> String {
 /// text = envelope × 100/(100+pct).
 /// Budget-semantic models (Anthropic-style `thinking_budget`) keep thinking in
 /// a separate envelope, so no subtraction applies.
+///
+/// "Has a separate envelope" means a **non-zero** budget: `Some(0)` is a
+/// disabled budget, i.e. effort semantics with a shared envelope. Treating it
+/// as a separate envelope made the bar disagree with reality — the in-turn
+/// request path emits `Some(0)` (it maps the always-present `Thinking` struct)
+/// while the `/model` path emits `None`, so the displayed budget jumped from
+/// the subtracted value to the full envelope as soon as a prompt was sent.
 fn format_max_out_tokens(
     label: &str,
     max_tokens: u32,
@@ -124,7 +131,7 @@ fn format_max_out_tokens(
         Some("xhigh") | Some("max") => 100,
         _ => 0,
     };
-    let max_out = if thinking_budget.is_some() {
+    let max_out = if thinking_budget.is_some_and(|budget| budget > 0) {
         // Separate thinking envelope: max_tokens already is the output limit.
         max_tokens
     } else {
@@ -748,6 +755,30 @@ mod render_tests {
         assert_eq!(
             super::format_max_out_tokens("max_out_token", 128_000, Some(32_000), Some("high")),
             Some("max_out_token 128K".into())
+        );
+    }
+
+    /// A **zero** budget is a disabled budget, not a separate envelope.
+    ///
+    /// Regression: the in-turn request path emits `Some(0)` (it maps the
+    /// always-present `Thinking` struct) while the `/model` path emits `None`,
+    /// so `is_some()` made the `out` segment change value as soon as a prompt
+    /// was sent — showing the un-subtracted envelope for effort-semantic
+    /// models, whose reasoning genuinely shares the `max_tokens` envelope.
+    #[test]
+    fn format_max_out_tokens_zero_budget_subtracts_effort_share() {
+        // Both encodings of "thinking off" must render identically.
+        for budget in [None, Some(0)] {
+            assert_eq!(
+                super::format_max_out_tokens("max_out_token", 64_000, budget, Some("high")),
+                Some("max_out_token 36.6K".into()),
+                "budget {budget:?}"
+            );
+        }
+        // 64k × 100/175 = 36,571 → "36.6K"; the un-subtracted value would be "64K".
+        assert_ne!(
+            super::format_max_out_tokens("max_out_token", 64_000, Some(0), Some("high")),
+            Some("max_out_token 64K".into())
         );
     }
 

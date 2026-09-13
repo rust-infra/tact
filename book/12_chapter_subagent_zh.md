@@ -80,7 +80,8 @@ and scope creep. Verdicts: Critical / Important / Minor.
   将其正文以 `<skill name=…>` 块追加到子代理静态 system prompt（在 `SubagentStart` hooks 之前）。
 - 未知 `skill` 使 spawn 失败并列出可用卡。
 - 会话启动时 `spawn_subagent` 工具描述会附加可用卡名（单行、长度截断、上限 30 张），主 agent 无需看到卡正文即可发现合法 `skill:` 值。
-- 工具集、权限继承、worktree 隔离与 `[agent.subagent]` 模型配置均不受影响。
+- 工具集、权限继承、worktree 隔离与 `[agent.subagent]` 模型配置均不受影响 ——
+  该段的解析规则见[配置](./21_chapter_config_zh.md)。
 
 ---
 

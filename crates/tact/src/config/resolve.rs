@@ -317,7 +317,9 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
 ///
 /// Reads `[agent.subagent]` and validates that the referenced `provider` key
 /// exists in `[llm.providers.*]`. Returns `None` when the subagent section is
-/// absent (backward compatibility).
+/// absent (backward compatibility), or when it is present but carries no
+/// overrides at all (a leftover header with every key commented out). A section
+/// that sets overrides without a `provider` is rejected rather than dropped.
 ///
 /// `main_max_tokens` and `main_thinking_budget` are the main agent's resolved
 /// defaults, used as fallback when the subagent does not override them.
@@ -331,6 +333,21 @@ fn resolve_subagent(
         return Ok(None);
     };
     let Some(provider_name) = &subagent_cfg.provider else {
+        // An all-defaults section is a harmless leftover (every key commented
+        // out), so it stays a silent no-op. A section that *sets* overrides
+        // without a provider is an error: silently dropping them is the
+        // "configured but ignored" trap — the user sees a max_tokens or model
+        // in the file that never reaches a request.
+        if subagent_cfg.model.is_some()
+            || subagent_cfg.max_tokens.is_some()
+            || subagent_cfg.thinking_budget.is_some()
+            || subagent_cfg.reasoning_effort.is_some()
+        {
+            anyhow::bail!(
+                "[agent.subagent] sets overrides but `provider` is missing, so the whole section is ignored.\n\
+                 Set `provider` to a key from [llm.providers.*] (e.g. provider = \"deepseek\"), or remove the section."
+            );
+        }
         return Ok(None);
     };
 
@@ -685,6 +702,7 @@ pub(super) fn resolve_config(
     let max_tokens = args
         .max_tokens
         .or_else(|| entry.and_then(|e| e.max_tokens))
+        .or(toml_cfg.agent.max_tokens)
         .or(toml_cfg.llm.max_tokens)
         .unwrap_or_else(|| {
             if provider_info.is_kimi_k2x(&provider_info.model) {
@@ -706,16 +724,22 @@ pub(super) fn resolve_config(
         );
     }
 
-    let model_context_window = model_context_window_for_model(&provider_info.model)
-        .or(args.model_context_window)
+    // Explicit config wins over the built-in model→window table: the mapping is
+    // a fallback for models the user did not configure. Note the trade-off —
+    // a stale manual value for a long-context model can now under-report the
+    // real window and trigger premature auto-compaction, which is why the
+    // mapping used to win. Resolution order: CLI > `[agent]` > mapping > default.
+    let model_context_window = args
+        .model_context_window
         .or(toml_cfg.agent.model_context_window)
+        .or_else(|| model_context_window_for_model(&provider_info.model))
         .unwrap_or(200_000);
 
     if model_context_window != 0
         && !usize::try_from(max_tokens).is_ok_and(|max_tokens| max_tokens < model_context_window)
     {
         anyhow::bail!(
-            "invalid token limits: llm.max_tokens ({max_tokens}) must be less than agent.model_context_window ({model_context_window})"
+            "invalid token limits: max_tokens ({max_tokens}) must be less than agent.model_context_window ({model_context_window})"
         );
     }
 
@@ -1021,6 +1045,52 @@ max_tokens = {subagent_max_tokens}
         let sa = cfg.agent.subagent.unwrap();
         assert_eq!(sa.thinking_budget, 0);
         assert_eq!(sa.max_tokens, 8_000);
+    }
+
+    /// A section that sets overrides without `provider` used to be dropped
+    /// silently, so `max_tokens` in the file never reached a request.
+    #[test]
+    fn subagent_overrides_without_provider_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent.subagent]
+max_tokens = 64000
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[agent.subagent]"), "got: {err}");
+        assert!(err.contains("`provider` is missing"), "got: {err}");
+    }
+
+    /// The same guard must not fire for a leftover header whose keys are all
+    /// commented out — that section is a no-op, not a mistake.
+    #[test]
+    fn subagent_empty_section_without_provider_is_ignored() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent.subagent]
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert!(resolved.agent.subagent.is_none());
     }
 
     #[test]
@@ -1545,6 +1615,100 @@ max_tokens = 32000
         assert_eq!(resolved.agent.max_tokens, 1000);
     }
 
+    /// `[agent].max_tokens` is the fallback when the provider entry has none:
+    /// it outranks the `[llm]` global.
+    #[test]
+    fn agent_max_tokens_overrides_global() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 8000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+max_tokens = 64000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 64_000);
+    }
+
+    /// The provider entry still wins over `[agent].max_tokens`.
+    #[test]
+    fn per_provider_max_tokens_overrides_agent() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+max_tokens = 32000
+
+[agent]
+max_tokens = 64000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 32_000);
+    }
+
+    /// `--max-tokens` still wins over everything, `[agent]` included.
+    #[test]
+    fn cli_max_tokens_overrides_agent() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+max_tokens = 64000
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.max_tokens = Some(1000);
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 1000);
+    }
+
+    /// A subagent without its own `max_tokens` inherits the resolved main value,
+    /// which now includes the `[agent]` level.
+    #[test]
+    fn subagent_inherits_agent_max_tokens() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+max_tokens = 64000
+
+[agent.subagent]
+provider = "openai"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 64_000);
+        assert_eq!(resolved.agent.subagent.unwrap().max_tokens, 64_000);
+    }
+
     #[test]
     fn anthropic_without_base_url_errors() {
         let toml_cfg: TactTomlConfig = toml::from_str(
@@ -1766,9 +1930,9 @@ model_context_window = 128000
     }
 
     #[test]
-    fn resolve_model_context_window_mapping_overrides_toml() {
-        // deepseek-v4-pro has a well-known 1M window; the model mapping wins
-        // over a stale `[agent] model_context_window` in the file.
+    fn resolve_model_context_window_toml_overrides_mapping() {
+        // deepseek-v4-pro has a well-known 1M window, but an explicit config
+        // value wins: the mapping is only a fallback.
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1784,11 +1948,34 @@ model_context_window = 128000
         )
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
-        assert_eq!(resolved.agent.model_context_window, 1_000_000);
+        assert_eq!(resolved.agent.model_context_window, 128_000);
     }
 
     #[test]
-    fn resolve_model_context_window_mapping_overrides_cli() {
+    fn resolve_model_context_window_cli_overrides_toml_and_mapping() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "deepseek-v4-pro"
+
+[agent]
+model_context_window = 128000
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.model_context_window = Some(64_000);
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 64_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_mapping_is_the_fallback() {
+        // No CLI flag, no `[agent]` key → the built-in table still applies.
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1800,9 +1987,7 @@ model = "deepseek-v4-pro"
 "#,
         )
         .unwrap();
-        let mut args = empty_cli_args();
-        args.model_context_window = Some(128_000);
-        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.model_context_window, 1_000_000);
     }
 
@@ -1975,7 +2160,7 @@ model_context_window = 8000
             .to_string();
         assert_eq!(
             err,
-            "invalid token limits: llm.max_tokens (8000) must be less than agent.model_context_window (8000)"
+            "invalid token limits: max_tokens (8000) must be less than agent.model_context_window (8000)"
         );
     }
 
@@ -2002,7 +2187,7 @@ model_context_window = 8000
         let err = resolve_config(&args, &toml_cfg, None)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("llm.max_tokens (9000)"));
+        assert!(err.contains("max_tokens (9000)"));
         assert!(err.contains("agent.model_context_window (8000)"));
     }
 

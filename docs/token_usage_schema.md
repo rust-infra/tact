@@ -222,7 +222,13 @@ This means consecutive multi-turn conversations typically achieve high cache hit
   (same tier convention as the compaction reserve: text = envelope ×
   `100/(100+pct)`, e.g. `high` → `73K` on a 128K envelope). Budget-semantic
   models (Anthropic-style `thinking_budget`) keep a separate thinking
-  envelope, so the full `max_tokens` is shown.
+  envelope, so the full `max_tokens` is shown. The discriminator is a
+  **non-zero** budget: `Some(0)` means "thinking off", i.e. shared-envelope
+  semantics, so the subtraction still applies — `None` and `Some(0)` render
+  identically. Both encodings reach the bar in practice (the in-turn request
+  path maps the always-present `Thinking` struct to `Some(0)`; the `/model`
+  path emits `None`), and treating `Some(0)` as a separate envelope made the
+  value change on the first prompt of a session.
 - **Context meter** — `ctx {pct}% used/window` (e.g. `ctx 4% 45K/1M`), where
   `used` is the latest main-loop
   `TokenUsageInfo.total` and `window` is `model_context_window`.

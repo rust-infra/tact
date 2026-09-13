@@ -107,6 +107,14 @@ impl Default for PermissionTomlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AgentTomlConfig {
+    /// Max output tokens for the main agent.
+    ///
+    /// Used as a fallback when the active `[llm.providers.<name>]` entry has no
+    /// `max_tokens`. Resolution order: `--max-tokens` > provider entry > this
+    /// key > `[llm].max_tokens` > built-in default (8000, or 32000 for Kimi
+    /// K2.x). Subagents without their own `max_tokens` inherit the result.
+    pub max_tokens: Option<u32>,
+
     /// Model context window in tokens (auto-compaction + TUI usage meter).
     pub model_context_window: Option<usize>,
 

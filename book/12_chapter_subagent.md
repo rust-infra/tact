@@ -86,8 +86,9 @@ and scope creep. Verdicts: Critical / Important / Minor.
 - At session start the `spawn_subagent` tool description is annotated with the
   available card names (single-line, length-capped, bounded at 30 cards) so the
   main agent can discover valid `skill:` values without seeing the cards' bodies.
-- The toolset, permission inheritance, worktree isolation, and `[agent.subagent]`
-  model config are all unaffected.
+- The toolset, permission inheritance, worktree isolation, and the
+  `[agent.subagent]` model config are all unaffected — see
+  [Configuration](./21_chapter_config.md) for that block's resolution rules.
 
 ---
 

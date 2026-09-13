@@ -32,6 +32,69 @@
 ---
 
 
+## 1. 2026-09-13 — 显式配置压过内置模型→窗口映射，subagent 段不再被静默丢弃
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs`（`resolve_config`、`resolve_subagent`）；`config.example.toml`；[Ch 21](./21_chapter_config_zh.md) §3 |
+
+**症状 / 动机：** 同一类 bug 的两个实例——配置**看起来**生效，却从未到达请求。
+
+1. `model_context_window` 原解析顺序为 映射 > CLI > 文件，即内置模型→窗口表**同时压过** CLI 标志与 `[agent].model_context_window`。用户为存在内置映射的模型刻意设置的窗口会被忽略。当时的官方理由是安全（过时的手工窗口不会低估已知模型），但实际效果违背了项目"配置优先"的规则，且同一文件里 `max_tokens`（生效）与 `model_context_window`（被忽略）可以并排存在。
+2. `resolve_subagent` 一旦缺少 `provider` 就返回 `Ok(None)`，于是 `provider` 被注释掉的 `[agent.subagent] max_tokens = 64000` 静默失效。这里 `tracing::warn!` 也无济于事：日志仅在设置 `RUST_LOG`/tokio-console 时安装，而配置解析更早发生（`crates/tact-ui/src/main.rs` 的 `init()`），警告根本不会打印。
+
+**决策：** (1) `model_context_window` 改为 CLI > `[agent]` > 映射 > 默认 `200_000`：内置表是**未配置模型时的回退**，而非覆盖。安全代价改为文档说明而非强制——过时的手工窗口会低估长上下文模型并触发过早自动压缩，因此应删除该键而不是留着过期值。显式 `0` 仍表示"禁用/未知窗口"，**不会**回退到映射。(2) `[agent.subagent]` 若设置了 `model` / `max_tokens` / `thinking_budget` / `reasoning_effort` 却没有 `provider`，现在会在 resolve 阶段**硬报错**并给出修法——因为 `provider` 文档上即为必填，另一条路就是静默忽略这些覆盖项。完全没有任何覆盖项的段（键全被注释掉的遗留表头）仍是静默 no-op，因此该守卫不会误伤无害模板。
+
+**之后的行为：** 为 `deepseek-v4-pro`（内置 1M）设置 `[agent] model_context_window = 128000` 现在得到 128,000，且 `--model-context-window` 优先级高于两者。带有 subagent 覆盖项却缺 `provider` 的配置会启动失败并报 `[agent.subagent] sets overrides but \`provider\` is missing, so the whole section is ignored. … Set \`provider\` to a key from [llm.providers.*], or remove the section.`——这类错误此前需要读 resolve 源码才能发现。
+
+**指针：** `crates/tact/src/config/resolve.rs` 的 `resolve_config` + `resolve_subagent`；测试 `resolve_model_context_window_toml_overrides_mapping`、`resolve_model_context_window_cli_overrides_toml_and_mapping`、`resolve_model_context_window_mapping_is_the_fallback`、`subagent_overrides_without_provider_errors`、`subagent_empty_section_without_provider_is_ignored`；[Ch 21](./21_chapter_config_zh.md) §3。
+
+---
+
+---
+
+
+## 1. 2026-09-13 — 底栏 `out` 额度不再在会话首个 prompt 后跳变
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`（`format_max_out_tokens`）；`crates/tact/src/agent/mod.rs`（`emit_model_status`、回合内 `ModelInfo`）；[Ch 23](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
+
+**症状 / 动机：** 配置未变的情况下，底栏 `out` 段在启动时显示一个值、发出首个 prompt 后变成另一个更大的值。`out` 是**有效**文本输出额度：effort 语义模型（openai / deepseek / kimi k3）的 reasoning 与文本共享 `max_tokens` 信封，因此扣除 reasoning 份额（`max_tokens × 100/(100+pct)`）；budget 语义模型（Anthropic 式 `thinking_budget`）的 thinking 走独立信封，显示完整值。原判定条件是 `thinking_budget.is_some()`，但两个发送方对"thinking 关闭"的编码不同：`/model` 路径发 `None`（`(budget > 0).then_some(..)`），而回合内请求路径发 `Some(0)`——它映射的是 `with_thinking` 里那个恒存在的 `Thinking` 结构。于是会话首个 prompt 就把渲染端从"共享信封"翻成"独立信封"，`out` 从扣减后的值跳到完整 `max_tokens`，例如 64000 信封 + `high` 下 `36.6K` → `64K`。
+
+**决策：** 判定条件改为**非零**预算——`thinking_budget.is_some_and(|b| b > 0)`。`Some(0)` 与 `None` 都表示"thinking 关闭"，即共享信封语义，两者都扣减、渲染结果一致。在渲染端修（而不是把回合内发送方对齐 `emit_model_status`）还能覆盖压缩摘要路径——那处发 `thinking_budget: None` + 小 `max_tokens`，否则仍可能在会话中途翻转该段。`think` 段本就带 `> 0` 过滤，这就是只有 `out` 会跳的原因。
+
+**之后的行为：** 配置不变时 `out` 跨会话边界保持稳定：64000 信封 + `high` effort 在首个 prompt 前后都显示 `36.6K`，不再出现 `36.6K` → `64K`。真正的 budget 语义模型（`thinking_budget > 0`）仍显示完整 `max_tokens`。
+
+**指针：** `crates/agent_tui_kit/src/render/bar.rs` 的 `format_max_out_tokens`；测试 `format_max_out_tokens_zero_budget_subtracts_effort_share`；[Ch 23](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md`。
+
+---
+
+---
+
+
+## 1. 2026-09-13 — `[agent].max_tokens` 成为输出预算链上的真实一级
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/types.rs`（`AgentTomlConfig::max_tokens`）；`crates/tact/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 21](./21_chapter_config_zh.md) §3 |
+
+**症状 / 动机：** `[agent] max_tokens = 64000` 完全没有效果。`AgentTomlConfig` 没有这个字段，且该结构是 `#[serde(default)]` **没有** `deny_unknown_fields`，于是 serde 静默丢弃该键——不报错、不警告。原解析链是 `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[llm].max_tokens` > 默认 8000，因此只配 `[agent] max_tokens` 的配置实际跑在 8000，**看起来却是配好的**。实测：配置文件带 `[agent] max_tokens = 64000`（mtime 14:32），14:34 发出的请求仍是 `"max_tokens": 8000`，且项目 DB 的 `token_usages.request_body` 里从未出现过 64000。同一文件里的 `[agent.subagent] max_tokens = 64000` 还因第二个原因失效——该段没有 `provider` 时 `resolve_subagent` 直接返回 `Ok(None)`。
+
+**决策：** `[agent].max_tokens` 成为受支持的键，占据**provider 条目与 `[llm]` 全局之间**的位置：`--max-tokens` > `[llm.providers.<active>].max_tokens` > `[agent].max_tokens` > `[llm].max_tokens` > 默认值（8000；Kimi K2.x 为 32000）。它排在 `[llm]` 全局**之上**，这样同时设了全局的用户也不会让它失效——反过来排会重现本次要修的"配了但被忽略"陷阱。`[llm]` 全局保留，既有配置继续可解析。`model_context_window` 校验的错误文案不再写死 `llm.max_tokens`，因为该值现在有三个来源。
+
+**之后的行为：** 只配 `[agent] max_tokens = 64000` 时，凡 provider 条目未设 `max_tokens` 的 provider 都跑在 64000；provider 条目仍然优先，`--max-tokens` 优先级最高。未设 `[agent.subagent].max_tokens` 的子 agent 继承已解析的主值（含 `[agent]` 这一级）。窗口校验报错改为 `invalid token limits: max_tokens (N) must be less than agent.model_context_window (M)`。
+
+**指针：** `crates/tact/src/config/resolve.rs` 的 `resolve_config`；测试 `agent_max_tokens_overrides_global`、`per_provider_max_tokens_overrides_agent`、`cli_max_tokens_overrides_agent`、`subagent_inherits_agent_max_tokens`；[Ch 21](./21_chapter_config_zh.md) §3 优先级表 + §4 schema。
+
+---
+
+---
+
+
 ## 1. 2026-09-13 — 压缩摘要改用 effort 桶 + 分档阶梯，取代固定预留
 
 | 字段 | 内容 |
@@ -1647,6 +1710,8 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 决策 | 在 `resolve.rs` 新增 `model_context_window_for_model(model)`，并按 **模型→窗口映射（最高）→ CLI/TOML → 默认 `200_000`** 解析窗口。数值依据官方模型文档（2026-08）：OpenAI `gpt-5.6` 系列 + `gpt-5.5` → `1_050_000`、`gpt-5.4` → `1_000_000`、`gpt-5`…`gpt-5.3`/`gpt-5.4-mini` → `400_000`、`gpt-4o` 系列 → `128_000`；Anthropic（API 与 Claude Code 同 ID）`claude-sonnet-5`/`claude-fable-5`/`claude-opus-5`/`claude-opus-4-8`/`claude-opus-4-7`/`claude-opus-4-6`/`claude-sonnet-4-6` → `1_000_000`、`claude-sonnet-4-20250514`/`claude-opus-4-20250514`/`claude-haiku-4-5`/`claude-haiku-4-20250514` → `200_000`；DeepSeek V4 → `1_000_000`、`k3-256k` → `256_000`。命中映射时**刻意**覆盖用户文件配置，避免过时的手工窗口低估已知模型。 |
 | 改后行为 | `ctx` 底栏计量与派生的自动压缩阈值（窗口的 80%）对已映射模型使用映射后的窗口。GPT-5.6/5.5 系列显示 `…/1.05M`、Claude 1M 模型（含 Claude Code ID）`…/1M`、DeepSeek V4 `…/1M`、GPT-5.x `…/400K`、GPT-4o `…/128K`、`k3-256k` `…/256K`。手工 `model_context_window` 仅对无内置映射的模型生效。非零 `model_context_window > max_tokens` 的校验仍作用于解析后的最终值。 |
 | 指针 | `crates/tact/src/config/resolve.rs`（`model_context_window_for_model`，解析位于 ~`:587`）；`config.example.toml` `[agent]`；book [Ch 21](./21_chapter_config_zh.md) §5、[Ch 5](./05_chapter_compact_zh.md) 设置表。 |
+
+*（2026-09-13 被取代——优先级已反转：显式的 CLI 标志或 `[agent]` 配置现在优先，映射降级为未配置模型时的回退。见最新条目；其中还保留"过时手工窗口会低估长上下文模型"这一代价，但改为文档说明而非强制。）*
 
 ---
 
