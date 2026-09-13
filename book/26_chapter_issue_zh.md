@@ -32,6 +32,25 @@
 ---
 
 
+## 1. 2026-09-13 — 压缩摘要改用 effort 桶 + 分档阶梯，取代固定预留
+
+| 字段 | 内容 |
+|-------|-------|
+| 类型 | `optimization` |
+| 相关 | `crates/tact/src/agent/mod.rs`（`compact_history_local_with_mode`、`compact_effort_reserve_tokens`、`compact_summary_server_default_effort`、`compact_summary_effort`、`next_compaction_reserve`）；`crates/tact/src/recovery.rs`（`MAX_COMPACT_SUMMARY_ATTEMPTS`、`MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS`） |
+
+**现象 / 动机：** 摘要器的 reasoning 预留是摘要**文本**预算（封顶 2,000 token）的百分比，于是 `high` effort 只预留 1,500 token，而 effort 档位本身表达的是一个绝对思考额度。截断恢复也只是固定 3 次续写，在推理密集的 provider 上无法收敛：DeepSeek 不回放历史 `reasoning_content`，每次调用都会从头重新思考，于是每次续写都重复同样的溢出，直到接受部分摘要——或者因空文本而报错。Codex 自身的摘要器是单发、用与采样相同的 effort、并容忍被截断的摘要，这决定了下面的改法。
+
+**决策：** (1) 初始预留改为**有效 effort 的绝对 token 桶**——`none` 0 / `minimal|low` 2,000 / `medium` 4,000 / `high` 8,000 / `xhigh|max` 16,000——不再按文本预算的百分比；未配置 effort 时，DeepSeek / Kimi K3（服务端默认 effort high）取 `high` 桶，其余 provider 取 0。(2) 单一续写循环改为**分档阶梯**：阶段 0 继承会话 effort；阶段 1 降档（DeepSeek / Kimi K3 发 `low`，OpenAI 推理模型发 `none`，其余省略）；阶段 2+ 依据上一次的 `usage.reasoning_tokens` 设定预留 `clamp(observed × 1.25, floor, cap)`，其中 `floor = max(上次预留, effort 桶, 文本/4)`、`cap = 2 × floor`，并受窗口上限约束。(3) 新增 `MAX_COMPACT_SUMMARY_ATTEMPTS`（5），独立于主循环的 `MAX_CONTINUATION_ATTEMPTS`（3）；传输重试 `MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS` 从 3 提到 5。空摘要文本仍会失败。
+
+**改后行为：** `max_tokens` = 2,000 文本 + effort 桶——`high` 为 10,000，DeepSeek / Kimi K3 未显式配置 effort 时同为 10,000（服务端默认 high）。截断的摘要会发出 `[compact continue n/5]` 并携带递增的预算；阶梯耗尽后发出 `[compact fallback]`，接受部分摘要而不是失败——压缩不再因为推理模型吃掉了上一次信封就报错。
+
+**设计说明（与 Codex 对比）：** 摘要调用是**合成**一次无 tools 的 `create_message`——指令 + 可选 focus + 最近文件清单 + 序列化成 JSON 文本的近期消息切片——而不是回放真实历史。Codex 则回放：把 `SUMMARIZATION_PROMPT` 追加到原生 items 上发送，输入超限时通过 `ContextWindowExceeded` 删除最旧项重试。合成带来的好处是请求必然放得进输入预算、且结构永远合法（不会出现孤立的 `tool_use`/`tool_result`，wire 上也不带 tools），并且 `focus`、最近文件、超大媒体降级都在这里注入；代价是工具往来的语义只以 JSON 形式保留。重组环节两者都是「近期真实用户消息 + 一条摘要单元」、上限 20k 估算 token；但 Tact 会在保留用户消息前剥掉 `ToolResult` 块（Tact 的工具结果挂在用户消息里，而 Codex 是独立的 `FunctionCallOutput` item），并有一个外层 fit-loop，按 `system prompt + tool specs + rebuilt + max_tokens + headroom` 收缩保留预算直到放得下；Codex 保持固定 20k，交由调用方处理。另外 Tact 在摘要为空时报错，Codex 则接受仅有 `SUMMARY_PREFIX` 的单元。
+
+**指针：** `crates/tact/src/agent/mod.rs` 中的 `compact_history_local_with_mode` 与各辅助函数；`crates/tact/src/recovery.rs` 中的常量；测试 `compact_effort_reserve_bucket_tiers`、`compact_summary_server_default_effort_tiers`、`compact_summary_effort_ladder_per_provider`、`next_compaction_reserve_*`、`local_compact_inherits_session_effort`、`local_compact_keeps_server_default_reasoning_reserve`、`local_compact_accepts_partial_summary_when_continuations_exhausted`；[Ch 5](./05_chapter_compact_zh.md) §5 步骤 3。
+
+---
+
 ## 1. 2026-09-12 — `/model` 流程合二为一，TUI 不再在 UI 线程上 fork git
 
 | Field | Value |

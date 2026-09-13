@@ -307,19 +307,26 @@ flowchart LR
     New -->|serialized into prompt| SumLLM[summarization LLM]
 ```
 
-**3. Summarization call** — a fresh non-streaming `create_message` (no tools) reserves output and 10% safety headroom before selecting input. The summary **text** keeps the classic `min(20% × window, 2,000)` output budget. The summarizer **never enables thinking**: no Claude-style thinking budget and no explicit reasoning effort are forwarded, because thinking adds little value to a handoff summary and would consume output tokens. The only exception is the **server-default reasoning reserve**: DeepSeek / Kimi K3 default thinking ON + effort high server-side even when the request omits effort, and they count reasoning tokens inside the same `max_tokens` envelope as the text — so a fixed 75% reserve is added **on top** for them (`max_tokens` = text + 75% × text); without it their forced reasoning would starve the summary text and force truncation continuations. OpenAI / Anthropic get no reserve (full text budget). Since no thinking is enabled, nothing is subtracted from the input reservation. If the fixed summary instructions alone exceed the input limit, compaction fails early because no valid summary request can be constructed, even after removing all history. Transient transport failures get up to three retries with backoff. A `MaxTokens` summary is **continued** (up to three times): the partial summary is appended as an assistant message plus a continuation prompt (`[compact continue n/3]`), mirroring the main loop's output-limit recovery; when continuations are exhausted the partial summary is accepted as best-effort (the Codex-style rebuild keeps recent real user messages anyway). Refusal / other abnormal stop reasons and empty text are still rejected without replacing the old context. The prompt asks the model to preserve:
+**3. Summarization call** — a fresh non-streaming `create_message` (no tools) reserves output and 10% safety headroom before selecting input. The summary **text** keeps the classic `min(20% × window, 2,000)` output budget. The summarizer never forwards a Claude-style thinking budget (thinking adds little value to a handoff summary), and its reasoning reserve is the absolute token **bucket** of the attempt's effective effort — `none` 0, `minimal`/`low` 2,000, `medium` 4,000, `high` 8,000, `xhigh`/`max` 16,000 — added **on top** of the text budget (`max_tokens` = text + bucket). The reserve runs a **staged effort ladder**:
+
+- **Stage 0 — inherit.** The attempt forwards the session's configured `reasoning_effort`; when none is configured, the provider's server default applies (DeepSeek / Kimi K3 default thinking ON + effort high, so they take the `high` bucket; OpenAI / Anthropic take none).
+- **Stage 1 — minimize.** Thinking is turned down where the provider allows it: DeepSeek / Kimi K3 forward `low` (their body hook cannot fully disable thinking), an OpenAI reasoning model sends `none`, and every other provider omits the field.
+- **Stage 2+ — adapt.** The reserve is sized from the `reasoning_tokens` the previous attempt actually spent: `clamp(observed × 1.25, floor, cap)` with `floor = max(previous reserve, effort bucket, text/4)` and `cap = 2 × floor`. Every envelope is capped so the initial prompt + `max_tokens` + headroom still fit the window.
+
+Reasoning counts inside the same `max_tokens` envelope as the text, so without the reserve a reasoning model would starve the summary. If the fixed summary instructions alone exceed the input limit, compaction fails early because no valid summary request can be constructed, even after removing all history. Transient transport failures get up to five retries with backoff. A `MaxTokens` truncation is **continued** (up to `MAX_COMPACT_SUMMARY_ATTEMPTS` = 5, `[compact continue n/5]`): the partial summary is appended as an assistant message plus a continuation prompt. When the ladder is exhausted the partial summary is accepted as best-effort with `[compact fallback]` (the Codex-style rebuild keeps recent real user messages anyway). Refusal / other abnormal stop reasons and empty text are still rejected without replacing the old context. The instructions also state that the conversation appears as a JSON message array (tool results and attachments may be elided) and that the summary must be grounded in it. The prompt asks the model to preserve:
 
 1. Current goal and accomplishments  
 2. Findings, decisions, architectural insights  
-3. Files read/changed (types, signatures, APIs when relevant)  
+3. Files read/changed with key code structures (types, signatures, APIs)  
 4. Remaining work / next steps  
 5. User constraints and preferences  
 6. Errors and causes  
 
-Optional appendages:
+Optional appendages, appended in this priority order and only while the remaining input budget allows (each step re-checks; an oversized `focus` or file list is dropped with a warning, and the message slice is trimmed to fit):
 
-- `Focus to preserve next: {focus}` — from the manual `compact` tool  
-- `Recent files to reopen if needed:` — from `CompactState.recent_files`
+- `Focus to preserve next: {focus}` — the **only** appendage that comes from a **model tool call**: the model invokes the `compact` tool with a `focus` argument (exposed on non-Responses providers only), and the `[manual compact]` path then calls `compact_history_with_trigger(Manual, Some(focus))`. Auto-compaction passes none and native Responses compaction ignores it.  
+- `Recent files to reopen if needed:` — automatic: whenever `CompactState.recent_files` is non-empty (accumulated by successful `read_file` calls, LRU-bounded)  
+- the recent-message slice serialized as JSON — automatic: whenever the history is non-empty and the budget is positive (`recent_messages_for_summary`)
 
 ### OpenAI Responses: native compaction (no local summary fallback)
 
@@ -438,7 +445,7 @@ The asymmetry is intentional:
 
 ### Compaction failure behavior
 
-The context is replaced only after the summary has been validated and the rebuilt request fits the model window. If summary generation fails, returns empty text, uses an invalid stop reason (a truncated `MaxTokens` summary is continued first; only non-continuable failures count), or the rebuilt request cannot fit, the original in-memory context remains in place. If persisting the rebuilt context to SQLite fails, the replacement is rolled back as well. The transcript written at the start of compaction remains available for diagnosis or offline recovery. The current agent loop then propagates the error and normally ends the task; it does not blindly retry the same oversized context. Transient summary transport errors are the exception: they are retried up to three times before failing.
+The context is replaced only after the summary has been validated and the rebuilt request fits the model window. If summary generation fails, returns empty text, uses an invalid stop reason (a truncated `MaxTokens` summary is continued first; only non-continuable failures count), or the rebuilt request cannot fit, the original in-memory context remains in place. If persisting the rebuilt context to SQLite fails, the replacement is rolled back as well. The transcript written at the start of compaction remains available for diagnosis or offline recovery. The current agent loop then propagates the error and normally ends the task; it does not blindly retry the same oversized context. Transient summary transport errors are the exception: they are retried up to five times before failing.
 
 **5. Bookkeeping**
 

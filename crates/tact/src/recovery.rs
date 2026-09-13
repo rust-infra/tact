@@ -16,6 +16,8 @@
 //! - [`MAX_CONTINUATION_ATTEMPTS`]: max-tokens continuation retries.
 //! - [`MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS`]: transient retries during the
 //!   compaction summary call itself.
+//! - [`MAX_COMPACT_SUMMARY_ATTEMPTS`]: compaction-summarizer attempts before a
+//!   partial summary is accepted as best-effort.
 //! - [`RecoveryState`]: tracks attempts across compaction, continuation, and
 //!   transport categories.
 //! - [`is_prompt_too_long_error`] / [`is_transient_transport_error`]:
@@ -28,11 +30,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const MAX_COMPACT_ATTEMPTS: u32 = 3;
 pub const MAX_TRANSPORT_ATTEMPTS: u32 = 10;
 pub const MAX_CONTINUATION_ATTEMPTS: u32 = 3;
-/// Retries for transient errors during the compaction summary LLM call.
-/// Kept smaller than [`MAX_TRANSPORT_ATTEMPTS`] because the summary call is
-/// a short one-shot operation — failing after a few retries means the
-/// compaction cannot proceed, and the main loop will surface the error.
-pub const MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS: u32 = 3;
+/// Retries for **transient transport** errors during the compaction summary
+/// LLM call (timeouts, 408/429/5xx); a permanent error is never retried.
+/// Kept below [`MAX_TRANSPORT_ATTEMPTS`] because the summary call is a short
+/// one-shot operation, but raised to give a flaky link more chances before
+/// compaction is abandoned and surfaced to the main loop.
+///
+/// This budget does **not** affect truncation-driven fallback; that is
+/// governed by [`MAX_COMPACT_SUMMARY_ATTEMPTS`].
+pub const MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS: u32 = 5;
+/// Compaction-summarizer attempts before a partial summary is accepted as
+/// best-effort. Kept separate from [`MAX_CONTINUATION_ATTEMPTS`], which the
+/// main agent loop also uses: compaction wants more patience because an
+/// output-limited summary is still a usable handoff, while the main loop
+/// should not keep re-answering an over-long response indefinitely.
+pub const MAX_COMPACT_SUMMARY_ATTEMPTS: u32 = 5;
 const BACKOFF_BASE_DELAY_SECS: f64 = 1.0;
 const BACKOFF_MAX_DELAY_SECS: f64 = 30.0;
 

@@ -307,19 +307,26 @@ flowchart LR
     New -->|序列化进 prompt| SumLLM[摘要 LLM]
 ```
 
-**3. 摘要调用** — 一次新的非流式 `create_message`（无 tools）；选择输入前先预留输出与 10% 安全余量。摘要**文本**部分沿用经典的 `min(窗口 × 20%, 2,000)` 输出预算。摘要请求**从不开启 thinking**：既不转发 Claude 式 thinking budget，也不转发显式 reasoning effort——思考对手交摘要价值不大，而且会占用输出 token。唯一例外是**服务端默认 reasoning 预留**：DeepSeek / Kimi K3 即使请求省略 effort，服务端也默认 thinking 开启 + effort high，且它们把 reasoning token 与文本算在同一个 `max_tokens` 信封内——因此为它们固定追加 75% 预留（`max_tokens` = 文本 + 75% × 文本）；没有该预留，强制的 reasoning 会挤占摘要文本额度、触发截断续写。OpenAI / Anthropic 无预留（输出额度全部给文本）。由于摘要调用不开启 thinking，输入预留也不再扣除 thinking。如果连固定的摘要指令本身都超过这个输入上限，压缩会提前失败，因为即使删除全部历史，也无法构造合法的摘要请求。瞬时传输错误最多退避重试三次；`MaxTokens` 截断的摘要会**续写**（最多三次）：把已产生的部分摘要作为 assistant 消息、追加一条续写提示（`[compact continue n/3]`）再次调用，与主循环的输出上限恢复一致；续写次数耗尽后，部分摘要会被接受为 best-effort（Codex-style 重建反正会保留最近的真实用户消息）。拒绝/其它异常终止原因和空文本仍会被拒绝，旧 context 不会被替换。摘要要求模型保留：
+**3. 摘要调用** — 一次新的非流式 `create_message`（无 tools）；选择输入前先预留输出与 10% 安全余量。摘要**文本**部分沿用经典的 `min(窗口 × 20%, 2,000)` 输出预算。摘要请求不转发 Claude 式 thinking budget（思考对手交摘要价值不大），其 reasoning 预留是该次尝试**有效 effort 对应的绝对 token 桶**——`none` 0、`minimal`/`low` 2,000、`medium` 4,000、`high` 8,000、`xhigh`/`max` 16,000——追加在文本预算**之上**（`max_tokens` = 文本 + 桶）。预留走一条**分档 effort 阶梯**：
+
+- **阶段 0 — 继承。** 转发会话配置的 `reasoning_effort`；未配置时按 provider 服务端默认（DeepSeek / Kimi K3 默认 thinking 开启 + effort high，取 `high` 桶；OpenAI / Anthropic 取 0）。
+- **阶段 1 — 最小化。** 在 provider 允许的范围内压低思考：DeepSeek / Kimi K3 转发 `low`（其 body hook 无法完全关闭 thinking），OpenAI 推理模型发 `none`，其余 provider 省略该字段。
+- **阶段 2+ — 自适应。** 依据上一次尝试实际消耗的 `reasoning_tokens` 设定预留：`clamp(observed × 1.25, floor, cap)`，其中 `floor = max(上次预留, effort 桶, 文本/4)`、`cap = 2 × floor`。每次信封都受窗口上限约束，保证初始 prompt + `max_tokens` + headroom 仍放得下。
+
+reasoning 与文本共用同一个 `max_tokens` 信封，没有预留时推理模型会挤占摘要文本。如果连固定的摘要指令本身都超过输入上限，压缩会提前失败，因为即使删除全部历史也无法构造合法请求。瞬时传输错误最多退避重试五次。`MaxTokens` 截断的摘要会**续写**（最多 `MAX_COMPACT_SUMMARY_ATTEMPTS` = 5 次，`[compact continue n/5]`）：把已产生的部分摘要作为 assistant 消息、追加一条续写提示。阶梯用尽后，部分摘要以 `[compact fallback]` 被接受为 best-effort（Codex-style 重建反正会保留最近的真实用户消息）。拒绝/其它异常终止原因和空文本仍会被拒绝，旧 context 不会被替换。指令还说明对话以 JSON 消息数组形式附在后面（工具结果与附件可能被省略），摘要必须仅基于该内容。摘要要求模型保留：
 
 1. 当前目标与已完成工作  
 2. 关键发现、决策、架构洞见  
-3. 读过/改过的文件（相关类型、签名、API）  
+3. 读过/改过的文件及关键代码结构（类型、签名、API）  
 4. 剩余工作与下一步  
 5. 用户约束与偏好  
 6. 遇到的错误及原因  
 
-可选附加：
+可选附加，按以下优先级顺序追加，且只在剩余输入预算允许时（每一步都重新检查；超大的 `focus` 或文件清单会被丢弃并告警，消息切片则被裁剪以适应）：
 
-- `Focus to preserve next: {focus}` — 来自手动 `compact` 工具  
-- `Recent files to reopen if needed:` — 来自 `CompactState.recent_files`
+- `Focus to preserve next: {focus}` — 三个附加项里**唯一来自模型工具调用**的：模型带 `focus` 参数调用 `compact` 工具（仅在非 Responses provider 上暴露），随后 `[manual compact]` 路径调用 `compact_history_with_trigger(Manual, Some(focus))`。自动压缩不传，Responses 原生压缩忽略。  
+- `Recent files to reopen if needed:` — 自动：只要 `CompactState.recent_files` 非空（由成功的 `read_file` 累积，LRU 有界）  
+- 序列化成 JSON 的近期消息切片 — 自动：只要历史非空且预算 > 0（`recent_messages_for_summary`）
 
 ### OpenAI Responses：原生压缩（不回落本地摘要）
 
@@ -421,7 +428,7 @@ id 仅存于 provider 状态与 SQLite 元数据中。
 
 ### 压缩失败时的行为
 
-只有在摘要通过校验且重建后的请求符合模型窗口限制后，context 才会被替换。如果摘要生成失败、返回空文本、使用无效 stop reason（`MaxTokens` 截断会先续写，只有不可续写的失败才算）、或重建后的请求仍放不进窗口，原有的内存 context 会保持不变。如果写入新的 context 到 SQLite 失败，替换也会回滚。压缩开始时写入的 transcript 仍会保留，可用于诊断或离线恢复。当前 agent loop 随后会向上返回错误，通常结束本次任务；它不会带着同一个超大 context 盲目重试。例外是摘要请求遇到瞬时传输错误：这种情况会先最多重试三次，之后才失败。
+只有在摘要通过校验且重建后的请求符合模型窗口限制后，context 才会被替换。如果摘要生成失败、返回空文本、使用无效 stop reason（`MaxTokens` 截断会先续写，只有不可续写的失败才算）、或重建后的请求仍放不进窗口，原有的内存 context 会保持不变。如果写入新的 context 到 SQLite 失败，替换也会回滚。压缩开始时写入的 transcript 仍会保留，可用于诊断或离线恢复。当前 agent loop 随后会向上返回错误，通常结束本次任务；它不会带着同一个超大 context 盲目重试。例外是摘要请求遇到瞬时传输错误：这种情况会先最多重试五次，之后才失败。
 
 **5. 簿记**
 

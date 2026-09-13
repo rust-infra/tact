@@ -122,6 +122,8 @@ depend on the provider:
 | `[manual compact]` | Local `compact` tool succeeded and set a manual-compact flag (non-Responses only) |
 | `[native compact]` | Responses provider: explicit `POST /responses/compact` started |
 | `[compact retry n/N] retrying in Xs` | Transient transport error while compacting; bounded backoff retry |
+| `[compact continue n/N]` | Local summarizer hit the output limit; the partial summary is carried into the next staged-ladder attempt (effort minimized, then reserve sized from the observed reasoning) |
+| `[compact fallback]` | The ladder is exhausted and the partial summary is accepted as best-effort instead of failing |
 | `[responses compacted: items=N, id=…]` | Responses native compaction succeeded; `N` = baseline item count, `id` = truncated compaction-id prefix |
 | `Compaction complete.` | `UserCommand::Compact` finished successfully |
 

@@ -32,6 +32,25 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-13 — Compaction summarizer uses an effort bucket + staged ladder instead of a fixed reserve
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`, `compact_effort_reserve_tokens`, `compact_summary_server_default_effort`, `compact_summary_effort`, `next_compaction_reserve`); `crates/tact/src/recovery.rs` (`MAX_COMPACT_SUMMARY_ATTEMPTS`, `MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS`) |
+
+**Symptom / motivation:** The summarizer's reasoning reserve was a percentage of the summary **text** budget (capped at 2,000 tokens), so `high` effort reserved only 1,500 tokens even though an effort tier names an absolute thinking allowance. The truncation recovery was also a fixed 3 continuations that could not converge on reasoning-heavy providers: DeepSeek does not replay historical `reasoning_content` and every call regenerates thinking from scratch, so each continuation repeated the same overrun until the loop accepted a partial — or bailed on empty text. Codex's own summarizer is single-shot, runs at the sampling effort, and tolerates a truncated summary, which shaped the fix below.
+
+**Decision:** (1) The initial reserve is the absolute token **bucket** of the effective effort — `none` 0 / `minimal|low` 2,000 / `medium` 4,000 / `high` 8,000 / `xhigh|max` 16,000 — not a percentage of the text budget; with no effort configured, DeepSeek / Kimi K3 (which reason at effort high by server default) take the `high` bucket and every other provider takes 0. (2) The single continuation loop becomes a **staged ladder**: stage 0 inherits the session effort, stage 1 minimizes it (`low` for DeepSeek / Kimi K3, `none` for OpenAI reasoning models, omitted elsewhere), and stage 2+ size the reserve from the previous attempt's `usage.reasoning_tokens` via `clamp(observed × 1.25, floor, cap)` with `floor = max(previous reserve, effort bucket, text/4)` and `cap = 2 × floor`, each capped so the request still fits the window. (3) `MAX_COMPACT_SUMMARY_ATTEMPTS` (new, 5) bounds the ladder independently of the main loop's `MAX_CONTINUATION_ATTEMPTS` (3), and the transport-retry budget `MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS` went 3 → 5. Empty summary text still fails.
+
+**Behavior after:** `max_tokens` = 2,000 text + the effort bucket — 10,000 at `high`, and the same for DeepSeek / Kimi K3 with no explicit effort (server-default high). A truncated summary emits `[compact continue n/5]` with the escalating budget, and `[compact fallback]` once the ladder is exhausted, accepting the partial summary instead of failing; compaction no longer bails just because a reasoning model consumed the previous envelope.
+
+**Design notes (vs Codex):** The summarizer *synthesizes* one tool-less `create_message` — instructions + optional focus + recent-file list + the recent message slice serialized as JSON text — instead of replaying the real history. Codex replays: it appends `SUMMARIZATION_PROMPT` to the native items and trims the oldest item on `ContextWindowExceeded`. Synthesis buys a request that is guaranteed to fit the input budget and is always structurally valid (no orphan `tool_use`/`tool_result`, no tools on the wire), and it is where `focus`, recent files, and oversized-media downgrades are injected; the cost is that tool-call nuance survives only as JSON. On the rebuild side both keep recent real user messages plus one summary cell under a 20k estimated-token cap, but Tact strips `ToolResult` blocks before retaining a user message (its tool results live inside user messages, unlike Codex's separate `FunctionCallOutput` items) and runs an outer fit-loop that shrinks the retained budget until `system prompt + tool specs + rebuilt + max_tokens + headroom` fits the window, while Codex keeps the flat 20k and leaves that to the caller. Tact also fails on an empty summary; Codex accepts `SUMMARY_PREFIX` alone.
+
+**Pointers:** `compact_history_local_with_mode` + helpers in `crates/tact/src/agent/mod.rs`; constants in `crates/tact/src/recovery.rs`; tests `compact_effort_reserve_bucket_tiers`, `compact_summary_server_default_effort_tiers`, `compact_summary_effort_ladder_per_provider`, `next_compaction_reserve_*`, `local_compact_inherits_session_effort`, `local_compact_keeps_server_default_reasoning_reserve`, `local_compact_accepts_partial_summary_when_continuations_exhausted`; [Ch 5](./05_chapter_compact.md) §5 step 3.
+
+---
+
 ## 1. 2026-09-12 — One `/model` flow instead of two, and the TUI stops forking git on the UI thread
 
 | Field | Value |

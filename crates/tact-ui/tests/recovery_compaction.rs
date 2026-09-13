@@ -303,13 +303,13 @@ async fn compact_summary_rejects_empty_text_response() {
 
 #[tokio::test]
 async fn compact_summary_continues_truncated_response() {
-    // A `MaxTokens` summary is continued (up to MAX_CONTINUATION_ATTEMPTS);
+    // A `MaxTokens` summary is continued (up to MAX_COMPACT_SUMMARY_ATTEMPTS);
     // when continuations are exhausted the partial summary is accepted as
     // best-effort instead of failing the whole compaction.
     let mock = MockClient::with_responder(|_request, idx| match idx {
         0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
-        // Summary call plus three continuation calls all hit the output budget.
-        1..=4 => Ok((
+        // Summary call plus five continuation calls all hit the output budget.
+        1..=6 => Ok((
             vec![text_block("partial summary")],
             Some(StopReason::MaxTokens),
             None,
@@ -329,7 +329,7 @@ async fn compact_summary_continues_truncated_response() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[compact continue 3/3]"))),
+            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[compact continue 5/5]"))),
         "expected exhausted continuation notices, got: {updates:?}"
     );
     assert!(

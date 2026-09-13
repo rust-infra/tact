@@ -98,6 +98,8 @@ pub enum UserCommand {
 | `[manual compact]` | 本地 `compact` 工具成功并置位手动压缩标记（仅非 Responses） |
 | `[native compact]` | Responses provider：显式 `POST /responses/compact` 开始 |
 | `[compact retry n/N] retrying in Xs` | 压缩遇到瞬时传输错误；有界退避重试 |
+| `[compact continue n/N]` | 本地摘要器撞到输出上限；部分摘要带入阶梯下一次尝试（先降 effort，再按实测 reasoning 调整预留） |
+| `[compact fallback]` | 阶梯耗尽，部分摘要被接受为 best-effort 而不是失败 |
 | `[responses compacted: items=N, id=…]` | Responses 原生压缩成功；`N` = 基线 item 数，`id` = 截断后的 compaction id 前缀 |
 | `Compaction complete.` | `UserCommand::Compact` 成功完成 |
 

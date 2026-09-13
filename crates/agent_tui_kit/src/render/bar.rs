@@ -103,8 +103,8 @@ fn format_model_name(name: &str) -> String {
 /// The value is the effective text-output budget. Effort-semantic models
 /// (openai / deepseek / kimi k3) count reasoning inside the SAME `max_tokens`
 /// envelope as the output text, so the reasoning share is subtracted using the
-/// same tier convention as `compact_summary_reasoning_reserve_percent`
-/// (percent of the text budget, added on top): text = envelope × 100/(100+pct).
+/// effort-tier convention (percent of the text budget, added on top):
+/// text = envelope × 100/(100+pct).
 /// Budget-semantic models (Anthropic-style `thinking_budget`) keep thinking in
 /// a separate envelope, so no subtraction applies.
 fn format_max_out_tokens(
