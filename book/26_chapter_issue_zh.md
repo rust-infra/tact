@@ -32,6 +32,26 @@
 ---
 
 
+## 1. 2026-09-13 — 命令跑完后输出卡片收起为两行
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`ToolLayout::detail_collapsed`、`ToolWidget::collapses_detail`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（meta 行提示）；`crates/agent_tui_kit/src/i18n.rs`；`crates/tui/src/widgets/state/app/popups.rs`（`popup_from_tool_output`、`open_diff_popup_at_row`）；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5/§8 |
+
+**症状 / 动机：** 每个跑完的 `bash` 都会留一张内联卡片：两行 header 加上下边框再加 1 行预览。一次会话里几十条短命令下来，日志大部分是卡片边框，而留下的那一行是输出的**尾部**（`1/27 lines | Double-click for full code`）——通常不是想看的那行，而且想读到任何内容都得先打开卡片。不管输出多少，预览开销都是固定的：一行输出的命令和 27 行输出的命令付一样多的卡片行。
+
+**决策：** 已完成的命令不再画卡片。规则按 visual kind 判定——`Command` + `Success` + 非 live——以新的 `ToolLayout.detail_collapsed` 标志暴露，而不是按工具名开关（同一个渲染器里那种 per-tool flag 曾试过又被删掉）。两处连带影响被显式处理：`build()` 对折叠卡片照旧填 `detail_full` / `detail_total_lines`，所以弹窗路径不需要新的内容管道；`popup_from_tool_output` 原来遇到 `!has_detail_card` 直接返回 `None`，现在也接受折叠卡片。由于没有卡片可点，点击目标收窄为 header 的**文字**：`open_diff_popup_at` 接收点击列并与其 `ToolRenderOutput::header_text_cols(row)` 比较，因此整行里空白的那部分不响应，触发范围就是用户能看到的东西。要测量它就得知道该行的确切文本，于是 widget 把已完成块的 meta 行存进 `ToolRenderOutput.meta_text`（运行中为 `None`，因为 cell 会重新推导走动的耗时）；widget 与 cell 通过同一组 `build_meta_text` + `meta_suffixes` 组装，并有测试钉住二者相等。仍然画卡片的工具，其 header 行照旧无响应——2026-07-15 的 `tool_card_double_click_detail_area_only` 规则（[Ch 4](./04_chapter_prompt_zh.md)）对所有**存在卡片**的情形仍然成立，只是对无卡片的情形做了补充。
+
+**之后的行为：** 运行中不变（`Live output` 卡片，1→3 行 tail）。成功时只打印两行，并在 meta 行追加 `… · {n} 行 · 双击查看`（`tool_collapsed_output_hint`，另有单数形 `tool_collapsed_output_hint_one`，对应后台任务收尾路径可能出现的单行文本）——没有这条提示，无卡片的 block 就等于悄悄藏起了输出。`n` 取 `detail_total_lines`，与弹窗报告的行数完全一致（含 `$ <command>` 前缀行），因此提示与弹窗永远对得上。失败仍保留五行预览的 `Error` 卡片，文件类工具与 subagent 不受影响，`background_run` 在 `BackgroundTaskFinished` 收尾时折叠。每条完成的命令从 5 行降到 2 行。
+
+**Pointers:** `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapses_detail`、`layout`、`build`、`header_text_cols`、`meta_suffixes`、`collapsed_output_hint`）；`crates/agent_tui_kit/src/render/cells/tool.rs`；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`）；`crates/tui/src/handlers/mouse.rs`（点击列）；测试 `completed_command_renders_header_rows_only`、`double_click_collapsed_command_header_opens_diff_popup`、`collapsed_command_ignores_clicks_past_the_text`、`double_click_tool_header_does_not_open_diff_popup`、`failed_command_keeps_its_error_card`、`collapse_applies_only_to_finished_commands`、`collapsed_command_meta_row_reports_hidden_output`、`widget_meta_text_matches_the_rendered_meta_row`、`finished_block_stores_its_meta_text_for_hit_testing`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed command output」。
+
+---
+
+---
+
+
 ## 1. 2026-09-13 — `[agent]` 拒绝未知键：写错位置的 thinking 设置会报错，而不是凭空消失
 
 | Field | Value |

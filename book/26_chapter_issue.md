@@ -32,6 +32,26 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-13 — A finished command's output card collapses to two rows
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`ToolLayout::detail_collapsed`, `ToolWidget::collapses_detail`); `crates/agent_tui_kit/src/render/cells/tool.rs` (meta-row hint); `crates/agent_tui_kit/src/i18n.rs` (`tool_collapsed_output_hint`); `crates/tui/src/widgets/state/app/popups.rs` (`popup_from_tool_output`, `open_diff_popup_at_row`); [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5/§8 |
+
+**Symptom / motivation:** Every finished `bash` call kept an inline card: two header rows plus a top/bottom border and one preview row. On a run that executes dozens of short commands the log was mostly card chrome, and the single retained line was the *tail* of the output (`1/27 lines | Double-click for full code`) — rarely the line anyone wants, while the card had to be opened anyway to read anything at all. The preview cost was fixed regardless of output size, so a one-line command paid the same card as a 27-line one.
+
+**Decision:** A completed command draws no card at all. The rule is keyed on the visual kind — `ToolVisualKind::Command` + `Success` + not the live card — and surfaces as a new `ToolLayout.detail_collapsed` flag, not as a tool-name switch (a per-tool flag in this same renderer was tried and removed before). Two consequences were handled explicitly: `build()` keeps `detail_full` / `detail_total_lines` populated for collapsed cards so the popup path needed no new content plumbing, and `popup_from_tool_output` — which bailed on `!has_detail_card` — now also accepts a collapsed card. Since no card is drawn, the click target becomes the header *text*: `open_diff_popup_at` takes the click column and compares it with `ToolRenderOutput::header_text_cols(row)`, so the empty remainder of a row stays inert and the trigger is what the user can actually see. Measuring that needs the row's exact text, so the widget now stores the finished meta row in `ToolRenderOutput.meta_text` (`None` while a tool runs, where the cell re-derives a ticking elapsed time); the widget and the cell assemble it through the same `build_meta_text` + `meta_suffixes`, and a test pins them equal. A tool that still draws a card keeps its header rows inert as before, so the 2026-07-15 rule `tool_card_double_click_detail_area_only` ([Ch 4](./04_chapter_prompt.md)) still holds wherever a card exists and is amended only for the card-less case.
+
+**Behavior after:** Running stays as it was (`Live output` card, 1→3 row tail). Success prints two rows and appends `… · {n} lines · double-click` to the meta row (`tool_collapsed_output_hint`, plus a singular `tool_collapsed_output_hint_one` for the one-line case reachable from the background-task finalize path) — without that hint a card-less block would silently hide output. `n` is `detail_total_lines`, the same count the popup reports, prefix line included, so hint and popup never disagree. Failures keep their five-preview-row `Error` card, file tools and subagents are untouched, and `background_run` collapses when `BackgroundTaskFinished` finalizes it. Every finished command now costs two rows instead of five.
+
+**Pointers:** `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`collapses_detail`, `layout`, `build`, `header_text_cols`, `meta_suffixes`, `collapsed_output_hint`); `crates/agent_tui_kit/src/render/cells/tool.rs`; `crates/tui/src/widgets/state/app/popups.rs` (`open_diff_popup_at`); `crates/tui/src/handlers/mouse.rs` (click column); tests `completed_command_renders_header_rows_only`, `double_click_collapsed_command_header_opens_diff_popup`, `collapsed_command_ignores_clicks_past_the_text`, `double_click_tool_header_does_not_open_diff_popup`, `failed_command_keeps_its_error_card`, `collapse_applies_only_to_finished_commands`, `collapsed_command_meta_row_reports_hidden_output`, `widget_meta_text_matches_the_rendered_meta_row`, `finished_block_stores_its_meta_text_for_hit_testing`; [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 "Collapsed command output".
+
+---
+
+---
+
+
 ## 1. 2026-09-13 — `[agent]` rejects unknown keys, so a misplaced thinking setting fails instead of vanishing
 
 | Field | Value |

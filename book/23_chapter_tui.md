@@ -438,7 +438,7 @@ pub(crate) trait Renderable {
 | Help | `Ctrl+?` | `popups/help.rs` |
 | History | `Ctrl+H` | `popups/history.rs` |
 | Thinking detail | double-click thinking card; adjacent ordered-list items have blank-row separation | `popups/thinking_popup.rs` |
-| Tool/file detail | double-click tool card | `popups/diff_popup.rs` |
+| Tool/file detail | double-click tool card (a collapsed command: the text of either header row) | `popups/diff_popup.rs` |
 | Code detail | double-click code card | `popups/code_popup.rs` |
 | Mermaid diagram / source | double-click rendered Mermaid diagram; opens on the rendered diagram, `Tab` toggles to source | `popups/mermaid_popup.rs` |
 
@@ -636,7 +636,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 | Construct | Layer | Height source | Double-click |
 |-----------|-------|---------------|--------------|
 | **TextCell** | Inline | Wrapped line count from cache | Word select / line select |
-| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — replaces placeholder range | Opens `diff_popup` |
+| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — replaces placeholder range | Opens `diff_popup` (collapsed command: the header text itself) |
 | **ThinkingCell** | Inline | One blank row on each side; active 1→3 tail rows; completed one summary row | Opens `thinking_popup` |
 | **TaskEndSeparator** | Inline | 1 visual row (rule + centered elapsed) | — |
 | **MessageSeparator** | Inline | 1 blank row between user/system/assistant groups | — |
@@ -645,7 +645,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 
 **TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). Left gutter `indent_cols` comes from the row's `LogItemKind`; user ownership and category separators never inspect raw text.
 
-**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. Visible `bash` output grows the card from one to three rows; later chunks update the three-line tail in place. stdout uses normal text, stderr uses warning color. The live card is titled `Live output`; line counts live in the card's bottom bar (`preview/total lines` when truncated) and count streamed output lines only; popup/`detail_full` still prepend `$ <command>` for consistency with completed cards, where the counter and popup share that combined content. Completion collapses to the existing compact card and makes `StepResult.detail` authoritative.
+**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. Visible `bash` output grows the card from one to three rows; later chunks update the three-line tail in place. stdout uses normal text, stderr uses warning color. The live card is titled `Live output`; line counts live in the card's bottom bar (`preview/total lines` when truncated) and count streamed output lines only; popup/`detail_full` still prepend `$ <command>`, and the popup shares that same combined content. Completion **drops the card entirely** for command tools that produced detail: the block is its two header rows, `StepResult.detail` becomes authoritative, and the meta row appends `· {n} lines · double-click` (`tool_collapsed_output_hint`) where `n` is the same count the popup reports — a card-less block must still say that output exists. Failures keep their card (up to five preview rows).
 
 **Why code remains an overlay:** code blocks replace streamed fence lines with blank placeholders plus a pre-rendered `styled` cache for the card interior. Thinking instead follows the direct `Renderable` model used by tool cards, so its live tail and completion summary have one rendering owner.
 
@@ -661,7 +661,7 @@ Diff previews for file-write tools are now folded into `ToolCell` detail cards; 
 | Double click (plain text) | Word selection via `find_word_bounds` |
 | Triple click | Whole logical line; inside code block → entire block range |
 | Single click on thinking/tool/code card | Remember card index; no text selection |
-| Double click on card | Open corresponding detail popup |
+| Double click on card | Open corresponding detail popup; for a collapsed command the card is gone, so its header *text* is the target (the empty rest of the row is inert) |
 | Left-button drag in tool/Thinking detail popup | Select original tool text or visible Thinking text; display-only prefixes are excluded |
 
 Copy (`y` in normal mode) prefers a non-empty selection while a tool or Thinking popup is active; with an empty popup selection it copies the full original popup content. Without a selectable popup, it prefers log word selection, then concatenates the selected logical rows' `LogItem::raw` values.

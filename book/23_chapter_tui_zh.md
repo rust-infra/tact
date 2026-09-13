@@ -393,7 +393,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 | Help | `Ctrl+?` | `popups/help.rs` |
 | History | `Ctrl+H` | `popups/history.rs` |
 | Thinking detail | 双击 thinking card；相邻有序列表项以空行分隔 | `popups/thinking_popup.rs` |
-| Tool/file detail | 双击 tool card | `popups/diff_popup.rs` |
+| Tool/file detail | 双击 tool card（已折叠的命令卡片：两行 header 的**文字**） | `popups/diff_popup.rs` |
 | Code detail | 双击 code card | `popups/code_popup.rs` |
 | Mermaid 图 / 源码 | 双击已渲染的 Mermaid 图；默认显示渲染图，`Tab` 切换到源码 | `popups/mermaid_popup.rs` |
 
@@ -594,7 +594,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 构造 | 层 | 高度来源 | 双击 |
 |------|-----|----------|------|
 | **TextCell** | Inline | Cache 换行数 | 词选 / 行选 |
-| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — 替换 placeholder 范围 | 打开 `diff_popup` |
+| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — 替换 placeholder 范围 | 打开 `diff_popup`（折叠的命令卡片：命中两行 header 的**文字**本身） |
 | **ThinkingCell** | Inline | 前后各一行空白；active 1→3 tail 行；completed 一行 summary | 打开 `thinking_popup` |
 | **TaskEndSeparator** | Inline | 1 visual 行（实线 + 居中耗时） | — |
 | **MessageSeparator** | Inline | user/system/assistant 组间 1 blank | — |
@@ -603,7 +603,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 
 **TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自行的 `LogItemKind`；user 归属与类别分隔线不再检查 raw 文本。
 
-**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，与完成后卡片一致——完成后则是计数与 popup 共用这份「命令 + 输出」内容。完成后折叠为现有 compact card，并以 `StepResult.detail` 为准。
+**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，popup 用的就是这份「命令 + 输出」内容。命令类 tool **完成后整块卡片消失**：block 只剩 title + meta 两行，以 `StepResult.detail` 为准，meta 行追加 `· {n} 行 · 双击查看`（`tool_collapsed_output_hint`），其中 `n` 与 popup 显示的行数是同一个数——没有卡片的 block 仍然要能说明「这里藏着输出」。失败仍保留卡片（最多 5 行预览）。
 
 **为何仅 code 用 overlay：** code block 将流式 fence 行换成 blank placeholder，并用预渲染 `styled` cache 绘制 card。Thinking 则采用与 tool card 相同的 direct `Renderable` 模型，因此 live tail 与 completion summary 只有一个渲染所有者。
 
@@ -619,7 +619,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 双击（纯文本） | `find_word_bounds` 词选 |
 | 三击 | 整 logical 行；code block 内 → 整块范围 |
 | 单击 thinking/tool/code card | 记住 card 索引；无文本选择 |
-| 双击 card | 打开对应 detail popup |
+| 双击 card | 打开对应 detail popup；命令类卡片已折叠时没有 card，命中目标是 header 的**文字**（该行空白处不响应） |
 | 在 tool/Thinking detail popup 内左键拖拽 | 选择原始 tool 文本或可见 Thinking 文本；排除仅用于显示的前缀 |
 
 复制（normal 模式 `y`）在 tool 或 Thinking popup active 时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无 selectable popup 时，优先 log 词选，然后拼接选中 logical 行的 `LogItem::raw`。
