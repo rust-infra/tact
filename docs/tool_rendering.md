@@ -137,12 +137,12 @@ Why two stages: `ToolWidget` needs `&Theme` and `&Messages`. `ToolCell` must liv
   ← LOG_TOOL_BLOCK_INDENT (8 cols)
   │
   ├─ Row 1  Title     "2. bash (git status)"         (bold; truncated at 120 chars)
-  ├─ Row 2  Meta      "⠋ Running · 1.2s"  or  "✓ Success · Always allow · 21ms"
-  └─ Card   (optional, Success + detail only)
-            ╭─ Command output ───────────────────╮
-            │ $ git status                         │
-            │  M crates/tact/src/agent/mod.rs      │
-            ╰─ double-click for full content ──────╯
+  ├─ Row 2  Meta      "⠋ Running · 1.2s"  or  "✓ Success · 21ms · 4 lines · double-click"
+  └─ Card   (optional: drawn for a running/failed command, a finished file
+             tool, or a subagent — never for a finished command)
+            ╭─ <card title> ──────────────────────╮
+            │  preview rows (1 by default; 3 live) │
+            ╰─ Double-click for full content ──────╯
 ```
 
 Title format (`ToolWidget::title_text`):
@@ -177,10 +177,10 @@ Shown only when **phase is Success** and tool kind is:
 |---|---|---|
 | `FileWrite` | `write_file` | Written content; green `+` gutter |
 | `FileRead` | `read_file` | Read file body |
-| `Command` | `bash`, `shell`, `run_command` | Command stdout/stderr |
+| `Command` | `bash`, `shell`, `run_command` | **No card** — collapsed, see below |
 | `Generic` | others | No card (title + meta only) |
 
-Completed preview: default 1 line inside the card; overflow row when total > preview. For command tools, the cached detail is the full command followed by its output, so the preview/total counter and popup use the same content.
+Completed preview for the kinds that keep a card: default 1 line inside the card; overflow row when total > preview. For command tools, the cached detail is the full command followed by its output, so the popup's counter and content come from one source.
 
 Running `bash` cards add no detail until the first visible output. They then
 grow from one to three rows, titled `Live output`. The line count lives in the
@@ -188,9 +188,27 @@ card's bottom bar (`preview/total lines`, shown only when the output overflows
 the preview), where the total is the streamed output line count (not the
 `$ <command>` prefix). Later progress
 updates a stable three-row tail without changing card height. Popup/`detail_full`
-still prepend `$ <command>` for consistency with completed cards. stdout uses
+still prepend `$ <command>`. stdout uses
 normal text styling and stderr spans use the theme warning color. ANSI CSI/OSC
 is removed and carriage return replaces the current logical line.
+
+### Collapsed command output (`ToolWidget::collapses_detail`)
+
+A finished command draws **no card at all**. When the visual kind is `Command`, the phase is `Success`, and the card is not the live one, `ToolLayout.detail_collapsed` is set, `preview_lines` is 0, and the block is exactly its two header rows (`tool_visual_rows(false, 0, 0, false)` == `TOOL_HEADER_ROWS`). The collapse rule is keyed on the visual kind, not on tool names, so `background_run` and `worktree_run` follow it too (it applies only when there is detail to hide); file tools and subagents are untouched.
+
+The full text is still kept in `ToolRenderOutput.detail_full`, and `detail_total_lines` carries its line count, so the popup path is unchanged — only the inline card is gone.
+
+**Click target.** With no card to hit, the affordance is the header text itself: `ToolRenderOutput::header_text_cols(row)` returns the column range the drawn text occupies (`LOG_TOOL_BLOCK_INDENT .. indent + display width`), and a click opens the popup only inside that range — the empty rest of the row stays inert, so the trigger is what the user can see rather than an invisible full-width band. Row 0 is measured from `title_raw`; row 1 from `meta_text`.
+
+| State | Block rows | Output visible inline |
+|---|---|---|
+| Running (live card) | header + `Live output` card, 1→3 rows | yes |
+| Success | 2 (title + meta) | no — popup only |
+| Failed | header + `Error` card, up to 5 preview rows | yes |
+
+Because a card-less block would otherwise hide the fact that output exists, the meta row appends `… · {n} lines · double-click` (`collapsed_output_hint()`, from `tool_collapsed_output_hint` / `..._one`). `n` is `detail_total_lines` — the same number the popup reports, prefix line included.
+
+`ToolRenderOutput.meta_text` holds the **finished** block's exact meta row (the widget and the cell assemble it through `build_meta_text` + `meta_suffixes`, so the measured text and the drawn text cannot drift; a test asserts they are equal). It is `None` while a tool runs, where the cell re-derives a ticking elapsed time — and a running block has no card-less hit area to measure.
 
 ---
 
@@ -255,6 +273,8 @@ the terminal `StepResult.detail` becomes authoritative after completion.
 
 Centered modal styling (no drop shadow); scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
 
+A collapsed finished command (`ToolLayout.detail_collapsed`) draws no card, so its click target is the *text* of the header row under the pointer — the empty rest of that row is inert. Every other tool opens only from a click inside the detail card. See §5 "Collapsed command output".
+
 Tool detail popups support left-button text selection over the visible body. Hit testing stores UTF-8-safe byte offsets into the original cached content, so line numbers, green diff gutters, borders, titles, and scrollbars are never selected or copied. Display cells map to complete extended grapheme clusters using Ratatui-compatible widths; forward and backward drags therefore include the whole visible grapheme under both endpoints, including combining and emoji sequences. Dragging above or below the body clamps to the first or last visible source boundary without changing popup scroll; scrolling otherwise preserves the current selection. Automatic drag-edge scrolling is intentionally out of scope.
 
 While a tool detail popup is active, `y` copies its non-empty selection and falls back to the full original content for an empty or absent selection. This mouse-selection behavior is limited to tool detail popups; thinking and code popups are unchanged.
@@ -302,6 +322,8 @@ rewrite commands to bypass application or pipeline buffering.
 4. **Card rules** — update `should_show_detail()` and `detail_card_title()` if the card should appear.
 5. **Gutter** — set `use_diff_gutter` in `build()` for diff-style lines.
 
+A new kind that maps onto `ToolVisualKind::Command` inherits the collapse rule (`collapses_detail()`) as soon as it succeeds, so give it a detail only if an inline card is really wanted, and remember the popup must be able to show what the collapsed block hides.
+
 No changes to `ToolCell` are needed unless the visual structure itself changes (e.g. a fourth header row).
 
 ---
@@ -331,3 +353,5 @@ Integration-style unit tests live in `render/cells/tool.rs` (`make_output`, heig
 ```bash
 cargo test -p tui tool_cell
 ```
+
+Collapse-specific coverage: `collapsed_command_meta_row_reports_hidden_output` / `collapsed_command_meta_row_uses_the_singular_for_one_line` / `open_card_meta_row_has_no_collapsed_hint` / `widget_meta_text_matches_the_rendered_meta_row` (agent_tui_kit cells), `failed_command_keeps_its_error_card` + `collapse_applies_only_to_finished_commands` + `from_step_result_maps_permission_and_duration` + `finished_block_stores_its_meta_text_for_hit_testing` + `running_block_stores_no_meta_text` (widget layer), `completed_command_renders_header_rows_only` (log render, incl. the buffer-level indent check), `double_click_collapsed_command_header_opens_diff_popup` / `collapsed_command_ignores_clicks_past_the_text` / `double_click_tool_header_does_not_open_diff_popup` (mouse hit test).

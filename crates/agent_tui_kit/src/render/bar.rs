@@ -69,7 +69,7 @@ fn format_quota_value(value: Option<f64>) -> String {
 }
 
 /// Compact token count for status display (`590`, `12.5K`, `200K`).
-fn format_tokens_compact(n: u64) -> String {
+pub(crate) fn format_tokens_compact(n: u64) -> String {
     if n < 1_000 {
         n.to_string()
     } else if n < 1_000_000 {

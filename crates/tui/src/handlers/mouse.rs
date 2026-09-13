@@ -333,7 +333,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 
     if let Some((tool_idx, tool_phys, logical_start, _)) = app.find_tool_at_logical(line_idx) {
         let relative_row = line_idx - logical_start;
-        handle_tool_block_click(app, tool_idx, tool_phys, relative_row);
+        handle_tool_block_click(app, tool_idx, tool_phys, relative_row, col);
         if app.mouse.click_count >= 3 {
             handle_log_triple_click(app, line_idx, false);
         }
@@ -471,12 +471,15 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
     app.mouse.dragging_log = true;
 }
 
-/// Double-click on a tool detail card opens its detail popup.
+/// Double-click on a tool's clickable text opens its detail popup: the detail
+/// card when one is drawn, or the header text itself for a collapsed command
+/// (`col` counts from the block's left edge).
 pub(crate) fn handle_tool_block_click(
     app: &mut App,
     tool_idx: usize,
     phys_idx: usize,
     relative_row: usize,
+    col: usize,
 ) {
     if app.mouse.click_count == 2 && app.mouse.last_click_tool == Some(tool_idx) {
         // Subagent tools open a dedicated live/markdown popup.
@@ -497,7 +500,7 @@ pub(crate) fn handle_tool_block_click(
         if is_subagent {
             app.open_subagent_popup(phys_idx);
         } else {
-            app.open_diff_popup_at_row(phys_idx, relative_row);
+            app.open_diff_popup_at(phys_idx, relative_row, col);
         }
         return;
     }
@@ -1178,8 +1181,10 @@ mod tests {
         assert_eq!(app.tools_mut().popup.as_ref().unwrap().scroll, 1);
     }
 
+    /// A finished command collapses its output card, so the header text is the
+    /// only thing left to click — double-clicking it opens the full output.
     #[test]
-    fn double_click_tool_block_opens_diff_popup() {
+    fn double_click_collapsed_command_header_opens_diff_popup() {
         let mut app = make_app();
         app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
             "run",
@@ -1212,55 +1217,177 @@ mod tests {
         });
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
+        // The collapsed block is exactly the two header rows.
+        let block = app.tools_mut().blocks.last().unwrap();
+        assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
+        let title_cols = block.output.header_text_cols(0).expect("title text");
+        let meta_cols = block.output.header_text_cols(1).expect("meta text");
+        assert_eq!(
+            title_cols.start,
+            agent_tui_kit::render::util::LOG_TOOL_BLOCK_INDENT,
+            "the target starts where the text does"
+        );
+
         app.mouse.click_count = 1;
-        handle_tool_block_click(&mut app, 0, phys_idx, 0);
+        handle_tool_block_click(&mut app, 0, phys_idx, 0, title_cols.start as usize);
         assert!(app.tools_mut().popup.is_none());
 
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
-        handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS);
-        assert!(app.tools_mut().popup.is_some());
+        handle_tool_block_click(&mut app, 0, phys_idx, 0, (title_cols.end - 1) as usize);
+        let popup = app
+            .tools_mut()
+            .popup
+            .as_ref()
+            .expect("collapsed output popup");
+        assert!(
+            popup
+                .inline_content
+                .as_deref()
+                .unwrap_or_default()
+                .contains("hi"),
+            "popup must carry the hidden output"
+        );
+
+        // The meta row's own text opens it too.
+        app.close_diff_popup();
+        handle_tool_block_click(
+            &mut app,
+            0,
+            phys_idx,
+            TOOL_HEADER_ROWS - 1,
+            (meta_cols.start + 1) as usize,
+        );
+        assert!(
+            app.tools_mut().popup.is_some(),
+            "the meta row text opens the collapsed output"
+        );
     }
 
+    /// The empty remainder of a header row is not a click target: the trigger is
+    /// the text, not the full-width row.
+    #[test]
+    fn collapsed_command_ignores_clicks_past_the_text() {
+        let long_command = "cd /home/rg/Projects/tact && no_proxy=127.0.0.1,localhost \
+                            cargo test --workspace 2>&1 | tail -20";
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run",
+            "bash",
+            "b1",
+            HashMap::from([("command".to_string(), long_command.to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "b1".into(),
+            tool_name: "bash".into(),
+            arg_summary: long_command.into(),
+            arg_full: long_command.into(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "b1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: long_command.into(),
+                arg_full: Some(long_command.into()),
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some("done\n".into()),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
+        let output = &app.tools_mut().blocks.last().unwrap().output;
+        let title_cols = output.header_text_cols(0).unwrap();
+        let meta_cols = output.header_text_cols(1).unwrap();
+        assert!(
+            meta_cols.end < title_cols.end,
+            "the report's case: the command outruns its meta row — {meta_cols:?} vs {title_cols:?}"
+        );
+
+        app.mouse.click_count = 2;
+        app.mouse.last_click_tool = Some(0);
+        let past_meta = meta_cols.end as usize;
+
+        // Empty to the right of the meta text: inert, even though the title row
+        // above still has command text at that very column.
+        handle_tool_block_click(&mut app, 0, phys_idx, 1, past_meta);
+        assert!(
+            app.tools_mut().popup.is_none(),
+            "empty space right of the meta text must not open the popup"
+        );
+        handle_tool_block_click(&mut app, 0, phys_idx, 0, past_meta);
+        assert!(
+            app.tools_mut().popup.is_some(),
+            "the same column is still command text on the title row"
+        );
+
+        // Past the end of the title text, past the end of the meta text.
+        app.close_diff_popup();
+        handle_tool_block_click(&mut app, 0, phys_idx, 0, title_cols.end as usize);
+        assert!(app.tools_mut().popup.is_none(), "past the title text");
+
+        // Left of the text (the block indent gutter) is inert as well.
+        handle_tool_block_click(&mut app, 0, phys_idx, 0, (title_cols.start - 1) as usize);
+        assert!(app.tools_mut().popup.is_none(), "left of the text");
+    }
+
+    /// A tool that still draws a card keeps its header rows inert: only clicks
+    /// inside the card open the popup.
     #[test]
     fn double_click_tool_header_does_not_open_diff_popup() {
         let mut app = make_app();
         app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run",
-            "bash",
-            "b1",
-            HashMap::from([("command".to_string(), "echo hi".to_string())]),
+            "write",
+            "write_file",
+            "w1",
+            HashMap::from([("path".to_string(), "src/main.rs".to_string())]),
         )));
         app.handle_agent_update(AgentUpdate::StepStarted {
             idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: "echo hi".into(),
-            arg_full: "echo hi".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
+            tool_id: "w1".into(),
+            tool_name: "write_file".into(),
+            arg_summary: "src/main.rs".into(),
+            arg_full: "src/main.rs".into(),
+            presentation: ToolPresentationInfo::generic("write_file"),
         });
         app.handle_agent_update(AgentUpdate::StepFinished {
             idx: 0,
-            tool_id: "b1".into(),
+            tool_id: "w1".into(),
             result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "echo hi".into(),
-                arg_full: Some("echo hi".into()),
+                tool: "write_file".into(),
+                arg_summary: "src/main.rs".into(),
+                arg_full: Some("src/main.rs".into()),
                 status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("hi\n".into()),
+                message: "wrote".into(),
+                detail: Some("fn main() {}".into()),
                 duration_us: Some(1),
                 permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
+                presentation: ToolPresentationInfo::generic("write_file"),
             },
         });
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
+        assert!(
+            app.tools_mut()
+                .blocks
+                .last()
+                .unwrap()
+                .output
+                .layout
+                .has_detail_card,
+            "write_file still renders a card"
+        );
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
-        handle_tool_block_click(&mut app, 0, phys_idx, 0);
+        handle_tool_block_click(&mut app, 0, phys_idx, 0, 10);
         assert!(app.tools_mut().popup.is_none());
-        handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS - 1);
+        handle_tool_block_click(&mut app, 0, phys_idx, TOOL_HEADER_ROWS - 1, 10);
         assert!(app.tools_mut().popup.is_none());
     }
 

@@ -899,7 +899,10 @@ mod lifecycle_tests {
     use crate::widgets::state::app::extensions::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
     use crate::{
         render::test_harness::render_log_panel_text,
-        widgets::state::{App, Status},
+        widgets::{
+            state::{App, Status},
+            tool_widget::TOOL_HEADER_ROWS,
+        },
     };
 
     fn make_app() -> App {
@@ -1642,12 +1645,18 @@ mod lifecycle_tests {
             },
         });
         let completed_rows = app.tools_mut().blocks[0].output.visual_rows(false);
+        let collapsed = app.tools_mut().blocks[0].output.layout.detail_collapsed;
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("late\n")],
         });
 
         assert!(completed_rows < live_rows);
+        assert!(
+            collapsed,
+            "completed command output must collapse to its header rows"
+        );
+        assert_eq!(completed_rows, TOOL_HEADER_ROWS);
         assert!(app.tools_mut().active.is_empty());
         assert_eq!(
             app.tools_mut().blocks[0].output.detail_full.as_deref(),

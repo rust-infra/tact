@@ -575,7 +575,8 @@ impl App {
         &self,
         output: &crate::widgets::tool_widget::ToolRenderOutput,
     ) -> Option<DiffPopup> {
-        if !output.layout.has_detail_card {
+        // A collapsed command draws no card, but its detail is still reachable.
+        if !output.layout.has_detail_card && !output.layout.detail_collapsed {
             return None;
         }
         if output.phase == ToolPhase::Failed {
@@ -712,11 +713,26 @@ impl App {
         }
     }
 
-    /// Open a tool detail popup only if the click was inside the detail card area.
-    pub(crate) fn open_diff_popup_at_row(&mut self, phys_idx: usize, relative_row: usize) {
+    /// Open a tool detail popup for a click at (`relative_row`, `col`), where
+    /// `col` counts from the block's own left edge.
+    ///
+    /// Two shapes are clickable, and only on what the user can actually see:
+    /// a drawn detail card (its whole rectangle) and a collapsed command (the
+    /// text of the clicked header row — not the empty rest of the row).
+    pub(crate) fn open_diff_popup_at(&mut self, phys_idx: usize, relative_row: usize, col: usize) {
         let Some(output) = self.tool_output_at(phys_idx) else {
             return;
         };
+        if output.layout.detail_collapsed {
+            // No card is drawn, so the header text is the whole affordance.
+            let on_text = output
+                .header_text_cols(relative_row)
+                .is_some_and(|cols| cols.contains(&(col as u16)));
+            if on_text {
+                self.open_diff_popup(phys_idx);
+            }
+            return;
+        }
         if !output.layout.has_detail_card {
             return;
         }
