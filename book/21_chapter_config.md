@@ -93,10 +93,16 @@ explicit path is an error (never auto-created).
 |-------|----------|
 | `api_key` / `model` | CLI → entry (required) |
 | `base_url` | CLI → entry → `ProviderKind::default_base_url()` |
-| `max_tokens` | CLI → entry → `[agent]` → `[llm]` global → code defaults |
+| `max_tokens` | CLI → entry → `[agent]` → code defaults |
 | `thinking_budget` | CLI → entry → `[llm]` global → code defaults |
 | `protocol` | entry → `chat_completions` default |
 | `reasoning_effort` | entry (openai / deepseek / kimi / custom) → provider default (model-dependent) |
+
+`max_tokens` is the one field with **no `[llm]` global** (removed 2026-09-13):
+the level used to sit *below* `[agent]`, so it could only ever apply to users
+who set nothing there, and setting both silently ignored one. A leftover
+`[llm] max_tokens` is now a **hard resolve error** naming the replacement, not a
+silent drop — see §3 and [Ch 26](./26_chapter_issue.md).
 
 Required: **`llm.provider`**, plus **`api_key`** and **`model`** on the active
 entry. `anthropic` has no default `base_url` and must set one explicitly.
@@ -136,8 +142,7 @@ Top-level sections in `TactTomlConfig`:
 ```toml
 [llm]
 provider = "kimi"          # active ProviderKind: anthropic | openai | deepseek | kimi | any custom name
-max_tokens = 32000         # optional global default
-thinking_budget = 32000
+thinking_budget = 32000    # optional global default (max_tokens is NOT settable here — see §3)
 
 # Optional per-model thinking parameter options (model id → selectable tiers).
 # The /model second step shows only these tiers for the picked model.
@@ -216,6 +221,18 @@ theme = "ink"
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 bash_timeout_secs = 1800
 ```
+
+### Unknown keys are rejected
+
+`[agent]` and `[agent.subagent]` are `deny_unknown_fields`: a key that is not a
+real field there fails at **parse** time, listing the fields that are valid,
+instead of being dropped in silence (2026-09-13). This matters most for keys that
+do exist elsewhere and therefore look plausible here — `thinking_budget` and
+`reasoning_effort` are fields on the *runtime* agent settings but as TOML keys
+they belong to `[llm]` (§3) or a `[llm.providers.<name>]` entry, and `model`
+belongs to the provider entry. Before this, writing any of them under `[agent]`
+produced a session running on default thinking settings with nothing in the
+output to say so.
 
 Optional `models` is the **primary** candidate list for the TUI `/model` slash
 command (same provider only). On first `/model` in a session, OpenAI-compatible
@@ -326,10 +343,9 @@ get wrong, because the subagent chain is **not** the main chain:
 - `--max-tokens` reaches subagents only *indirectly* — it first changes the main
   agent's resolved value, which then feeds the last level. There is no way to
   set a main-agent-only `max_tokens`.
-- `[llm].max_tokens` (the `[llm]` global) is **never read** by this chain. It is
-  also absent from the main chain's own levels for subagents: a subagent only
-  picks it up when it is what the *main* agent resolved to, which then arrives
-  through the last level.
+- `[llm].max_tokens` (the `[llm]` global) **no longer exists** — it was removed
+  as a level (§4), so it can no longer arrive through the last level either. A
+  config still setting it fails to resolve.
 
 `[llm.providers.<referenced>].max_tokens` **is** read — the entry named by
 `provider`, not the active one. So a provider entry that sets `max_tokens`

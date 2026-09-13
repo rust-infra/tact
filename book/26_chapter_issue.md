@@ -32,6 +32,66 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-13 — `[agent]` rejects unknown keys, so a misplaced thinking setting fails instead of vanishing
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/types.rs` (`AgentTomlConfig`, `SubagentTomlConfig`); `crates/tact/src/config/resolve.rs` (`resolve_config`); `config.example.toml`; [Ch 21](./21_chapter_config.md) §4 |
+
+**Symptom / motivation:** `AgentTomlConfig` was `#[serde(default)]` with no `deny_unknown_fields`, so any key that is not an agent field was dropped with no error, no warning, and no effect. The dangerous cases are not typos but keys that exist *elsewhere* and therefore look right here: `thinking_budget` and `reasoning_effort` are fields on the runtime agent settings (`AgentSettings`) — and on the subagent section — but as TOML keys they belong to `[llm]` (global) or a `[llm.providers.<name>]` entry, and `model` belongs to the provider entry. Measured before the fix: `[agent] max_tokens = "abc"` (a known key with a wrong type) failed at parse, while `[agent] thinking_budget = "abc"` plus `[agent] reasoning_effort = 123` started normally with both values discarded — the same "configured but ignored" class as `[llm].max_tokens` (removed the same day).
+
+**Decision:** `#[serde(deny_unknown_fields)]` on `AgentTomlConfig` and `SubagentTomlConfig`. The two keys stay absent from the schema, so serde's `unknown field` error lists only the real agent fields — which is what points the reader at `[llm]`. A targeted guard field per misplaced key was tried and **removed**: keeping `thinking_budget` in the struct makes serde advertise it in its own "expected one of …" list, so a config that then adds it would be told the key is valid and rejected one layer later. An error message that names an invalid key as valid is worse than a generic one. Other top-level sections are left as-is — `[llm]` still needs its `max_tokens` field to carry the removal guard.
+
+**Behavior after:** A `[agent]` or `[agent.subagent]` key that is not a real field fails at parse time with `unknown field \`thinking_budget\`, expected one of \`max_tokens\`, \`model_context_window\`, …`. Configs that only use real keys are unaffected (the shipped `config.example.toml`, the process's own `persist` writers, and every fixture in the test suite resolve unchanged).
+
+**Pointers:** `AgentTomlConfig` / `SubagentTomlConfig` in `crates/tact/src/config/types.rs`; tests `agent_thinking_keys_are_rejected`, `agent_unknown_key_is_rejected`, `subagent_unknown_key_is_rejected` in `crates/tact/src/config/resolve.rs`; [Ch 21](./21_chapter_config.md) §4 "Unknown keys are rejected"; `config.example.toml`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — `[llm].max_tokens` is removed, and a leftover key fails loudly
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact/src/config/types.rs` (`LlmTomlConfig`, `AgentTomlConfig`); `crates/tact/src/config/resolve.rs` (`resolve_config`); `config.example.toml`; [Ch 21](./21_chapter_config.md) §3/§4 |
+
+**Symptom / motivation:** The output-budget chain had five levels (`--max-tokens` > provider entry > `[agent].max_tokens` > `[llm].max_tokens` > built-in default), and the `[llm]` global was the only one that could never be observed: it sat *below* `[agent]`, so it applied solely to users who set nothing there. Anyone who set both had one of the two values silently ignored — the same "configured but ignored" class the `[agent]` level was added to fix, just moved one level down. A global that cannot take effect for the users most likely to set it is worse than no global: it invites a key that looks live.
+
+**Decision:** Drop the level. The chain is now `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[agent].max_tokens` > default (8000; 32000 for Kimi K2.x), and `[llm]` keeps only `provider`, `thinking_budget`, `providers`, `model_profiles`. The key stays in `LlmTomlConfig` **solely as a guard**: `resolve_config` bails when it is present, naming `[agent].max_tokens` as the replacement. Silently ignoring it was rejected because the request would fall back to the built-in default with nothing in the output to say so — the exact failure mode this removal is meant to end. This is the precedent already set by `[agent.subagent]` overrides without `provider` (2026-09-13, same day).
+
+**Behavior after:** A config that sets `[llm] max_tokens` fails to start with `[llm].max_tokens was removed. Set [agent].max_tokens instead (or [llm.providers.<name>].max_tokens for a per-provider value), or delete the key.` followed by the resolution order. Configs that never set it are unaffected, and `thinking_budget` keeps its `[llm]` global (it has no `[agent]` counterpart, so the global is the only non-provider switch). The `responses_compact_threshold` validation message no longer names `llm.max_tokens` — it says `max_tokens`, since the value can come from the CLI, an entry, or `[agent]`.
+
+**Pointers:** `resolve_config` in `crates/tact/src/config/resolve.rs`; tests `llm_max_tokens_is_rejected`, `absent_llm_max_tokens_still_resolves`, `agent_max_tokens_overrides_default`, `per_provider_max_tokens_overrides_default`, `cli_max_tokens_overrides_entry`, `parse_removed_llm_max_tokens_is_captured`; [Ch 21](./21_chapter_config.md) §3 priority table + §4 schema; `config.example.toml`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — The bar's `out` shows the request parameter, not a reasoning-share estimate
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs` (`format_max_out_tokens`); `crates/tact_llm/src/openai/responses/convert.rs`, `crates/tact_llm/src/convert.rs`, `crates/tact_llm/src/anthropic/mod.rs`; [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** The bottom bar's `out` segment rendered `max_tokens × 100/(100+pct)` for effort-semantic models (openai / deepseek / kimi k3), subtracting a reasoning share using the effort tier table (`high` → 75%). That made the readout disagree with the wire: the request is sent with the **full** `max_output_tokens` / `max_tokens`, and the reasoning-vs-text split inside that envelope is the endpoint's per-request decision. A fixed 75% is a guess, so on a `[agent] max_tokens = 65536` config at `high` the bar said `37.4K` while the endpoint was asked for 65536. The subtraction convention had been borrowed from the compaction reserve, where a size *must* be committed to before the call — a different problem from reading back a number that is already known exactly.
+
+**Decision:** `format_max_out_tokens` now takes only `(label, max_tokens)` and renders the value verbatim; `thinking_budget` / `reasoning_effort` are no longer inputs. The three subtests that pinned the subtraction (`..._subtracts_effort_share`, `..._budget_keeps_full_envelope`, `..._zero_budget_subtracts_effort_share`) collapse into `format_max_out_tokens_is_the_wire_value`. This also retires the previous bugfix in this area — the `None` vs `Some(0)` "thinking off" discriminator that decided *whether* to subtract can no longer move the segment, because the segment no longer depends on thinking settings at all. Reasoning-reserve estimation stays where a size has to be chosen: the compaction summary budget and `should_auto_compact`'s incoming-turn reserve.
+
+**Behavior after:** On `[agent] max_tokens = 65536` at any effort the bar reads `out 65.5K` — the number actually sent. It matches `ModelInfo.max_tokens` and the request body (`max_output_tokens` / `max_tokens`) by construction. The segment is stable across `/model` effort switches and across a session boundary.
+
+**Pointers:** `format_max_out_tokens` in `crates/agent_tui_kit/src/render/bar.rs`; test `format_max_out_tokens_is_the_wire_value`; [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md`.
+
+---
+
+---
+
+
 ## 1. 2026-09-13 — Explicit config beats the built-in model→window table, and a subagent section can no longer be dropped in silence
 
 | Field | Value |

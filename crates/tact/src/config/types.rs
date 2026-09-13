@@ -35,7 +35,12 @@ pub struct LlmTomlConfig {
     /// Active provider (`anthropic` | `openai` | `deepseek` | `kimi`).
     pub provider: Option<String>,
 
-    /// Global default max tokens (overridable per provider entry).
+    /// **Removed** as a resolution level (2026-09-13) — set `[agent].max_tokens`
+    /// instead, or `[llm.providers.<name>].max_tokens` for a per-provider value.
+    ///
+    /// The key is still in the schema for one reason: so a stale value is a
+    /// hard error naming the fix, rather than being dropped silently and
+    /// letting the request fall back to the built-in default unnoticed.
     pub max_tokens: Option<u32>,
 
     /// Global default thinking budget (overridable per provider entry).
@@ -84,8 +89,8 @@ pub struct ProviderEntryToml {
     pub models: Vec<String>,
     /// Optional OpenAI Responses `context_management.compact_threshold`
     /// (tokens). Only meaningful for `protocol = "responses"`. When omitted,
-    /// the threshold is derived from `agent.model_context_window`,
-    /// `llm.max_tokens`, and 10% safety headroom.
+    /// the threshold is derived from `agent.model_context_window`, the resolved
+    /// `max_tokens`, and 10% safety headroom.
     pub responses_compact_threshold: Option<u32>,
 }
 
@@ -105,14 +110,18 @@ impl Default for PermissionTomlConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AgentTomlConfig {
     /// Max output tokens for the main agent.
     ///
     /// Used as a fallback when the active `[llm.providers.<name>]` entry has no
     /// `max_tokens`. Resolution order: `--max-tokens` > provider entry > this
-    /// key > `[llm].max_tokens` > built-in default (8000, or 32000 for Kimi
-    /// K2.x). Subagents without their own `max_tokens` inherit the result.
+    /// key > built-in default (8000, or 32000 for Kimi K2.x). Subagents without
+    /// their own `max_tokens` inherit the result.
+    ///
+    /// `[llm].max_tokens` used to sit below this key; it was removed (2026-09-13)
+    /// because a global could only apply to users who set nothing here, and
+    /// setting both silently ignored one of them.
     pub max_tokens: Option<u32>,
 
     /// Model context window in tokens (auto-compaction + TUI usage meter).
@@ -146,7 +155,7 @@ pub struct AgentTomlConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SubagentTomlConfig {
     /// References a key from [llm.providers.*] (e.g. "deepseek", "openai").
     pub provider: Option<String>,
@@ -447,7 +456,6 @@ provider = "anthropic"
         let toml_str = r#"
 [llm]
 provider = "openai"
-max_tokens = 16000
 thinking_budget = 64000
 
 [llm.providers.openai]
@@ -471,7 +479,9 @@ vision_image.jpeg_quality = 75
 "#;
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.llm.provider.as_deref(), Some("openai"));
-        assert_eq!(cfg.llm.max_tokens, Some(16000));
+        // Removed key: a normal config leaves it unset (see
+        // `parse_removed_llm_max_tokens_is_captured` for the guard case).
+        assert_eq!(cfg.llm.max_tokens, None);
         assert_eq!(cfg.llm.thinking_budget, Some(64000));
         let openai = cfg.llm.providers.get("openai").unwrap();
         assert_eq!(openai.model.as_deref(), Some("gpt-4o"));
@@ -486,6 +496,19 @@ vision_image.jpeg_quality = 75
         assert_eq!(cfg.ui.vision_image.compress, Some(false));
         assert_eq!(cfg.ui.vision_image.max_edge, Some(1024));
         assert_eq!(cfg.ui.vision_image.jpeg_quality, Some(75));
+    }
+
+    /// The removed key must stay in the schema, otherwise serde would drop it
+    /// and `resolve_config` could not raise the "was removed" error.
+    #[test]
+    fn parse_removed_llm_max_tokens_is_captured() {
+        let toml_str = r#"
+[llm]
+provider = "openai"
+max_tokens = 16000
+"#;
+        let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.llm.max_tokens, Some(16000));
     }
 
     #[test]

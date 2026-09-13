@@ -216,19 +216,18 @@ This means consecutive multi-turn conversations typically achieve high cache hit
 **TUI bottom-bar usage display:** The second row shows:
 
 - **Max output tokens** — `out {n}` (labelled `max_out_token` before the
-  2026-09-12 compaction), the effective text-output
-  budget. For effort-semantic models (openai / deepseek / kimi k3) reasoning
-  shares the same `max_tokens` envelope, so the reasoning share is subtracted
-  (same tier convention as the compaction reserve: text = envelope ×
-  `100/(100+pct)`, e.g. `high` → `73K` on a 128K envelope). Budget-semantic
-  models (Anthropic-style `thinking_budget`) keep a separate thinking
-  envelope, so the full `max_tokens` is shown. The discriminator is a
-  **non-zero** budget: `Some(0)` means "thinking off", i.e. shared-envelope
-  semantics, so the subtraction still applies — `None` and `Some(0)` render
-  identically. Both encodings reach the bar in practice (the in-turn request
-  path maps the always-present `Thinking` struct to `Some(0)`; the `/model`
-  path emits `None`), and treating `Some(0)` as a separate envelope made the
-  value change on the first prompt of a session.
+  2026-09-12 compaction), the `max_tokens` value **verbatim**: the same number
+  the request carries (`max_output_tokens` on the Responses protocol,
+  `max_tokens` on chat completions / Anthropic), so the bar always agrees with
+  what the endpoint was asked for. No reasoning share is subtracted, not even
+  for effort-semantic models (openai / deepseek / kimi k3), whose reasoning is
+  counted inside this same envelope — the reasoning/text split is the endpoint's
+  per-request decision, so any fixed reserve here would be a guess. Estimating a
+  reasoning reserve belongs to the compaction path (summary budget,
+  `should_auto_compact`'s incoming-turn reserve), which must commit to a size;
+  this segment only reads one that is already known. Because `out` no longer
+  depends on the thinking settings, the earlier `None`-vs-`Some(0)` discriminator
+  (and the first-prompt value jump it caused) is structurally gone.
 - **Context meter** — `ctx {pct}% used/window` (e.g. `ctx 4% 45K/1M`), where
   `used` is the latest main-loop
   `TokenUsageInfo.total` and `window` is `model_context_window`.

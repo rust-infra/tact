@@ -32,6 +32,66 @@
 ---
 
 
+## 1. 2026-09-13 — `[agent]` 拒绝未知键：写错位置的 thinking 设置会报错，而不是凭空消失
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/types.rs`（`AgentTomlConfig`、`SubagentTomlConfig`）；`crates/tact/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 21](./21_chapter_config_zh.md) §4 |
+
+**症状 / 动机：** `AgentTomlConfig` 是 `#[serde(default)]` 且没有 `deny_unknown_fields`，因此任何非 agent 字段的键都会被丢弃——不报错、不警告、无效果。危险的不是拼写错误，而是那些**在别处确实存在、写在这里看起来合理**的键：`thinking_budget` 与 `reasoning_effort` 是**运行时** agent 设置（`AgentSettings`）的字段（subagent 段亦然），但作为 TOML 键它们属于 `[llm]`（全局）或 `[llm.providers.<name>]` 条目；`model` 属于 provider 条目。修复前实测：`[agent] max_tokens = "abc"`（已知键、类型错）解析即失败，而 `[agent] thinking_budget = "abc"` 加 `[agent] reasoning_effort = 123` 却正常启动、两个值全丢——与同日移除的 `[llm].max_tokens` 属同一"配了却被忽略"类别。
+
+**决策：** 给 `AgentTomlConfig` 与 `SubagentTomlConfig` 加上 `#[serde(deny_unknown_fields)]`。这两个键仍然不在 schema 里，因此 serde 的 `unknown field` 报错只会列出真正的 agent 字段——这正是把读者引向 `[llm]` 的线索。曾尝试为每个错位键单独加一个守卫字段，后来**撤掉**：把 `thinking_budget` 留在结构体里会让 serde 在它自己的 "expected one of …" 列表里把它列为合法字段，于是再补上该键的配置会先被告知"这个键有效"、然后在下一层被拒。把无效键说成有效的报错，比通用报错更糟。其他顶层段保持原样——`[llm]` 仍需保留其 `max_tokens` 字段以承载"已移除"守卫。
+
+**之后的行为：** `[agent]` 或 `[agent.subagent]` 下任何非真实字段的键在解析阶段即失败，报 `unknown field \`thinking_budget\`, expected one of \`max_tokens\`, \`model_context_window\`, …`。只使用合法键的配置不受影响（随包发布的 `config.example.toml`、进程自身的 `persist` 写入方、以及测试套件中的全部夹具均照常解析）。
+
+**Pointers:** `AgentTomlConfig` / `SubagentTomlConfig` in `crates/tact/src/config/types.rs`; tests `agent_thinking_keys_are_rejected`, `agent_unknown_key_is_rejected`, `subagent_unknown_key_is_rejected` in `crates/tact/src/config/resolve.rs`; [Ch 21](./21_chapter_config_zh.md) §4「未知键会被拒绝」; `config.example.toml`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — 移除 `[llm].max_tokens`，残留该键将直接报错
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact/src/config/types.rs`（`LlmTomlConfig`、`AgentTomlConfig`）；`crates/tact/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 21](./21_chapter_config_zh.md) §3/§4 |
+
+**症状 / 动机：** 输出预算解析链有五个层级（`--max-tokens` > provider 条目 > `[agent].max_tokens` > `[llm].max_tokens` > 内置默认），而 `[llm]` 全局是唯一一个**永远不会被观察到**的层级：它排在 `[agent]` **之下**，只对"没在 `[agent]` 里设过"的用户生效。两级都设的人，其中一个值被静默忽略——正是当初新增 `[agent]` 一级要消灭的"配了却被忽略"类别，只是下沉了一层。一个对最可能设置它的用户都不生效的全局，比没有全局更糟：它诱使人写下一个看起来生效的键。
+
+**决策：** 去掉这一级。解析链变为 `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[agent].max_tokens` > 默认（8000；Kimi K2.x 为 32000），`[llm]` 只保留 `provider`、`thinking_budget`、`providers`、`model_profiles`。该键仍留在 `LlmTomlConfig` 中，**仅作为守卫**：`resolve_config` 发现它存在即报错，并指明替代键 `[agent].max_tokens`。没有选择静默忽略，因为那样请求会悄悄回落到内置默认值、输出里没有任何提示——正是本次移除要终结的失败模式。这与同日 `[agent.subagent]` 缺 `provider` 的处理先例一致。
+
+**之后的行为：** 设置 `[llm] max_tokens` 的配置启动失败，报 `[llm].max_tokens was removed. Set [agent].max_tokens instead (or [llm.providers.<name>].max_tokens for a per-provider value), or delete the key.`，随后给出解析顺序。从未设置该键的配置不受影响；`thinking_budget` 保留其 `[llm]` 全局（它没有 `[agent]` 对应键，因此全局是唯一的非 provider 开关）。`responses_compact_threshold` 的校验文案不再写死 `llm.max_tokens`，改为 `max_tokens`——该值可能来自 CLI、provider 条目或 `[agent]`。
+
+**Pointers:** `resolve_config` in `crates/tact/src/config/resolve.rs`; tests `llm_max_tokens_is_rejected`, `absent_llm_max_tokens_still_resolves`, `agent_max_tokens_overrides_default`, `per_provider_max_tokens_overrides_default`, `cli_max_tokens_overrides_entry`, `parse_removed_llm_max_tokens_is_captured`; [Ch 21](./21_chapter_config_zh.md) §3 优先级表 + §4 schema; `config.example.toml`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — 底栏 `out` 显示请求参数本身，而不是推算出来的 reasoning 份额
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`（`format_max_out_tokens`）；`crates/tact_llm/src/openai/responses/convert.rs`、`crates/tact_llm/src/convert.rs`、`crates/tact_llm/src/anthropic/mod.rs`；[Ch 23](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
+
+**症状 / 动机：** 底栏 `out` 段对 effort 语义模型（openai / deepseek / kimi k3）渲染 `max_tokens × 100/(100+pct)`，按 effort 分档表扣掉 reasoning 份额（`high` → 75%）。这让读数与线上请求不一致：请求发出的是**完整**的 `max_output_tokens` / `max_tokens`，信封内推理与正文的切分由服务端按次请求决定。固定的 75% 只是猜测——于是在 `[agent] max_tokens = 65536` + `high` 的配置下，底栏显示 `37.4K`，而接口实际收到的是 65536。该扣减约定原本借自压缩预留：那里必须在调用前**先定下一个尺寸**，与"把已知数字读出来"是两回事。
+
+**决策：** `format_max_out_tokens` 现在只接收 `(label, max_tokens)` 并原样渲染；`thinking_budget` / `reasoning_effort` 不再是入参。原先固定扣减行为的三个测试（`..._subtracts_effort_share`、`..._budget_keeps_full_envelope`、`..._zero_budget_subtracts_effort_share`）合并为 `format_max_out_tokens_is_the_wire_value`。这也顺带退掉了本区域上一次的修复——那个用来决定"是否扣减"的 `None` vs `Some(0)`「thinking 关闭」判据再也无法影响该段，因为该段已完全不依赖 thinking 设置。reasoning 预留的估算仍留在必须选尺寸的地方：压缩摘要预算与 `should_auto_compact` 的 incoming-turn 预留。
+
+**之后的行为：** 在 `[agent] max_tokens = 65536` 配置下，无论 effort 为何，底栏都显示 `out 65.5K`——即真正发出去的数字；按构造与 `ModelInfo.max_tokens` 及请求体（`max_output_tokens` / `max_tokens`）一致。该段在 `/model` 切换 effort 时、跨会话边界时都保持稳定。
+
+**Pointers:** `format_max_out_tokens` in `crates/agent_tui_kit/src/render/bar.rs`; test `format_max_out_tokens_is_the_wire_value`; [Ch 23](./23_chapter_tui_zh.md) §6.6; `docs/token_usage_schema.md`.
+
+---
+
+---
+
+
 ## 1. 2026-09-13 — 显式配置压过内置模型→窗口映射，subagent 段不再被静默丢弃
 
 | Field | Value |

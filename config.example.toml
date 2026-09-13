@@ -32,9 +32,9 @@
 [llm]
 provider = "deepseek"
 
-# Optional globals (overridable per provider entry, then by CLI flags;
-# `max_tokens` is also overridden by [agent].max_tokens)
-# max_tokens = 8000
+# Optional globals (overridable per provider entry, then by CLI flags).
+# `max_tokens` is NOT settable here — use [agent].max_tokens (or the per-provider
+# entry); a leftover key is a hard startup error naming the replacement.
 # thinking_budget = 0  # off by default; set to e.g. 8000 to enable
 
 # Optional per-model thinking parameter options (model id → selectable tiers).
@@ -70,8 +70,8 @@ protocol = "responses"
 # Optional OpenAI Responses `context_management.compact_threshold` (tokens).
 # Sent on every ordinary `/responses` request so the endpoint compacts the
 # protocol baseline automatically at the threshold. When omitted, the
-# threshold is derived from agent.model_context_window / llm.max_tokens with
-# 10% headroom (only for protocol = "responses").
+# threshold is derived from agent.model_context_window / the resolved
+# max_tokens with 10% headroom (only for protocol = "responses").
 # responses_compact_threshold = 160000
 # Endpoints lacking native Responses compaction are unsupported; Tact never
 # falls back to local summary compaction for protocol = "responses".
@@ -135,12 +135,19 @@ mode = "default"
 # Agent runtime
 # ---------------------------------------------------------------------------
 [agent]
+# Keys that are not real [agent] fields are a startup error, not a silent
+# no-op: `thinking_budget` / `reasoning_effort` live in [llm] (or a provider
+# entry), and `model` lives in the provider entry.
+#
 # Max output tokens for the main agent.
 #
 # Resolution priority (highest first): --max-tokens > [llm.providers.<active>]
-# entry > this key > [llm] global max_tokens > default 8000 (32000 for Kimi
-# K2.x). Set this when you switch providers often and want one number to apply
-# to all of them; set it per provider when the providers need different caps.
+# entry > this key > default 8000 (32000 for Kimi K2.x). Set this when you
+# switch providers often and want one number to apply to all of them; set it
+# per provider when the providers need different caps.
+# (There is no [llm] global for this: it used to sit below this key, where it
+# could only apply to users who set nothing here. A leftover [llm] max_tokens
+# is now a hard startup error, not a silent drop.)
 # Subagents without their own [agent.subagent].max_tokens inherit this value.
 # max_tokens = 64000
 

@@ -187,25 +187,38 @@ mod render_tests {
         );
     }
 
+    /// The rendered `out` is the request's `max_tokens`, at any effort.
+    ///
+    /// Regression guard for the removed reasoning-share subtraction: on this
+    /// 128_000 envelope at `high`, the bar used to read `out 73.1K`.
     #[test]
-    fn bottom_bar_subtracts_effort_share_from_out_budget() {
-        let mut app = make_app();
-        app.status_bar_mut().model_name = "mock-model".into();
-        app.status_bar_mut().model_max_tokens = 128_000;
-        app.status_bar_mut().model_reasoning_effort = Some("high".into());
-        // 128k × 100/175 ≈ 73.1K — the reasoning share is subtracted from the
-        // shared envelope for effort-semantic models.
-        let backend = TestBackend::new(120, 2);
-        let mut terminal = Terminal::new(backend).expect("terminal");
+    fn bottom_bar_out_is_the_wire_value_at_any_effort() {
+        let render = |effort: Option<&str>| {
+            let mut app = make_app();
+            app.status_bar_mut().model_name = "mock-model".into();
+            app.status_bar_mut().model_max_tokens = 128_000;
+            app.status_bar_mut().model_reasoning_effort = effort.map(str::to_string);
+            let backend = TestBackend::new(120, 2);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 120, 2), &app))
+                .expect("draw");
+            buffer_text(terminal.backend().buffer())
+        };
 
-        terminal
-            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 120, 2), &app))
-            .expect("draw");
-
-        let text = buffer_text(terminal.backend().buffer());
+        // Same envelope, different thinking settings: `out` must not move, so
+        // the segment cannot disagree with the request body either way.
+        let none = render(None);
+        let high = render(Some("high"));
+        assert!(none.contains("out 128K"), "got:\n{none}");
         assert!(
-            text.contains("out 73.1K") && text.contains("think high"),
-            "bottom bar should subtract the reasoning share, got:\n{text}"
+            high.contains("out 128K") && high.contains("think high"),
+            "got:\n{high}"
+        );
+        // 128k × 100/175 ≈ 73.1K was the old subtracted render.
+        assert!(
+            !high.contains("out 73.1K"),
+            "out must not subtract a reasoning share, got:\n{high}"
         );
     }
 
@@ -274,7 +287,7 @@ mod render_tests {
 
         for marker in [
             "deepseek-v4",
-            "out 73.1K",
+            "out 128K",
             "think high",
             "ctx 4% 45K/1M",
             "⟳",

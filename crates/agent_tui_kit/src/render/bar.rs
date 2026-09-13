@@ -98,46 +98,31 @@ fn format_model_name(name: &str) -> String {
     }
 }
 
-/// Labeled max-output segment: `"max_out_token 73K"` / `None` when max is 0.
+/// Labeled max-output segment: `"out 64K"` / `None` when max is 0.
 ///
-/// The value is the effective text-output budget. Effort-semantic models
-/// (openai / deepseek / kimi k3) count reasoning inside the SAME `max_tokens`
-/// envelope as the output text, so the reasoning share is subtracted using the
-/// effort-tier convention (percent of the text budget, added on top):
-/// text = envelope × 100/(100+pct).
-/// Budget-semantic models (Anthropic-style `thinking_budget`) keep thinking in
-/// a separate envelope, so no subtraction applies.
+/// The value is `max_tokens` **verbatim** — the same number `ModelInfo` carries
+/// and the one that goes on the wire (`max_output_tokens` for the Responses
+/// protocol, `max_tokens` for chat completions and Anthropic). The segment is a
+/// readout of the request parameter, so it must equal what the endpoint was
+/// asked for; reinterpreting it would make the bar disagree with the request.
 ///
-/// "Has a separate envelope" means a **non-zero** budget: `Some(0)` is a
-/// disabled budget, i.e. effort semantics with a shared envelope. Treating it
-/// as a separate envelope made the bar disagree with reality — the in-turn
-/// request path emits `Some(0)` (it maps the always-present `Thinking` struct)
-/// while the `/model` path emits `None`, so the displayed budget jumped from
-/// the subtracted value to the full envelope as soon as a prompt was sent.
-fn format_max_out_tokens(
-    label: &str,
-    max_tokens: u32,
-    thinking_budget: Option<u32>,
-    reasoning_effort: Option<&str>,
-) -> Option<String> {
+/// Deliberately **no** reasoning-share subtraction for effort-semantic models
+/// (openai / deepseek / kimi k3), even though their reasoning is counted inside
+/// this same envelope: the split between reasoning and text is the endpoint's
+/// per-request decision, so any fixed `100/(100+pct)` figure here is a guess.
+/// Reserving room for reasoning is a *sizing* decision, and Tact already makes
+/// it where a size must be chosen — the compaction summary budget and
+/// `should_auto_compact`'s incoming-turn reserve. Those paths must estimate
+/// because they have to commit to a number; this one does not, because the
+/// number is already known exactly.
+fn format_max_out_tokens(label: &str, max_tokens: u32) -> Option<String> {
     if max_tokens == 0 {
         return None;
     }
-    let pct = match reasoning_effort {
-        Some("none") => 0,
-        Some("minimal") | Some("low") => 25,
-        Some("medium") => 50,
-        Some("high") => 75,
-        Some("xhigh") | Some("max") => 100,
-        _ => 0,
-    };
-    let max_out = if thinking_budget.is_some_and(|budget| budget > 0) {
-        // Separate thinking envelope: max_tokens already is the output limit.
-        max_tokens
-    } else {
-        max_tokens.saturating_mul(100) / (100 + pct)
-    };
-    Some(format!("{label} {}", format_tokens_compact(max_out as u64)))
+    Some(format!(
+        "{label} {}",
+        format_tokens_compact(max_tokens as u64)
+    ))
 }
 
 /// Thinking segment: `"think high"`, `"think 32K"`, or `None`.
@@ -400,12 +385,7 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
 
     // --- Row 2 ---
     let model = format_model_name(&ctx.status_bar.model_name);
-    let out = format_max_out_tokens(
-        msgs.bottom_out,
-        ctx.status_bar.model_max_tokens,
-        ctx.status_bar.model_thinking_budget,
-        ctx.status_bar.model_reasoning_effort.as_deref(),
-    );
+    let out = format_max_out_tokens(msgs.bottom_out, ctx.status_bar.model_max_tokens);
     let think = format_think_segment(
         msgs.bottom_think,
         ctx.status_bar.model_reasoning_effort.as_deref(),
@@ -704,81 +684,40 @@ mod render_tests {
     #[test]
     fn format_max_out_tokens_labeled() {
         assert_eq!(
-            super::format_max_out_tokens("max_out_token", 8_000, None, None),
-            Some("max_out_token 8K".into())
+            super::format_max_out_tokens("out", 8_000),
+            Some("out 8K".into())
         );
-        assert_eq!(
-            super::format_max_out_tokens("max_out_token", 0, None, None),
-            None
-        );
+        assert_eq!(super::format_max_out_tokens("out", 0), None);
     }
 
-    #[test]
-    fn format_max_out_tokens_subtracts_effort_share() {
-        // Effort-semantic models count reasoning inside max_tokens; the
-        // reserve convention is pct% of the TEXT budget on top, so the
-        // text share is envelope × 100/(100+pct).
-        let cases = [
-            // (effort, expected share of max_tokens)
-            (Some("none"), 1_000_000),
-            (Some("low"), 800_000),
-            (Some("medium"), 666_666),
-            (Some("high"), 571_428),
-            (Some("xhigh"), 500_000),
-            (Some("max"), 500_000),
-        ];
-        for (effort, expected) in cases {
-            assert_eq!(
-                super::format_max_out_tokens("max_out_token", 1_000_000, None, effort),
-                Some(format!(
-                    "max_out_token {}",
-                    super::format_tokens_compact(expected)
-                )),
-                "effort {effort:?}"
-            );
-        }
-        // No effort → no subtraction.
-        assert_eq!(
-            super::format_max_out_tokens("max_out_token", 128_000, None, None),
-            Some("max_out_token 128K".into())
-        );
-    }
-
-    #[test]
-    fn format_max_out_tokens_budget_keeps_full_envelope() {
-        // Budget-semantic models (Anthropic) keep thinking in a separate
-        // envelope, so max_tokens is already the output limit.
-        assert_eq!(
-            super::format_max_out_tokens("max_out_token", 128_000, Some(32_000), None),
-            Some("max_out_token 128K".into())
-        );
-        assert_eq!(
-            super::format_max_out_tokens("max_out_token", 128_000, Some(32_000), Some("high")),
-            Some("max_out_token 128K".into())
-        );
-    }
-
-    /// A **zero** budget is a disabled budget, not a separate envelope.
+    /// The segment renders the wire value, so no reasoning share is subtracted.
     ///
-    /// Regression: the in-turn request path emits `Some(0)` (it maps the
-    /// always-present `Thinking` struct) while the `/model` path emits `None`,
-    /// so `is_some()` made the `out` segment change value as soon as a prompt
-    /// was sent — showing the un-subtracted envelope for effort-semantic
-    /// models, whose reasoning genuinely shares the `max_tokens` envelope.
+    /// An earlier revision showed `max_tokens × 100/(100+pct)` for
+    /// effort-semantic models and had to discriminate them from budget-semantic
+    /// ones via a non-zero `thinking_budget`; the two `ModelInfo` producers
+    /// encoded "thinking off" differently (`None` vs `Some(0)`), so `out` moved
+    /// on the first prompt of a session. Reading `max_tokens` alone removes the
+    /// discriminator — and with it the whole bug class, since `out` no longer
+    /// depends on thinking settings at all.
     #[test]
-    fn format_max_out_tokens_zero_budget_subtracts_effort_share() {
-        // Both encodings of "thinking off" must render identically.
-        for budget in [None, Some(0)] {
-            assert_eq!(
-                super::format_max_out_tokens("max_out_token", 64_000, budget, Some("high")),
-                Some("max_out_token 36.6K".into()),
-                "budget {budget:?}"
-            );
-        }
-        // 64k × 100/175 = 36,571 → "36.6K"; the un-subtracted value would be "64K".
+    fn format_max_out_tokens_is_the_wire_value() {
+        assert_eq!(
+            super::format_max_out_tokens("out", 65_536),
+            Some("out 65.5K".into())
+        );
+        assert_eq!(
+            super::format_max_out_tokens("out", 1_000_000),
+            Some("out 1M".into())
+        );
+        assert_eq!(
+            super::format_max_out_tokens("out", 64_000),
+            Some("out 64K".into())
+        );
+        // The subtracted values for these envelopes: 64k@high was 36.6K,
+        // 1000k@high was 571K — both are guesses, neither is what was sent.
         assert_ne!(
-            super::format_max_out_tokens("max_out_token", 64_000, Some(0), Some("high")),
-            Some("max_out_token 64K".into())
+            super::format_max_out_tokens("out", 64_000),
+            Some("out 36.6K".into())
         );
     }
 

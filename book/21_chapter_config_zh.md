@@ -91,10 +91,15 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 |------|--------|
 | `api_key` / `model` | CLI → 条目（必填） |
 | `base_url` | CLI → 条目 → `ProviderKind::default_base_url()` |
-| `max_tokens` | CLI → 条目 → `[agent]` → `[llm]` 全局 → 代码默认值 |
+| `max_tokens` | CLI → 条目 → `[agent]` → 代码默认值 |
 | `thinking_budget` | CLI → 条目 → `[llm]` 全局 → 代码默认值 |
 | `protocol` | 条目 → 默认 `chat_completions` |
 | `reasoning_effort` | entry（openai / deepseek / kimi / 自定义）→ provider 默认（模型相关） |
+
+`max_tokens` 是唯一**没有 `[llm]` 全局**的字段（2026-09-13 移除）：该级原本排在
+`[agent]` **之下**，因此只对"没在 `[agent]` 里设过"的用户生效，两级同时设置时必然静默忽略其一。
+现在残留的 `[llm] max_tokens` 会触发**resolve 阶段的硬报错**并指明替代键，而不是被静默丢弃——
+详见 §3 与 [Ch 26](./26_chapter_issue_zh.md)。
 
 必填：**`llm.provider`**，以及活跃条目上的 **`api_key`** 和 **`model`**。`anthropic` 没有默认 `base_url`，必须显式设置。缺失活跃条目会在 resolve 时报错。
 
@@ -121,8 +126,7 @@ model = "kimi-k2.5"
 ```toml
 [llm]
 provider = "kimi"          # 活跃 ProviderKind：anthropic | openai | deepseek | kimi | 任意自定义名称
-max_tokens = 32000         # 可选全局默认
-thinking_budget = 32000
+thinking_budget = 32000    # 可选全局默认（`max_tokens` 不能设在这里——见 §3）
 
 # 可选：按模型的思考参数选项（模型 id → 可选档位）。
 # /model 第二步只显示该模型映射的档位；无映射的模型回落 provider 默认档位。
@@ -201,6 +205,14 @@ theme = "ink"
 # Bash 墙钟超时秒数（默认 1800；0 表示禁用）
 bash_timeout_secs = 1800
 ```
+
+### 未知键会被拒绝
+
+`[agent]` 与 `[agent.subagent]` 都是 `deny_unknown_fields`：这里不存在的键会在**解析阶段**
+直接失败并列出合法字段，而不是被静默丢弃（2026-09-13）。最容易踩的是那些"别处确实存在、
+写在这里看起来也合理"的键——`thinking_budget` / `reasoning_effort` 是**运行时** agent 设置的字段，
+但作为 TOML 键它们属于 `[llm]`（见 §3）或 `[llm.providers.<name>]` 条目；`model` 属于 provider 条目。
+在此改动之前，把其中任何一个写在 `[agent]` 下，都会让会话以默认思考设置运行，而输出里没有任何提示。
 
 可选 `models` 是 TUI `/model` slash 命令的**主要**候选列表（仅限同一 provider）。在会话中首次使用 `/model` 时，兼容 OpenAI 的 provider（`openai` / `deepseek` / `kimi`）也会调用 `GET {base_url}/models`，并将不在 config 列表中的 id 附加到末尾（config 的顺序和重复 id 优先）。API 结果按 `(base_url, api_key)` 在进程内缓存。如果 config 和 API 均未提供任何候选，`/model` 打印提示而非打开选择器。选择模型立即生效；可选写回已加载配置文件中该 provider 的 `model` 字段。
 
@@ -285,8 +297,8 @@ provider 名称不存在则报错并列出可用键。完全没有任何覆盖�
 
 - `--max-tokens` 只能**间接**影响 subagent——它先改变主 agent 的解析结果，再由最后一级继承。
   没有办法只给主 agent 设 `max_tokens`。
-- `[llm].max_tokens`（`[llm]` 全局）这条链**完全不读**。它只能通过"主 agent 恰好落到这一级"
-  再由最后一级间接传入。
+- `[llm].max_tokens`（`[llm]` 全局）**已不存在**——它作为一级已被移除（见 §4），因此也不可能
+  再经由最后一级间接传入。仍写有该键的配置会 resolve 失败。
 
 `[llm.providers.<被引用>].max_tokens` **会**被读到——注意是 `provider` 指定的那个条目，
 不是活跃条目。因此某个 provider 条目一旦设了 `max_tokens`，所有指向它的 subagent 都会被该值封顶

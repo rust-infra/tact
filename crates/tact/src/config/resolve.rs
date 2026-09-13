@@ -205,7 +205,7 @@ fn resolve_responses_compact_threshold(
             let required = u128::from(configured) + u128::from(max_tokens) + headroom as u128;
             if required > model_context_window as u128 {
                 anyhow::bail!(
-                    "invalid token limits: responses_compact_threshold ({configured}) must leave room for llm.max_tokens ({max_tokens}) and 10% headroom within agent.model_context_window ({model_context_window})"
+                    "invalid token limits: responses_compact_threshold ({configured}) must leave room for max_tokens ({max_tokens}) and 10% headroom within agent.model_context_window ({model_context_window})"
                 );
             }
         }
@@ -699,11 +699,31 @@ pub(super) fn resolve_config(
     let provider_info = llm.provider_info();
     let entry = toml_cfg.llm.providers.get(llm.provider.as_str());
 
+    // `[llm].max_tokens` was removed as a level: it sat *below* `[agent]`, so a
+    // global value could only ever apply to users who set no `[agent]` key, and
+    // setting both silently ignored one of them. A stale key is now a hard
+    // error naming the replacement instead of a silent drop — otherwise the
+    // request would quietly fall back to the built-in default.
+    if toml_cfg.llm.max_tokens.is_some() {
+        anyhow::bail!(
+            "[llm].max_tokens was removed. Set [agent].max_tokens instead (or \
+             [llm.providers.<name>].max_tokens for a per-provider value), or delete the key.\n\
+             Resolution order: --max-tokens > [llm.providers.<active>].max_tokens > \
+             [agent].max_tokens > default (8000; 32000 for Kimi K2.x)."
+        );
+    }
+
+    // NOTE on `[agent]`: the struct is `deny_unknown_fields`, so a key that is
+    // not a real agent field — a typo, or `thinking_budget` / `reasoning_effort`
+    // (runtime agent fields that as TOML keys belong to `[llm]` or a provider
+    // entry), or `model` — fails at parse time listing the valid fields. serde
+    // used to drop all of these silently, so a session could run for its whole
+    // life on default thinking settings while the config looked configured.
+
     let max_tokens = args
         .max_tokens
         .or_else(|| entry.and_then(|e| e.max_tokens))
         .or(toml_cfg.agent.max_tokens)
-        .or(toml_cfg.llm.max_tokens)
         .unwrap_or_else(|| {
             if provider_info.is_kimi_k2x(&provider_info.model) {
                 32_000
@@ -876,7 +896,6 @@ model = "gpt-4o"
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -885,6 +904,7 @@ protocol = "responses"
 {threshold_line}
 
 [agent]
+max_tokens = 8000
 model_context_window = {model_context_window}
 
 [agent.subagent]
@@ -1513,7 +1533,6 @@ model = "deepseek-chat"
             r#"
 [llm]
 provider = "kimi"
-max_tokens = 8000
 
 [llm.providers.kimi]
 api_key = "mk-test"
@@ -1526,7 +1545,8 @@ model = "kimi-k2.5"
         assert_eq!(resolved.llm.api_key, "mk-test");
         assert_eq!(resolved.llm.model, "kimi-k2.5");
         assert_eq!(resolved.llm.base_url, "https://api.moonshot.cn/v1");
-        assert_eq!(resolved.agent.max_tokens, 8000);
+        // No `max_tokens` anywhere → the Kimi K2.x default.
+        assert_eq!(resolved.agent.max_tokens, 32_000);
     }
 
     #[test]
@@ -1576,12 +1596,11 @@ model = "gpt-4o"
     }
 
     #[test]
-    fn per_provider_max_tokens_overrides_global() {
+    fn per_provider_max_tokens_overrides_default() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -1595,12 +1614,11 @@ max_tokens = 32000
     }
 
     #[test]
-    fn cli_max_tokens_overrides_entry_and_global() {
+    fn cli_max_tokens_overrides_entry() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -1616,14 +1634,13 @@ max_tokens = 32000
     }
 
     /// `[agent].max_tokens` is the fallback when the provider entry has none:
-    /// it outranks the `[llm]` global.
+    /// it outranks the built-in default.
     #[test]
-    fn agent_max_tokens_overrides_global() {
+    fn agent_max_tokens_overrides_default() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -1636,6 +1653,128 @@ max_tokens = 64000
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.max_tokens, 64_000);
+    }
+
+    /// The removed `[llm].max_tokens` key is a hard error, not a silent drop.
+    ///
+    /// A dropped key would let the request fall back to the built-in default
+    /// (8000 here) with nothing in the output to say so — the same
+    /// "configured but ignored" trap the key's removal is meant to end.
+    #[test]
+    fn llm_max_tokens_is_rejected() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 64000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[llm].max_tokens was removed"), "got: {err}");
+        assert!(err.contains("[agent].max_tokens"), "got: {err}");
+    }
+
+    /// A config that never sets the removed key still resolves.
+    #[test]
+    fn absent_llm_max_tokens_still_resolves() {
+        let toml_cfg = openai_toml_config();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 8_000);
+    }
+
+    /// `[agent]` carries no thinking keys: writing them there used to be a
+    /// silent no-op, so the session ran at default thinking settings with
+    /// nothing in the output to say so.
+    ///
+    /// The report is serde's unknown-field error. Note it lists only the *real*
+    /// agent fields — `thinking_budget` / `reasoning_effort` are absent, which is
+    /// what points the reader at `[llm]` (see Ch 21 §3).
+    #[test]
+    fn agent_thinking_keys_are_rejected() {
+        for key in [
+            "thinking_budget = 8000",
+            // Wrong type on purpose: the report is "unknown field", not a type
+            // error, because the key itself does not exist here.
+            "thinking_budget = \"abc\"",
+            "reasoning_effort = \"low\"",
+            "reasoning_effort = 123",
+        ] {
+            let err = toml::from_str::<TactTomlConfig>(&format!(
+                r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+{key}
+"#
+            ))
+            .unwrap_err()
+            .to_string();
+            let name = key.split_whitespace().next().unwrap();
+            assert!(err.contains("unknown field"), "{key}: {err}");
+            assert!(err.contains(name), "{key}: {err}");
+            // The valid-field list must not advertise a key that is rejected.
+            let list = err.split("expected one of").nth(1).unwrap_or_default();
+            assert!(!list.contains(name), "{key}: {err}");
+        }
+    }
+
+    /// Any other unknown `[agent]` key is rejected by serde, not dropped.
+    #[test]
+    fn agent_unknown_key_is_rejected() {
+        // `model` is a runtime agent field, not a TOML one — the same shape of
+        // mistake as `thinking_budget` above, caught one layer earlier.
+        let err = toml::from_str::<TactTomlConfig>(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model = "gpt-4o"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field"), "got: {err}");
+        assert!(err.contains("model"), "got: {err}");
+    }
+
+    /// The same guard applies inside `[agent.subagent]`.
+    #[test]
+    fn subagent_unknown_key_is_rejected() {
+        let err = toml::from_str::<TactTomlConfig>(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent.subagent]
+provider = "openai"
+max_token = 64000
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field"), "got: {err}");
+        assert!(err.contains("max_token"), "got: {err}");
     }
 
     /// The provider entry still wins over `[agent].max_tokens`.
@@ -1750,13 +1889,15 @@ model = "gpt-4o"
             r#"
 [llm]
 provider = "openai"
-max_tokens = 128000
 thinking_budget = 32000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 thinking_budget = 64000
+
+[agent]
+max_tokens = 128000
 "#,
         )
         .unwrap();
@@ -2143,13 +2284,13 @@ model_context_window = 777_000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 
 [agent]
+max_tokens = 8000
 model_context_window = 8000
 "#,
         )
@@ -2170,13 +2311,13 @@ model_context_window = 8000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 1000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 
 [agent]
+max_tokens = 1000
 model_context_window = 8000
 "#,
         )
@@ -2197,13 +2338,13 @@ model_context_window = 8000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 7999
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 
 [agent]
+max_tokens = 7999
 model_context_window = 8000
 "#,
         )
@@ -2220,13 +2361,13 @@ model_context_window = 8000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 32000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 
 [agent]
+max_tokens = 32000
 model_context_window = 0
 "#,
         )
@@ -2243,7 +2384,6 @@ model_context_window = 0
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2251,6 +2391,7 @@ model = "some-unknown-model"
 protocol = "responses"
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
@@ -2266,7 +2407,6 @@ model_context_window = 200000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2275,6 +2415,7 @@ protocol = "responses"
 responses_compact_threshold = 160000
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
@@ -2289,7 +2430,6 @@ model_context_window = 200000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2298,6 +2438,7 @@ protocol = "responses"
 responses_compact_threshold = 0
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
@@ -2314,7 +2455,6 @@ model_context_window = 200000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2323,6 +2463,7 @@ protocol = "responses"
 responses_compact_threshold = 180000
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
@@ -2344,7 +2485,6 @@ model_context_window = 200000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2353,6 +2493,7 @@ protocol = "responses"
 responses_compact_threshold = 160000
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 
 [agent.subagent]
@@ -2377,7 +2518,6 @@ max_tokens = 40000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2386,6 +2526,7 @@ protocol = "responses"
 responses_compact_threshold = 160000
 
 [agent]
+max_tokens = 8000
 model_context_window = 250000
 
 [agent.subagent]
@@ -2450,7 +2591,6 @@ max_tokens = 40000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2458,6 +2598,7 @@ model = "some-unknown-model"
 protocol = "responses"
 
 [agent]
+max_tokens = 8000
 model_context_window = 0
 "#,
         )
@@ -2472,13 +2613,13 @@ model_context_window = 0
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "gpt-4o"
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
