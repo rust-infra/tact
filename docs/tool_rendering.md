@@ -292,7 +292,7 @@ the terminal `StepResult.detail` becomes authoritative after completion.
 
 Centered modal styling (no drop shadow); scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
 
-A collapsed finished tool (`ToolLayout.detail_collapsed`) draws no card, so its click target is the trailing `double-click` hint on the meta row (`collapsed_action_cols` / `hits_collapsed_action`) — everything else in those two rows is inert. A tool that still draws a card (a finished subagent, a running or failed tool) opens only from a click inside that card. See §5 "Collapsed output".
+A collapsed finished tool (`ToolLayout.detail_collapsed`) draws no card, so its click target is the trailing `double-click-result` hint on the meta row (`collapsed_action_cols` / `hits_collapsed_action`) — everything else in those two rows is inert. A tool that still draws a card (a finished subagent, a running or failed tool) opens only from a click inside that card. See §5 "Collapsed output".
 
 Tool detail popups support left-button text selection over the visible body. Hit testing stores UTF-8-safe byte offsets into the original cached content, so line numbers, green diff gutters, borders, titles, and scrollbars are never selected or copied. Display cells map to complete extended grapheme clusters using Ratatui-compatible widths; forward and backward drags therefore include the whole visible grapheme under both endpoints, including combining and emoji sequences. Dragging above or below the body clamps to the first or last visible source boundary without changing popup scroll; scrolling otherwise preserves the current selection. Automatic drag-edge scrolling is intentionally out of scope.
 
