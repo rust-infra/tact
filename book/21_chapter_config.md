@@ -93,9 +93,16 @@ explicit path is an error (never auto-created).
 |-------|----------|
 | `api_key` / `model` | CLI → entry (required) |
 | `base_url` | CLI → entry → `ProviderKind::default_base_url()` |
-| `max_tokens` / `thinking_budget` | CLI → entry → `[llm]` global → code defaults |
+| `max_tokens` | CLI → entry → `[agent]` → code defaults |
+| `thinking_budget` | CLI → entry → `[llm]` global → code defaults |
 | `protocol` | entry → `chat_completions` default |
 | `reasoning_effort` | entry (openai / deepseek / kimi / custom) → provider default (model-dependent) |
+
+`max_tokens` is the one field with **no `[llm]` global** (removed 2026-09-13):
+the level used to sit *below* `[agent]`, so it could only ever apply to users
+who set nothing there, and setting both silently ignored one. A leftover
+`[llm] max_tokens` is now a **hard resolve error** naming the replacement, not a
+silent drop — see §3 and [Ch 26](./26_chapter_issue.md).
 
 Required: **`llm.provider`**, plus **`api_key`** and **`model`** on the active
 entry. `anthropic` has no default `base_url` and must set one explicitly.
@@ -117,6 +124,15 @@ base_url = "https://api.moonshot.cn/v1"   # required for custom providers
 model = "kimi-k2.5"
 ```
 
+**OpenCode Go endpoints** (`https://opencode.ai/zen/go/v1` and subdomains of
+`opencode.ai`): Tact automatically attaches an `x-opencode-session` header to
+every request and sends `tact/<version>` as the `User-Agent` so the endpoint
+can identify the tool. The header value is the **Tact session id** — OpenCode
+uses it as the key that distinguishes its per-conversation caches, so the same
+session (including a resumed one) reuses one value and different sessions get
+different values. Requests without a session (e.g. the `/v1/models` picker
+fetch) omit the header (they still send the identifying User-Agent).
+
 ---
 
 ## 4. TOML Schema
@@ -126,8 +142,7 @@ Top-level sections in `TactTomlConfig`:
 ```toml
 [llm]
 provider = "kimi"          # active ProviderKind: anthropic | openai | deepseek | kimi | any custom name
-max_tokens = 32000         # optional global default
-thinking_budget = 32000
+thinking_budget = 32000    # optional global default (max_tokens is NOT settable here — see §3)
 
 # Optional per-model thinking parameter options (model id → selectable tiers).
 # The /model second step shows only these tiers for the picked model.
@@ -158,10 +173,29 @@ base_url = "https://api.anthropic.com"   # required for anthropic
 mode = "default"           # default | plan | auto
 
 [agent]
+max_tokens = 64000         # fallback when the active provider entry sets none
 model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
+# Extra skill roots (optional). Each should contain */SKILL.md.
+# Relative paths resolve against the workdir; ~ expands to $HOME.
+# Loaded after the built-in roots; later entries win on a same-name clash.
+# skill_dirs = ["~/shared-skills", "./vendor/skills"]
+# Project instruction files injected into the system prompt (default: ["agents_md"]).
+# instruction_sources = ["agents_md"]
+# Inject full skill bodies into every system prompt (default: false).
+# skill_body_auto_inject = false
+
+# Subagent LLM configuration (optional). spawn_subagent then runs on this
+# provider/model instead of the main agent's. `provider` is required whenever
+# any override below is set; credentials/endpoint are taken from that entry.
+# [agent.subagent]
+# provider = "deepseek"       # required; a key from [llm.providers.*]
+# model = "deepseek-chat"     # optional; else the entry's model
+# max_tokens = 8000           # optional; else the entry's, then the main agent's
+# thinking_budget = 0         # optional; else the entry's, then the main agent's
+# reasoning_effort = "high"   # optional; else the entry's (openai/deepseek/kimi k3)
 
 [ui]
 theme = "ink"
@@ -187,6 +221,18 @@ theme = "ink"
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 bash_timeout_secs = 1800
 ```
+
+### Unknown keys are rejected
+
+`[agent]` and `[agent.subagent]` are `deny_unknown_fields`: a key that is not a
+real field there fails at **parse** time, listing the fields that are valid,
+instead of being dropped in silence (2026-09-13). This matters most for keys that
+do exist elsewhere and therefore look plausible here — `thinking_budget` and
+`reasoning_effort` are fields on the *runtime* agent settings but as TOML keys
+they belong to `[llm]` (§3) or a `[llm.providers.<name>]` entry, and `model`
+belongs to the provider entry. Before this, writing any of them under `[agent]`
+produced a session running on default thinking settings with nothing in the
+output to say so.
 
 Optional `models` is the **primary** candidate list for the TUI `/model` slash
 command (same provider only). On first `/model` in a session, OpenAI-compatible
@@ -237,10 +283,13 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 |---------|---------|-------------------|
 | `max_tokens` | 8_000 | 32_000 |
 | `thinking_budget` | 32_000 | — |
-| `model_context_window` | 200_000 | — (tokens; global; model→window mapping overrides file config, see below) |
+| `model_context_window` | 200_000 | — (tokens; global; see the resolution order below) |
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `instruction_sources` | `["agents_md"]` | — |
+| `skill_dirs` | empty (no extra roots) | — |
+| `skill_body_auto_inject` | `false` | — |
 | `tools.bash_timeout_secs` | `1_800` (`0` disables) | — |
 | `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | — (token size only; does not enable vision) |
@@ -253,6 +302,67 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `voice.language` | `zh` | Google examples: `zh-CN`, `en-US` |
 | `voice.max_duration_secs` | `300` (openai/whisper_cpp, valid `1..=600`) / `60` (google, valid `1..=60`) | — |
 | `voice.voice_keybind` | unset (mouse-only) | `ctrl+<char>` (e.g. `ctrl+g`) |
+
+### `[agent]` — skill roots, instruction files, body injection
+
+Three `[agent]` fields shape what reaches the prompt beyond the built-in roots and defaults.
+
+`skill_dirs` adds extra skill roots. Each entry must be a directory containing `*/SKILL.md`; relative paths resolve against the **workdir**, `~` expands to `$HOME`, and blank entries are skipped. The roots are appended after the three built-in ones (`~/.agents/skills`, `~/.tact/skills`, `<workdir>/.tact/skills`) in listed order, so a configured root beats every built-in root on a same-name clash; a resolved path that is already present is dropped as a duplicate. Scanning is recursive, exactly like the built-in roots. `/skill-reload` re-reads them without a restart. See [Ch 2](./02_chapter_skill.md).
+
+`instruction_sources` selects which project instruction files are injected into the system prompt. `agents_md` is the only accepted value (default `["agents_md"]`); an empty list, or any other value such as `claude_md`, fails config resolution. See [Ch 4](./04_chapter_prompt.md).
+
+`skill_body_auto_inject` chooses between descriptions and bodies. With `false` (the default) every turn carries only skill names and descriptions from `describe_available()`, and a full body arrives on demand through the `load_skill` tool. With `true` every skill body is injected into every system prompt — exact, but paid for on each call, so prefer the default unless a skill must be in context unconditionally. `--skill-body-auto-inject` is the CLI equivalent.
+
+### `[agent.subagent]` — a separate provider/model for `spawn_subagent`
+
+Optional. When present, `spawn_subagent` runs on this provider instead of the main
+agent's, so a cheap/fast model can drive workers while the main loop keeps its
+own. The section **references** an existing provider entry rather than
+duplicating credentials: `base_url`, `api_key` and `protocol` all come from the
+referenced `[llm.providers.<name>]` entry.
+
+`provider` is required whenever any override is set. A missing `provider` fails
+resolution with a message naming the fix, and an unknown name fails listing the
+available keys. A section that sets **no** overrides at all — a leftover header
+whose keys are all commented out, as shipped in `config.example.toml` — stays a
+silent no-op, so it never blocks startup.
+
+| Field | Resolution |
+|-------|-----------|
+| `provider` | required when any override is set; must name a key in `[llm.providers.*]` |
+| `model` | `[agent.subagent].model` → referenced entry's `model`; neither set is an error |
+| `max_tokens` | `[agent.subagent].max_tokens` → referenced entry's → **main agent's resolved `max_tokens`** (a Kimi K2.x subagent model instead falls back to `32_000`) |
+| `thinking_budget` | `[agent.subagent].thinking_budget` → referenced entry's → main agent's resolved value |
+| `reasoning_effort` | `[agent.subagent].reasoning_effort` → referenced entry's (openai / deepseek / kimi k3 semantics) |
+
+The last level is deliberately the **already-resolved main value**, not the
+literal default of 8_000: raising `[agent] max_tokens` (see §3) therefore also
+raises every subagent that does not override it. Two consequences are easy to
+get wrong, because the subagent chain is **not** the main chain:
+
+- `--max-tokens` reaches subagents only *indirectly* — it first changes the main
+  agent's resolved value, which then feeds the last level. There is no way to
+  set a main-agent-only `max_tokens`.
+- `[llm].max_tokens` (the `[llm]` global) **no longer exists** — it was removed
+  as a level (§4), so it can no longer arrive through the last level either. A
+  config still setting it fails to resolve.
+
+`[llm.providers.<referenced>].max_tokens` **is** read — the entry named by
+`provider`, not the active one. So a provider entry that sets `max_tokens`
+silently caps every subagent pointed at it (level 2 above), even when the
+subagent section does not mention `max_tokens` at all.
+
+Resolve-time validation:
+
+- `thinking_budget` must be strictly less than the subagent's own `max_tokens`.
+- `protocol = "responses"` on the referenced **DeepSeek** entry is rejected — the same unsupported combination as the main agent.
+- The referenced entry's `responses_compact_threshold` is reused but re-validated against the *subagent's* `max_tokens` and the shared window (a threshold that fit the main agent's smaller budget may not fit the subagent's). When the entry omits it, the threshold is derived from the subagent's `max_tokens`; non-Responses protocols and a zero window resolve to no threshold.
+
+`model_context_window` is **not** per-subagent: worker calls share the main
+agent's window. The `/model-subagent` picker's candidate list comes from the
+referenced entry's `models`, and picking a model or thinking budget there writes
+back to `[agent.subagent].model` plus its budget/effort key. See
+[Ch 12](./12_chapter_subagent.md) for the runtime side.
 
 ### `[voice]` — speech-to-text input (macOS-first)
 
@@ -275,9 +385,11 @@ logged or written to session history.
 
 Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](./22_chapter_llm.md)).
 
-`model_context_window` resolves with a three-tier priority (highest first):
+`model_context_window` resolves with a four-tier priority (highest first):
 
-1. **Model→window mapping** — a built-in lookup keyed on the resolved model id,
+1. **CLI `--model-context-window`**.
+2. **TOML `[agent].model_context_window`**.
+3. **Model→window mapping** — a built-in lookup keyed on the resolved model id,
    following official model docs (2026-08):
    - OpenAI: `gpt-5.6` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol` /
      `gpt-5.5` → `1_050_000`; `gpt-5.4` → `1_000_000`; `gpt-5` / `gpt-5.1` /
@@ -288,13 +400,19 @@ Kimi K2.x detection uses `provider_info.is_kimi_k2x()` at resolve time ([Ch 22](
      `claude-sonnet-4-6` → `1_000_000`; `claude-opus-4-20250514` /
      `claude-sonnet-4-20250514` / `claude-haiku-4-5` / `claude-haiku-4-20250514`
      → `200_000`.
-   - DeepSeek: `deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-reasoner` →
-     `1_000_000`; Kimi: `k3-256k` → `256_000`.
-   A match overrides both the CLI flag and the TOML file, so a stale manual
-   window can never under-report a well-known model (which would trigger
-   premature auto-compaction).
-2. **CLI `--model-context-window` / TOML `[agent].model_context_window`**.
-3. **Default `200_000`**.
+   - DeepSeek: any `deepseek-v4-*` or `deepseek-v4.*` id (prefix match, so
+     experiment / vision suffixes such as `deepseek-v4-flash-version-exp` and
+     `deepseek-v4-flash-vision-exp`, and dot-separated minor versions such as
+     `deepseek-v4.1-flash`, are covered), the unversioned gateway alias
+     `deepseek-flash`, and `deepseek-reasoner` → `1_000_000`; Kimi:
+     `k3-256k` → `256_000`.
+   The mapping is only a **fallback** for models the user did not configure: an
+   explicit CLI flag or `[agent]` value wins. The trade-off is real — a stale
+   manual window for a long-context model under-reports its real window and
+   therefore triggers **premature auto-compaction**, so delete the key rather
+   than leaving an outdated value behind. An explicit `0` is not a fallback: it
+   keeps the "disabled/unknown window" semantics described below.
+4. **Default `200_000`**.
 
 After merging CLI and TOML values, configuration fails fast when a nonzero
 `model_context_window` is less than or equal to `max_tokens`: the output
@@ -320,10 +438,14 @@ CLI-only overrides:
 |------|---------|
 | `--provider` | selects active `llm.providers.*` entry (`ProviderKind`) |
 | `--model`, `--api-key`, `--base-url` | override that entry’s fields |
-| `--max-tokens`, `--thinking-budget` | CLI → entry → `[llm]` global → defaults |
+| `--max-tokens` | CLI → entry → `[agent]` → `[llm]` global → defaults |
+| `--thinking-budget` | CLI → entry → `[llm]` global → defaults |
 | `-m` / `--permission-mode` | `[permission].mode` |
 | `--model-context-window`, `--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |
+| `--skill-body-auto-inject` | `[agent].skill_body_auto_inject` (enable only; no `--no-` form) |
+| `--no-micro-compact` | `[agent].micro_compact_enabled` (disable only) |
+| `--tokio-console` | enables the tokio-console debugging subscriber (no TOML field) |
 | `--theme` | `[ui].theme` |
 | `--brave-search-api-key` | `[tools]` |
 | `--session`, `--resume-last`, `--list-sessions` | session store (not in TOML). `--resume-last` and `--list-sessions` pass `list_sessions(Some(root_dir))` so only sessions for the current workdir appear. |
@@ -338,11 +460,35 @@ tact-ui headless "Summarize this repo"
 Plugin management lives under `tact plugin` / `/plugin`: `list` prints each
 installed plugin with a feature summary (`skills=N commands=M hooks mcp`),
 and `install` / `uninstall` / `update` / `reload` manage the
-revision-locked cache under `~/.tact/plugins`. Marketplace commands
+revision-locked cache under `~/.tact/plugins`. Plugin **state**
+(`installed.json`, `marketplaces.json`) lives separately in
+`~/.tact/plugins/state/`; legacy copies at the plugin root are still read and
+migrated on first use, so an older binary sharing the same home keeps working.
+Marketplace commands
 (`tact plugin marketplace add|list|update|remove`) manage Git/catalog
-sources. Installed plugin content contributes skills (`plugin:<name>`),
-`commands/*.md` slash commands, MCP servers, and lifecycle hooks — see Ch 2,
-8, 9, 12.
+sources plus discovered Codex local marketplaces at
+`~/.agents/plugins/marketplace.json` and
+nearest repo `.agents/plugins/marketplace.json`. Two built-in Git
+marketplaces are always registered: `claude-plugins-official` and the OpenAI
+Codex catalog `openai-curated` (`github.com/openai/plugins`). A bare
+`plugin install <name>`
+prefers a matching discovered Codex marketplace and falls back to
+`claude-plugins-official`. Installed plugin content contributes skills
+(`plugin:<name>`), `commands/*.md` slash commands, MCP servers, and lifecycle
+hooks — see Ch 2,
+8, 9, 12. MCP servers are declared in `~/.tact/mcp.json` (user) or
+`<workdir>/.tact/mcp.json` (project) — one filename per scope, with no
+cwd-level manifest or `.mcp.json` read; installed plugins still contribute
+servers. An entry is either local (`command`, spawned over stdio) or remote
+(`url`, Streamable HTTP), optionally with static `headers` or
+`auth: { "type": "oauth", ... }`; OAuth tokens are stored per server under
+`~/.tact/mcp/oauth/` and authorized with `/mcp auth <server>` (interactive) or
+`tact-ui mcp login <server>` (CLI); `/mcp list` shows the configured servers and
+their live status in the TUI (idle-only, never reconnects). The CLI manages the
+whole lifecycle —
+`tact-ui mcp list` (every server with transport and status), `get <name>` (one
+server, its tools), `add`/`remove` (`--user` for the home file, `--force` to
+replace), `login`/`logout` (stored credentials) — see Ch 8.
 
 Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.
 

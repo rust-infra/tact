@@ -306,6 +306,15 @@ impl super::SessionStore for SqliteSessionStore {
             serde_json::to_string(content).context("failed to serialize message content")?;
         let now = Self::now();
 
+        // The insert and the session `updated_at` bump are one logical write:
+        // committing only the first would leave a message whose session looks
+        // stale (and, for the TUI's history reload, an ordering it cannot see).
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin message transaction")?;
+
         let id =
             sqlx::query("INSERT INTO messages (session_id, role, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)")
                 .bind(session_id)
@@ -313,7 +322,7 @@ impl super::SessionStore for SqliteSessionStore {
                 .bind(content_json)
                 .bind(ordinal)
                 .bind(now)
-                .execute(&*self.pool)
+                .execute(&mut *tx)
                 .await
                 .context("failed to insert message")?
                 .last_insert_rowid();
@@ -321,9 +330,13 @@ impl super::SessionStore for SqliteSessionStore {
         sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
             .bind(now)
             .bind(session_id)
-            .execute(&*self.pool)
+            .execute(&mut *tx)
             .await
             .context("failed to update session timestamp")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit message transaction")?;
 
         Ok(id)
     }

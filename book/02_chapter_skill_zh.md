@@ -27,10 +27,9 @@ Skill 是一份 Markdown 文档，教 agent 如何完成专项任务（编码规
 ```mermaid
 graph TB
     subgraph Disk["Skill 根目录"]
-        T["workdir/.tact/skills/*/SKILL.md"]
-        U["~/.tact/skills/*/SKILL.md"]
-        A["~/.agents/skills/*/SKILL.md"]
-        P["workdir/.claude/skills/*/SKILL.md"]
+        T["workdir/.tact/skills/**/SKILL.md"]
+        U["~/.tact/skills/**/SKILL.md"]
+        A["~/.agents/skills/**/SKILL.md"]
         C["agent.skill_dirs 配置"]
         I["~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md"]
     end
@@ -71,21 +70,22 @@ graph TB
     SR --> SE
 ```
 
-发现根目录：
+发现根目录（最具体者在前）：
 
 | 根 | 路径 | 角色 |
 |----|------|------|
 | 项目本地 | `<workdir>/.tact/skills/` | 仓库内 tact skills |
 | User | `~/.tact/skills/` | 跨项目的个人 skills |
 | Global agents | `~/.agents/skills/` | 共享 agents skills |
-| Project（Claude） | `<workdir>/.claude/skills/` | 团队/仓库 skills（Claude 兼容） |
 | 配置额外目录 | `[agent].skill_dirs` | TOML 额外根（相对 workdir；支持 `~`） |
 | Installed plugin | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/` | 已安装插件的 playbook |
 | Installed plugin commands | `~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/commands/*.md` | 旧式 Claude 斜杠命令 |
 
-加载顺序：项目本地 → user → global agents → Claude project → **配置 `skill_dirs`** → 已安装插件。**同名的独立 skill 以后者覆盖**。已安装插件的 skill 始终使用 `plugin:skill` 名称，因此不能替换独立 skill。
+加载顺序（升序 —— 同名冲突时靠后的根胜出）：`~/.agents/skills/` → `~/.tact/skills/` → `<workdir>/.tact/skills/` → **配置 `skill_dirs`**（按列出顺序）→ 已安装插件。Codex 兼容根被刻意排在最前，因此它会输给 Tact 自己的根和项目根；上表按「最具体者在前」列出同一批根。已安装插件的 skill 始终带 `plugin:` 前缀，因此永远不能替换独立 skill。
 
 旧式 `commands/*.md` 在插件的 `skills/` **之后**加载进同一注册表（Claude Code 两种布局加载方式相同，只是文件布局不同），因此同名命令覆盖技能。命令名取自文件 stem：`commands/commit.md` → `/plugin:commit`。
+
+根目录下的条目可以是**符号链接**：遍历使用 `follow_links(true)`，因此把 skill 目录链接进位的安装方式（`~/.agents/skills/omarchy -> /usr/share/omarchy/default/agents/skills/omarchy`）与复制一份完全等价。`walkdir` 默认不跟随链接，而被链接的目录既不会被下降进入、也不满足 `is_file()`，这些 skill 过去会被无提示地丢弃。插件根在它那套扁平扫描允许的范围内遵守同一条规则：判断子项用 `Path::is_dir()`（stat，跟随链接）而不是 `DirEntry::file_type()`（lstat），因此符号链接形式的插件 skill 目录同样能加载——深度仍然只有一层。
 
 ---
 
@@ -151,11 +151,11 @@ description: Comprehensive Rust coding guidelines
 
 `SkillRegistry::load_skills()`：
 
-- 遍历 `skill_search_dirs()` 中的每个根（`WalkDir`）
+- 遍历 `skill_search_dirs()` 中的每个根（`WalkDir`，**递归**——根下任意深度的 `SKILL.md` 都会被收进来）
 - 匹配文件名恰好为 `SKILL.md` 的文件
 - 插入以 skill 名称为 key 的 `HashMap<String, SkillDocument>`
 
-随后，`get_skill_registry()` 会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill 名称添加前缀（`plugin:skill`）。同一插件的旧式 `commands/*.md` 斜杠命令随后加载（`load_plugin_commands`），同名命令覆盖技能。命令名取文件 stem（`commands/commit.md` → `plugin:commit`），frontmatter 的 `description` / `argument-hint` / `allowed-tools` / `model` 解析进 manifest（后三者仅存储，v1 不强制执行）。
+随后，`get_skill_registry()` 会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill 名称添加前缀（`plugin:skill`）。**插件的扫描只有一层，不递归**：只读 `skills/<name>/SKILL.md`，更深的 `skills/group/<name>/SKILL.md` 会被忽略且没有任何提示。这与该格式来源的 Claude Code 插件布局一致——它与独立根之间的深度差异是刻意为之，由 `plugin_skills_only_load_direct_skill_children`（`skill/mod.rs`）固定住。同一插件的旧式 `commands/*.md` 斜杠命令随后加载（`load_plugin_commands`），同样是扁平的：只取 `commands/` 下的直接 `.md` 文件，绝不进子目录。命令名取文件 stem（`commands/commit.md` → `plugin:commit`），frontmatter 的 `description` / `argument-hint` / `allowed-tools` / `model` 解析进 manifest（后三者仅存储，v1 不强制执行）。
 
 重名的独立 skill：后扫描的根**覆盖**先前的——无警告。同一根内，后遍历到的条目也会覆盖。插件 skill 位于独立的 `plugin:skill` 命名空间中。
 
@@ -190,6 +190,8 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry>
 ```
 
 在模板中渲染为 `# Available skills`。见 [系统提示词](./04_chapter_prompt_zh.md)——该节在动态边界之上（除非会话中途在磁盘上增删 skills 且未 reload，否则基本稳定）。
+
+`# Available skills` **只来自磁盘**：注册表里从来不会有 MCP server 提供的东西。MCP server 是在*工具描述*里宣传自己 skill 的（`skill://<server>/<skill>/SKILL.md`），Tact 原样转发，因此请求确实携带它们，而 system prompt 对此一字不提。`/view-system-prompt` 弹窗的 "Assembled current prompt" 视图会在末尾的 `## MCP skills` 段列出这些路径。
 
 ### load_skill 工具
 
@@ -255,7 +257,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 | 方面 | Skills | Memory |
 |------|--------|--------|
-| 位置 | `.tact/skills/` + `~/.tact/skills/` + `.claude/skills/`（+ 可选 `skill_dirs`） | `~/.tact/memory/`（用户全局） |
+| 位置 | `.tact/skills/` + `~/.tact/skills/` + `~/.agents/skills/`（+ 可选 `skill_dirs`） | `~/.tact/memory/`（用户全局） |
 | 格式 | `SKILL.md` + 可选 frontmatter | `{name}.md` + 必需 frontmatter |
 | 提示词注入 | 始终摘要；正文按需 / 斜杠 | 每轮全文（动态节） |
 | 写入路径 | 编辑磁盘文件（无 agent 工具） | `save_memory` 工具 |

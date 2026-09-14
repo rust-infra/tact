@@ -1,6 +1,8 @@
 # TUI Rendering Documentation
 
-This document describes the rendering architecture, module division, rendering flow, and performance optimization strategies of the `crates/tui/src/render` module.
+This document describes the rendering architecture, module division, rendering flow, and performance optimization strategies of the TUI rendering layer.
+
+Rendering is split across two crates: the **shell** keeps its `&App`-shaped entry points in `crates/tui/src/render/`, while the **pure drawing** lives in `crates/agent_tui_kit/src/render/` as `&RenderCtx`-shaped functions with no `App` dependency.
 
 ---
 
@@ -9,37 +11,67 @@ This document describes the rendering architecture, module division, rendering f
 The TUI is drawn with [ratatui](https://docs.rs/ratatui) and follows a **layered rendering** design:
 
 - The main loop in `lib.rs` initializes the terminal, handles events, and schedules rendering.
-- The `render/` directory contains all drawing logic, split into submodules by feature.
+- The shell's `render/` directory owns the `&App`-shaped entry points; the kit's `render/` directory owns the pure drawing functions. `crates/tui/src/render/mod.rs` wires them together (re-exporting the kit's `render_md` / `renderable` / `util`, and `cells::{separator, thinking}`).
 - Rendering is frame-based: each `Frame` converts the `App` state into a terminal screen.
 
 ```
-crates/tui/src/render/
-├── mod.rs              # module re-exports
-├── layout.rs           # main area layout
-├── bar.rs              # top/bottom status bars
-├── input.rs            # input box and command line
-├── log.rs              # log panel
-├── log_column.rs       # log column renderer
-├── render_md.rs        # Markdown rendering
-├── renderable.rs       # Renderable trait
+crates/tui/src/render/            # shell layer: `&App` entry points + App-level tests
+├── mod.rs              # module tree + re-exports of kit render modules
+├── layout.rs           # main area layout (log / history / help)
+├── bar.rs              # `&App` wrappers for the kit status / bottom bars
+├── input.rs            # `&App` wrapper for the kit input box
+├── log.rs              # `&App` log panel wrapper
+├── log_style.rs        # log line styling
 ├── slash_style.rs      # /skill-name vs args highlighting
-├── util.rs             # text wrapping utilities
-├── welcome.rs          # startup logo component
-├── cells/              # card rendering cells
-│   ├── text.rs
-│   ├── thinking.rs
-│   ├── tool.rs         # tool invocation blocks (title + meta + detail card)
-│   ├── diff.rs
-│   └── code.rs
-└── popups/             # popups
-    ├── code_popup.rs
+├── task_panel.rs       # task panel
+├── test_harness.rs     # `make_app` / `render_app_text` (test-support)
+├── cells/              # App-level cell integration tests
+└── popups/             # popups that need full `App` state
     ├── command_palette.rs
+    ├── code_popup.rs
     ├── diff_popup.rs
     ├── file_picker.rs   # @-file attachment directory browser
     ├── help.rs
     ├── history.rs
+    ├── mermaid_popup.rs
     ├── select.rs
     ├── slash_command.rs # Insert `/` menu (Commands then Skills)
+    ├── subagent_popup.rs
+    ├── system_prompt_popup.rs
+    ├── task_dag_popup.rs
+    └── thinking_popup.rs
+
+crates/agent_tui_kit/src/render/  # pure drawing: `&RenderCtx`, no `App`
+├── mod.rs
+├── bar.rs              # top status bar + 2-row bottom bar
+├── ctx.rs              # `RenderCtx` — the state each render fn reads
+├── input.rs            # input box + soft wrapping (`wrap_line`)
+├── log.rs              # log panel
+├── log_column.rs       # log column renderer
+├── mermaid_sequence.rs # Mermaid sequence-diagram cards
+├── pulldown.rs         # pulldown-cmark glue
+├── render_md.rs        # Markdown rendering
+├── renderable.rs       # Renderable trait
+├── selectable_text.rs  # text selection model
+├── slash_style.rs      # /skill-name vs args highlighting
+├── sticky_host.rs      # sticky host rows for subagent/task domains
+├── task_panel.rs       # task panel
+├── util.rs             # text wrapping utilities
+├── cells/              # card rendering cells
+│   ├── text.rs
+│   ├── thinking.rs
+│   ├── tool.rs         # tool invocation blocks (title + meta + detail card)
+│   ├── separator.rs
+│   ├── markdown.rs
+│   └── code.rs
+└── popups/             # popups that render from the ctx alone
+    ├── code_popup.rs
+    ├── diff_popup.rs
+    ├── history.rs
+    ├── mermaid_popup.rs
+    ├── select.rs
+    ├── subagent_popup.rs
+    ├── system_prompt_popup.rs
     └── thinking_popup.rs
 ```
 
@@ -98,59 +130,64 @@ It also updates `app.mouse.log_area` from the layout result for later mouse hit 
 
 ### Top Status Bar (`render_status_bar`)
 
-- Shows current input mode (`Normal` / `Insert` / `Palette` / `Select` / `FilePicker`).
-- Shows task status according to `Status`:
-  - `Idle`: theme, language, shortcut hints
-  - `Planning`: planning in progress
-  - `Executing`: step N of M
-  - `WaitingForUser`: waiting for user approval
-  - `Done`: task complete (green highlight for 2s)
-- Special overrides:
-  - `flash_msg`: temporary notification (3s)
+- Always starts with the **input mode** (`emoji label` from `Messages`): `◆ NORMAL`, `◇ INSERT`, `⚡ PALETTE`, `▣ SELECT`, `📎 FILES`.
+- Then the **focused panel** label, rendered by *every* status arm as `{mode} {focus} │ …` (`FocusedPanel` currently has only the `Log` variant, so it always reads `Log`).
+- Then the task status, according to `Status` (four variants — see `docs/state_machines.md`):
+  - `Idle`: `{mode} {focus} │ ⌨H Hist │ 🎨 {theme} │ 🌐 {language} │ ? Help │ ✕ Quit` (`status_idle_tmpl`, filled with exactly four placeholders in that order).
+  - `Planning`: `{mode} {focus} │ {spinner} {status_planning}` (accent color).
+  - `Executing { current_step, total }`: `{mode} {focus} │ {spinner} {status_executing_tmpl}` where the template is `Executing step {}` / `正在执行步骤 {}` — **no denominator**: the plan's step total is not what a running task is judged by. The progress step is derived from completed + active tools (`completed + 1` while tools are running, else `completed`), not from `current_step`. With parallel tools it gains ` │ running {n}` / ` │ 并行中 {n}` (warning color).
+  - `Done`: `{mode} {focus} │ ✅ {status_done_tmpl}` (success background, bold, 2s highlight).
+- Overrides: a temporary `flash_msg` replaces the whole line with `⚠ {msg}` (3s).
+- The bar renders **no clock or gauge of its own**: the `[████░░] n%` step gauge was dropped on 2026-09-14 (it restated the step count as glyphs) and the live task elapsed moved to bottom-bar row 1, next to the uptime.
 
 ### Bottom Bar (`render_bottom_bar`)
 
-Always **2 rows**, built from `Vec<Span>` with per-segment color hierarchy:
+Always **2 rows**, built as `Vec<DropGroup>` (each group a `Vec<Span>`) with a per-segment color hierarchy:
 
-**Row 1 — context:** focus panel label, elapsed time, process uptime, working directory, Git branch, account balance/quota.
+**Row 1 — run context** (separator ` │ `), in display order:
 
-**Row 2 — usage:** model with compact limits (`8k/32k`), context usage meter, token total, cache hit percentage.
+1. permission mode — `plan` / `default` / `auto` (`bottom_permission_*`), **never dropped** (security-critical);
+2. working directory;
+3. process uptime — `⊙ Up 00:58` / `⊙ 运行 00:58`;
+4. live task elapsed — `⏱ Elapsed 00:12` / `⏱ 耗时 00:12`, only while a task is in flight;
+5. Git branch — `⎇ name` (`unknown` when unset);
+6. optional account — balance (`¤ CNY 9.60`) or quota windows.
+
+**Row 2 — usage** (separator: two spaces), in display order: model name (`-` when unset), `out {max_tokens}`, `think {effort|budget}`, `ctx {pct}% {used}/{window}`, cache `▣ {pct}%`, turn counters `⟳ {user}` (+ `⇅ {llm}` once the task has made its first LLM call), frozen turn timing `⏱ mm:ss` + `avg mm:ss`.
 
 Target layout (wide terminal):
 ```text
-◷ 00:03 · ⊙ 00:58 · ~/Projects/tact · ⎇ feat/web · ¤ CNY 9.60
-deepseek-v4-flash 8k/32k · [░░░░░░░░░░] 0% · 6.6K/1M · ∑6612 · ▣8%
+default │ ~/Projects/tact │ ⊙ Up 00:58 │ ⏱ Elapsed 00:12 │ ⎇ feat/web │ ¤ CNY 9.60
+deepseek-v4-flash  out 128K  think high  ctx 4% 45K/1M  ▣ 30%  ⟳ 12  ⇅ 3  ⏱ 02:05 avg 01:45
 ```
 
 **Icons (language-invariant Unicode):**
 
-| Meaning | Glyph |
-|---------|-------|
-| Task elapsed | `◷` |
-| Process uptime | `⊙` |
-| Git branch | `⎇` |
-| Balance / quota | `¤` |
-| Tokens | `∑` |
-| Cache hit % | `▣` |
+| Meaning | Glyph | | Meaning | Glyph |
+|---------|-------|---|---|---|
+| Task elapsed / turn timing | `⏱` | | Balance / quota | `¤` |
+| Process uptime | `⊙` | | Session user turns | `⟳` |
+| Git branch | `⎇` | | Task LLM turns | `⇅` |
+| Cache hit % | `▣` | | | |
 
-**Separators:** ` · ` (space-middot-space) only.
+**Separators:** ` │ ` on row 1, two spaces on row 2.
 
-**Color roles (all from existing `Theme`):**
+**Color roles (all from `Theme`):**
 
 | Role | Content | Theme source |
 |------|---------|-------------|
-| Dim | icons, ` · ` | `theme.muted_fg()` |
-| Primary | elapsed, model, focus label | `theme.fg` |
-| Secondary | uptime, path, token count, cache % | `theme.bottom_bar_fg` |
+| Dim | icons, separators | `theme.muted_fg()` |
+| Primary | model, `out`, `think`, ctx meter | `theme.fg` |
+| Secondary | path, uptime, task elapsed, cache %, turns, timing, permission `default` | `theme.bottom_bar_fg` |
 | Accent | branch (`⎇ name`) | `theme.accent` |
-| Success/Error | balance available vs not | `theme.success` / `theme.error` |
-| Meter | context usage bar | `theme.accent` |
+| Success / Error | balance & quota availability; permission `auto` | `theme.success` / `theme.error` |
+| Warning | permission `plan` | `theme.warning` |
 
-**Narrow-width drop order** (each row independently):
-Row 1 drops: uptime → path (in that order).
-Row 2 drops: cache → token total → context meter.
+**Narrow-width drop order** (each row independently; `fit_row_spans` drops from the end of the group list, and push order *is* survival priority):
+Row 1 drops **task elapsed → uptime → path** (permission mode, branch and account are never dropped).
+Row 2 drops **timing → turns → cache → ctx** (model, `out` and `think` are never dropped, so `ctx` survives longest among the droppable segments).
 
-**Helpers:** Pure formatting functions (`format_model_compact`, `format_balance_entry`, `format_quota_window`, `format_cache_pct`, `format_context_meter_new`) are unit-tested in `bar.rs::render_tests`.
+**Helpers:** Pure formatting functions — `format_task_elapsed`, `format_quota_value`, `format_model_name`, `format_max_out_tokens`, `format_think_segment`, `format_balance_entry`, `format_quota_window`, `format_cache_pct`, `format_context_meter`, `format_mm_ss`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`, `context_usage_pct`, `group_total_width`, `fit_row_spans`, `build_account_spans` — are unit-tested in `agent_tui_kit::render::bar::render_tests`, and the App-level integration/width-budget tests live in `crates/tui/src/render/bar.rs::render_tests`.
 
 ---
 
@@ -167,7 +204,7 @@ Used for `Palette` mode:
 
 - Supports multi-line input up to 3 display rows; long lines soft-wrap at character boundaries (CJK double-width aware), and box height / line stats count wrapped rows, not just explicit `\n` splits.
 - Renders a rounded-border input box in `Insert` mode.
-- Renders an approval banner in `WaitingForUser` state.
+- **No approval banner**: an agent permission prompt arrives as `AgentUpdate::RequestSelect`, which fills the select popup (`popups/select.rs`) and switches to `InputMode::Select`; the prompt is rendered by the popup overlay, not by the input box.
 - Cursor is computed by character width (supports CJK full-width characters) and mapped through the soft-wrapped rows (`caret_in_wrapped`) so it lands on the visible text.
 
 ---
@@ -365,7 +402,7 @@ Popups usually:
 
 Rendering is driven by the following state machines; see `docs/state_machines.md` for details:
 
-- `Status`: Idle / Planning / Executing / WaitingForUser / Done
+- `Status`: Idle / Planning / Executing / Done
 - `InputMode`: Normal / Insert / Palette / Select / FilePicker
 - `SelectPopup`: Inactive / Active / Confirmed / Cancelled
 - `StreamState` / `ThinkingState`: streaming output parsing

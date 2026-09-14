@@ -203,6 +203,11 @@ pub fn execute_request(home: PluginHome, request: PluginRequest) -> Result<Plugi
             plugin,
             marketplace,
         } => {
+            let marketplace = if marketplace.is_empty() {
+                default_install_marketplace(&home, &plugin)?
+            } else {
+                marketplace
+            };
             let installed = PluginInstaller::new(home).install(&plugin, &marketplace)?;
             Ok(PluginResult::Installed {
                 plugin: installed.id,
@@ -262,6 +267,23 @@ pub fn execute_request(home: PluginHome, request: PluginRequest) -> Result<Plugi
     }
 }
 
+fn default_install_marketplace(home: &PluginHome, plugin: &str) -> Result<String> {
+    let service = MarketplaceService::new(home.clone());
+    let state = PluginStore::new(home.clone()).load_marketplaces()?;
+    for (name, record) in state.iter() {
+        if !matches!(record.source, MarketplaceSource::LocalPath(_)) {
+            continue;
+        }
+        if service
+            .catalog(name)
+            .is_ok_and(|catalog| catalog.plugins.contains_key(plugin))
+        {
+            return Ok(name.to_owned());
+        }
+    }
+    Ok(OFFICIAL_MARKETPLACE.to_owned())
+}
+
 /// Runs an async future from a synchronous context, handling both
 /// when a tokio runtime is active and when it isn't.
 pub(crate) fn block_on_async<F: std::future::Future<Output = T>, T>(future: F) -> T {
@@ -282,7 +304,10 @@ mod tests {
     use tempfile::tempdir;
     use tokio::sync::mpsc::unbounded_channel;
 
-    use super::{PluginEvent, PluginHome, PluginRequest, spawn_unavailable_worker, spawn_worker};
+    use super::{
+        PluginEvent, PluginHome, PluginRequest, PluginResult, execute_request,
+        spawn_unavailable_worker, spawn_worker,
+    };
 
     async fn run_request(home: PluginHome, request: PluginRequest) -> PluginEvent {
         let (request_tx, request_rx) = unbounded_channel();
@@ -383,6 +408,51 @@ mod tests {
         .await;
 
         assert!(matches!(event, PluginEvent::Failed { .. }));
+    }
+
+    #[test]
+    fn install_without_marketplace_prefers_discovered_codex_marketplace() {
+        let temporary_home = tempdir().unwrap();
+        fs::create_dir_all(temporary_home.path().join(".agents/plugins")).unwrap();
+        fs::create_dir_all(temporary_home.path().join("plugins/demo/skills/check")).unwrap();
+        fs::write(
+            temporary_home
+                .path()
+                .join(".agents/plugins/marketplace.json"),
+            r#"{
+                "name":"codex-local",
+                "plugins":[{
+                    "name":"demo",
+                    "source":{"source":"local","path":"./plugins/demo"}
+                }]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            temporary_home
+                .path()
+                .join("plugins/demo/skills/check/SKILL.md"),
+            "---\nname: check\n---\n",
+        )
+        .unwrap();
+
+        let home = PluginHome::from_home(temporary_home.path());
+        let result = execute_request(
+            home,
+            PluginRequest::Install {
+                plugin: "demo".into(),
+                marketplace: String::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            PluginResult::Installed {
+                plugin: "demo".into(),
+                marketplace: "codex-local".into(),
+            }
+        );
     }
 
     #[tokio::test]

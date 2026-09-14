@@ -11,13 +11,13 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.27"
+version = "1.1.28"
 edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1.0"
-arboard = "3"
+arboard = { version = "3", features = ["wayland-data-control"] }
 async-openai = "0.20"
 bytes = "1"
 async-openai-responses = { package = "async-openai-local", git = "https://github.com/rust-infra/async-openai.git", branch = "feat/tact", version = "0.41.3", features = ["responses", "byot"] }
@@ -44,7 +44,13 @@ syntect = "5.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls"] }
 reqwest-eventsource = "0.6"
-rmcp = { version = "0.17.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "0.17.0", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+    "auth",
+] }
 schemars = "1.0"
 secrecy = "0.8"
 secrecy10 = { package = "secrecy", version = "0.10.3" }
@@ -66,6 +72,9 @@ cpal = "0.15"
 toml = "0.8"
 toml_edit = "0.22"
 tracing = "0.1"
+# tact-ui installs its own file fmt layer; no default features (no ansi /
+# tracing-log) so the `log` bridge cannot leak MCP logs into the TUI.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 unicode-segmentation = "1"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }

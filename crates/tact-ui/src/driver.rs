@@ -2,7 +2,8 @@
 
 use std::{path::Path, sync::atomic::Ordering};
 
-use tact::{Agent, extract_text};
+use tact::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
+use tact_llm::{Message, Role};
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -80,8 +81,10 @@ pub async fn run_command_loop_with_account(
         match cmd {
             UserCommand::UiResponse(response) => {
                 // Never await the in-flight task: the agent may be blocked
-                // waiting for exactly this answer.
-                ui_responder.handle_response(response);
+                // waiting for exactly this answer. A stale response (already
+                // answered/withdrawn) is harmless; `respond` returns false and
+                // must not affect any other pending request.
+                ui_responder.respond(response);
             }
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
@@ -108,7 +111,7 @@ pub async fn run_command_loop_with_account(
                 // Immediate snapshot: does NOT wait for the running task —
                 // stats live in an Arc<RwLock<SessionStats>> shared with the
                 // agent, so /stats responds instantly even mid-run.
-                let stats_text = stats.read().expect("session stats lock poisoned").summary();
+                let stats_text = stats.read_recover().summary();
                 if let Some(tx) = &ui_tx {
                     let _ = tx.send(AgentUpdate::SessionStats(stats_text));
                 }
@@ -175,6 +178,8 @@ pub async fn run_command_loop_with_account(
     }
 
     let mut agent = agent.expect("agent should be available after command loop");
+    // SessionEnd hooks fire once at teardown, symmetrical with SessionStart.
+    let _ = agent.dispatch_session_end_hooks().await;
     agent.shutdown_mcp().await;
     agent
 }
@@ -187,12 +192,26 @@ fn spawn_wakeup_task(
     if active.is_some() {
         return;
     }
+    // A wake-up turn only delivers queued results into the parent's context.
+    // If a turn that just finished already drained the queue, the summary is
+    // already in context and this turn would be empty — skip it entirely.
+    if !agent
+        .as_ref()
+        .is_some_and(Agent::has_pending_subagent_results)
+    {
+        return;
+    }
     let Some(mut task_agent) = agent.take() else {
         return;
     };
     let work_dir = image_work_dir.to_path_buf();
     *active = Some(tokio::spawn(async move {
-        let prompt = "A background subagent finished. Review its result below.".to_string();
+        // The queued result reaches the model during the drain below, so it
+        // may legitimately not appear verbatim as a result "below"; point at
+        // `check_subagent` as the fallback way to retrieve it.
+        let prompt = "A background subagent finished. Review its result below \
+                      (or call check_subagent if none is shown)."
+            .to_string();
         handle_user_command(&mut task_agent, UserCommand::SubmitTask(prompt), &work_dir).await;
         task_agent
     }));
@@ -230,27 +249,66 @@ async fn handle_user_command_with_account(
                 return;
             }
 
-            match agent.agent_loop(Some(task_message)).await {
-                Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
-                    if let Some(last) = agent.runtime.context.last() {
-                        let text = extract_text(&last.content);
-                        agent.emit_update(AgentUpdate::TaskComplete(text));
+            // A Stop hook may `block` to request one more turn (Codex
+            // continuation-fragment semantics: the block reason becomes the
+            // next prompt). Bound the loop so a misbehaving hook cannot spin
+            // the agent forever.
+            const MAX_STOP_CONTINUATIONS: u32 = 4;
+            let mut task_message = Some(task_message);
+            let mut stop_continuations = 0u32;
+            loop {
+                match agent.agent_loop(task_message.take()).await {
+                    Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
+                        // Turn completed normally: run Stop hooks to decide
+                        // whether to keep going.
+                        match agent.dispatch_stop_hooks().await {
+                            Ok(HookControl::Block(reason))
+                                if stop_continuations < MAX_STOP_CONTINUATIONS =>
+                            {
+                                stop_continuations += 1;
+                                agent.emit_update(AgentUpdate::Info(format!(
+                                    "[Stop hook] continuing: {reason}"
+                                )));
+                                task_message = Some(Message::new_text(Role::User, reason));
+                                continue;
+                            }
+                            Ok(HookControl::Block(reason)) => {
+                                agent.emit_update(AgentUpdate::Info(format!(
+                                    "[Stop hook] continuation limit reached; stopping: {reason}"
+                                )));
+                            }
+                            Ok(HookControl::Continue) | Err(_) => {}
+                        }
+                        if let Some(last) = agent.runtime.context.last() {
+                            let text = extract_text(&last.content);
+                            agent.emit_update(AgentUpdate::TaskComplete(text));
+                        }
+                        // TaskCompleted hooks fire once per completed user task.
+                        if let Err(error) = agent.dispatch_task_completed_hooks().await {
+                            agent.emit_update(AgentUpdate::Info(format!(
+                                "[TaskCompleted hook failed] {error}"
+                            )));
+                        }
+                    }
+                    Ok(()) => {
+                        // Cancelled: clear TUI busy state (Planning/Executing) so
+                        // queued (pending) messages are flushed rather than waiting
+                        // on a stale busy state.
+                        agent.emit_update(AgentUpdate::TaskCancelled);
+                    }
+                    Err(e) => {
+                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
                     }
                 }
-                Ok(()) => {
-                    // Cancelled: clear TUI busy state (Planning/Executing) so
-                    // queued (pending) messages are flushed rather than waiting
-                    // on a stale busy state.
-                    agent.emit_update(AgentUpdate::TaskCancelled);
-                }
-                Err(e) => {
-                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
-                }
+                break;
             }
         }
         UserCommand::Compact => {
             agent.emit_update(AgentUpdate::Info("[compacting]".into()));
-            if let Err(error) = agent.compact_history(None).await {
+            if let Err(error) = agent
+                .compact_history_with_trigger(tact::compact::CompactTrigger::Command, None)
+                .await
+            {
                 agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
                     "Compaction failed: {error}"
                 ))));
@@ -320,8 +378,87 @@ async fn handle_user_command_with_account(
         UserCommand::SetModel(model) => {
             agent.set_model(model);
         }
+        UserCommand::McpAuth { server } => {
+            // Stream progress lines instead of buffering them: the URL is
+            // reported *before* the flow blocks on the browser redirect, so
+            // buffering would hide it for the whole round-trip — and forever,
+            // if the user never authorizes, since the callback only times out.
+            let (line_tx, line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            // `authorize_server` requires a `Send` notify closure, which rules
+            // out capturing `&Agent` directly; the channel decouples the two.
+            let mut notify = move |line: &str| {
+                let _ = line_tx.send(line.to_owned());
+            };
+            let result = stream_auth_progress(
+                tact::mcp::authorize_server(&server, &mut notify),
+                line_rx,
+                |line| agent.emit_update(AgentUpdate::Info(line)),
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    agent.emit_update(AgentUpdate::Info(format!(
+                        "Authorized MCP server {server}; reloading MCP servers..."
+                    )));
+                    let report = agent.reload_mcp_router().await;
+                    for line in report.notice_lines() {
+                        agent.emit_update(AgentUpdate::Info(line));
+                    }
+                    agent.emit_update(AgentUpdate::Info(format!(
+                        "MCP reload complete ({} server(s) connected)",
+                        report.connected.len()
+                    )));
+                }
+                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                    format!("MCP authorization failed for {server}: {error:#}"),
+                ))),
+            }
+        }
+        UserCommand::McpList => {
+            // Live view: describe what the agent's *current* router holds.
+            // Never reload here — a reconnect would drop live stdio children
+            // and duplicate remote dials just to print a table.
+            match tact::mcp::describe_servers(&agent.mcp_router.server_summaries()) {
+                Ok(views) => agent.emit_update(AgentUpdate::MdInfo(
+                    crate::mcp_cli::render_live_listing(&views),
+                )),
+                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                    format!("MCP list failed: {error:#}"),
+                ))),
+            }
+        }
         _ => {}
     }
+}
+
+/// Awaits `auth` while forwarding its progress lines to `emit` as they arrive.
+///
+/// The authorization URL is the one line that matters, and
+/// `authorize_server` produces it *before* blocking on the loopback callback —
+/// waiting for the future to resolve before showing it would hide the URL for
+/// the whole browser round-trip, and for good if the user never authorizes.
+///
+/// Any lines still queued when the flow finishes are drained afterwards, so a
+/// URL delivered in the same poll that completes the flow is never dropped.
+async fn stream_auth_progress<F>(
+    auth: F,
+    mut line_rx: UnboundedReceiver<String>,
+    mut emit: impl FnMut(String),
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    tokio::pin!(auth);
+    let output = loop {
+        tokio::select! {
+            output = &mut auth => break output,
+            Some(line) = line_rx.recv() => emit(line),
+        }
+    };
+    while let Ok(line) = line_rx.try_recv() {
+        emit(line);
+    }
+    output
 }
 
 #[cfg(test)]
@@ -514,6 +651,24 @@ mod tests {
         assert!(saw_error, "QueryBackground with unknown id must emit Error");
     }
 
+    #[tokio::test]
+    async fn mcp_list_emits_the_live_listing_without_reconnecting() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(&mut agent, UserCommand::McpList, &work_dir).await;
+
+        let mut saw_md = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::MdInfo(md) = update {
+                assert!(md.contains("MCP Servers"), "md: {md}");
+                saw_md = true;
+            }
+        }
+        assert!(saw_md, "McpList must emit MdInfo with the server listing");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn subagent_finished_notification_is_not_lost_when_parent_finishes() {
         use std::sync::atomic::AtomicUsize;
@@ -536,6 +691,9 @@ mod tests {
         });
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        // Share the parent's result queue so the test can enqueue the child's
+        // summary exactly as the real async child does.
+        let pending = agent.runtime.pending_subagent_results.clone();
         let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 
@@ -550,6 +708,16 @@ mod tests {
         .await
         .expect("parent task should start");
 
+        // The child enqueues its summary before emitting the notification, so
+        // the wake-up turn's drain is guaranteed to see it.
+        pending
+            .lock()
+            .unwrap()
+            .push_back(tact::subagent::SubagentResult {
+                child_id: "child-1".into(),
+                summary: "finished".into(),
+                success: true,
+            });
         // The notification arrives while the parent turn is still running.
         user_cmd_tx
             .send(UserCommand::SubagentFinishedNotification {
@@ -574,6 +742,76 @@ mod tests {
 
         wait_result.expect("queued wake-up should run after the parent finishes");
         assert_eq!(completions, 2);
+    }
+
+    /// A notification whose result an earlier turn already drained must not
+    /// spawn an empty wake-up turn: the summary is already in the parent's
+    /// context, so the extra turn would have nothing to review.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subagent_notification_with_empty_queue_does_not_wake_parent() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Duration;
+
+        install_test_config();
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_rx = release.clone();
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let calls_rx = calls.clone();
+        let mock = MockClient::with_responder(move |_request, _idx| {
+            calls_rx.fetch_add(1, Ordering::Relaxed);
+            while !release_rx.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok((
+                vec![text_block("parent done")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
+
+        user_cmd_tx
+            .send(UserCommand::SubmitTask("parent task".into()))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while calls.load(Ordering::Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("parent task should start");
+
+        // The queue is deliberately left empty: this models a turn that already
+        // drained and injected the summary.
+        user_cmd_tx
+            .send(UserCommand::SubagentFinishedNotification {
+                child_id: "child-1".into(),
+                summary: "already delivered".into(),
+                success: true,
+            })
+            .unwrap();
+        release.store(true, Ordering::Relaxed);
+
+        // Give a wrongly-spawned wake-up turn time to reach the client.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(user_cmd_tx);
+        let _ = loop_handle.await;
+
+        let mut completions = 0;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::TaskComplete(_) = update {
+                completions += 1;
+            }
+        }
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "an empty queue must not trigger a wake-up request"
+        );
+        assert_eq!(completions, 1, "only the parent turn should complete");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -633,5 +871,85 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), loop_handle)
             .await
             .expect("command loop must finish");
+    }
+
+    /// The URL must reach the user while the flow is *still* waiting for the
+    /// browser, which is exactly what the old buffer-then-flush version broke.
+    #[tokio::test]
+    async fn auth_progress_reaches_the_user_before_the_flow_finishes() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use std::time::Duration;
+
+        use super::stream_auth_progress;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (line_tx, line_rx) = unbounded_channel::<String>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_in_task = Arc::clone(&finished);
+        let auth = async move {
+            line_tx
+                .send("https://example.test/authorize?state=abc".to_string())
+                .expect("receiver alive");
+            // Block like the real flow does on the loopback callback.
+            let _ = release_rx.await;
+            finished_in_task.store(true, Ordering::SeqCst);
+        };
+
+        let (seen_tx, mut seen_rx) = unbounded_channel::<String>();
+        let progress = stream_auth_progress(auth, line_rx, move |line| {
+            let _ = seen_tx.send(line);
+        });
+        tokio::pin!(progress);
+
+        // The line arrives while the flow is still pending.
+        let line = tokio::select! {
+            line = seen_rx.recv() => line.expect("progress channel open"),
+            _ = &mut progress => panic!("flow completed before the URL was released"),
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                panic!("URL must be emitted without waiting for the callback")
+            }
+        };
+        assert_eq!(line, "https://example.test/authorize?state=abc");
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "the URL must be emitted before the authorization flow completes"
+        );
+
+        release_tx.send(()).expect("auth future alive");
+        tokio::time::timeout(Duration::from_millis(500), progress)
+            .await
+            .expect("flow completes once released");
+        assert!(finished.load(Ordering::SeqCst));
+    }
+
+    /// A line produced in the same poll that completes the flow must not be
+    /// lost to the `select!` race.
+    #[tokio::test]
+    async fn auth_progress_drains_lines_sent_at_completion() {
+        use std::time::Duration;
+
+        use super::stream_auth_progress;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (line_tx, line_rx) = unbounded_channel::<String>();
+        let auth = async move {
+            line_tx.send("last".to_string()).expect("receiver alive");
+        };
+
+        let (seen_tx, mut seen_rx) = unbounded_channel::<String>();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            stream_auth_progress(auth, line_rx, move |line| {
+                let _ = seen_tx.send(line);
+            }),
+        )
+        .await
+        .expect("flow completes");
+
+        assert_eq!(seen_rx.recv().await.as_deref(), Some("last"));
     }
 }

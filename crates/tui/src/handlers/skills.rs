@@ -177,6 +177,12 @@ fn dispatch_user_task(app: &mut App, display_text: String, agent_task: String) -
     app.plan_mut().reset();
     app.last_prompt_elapsed_secs = None;
     app.task_start_time = Some(chrono::Local::now());
+    // Turn counters: this is the single choke point for user turns (direct
+    // submits, queued flushes, skill dispatch), so count here. The per-task LLM
+    // counter resets and is driven by `AgentUpdate::TurnStats` from then on.
+    app.status_bar_mut().turn_user += 1;
+    app.status_bar_mut().turn_llm = 0;
+    app.status_bar_mut().turn_llm_cap = None;
     let _ = app.user_cmd_tx.send(UserCommand::SubmitTask(agent_task));
     true
 }
@@ -376,6 +382,52 @@ mod tests {
             UserCommand::SubmitTask(task) => assert_eq!(task, "go"),
             other => panic!("expected SubmitTask, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn submit_user_task_counts_session_turn_and_resets_llm_counter() {
+        let (mut app, _user_cmd_rx) = make_app_with_cmds();
+        app.status = Status::Idle;
+        // Stale per-task state from the previous turn must not leak.
+        app.status_bar_mut().turn_llm = 7;
+        app.status_bar_mut().turn_llm_cap = Some(50);
+
+        let ok = submit_user_task(&mut app, "one".into(), "one".into());
+        assert!(ok);
+        assert_eq!(app.status_bar_mut().turn_user, 1);
+        assert_eq!(
+            app.status_bar_mut().turn_llm,
+            0,
+            "LLM counter resets per task"
+        );
+        assert_eq!(app.status_bar_mut().turn_llm_cap, None);
+    }
+
+    #[test]
+    fn queued_messages_each_count_as_a_session_turn() {
+        let (mut app, _user_cmd_rx) = make_app_with_cmds();
+        app.status = Status::Idle;
+        let _ = submit_user_task(&mut app, "one".into(), "one".into());
+        assert_eq!(app.status_bar_mut().turn_user, 1);
+
+        // Busy now: these two queue instead of dispatching, so the counter must
+        // not move until the flush actually dispatches them.
+        let _ = submit_user_task(&mut app, "two".into(), "two".into());
+        let _ = submit_user_task(&mut app, "three".into(), "three".into());
+        assert_eq!(app.pending_messages.len(), 2);
+        assert_eq!(
+            app.status_bar_mut().turn_user,
+            1,
+            "queueing is not dispatching — no turn counted yet"
+        );
+
+        app.status = Status::Done;
+        flush_pending_when_idle(&mut app);
+        assert_eq!(
+            app.status_bar_mut().turn_user,
+            3,
+            "each flushed queued message counts as its own user turn"
+        );
     }
 
     #[test]

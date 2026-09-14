@@ -20,7 +20,6 @@ use crate::{
     i18n::Messages,
     protocol::{AgentUpdate, PlanStep, StepResult, TokenUsageInfo, ToolOutputChunk},
     state::{ActiveToolBlock, ToolBlock, ToolState},
-    theme::Theme,
     widgets::tool_widget::{ToolPhase, ToolRenderOutput, ToolWidget},
 };
 
@@ -71,7 +70,6 @@ pub enum ToolEvent {
 
 pub struct ToolComponent {
     state: ToolState,
-    theme: Theme,
     messages: Messages,
     /// `tool_id` → plan step index, recorded from `StepAdded` in arrival
     /// order. Mirrors the shell's `resolve_step_idx` (first plan position for
@@ -91,14 +89,21 @@ pub struct ToolComponent {
 }
 
 impl ToolComponent {
-    pub fn new(theme: Theme, messages: Messages) -> Self {
+    pub fn new(messages: Messages) -> Self {
         Self {
             state: ToolState::default(),
-            theme,
             messages,
             step_indices: HashMap::new(),
             step_count: 0,
         }
+    }
+
+    /// Swap the locale. Components own a `Messages` because they write log
+    /// text that outlives the frame that produced it (the `step_failed_tmpl`
+    /// system message, for one), so a language change has to reach them too —
+    /// see `App::toggle_language`.
+    pub fn set_messages(&mut self, messages: Messages) {
+        self.messages = messages;
     }
 
     pub fn state(&self) -> &ToolState {
@@ -174,7 +179,7 @@ impl ToolComponent {
             crate::protocol::ToolPopupKind::SubagentTranscript
         );
         let step_idx = self.resolve_step_idx(tool_id, idx);
-        let output = ToolWidget::new(&self.theme, &self.messages)
+        let output = ToolWidget::new()
             .with_tool(tool_name.to_string())
             .with_arg_summary(arg_summary.to_string())
             .with_arg_full(arg_full.to_string())
@@ -212,7 +217,7 @@ impl ToolComponent {
         let (phys_idx, old_rows, output) = {
             let active = &self.state.active[pos];
             // Preserve subagent metadata when rebuilding the output.
-            let output = ToolWidget::new(&self.theme, &self.messages)
+            let output = ToolWidget::new()
                 .with_tool(active.output.tool_name.clone())
                 .with_arg_summary(active.output.arg_summary.clone())
                 .with_arg_full(active.output.arg_full.clone())
@@ -264,7 +269,7 @@ impl ToolComponent {
             crate::protocol::ToolPopupKind::SubagentTranscript
         );
         let step_idx = self.resolve_step_idx(tool_id, idx);
-        let mut output = ToolWidget::from_step_result(result, &self.theme, &self.messages)
+        let mut output = ToolWidget::from_step_result(result)
             .with_step_index(step_idx)
             .build();
 
@@ -320,7 +325,7 @@ impl ToolComponent {
             arg_summary.to_string()
         };
         let step_idx = self.resolve_step_idx(tool_id, idx);
-        let output = ToolWidget::new(&self.theme, &self.messages)
+        let output = ToolWidget::new()
             .with_tool(tool_name)
             .with_arg_summary(arg_summary)
             .with_step_index(step_idx)
@@ -354,7 +359,7 @@ impl ToolComponent {
         let arg_summary = active.output.arg_summary.clone();
         let arg_full = active.output.arg_full.clone();
         let step_idx = self.resolve_step_idx(tool_id, 0);
-        let mut widget = ToolWidget::new(&self.theme, &self.messages)
+        let mut widget = ToolWidget::new()
             .with_tool(tool_name)
             .with_arg_summary(arg_summary)
             .with_arg_full(arg_full)
@@ -405,7 +410,7 @@ impl ToolComponent {
             )
         };
         let step_idx = self.resolve_step_idx(tool_id, 0);
-        let mut output = ToolWidget::new(&self.theme, &self.messages)
+        let mut output = ToolWidget::new()
             .with_tool(tool_name)
             .with_arg_summary(arg_summary)
             .with_arg_full(arg_full)
@@ -475,10 +480,7 @@ impl ToolComponent {
 
 impl Default for ToolComponent {
     fn default() -> Self {
-        Self::new(
-            Theme::from(crate::theme::ThemeName::Ink),
-            Messages::by_language(crate::i18n::Language::English),
-        )
+        Self::new(Messages::by_language(crate::i18n::Language::English))
     }
 }
 
@@ -636,7 +638,6 @@ mod tests {
             ToolPresentationInfo,
         },
         state::{LogCoordinator, StreamEvent},
-        theme::ThemeName,
     };
 
     fn ctx<'a>(
@@ -655,10 +656,7 @@ mod tests {
     }
 
     fn comp() -> ToolComponent {
-        ToolComponent::new(
-            Theme::from(ThemeName::Ink),
-            Messages::by_language(crate::i18n::Language::English),
-        )
+        ToolComponent::new(Messages::by_language(crate::i18n::Language::English))
     }
 
     fn step_added(c: &mut ToolComponent, tool_id: &str) {

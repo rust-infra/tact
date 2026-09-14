@@ -1,13 +1,16 @@
 //! Skill (custom instruction) loading.
 //!
 //! Skills are markdown files (`SKILL.md`) nested in subdirectories under one or
-//! more skill roots. Discovery order (later wins on name clash):
+//! more skill roots. Roots are scanned in ascending precedence — a later root
+//! wins on a name clash:
 //!
-//! - project-local: `<workdir>/.tact/skills/`
-//! - user:          `~/.tact/skills/`
-//! - global:        `~/.agents/skills/`
-//! - project:       `<workdir>/.claude/skills/`
-//! - config:        `[agent].skill_dirs` (in listed order)
+//! - global:  `~/.agents/skills/`   (Codex compatibility root)
+//! - user:    `~/.tact/skills/`
+//! - project: `<workdir>/.tact/skills/`
+//! - config:  `[agent].skill_dirs`  (appended last, in listed order)
+//!
+//! Installed plugin roots load after all of these, into their own
+//! `plugin:skill` namespace.
 //!
 //! Each file has optional YAML frontmatter for `name` and `description`
 //! (Agent Skills–compatible). Bodies are unrestricted; TUI slash invoke may
@@ -179,7 +182,11 @@ impl SkillRegistry {
                     continue;
                 }
             };
-            if !entry.file_type()?.is_dir() {
+            // `Path::is_dir()` (stat) rather than `DirEntry::file_type()` (lstat),
+            // so a symlinked skill directory is a skill like any other — the same
+            // rule the standalone walk follows. Still one level deep: the flat,
+            // direct-children-only contract is unchanged.
+            if !entry.path().is_dir() {
                 continue;
             }
             let skill = entry.path().join("SKILL.md");
@@ -204,6 +211,11 @@ impl SkillRegistry {
         }
 
         for entry in WalkDir::new(skills_dir)
+            // Skill roots are assembled by symlinking directories in place:
+            // `~/.agents/skills/omarchy -> /usr/share/omarchy/default/agents/skills/omarchy`.
+            // walkdir does not follow links by default, and a symlinked *directory*
+            // is not `is_file()`, so without this the skill is silently missing.
+            .follow_links(true)
             .into_iter()
             .filter_map(|r| match r {
                 Ok(e) => Some(e),
@@ -502,6 +514,35 @@ mod tests {
         assert!(!registry.skills().contains_key("plugin:hidden"));
     }
 
+    /// A plugin skill whose directory is a symlink is still a direct child, so
+    /// it loads — the plugin scan must not be stricter than the standalone walk.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_plugin_skill_dir_is_loaded() {
+        let dir = tempdir().unwrap();
+        let real_root = dir.path().join("real-skills");
+        write_skill(&real_root, "linked", "Linked plugin skill", "linked body");
+
+        let skills_dir = dir.path().join("plugin/skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        std::os::unix::fs::symlink(real_root.join("linked"), skills_dir.join("linked")).unwrap();
+
+        let mut registry = SkillRegistry::new([]);
+        registry
+            .load_plugin_skills(&[PluginSkillRoot {
+                plugin_id: "plugin".into(),
+                skills_dir,
+            }])
+            .unwrap();
+
+        assert!(registry.skills().contains_key("plugin:linked"));
+        assert!(
+            registry
+                .load_full_text("plugin:linked")
+                .contains("linked body")
+        );
+    }
+
     #[test]
     fn standalone_skill_keeps_its_unqualified_name() {
         let dir = tempdir().unwrap();
@@ -529,14 +570,22 @@ mod tests {
     }
 
     #[test]
-    fn loads_from_project_claude_skills_dir() {
+    fn claude_project_skills_dir_is_not_scanned() {
+        // Claude-directory compatibility was removed; `<workdir>/.claude/skills`
+        // must not be picked up as a project skill root.
         let dir = tempdir().unwrap();
-        let project_skills = dir.path().join(".claude/skills");
-        write_skill(&project_skills, "deploy", "Deploy playbook", "step 1");
+        write_skill(
+            &dir.path().join(".claude/skills"),
+            "deploy",
+            "Deploy playbook",
+            "step 1",
+        );
 
         let registry = get_skill_registry(dir.path()).unwrap();
-        assert!(registry.skills().contains_key("deploy"));
-        assert!(registry.load_full_text("deploy").contains("step 1"));
+        assert!(
+            !registry.skills().contains_key("deploy"),
+            "legacy .claude/skills must not be scanned after claude-dir removal"
+        );
     }
 
     #[test]
@@ -564,20 +613,25 @@ mod tests {
         assert!(!registry.skills().contains_key("old"));
     }
 
+    /// Skill roots are commonly populated with symlinks (`omarchy` ships its
+    /// skills as `~/.agents/skills/omarchy -> /usr/share/omarchy/...`); a
+    /// symlinked directory must be followed, not skipped.
+    #[cfg(unix)]
     #[test]
-    fn project_skill_overrides_tact_skills_same_name() {
+    fn symlinked_skill_dir_is_loaded() {
         let dir = tempdir().unwrap();
-        write_skill(&dir.path().join(".tact/skills"), "style", "tact", "TACT");
-        write_skill(
-            &dir.path().join(".claude/skills"),
-            "style",
-            "project",
-            "PROJECT",
-        );
+        let real_root = dir.path().join("real-skills");
+        write_skill(&real_root, "linked", "Linked skill", "linked body");
 
-        let registry = get_skill_registry(dir.path()).unwrap();
-        assert!(registry.load_full_text("style").contains("PROJECT"));
-        assert!(!registry.load_full_text("style").contains("TACT"));
+        let search_root = dir.path().join("skills-root");
+        fs::create_dir_all(&search_root).unwrap();
+        std::os::unix::fs::symlink(real_root.join("linked"), search_root.join("linked")).unwrap();
+
+        let mut registry = SkillRegistry::new([search_root]);
+        registry.load_skills().unwrap();
+
+        assert!(registry.skills().contains_key("linked"));
+        assert!(registry.load_full_text("linked").contains("linked body"));
     }
 
     #[test]
@@ -736,7 +790,7 @@ mod tests {
         );
 
         write_skill(
-            &dir.path().join(".claude/skills"),
+            &dir.path().join(".tact/skills"),
             &unique,
             "Deploy",
             "v1 body",

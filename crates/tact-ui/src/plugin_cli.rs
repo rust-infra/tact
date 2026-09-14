@@ -29,7 +29,7 @@ fn build_request(command: PluginSubcommand) -> Result<(PluginRequest, bool)> {
             let (plugin, marketplace) = spec
                 .split_once('@')
                 .map(|(p, m)| (p.to_owned(), m.to_owned()))
-                .unwrap_or_else(|| (spec.clone(), "claude-plugins-official".to_owned()));
+                .unwrap_or_else(|| (spec.clone(), String::new()));
             Ok((
                 PluginRequest::Install {
                     plugin,

@@ -153,7 +153,7 @@ pub struct AgentRuntime {
     pub last_message_db_id: i64,
     /// `last_message_db_id` captured when `persist_llm_call` runs (before assistant row).
     pub llm_call_last_message_id: i64,
-    // … cached_dir_snapshot, cached_claude_md, cached_agents_md
+    // … cached_dir_snapshot, cached_agents_md
 }
 ```
 

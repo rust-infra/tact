@@ -21,30 +21,34 @@ use tact_protocol::{AgentUpdate, TokenUsageInfo};
 use crate::{
     ToolSpec,
     compact::{
-        CompactState, approx_text_tokens, build_compacted_history, collect_user_messages,
-        compact_rebuild_headroom_tokens, compacted_context, estimate_context_tokens,
-        estimate_message_tokens, micro_compact, recent_messages_for_summary,
-        retained_user_message_token_budget, should_auto_compact, write_transcript,
+        CompactState, CompactTrigger, approx_text_tokens, build_compacted_history,
+        collect_user_messages, compact_rebuild_headroom_tokens, compacted_context,
+        estimate_context_tokens, estimate_message_tokens, micro_compact,
+        recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
+        write_transcript,
     },
     config::{self, AgentSettings},
     hook::{
-        Hook, HookControl, HookTypes, PostToolUseFn, PreToolUseFn, SessionStartFn,
-        UserPromptSubmitFn,
+        Hook, HookControl, HookTypes, NotificationFn, PostCompactFn, PostToolUseFailureFn,
+        PostToolUseFn, PreCompactFn, PreToolUseFn, SessionEndFn, SessionStartFn, StopFn,
+        TaskCompletedFn, UserPromptSubmitFn,
     },
     invoke_hooks,
-    mcp::MCPToolRouter,
+    mcp::{MCPToolRouter, McpLoadReport},
     memory::MEMORY_GUIDANCE,
     permission::PermissionManager,
     prompt::{SystemPrompt, responses_prompt_template},
     recovery::{
-        MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS, MAX_CONTINUATION_ATTEMPTS,
-        MAX_TRANSPORT_ATTEMPTS, RecoveryState, backoff_delay, continuation_message, error_summary,
-        is_prompt_too_long_error, is_transient_transport_error,
+        FailureKind, MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_ATTEMPTS,
+        MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS, MAX_CONTINUATION_ATTEMPTS, MAX_TRANSPORT_ATTEMPTS,
+        RecoveryState, backoff_delay, classify_error, classify_llm_error, continuation_message,
+        error_summary,
     },
     stats::SessionStats,
     store::DynSessionStore,
     subagent::SubagentResult,
     tool::{ToolContext, ToolRouter},
+    utils::{LockExt, RwLockExt},
 };
 
 enum CompactRebuildMode {
@@ -61,32 +65,101 @@ const COMPACT_SUMMARY_HEADROOM_PERCENT: usize = 10;
 /// trigger. Must stay in sync with `crate::compact::should_auto_compact`
 /// (its threshold constant is private to that module).
 const RESPONSES_AUTO_COMPACT_THRESHOLD_PERCENT: usize = 80;
-const COMPACT_SUMMARY_INSTRUCTIONS: &str = "Summarize this coding-agent conversation so work can continue.\n\
+const COMPACT_SUMMARY_INSTRUCTIONS: &str = "Summarize this coding-agent conversation so another agent can continue the work.\n\
+The conversation appears below as a JSON array of messages; tool results and attachments may be elided or truncated. Ground the summary only in that content and do not invent details.\n\
 Preserve:\n\
 1. The current goal and what has been accomplished\n\
 2. Important findings, decisions, and architectural insights\n\
-3. Files read or changed (with key code structures like types, signatures, APIs if relevant)\n\
+3. Files read or changed, with key code structures (types, signatures, APIs)\n\
 4. Remaining work and next steps\n\
 5. User constraints and preferences\n\
 6. Any errors encountered and their causes\n\
-Be compact but concrete. Preserve exact file paths, function names, and type signatures when they are important for continuing the work.";
+Output a compact, structured handoff. Keep exact file paths, function names, type signatures, commands, and error text when they matter for continuing; never paraphrase identifiers.";
 
-/// Share of the summary *text* budget reserved on top of `max_tokens` for
-/// server-default reasoning tokens.
+/// The effort a provider reasons at **by server default** when the request
+/// omits `reasoning_effort`.
 ///
-/// The compaction summary call no longer enables thinking itself (no
-/// Claude-style budget, no explicit reasoning effort — see
-/// [`Agent::compact_history_local_with_mode`]), so only providers that
-/// reason **by default** when effort is omitted need headroom: DeepSeek and
-/// Kimi K3 default thinking ON + effort high server-side, and they count
-/// reasoning tokens inside the SAME `max_tokens` envelope as the summary
-/// text. Without the reserve their default thinking starves the summary text
-/// budget and forces truncation continuations. Other providers get 0.
-fn compact_summary_reasoning_reserve_percent(provider_kind: &ProviderKind) -> usize {
+/// DeepSeek and Kimi K3 default thinking ON + effort high server-side and count
+/// reasoning tokens inside the same `max_tokens` envelope as the text, so a
+/// summary request that omits effort still needs the high bucket as headroom.
+/// Every other provider defaults to no thinking at the level this client
+/// models, so it needs none.
+fn compact_summary_server_default_effort(
+    provider_kind: &ProviderKind,
+) -> Option<OpenAiReasoningEffort> {
     match provider_kind {
-        ProviderKind::DeepSeek | ProviderKind::Kimi => 75,
-        _ => 0,
+        ProviderKind::DeepSeek | ProviderKind::Kimi => Some(OpenAiReasoningEffort::High),
+        _ => None,
     }
+}
+
+/// Initial reasoning reserve, in tokens, for an explicit effort tier.
+///
+/// Compaction uses a fixed token bucket per effort rather than a percentage of
+/// the summary text budget: the text budget is capped at 2,000 tokens, so a
+/// percentage would scale the reasoning headroom down with it even though an
+/// effort tier names an absolute thinking allowance, not a fraction of the
+/// output.
+fn compact_effort_reserve_tokens(effort: OpenAiReasoningEffort) -> u32 {
+    match effort {
+        OpenAiReasoningEffort::None => 0,
+        OpenAiReasoningEffort::Minimal | OpenAiReasoningEffort::Low => 2_000,
+        OpenAiReasoningEffort::Medium => 4_000,
+        OpenAiReasoningEffort::High => 8_000,
+        OpenAiReasoningEffort::Xhigh | OpenAiReasoningEffort::Max => 16_000,
+    }
+}
+
+/// Reasoning effort for a compaction-summary ladder stage.
+///
+/// Stage 0 inherits the session's live effort (the summary request never
+/// enables Claude-style thinking). From stage 1 on, thinking is minimized where
+/// the provider allows it: DeepSeek and Kimi K3 forward `low` (the body hook
+/// cannot fully disable them), while an OpenAI reasoning model — one with a
+/// configured effort — sends `none`. Providers whose thinking is already off
+/// (Anthropic, unknown) keep omitting the field.
+fn compact_summary_effort(
+    provider_kind: &ProviderKind,
+    session_effort: Option<OpenAiReasoningEffort>,
+    stage: u32,
+) -> Option<OpenAiReasoningEffort> {
+    if stage == 0 {
+        return session_effort;
+    }
+    match provider_kind {
+        ProviderKind::DeepSeek | ProviderKind::Kimi => Some(OpenAiReasoningEffort::Low),
+        ProviderKind::OpenAi => session_effort.map(|_| OpenAiReasoningEffort::None),
+        ProviderKind::Anthropic | ProviderKind::Custom(_) => None,
+    }
+}
+
+/// Next reasoning reserve for an adaptive compaction attempt.
+///
+/// The three signals are used as floor / target / cap rather than a plain
+/// minimum — a minimum can shrink the envelope or leave the text starved:
+/// - floor: the largest of the previous reserve, the effort-implied reserve and
+///   a minimum headroom (a quarter of the text budget), so the reserve never
+///   shrinks after a truncation and never collapses to zero;
+/// - target: the reasoning the model actually spent plus 25% headroom; when no
+///   reasoning tokens are reported the summary text itself overran, so the
+///   current room is doubled instead;
+/// - cap: at most double the current room (the caller additionally caps by the
+///   context window).
+fn next_compaction_reserve(
+    effort_implied: u32,
+    text_budget: u32,
+    prev_reserve: u32,
+    observed_think: usize,
+) -> u32 {
+    let floor = prev_reserve.max(effort_implied).max(text_budget / 4);
+    let cap = floor.saturating_mul(2);
+    let observed = u32::try_from(observed_think).unwrap_or(u32::MAX);
+    let target = if observed == 0 {
+        floor.saturating_mul(2)
+    } else {
+        observed.saturating_add(observed / 4)
+    };
+    target.clamp(floor, cap)
 }
 
 /// Shared state for a running agent session.
@@ -115,8 +188,6 @@ pub struct AgentRuntime {
     /// Cached project-directory snapshot, computed once per session so the
     /// deterministic output doesn't churn the DeepSeek prefix KV-cache.
     pub cached_dir_snapshot: Option<String>,
-    /// Cached `CLAUDE.md` assembly (once per session) for a stable prompt prefix.
-    pub cached_claude_md: Option<String>,
     /// Cached `AGENTS.md` assembly (once per session) for a stable prompt prefix.
     pub cached_agents_md: Option<String>,
     /// Total tokens from the most recent LLM usage report (`0` = none yet).
@@ -161,15 +232,31 @@ pub struct Agent {
     pub turns_taken: u32,
     /// Snapshot of agent settings at construction; avoids parallel tests racing on global config.
     agent_settings: AgentSettings,
-    /// Provider kind captured at construction (or overridden via
-    /// [`Self::with_provider_kind`]); lets Responses routing distinguish
-    /// OpenAI (native compaction) from DeepSeek (local summary fallback)
-    /// without reading process-global provider state.
-    provider_kind: ProviderKind,
+    /// Compaction-routing provider kind, when set explicitly via
+    /// [`Self::with_provider_kind`]. `None` means "inherit from the live
+    /// provider" — see [`Self::provider_kind`].
+    provider_kind: Option<ProviderKind>,
     cached_tool_specs: Vec<ToolSpec>,
 }
 
 impl Agent {
+    /// Whether a background subagent result is waiting to be re-injected.
+    ///
+    /// The driver consults this before submitting a subagent-finished wake-up
+    /// turn: such a turn only exists to drain the queue into the parent's
+    /// context, so an empty queue means a previous turn already delivered the
+    /// summary and the extra turn would have nothing to review.
+    pub fn has_pending_subagent_results(&self) -> bool {
+        self.runtime
+            .pending_subagent_results
+            .lock()
+            .map(|queue| !queue.is_empty())
+            // A poisoned lock leaves the queue contents unknown; fall back to
+            // the previous always-wake behaviour rather than silently
+            // swallowing a completion.
+            .unwrap_or(true)
+    }
+
     pub fn new(
         client: LlmProvider,
         mut tool_context: ToolContext,
@@ -182,23 +269,16 @@ impl Agent {
         // user `/compact` command and automatic triggers dispatch to the
         // native `/responses/compact` endpoint instead. MCP tools are kept
         // unchanged.
-        let provider_kind = ProviderKind::OpenAi;
-        let native_specs = if matches!(client, LlmProvider::OpenAiResponses(_)) {
-            tools
-                .tool_specs()
-                .into_iter()
-                .filter(|spec| spec.name != "compact")
-                .collect()
-        } else {
-            tools.tool_specs()
-        };
-        let cached_tool_specs: Vec<ToolSpec> = native_specs
-            .into_iter()
-            .chain(mcp_router.all_tools())
-            .collect();
+        //
+        // Routing kind is left unset: it is resolved lazily from the live
+        // provider so a subagent (which never calls `with_provider_kind`)
+        // inherits its parent's routing instead of silently defaulting to
+        // OpenAI and calling a `/responses/compact` endpoint that DeepSeek
+        // does not implement.
+        let provider_kind = None;
         let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         tool_context.cancel_flag = cancel_flag.clone();
-        Self {
+        let mut agent = Self {
             runtime: AgentRuntime {
                 client,
                 context: Vec::new(),
@@ -214,7 +294,6 @@ impl Agent {
                 last_message_db_id: 0,
                 llm_call_last_message_id: 0,
                 cached_dir_snapshot: None,
-                cached_claude_md: None,
                 cached_agents_md: None,
                 last_token_total: 0,
                 provider_state: None,
@@ -230,16 +309,72 @@ impl Agent {
             turns_taken: 0,
             agent_settings: crate::config::settings().agent.clone(),
             provider_kind,
-            cached_tool_specs,
-        }
+            cached_tool_specs: Vec::new(),
+        };
+        agent.rebuild_cached_tool_specs();
+        agent
     }
 
     /// Override the provider kind used for Responses compaction routing
     /// (OpenAI → native `/responses/compact`; DeepSeek → local summary
     /// fallback because its endpoint lacks the endpoint).
     pub fn with_provider_kind(mut self, provider_kind: ProviderKind) -> Self {
-        self.provider_kind = provider_kind;
+        self.provider_kind = Some(provider_kind);
         self
+    }
+
+    /// The provider kind compaction is routed by.
+    ///
+    /// Explicitly set kinds ([`Self::with_provider_kind`]) win; otherwise the
+    /// live provider is consulted, falling back to OpenAI when no provider has
+    /// been installed (tests that never call `init_provider`).
+    fn provider_kind(&self) -> ProviderKind {
+        self.provider_kind
+            .clone()
+            .or_else(tact_llm::current_provider_kind)
+            .unwrap_or(ProviderKind::OpenAi)
+    }
+
+    /// Rebuild the cached tool specs from the native tools plus the current
+    /// MCP router. Called after any MCP router replacement.
+    fn rebuild_cached_tool_specs(&mut self) {
+        let native_specs = if matches!(self.runtime.client, LlmProvider::OpenAiResponses(_)) {
+            self.tools
+                .tool_specs()
+                .into_iter()
+                .filter(|spec| spec.name != "compact")
+                .collect()
+        } else {
+            self.tools.tool_specs()
+        };
+        self.cached_tool_specs = native_specs
+            .into_iter()
+            .chain(self.mcp_router.all_tools())
+            .collect();
+    }
+
+    /// Reload every MCP server from disk and rebuild the tool list.
+    ///
+    /// Used after an interactive OAuth authorization (`/mcp auth <server>`) so
+    /// the newly authorized remote server becomes usable without restarting.
+    /// The previous connections are shut down first; failures are reported, not
+    /// propagated, mirroring startup semantics.
+    pub async fn reload_mcp_router(&mut self) -> McpLoadReport {
+        self.mcp_router.disconnect_all().await;
+        match crate::mcp::load_mcp_router_with_report().await {
+            Ok((router, report)) => {
+                self.mcp_router = router;
+                self.rebuild_cached_tool_specs();
+                report
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to reload MCP servers");
+                McpLoadReport {
+                    failures: vec![("mcp".to_owned(), format!("{error:#}"))],
+                    ..McpLoadReport::default()
+                }
+            }
+        }
     }
 
     /// Override agent-loop settings (used by integration tests with custom config).
@@ -651,6 +786,35 @@ impl Agent {
         idx
     }
 
+    /// Whether the user asked the run to stop.
+    ///
+    /// Checked at turn and wave boundaries; a tool call already in flight is
+    /// deliberately not interrupted.
+    fn cancel_requested(&self) -> bool {
+        self.runtime
+            .cancel_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Records one tool result into the session stats.
+    ///
+    /// All four counters live behind the same lock, so they are updated in one
+    /// acquisition instead of one per counter.
+    fn record_tool_stats(&self, name: &str, succeeded: bool, duration_us: u64) {
+        let key = name.to_string();
+        let mut stats = self.runtime.stats.write_recover();
+        if succeeded {
+            *stats.tool_success_counts.entry(key.clone()).or_insert(0) += 1;
+        } else {
+            *stats.tool_failure_counts.entry(key.clone()).or_insert(0) += 1;
+        }
+        *stats
+            .tool_total_durations_ms
+            .entry(key.clone())
+            .or_insert(0) += duration_us / 1000;
+        *stats.tool_timing_counts.entry(key).or_insert(0) += 1;
+    }
+
     /// The main agent conversation loop.
     ///
     /// 1. Builds the system prompt and primes the context.
@@ -700,17 +864,17 @@ impl Agent {
             // Turn cap: bounds a runaway subagent. Count a turn per loop
             // iteration (one LLM call) and stop once the cap is exceeded.
             self.turns_taken += 1;
+            self.emit_update(AgentUpdate::TurnStats {
+                turns_taken: self.turns_taken,
+                max_turns: self.max_turns,
+            });
             if let Some(max) = self.max_turns
                 && self.turns_taken > max
             {
                 self.emit_update(AgentUpdate::Info(format!("max_turns ({max}) reached")));
                 return Ok(());
             }
-            if self
-                .runtime
-                .cancel_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok(());
             }
@@ -747,11 +911,7 @@ impl Agent {
             // (not `runtime.context.push()`) persists the synthetic message so
             // the on-disk transcript stays consistent.
             let pending: Vec<SubagentResult> = {
-                let mut queue = self
-                    .runtime
-                    .pending_subagent_results
-                    .lock()
-                    .expect("pending_subagent_results lock poisoned");
+                let mut queue = self.runtime.pending_subagent_results.lock_recover();
                 queue.drain(..).collect()
             };
             for result in pending {
@@ -798,74 +958,73 @@ impl Agent {
                 .map(|s| s.chars().count() as u64)
                 .unwrap_or(0);
             {
-                let mut stats = self
-                    .runtime
-                    .stats
-                    .write()
-                    .expect("session stats lock poisoned");
+                let mut stats = self.runtime.stats.write_recover();
                 stats.prompt_count += 1;
                 stats.total_prompt_chars += prompt_chars;
             }
             let llm_call_start = std::time::Instant::now();
 
-            let (content, stop_reason, token_usage, request_body, state_update) = match self
-                .stream_message(&request)
-                .await
-            {
-                Ok(result) => {
-                    self.runtime.recovery_state.transport_attempts = 0;
-                    result
-                }
-                Err(error) => {
-                    let error_text = error.to_string().to_lowercase();
-                    if is_prompt_too_long_error(&error_text)
-                        && self.runtime.recovery_state.compact_attempts < MAX_COMPACT_ATTEMPTS
-                    {
-                        self.runtime.recovery_state.compact_attempts += 1;
-                        self.emit_update(AgentUpdate::Info(format!(
-                            "[Recovery] compact ({}/{}): context too large",
-                            self.runtime.recovery_state.compact_attempts, MAX_COMPACT_ATTEMPTS
-                        )));
-                        self.compact_history(None).await?;
-                        continue;
+            let (content, stop_reason, token_usage, request_body, state_update) =
+                match self.stream_message(&request).await {
+                    Ok(result) => {
+                        self.runtime.recovery_state.transport_attempts = 0;
+                        result
                     }
+                    Err(error) => {
+                        match classify_error(&error) {
+                            FailureKind::PromptTooLong
+                                if self.runtime.recovery_state.compact_attempts
+                                    < MAX_COMPACT_ATTEMPTS =>
+                            {
+                                self.runtime.recovery_state.compact_attempts += 1;
+                                self.emit_update(AgentUpdate::Info(format!(
+                                    "[Recovery] compact ({}/{}): context too large",
+                                    self.runtime.recovery_state.compact_attempts,
+                                    MAX_COMPACT_ATTEMPTS
+                                )));
+                                self.compact_history_with_trigger(CompactTrigger::Recovery, None)
+                                    .await?;
+                                continue;
+                            }
+                            FailureKind::Transient
+                                if self.runtime.recovery_state.transport_attempts
+                                    < MAX_TRANSPORT_ATTEMPTS =>
+                            {
+                                let delay =
+                                    backoff_delay(self.runtime.recovery_state.transport_attempts);
+                                self.runtime.recovery_state.transport_attempts += 1;
+                                let summary = error_summary(
+                                    &error
+                                        .chain()
+                                        .map(|cause| cause.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(": "),
+                                );
+                                self.emit_update(AgentUpdate::Info(format!(
+                                    "[Recovery] backoff ({}/{}): retrying in {:.1}s — {summary}",
+                                    self.runtime.recovery_state.transport_attempts,
+                                    MAX_TRANSPORT_ATTEMPTS,
+                                    delay.as_secs_f64()
+                                )));
+                                tokio::time::sleep(delay).await;
+                                continue;
+                            }
+                            _ => {}
+                        }
 
-                    if is_transient_transport_error(&error_text)
-                        && self.runtime.recovery_state.transport_attempts < MAX_TRANSPORT_ATTEMPTS
-                    {
-                        let delay = backoff_delay(self.runtime.recovery_state.transport_attempts);
-                        self.runtime.recovery_state.transport_attempts += 1;
-                        let summary = error_summary(
-                            &error
-                                .chain()
-                                .map(|cause| cause.to_string())
-                                .collect::<Vec<_>>()
-                                .join(": "),
-                        );
-                        self.emit_update(AgentUpdate::Info(format!(
-                            "[Recovery] backoff ({}/{}): retrying in {:.1}s — {summary}",
-                            self.runtime.recovery_state.transport_attempts,
-                            MAX_TRANSPORT_ATTEMPTS,
-                            delay.as_secs_f64()
-                        )));
-                        tokio::time::sleep(delay).await;
-                        continue;
+                        // Propagate the original error: `anyhow!(error)` would
+                        // re-wrap it as a Display string, dropping both the
+                        // typed cause and the chain for callers up the stack.
+                        return Err(error);
                     }
-
-                    return Err(anyhow::anyhow!(error));
-                }
-            };
+                };
 
             // ── Stats: after LLM call ──
             let response_chars = serde_json::to_string(&content)
                 .map(|s| s.chars().count() as u64)
                 .unwrap_or(0);
             {
-                let mut stats = self
-                    .runtime
-                    .stats
-                    .write()
-                    .expect("session stats lock poisoned");
+                let mut stats = self.runtime.stats.write_recover();
                 stats.llm_call_durations.push(llm_call_start.elapsed());
                 stats.total_response_chars += response_chars;
                 for block in &content {
@@ -877,11 +1036,7 @@ impl Agent {
             }
 
             if let Some(ref usage) = token_usage {
-                self.runtime
-                    .stats
-                    .write()
-                    .expect("session stats lock poisoned")
-                    .record_token_usage(usage);
+                self.runtime.stats.write_recover().record_token_usage(usage);
                 self.runtime.last_token_total = usage.total;
             }
             self.runtime.llm_call_last_message_id = self.runtime.last_message_db_id;
@@ -945,7 +1100,11 @@ impl Agent {
                         .await?;
                     if let Some(focus) = manual_compact {
                         self.emit_update(AgentUpdate::Info("[manual compact]".into()));
-                        self.compact_history(Some(focus.as_str())).await?;
+                        self.compact_history_with_trigger(
+                            CompactTrigger::Manual,
+                            Some(focus.as_str()),
+                        )
+                        .await?;
                     }
                 }
 
@@ -1000,11 +1159,7 @@ impl Agent {
                 }
             }
 
-            if self
-                .runtime
-                .cancel_flag
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 return Ok(());
             }
@@ -1015,7 +1170,8 @@ impl Agent {
 
             if let Some(focus) = manual_compact {
                 self.emit_update(AgentUpdate::Info("[manual compact]".into()));
-                self.compact_history(Some(focus.as_str())).await?;
+                self.compact_history_with_trigger(CompactTrigger::Manual, Some(focus.as_str()))
+                    .await?;
             }
         }
     }
@@ -1039,7 +1195,11 @@ impl Agent {
             .client
             .stream_message(request, self.runtime.provider_state.as_ref(), ui_tx)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            // Keep the typed `LlmError` as the root cause: the recovery loop
+            // classifies retries on `LlmError::HttpError.status`, and
+            // stringifying here would erase it (and the error chain) before
+            // the retry decision is made.
+            .map_err(anyhow::Error::from)?;
         Ok((
             response.blocks,
             response.stop_reason,
@@ -1080,6 +1240,41 @@ impl Agent {
         self
     }
 
+    pub fn with_stop(mut self, hook: impl StopFn + 'static) -> Self {
+        self.hooks.push(Hook::Stop(Box::new(hook)));
+        self
+    }
+
+    pub fn with_session_end(mut self, hook: impl SessionEndFn + 'static) -> Self {
+        self.hooks.push(Hook::SessionEnd(Box::new(hook)));
+        self
+    }
+
+    pub fn with_pre_compact(mut self, hook: impl PreCompactFn + 'static) -> Self {
+        self.hooks.push(Hook::PreCompact(Box::new(hook)));
+        self
+    }
+
+    pub fn with_post_compact(mut self, hook: impl PostCompactFn + 'static) -> Self {
+        self.hooks.push(Hook::PostCompact(Box::new(hook)));
+        self
+    }
+
+    pub fn with_post_tool_failure(mut self, hook: impl PostToolUseFailureFn + 'static) -> Self {
+        self.hooks.push(Hook::PostToolUseFailure(Box::new(hook)));
+        self
+    }
+
+    pub fn with_notification(mut self, hook: impl NotificationFn + 'static) -> Self {
+        self.hooks.push(Hook::Notification(Box::new(hook)));
+        self
+    }
+
+    pub fn with_task_completed(mut self, hook: impl TaskCompletedFn + 'static) -> Self {
+        self.hooks.push(Hook::TaskCompleted(Box::new(hook)));
+        self
+    }
+
     pub async fn dispatch_session_start_hooks(&mut self) -> Result<()> {
         match invoke_hooks!(SessionStart, self)? {
             HookControl::Continue => Ok(()),
@@ -1090,6 +1285,55 @@ impl Agent {
                 Ok(())
             }
         }
+    }
+
+    /// Runs [`Hook::Stop`] hooks once at the outer turn boundary and returns
+    /// the aggregated control. `Continue` means "stop normally"; `Block(reason)`
+    /// means "continue the turn with `reason` as the next prompt" (Codex
+    /// continuation-fragment semantics).
+    pub async fn dispatch_stop_hooks(&mut self) -> Result<HookControl> {
+        invoke_hooks!(Stop, self)
+    }
+
+    /// Runs [`Hook::TaskCompleted`] hooks once per completed user task.
+    /// Observational only: a `Block` is surfaced as info and ignored.
+    pub async fn dispatch_task_completed_hooks(&mut self) -> Result<()> {
+        match invoke_hooks!(TaskCompleted, self)? {
+            HookControl::Continue => Ok(()),
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[TaskCompleted hook blocked] {reason}"
+                )));
+                Ok(())
+            }
+        }
+    }
+
+    /// Runs [`Hook::SessionEnd`] hooks at real teardown. Observational only:
+    /// a `Block` is surfaced as info and ignored because the session is ending.
+    pub async fn dispatch_session_end_hooks(&mut self) -> Result<()> {
+        match invoke_hooks!(SessionEnd, self)? {
+            HookControl::Continue => Ok(()),
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[SessionEnd hook blocked] {reason}"
+                )));
+                Ok(())
+            }
+        }
+    }
+
+    /// The last assistant message text, if any — exposed so Stop/SubagentStop
+    /// hooks (and the plugin payload) can report what the model just produced.
+    #[must_use]
+    pub fn last_assistant_message(&self) -> Option<String> {
+        self.runtime
+            .context
+            .iter()
+            .rev()
+            .find(|message| matches!(message.role, Role::Assistant))
+            .map(|message| crate::extract_text(&message.content))
+            .filter(|text| !text.is_empty())
     }
     /// Returns hooks registered for the given [`HookTypes`] variant.
     pub fn hooks_by_type(&self, hook_type: HookTypes) -> Vec<&Hook> {
@@ -1111,11 +1355,48 @@ impl Agent {
     // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
     // bodies first, keep user/assistant text).
     pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<()> {
-        if self.is_openai_responses() && self.provider_kind != ProviderKind::DeepSeek {
+        self.compact_history_with_trigger(CompactTrigger::Auto, focus)
+            .await
+    }
+
+    /// Compacts with an explicit [`CompactTrigger`] (used by the recovery /
+    /// manual-compact / slash-command paths so plugin `PreCompact` /
+    /// `PostCompact` matchers can distinguish them).
+    pub async fn compact_history_with_trigger(
+        &mut self,
+        trigger: CompactTrigger,
+        focus: Option<&str>,
+    ) -> Result<()> {
+        // PreCompact hooks may veto the compaction (Codex `should_stop`).
+        match invoke_hooks!(PreCompact, self, trigger)? {
+            HookControl::Continue => {}
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[PreCompact hook vetoed compaction] {reason}"
+                )));
+                return Ok(());
+            }
+        }
+
+        let result = if self.is_openai_responses() && self.provider_kind() != ProviderKind::DeepSeek
+        {
             self.compact_responses_native().await
         } else {
             self.compact_history_local(focus).await
+        };
+
+        // PostCompact hooks run once, only after a successful compaction.
+        if result.is_ok() {
+            match invoke_hooks!(PostCompact, self, trigger)? {
+                HookControl::Continue => {}
+                HookControl::Block(reason) => {
+                    self.emit_update(AgentUpdate::Info(format!(
+                        "[PostCompact hook blocked] {reason}"
+                    )));
+                }
+            }
         }
+        result
     }
 
     /// Native OpenAI Responses compaction via `POST /responses/compact`.
@@ -1149,20 +1430,9 @@ impl Agent {
             {
                 Ok(response) => break response,
                 Err(error) => {
-                    let error_text = error.to_string();
-                    if retry_attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
-                        || !is_transient_transport_error(&error_text.to_lowercase())
-                    {
+                    if !self.retry_compaction_call(&error, &mut retry_attempt).await {
                         return Err(anyhow::Error::from(error));
                     }
-                    retry_attempt = retry_attempt.saturating_add(1);
-                    let delay = backoff_delay(retry_attempt.saturating_sub(1));
-                    let summary = error_summary(&error_text);
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
-                        delay.as_secs_f64()
-                    )));
-                    tokio::time::sleep(delay).await;
                 }
             }
         };
@@ -1194,16 +1464,7 @@ impl Agent {
         self.runtime.provider_state = Some(ProviderConversationState::OpenAiResponses(
             candidate_state.clone(),
         ));
-        self.runtime.first_message_db_id = 0;
-        self.runtime.last_message_db_id = 0;
-        self.runtime.llm_call_last_message_id = 0;
-        self.runtime.last_token_total = 0;
-        self.runtime.compact_state.has_compacted = true;
-        self.runtime
-            .stats
-            .write()
-            .expect("session stats lock poisoned")
-            .compactions += 1;
+        self.finish_compaction(None);
 
         // Informational status only: item count and a bounded compaction id
         // prefix. Never expose the opaque encrypted content, and never echo
@@ -1244,6 +1505,8 @@ impl Agent {
         )));
 
         let model_context_window = self.model_context_window();
+        let provider_kind = self.provider_kind();
+        let session_effort = self.agent_settings.reasoning_effort;
         // Text portion of the summarizer output budget keeps the classic
         // 20%-of-window (capped) formula. Reasoning-effort providers count
         // reasoning tokens inside the same `max_tokens` envelope, so reserve
@@ -1261,9 +1524,14 @@ impl Agent {
             )
             .context("summary output token budget does not fit u32")?
         };
-        let reasoning_reserve = summary_text_max_tokens
-            .saturating_mul(compact_summary_reasoning_reserve_percent(&self.provider_kind) as u32)
-            .div_ceil(100);
+        // The reserve is the absolute token bucket of the effective effort:
+        // the session's effort when configured, otherwise the effort a provider
+        // reasons at by server default (DeepSeek / Kimi K3 = high).
+        let effective_effort =
+            session_effort.or_else(|| compact_summary_server_default_effort(&provider_kind));
+        let reasoning_reserve = effective_effort
+            .map(compact_effort_reserve_tokens)
+            .unwrap_or(0);
         // Wire `max_tokens`: text plus the reasoning reserve. The text portion
         // keeps its classic budget; the reserve only covers providers that
         // reason by server default (DeepSeek / Kimi K3) — the summary call
@@ -1334,68 +1602,102 @@ impl Agent {
         );
 
         let model_name = self.agent_settings.model.clone();
-        // The compaction summary call does not enable thinking: no Claude-style
-        // thinking budget and no reasoning effort, so the full `max_tokens`
-        // envelope goes to the summary text (thinking adds little value to a
-        // handoff summary and would consume output tokens).
-        let initial_request = CreateMessageParams::new(RequiredMessageParams {
-            model: model_name.clone(),
-            messages: vec![Message::new_text(Role::User, prompt.clone())],
-            max_tokens: summary_max_tokens,
-        });
-
+        // The summarizer runs a staged ladder. Stage 0 inherits the session's
+        // live reasoning effort; it never enables a Claude-style thinking budget
+        // (thinking adds little value to a handoff summary and consumes output
+        // tokens). Later stages minimize thinking and then size the reasoning
+        // reserve from the observed `reasoning_tokens`, because DeepSeek / Kimi K3
+        // count reasoning inside the same `max_tokens` envelope and would starve
+        // the summary text otherwise.
         self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
             model: model_name.clone(),
-            max_tokens: initial_request.max_tokens,
+            max_tokens: summary_max_tokens,
             thinking_budget: None,
-            reasoning_effort: None,
+            reasoning_effort: compact_summary_effort(&provider_kind, session_effort, 0)
+                .map(|effort| effort.as_str().to_string()),
             extra_body: None,
         }));
         // ── Stats: before compaction LLM call ──
-        self.runtime
-            .stats
-            .write()
-            .expect("session stats lock poisoned")
-            .prompt_count += 1;
-        let compact_prompt_chars = serde_json::to_string(&initial_request)
+        self.runtime.stats.write_recover().prompt_count += 1;
+        let compact_prompt_chars =
+            serde_json::to_string(&CreateMessageParams::new(RequiredMessageParams {
+                model: model_name.clone(),
+                messages: vec![Message::new_text(Role::User, prompt.clone())],
+                max_tokens: summary_max_tokens,
+            }))
             .map(|s| s.chars().count() as u64)
             .unwrap_or(0);
-        self.runtime
-            .stats
-            .write()
-            .expect("session stats lock poisoned")
-            .total_prompt_chars += compact_prompt_chars;
+        self.runtime.stats.write_recover().total_prompt_chars += compact_prompt_chars;
         let compact_start = std::time::Instant::now();
+
+        // Envelope growth is bounded so the initial prompt plus `max_tokens`
+        // plus headroom still fits the window. Continuation messages add input on
+        // later attempts, so this bound is deliberately conservative.
+        let max_reserve_for_window = if model_context_window == 0 {
+            u32::MAX
+        } else {
+            let headroom = model_context_window
+                .saturating_mul(COMPACT_SUMMARY_HEADROOM_PERCENT)
+                .div_ceil(100);
+            u32::try_from(
+                model_context_window
+                    .saturating_sub(approx_text_tokens(&prompt))
+                    .saturating_sub(headroom)
+                    .saturating_sub(summary_text_max_tokens as usize),
+            )
+            .unwrap_or(u32::MAX)
+        };
 
         // Summarization call with two independent recovery axes:
         // - transient transport errors → bounded backoff retry (`retry_attempt`);
-        // - `MaxTokens` truncation → append the partial summary as an assistant
-        //   message plus a continuation prompt and re-call, mirroring the main
-        //   agent loop's output-limit recovery (`continuation_attempt`).
-        // When continuation attempts are exhausted, the partial summary is
-        // accepted as best-effort (the Codex-style rebuild keeps recent real
-        // user messages anyway).
+        // - `MaxTokens` truncation → escalate the effort/reserve ladder, carrying
+        //   the partial summary forward as an assistant message plus a
+        //   continuation prompt (`continuation_attempt`).
+        // When the ladder is exhausted, the partial summary is accepted as
+        // best-effort (the Codex-style rebuild keeps recent real user messages
+        // anyway) instead of failing the whole compaction.
         let mut retry_attempt = 0;
         let mut continuation_attempt = 0u32;
+        let mut attempt_max_tokens = summary_max_tokens;
+        let mut attempt_reserve = reasoning_reserve;
         let mut messages = vec![Message::new_text(Role::User, prompt.clone())];
         let mut blocks_all: Vec<ContentBlock> = Vec::new();
         let (stop_reason, token_usage, request_body) = loop {
+            let stage = continuation_attempt.saturating_add(1);
+            let total_stages = MAX_COMPACT_SUMMARY_ATTEMPTS.saturating_add(1);
+            let attempt_effort =
+                compact_summary_effort(&provider_kind, session_effort, continuation_attempt);
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: messages.clone(),
-                max_tokens: summary_max_tokens,
-            });
+                max_tokens: attempt_max_tokens,
+            })
+            .with_reasoning_effort(attempt_effort);
+            let request_chars = serde_json::to_string(&request)
+                .map(|body| body.chars().count())
+                .unwrap_or(0);
+            // Every attempt announces its exact request envelope: the printed
+            // `max_tokens` is verbatim what the provider receives, split into the
+            // summary text budget and the reasoning reserve.
+            self.emit_update(AgentUpdate::Info(format!(
+                "[compact summary {stage}/{total_stages}] request model={model_name} max_tokens={attempt_max_tokens} (text {summary_text_max_tokens} + reasoning {attempt_reserve}), reasoning_effort={}, input {request_chars} chars",
+                attempt_effort.map_or("provider-default", OpenAiReasoningEffort::as_str),
+            )));
             match self.runtime.client.create_message(&request, None).await {
                 Ok(response) => {
                     let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
-                    if truncated && continuation_attempt < MAX_CONTINUATION_ATTEMPTS {
-                        if let Some(usage) = &response.usage {
-                            self.emit_update(AgentUpdate::Info(format!(
-                                "[compact usage: {:?}]",
-                                usage,
-                            )));
-                        }
-                        let think_len = response.blocks.iter().fold(0, |acc, block| {
+                    self.emit_update(AgentUpdate::Info(format!(
+                        "[compact summary {stage}/{total_stages}] response stop={:?} usage={:?}",
+                        response.stop_reason, response.usage,
+                    )));
+                    if truncated && continuation_attempt < MAX_COMPACT_SUMMARY_ATTEMPTS {
+                        let usage = response.usage.clone();
+                        // Byte length of the thinking block that ate into this
+                        // attempt's budget (`String::len() + signature.len()`),
+                        // NOT a token count. The tokens actually spent are
+                        // `usage.reasoning_tokens` below (`observed_think`),
+                        // which is what sizes the next reserve.
+                        let think_block_bytes = response.blocks.iter().fold(0, |acc, block| {
                             if let ContentBlock::Thinking {
                                 thinking,
                                 signature,
@@ -1413,29 +1715,42 @@ impl Agent {
                             Role::User,
                             continuation_message(continuation_attempt).to_string(),
                         ));
+                        // Escalate: the first continuation turns thinking down
+                        // (reserve 0); later ones size the reserve from the
+                        // reasoning tokens the model actually spent.
+                        let observed_think = usage
+                            .as_ref()
+                            .map_or(0usize, |u| u.reasoning_tokens as usize);
+                        attempt_reserve = if continuation_attempt <= 1 {
+                            0
+                        } else {
+                            next_compaction_reserve(
+                                reasoning_reserve,
+                                summary_text_max_tokens,
+                                attempt_reserve,
+                                observed_think,
+                            )
+                            .min(max_reserve_for_window)
+                        };
+                        attempt_max_tokens =
+                            summary_text_max_tokens.saturating_add(attempt_reserve);
                         self.emit_update(AgentUpdate::Info(format!(
-                            "[compact continue {continuation_attempt}/{MAX_CONTINUATION_ATTEMPTS}] summary truncated({think_len} think tokens, {summary_max_tokens} max tokens), continuing"
+                            "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated ({think_block_bytes} think bytes), next attempt max_tokens={attempt_max_tokens}"
                         )));
                         continue;
                     }
                     blocks_all.extend(response.blocks);
+                    if truncated {
+                        self.emit_update(AgentUpdate::Info(format!(
+                            "[compact fallback] summary truncated after {MAX_COMPACT_SUMMARY_ATTEMPTS} attempts; using best-effort partial summary"
+                        )));
+                    }
                     break (response.stop_reason, response.usage, response.request_body);
                 }
                 Err(error) => {
-                    let error_text = error.to_string();
-                    if retry_attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
-                        || !is_transient_transport_error(&error_text.to_lowercase())
-                    {
+                    if !self.retry_compaction_call(&error, &mut retry_attempt).await {
                         return Err(anyhow::Error::from(error));
                     }
-                    retry_attempt = retry_attempt.saturating_add(1);
-                    let delay = backoff_delay(retry_attempt.saturating_sub(1));
-                    let summary = error_summary(&error_text);
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "[compact retry {retry_attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
-                        delay.as_secs_f64()
-                    )));
-                    tokio::time::sleep(delay).await;
                 }
             }
         };
@@ -1446,11 +1761,7 @@ impl Agent {
             .map(|s| s.chars().count() as u64)
             .unwrap_or(0);
         {
-            let mut stats = self
-                .runtime
-                .stats
-                .write()
-                .expect("session stats lock poisoned");
+            let mut stats = self.runtime.stats.write_recover();
             stats.llm_call_durations.push(compact_start.elapsed());
             stats.total_response_chars += compact_response_chars;
             for block in &blocks {
@@ -1461,11 +1772,7 @@ impl Agent {
             }
         }
         if let Some(ref usage) = token_usage {
-            self.runtime
-                .stats
-                .write()
-                .expect("session stats lock poisoned")
-                .record_token_usage(usage);
+            self.runtime.stats.write_recover().record_token_usage(usage);
             // Do NOT assign usage.total to last_token_total: that figure is for
             // the summarization request (large history prompt), not the size of
             // the replacement context below.
@@ -1580,21 +1887,59 @@ impl Agent {
         }
         // Context and persistence now agree, so future messages start a new
         // message-id window and compaction state can be committed.
+        self.finish_compaction(Some(summary));
+        Ok(())
+    }
+
+    /// Commits the runtime bookkeeping shared by every compaction path.
+    ///
+    /// The message-id window is reset because the persisted history now starts
+    /// over, and `last_token_total` is zeroed so the next `should_auto_compact`
+    /// check sees the *new* small context rather than the pre-compact or
+    /// summarizer-prompt totals.
+    ///
+    /// `summary` is the Codex-style handoff summary, remembered for the next
+    /// user turn. `None` leaves the previous one in place — the Responses path
+    /// keeps its own opaque compaction state instead.
+    fn finish_compaction(&mut self, summary: Option<String>) {
         self.runtime.first_message_db_id = 0;
         self.runtime.last_message_db_id = 0;
         self.runtime.llm_call_last_message_id = 0;
-        self.runtime.compact_state.has_compacted = true;
-        self.runtime.compact_state.last_summary = Some(summary);
-        // Reset so the next should_auto_compact check reflects the new small
-        // context (via token estimate / next main-loop TokenUsage), not the
-        // pre-compact or summarizer-prompt totals.
         self.runtime.last_token_total = 0;
-        self.runtime
-            .stats
-            .write()
-            .expect("session stats lock poisoned")
-            .compactions += 1;
-        Ok(())
+        self.runtime.compact_state.has_compacted = true;
+        if summary.is_some() {
+            self.runtime.compact_state.last_summary = summary;
+        }
+        self.runtime.stats.write_recover().compactions += 1;
+    }
+
+    /// Retry policy shared by both compaction summarizer call paths.
+    ///
+    /// Returns `false` when the caller must surface the error — the attempt
+    /// budget is exhausted, or the failure is not retryable. Otherwise it
+    /// bumps `attempt`, sleeps the back-off and emits the retry notice.
+    ///
+    /// Classification goes through [`classify_llm_error`], so a permanent
+    /// (400/401/403/404) failure is never retried.
+    async fn retry_compaction_call(
+        &mut self,
+        error: &tact_llm::LlmError,
+        attempt: &mut u32,
+    ) -> bool {
+        if *attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
+            || classify_llm_error(error) != FailureKind::Transient
+        {
+            return false;
+        }
+        *attempt += 1;
+        let delay = backoff_delay(attempt.saturating_sub(1));
+        let summary = error_summary(&error.to_string());
+        self.emit_update(AgentUpdate::Info(format!(
+            "[compact retry {attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
+            delay.as_secs_f64()
+        )));
+        tokio::time::sleep(delay).await;
+        true
     }
 
     fn remember_recent_file(&mut self, path: &str) {
@@ -1651,9 +1996,6 @@ impl Agent {
                 }
             })
             .memory(self.load_memory_prompt()?)
-            .claude_md(cached_md_section(&mut self.runtime.cached_claude_md, || {
-                assemble_claude_md_prompt(workdir, &self.agent_settings.instruction_sources)
-            }))
             .additional(cached_md_section(&mut self.runtime.cached_agents_md, || {
                 assemble_agents_md_prompt(workdir, &self.agent_settings.instruction_sources)
             }))
@@ -1873,70 +2215,6 @@ fn cached_md_section(cached: &mut Option<String>, compute: impl FnOnce() -> Stri
     value
 }
 
-fn assemble_claude_md_prompt(
-    workdir: &Path,
-    sources: &crate::config::InstructionSources,
-) -> String {
-    if !sources.claude_user && !sources.claude_project && !sources.claude_subdir {
-        return String::new();
-    }
-
-    let mut file_sources = Vec::new();
-
-    if sources.claude_user {
-        let user_claude =
-            crate::consts::TactPath::home_claude_dir().map(|home| home.join("CLAUDE.md"));
-        if let Some(path) = user_claude
-            && let Ok(content) = std::fs::read_to_string(&path)
-        {
-            file_sources.push((
-                "user global (~/.claude/CLAUDE.md)".to_string(),
-                content.trim().to_string(),
-            ));
-        }
-    }
-
-    if sources.claude_project {
-        let project_claude = workdir.join("CLAUDE.md");
-        if let Ok(content) = std::fs::read_to_string(&project_claude) {
-            file_sources.push((
-                "project root (CLAUDE.md)".to_string(),
-                content.trim().to_string(),
-            ));
-        }
-    }
-
-    if sources.claude_subdir
-        && let Ok(cwd) = std::env::current_dir()
-        && cwd != workdir
-    {
-        let subdir_claude = cwd.join("CLAUDE.md");
-        if let Ok(content) = std::fs::read_to_string(&subdir_claude) {
-            file_sources.push((
-                format!("subdir ({}/CLAUDE.md)", cwd.display()),
-                content.trim().to_string(),
-            ));
-        }
-    }
-
-    if file_sources.is_empty() {
-        return String::new();
-    }
-
-    let mut lines = vec!["## CLAUDE.md instructions".to_string(), String::new()];
-    for (label, content) in file_sources {
-        lines.push(format!("### From {}", label));
-        lines.push(String::new());
-        lines.push(content);
-        lines.push(String::new());
-    }
-    lines.join("\n").trim().to_string()
-}
-
-/// Assemble project `AGENTS.md` for the system-prompt `additional` section.
-///
-/// Looks at the agent workdir and, when different, the process cwd — matching
-/// the local CLAUDE.md discovery paths (without a user-global file).
 fn assemble_agents_md_prompt(
     workdir: &Path,
     sources: &crate::config::InstructionSources,
@@ -2043,6 +2321,7 @@ mod tests {
                     rtk_filter: false,
                 },
                 voice: crate::config::VoiceSettings::disabled_defaults(),
+                mcp: crate::config::McpSettings::default(),
                 permission_mode: None,
                 tokio_console: false,
                 config_path: None,
@@ -2458,7 +2737,7 @@ mod tests {
         }
         assert!(
             updates.iter().any(|u| {
-                matches!(u, AgentUpdate::Info(msg) if msg.contains("[compact continue 1/3]"))
+                matches!(u, AgentUpdate::Info(msg) if msg.contains("[compact continue 1/5]"))
             }),
             "expected a compact-continue Info update, got: {updates:?}"
         );
@@ -2528,9 +2807,9 @@ mod tests {
         let mut tool_context = context;
         tool_context.ui_tx = Some(tx);
 
-        // Every call is truncated: MAX_CONTINUATION_ATTEMPTS (3) continuations
-        // run, then the partial summary is accepted as best-effort instead of
-        // failing the whole compaction.
+        // Every call is truncated: MAX_COMPACT_SUMMARY_ATTEMPTS (5)
+        // continuations run, then the partial summary is accepted as
+        // best-effort instead of failing the whole compaction.
         let mock = MockClient::new(vec![
             (
                 vec![make_text_block("partial one")],
@@ -2546,6 +2825,14 @@ mod tests {
             ),
             (
                 vec![make_text_block("partial four")],
+                Some(StopReason::MaxTokens),
+            ),
+            (
+                vec![make_text_block("partial five")],
+                Some(StopReason::MaxTokens),
+            ),
+            (
+                vec![make_text_block("partial six")],
                 Some(StopReason::MaxTokens),
             ),
         ]);
@@ -2579,45 +2866,118 @@ mod tests {
     }
 
     #[test]
-    fn compact_summary_reasoning_reserve_percent_tiers() {
+    fn compact_summary_server_default_effort_tiers() {
         use tact_llm::ProviderKind;
-        // The compaction summary call never enables thinking itself (no
-        // effort / no thinking budget), so only providers that reason by
-        // **server default** get headroom: DeepSeek and Kimi K3 default
-        // thinking ON + effort high server-side.
+        // Only providers that reason by **server default** when the summary
+        // request omits effort get headroom: DeepSeek and Kimi K3 default
+        // thinking ON + effort high server-side, everyone else needs none.
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(&ProviderKind::OpenAi),
-            0
+            compact_summary_server_default_effort(&ProviderKind::OpenAi),
+            None
         );
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(&ProviderKind::Anthropic),
-            0
+            compact_summary_server_default_effort(&ProviderKind::Anthropic),
+            None
         );
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(&ProviderKind::DeepSeek),
-            75
+            compact_summary_server_default_effort(&ProviderKind::DeepSeek),
+            Some(tact_llm::OpenAiReasoningEffort::High)
         );
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(&ProviderKind::Kimi),
-            75
+            compact_summary_server_default_effort(&ProviderKind::Kimi),
+            Some(tact_llm::OpenAiReasoningEffort::High)
         );
         assert_eq!(
-            compact_summary_reasoning_reserve_percent(&ProviderKind::Custom("other".to_string())),
-            0
+            compact_summary_server_default_effort(&ProviderKind::Custom("other".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn compact_effort_reserve_bucket_tiers() {
+        use tact_llm::OpenAiReasoningEffort as E;
+        // Absolute token buckets, independent of the summary text budget.
+        assert_eq!(compact_effort_reserve_tokens(E::None), 0);
+        assert_eq!(compact_effort_reserve_tokens(E::Minimal), 2_000);
+        assert_eq!(compact_effort_reserve_tokens(E::Low), 2_000);
+        assert_eq!(compact_effort_reserve_tokens(E::Medium), 4_000);
+        assert_eq!(compact_effort_reserve_tokens(E::High), 8_000);
+        assert_eq!(compact_effort_reserve_tokens(E::Xhigh), 16_000);
+        assert_eq!(compact_effort_reserve_tokens(E::Max), 16_000);
+    }
+
+    #[test]
+    fn next_compaction_reserve_never_shrinks() {
+        // A small observed reasoning must not shrink an already-large reserve.
+        assert_eq!(next_compaction_reserve(0, 2_000, 4_000, 100), 4_000);
+    }
+
+    #[test]
+    fn next_compaction_reserve_caps_growth_at_double() {
+        // Even a huge observed reasoning grows the room by at most 2x per step.
+        assert_eq!(next_compaction_reserve(0, 2_000, 4_000, 1_000_000), 8_000);
+        // Within the cap, the target covers the observed reasoning plus headroom.
+        assert_eq!(next_compaction_reserve(1_500, 2_000, 0, 1_800), 2_250);
+    }
+
+    #[test]
+    fn next_compaction_reserve_keeps_minimum_headroom() {
+        // No effort reserve and no history: start from a quarter of the text
+        // budget so a text-only overrun still gets more room.
+        assert_eq!(next_compaction_reserve(0, 2_000, 0, 0), 1_000);
+        // The effort-implied reserve wins when it is larger.
+        assert_eq!(next_compaction_reserve(1_500, 2_000, 0, 0), 3_000);
+        // Small observed reasoning is floored at the minimum headroom.
+        assert_eq!(next_compaction_reserve(0, 2_000, 0, 400), 500);
+    }
+
+    #[test]
+    fn compact_summary_effort_ladder_per_provider() {
+        use tact_llm::ProviderKind;
+        let high = Some(tact_llm::OpenAiReasoningEffort::High);
+        let low = tact_llm::OpenAiReasoningEffort::Low;
+        let none = tact_llm::OpenAiReasoningEffort::None;
+
+        // Stage 0 always inherits the session effort.
+        assert_eq!(compact_summary_effort(&ProviderKind::OpenAi, high, 0), high);
+        assert_eq!(
+            compact_summary_effort(&ProviderKind::DeepSeek, None, 0),
+            None
+        );
+
+        // Stage 1+ minimizes: DeepSeek / Kimi K3 drop to `low`.
+        assert_eq!(
+            compact_summary_effort(&ProviderKind::DeepSeek, None, 1),
+            Some(low)
+        );
+        assert_eq!(
+            compact_summary_effort(&ProviderKind::Kimi, high, 2),
+            Some(low)
+        );
+        // OpenAI reasoning models send `none`; without a configured effort the
+        // field stays omitted (the model may not support it).
+        assert_eq!(
+            compact_summary_effort(&ProviderKind::OpenAi, high, 1),
+            Some(none)
+        );
+        assert_eq!(compact_summary_effort(&ProviderKind::OpenAi, None, 1), None);
+        // Anthropic / unknown keep omitting the field.
+        assert_eq!(
+            compact_summary_effort(&ProviderKind::Anthropic, None, 1),
+            None
         );
     }
 
     #[tokio::test]
-    async fn local_compact_omits_thinking_and_effort() {
+    async fn local_compact_inherits_session_effort() {
         ensure_config();
-        let context = test_context("local_compact_omits_thinking");
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut tool_context = context;
-        tool_context.ui_tx = Some(tx);
+        let context = test_context("local_compact_inherits_effort");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let tool_context = context;
 
-        // Capture the summarizer request so we can assert the compact call
-        // never enables thinking: no reasoning effort and no thinking budget
-        // are forwarded, so the full output envelope goes to the summary text.
+        // Capture the summarizer request so we can assert the first attempt
+        // inherits the session's reasoning effort while never enabling a
+        // Claude-style thinking budget.
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CreateMessageParams>::new()));
         let seen_arc = seen.clone();
         let mock = MockClient::with_responder(move |request, _idx| {
@@ -2640,9 +3000,10 @@ mod tests {
             .unwrap(),
             AgentSystemPrompt::Static("You are a test agent.".to_string()),
         )
-        .with_provider_kind(tact_llm::ProviderKind::OpenAi);
-        // High effort + a Claude-style thinking budget on a 128k window:
-        // neither may reach the compact summary request.
+        .with_provider_kind(tact_llm::ProviderKind::OpenAi)
+        .with_ui_channel(tx);
+        // High effort + a Claude-style thinking budget on a 128k window: the
+        // effort is inherited, the budget is not.
         agent.agent_settings.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::High);
         agent.agent_settings.thinking_budget = 4096;
         agent.agent_settings.model_context_window = 128_000;
@@ -2664,16 +3025,17 @@ mod tests {
         let request = requests
             .first()
             .expect("summarizer request must be captured");
-        // Text budget = min(20% × 128k, 2000) = 2000; OpenAI gets no
-        // server-default reasoning reserve, so the wire max_tokens is the
-        // full text budget.
+        // Text budget = min(20% × 128k, 2000) = 2000; the inherited high effort
+        // adds its 8,000-token reasoning bucket, so the wire max_tokens is
+        // 10,000. No Claude-style thinking budget is forwarded.
         assert_eq!(
-            request.max_tokens, 2000,
-            "wire max_tokens must equal the summary text budget (no thinking)"
+            request.max_tokens, 10_000,
+            "wire max_tokens must be text budget + the inherited effort bucket"
         );
         assert_eq!(
-            request.reasoning_effort, None,
-            "compact summary must not forward the configured reasoning effort"
+            request.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::High),
+            "the first attempt must inherit the configured reasoning effort"
         );
         assert!(
             request.thinking.is_none(),
@@ -2684,6 +3046,33 @@ mod tests {
         assert!(
             context_text.contains("reasoning-aware summary"),
             "rebuilt context must contain the summary: {context_text}"
+        );
+
+        // A successful first attempt (0 continuations) must still log its
+        // envelope, and the printed `max_tokens` must be the wire value split
+        // into its text and reasoning parts.
+        drop(requests);
+        let mut updates = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            updates.push(update);
+        }
+        let infos: Vec<&str> = updates
+            .iter()
+            .filter_map(|u| match u {
+                AgentUpdate::Info(msg) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            infos.iter().any(|msg| msg.starts_with(
+                "[compact summary 1/6] request model=mock-model max_tokens=10000 (text 2000 + reasoning 8000), reasoning_effort=high, input "
+            ) && msg.ends_with(" chars")),
+            "first attempt must log its request envelope: {infos:?}"
+        );
+        assert!(
+            infos.iter().any(|msg| msg
+                .starts_with("[compact summary 1/6] response stop=Some(EndTurn) usage=None")),
+            "first attempt must log its response even without truncation: {infos:?}"
         );
     }
 
@@ -2718,8 +3107,8 @@ mod tests {
             AgentSystemPrompt::Static("You are a test agent.".to_string()),
         )
         .with_provider_kind(tact_llm::ProviderKind::DeepSeek);
-        // DeepSeek reasons by server default even without an explicit effort,
-        // so the summary call keeps the 75% server-default reasoning reserve.
+        // DeepSeek reasons at effort high by server default even without an
+        // explicit effort, so the summary call reserves the high bucket.
         agent.agent_settings.reasoning_effort = None;
         agent.agent_settings.model_context_window = 128_000;
         agent
@@ -2740,12 +3129,12 @@ mod tests {
         let request = requests
             .first()
             .expect("summarizer request must be captured");
-        // Text budget 2000 + 75% server-default reserve = 3500, so DeepSeek's
-        // forced reasoning never starves the summary text; but no effort and
-        // no thinking budget are sent.
+        // Text budget 2000 + the high effort bucket (8000) = 10_000, so
+        // DeepSeek's forced reasoning never starves the summary text; but no
+        // effort and no thinking budget are sent.
         assert_eq!(
-            request.max_tokens, 3500,
-            "DeepSeek keeps the server-default reasoning reserve"
+            request.max_tokens, 10_000,
+            "DeepSeek keeps the server-default (high) reasoning bucket"
         );
         assert_eq!(request.reasoning_effort, None);
         assert!(request.thinking.is_none());
@@ -3708,6 +4097,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_loop_emits_turn_stats_each_iteration() {
+        ensure_config();
+        let context = test_context("agent_loop_turn_stats");
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("done")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent = agent.with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        // Drain without blocking: the loop has returned, so every emitted
+        // update is already queued.
+        let mut stats = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::TurnStats {
+                turns_taken,
+                max_turns,
+            } = update
+            {
+                stats.push((turns_taken, max_turns));
+            }
+        }
+        assert_eq!(
+            stats,
+            vec![(1, None)],
+            "one TurnStats per loop iteration, carrying the (absent) main-agent cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_turn_stats_carries_the_cap_and_counts_the_capped_turn() {
+        ensure_config();
+        let context = test_context("agent_loop_turn_stats_capped");
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("done")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_max_turns(Some(1));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent = agent.with_ui_channel(tx);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        let mut stats = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::TurnStats {
+                turns_taken,
+                max_turns,
+            } = update
+            {
+                stats.push((turns_taken, max_turns));
+            }
+        }
+        assert_eq!(
+            stats,
+            vec![(1, Some(1))],
+            "the cap is reported and the counted turn is the one that trips it"
+        );
+    }
+
+    #[tokio::test]
     async fn agent_loop_max_turns_zero_stops_immediately() {
         ensure_config();
         let context = test_context("agent_loop_max_turns_zero");
@@ -4206,33 +4686,8 @@ mod tests {
     fn assemble_agents_md_prompt_skipped_when_disabled() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "# Rules\n").unwrap();
-        let sources =
-            crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()]))
-                .unwrap();
+        let sources = crate::config::InstructionSources { agents_md: false };
         assert!(assemble_agents_md_prompt(dir.path(), &sources).is_empty());
-    }
-
-    #[test]
-    fn assemble_claude_md_prompt_skipped_when_disabled() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "# Claude rules\n").unwrap();
-        assert!(
-            assemble_claude_md_prompt(dir.path(), &crate::config::InstructionSources::default())
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn assemble_claude_md_prompt_reads_project_when_enabled() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "# Claude rules\n").unwrap();
-        let sources =
-            crate::config::InstructionSources::from_config(Some(vec!["claude_md_project".into()]))
-                .unwrap();
-        let rendered = assemble_claude_md_prompt(dir.path(), &sources);
-        assert!(rendered.starts_with("## CLAUDE.md instructions"));
-        assert!(rendered.contains("### From project root (CLAUDE.md)"));
-        assert!(rendered.contains("Claude rules"));
     }
 
     #[test]
@@ -4488,5 +4943,85 @@ mod tests {
             kind: MessageKind::Normal,
         };
         assert!(user_text_target(&mut message).is_none());
+    }
+
+    // ——— lifecycle hook wiring (Stop / SessionEnd / PreCompact / PostCompact) ———
+
+    fn hook_test_agent(context_name: &str) -> Agent {
+        ensure_config();
+        let context = test_context(context_name);
+        Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("hook test".into()),
+        )
+    }
+
+    #[tokio::test]
+    async fn stop_hook_block_requests_continuation() {
+        let agent = hook_test_agent("stop_hook_block").with_stop(|_agent| {
+            Box::pin(async move { Ok(HookControl::Block("keep going".into())) })
+        });
+        let mut agent = agent;
+        let control = agent.dispatch_stop_hooks().await.unwrap();
+        assert_eq!(control, HookControl::Block("keep going".into()));
+    }
+
+    #[tokio::test]
+    async fn stop_hook_continue_defaults_to_stop() {
+        let mut agent = hook_test_agent("stop_hook_continue");
+        let control = agent.dispatch_stop_hooks().await.unwrap();
+        assert_eq!(control, HookControl::Continue);
+    }
+
+    #[tokio::test]
+    async fn session_end_hook_is_observational() {
+        let mut agent = hook_test_agent("session_end_obs").with_session_end(|_agent| {
+            Box::pin(async move { Ok(HookControl::Block("ignored".into())) })
+        });
+        // A block must not fail the dispatch — the session is ending.
+        agent.dispatch_session_end_hooks().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn task_completed_hook_is_observational() {
+        let mut agent = hook_test_agent("task_completed_obs").with_task_completed(|_agent| {
+            Box::pin(async move { Ok(HookControl::Block("ignored".into())) })
+        });
+        // A block must not fail the dispatch — the task already completed.
+        agent.dispatch_task_completed_hooks().await.unwrap();
+    }
+
+    #[test]
+    fn new_hook_builders_register_variants() {
+        let agent = hook_test_agent("new_hook_builders")
+            .with_post_tool_failure(|_agent, _tool_use, _error| {
+                Box::pin(async { Ok(HookControl::Continue) })
+            })
+            .with_notification(|_agent, _ctx| Box::pin(async { Ok(HookControl::Continue) }))
+            .with_task_completed(|_agent| Box::pin(async { Ok(HookControl::Continue) }));
+        assert_eq!(agent.hooks_by_type(HookTypes::PostToolUseFailure).len(), 1);
+        assert_eq!(agent.hooks_by_type(HookTypes::Notification).len(), 1);
+        assert_eq!(agent.hooks_by_type(HookTypes::TaskCompleted).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pre_compact_block_vetoes_compaction() {
+        let mut agent = hook_test_agent("pre_compact_veto").with_pre_compact(|_agent, trigger| {
+            assert_eq!(trigger, CompactTrigger::Auto);
+            Box::pin(async move { Ok(HookControl::Block("no auto compact".into())) })
+        });
+        // PreCompact veto returns Ok without compacting (has_compacted stays false).
+        agent
+            .compact_history_with_trigger(CompactTrigger::Auto, None)
+            .await
+            .unwrap();
+        assert!(!agent.runtime.compact_state.has_compacted);
     }
 }

@@ -12,10 +12,13 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
 
+use crate::utils::LockExt;
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 
 /// One shared pool per database file, keyed by absolute path, together
 /// with the number of live [`PoolRef`] handles handed out for it.
@@ -41,7 +44,7 @@ impl Deref for PoolRef {
 
 impl Drop for PoolRef {
     fn drop(&mut self) {
-        let mut pools = POOLS.lock().expect("tact sqlite pool lock poisoned");
+        let mut pools = POOLS.lock_recover();
         if let Some((_, refs)) = pools.get_mut(&self.key) {
             *refs -= 1;
             if *refs == 0 {
@@ -68,7 +71,7 @@ pub async fn open_pool(path: &Path) -> Result<PoolRef> {
 
     // If two callers raced on a fresh path, both open a pool; the first to
     // insert wins and the loser's pool is dropped (connections close).
-    let mut pools = POOLS.lock().expect("tact sqlite pool lock poisoned");
+    let mut pools = POOLS.lock_recover();
     Ok(match pools.entry(key.clone()) {
         std::collections::hash_map::Entry::Occupied(mut entry) => {
             let (pool, refs) = entry.get_mut();
@@ -88,7 +91,7 @@ pub async fn open_pool(path: &Path) -> Result<PoolRef> {
 /// Returns a handle for `key` and bumps its refcount, or `None` when the
 /// pool is not cached yet.
 fn take_handle(key: &Path) -> Option<PoolRef> {
-    let mut pools = POOLS.lock().expect("tact sqlite pool lock poisoned");
+    let mut pools = POOLS.lock_recover();
     let (pool, refs) = pools.get_mut(key)?;
     *refs += 1;
     Some(PoolRef {
@@ -112,18 +115,52 @@ async fn open_new_pool(path: &Path) -> Result<SqlitePool> {
             .await
             .context("failed to create database file")?;
     }
-    let url = format!("sqlite:{}", path.display());
-    let pool = SqlitePool::connect(&url)
-        .await
-        .with_context(|| format!("failed to open sqlite database at {}", path.display()))?;
+    // WAL lets readers (the TUI reading session history) proceed while a
+    // writer (the agent persisting a message) holds the lock, which matters
+    // because every domain store here shares one database file.
+    //
+    // Switching a database *into* WAL requires an exclusive lock that
+    // `busy_timeout` cannot wait on, so a concurrent opener can legitimately
+    // fail the switch. Fall back to the default rollback journal rather than
+    // refusing to start.
+    match connect_with_pragmas(path, SqliteJournalMode::Wal).await {
+        Ok(pool) => Ok(pool),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                db = %path.display(),
+                "sqlite rejected WAL mode; falling back to the default journal"
+            );
+            connect_with_pragmas(path, SqliteJournalMode::Delete).await
+        }
+    }
+}
 
-    // Wait up to 5s for a concurrent writer (cross-process access to the
-    // same workdir) instead of failing with SQLITE_BUSY immediately.
-    sqlx::query("PRAGMA busy_timeout = 5000")
-        .execute(&pool)
+/// Opens a pool with the journal mode and durability level decided up front.
+///
+/// Both are set through the connection options (not a one-shot `PRAGMA`) so
+/// they apply to every connection the pool opens, not just the first.
+async fn connect_with_pragmas(path: &Path, journal: SqliteJournalMode) -> Result<SqlitePool> {
+    // `synchronous = NORMAL` is corruption-safe in WAL mode; the default FULL
+    // would fsync the WAL on every commit for no extra safety. Under a
+    // rollback journal NORMAL *can* corrupt on power loss, so keep FULL there.
+    let synchronous = if journal == SqliteJournalMode::Wal {
+        SqliteSynchronous::Normal
+    } else {
+        SqliteSynchronous::Full
+    };
+    let url = format!("sqlite:{}", path.display());
+    let options = SqliteConnectOptions::from_str(&url)
+        .with_context(|| format!("invalid sqlite url for {}", path.display()))?
+        .journal_mode(journal)
+        .synchronous(synchronous)
+        // Wait up to 5s for a concurrent writer (cross-process access to the
+        // same workdir) instead of failing with SQLITE_BUSY immediately.
+        .busy_timeout(std::time::Duration::from_secs(5));
+
+    SqlitePool::connect_with(options)
         .await
-        .context("failed to set busy_timeout")?;
-    Ok(pool)
+        .with_context(|| format!("failed to open sqlite database at {}", path.display()))
 }
 
 #[cfg(test)]
@@ -190,5 +227,32 @@ mod tests {
             assert_eq!(pool_count_under(&dir), 1);
         }
         assert_eq!(pool_count_under(&dir), 0);
+    }
+
+    /// The TUI reads session history while the agent writes it; without WAL
+    /// those lock each other out.
+    #[tokio::test]
+    async fn opened_pools_use_wal() {
+        let dir = temp_dir("wal");
+        let pool = open_pool(&dir.join("tact.db")).await.unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(pool.deref())
+            .await
+            .unwrap();
+        assert_eq!(mode.to_ascii_lowercase(), "wal");
+    }
+
+    /// `synchronous` is per-connection, so it is set through the connection
+    /// options rather than a one-shot `PRAGMA` that later connections miss.
+    #[tokio::test]
+    async fn wal_pools_downgrade_synchronous() {
+        let dir = temp_dir("synchronous");
+        let pool = open_pool(&dir.join("tact.db")).await.unwrap();
+        // NORMAL == 1; the rollback-journal default would be FULL == 2.
+        let level: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(pool.deref())
+            .await
+            .unwrap();
+        assert_eq!(level, 1);
     }
 }

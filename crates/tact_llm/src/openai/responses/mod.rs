@@ -41,6 +41,10 @@ struct ResponsesCompatConfig {
     api_base: String,
     api_key: Option<SecretString>,
     empty_api_key: SecretString,
+    /// Tact session id → OpenCode `x-opencode-session` header. `None` omits
+    /// the session header (requests without a conversation session, e.g. the
+    /// `/v1/models` picker fetch, send only the identifying User-Agent).
+    opencode_session: Option<String>,
 }
 
 impl ResponsesCompatConfig {
@@ -49,6 +53,7 @@ impl ResponsesCompatConfig {
             api_base,
             api_key,
             empty_api_key: SecretString::from(String::new()),
+            opencode_session: None,
         }
     }
 }
@@ -64,6 +69,15 @@ impl Config for ResponsesCompatConfig {
                     .expect("bearer header value is valid"),
             );
         }
+        // OpenCode Go requires x-opencode-session on every request and wants
+        // a recognizable User-Agent; both are added only for that endpoint.
+        // The session id doubles as the cache-distinguishing key, so each
+        // Tact session maps to exactly one OpenCode session. No session id
+        // (e.g. the `/v1/models` picker fetch) → session header omitted.
+        headers.extend(crate::opencode::endpoint_headers(
+            &self.api_base,
+            self.opencode_session.as_deref(),
+        ));
         headers
     }
 
@@ -152,6 +166,52 @@ fn normalize_stream_event_json(mut event: Value) -> Value {
     event
 }
 
+/// Every event `type` the vendored SDK's `ResponseStreamEvent` enum accepts.
+///
+/// Derived from serde itself rather than hand-maintained: for an internally
+/// tagged enum, the unknown-variant error enumerates every valid tag, so this
+/// set follows the enum automatically when the SDK is bumped. That matters
+/// because the alternative — a hand-written list of the events Tact acts on —
+/// silently drifts from the enum, and an event the SDK learned about but the
+/// list did not is dropped without a trace.
+///
+/// This is only used to tell "a type the SDK does not model" (drop it: a
+/// newer server may emit events this Tact build predates) apart from "a
+/// malformed payload for a type the SDK *does* model" (a real error worth
+/// surfacing). It deliberately does not decide which events Tact acts on —
+/// that is `stream.rs`'s `ResponsesStreamState::apply`, the single source of
+/// truth for stream semantics.
+fn sdk_event_types() -> &'static std::collections::HashSet<String> {
+    static TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
+        std::sync::LazyLock::new(|| {
+            let probe = serde_json::json!({ "type": EVENT_TYPE_PROBE });
+            let error = serde_json::from_value::<ResponseStreamEvent>(probe)
+                .expect_err("the probe type must not deserialize");
+            let message = error.to_string();
+            // "unknown variant `…`, expected one of `a`, `b`, …"
+            message
+                .split_once("expected one of ")
+                .map(|(_, list)| {
+                    list.split("`, `")
+                        .map(|entry| entry.trim_matches(|c: char| c == '`' || c.is_whitespace()))
+                        .filter(|entry| !entry.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+    &TYPES
+}
+
+/// The bogus tag used to make serde enumerate the enum's variants. NUL is not
+/// a valid event type and cannot collide with a real one.
+const EVENT_TYPE_PROBE: &str = "\u{0}tact-event-type-probe";
+
+/// Whether the SDK models this stream event type at all.
+fn sdk_knows_event(event_type: &str) -> bool {
+    sdk_event_types().contains(event_type)
+}
+
 struct ParsedStreamEvent {
     event: ResponseStreamEvent,
     raw_output_items: Option<Vec<Value>>,
@@ -163,33 +223,13 @@ fn parse_stream_event_with_raw(event: Value) -> Result<Option<ParsedStreamEvent>
             "missing field `type` in OpenAI Responses stream event".to_string(),
         ));
     };
-    let consumed = matches!(
-        event_type.as_str(),
-        "error"
-            | "response.created"
-            | "response.queued"
-            | "response.in_progress"
-            | "response.content_part.added"
-            | "response.content_part.done"
-            | "response.output_text.done"
-            | "response.refusal.done"
-            | "response.reasoning_summary_part.added"
-            | "response.reasoning_summary_part.done"
-            | "response.reasoning_summary_text.done"
-            | "response.reasoning_text.done"
-            | "response.function_call_arguments.delta"
-            | "response.function_call_arguments.done"
-            | "response.reasoning_summary_text.delta"
-            | "response.reasoning_text.delta"
-            | "response.output_text.delta"
-            | "response.refusal.delta"
-            | "response.output_item.added"
-            | "response.output_item.done"
-            | "response.completed"
-            | "response.incomplete"
-            | "response.failed"
-    );
-    if !consumed {
+    // Forward compatibility: a newer server may emit an event type this build
+    // does not model. Drop it rather than failing the whole stream — but only
+    // when the SDK genuinely has no such type; a malformed payload for a type
+    // the SDK *does* model is still a hard error, caught by the deserialize
+    // below. Previously this was a hardcoded list of the 23 events Tact acts
+    // on, which silently dropped any event the SDK learned about afterwards.
+    if !sdk_knows_event(&event_type) {
         return Ok(None);
     }
 
@@ -241,6 +281,19 @@ fn is_official_openai_base_url(base_url: &str) -> bool {
     host.contains("api.openai.com") || host.contains("openai.azure.com")
 }
 
+/// Whether a reasoning-capable model is being asked to think on this request.
+///
+/// DeepSeek (and similar OpenAI-compatible Reasoning models) require prior
+/// `reasoning_text` to be passed back in thinking mode, even on a compatible
+/// base URL that is not `api.openai.com`. The base-URL heuristic alone would
+/// drop the reasoning replay for such endpoints and produce a 400
+/// (`reasoning_text in the thinking mode must be passed back to the API`).
+fn reasoning_replay_required(request: &CreateMessageParams) -> bool {
+    let thinking = request.thinking.is_some() || request.reasoning_effort.is_some();
+    let deepseekish = request.model.to_ascii_lowercase().contains("deepseek");
+    thinking && deepseekish
+}
+
 /// OpenAI Responses API adapter backed by async-openai 0.41.x.
 ///
 /// Hosted web search is a **Responses-protocol capability**, independent of
@@ -258,6 +311,12 @@ pub struct OpenAiResponsesAdapter {
     /// entirely; Tact never falls back to a local summary compaction for
     /// Responses providers.
     compact_threshold: Option<u32>,
+    /// Tact session id, wired by [`Agent::with_session`](crate::Agent)
+    /// through `LlmProvider::set_user_id`. On OpenCode Go endpoints this
+    /// becomes the `x-opencode-session` header value, which the service uses
+    /// to distinguish per-conversation caches: same session = same header,
+    /// different sessions get different caches.
+    session_id: Option<String>,
     /// Whether historical assistant `reasoning` items are replayed into the
     /// `/responses` input. Official OpenAI needs them for turn continuation;
     /// compatible endpoints (DeepSeek, OpenCode, custom OpenAI-compatible
@@ -297,12 +356,19 @@ impl OpenAiResponsesAdapter {
             http,
             base_url,
             compact_threshold,
+            session_id: None,
             replay_prior_reasoning,
         }
     }
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Sets the Tact session id used as the OpenCode `x-opencode-session`
+    /// value (cache-distinguishing session key) for this adapter's endpoint.
+    pub fn set_session_id(&mut self, session_id: String) {
+        self.session_id = Some(session_id);
     }
 
     /// Overrides whether historical assistant `reasoning` items are replayed
@@ -321,12 +387,17 @@ impl OpenAiResponsesAdapter {
         self.replay_prior_reasoning
     }
 
+    fn opencode_session(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
     /// Builds the SDK client for the current request after resolving
     /// credentials, so OAuth-style flows can refresh tokens between calls.
     async fn sdk_client(&self) -> Result<Client<ResponsesCompatConfig>, LlmError> {
         let secret = self.credentials.resolve().await?;
         let key = SecretString::from(LegacyExposeSecret::expose_secret(&secret).clone());
-        let config = ResponsesCompatConfig::new(self.base_url.clone(), Some(key));
+        let mut config = ResponsesCompatConfig::new(self.base_url.clone(), Some(key));
+        config.opencode_session = self.opencode_session().map(str::to_owned);
         Ok(Client::build(self.http.inner().clone(), config))
     }
 
@@ -341,13 +412,20 @@ impl OpenAiResponsesAdapter {
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<(serde_json::Value, Vec<serde_json::Value>), LlmError> {
+        // A compatible base URL defaults to dropping the historical reasoning
+        // replay to save input tokens — unless the request is thinking mode
+        // on a reasoning model (DeepSeek-style) that requires `reasoning_text`
+        // to be passed back on the next turn. Honor the explicit
+        // `with_replay_prior_reasoning` override too.
+        let replay_prior_reasoning =
+            self.replay_prior_reasoning || reasoning_replay_required(request);
         convert::create_response_with_policy(
             request,
             provider_state,
             self.compact_threshold,
             convert::ResponsesRequestPolicy {
                 native_web_search: true,
-                replay_prior_reasoning: self.replay_prior_reasoning,
+                replay_prior_reasoning,
             },
         )
     }
@@ -516,14 +594,17 @@ impl LlmClient for OpenAiResponsesAdapter {
         // sending the request through the byot JSON path; no local summary
         // prompt or `create_message()` call is used. The reasoning-replay
         // policy applies here too: compatible endpoints compact without
-        // historical reasoning payloads.
+        // historical reasoning payloads — unless the request is thinking
+        // mode on a reasoning model that must receive `reasoning_text` back.
+        let replay_prior_reasoning =
+            self.replay_prior_reasoning || reasoning_replay_required(request);
         let (body, _) = convert::create_response_with_policy(
             request,
             provider_state,
             None,
             convert::ResponsesRequestPolicy {
                 native_web_search: false,
-                replay_prior_reasoning: self.replay_prior_reasoning,
+                replay_prior_reasoning,
             },
         )?;
         let compact_request = serde_json::json!({
@@ -539,6 +620,10 @@ impl LlmClient for OpenAiResponsesAdapter {
             .inner()
             .post(&url)
             .header(AUTHORIZATION, format!("Bearer {key}"))
+            .headers(crate::opencode::endpoint_headers(
+                &self.base_url,
+                self.opencode_session(),
+            ))
             .json(&compact_request)
             .send()
             .await
@@ -600,11 +685,66 @@ impl LlmClient for OpenAiResponsesAdapter {
 mod tests {
     use super::stream::ResponsesStreamState;
     use super::{normalize_stream_event_json, parse_stream_event, parse_stream_event_with_raw};
+    use crate::LlmError;
     use crate::{
         ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
-        StopReason, Tool,
+        StopReason, Thinking, ThinkingType, Tool,
     };
     use async_openai_responses::types::responses::OutputItem;
+
+    #[test]
+    fn opencode_config_headers_carry_the_session_id() {
+        use async_openai_responses::config::Config;
+
+        let mut config =
+            super::ResponsesCompatConfig::new("https://opencode.ai/zen/go/v1".into(), None);
+        // Simulate Agent::with_session → LlmProvider::set_user_id wiring.
+        config.opencode_session = Some("tact-session-1".into());
+        let headers = config.headers();
+        assert_eq!(
+            headers
+                .get(crate::opencode::X_OPENCODE_SESSION)
+                .and_then(|v| v.to_str().ok()),
+            Some("tact-session-1"),
+            "x-opencode-session must equal the session id (cache-distinguishing key)"
+        );
+        let ua = headers
+            .get(reqwest13::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ua.starts_with("tact/"), "user agent identifies tact: {ua}");
+    }
+
+    #[test]
+    fn opencode_config_without_session_omits_session_header() {
+        use async_openai_responses::config::Config;
+
+        // No session id → no synthetic fallback token: the config only sends
+        // the identifying User-Agent on OpenCode endpoints.
+        let config =
+            super::ResponsesCompatConfig::new("https://opencode.ai/zen/go/v1".into(), None);
+        let headers = config.headers();
+        assert!(
+            headers.get(crate::opencode::X_OPENCODE_SESSION).is_none(),
+            "no session header without a session id"
+        );
+        let ua = headers
+            .get(reqwest13::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ua.starts_with("tact/"), "user agent identifies tact: {ua}");
+    }
+
+    #[test]
+    fn set_session_id_is_used_by_compact_and_sdk_headers() {
+        // The adapter stores the session id and hands it to both the SDK
+        // config (ordinary /responses) and the direct compact POST.
+        let mut adapter =
+            super::OpenAiResponsesAdapter::new("test-key", "https://opencode.ai/zen/go/v1", None);
+        assert!(adapter.opencode_session().is_none());
+        adapter.set_session_id("tact-session-2".into());
+        assert_eq!(adapter.opencode_session(), Some("tact-session-2"));
+    }
 
     #[test]
     fn fills_missing_output_text_annotations_for_terminal_events() {
@@ -823,6 +963,85 @@ mod tests {
         .unwrap();
 
         assert!(event.is_some());
+    }
+
+    /// The known-type set is parsed out of serde's unknown-variant error, so a
+    /// serde wording change would silently empty it — and an empty set means
+    /// every event is dropped, i.e. a silently dead stream. Pin the derivation
+    /// itself.
+    #[test]
+    fn sdk_event_types_are_derived_from_the_enum() {
+        let types = super::sdk_event_types();
+        assert!(
+            types.len() > 20,
+            "deriving the SDK event types from serde produced {} entries; \
+             the unknown-variant message format likely changed",
+            types.len()
+        );
+        // One member from each family the stream state machine depends on.
+        for expected in [
+            "response.created",
+            "response.output_item.added",
+            "response.output_text.delta",
+            "response.completed",
+            "response.failed",
+            "error",
+        ] {
+            assert!(
+                types.contains(expected),
+                "{expected} missing from the derived SDK event types"
+            );
+        }
+    }
+
+    /// The behaviour that replaced the old 23-literal allowlist.
+    #[test]
+    fn unknown_event_types_are_dropped_and_known_ones_parsed() {
+        // Not modelled by the SDK at all — a newer server, or a proxy.
+        let name = "response.future.event";
+        assert!(!super::sdk_knows_event(name));
+        assert!(
+            parse_stream_event(serde_json::json!({
+                "type": name,
+                "sequence_number": 1,
+                "payload": {"ignored": true},
+            }))
+            .unwrap()
+            .is_none(),
+            "an event the SDK does not model must be dropped, not error"
+        );
+
+        // Modelled by the SDK: consumed even though Tact's state machine does
+        // not act on this particular one. Under the old allowlist it was
+        // dropped before deserialization.
+        let name = "response.code_interpreter_call.in_progress";
+        assert!(super::sdk_knows_event(name));
+        assert!(
+            parse_stream_event(serde_json::json!({
+                "type": name,
+                "sequence_number": 2,
+                "item_id": "ci-1",
+                "output_index": 0,
+            }))
+            .unwrap()
+            .is_some(),
+            "an event the SDK models must reach the state machine"
+        );
+    }
+
+    /// A malformed payload for a type the SDK *does* model is a real error, and
+    /// must not be silently swallowed by the unknown-type tolerance.
+    #[test]
+    fn malformed_known_event_is_still_an_error() {
+        let error = parse_stream_event(serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": 42,
+        }))
+        .expect_err("a malformed known event must error");
+        assert!(
+            matches!(error, LlmError::StreamParse(_)),
+            "expected a StreamParse error, got {error:?}"
+        );
     }
 
     #[test]
@@ -1071,6 +1290,54 @@ mod tests {
             super::OpenAiResponsesAdapter::new("test-key", "https://api.openai.com/v1", None)
                 .with_replay_prior_reasoning(false);
         assert!(!official.replay_prior_reasoning());
+    }
+
+    #[test]
+    fn thinking_on_reasoning_model_forces_replay_on_compatible_base_url() {
+        // DeepSeek-ish models in thinking mode require historical
+        // `reasoning_text` to be passed back, even on a compatible base URL
+        // (OpenCode Go, api.deepseek.com) whose default would drop the
+        // replay. Without this the provider returns 400
+        // ("reasoning_text in the thinking mode must be passed back to the API").
+        for base_url in ["https://opencode.ai/zen/go/v1", "https://api.deepseek.com"] {
+            let adapter = super::OpenAiResponsesAdapter::new("test-key", base_url, None);
+
+            // Prior assistant turn carries a persisted reasoning signature.
+            let mut request =
+                CreateMessageParams::new(RequiredMessageParams {
+                    model: "deepseek-v4-flash".to_string(),
+                    max_tokens: 128,
+                    messages: vec![
+                        Message::new_text(Role::User, "inspect this"),
+                        Message::new_blocks(
+                            Role::Assistant,
+                            vec![ContentBlock::Thinking {
+                                thinking: "plan".to_string(),
+                                signature: "openai-responses-v1:{\"reasoning\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"full chain of thought\"}],\"encrypted_content\":\"opaque\"},\"function_call_item_ids\":{}}"
+                                    .to_string(),
+                            }],
+                        ),
+                    ],
+                });
+            request.thinking = Some(Thinking {
+                type_: ThinkingType::Enabled,
+                budget_tokens: 64_000,
+            });
+
+            let (body, _) = adapter.build_wire_request(&request, None).unwrap();
+            let reasoning = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count();
+            assert_eq!(
+                reasoning,
+                1,
+                "thinking-mode {model} on {base_url} must replay the reasoning item: {body:?}",
+                model = request.model
+            );
+        }
     }
 
     /// Run with:

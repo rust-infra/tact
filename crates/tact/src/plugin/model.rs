@@ -1,21 +1,55 @@
 use std::{
     collections::BTreeMap,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// The official marketplace that is available in every marketplace state.
+/// The official Claude marketplace that is available in every marketplace state.
 pub const OFFICIAL_MARKETPLACE: &str = "claude-plugins-official";
+/// The official OpenAI Codex marketplace, seeded into every state.
+///
+/// The name matches the catalog declared by `github.com/openai/plugins`
+/// (`.agents/plugins/marketplace.json`), so a later
+/// `plugin marketplace add openai/plugins` resolves to this same entry instead
+/// of creating a duplicate.
+pub const OPENAI_MARKETPLACE: &str = "openai-curated";
 pub(crate) const MARKETPLACE_BACKUPS_DIRECTORY: &str = ".backups";
 const OFFICIAL_MARKETPLACE_URL: &str = "https://github.com/anthropics/claude-plugins-official.git";
+const OPENAI_MARKETPLACE_URL: &str = "https://github.com/openai/plugins.git";
+
+/// The marketplace records seeded into every registry and restored on load.
+///
+/// These are protected: user commands cannot replace or remove them.
+const BUILTIN_MARKETPLACES: &[(&str, &str)] = &[
+    (OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_URL),
+    (OPENAI_MARKETPLACE, OPENAI_MARKETPLACE_URL),
+];
+
+fn is_builtin_marketplace(name: &str) -> bool {
+    BUILTIN_MARKETPLACES
+        .iter()
+        .any(|(builtin, _)| *builtin == name)
+}
+
+fn builtin_record(name: &str, url: &str) -> MarketplaceRecord {
+    MarketplaceRecord {
+        name: name.to_owned(),
+        source: MarketplaceSource::GitUrl(url.to_owned()),
+    }
+}
 
 /// A marketplace location, either a Git repository or a catalog document.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MarketplaceSource {
     GitUrl(String),
     CatalogUrl(String),
+    /// A Codex-style local marketplace root.
+    ///
+    /// The catalog lives at `<root>/.agents/plugins/marketplace.json`; local
+    /// plugin source paths in that catalog are resolved relative to `<root>`.
+    LocalPath(std::path::PathBuf),
 }
 
 impl MarketplaceSource {
@@ -62,12 +96,27 @@ impl MarketplaceSource {
         Ok(Self::GitUrl(format!("https://github.com/{value}.git")))
     }
 
-    /// Returns the source URL used to fetch this marketplace.
+    /// Returns the source URL/path shown to users.
+    ///
+    /// A Codex-style local marketplace has no git URL. Its source path is the
+    /// resolution root, not the catalog location, so pointing at it alone reads
+    /// as "the wrong directory"; the catalog is appended to disambiguate.
     #[must_use]
-    pub fn git_url(&self) -> String {
+    pub fn display_source(&self) -> String {
         match self {
             Self::GitUrl(url) | Self::CatalogUrl(url) => url.clone(),
+            Self::LocalPath(path) => format!(
+                "{} (catalog: {})",
+                path.display(),
+                marketplace_catalog_path(path).display()
+            ),
         }
+    }
+
+    /// Backward-compatible name for display source; local paths are included.
+    #[must_use]
+    pub fn git_url(&self) -> String {
+        self.display_source()
     }
 }
 
@@ -78,31 +127,52 @@ pub struct MarketplaceRecord {
     pub source: MarketplaceSource,
 }
 
+/// The catalog document of a Codex-style local marketplace root.
+///
+/// Mirrors the candidate order used when reading a local marketplace: the
+/// personal `.agents/plugins/marketplace.json` first, then a repo-local
+/// `.codex-plugin/marketplace.json`, then a bare `marketplace.json`.
+#[must_use]
+pub fn marketplace_catalog_path(root: &Path) -> PathBuf {
+    const FILE: &str = "marketplace.json";
+    let agents = root.join(".agents").join("plugins").join(FILE);
+    if agents.exists() {
+        return agents;
+    }
+    let manifest = root.join(".codex-plugin").join(FILE);
+    if manifest.exists() {
+        manifest
+    } else {
+        root.join(FILE)
+    }
+}
+
 /// The persisted marketplace registry.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct MarketplaceState {
     marketplaces: BTreeMap<String, MarketplaceRecord>,
+    #[serde(skip)]
+    discovered: BTreeMap<String, MarketplaceRecord>,
 }
 
 impl MarketplaceState {
-    /// Creates the marketplace registry with the built-in official marketplace.
+    /// Creates the marketplace registry with the built-in marketplaces.
     #[must_use]
     pub fn with_builtin() -> Self {
         let mut marketplaces = BTreeMap::new();
-        marketplaces.insert(
-            OFFICIAL_MARKETPLACE.to_owned(),
-            MarketplaceRecord {
-                name: OFFICIAL_MARKETPLACE.to_owned(),
-                source: MarketplaceSource::GitUrl(OFFICIAL_MARKETPLACE_URL.to_owned()),
-            },
-        );
-        Self { marketplaces }
+        for (name, url) in BUILTIN_MARKETPLACES {
+            marketplaces.insert((*name).to_owned(), builtin_record(name, url));
+        }
+        Self {
+            marketplaces,
+            discovered: BTreeMap::new(),
+        }
     }
 
-    /// Adds a user marketplace unless it would replace the built-in source.
+    /// Adds a user marketplace unless it would replace a built-in source.
     pub fn add(&mut self, name: &str, source: MarketplaceSource) -> Result<()> {
         validate_marketplace_name(name)?;
-        if name == OFFICIAL_MARKETPLACE {
+        if is_builtin_marketplace(name) {
             bail!("the built-in marketplace cannot be replaced");
         }
 
@@ -123,13 +193,40 @@ impl MarketplaceState {
         Ok(())
     }
 
+    /// Adds a discovered (non-persisted) Codex marketplace unless the name is
+    /// already present. Discovered marketplaces are re-scanned on every load,
+    /// so deleting `~/.agents/plugins/marketplace.json` removes them again.
+    pub(crate) fn merge_discovered<I>(&mut self, records: I)
+    where
+        I: IntoIterator<Item = MarketplaceRecord>,
+    {
+        for record in records {
+            if self.marketplaces.contains_key(&record.name)
+                || self.discovered.contains_key(&record.name)
+                || validate_marketplace_name(&record.name).is_err()
+            {
+                continue;
+            }
+            self.discovered.insert(record.name.clone(), record);
+        }
+    }
+
     /// Removes a user-added marketplace from the registry.
+    ///
+    /// Discovered Codex marketplaces are not persisted, so they cannot be
+    /// removed here; a plain "unknown marketplace" would be misleading.
     pub fn remove(&mut self, name: &str) -> Result<()> {
         validate_marketplace_name(name)?;
-        if name == OFFICIAL_MARKETPLACE {
+        if is_builtin_marketplace(name) {
             bail!("the built-in marketplace cannot be removed");
         }
         if self.marketplaces.remove(name).is_none() {
+            if self.discovered.contains_key(name) {
+                bail!(
+                    "marketplace {name} is discovered from a Codex marketplace file and cannot be removed; \
+                     delete its marketplace.json instead"
+                );
+            }
             bail!("unknown marketplace {name}");
         }
         Ok(())
@@ -138,14 +235,24 @@ impl MarketplaceState {
     /// Returns the marketplace record for a given name.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&MarketplaceRecord> {
-        self.marketplaces.get(name)
+        self.marketplaces
+            .get(name)
+            .or_else(|| self.discovered.get(name))
     }
 
     /// Iterates over marketplace names and their records.
+    ///
+    /// Discovered Codex marketplaces come first so a bare `plugin install`
+    /// prefers the user's local Codex catalog over the legacy built-in source.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &MarketplaceRecord)> {
-        self.marketplaces
+        self.discovered
             .iter()
             .map(|(name, record)| (name.as_str(), record))
+            .chain(
+                self.marketplaces
+                    .iter()
+                    .map(|(name, record)| (name.as_str(), record)),
+            )
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
@@ -158,15 +265,12 @@ impl MarketplaceState {
         Ok(())
     }
 
-    /// Restores the canonical built-in marketplace entry.
+    /// Restores the canonical built-in marketplace entries.
     pub(crate) fn ensure_builtin(&mut self) {
-        self.marketplaces.insert(
-            OFFICIAL_MARKETPLACE.to_owned(),
-            MarketplaceRecord {
-                name: OFFICIAL_MARKETPLACE.to_owned(),
-                source: MarketplaceSource::GitUrl(OFFICIAL_MARKETPLACE_URL.to_owned()),
-            },
-        );
+        for (name, url) in BUILTIN_MARKETPLACES {
+            self.marketplaces
+                .insert((*name).to_owned(), builtin_record(name, url));
+        }
     }
 }
 
@@ -196,6 +300,7 @@ impl<'de> Deserialize<'de> for MarketplaceState {
         let raw = RawMarketplaceState::deserialize(deserializer)?;
         let mut state = Self {
             marketplaces: raw.marketplaces,
+            discovered: BTreeMap::new(),
         };
         state.validate().map_err(serde::de::Error::custom)?;
         state.ensure_builtin();
@@ -267,7 +372,7 @@ pub struct InstalledState {
 mod tests {
     use std::path::Path;
 
-    use super::{MarketplaceSource, MarketplaceState, OFFICIAL_MARKETPLACE};
+    use super::{MarketplaceSource, MarketplaceState, OFFICIAL_MARKETPLACE, OPENAI_MARKETPLACE};
     use crate::consts::PluginHome;
 
     #[test]
@@ -287,6 +392,67 @@ mod tests {
         assert_eq!(
             MarketplaceSource::parse("acme/plugins").unwrap().git_url(),
             "https://github.com/acme/plugins.git"
+        );
+    }
+
+    #[test]
+    fn local_marketplace_display_names_the_catalog_next_to_its_root() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".agents/plugins")).unwrap();
+        std::fs::write(
+            home.path().join(".agents/plugins/marketplace.json"),
+            r#"{"name":"codex-test-market","plugins":[]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            MarketplaceSource::LocalPath(home.path().to_path_buf()).display_source(),
+            format!(
+                "{} (catalog: {})",
+                home.path().display(),
+                home.path()
+                    .join(".agents/plugins/marketplace.json")
+                    .display()
+            )
+        );
+    }
+
+    #[test]
+    fn marketplace_catalog_path_prefers_the_personal_agents_catalog() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".agents/plugins")).unwrap();
+        std::fs::write(root.path().join(".agents/plugins/marketplace.json"), "{}").unwrap();
+        std::fs::write(root.path().join("marketplace.json"), "{}").unwrap();
+
+        assert_eq!(
+            super::marketplace_catalog_path(root.path()),
+            root.path().join(".agents/plugins/marketplace.json")
+        );
+    }
+
+    #[test]
+    fn marketplace_catalog_path_falls_back_to_a_bare_catalog() {
+        let root = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            super::marketplace_catalog_path(root.path()),
+            root.path().join("marketplace.json")
+        );
+    }
+
+    #[test]
+    fn discovered_marketplace_removal_explains_that_it_is_not_persisted() {
+        let mut state = MarketplaceState::with_builtin();
+        state.merge_discovered(vec![super::MarketplaceRecord {
+            name: "codex-marketplace-global".to_owned(),
+            source: MarketplaceSource::LocalPath(Path::new("/home/example").to_path_buf()),
+        }]);
+
+        let error = state.remove("codex-marketplace-global").unwrap_err();
+
+        assert!(
+            error.to_string().contains("delete its marketplace.json"),
+            "{error}"
         );
     }
 
@@ -334,19 +500,23 @@ mod tests {
     }
 
     #[test]
-    fn public_api_cannot_replace_the_builtin_marketplace() {
+    fn public_api_cannot_replace_a_builtin_marketplace() {
         let mut state = MarketplaceState::with_builtin();
-        assert!(
-            state
-                .add(
-                    "claude-plugins-official",
-                    MarketplaceSource::GitUrl("https://x/y.git".into())
-                )
-                .is_err()
-        );
+        for name in [OFFICIAL_MARKETPLACE, OPENAI_MARKETPLACE] {
+            assert!(
+                state
+                    .add(name, MarketplaceSource::GitUrl("https://x/y.git".into()))
+                    .is_err(),
+                "{name}"
+            );
+        }
         assert_eq!(
             state.get(OFFICIAL_MARKETPLACE).unwrap().source.git_url(),
             "https://github.com/anthropics/claude-plugins-official.git"
+        );
+        assert_eq!(
+            state.get(OPENAI_MARKETPLACE).unwrap().source.git_url(),
+            "https://github.com/openai/plugins.git"
         );
     }
 
@@ -375,8 +545,9 @@ mod tests {
         let state = MarketplaceState::with_builtin();
         let marketplaces: Vec<_> = state.iter().collect();
 
-        assert_eq!(marketplaces.len(), 1);
+        assert_eq!(marketplaces.len(), 2);
         assert_eq!(marketplaces[0].0, OFFICIAL_MARKETPLACE);
+        assert_eq!(marketplaces[1].0, OPENAI_MARKETPLACE);
     }
 
     #[test]
@@ -401,5 +572,16 @@ mod tests {
                 .git_url(),
             "https://github.com/anthropics/claude-plugins-official.git"
         );
+        assert!(state.get(OPENAI_MARKETPLACE).is_some());
+    }
+
+    #[test]
+    fn builtin_marketplaces_cannot_be_removed() {
+        let mut state = MarketplaceState::with_builtin();
+
+        for name in [OFFICIAL_MARKETPLACE, OPENAI_MARKETPLACE] {
+            assert!(state.remove(name).is_err(), "{name}");
+        }
+        assert!(state.get(OPENAI_MARKETPLACE).is_some());
     }
 }

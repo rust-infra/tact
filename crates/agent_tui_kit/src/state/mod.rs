@@ -37,5 +37,5 @@ pub use thinking::{
 pub use tool_state::{ActiveToolBlock, DiffPopup, SubagentPopup, ToolBlock, ToolState};
 pub use ui_types::{
     CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, MermaidBlock, MermaidPopup,
-    SkillEntry, Status, StickyTab, SystemPromptPopup,
+    MermaidPopupView, SkillEntry, Status, StickyTab, SystemPromptPopup,
 };

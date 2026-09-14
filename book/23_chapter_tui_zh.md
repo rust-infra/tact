@@ -42,7 +42,7 @@ sequenceDiagram
 
 **分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands、task DAG）。
 
-**组件注册表（whole-App 切换，2026-08-23）：** kit 的组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` / `subagent_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）、`SubagentsChanged`（subagent panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
+**组件注册表（whole-App 切换，2026-08-23）：** kit 的组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` / `subagent_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`TurnStats`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）、`SubagentsChanged`（subagent panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
 
 ---
 
@@ -98,6 +98,8 @@ pub enum UserCommand {
 | `[manual compact]` | 本地 `compact` 工具成功并置位手动压缩标记（仅非 Responses） |
 | `[native compact]` | Responses provider：显式 `POST /responses/compact` 开始 |
 | `[compact retry n/N] retrying in Xs` | 压缩遇到瞬时传输错误；有界退避重试 |
+| `[compact continue n/N]` | 本地摘要器撞到输出上限；部分摘要带入阶梯下一次尝试（先降 effort，再按实测 reasoning 调整预留） |
+| `[compact fallback]` | 阶梯耗尽，部分摘要被接受为 best-effort 而不是失败 |
 | `[responses compacted: items=N, id=…]` | Responses 原生压缩成功；`N` = 基线 item 数，`id` = 截断后的 compaction id 前缀 |
 | `Compaction complete.` | `UserCommand::Compact` 成功完成 |
 
@@ -134,6 +136,7 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 | `ToolProgress` | 更新匹配 active tool 的 1→3 行 live tail |
 | `RequestSelect` | 权限 popup（[Ch 10](./10_chapter_permission.md)） |
 | `TokenUsage` | 状态栏计数 |
+| `TurnStats` | 状态栏回合计数（当前任务的 LLM 回合；cap 携带但不渲染） |
 | `ModelInfo` | 模型名 / 限制显示 |
 | `TaskComplete` | 标记任务完成，启用后续输入 |
 | `Error` | 带 `AgentErrorKind` 的错误横幅 |
@@ -262,7 +265,7 @@ host 标题行对每个可见域渲染一个 `[Tasks] …` / `[Subagent] …` �
 - 顶栏：固定 1 行。
 - 主区域：`Constraint::Min(3)`。
 - 输入高度：`min(显示行, 3) + 2`（含 border）——显示行按软换行后的行数计，不只统计显式 `\n`（长行在框内折行）。有待提交的排队消息时，再叠加 `pending_display_lines()`（提示行 + 每条排队消息一行，上限 4 行）。
-- 底栏高度：始终 2 行（账户余额/配额追加到第 2 行，非第三行）。
+- 底栏高度：始终 2 行（账户余额/配额追加到第 1 行，非第三行）。
 
 Popups 在基础布局**之后**绘制以置顶。多数先用 `Clear`（无 drop shadow — 避免部分终端暗带）。
 
@@ -346,13 +349,19 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 ### 6.6 状态栏与输入
 
-**顶栏**（`render_status_bar`）：输入模式、`Status`（Idle / Planning / Executing / WaitingForUser / Done）、主题/语言提示。覆盖：临时 `flash_msg`。不再显示面板焦点标签（仅单栏 log）。
+**顶栏**（`render_status_bar`）：输入模式、焦点面板标签（`FocusedPanel` 目前只有 `Log`，但每个状态分支都会渲染该槽位）、`Status`（Idle / Planning / Executing / Done）、`Idle` 下的主题/语言提示。覆盖：临时 `flash_msg`。`Executing` 时还会显示步骤标签（`正在执行步骤 4` / `Executing step 4`，2026-09-14 起不再带分母）与并行工具数（`并行中 1` / `running 1`）；`[████░░] n%` 进度条与实时任务耗时已于 2026-09-14 一并删除——进度条只是把步骤数用字符重画一遍，耗时则下移到第 1 行紧挨运行（见下），因此顶栏不再渲染任何自有数字。
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
-- 第 1 行：cwd、运行（`⊙ 运行` / `Up`）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
-- 第 2 行：模型名、`max_out_token`（真正留给输出的额度：effort 语义模型从 `max_tokens` 中扣除 reasoning 份额——如 128K 信封 + `high` effort 显示 `max_out_token 73K`；budget 语义模型的 thinking 走独立信封，因此仍显示完整 `max_tokens`）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、带 `■`/`·` 填充的 `ctx` 进度、`∑ₜₒₖ` 上次调用合计、`▣ 缓存%`/`cache%`。段落用两个空格连接。窄终端优先丢弃：缓存 → 运行 → 路径 → ∑ → ctx。
+- 第 1 行：权限模式、cwd、运行（`⊙ 运行 …` / `⊙ Up …`）、实时任务耗时（`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`——紧跟在运行之后，因为描述*本次运行*的两只时钟该挨着读；无任务在跑时整段省略；作为本行最后一个可丢弃段推入，窄终端上它第一个被丢）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
+- 第 2 行：模型名、`输出`（即 `max_tokens` **原值**——请求真正发出去的那个数字：Responses 协议下是 `max_output_tokens`，chat completions / Anthropic 下是 `max_tokens`。即使对 effort 语义模型也**不扣** reasoning 份额：推理与正文的切分由服务端按次请求决定，所以这里报告的是"要了什么"，而不是猜出来的值——估算 reasoning 预留是压缩路径的职责，不是读数该做的事。见 2026-09-13 条目）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、`ctx` 用量（`ctx 4% 45K/1M`——百分比在前，绝对 used/window 在后；进度条已于 2026-09-12 去掉，因为它只是把百分比用字符又画了一遍）、`▣` 缓存命中率、回合计数（`⟳ 12` = 会话用户回合，以及 `⇅ 3` = 当前任务的 agent-loop 回合——任务的首次 LLM 调用前隐藏），以及回合耗时（`⏱ 02:05` = 上一完成回合，加 `均 01:45` = 会话平均；回合完成前不显示平均）。段落用两个空格连接。窄终端优先丢弃：回合耗时 → 回合计数 → 缓存 → ctx——即 `ctx` 存活最久。
 
-**输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；`WaitingForUser` 时批准横幅。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
+**第 2 行瘦身（2026-09-12）：** 新增回合段后第 2 行涨到约 138 列，普通终端已开始丢段。该行被压到 **90 列**，且不丢失任何独立信息（同日 ctx 调整后为 86 列）。遵循的规则是**一个值只留一种渲染**：(1) **删除** `∑ₜₒₖ {total}` 段——它读的是 `ctx` 段已渲染为 `used` 的同一个 `StatusBarState.token_total`（精确整数仍保留在任务 stats 块与 `/stats` 中）；(2) `max_out_token` → `out`；(3) `cache%` → 裸 `▣ 30%`；(4) 两个计数都去掉 `turns` 文字，只剩 `⟳ 12 ⇅ 3`。宽度预算由 `bottom_bar_fits_every_segment_in_100_columns` 锁定（85–86 列，随 `out` 取值浮动一位）；2026-09-14 新增到第 1 行的任务耗时另有预算测试（`bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`）。
+
+**ctx 恢复百分比、去掉进度条（2026-09-12，同日）：** 上面的瘦身一度删掉了 ctx 的 `pct%` 而保留 `■`/`·` 进度条。同日反转：进度条**删除**，百分比前置——`ctx [▍···] 45K/1M` → **`ctx 4% 45K/1M`**（24 → 17 → 14 列）。理由：进度条只是把百分比用字符又画了一遍，而只有 `45K/1M` 时读者得自己做除法才能回答"离自动压缩还有多远"。绝对 `used/window` 保留——比率无法替代它来自的两个计数。缓存 `▣` 段也移到紧接 `ctx` **之后**、回合计数**之前**，让两个会话级比率挨着读；push 顺序现为 `model → out → think → ctx → cache → turns → timing`，窄终端存活顺序为 `ctx > cache > 回合计数 > 回合耗时`。
+
+**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时是上文那条独立的**第 1 行**段（`format_task_elapsed`，读 `ctx.task_start_time`，紧挨运行）：自 2026-09-14 起它落户在那里，顶栏不再显示任何时钟。它刻意不在冻结段同一行——第 1 行回答"本次运行花了多久"，第 2 行回答"已结束的回合各花多久"——且作为本行最后一个可丢弃段，列宽不足时它是第一个被丢的。
+
+**输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；无批准横幅（agent 的权限询问是 `RequestSelect` 更新，会以 `InputMode::Select` 打开选择弹窗）。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
 
 **忙时排队消息**（Codex 风格"当前任务结束后提交"，2026-08-16 起）：agent 处于 `Planning`/`Executing` 时按 Enter 不再弹"busy"提示——文本进入 `App.pending_messages` 队列（输入框清空，提示"消息将在当前任务结束后自动提交（按 esc 立即中断并发送）"及每条排队消息一行 `↳ 消息` **渲染在输入框上方**）。队列在 agent 进入 `Idle`/`Done` 时自动提交（`handlers::skills::flush_pending_when_idle`，主循环在 `agent_rx` 排空后调用）：每条排队消息按序各自派发为一个 `SubmitTask`——命令驱动（`tact-ui/src/driver.rs`）本就会串行处理在途的 `SubmitTask`，因此每条排队消息都成为下一个用户回合。**Esc 保持原语义不变**——始终退出插入模式、队列保留（绝不中断运行中的任务）。**没有"立即发送"操作**：排队消息纯自动——当前任务结束后自动提交。丢弃排队消息的**唯一**途径是 pending 提示行文案后紧接的可点击 **`[Cancel]` 按钮**（鼠标；窄终端隐藏）：只清空队列、不影响运行中的任务。`/cancel`（及 Normal 模式 `c`）与队列无关——只取消在途任务（Idle/Done 时 noop 提示），与功能引入前完全一致；被 `/cancel` 结束的任务同样会触发排队消息的自动提交（与任务自然结束相同）。字符长度校验在入队时执行，超长消息不会进入队列。排队状态位于 `widgets/state/app/pending.rs`；排队块自行绘制背景（无残影，见 Ch 26 2026-08-16 条目）。
 
@@ -366,9 +375,10 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 - 完整的 ```mermaid fenced block 在主日志区渲染为**终端图**，不再生成 code card。
 - 支持的图类型跟随固定的 `ratatui-markdown` Mermaid 渲染器（flowchart/graph、pie、gantt、stateDiagram、classDiagram、quadrantChart、block）。`sequenceDiagram` 使用 Tact 自有渲染器（`mermaid_sequence.rs`），以正确处理别名、`+/-` 激活简写以及 CJK/宽字符标签对齐；不支持的图类型回退为代码。
-- 流式渲染会缓冲整个 block 直到闭合 fence；渲染成功时 diagram 行直接拼接进日志，**不创建 code card**。fence 正文保留在 `MermaidBlock` 中，供双击打开源码弹窗。
-- **双击**任意 diagram 行 → Mermaid 弹窗；弹窗内 **`y`** 复制 Mermaid 源码。主区选区 / Normal **`y`** 仍复制可见 ASCII 图。
-- 无效或不支持的 Mermaid 回退到普通 code block/card，原始源码仍可读。
+- 流式渲染会缓冲整个 block 直到闭合 fence；渲染成功时 diagram 行直接拼接进日志，**不创建 code card**。fence 正文保留在 `MermaidBlock` 中，供双击打开弹窗。
+- **双击**任意 diagram 行 → Mermaid 弹窗。自 2026-09-11 起，弹窗默认显示**已渲染的图**，并以弹窗宽度（约占 frame 的 80%）而非更窄的日志面板重新排版，因此密集的 flowchart 也能看清；**`Tab`** 在渲染图与原始 fence 正文之间切换。两种视图下 **`y`** 均复制 Mermaid 源码。主区选区 / Normal **`y`** 仍复制可见 ASCII 图。
+- 无法渲染的图（例如 pinned 渲染器不解析的 Mermaid `style` / `classDef` / `linkStyle`）会在弹窗中显示源码，并明确标注「does not render」，而不是静默显示空白。
+- 无效或不支持的 Mermaid 在日志区回退到普通 code block/card，原始源码仍可读。
 - 普通显式语言 fence（```rust 等）保留原有 code-card 行为。
 - 宽度变化与视口滚动沿用现有 log 布局/缓存行为——diagram 行一旦拼接即为普通日志行。
 
@@ -383,9 +393,9 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 | Help | `Ctrl+?` | `popups/help.rs` |
 | History | `Ctrl+H` | `popups/history.rs` |
 | Thinking detail | 双击 thinking card；相邻有序列表项以空行分隔 | `popups/thinking_popup.rs` |
-| Tool/file detail | 双击 tool card | `popups/diff_popup.rs` |
+| Tool/file detail | 双击 tool card（已折叠的命令 / 读取 / 编辑卡片：meta 行末尾的 `双击查看结果`） | `popups/diff_popup.rs` |
 | Code detail | 双击 code card | `popups/code_popup.rs` |
-| Mermaid source | 双击已渲染的 Mermaid 图 | `popups/mermaid_popup.rs` |
+| Mermaid 图 / 源码 | 双击已渲染的 Mermaid 图；默认显示渲染图，`Tab` 切换到源码 | `popups/mermaid_popup.rs` |
 
 Popups 通常占终端约 80%×80%，记录 `app.mouse.*_popup_area` 供点击外部关闭，显示 `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` 提示。`diff_popup` 经 `cached_content` 懒加载全文 — 热路径 `render()` 内无文件 I/O。
 
@@ -485,8 +495,8 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 
 `handle_agent_update`（`widgets/state/app/agent.rs`）是 agent 事件写入 log 行的唯一 writer。每次 update 设 `dirty = true`。match 前两个全局门：
 
-1. **Thinking gate** — 产出内容的 update *除* `ThinkingChunk` / `TokenUsage` / `ModelInfo` / `ToolProgress` 外，若 thinking 区域仍开则调用 `flush_and_close_thinking()` 作安全网。优先显式 `ThinkingChunk::Finished`。
-2. **Loading gate** — 多数 update 调用 `remove_loading_placeholder()`。信息性或类元数据 update（`TokenUsage`、`ModelInfo`、`ToolProgress`）跳过移除。Legacy `PlanGenerated` handler 也跳过，但 agent 从不发出 — loading 行路径 inactive。
+1. **Thinking gate** — 产出内容的 update *除* `ThinkingChunk` / `TokenUsage` / `ModelInfo` / `TurnStats` / `ToolProgress` 外，若 thinking 区域仍开则调用 `flush_and_close_thinking()` 作安全网。优先显式 `ThinkingChunk::Finished`。
+2. **Loading gate** — 多数 update 调用 `remove_loading_placeholder()`。信息性或类元数据 update（`TokenUsage`、`ModelInfo`、`TurnStats`、`ToolProgress`）跳过移除。Legacy `PlanGenerated` handler 也跳过，但 agent 从不发出 — loading 行路径 inactive。
 
 **当前 agent 路径：** `StepAdded` 仅更新内部 `app.plan.steps`（无 log 行、无专用面板）。`StepStarted` 创建 tool placeholder 并驱动 `Planning → Executing`。当前运行勿期望 `PlanGenerated`。
 
@@ -506,7 +516,7 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | **`Info`** | 系统消息行 | 无系统前缀则 Markdown |
 | **`Error`** | 系统错误行（fatal） | Fatal 时 flush stream |
 | **`TaskComplete`** | 仅 task-end separator | **不**重追加摘要文本（已流式）；scroll 到底 |
-| **`TokenUsage` / `ModelInfo`** | *（无）* | 仅状态栏 |
+| **`TokenUsage` / `TurnStats` / `ModelInfo`** | *（无）* | 仅状态栏 |
 
 **StreamChunk 解析** 需额外细节，因单批 token 可产出异构行：
 
@@ -538,7 +548,7 @@ ThinkingChunk::Started →  在 phys_idx 保留 direct-card placeholder 行
 ThinkingChunk::Delta   →  追加 active content；渲染 1→2→3 行 tail
 ThinkingChunk::Finished→  在同一 phys_idx 完成为 ThinkingBlock { summary, content, markdown }
 StreamChunk / Step*    →  若漏 Finished 则 safety-close
-TokenUsage / ModelInfo →  不关闭 thinking
+TokenUsage / ModelInfo / TurnStats →  不关闭 thinking
 ```
 
 Active card body 从一行增长到三行，之后保持最新三行 tail。关闭时原地变为一行 summary；完整内容保留在 state，供 detail popup 与 copy 使用。
@@ -584,7 +594,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 构造 | 层 | 高度来源 | 双击 |
 |------|-----|----------|------|
 | **TextCell** | Inline | Cache 换行数 | 词选 / 行选 |
-| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — 替换 placeholder 范围 | 打开 `diff_popup` |
+| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — 替换 placeholder 范围 | 打开 `diff_popup`（折叠的命令 / 读取 / 编辑卡片：命中 meta 行末尾的 `双击查看结果`） |
 | **ThinkingCell** | Inline | 前后各一行空白；active 1→3 tail 行；completed 一行 summary | 打开 `thinking_popup` |
 | **TaskEndSeparator** | Inline | 1 visual 行（实线 + 居中耗时） | — |
 | **MessageSeparator** | Inline | user/system/assistant 组间 1 blank | — |
@@ -593,7 +603,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 
 **TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自行的 `LogItemKind`；user 归属与类别分隔线不再检查 raw 文本。
 
-**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，与完成后卡片一致——完成后则是计数与 popup 共用这份「命令 + 输出」内容。完成后折叠为现有 compact card，并以 `StepResult.detail` 为准。
+**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，popup 用的就是这份「命令 + 输出」内容。命令（`Command`）、文件读取（`FileRead`：`read_file`、`read_image`）、文件写入（`FileWrite`：`write_file`）与文件编辑（`FileEdit`：`edit_file`、`apply_patch`）**完成后整块卡片消失**：block 只剩 title + meta 两行，以 `StepResult.detail` 为准，meta 行追加 `· {n} 行 · 双击查看结果`（`tool_collapsed_output_hint`），其中 `n` 与 popup 显示的行数是同一个数（编辑类取 `new_text` 的行数，popup 渲染的是 git diff；读取/写入类取正文行数）——没有卡片的 block 仍然要能说明「这里藏着输出」，而可点的只有末尾的 `双击查看结果`（参数行与行数都不响应）。本来就不画卡片的 kind（`Task` / `Sleep` / `Generic`，MCP/插件工具都走 `Generic`）同样会折叠，但**只在结果超过一行时**：没有卡片时它们的结果原本根本读不到（`detail_full` 一直是 `None`，既没有 popup 也没有点击目标），而只有一行的确认信息不值得给一个入口。已完成的 subagent 保留摘要卡片——它是 transcript 弹窗的入口。失败仍保留卡片（最多 5 行预览）。
 
 **为何仅 code 用 overlay：** code block 将流式 fence 行换成 blank placeholder，并用预渲染 `styled` cache 绘制 card。Thinking 则采用与 tool card 相同的 direct `Renderable` 模型，因此 live tail 与 completion summary 只有一个渲染所有者。
 
@@ -609,7 +619,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 双击（纯文本） | `find_word_bounds` 词选 |
 | 三击 | 整 logical 行；code block 内 → 整块范围 |
 | 单击 thinking/tool/code card | 记住 card 索引；无文本选择 |
-| 双击 card | 打开对应 detail popup |
+| 双击 card | 打开对应 detail popup；命令 / 读取 / 编辑类卡片已折叠时没有 card，命中目标是 meta 行末尾的 `双击查看结果`——参数行与该行其余文字都不响应 |
 | 在 tool/Thinking detail popup 内左键拖拽 | 选择原始 tool 文本或可见 Thinking 文本；排除仅用于显示的前缀 |
 
 复制（normal 模式 `y`）在 tool 或 Thinking popup active 时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无 selectable popup 时，优先 log 词选，然后拼接选中 logical 行的 `LogItem::raw`。

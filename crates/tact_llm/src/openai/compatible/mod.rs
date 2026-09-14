@@ -207,10 +207,26 @@ pub(crate) const STREAM_OPTIONS_WITH_USAGE: StreamOptions = StreamOptions {
     include_usage: Some(true),
 };
 
+/// Deserialize a nullable JSON array into an empty `Vec`.
+///
+/// Some OpenAI-compatible streaming endpoints emit `null` for array-typed
+/// fields (notably `choices` or `delta.tool_calls`) instead of omitting them
+/// or sending `[]`. Serde's `#[serde(default)]` only covers *missing* fields,
+/// so an explicit `null` would otherwise abort the stream with a
+/// `serialization error: invalid type: null, expected a sequence`.
+fn deserialize_null_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Top-level SSE chunk from an OpenAI-compatible streaming chat completion.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct StreamChunk {
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
     choices: Vec<StreamChoice>,
     usage: Option<StreamUsage>,
 }
@@ -228,6 +244,7 @@ struct StreamDelta {
     content: Option<String>,
     #[serde(rename = "reasoning_content")]
     reasoning_content: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
     tool_calls: Vec<StreamToolCallDelta>,
 }
 
@@ -367,6 +384,10 @@ pub struct OpenAiAdapter {
     config: CompatibleConfig,
     http: SharedHttpClient,
     credentials: Arc<dyn CredentialProvider>,
+    /// Tact session id → OpenCode `x-opencode-session` header value. `None`
+    /// (or a non-OpenCode endpoint) omits the session header; OpenCode only
+    /// sees the identifying `tact/<version>` User-Agent then.
+    session_id: Option<String>,
 }
 
 /// Accumulates a streaming tool-call delta across SSE chunks.
@@ -383,6 +404,7 @@ impl OpenAiAdapter {
             config,
             http: SharedHttpClient::default(),
             credentials: Arc::new(ApiKeyProvider::new(api_key)),
+            session_id: None,
         }
     }
 
@@ -396,7 +418,14 @@ impl OpenAiAdapter {
             config: CompatibleConfig::without_api_key(base_url),
             http,
             credentials,
+            session_id: None,
         }
+    }
+
+    /// Sets the Tact session id used as the OpenCode `x-opencode-session`
+    /// header value on this adapter's endpoint (cache-distinguishing key).
+    pub fn set_session_id(&mut self, session_id: String) {
+        self.session_id = Some(session_id);
     }
 
     /// Expose the configured API base URL for diagnostics/tests.
@@ -415,6 +444,14 @@ impl OpenAiAdapter {
                     .map_err(|_| LlmError::Auth("invalid api key header value".to_string()))?,
             );
         }
+        // OpenCode Go wants `x-opencode-session` (and a recognizable UA) on
+        // every request; both are added only for that endpoint and override
+        // the generic User-Agent above. The value is the Tact session id,
+        // which doubles as the cache-distinguishing key.
+        headers.extend(crate::opencode::endpoint_headers(
+            self.config.api_base(),
+            self.session_id.as_deref(),
+        ));
         Ok(headers)
     }
 
@@ -495,7 +532,17 @@ impl OpenAiAdapter {
                         break;
                     }
 
-                    let chunk: StreamChunk = serde_json::from_str(&msg.data)?;
+                    let chunk: StreamChunk = match serde_json::from_str(&msg.data) {
+                        Ok(chunk) => chunk,
+                        Err(error) => {
+                            tracing::debug!(
+                                error = %error,
+                                data = %msg.data,
+                                "OpenAI-compatible SSE chunk failed to deserialize; logging the raw chunk for diagnostics"
+                            );
+                            return Err(error.into());
+                        }
+                    };
 
                     // ── choices ──
                     for choice in &chunk.choices {
@@ -834,5 +881,68 @@ mod tests {
         let events = openai_delta_ui_events(&mut open, Some(""), Some(""));
         assert!(events.is_empty());
         assert!(!open);
+    }
+
+    #[tokio::test]
+    async fn chat_completions_opencode_session_header_flow() {
+        // OpenCode Go endpoint: setting the session id must make the
+        // transport emit x-opencode-session + tact/<version> UA.
+        let mut adapter = OpenAiAdapter::with_auth(
+            "https://opencode.ai/zen/go/v1",
+            SharedHttpClient::default(),
+            Arc::new(ApiKeyProvider::new("sk-test")),
+        );
+        // No session → header omitted, but the identifying UA is present.
+        let headers = adapter.request_headers().await.unwrap();
+        assert!(
+            headers.get(crate::opencode::X_OPENCODE_SESSION).is_none(),
+            "no session id → no x-opencode-session"
+        );
+        let ua = headers
+            .get(reqwest13::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ua.starts_with("tact/"), "UA identifies tact: {ua}");
+
+        // Set session id → header equals it verbatim.
+        adapter.set_session_id("tact-sess-chat".into());
+        let headers = adapter.request_headers().await.unwrap();
+        assert_eq!(
+            headers
+                .get(crate::opencode::X_OPENCODE_SESSION)
+                .and_then(|v| v.to_str().ok()),
+            Some("tact-sess-chat"),
+            "x-opencode-session must equal the session id"
+        );
+    }
+
+    #[test]
+    fn stream_chunk_accepts_null_array_fields() {
+        // Some OpenAI-compatible endpoints send explicit `null` instead of
+        // omitting the field / using `[]`; that must not abort the stream.
+        let chunk: StreamChunk = serde_json::from_str(r#"{"choices":null}"#).unwrap();
+        assert!(chunk.choices.is_empty());
+
+        let chunk: StreamChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{"tool_calls":null}}],"usage":null}"#)
+                .unwrap();
+        assert!(chunk.usage.is_none());
+        assert_eq!(chunk.choices.len(), 1);
+        assert!(chunk.choices[0].delta.tool_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_completions_non_opencode_no_session_header() {
+        let mut adapter = OpenAiAdapter::with_auth(
+            "https://api.moonshot.cn/v1",
+            SharedHttpClient::default(),
+            Arc::new(ApiKeyProvider::new("sk-test")),
+        );
+        adapter.set_session_id("sess-1".into());
+        let headers = adapter.request_headers().await.unwrap();
+        assert!(
+            headers.get(crate::opencode::X_OPENCODE_SESSION).is_none(),
+            "non-OpenCode endpoints must not add x-opencode-session"
+        );
     }
 }

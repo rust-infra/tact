@@ -1,5 +1,7 @@
 /target/
 /videos/
+# Local runtime state (state_store / stream_store), not source.
+/data/
 *.log
 .env
 .DS_Store
@@ -12,6 +14,7 @@
 .tact/
 skills
 .qoder/
+.workbuddy-ai/
 .worktrees/
 .tmp/
 tmp/

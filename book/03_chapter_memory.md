@@ -1,7 +1,7 @@
 # Persistent Memory
 > Language: [English](./03_chapter_memory.md) · [中文](./03_chapter_memory_zh.md)
 
-This chapter explains how Tact stores **long-lived facts** outside the conversation context: user preferences, corrections, project constraints, and reference URLs. Memories are Markdown files with YAML frontmatter under `~/.tact/memory/` — a **user-global** directory shared across all projects (like Claude Code's user-level `~/.claude` state). They are injected into the system prompt every turn and can be written at runtime through the `save_memory` native tool.
+This chapter explains how Tact stores **long-lived facts** outside the conversation context: user preferences, corrections, project constraints, and reference URLs. Memories are Markdown files with YAML frontmatter under `~/.tact/memory/` — a **user-global** directory shared across all projects. They are injected into the system prompt every turn and can be written at runtime through the `save_memory` native tool.
 
 For how memory fits into prompt assembly and the dynamic boundary, see [System Prompt](./04_chapter_prompt.md). For the tool that writes memories, see [Tool System](./07_chapter_tool.md).
 

@@ -132,11 +132,14 @@ impl LlmProvider {
     ///
     /// DeepSeek injects top-level `"user_id"` for KV cache isolation.
     /// OpenAI multi-model adapter forwards it when the live hook is DeepSeek.
-    /// Anthropic / Mock / OpenAI Responses — no-op.
+    /// The OpenAI Responses adapter uses it as the OpenCode Go
+    /// `x-opencode-session` value (per-session cache isolation) when the
+    /// endpoint is `opencode.ai`. Anthropic / Mock — no-op.
     pub fn set_user_id(&mut self, user_id: &str) {
         match self {
             LlmProvider::ChatCompletions(c) => c.set_user_id(user_id.to_string()),
-            LlmProvider::Anthropic(_) | LlmProvider::OpenAiResponses(_) | LlmProvider::Mock(_) => {}
+            LlmProvider::OpenAiResponses(o) => o.set_session_id(user_id.to_string()),
+            LlmProvider::Anthropic(_) | LlmProvider::Mock(_) => {}
         }
     }
 }

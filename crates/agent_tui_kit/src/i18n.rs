@@ -36,6 +36,9 @@ impl Language {
 ///   `_tmpl` suffix = template strings with `{}` placeholders, filled via `format!()`.
 ///   Others are static text.
 ///   `_pl` suffix = strings involving plural forms (can generally be ignored in Chinese).
+/// Every field is a `&'static str`, so the whole set is `Copy`: it is cheap to
+/// hand to whoever needs to render or measure a row.
+#[derive(Clone, Copy, Debug)]
 #[allow(non_snake_case, dead_code)]
 pub struct Messages {
     // ---- 面板标题 ----
@@ -47,12 +50,26 @@ pub struct Messages {
     pub tool_error_card_title: &'static str,
     pub tool_error_card_bottom: &'static str,
     pub code_card_bottom: &'static str, // " Click for full code "
+    /// Card-bottom prefix shown when a card previews fewer lines than the result
+    /// has: `preview`, `total`, then the card's own bottom label.
+    pub tool_card_progress_tmpl: &'static str, // " {}/{} lines | {} "
+    /// Code-card variant: how many lines the card left out, then the label.
+    pub code_card_progress_tmpl: &'static str, // " +{} lines | {}", len
     pub tool_phase_running: &'static str,
     pub tool_phase_success: &'static str,
     pub tool_phase_failed: &'static str,
     pub tool_meta_sep: &'static str,
     pub tool_live_output_title: &'static str, // "Live output" (no line count — it lives in the bottom bar)
     pub tool_live_output_bottom: &'static str,
+    /// Meta-row hint for a collapsed command card: "{} lines · double-click-result".
+    pub tool_collapsed_output_hint: &'static str,
+    /// Singular form of [`Self::tool_collapsed_output_hint`] — reachable when
+    /// the collapsed text is one line (a background task's summary, say).
+    pub tool_collapsed_output_hint_one: &'static str,
+    /// The clickable action inside [`Self::tool_collapsed_output_hint`], which
+    /// must end with it: those glyphs are the whole double-click target of a
+    /// collapsed command, and the line count left of them stays inert.
+    pub tool_collapsed_output_action: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
     pub command_title: &'static str,
@@ -104,7 +121,7 @@ pub struct Messages {
     pub bottom_out: &'static str,
     pub bottom_think: &'static str,
     pub bottom_ctx: &'static str,
-    pub bottom_cache_pct: &'static str,
+    pub bottom_avg: &'static str,
     pub bottom_permission_default: &'static str,
     pub bottom_permission_plan: &'static str,
     pub bottom_permission_auto: &'static str,
@@ -236,6 +253,8 @@ pub struct Messages {
     pub plugin_request_queued: &'static str,
     pub plugin_worker_unavailable: &'static str,
     pub plugin_usage: &'static str,
+    pub mcp_usage: &'static str,
+    pub mcp_auth_started_tmpl: &'static str,
     pub plugin_completed_tmpl: &'static str,
     pub plugin_reload_failed_tmpl: &'static str,
     pub plugin_worker_failed_tmpl: &'static str,
@@ -336,12 +355,17 @@ impl Messages {
             tool_error_card_title: " Error ",
             tool_error_card_bottom: " Double-click for full error ",
             code_card_bottom: " Click for full code ",
+            tool_card_progress_tmpl: " {}/{} lines | {} ",
+            code_card_progress_tmpl: " +{} lines | {}",
             tool_phase_running: "Running",
             tool_phase_success: "Success",
             tool_phase_failed: "Failed",
             tool_meta_sep: " · ",
             tool_live_output_title: "Live output",
             tool_live_output_bottom: " Double-click for buffered output ",
+            tool_collapsed_output_hint: "{} lines · double-click-result",
+            tool_collapsed_output_hint_one: "1 line · double-click-result",
+            tool_collapsed_output_action: "double-click-result",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
             command_title: " ⌘ Command ",
@@ -377,9 +401,12 @@ impl Messages {
             theme_brutal: "Brutal",
             theme_ink: "Ink",
             theme_ink_light: "InkLight",
-            status_idle_tmpl: "{} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit",
+            // Four placeholders, filled in this order: mode, focused panel,
+            // theme, language. The focused-panel slot mirrors the other
+            // `render_status_bar` arms (`{mode} {focus} │ …`).
+            status_idle_tmpl: "{} {} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit",
             status_planning: "Planning...",
-            status_executing_tmpl: "Executing step {}/{}",
+            status_executing_tmpl: "Executing step {}",
             status_running_tmpl: "running {}",
             status_done_tmpl: "{} {} | ✅ Task completed",
 
@@ -388,10 +415,10 @@ impl Messages {
             bottom_model_unknown: "-",
             bottom_elapsed: "Elapsed",
             bottom_uptime: "Up",
-            bottom_out: "max_out_token",
+            bottom_out: "out",
             bottom_think: "think",
             bottom_ctx: "ctx",
-            bottom_cache_pct: "cache%",
+            bottom_avg: "avg",
             bottom_permission_default: "default",
             bottom_permission_plan: "plan",
             bottom_permission_auto: "auto",
@@ -515,6 +542,8 @@ impl Messages {
             plugin_request_queued: "▶ Plugin request queued…",
             plugin_worker_unavailable: "⚠ Plugin worker is unavailable",
             plugin_usage: "Usage: /plugin list | /plugin reload | /plugin uninstall <name> | /plugin update <name> | /plugin marketplace list",
+            mcp_usage: "Usage: /mcp auth <server> (or /mcp login <server>) — authorize a remote (OAuth) MCP server. /mcp list — show configured servers and their live status (idle only). Manage servers from the CLI: `tact-ui mcp list|get|add|remove|login|logout`.",
+            mcp_auth_started_tmpl: "🔐 Starting MCP authorization for {} (watch for the URL below)...",
             plugin_completed_tmpl: "plugin completed: {}",
             plugin_reload_failed_tmpl: "plugin skill refresh failed: {}",
             plugin_worker_failed_tmpl: "plugin error: {}",
@@ -529,7 +558,7 @@ impl Messages {
             marketplace_added_tmpl: "added marketplace {}",
             marketplace_list_empty: "(no marketplaces)",
             marketplace_list_title_tmpl: "🔌 Marketplaces ({})",
-            marketplace_list_header: "| Name | Source |",
+            marketplace_list_header: "| Name | Root / Source |",
             marketplace_updated_tmpl: "updated marketplace {} ({} plugin(s))",
             marketplace_removed_tmpl: "removed marketplace {}",
             plugin_operation_install: "install plugin",
@@ -608,12 +637,17 @@ impl Messages {
             tool_error_card_title: " 错误 ",
             tool_error_card_bottom: " 双击查看完整错误 ",
             code_card_bottom: " 点击查看完整代码 ",
+            tool_card_progress_tmpl: " {}/{} 行 | {} ",
+            code_card_progress_tmpl: " +{} 行 | {}",
             tool_phase_running: "运行中",
             tool_phase_success: "成功",
             tool_phase_failed: "失败",
             tool_meta_sep: " · ",
             tool_live_output_title: "实时输出",
             tool_live_output_bottom: " 双击查看已缓冲输出 ",
+            tool_collapsed_output_hint: "{} 行 · 双击查看结果",
+            tool_collapsed_output_hint_one: "1 行 · 双击查看结果",
+            tool_collapsed_output_action: "双击查看结果",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
             command_title: " ⌘ 命令 ",
@@ -649,9 +683,9 @@ impl Messages {
             theme_brutal: "粗野",
             theme_ink: "墨色",
             theme_ink_light: "墨色亮",
-            status_idle_tmpl: "{} │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出",
+            status_idle_tmpl: "{} {} │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出",
             status_planning: "规划中...",
-            status_executing_tmpl: "正在执行步骤 {}/{}",
+            status_executing_tmpl: "正在执行步骤 {}",
             status_running_tmpl: "并行中 {}",
             status_done_tmpl: "{} {} | ✅ 任务完成",
 
@@ -660,10 +694,10 @@ impl Messages {
             bottom_model_unknown: "-",
             bottom_elapsed: "耗时",
             bottom_uptime: "运行",
-            bottom_out: "max_out_token",
+            bottom_out: "输出",
             bottom_think: "思考",
             bottom_ctx: "ctx",
-            bottom_cache_pct: "缓存%",
+            bottom_avg: "均",
             bottom_permission_default: "默认",
             bottom_permission_plan: "计划",
             bottom_permission_auto: "自动",
@@ -787,6 +821,8 @@ impl Messages {
             plugin_request_queued: "▶ 插件请求已加入队列…",
             plugin_worker_unavailable: "⚠ 插件工作线程不可用",
             plugin_usage: "用法：/plugin list | /plugin reload | /plugin uninstall <名称> | /plugin update <名称> | /plugin marketplace list",
+            mcp_usage: "用法：/mcp auth <服务器名>（或 /mcp login <服务器名>）—— 为远程（OAuth）MCP 服务器授权。/mcp list —— 列出已配置服务器及其当前状态（仅空闲时）。用 CLI 管理服务器：`tact-ui mcp list|get|add|remove|login|logout`。",
+            mcp_auth_started_tmpl: "🔐 正在为 {} 启动 MCP 授权（请留意下方链接）...",
             plugin_completed_tmpl: "插件操作完成：{}",
             plugin_reload_failed_tmpl: "插件技能刷新失败：{}",
             plugin_worker_failed_tmpl: "插件错误：{}",
@@ -801,7 +837,7 @@ impl Messages {
             marketplace_added_tmpl: "已添加市场 {}",
             marketplace_list_empty: "（未注册任何市场）",
             marketplace_list_title_tmpl: "🔌 市场（{}）",
-            marketplace_list_header: "| 名称 | 源 |",
+            marketplace_list_header: "| 名称 | 根目录 / 源 |",
             marketplace_updated_tmpl: "已更新市场 {}（{} 个插件）",
             marketplace_removed_tmpl: "已移除市场 {}",
             plugin_operation_install: "安装插件",

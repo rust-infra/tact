@@ -125,6 +125,20 @@ fn error_with_partial(reason: &str, capture: &ToolOutputBuffer) -> anyhow::Error
 pub struct BashInput {
     #[schemars(description = "Shell command to run in the current workspace.")]
     pub command: String,
+    /// Per-call wall-clock limit in seconds. Overrides the configured
+    /// `[tools].bash_timeout_secs`; `0` disables the timeout for this call.
+    #[schemars(
+        description = "Optional wall-clock timeout in seconds for this command. \
+                       Overrides the configured default. Use 0 to disable the timeout."
+    )]
+    #[serde(default, alias = "timeout_secs")]
+    pub timeout: Option<u64>,
+}
+
+/// Resolve the effective wall-clock limit: a per-call `timeout` (if given)
+/// wins over the configured `[tools].bash_timeout_secs`, and `0` disables it.
+fn resolve_timeout_secs(input_timeout: Option<u64>, configured_secs: u64) -> u64 {
+    input_timeout.unwrap_or(configured_secs)
 }
 
 pub const BASH_METADATA: ToolMetadata = ToolMetadata {
@@ -155,11 +169,12 @@ pub const BASH_METADATA: ToolMetadata = ToolMetadata {
 /// - The shell command is invalid or potentially dangerous.
 /// - The shell process cannot be spawned.
 /// - The stdout or stderr pipes cannot be captured.
-/// - The command times out (configured via `ctx.bash_timeout_secs`).
+/// - The command times out (per-call `timeout`, else `ctx.bash_timeout_secs`).
 /// - The command is cancelled by the user.
 /// - The command exits with a failure or the pipe readers encounter an error.
 pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     let command = input.command;
+    let timeout_secs = resolve_timeout_secs(input.timeout, ctx.bash_timeout_secs);
 
     validate_shell_command(&command)?;
 
@@ -195,8 +210,8 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     let mut progress_tick = interval(PROGRESS_INTERVAL);
     progress_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     progress_tick.tick().await;
-    let timeout_enabled = ctx.bash_timeout_secs != 0;
-    let timeout_sleep = tokio::time::sleep(Duration::from_secs(ctx.bash_timeout_secs.max(1)));
+    let timeout_enabled = timeout_secs != 0;
+    let timeout_sleep = tokio::time::sleep(Duration::from_secs(timeout_secs.max(1)));
     tokio::pin!(timeout_sleep);
     let mut exit_status = None;
     let mut closed_pipes = 0_usize;
@@ -271,7 +286,7 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
                 }
             }
             _ = &mut timeout_sleep, if timeout_enabled && failure_reason.is_none() => {
-                failure_reason = Some(format!("Timeout ({}s)", ctx.bash_timeout_secs));
+                failure_reason = Some(format!("Timeout ({timeout_secs}s)"));
                 terminate_process(
                     &mut child,
                     process_group_id,
@@ -400,6 +415,52 @@ mod tests {
         assert!(error.contains("started"), "partial output missing: {error}");
     }
 
+    #[test]
+    fn resolve_timeout_prefers_input_then_config() {
+        assert_eq!(resolve_timeout_secs(None, 1_800), 1_800);
+        assert_eq!(resolve_timeout_secs(Some(5), 1_800), 5);
+        // Explicit 0 disables the timeout even when the config enables it.
+        assert_eq!(resolve_timeout_secs(Some(0), 1_800), 0);
+        // `None` still inherits a config that disables the timeout.
+        assert_eq!(resolve_timeout_secs(None, 0), 0);
+    }
+
+    #[tokio::test]
+    async fn bash_input_timeout_overrides_configured() {
+        let mut context = test_context("bash_input_timeout_overrides");
+        context.bash_timeout_secs = 60;
+
+        let error = run_tool(
+            &context,
+            BashTool,
+            "bash",
+            serde_json::json!({ "command": "printf 'started\\n'; sleep 5", "timeout": 1 }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("Timeout (1s)"), "unexpected error: {error}");
+        assert!(error.contains("started"), "partial output missing: {error}");
+    }
+
+    #[tokio::test]
+    async fn bash_input_timeout_zero_disables_configured_timeout() {
+        let mut context = test_context("bash_input_timeout_zero_disables");
+        context.bash_timeout_secs = 1;
+
+        let output = run_tool(
+            &context,
+            BashTool,
+            "bash",
+            serde_json::json!({ "command": "sleep 2; printf 'done\\n'", "timeout": 0 }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output, "done");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn orphaned_background_grandchild_does_not_hang() {
@@ -415,6 +476,7 @@ mod tests {
                 context,
                 BashInput {
                     command: "sh -c 'sleep 2 &'".to_string(),
+                    timeout: None,
                 },
             ),
         )
@@ -439,6 +501,7 @@ mod tests {
             context,
             BashInput {
                 command: "sleep 10".to_string(),
+                timeout: None,
             },
         ));
 

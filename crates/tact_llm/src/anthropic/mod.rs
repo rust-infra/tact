@@ -100,6 +100,56 @@ fn parse_stop_reason(reason: Option<String>) -> Option<StopReason> {
     StopReason::from_anthropic(reason.as_deref())
 }
 
+// ── Token usage extraction ───────────────────────────────────────────────
+//
+// Anthropic's `input_tokens`/`output_tokens` are `u32` on the wire, but the
+// DeepSeek-compatible extras (`prompt_cache_hit_tokens`,
+// `completion_tokens_details.reasoning_tokens`) live in the untyped part of
+// the usage object. All of these are clamped to `u32::MAX` rather than
+// truncated with `as u32`: a bogus counter must not wrap into a
+// plausible-looking small number.
+
+/// Clamps a wire token count into `u32`, saturating instead of wrapping.
+fn clamp_token_count(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+/// Reads one optional numeric field of a raw usage object, defaulting to 0.
+fn usage_field(raw: &serde_json::Value, field: &str) -> u32 {
+    raw.get(field)
+        .and_then(|v| v.as_u64())
+        .map(clamp_token_count)
+        .unwrap_or(0)
+}
+
+/// Reads `completion_tokens_details.reasoning_tokens`, defaulting to 0.
+fn usage_reasoning_tokens(raw: &serde_json::Value) -> u32 {
+    raw.get("completion_tokens_details")
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(|v| v.as_u64())
+        .map(clamp_token_count)
+        .unwrap_or(0)
+}
+
+/// Builds [`TokenUsageInfo`] from a raw usage object.
+///
+/// `None` when either required counter is missing or not a number — some
+/// Anthropic-compatible endpoints omit `usage` fields entirely.
+fn usage_from_json(raw: &serde_json::Value) -> Option<TokenUsageInfo> {
+    let prompt = clamp_token_count(raw.get("input_tokens")?.as_u64()?);
+    let completion = clamp_token_count(raw.get("output_tokens")?.as_u64()?);
+    Some(TokenUsageInfo {
+        prompt,
+        completion,
+        // Saturating: `prompt + completion` can exceed `u32::MAX` for a
+        // hostile or buggy provider, which would panic in debug builds.
+        total: prompt.saturating_add(completion),
+        prompt_cache_hit_tokens: usage_field(raw, "prompt_cache_hit_tokens"),
+        prompt_cache_miss_tokens: usage_field(raw, "prompt_cache_miss_tokens"),
+        reasoning_tokens: usage_reasoning_tokens(raw),
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct MessageStartEvent {
     message: MessageStartPayload,
@@ -217,7 +267,7 @@ impl LlmClient for AnthropicAdapter {
                                     thinking_budget: request
                                         .thinking
                                         .as_ref()
-                                        .map(|t| t.budget_tokens as u32),
+                                        .map(|t| clamp_token_count(t.budget_tokens as u64)),
                                     reasoning_effort: request
                                         .reasoning_effort
                                         .map(|effort| effort.as_str().to_string()),
@@ -349,31 +399,23 @@ impl LlmClient for AnthropicAdapter {
                                 })?;
                             stop_reason = parse_stop_reason(delta_event.delta.stop_reason);
                             if let Some(usage) = delta_event.usage {
-                                // StreamUsage carries input/output tokens.
-                                // DeepSeek's Anthropic-compatible endpoint also
-                                // returns cache and reasoning tokens in the same
-                                // usage object — parse those from the raw JSON.
+                                // The typed `StreamUsage` carries the required
+                                // counters; the DeepSeek-compatible extras come
+                                // from the same object's raw JSON.
                                 let usage_json = &value["usage"];
-                                let cache_hit = usage_json["prompt_cache_hit_tokens"]
-                                    .as_u64()
-                                    .map(|n| n as u32)
-                                    .unwrap_or(0);
-                                let cache_miss = usage_json["prompt_cache_miss_tokens"]
-                                    .as_u64()
-                                    .map(|n| n as u32)
-                                    .unwrap_or(0);
-                                let reasoning = usage_json["completion_tokens_details"]
-                                    .get("reasoning_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .map(|n| n as u32)
-                                    .unwrap_or(0);
                                 let info = TokenUsageInfo {
                                     prompt: usage.input_tokens,
                                     completion: usage.output_tokens,
-                                    total: usage.input_tokens + usage.output_tokens,
-                                    prompt_cache_hit_tokens: cache_hit,
-                                    prompt_cache_miss_tokens: cache_miss,
-                                    reasoning_tokens: reasoning,
+                                    total: usage.input_tokens.saturating_add(usage.output_tokens),
+                                    prompt_cache_hit_tokens: usage_field(
+                                        usage_json,
+                                        "prompt_cache_hit_tokens",
+                                    ),
+                                    prompt_cache_miss_tokens: usage_field(
+                                        usage_json,
+                                        "prompt_cache_miss_tokens",
+                                    ),
+                                    reasoning_tokens: usage_reasoning_tokens(usage_json),
                                 };
                                 if let Some(ref tx) = ui_tx {
                                     let _ = tx.send(AgentUpdate::TokenUsage(info.clone()));
@@ -452,28 +494,7 @@ impl LlmClient for AnthropicAdapter {
             )))
         })?;
 
-        let token_usage = payload.usage.as_ref().and_then(|raw| {
-            let prompt = raw["input_tokens"].as_u64().map(|n| n as u32)?;
-            let completion = raw["output_tokens"].as_u64().map(|n| n as u32)?;
-            Some(TokenUsageInfo {
-                prompt,
-                completion,
-                total: prompt + completion,
-                prompt_cache_hit_tokens: raw["prompt_cache_hit_tokens"]
-                    .as_u64()
-                    .map(|n| n as u32)
-                    .unwrap_or(0),
-                prompt_cache_miss_tokens: raw["prompt_cache_miss_tokens"]
-                    .as_u64()
-                    .map(|n| n as u32)
-                    .unwrap_or(0),
-                reasoning_tokens: raw["completion_tokens_details"]
-                    .get("reasoning_tokens")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as u32)
-                    .unwrap_or(0),
-            })
-        });
+        let token_usage = payload.usage.as_ref().and_then(usage_from_json);
 
         Ok(LlmResponse {
             blocks: payload.content,
@@ -488,6 +509,44 @@ impl LlmClient for AnthropicAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_from_json_clamps_instead_of_truncating() {
+        let usage = usage_from_json(&serde_json::json!({
+            "input_tokens": u32::MAX as u64 + 5,
+            "output_tokens": 3,
+            "prompt_cache_hit_tokens": 7,
+            "prompt_cache_miss_tokens": 9,
+            "completion_tokens_details": { "reasoning_tokens": 2 },
+        }))
+        .expect("usage with both required counters parses");
+        assert_eq!(usage.prompt, u32::MAX, "must clamp, not wrap to 4");
+        assert_eq!(usage.completion, 3);
+        assert_eq!(usage.total, u32::MAX, "total must saturate, not overflow");
+        assert_eq!(usage.prompt_cache_hit_tokens, 7);
+        assert_eq!(usage.prompt_cache_miss_tokens, 9);
+        assert_eq!(usage.reasoning_tokens, 2);
+    }
+
+    #[test]
+    fn usage_from_json_requires_both_required_counters() {
+        assert!(usage_from_json(&serde_json::json!({"input_tokens": 1})).is_none());
+        assert!(usage_from_json(&serde_json::json!({"output_tokens": 1})).is_none());
+        assert!(usage_from_json(&serde_json::json!({"input_tokens": "x"})).is_none());
+    }
+
+    #[test]
+    fn usage_from_json_defaults_missing_extras_to_zero() {
+        let usage = usage_from_json(&serde_json::json!({
+            "input_tokens": 10,
+            "output_tokens": 20,
+        }))
+        .expect("required counters present");
+        assert_eq!(usage.total, 30);
+        assert_eq!(usage.prompt_cache_hit_tokens, 0);
+        assert_eq!(usage.prompt_cache_miss_tokens, 0);
+        assert_eq!(usage.reasoning_tokens, 0);
+    }
 
     #[test]
     fn parse_stop_reason_handles_known_values() {

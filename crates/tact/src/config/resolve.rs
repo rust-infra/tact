@@ -6,8 +6,8 @@ use super::{
     cli::CliArgs,
     instruction_sources::InstructionSources,
     types::{
-        AgentSettings, LlmSettings, ResolvedConfig, SubagentSettings, TactTomlConfig, ToolSettings,
-        UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
+        AgentSettings, LlmSettings, McpSettings, ResolvedConfig, SubagentSettings, TactTomlConfig,
+        ToolSettings, UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
     },
 };
 
@@ -72,6 +72,34 @@ fn validate_voice_keybind(raw: &str) -> anyhow::Result<()> {
             raw
         ),
     }
+}
+
+/// Resolves `[mcp]` settings.
+///
+/// An empty or whitespace-only `oauth_client_name` falls back to the default
+/// rather than sending a blank name, which every provider would reject.
+fn resolve_mcp(toml_cfg: &TactTomlConfig) -> McpSettings {
+    let configured = toml_cfg
+        .mcp
+        .oauth_client_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+
+    let oauth_client_name = match configured {
+        Some(name) => name.to_string(),
+        None => McpSettings::DEFAULT_OAUTH_CLIENT_NAME.to_string(),
+    };
+    if oauth_client_name != McpSettings::TACT_OAUTH_CLIENT_NAME {
+        // Worth a line in the log: providers see this name on their consent
+        // screens and in their audit trails, so "who did Tact claim to be?" is
+        // a question the log should answer.
+        tracing::debug!(
+            oauth_client_name = %oauth_client_name,
+            "MCP OAuth registration identity"
+        );
+    }
+    McpSettings { oauth_client_name }
 }
 
 fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
@@ -177,7 +205,7 @@ fn resolve_responses_compact_threshold(
             let required = u128::from(configured) + u128::from(max_tokens) + headroom as u128;
             if required > model_context_window as u128 {
                 anyhow::bail!(
-                    "invalid token limits: responses_compact_threshold ({configured}) must leave room for llm.max_tokens ({max_tokens}) and 10% headroom within agent.model_context_window ({model_context_window})"
+                    "invalid token limits: responses_compact_threshold ({configured}) must leave room for max_tokens ({max_tokens}) and 10% headroom within agent.model_context_window ({model_context_window})"
                 );
             }
         }
@@ -289,7 +317,9 @@ fn resolve_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<LlmS
 ///
 /// Reads `[agent.subagent]` and validates that the referenced `provider` key
 /// exists in `[llm.providers.*]`. Returns `None` when the subagent section is
-/// absent (backward compatibility).
+/// absent (backward compatibility), or when it is present but carries no
+/// overrides at all (a leftover header with every key commented out). A section
+/// that sets overrides without a `provider` is rejected rather than dropped.
 ///
 /// `main_max_tokens` and `main_thinking_budget` are the main agent's resolved
 /// defaults, used as fallback when the subagent does not override them.
@@ -303,6 +333,21 @@ fn resolve_subagent(
         return Ok(None);
     };
     let Some(provider_name) = &subagent_cfg.provider else {
+        // An all-defaults section is a harmless leftover (every key commented
+        // out), so it stays a silent no-op. A section that *sets* overrides
+        // without a provider is an error: silently dropping them is the
+        // "configured but ignored" trap — the user sees a max_tokens or model
+        // in the file that never reaches a request.
+        if subagent_cfg.model.is_some()
+            || subagent_cfg.max_tokens.is_some()
+            || subagent_cfg.thinking_budget.is_some()
+            || subagent_cfg.reasoning_effort.is_some()
+        {
+            anyhow::bail!(
+                "[agent.subagent] sets overrides but `provider` is missing, so the whole section is ignored.\n\
+                 Set `provider` to a key from [llm.providers.*] (e.g. provider = \"deepseek\"), or remove the section."
+            );
+        }
         return Ok(None);
     };
 
@@ -433,11 +478,39 @@ fn resolve_subagent(
     }))
 }
 
-pub(super) fn resolve_non_llm_settings(
-    args: &CliArgs,
-    toml_cfg: &TactTomlConfig,
-    config_path: Option<std::path::PathBuf>,
-) -> ResolvedConfig {
+/// Every setting that does not depend on a usable LLM configuration.
+///
+/// Extracted so the two resolution entry points cannot drift apart:
+/// [`resolve_non_llm_settings`] (subcommands that never talk to a model, so an
+/// invalid `[llm]` section must not stop them) and [`resolve_config`] (the full
+/// path) both take all of these through the same precedence chain —
+/// **CLI flag > TOML > built-in default**.
+struct NonLlmSettings {
+    notifications_enabled: bool,
+    snapshot_max_items: usize,
+    micro_compact_enabled: bool,
+    skill_body_auto_inject: bool,
+    skill_dirs: Vec<String>,
+    instruction_sources: InstructionSources,
+    theme: String,
+    vision_image: VisionImageSettings,
+    bash_timeout_secs: u64,
+    bash_nice: i32,
+    rtk_filter: bool,
+    permission_mode: Option<String>,
+    mcp: McpSettings,
+}
+
+/// Resolves the non-LLM half of the configuration.
+///
+/// Precedence, per field: an explicit CLI flag wins, then the TOML value, then
+/// the built-in default. The two negating flags (`--no-notifications`,
+/// `--no-micro-compact`) are absolute: when set they force the feature off and
+/// the TOML value is not consulted.
+///
+/// Returns `Err` for a malformed `[agent].instruction_sources`; callers decide
+/// whether that is fatal (it is not for subcommands that never build a prompt).
+fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<NonLlmSettings> {
     let notifications_enabled = if args.no_notifications {
         false
     } else {
@@ -462,9 +535,12 @@ pub(super) fn resolve_non_llm_settings(
 
     let skill_dirs = toml_cfg.agent.skill_dirs.clone();
 
+    // Unlike the old `.expect()` here, a bad value is reported to the caller.
+    // This is library code reached from `main`, where a panic aborts the
+    // process instead of naming the offending config key.
     let instruction_sources =
         InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
-            .expect("invalid instruction_sources in config");
+            .map_err(|e| anyhow::anyhow!("invalid [agent].instruction_sources: {e}"))?;
 
     let theme = args
         .theme
@@ -491,12 +567,34 @@ pub(super) fn resolve_non_llm_settings(
         .clone()
         .or_else(|| toml_cfg.permission.mode.clone());
 
-    let voice = resolve_voice(toml_cfg).unwrap_or_else(|err| {
-        tracing::warn!(error = %err, "invalid voice configuration; voice input disabled");
-        VoiceSettings::disabled_defaults()
-    });
+    Ok(NonLlmSettings {
+        notifications_enabled,
+        snapshot_max_items,
+        micro_compact_enabled,
+        skill_body_auto_inject,
+        skill_dirs,
+        instruction_sources,
+        theme,
+        vision_image,
+        bash_timeout_secs,
+        bash_nice,
+        rtk_filter,
+        permission_mode,
+        mcp: resolve_mcp(toml_cfg),
+    })
+}
 
-    ResolvedConfig {
+pub(super) fn resolve_non_llm_settings(
+    args: &CliArgs,
+    toml_cfg: &TactTomlConfig,
+    config_path: Option<std::path::PathBuf>,
+) -> anyhow::Result<ResolvedConfig> {
+    let non_llm = resolve_non_llm(args, toml_cfg)?;
+
+    Ok(ResolvedConfig {
+        // Placeholder identity: this path exists for subcommands that never
+        // build a request (`--list-sessions`, `plugin`, `mcp`, `upgrade`), so
+        // an unusable `[llm]` section must not stop them.
         llm: LlmSettings {
             provider: ProviderKind::OpenAi,
             protocol: OpenAiProtocol::default(),
@@ -514,35 +612,43 @@ pub(super) fn resolve_non_llm_settings(
             max_tokens: 8_000,
             thinking_budget: 0,
             model_context_window: 200_000,
-            notifications_enabled,
-            snapshot_max_items,
-            micro_compact_enabled,
-            skill_body_auto_inject,
-            skill_dirs,
-            instruction_sources,
+            notifications_enabled: non_llm.notifications_enabled,
+            snapshot_max_items: non_llm.snapshot_max_items,
+            micro_compact_enabled: non_llm.micro_compact_enabled,
+            skill_body_auto_inject: non_llm.skill_body_auto_inject,
+            skill_dirs: non_llm.skill_dirs,
+            instruction_sources: non_llm.instruction_sources,
             subagent: None,
         },
         ui: UiSettings {
-            theme,
-            vision_image,
+            theme: non_llm.theme,
+            vision_image: non_llm.vision_image,
         },
         tools: ToolSettings {
-            bash_timeout_secs,
-            bash_nice,
-            rtk_filter,
+            bash_timeout_secs: non_llm.bash_timeout_secs,
+            bash_nice: non_llm.bash_nice,
+            rtk_filter: non_llm.rtk_filter,
         },
-        voice,
-        permission_mode,
+        // A malformed `[voice]` warns and degrades to disabled here: this path
+        // serves subcommands that never record audio, so it must not fail.
+        voice: resolve_voice(toml_cfg).unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "invalid voice configuration; voice input disabled");
+            VoiceSettings::disabled_defaults()
+        }),
+        mcp: non_llm.mcp,
+        permission_mode: non_llm.permission_mode,
         tokio_console: args.tokio_console,
         config_path,
-    }
+    })
 }
 
 /// Returns the context window (total input + output tokens) for a known model id.
 ///
-/// This mapping has the **highest** priority in resolution: it overrides both
-/// the CLI flag and the TOML file so the window stays correct for models with
-/// a well-known size regardless of stale manual config.
+/// This mapping is a **fallback** for models the user did not configure: the
+/// resolution order is CLI `--model-context-window` > `[agent]
+/// model_context_window` > this mapping > the 200,000 default. An explicit
+/// value therefore always wins, so a stale manual window can under-report a
+/// long-context model.
 ///
 /// Values follow official docs (2026-08):
 /// - OpenAI (developers.openai.com/api/docs/models): GPT-5.6 family and GPT-5.5
@@ -573,8 +679,16 @@ fn model_context_window_for_model(model: &str) -> Option<usize> {
         | "claude-sonnet-4-20250514"
         | "claude-haiku-4-5"
         | "claude-haiku-4-20250514" => Some(200_000),
-        // DeepSeek V4 family — 1M default.
-        "deepseek-v4-pro" | "deepseek-v4-flash" | "deepseek-reasoner" => Some(1_000_000),
+        // DeepSeek V4 family — 1M default. Ids can carry experiment/vision
+        // suffixes (e.g. `deepseek-v4-flash-vision-exp`) and dot-separated minor
+        // versions (`deepseek-v4.1-flash`), so match the family prefix rather
+        // than a fixed id list. `deepseek-flash` is the unversioned alias
+        // OpenAI-compatible gateways expose for the same V4 Flash model;
+        // `deepseek-reasoner` is the official reasoning id.
+        _ if model.starts_with("deepseek-v4-") || model.starts_with("deepseek-v4.") => {
+            Some(1_000_000)
+        }
+        "deepseek-flash" | "deepseek-reasoner" => Some(1_000_000),
         // Kimi — k3-256k.
         "k3-256k" => Some(256_000),
         _ => None,
@@ -590,10 +704,31 @@ pub(super) fn resolve_config(
     let provider_info = llm.provider_info();
     let entry = toml_cfg.llm.providers.get(llm.provider.as_str());
 
+    // `[llm].max_tokens` was removed as a level: it sat *below* `[agent]`, so a
+    // global value could only ever apply to users who set no `[agent]` key, and
+    // setting both silently ignored one of them. A stale key is now a hard
+    // error naming the replacement instead of a silent drop — otherwise the
+    // request would quietly fall back to the built-in default.
+    if toml_cfg.llm.max_tokens.is_some() {
+        anyhow::bail!(
+            "[llm].max_tokens was removed. Set [agent].max_tokens instead (or \
+             [llm.providers.<name>].max_tokens for a per-provider value), or delete the key.\n\
+             Resolution order: --max-tokens > [llm.providers.<active>].max_tokens > \
+             [agent].max_tokens > default (8000; 32000 for Kimi K2.x)."
+        );
+    }
+
+    // NOTE on `[agent]`: the struct is `deny_unknown_fields`, so a key that is
+    // not a real agent field — a typo, or `thinking_budget` / `reasoning_effort`
+    // (runtime agent fields that as TOML keys belong to `[llm]` or a provider
+    // entry), or `model` — fails at parse time listing the valid fields. serde
+    // used to drop all of these silently, so a session could run for its whole
+    // life on default thinking settings while the config looked configured.
+
     let max_tokens = args
         .max_tokens
         .or_else(|| entry.and_then(|e| e.max_tokens))
-        .or(toml_cfg.llm.max_tokens)
+        .or(toml_cfg.agent.max_tokens)
         .unwrap_or_else(|| {
             if provider_info.is_kimi_k2x(&provider_info.model) {
                 32_000
@@ -614,71 +749,28 @@ pub(super) fn resolve_config(
         );
     }
 
-    let model_context_window = model_context_window_for_model(&provider_info.model)
-        .or(args.model_context_window)
+    // Explicit config wins over the built-in model→window table: the mapping is
+    // a fallback for models the user did not configure. Note the trade-off —
+    // a stale manual value for a long-context model can now under-report the
+    // real window and trigger premature auto-compaction, which is why the
+    // mapping used to win. Resolution order: CLI > `[agent]` > mapping > default.
+    let model_context_window = args
+        .model_context_window
         .or(toml_cfg.agent.model_context_window)
+        .or_else(|| model_context_window_for_model(&provider_info.model))
         .unwrap_or(200_000);
 
     if model_context_window != 0
         && !usize::try_from(max_tokens).is_ok_and(|max_tokens| max_tokens < model_context_window)
     {
         anyhow::bail!(
-            "invalid token limits: llm.max_tokens ({max_tokens}) must be less than agent.model_context_window ({model_context_window})"
+            "invalid token limits: max_tokens ({max_tokens}) must be less than agent.model_context_window ({model_context_window})"
         );
     }
 
-    let notifications_enabled = if args.no_notifications {
-        false
-    } else {
-        args.notifications
-            .or(toml_cfg.agent.notifications_enabled)
-            .unwrap_or(true)
-    };
-
-    let snapshot_max_items = args
-        .snapshot_max_items
-        .or(toml_cfg.agent.snapshot_max_items)
-        .unwrap_or(80);
-
-    let micro_compact_enabled = if args.no_micro_compact {
-        false
-    } else {
-        toml_cfg.agent.micro_compact_enabled.unwrap_or(false)
-    };
-
-    let skill_body_auto_inject =
-        args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
-
-    let skill_dirs = toml_cfg.agent.skill_dirs.clone();
-
-    let instruction_sources =
-        InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    let theme = args
-        .theme
-        .clone()
-        .or_else(|| toml_cfg.ui.theme.clone())
-        .unwrap_or_else(|| "ink".to_string());
-
-    let vision_image = resolve_vision_image(toml_cfg);
-
-    let bash_timeout_secs = toml_cfg
-        .tools
-        .bash_timeout_secs
-        .unwrap_or(ToolSettings::DEFAULT_BASH_TIMEOUT_SECS);
-
-    let bash_nice = toml_cfg
-        .tools
-        .bash_nice
-        .unwrap_or(ToolSettings::DEFAULT_BASH_NICE);
-
-    let rtk_filter = toml_cfg.tools.rtk_filter.unwrap_or(false);
-
-    let permission_mode = args
-        .permission_mode
-        .clone()
-        .or_else(|| toml_cfg.permission.mode.clone());
+    // Identical precedence chain to `resolve_non_llm_settings` — shared so the
+    // two paths cannot drift.
+    let non_llm = resolve_non_llm(args, toml_cfg)?;
 
     let subagent = resolve_subagent(toml_cfg, max_tokens, thinking_budget, model_context_window)?;
 
@@ -718,25 +810,26 @@ pub(super) fn resolve_config(
             max_tokens,
             thinking_budget,
             model_context_window,
-            notifications_enabled,
-            snapshot_max_items,
-            micro_compact_enabled,
-            skill_body_auto_inject,
-            skill_dirs,
-            instruction_sources,
+            notifications_enabled: non_llm.notifications_enabled,
+            snapshot_max_items: non_llm.snapshot_max_items,
+            micro_compact_enabled: non_llm.micro_compact_enabled,
+            skill_body_auto_inject: non_llm.skill_body_auto_inject,
+            skill_dirs: non_llm.skill_dirs,
+            instruction_sources: non_llm.instruction_sources,
             subagent,
         },
         ui: UiSettings {
-            theme,
-            vision_image,
+            theme: non_llm.theme,
+            vision_image: non_llm.vision_image,
         },
         tools: ToolSettings {
-            bash_timeout_secs,
-            bash_nice,
-            rtk_filter,
+            bash_timeout_secs: non_llm.bash_timeout_secs,
+            bash_nice: non_llm.bash_nice,
+            rtk_filter: non_llm.rtk_filter,
         },
         voice,
-        permission_mode,
+        mcp: non_llm.mcp,
+        permission_mode: non_llm.permission_mode,
         tokio_console: args.tokio_console,
         config_path,
     })
@@ -808,7 +901,6 @@ model = "gpt-4o"
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -817,6 +909,7 @@ protocol = "responses"
 {threshold_line}
 
 [agent]
+max_tokens = 8000
 model_context_window = {model_context_window}
 
 [agent.subagent]
@@ -860,6 +953,39 @@ max_tokens = {subagent_max_tokens}
         assert_eq!(cfg.voice.model, "latest_long");
         assert_eq!(cfg.voice.language.as_deref(), Some("en-US"));
         assert_eq!(cfg.voice.max_duration_secs, 42);
+    }
+
+    #[test]
+    fn resolve_mcp_oauth_client_name_defaults_to_codex_and_is_overridable() {
+        // Default: the value providers such as Figma admit.
+        let (args, toml_cfg) = empty_cli_args_with_openai();
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(
+            cfg.mcp.oauth_client_name,
+            McpSettings::DEFAULT_OAUTH_CLIENT_NAME
+        );
+
+        // Configured value wins, and is trimmed.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.oauth_client_name = Some("  MyAgent  ".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.oauth_client_name, "MyAgent");
+
+        // Blank falls back to the default rather than sending an empty name.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.oauth_client_name = Some("   ".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(
+            cfg.mcp.oauth_client_name,
+            McpSettings::DEFAULT_OAUTH_CLIENT_NAME
+        );
+
+        // `McpSettings::default()` must agree with the resolver, since it is
+        // the fallback when config is not installed.
+        assert_eq!(
+            McpSettings::default().oauth_client_name,
+            McpSettings::DEFAULT_OAUTH_CLIENT_NAME
+        );
     }
 
     #[test]
@@ -944,6 +1070,52 @@ max_tokens = {subagent_max_tokens}
         let sa = cfg.agent.subagent.unwrap();
         assert_eq!(sa.thinking_budget, 0);
         assert_eq!(sa.max_tokens, 8_000);
+    }
+
+    /// A section that sets overrides without `provider` used to be dropped
+    /// silently, so `max_tokens` in the file never reached a request.
+    #[test]
+    fn subagent_overrides_without_provider_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent.subagent]
+max_tokens = 64000
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[agent.subagent]"), "got: {err}");
+        assert!(err.contains("`provider` is missing"), "got: {err}");
+    }
+
+    /// The same guard must not fire for a leftover header whose keys are all
+    /// commented out — that section is a no-op, not a mistake.
+    #[test]
+    fn subagent_empty_section_without_provider_is_ignored() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent.subagent]
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert!(resolved.agent.subagent.is_none());
     }
 
     #[test]
@@ -1273,15 +1445,12 @@ protocol = "responses"
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [agent]
-instruction_sources = ["agents_md", "claude_md_project"]
+instruction_sources = ["agents_md"]
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert!(resolved.agent.instruction_sources.agents_md);
-        assert!(!resolved.agent.instruction_sources.claude_user);
-        assert!(resolved.agent.instruction_sources.claude_project);
-        assert!(!resolved.agent.instruction_sources.claude_subdir);
     }
 
     #[test]
@@ -1293,7 +1462,7 @@ skill_dirs = ["~/shared-skills", "./vendor/skills"]
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(
             resolved.agent.skill_dirs,
             vec!["~/shared-skills".to_string(), "./vendor/skills".to_string()]
@@ -1311,7 +1480,7 @@ jpeg_quality = 70
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert!(!resolved.ui.vision_image.compress);
         assert_eq!(resolved.ui.vision_image.max_edge, 1024);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 70);
@@ -1327,18 +1496,19 @@ jpeg_quality = 0
 "#,
         )
         .unwrap();
-        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None);
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.ui.vision_image.max_edge, 4096);
         assert_eq!(resolved.ui.vision_image.jpeg_quality, 1);
     }
 
     #[test]
     fn bash_timeout_defaults_to_thirty_minutes_and_zero_is_preserved() {
-        let default = resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None);
+        let default =
+            resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None).unwrap();
         assert_eq!(default.tools.bash_timeout_secs, 1_800);
 
         let cfg: TactTomlConfig = toml::from_str("[tools]\nbash_timeout_secs = 0\n").unwrap();
-        let disabled = resolve_non_llm_settings(&empty_cli_args(), &cfg, None);
+        let disabled = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
         assert_eq!(disabled.tools.bash_timeout_secs, 0);
     }
 
@@ -1368,7 +1538,6 @@ model = "deepseek-chat"
             r#"
 [llm]
 provider = "kimi"
-max_tokens = 8000
 
 [llm.providers.kimi]
 api_key = "mk-test"
@@ -1381,7 +1550,8 @@ model = "kimi-k2.5"
         assert_eq!(resolved.llm.api_key, "mk-test");
         assert_eq!(resolved.llm.model, "kimi-k2.5");
         assert_eq!(resolved.llm.base_url, "https://api.moonshot.cn/v1");
-        assert_eq!(resolved.agent.max_tokens, 8000);
+        // No `max_tokens` anywhere → the Kimi K2.x default.
+        assert_eq!(resolved.agent.max_tokens, 32_000);
     }
 
     #[test]
@@ -1431,12 +1601,11 @@ model = "gpt-4o"
     }
 
     #[test]
-    fn per_provider_max_tokens_overrides_global() {
+    fn per_provider_max_tokens_overrides_default() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -1450,12 +1619,11 @@ max_tokens = 32000
     }
 
     #[test]
-    fn cli_max_tokens_overrides_entry_and_global() {
+    fn cli_max_tokens_overrides_entry() {
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -1468,6 +1636,221 @@ max_tokens = 32000
         args.max_tokens = Some(1000);
         let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.max_tokens, 1000);
+    }
+
+    /// `[agent].max_tokens` is the fallback when the provider entry has none:
+    /// it outranks the built-in default.
+    #[test]
+    fn agent_max_tokens_overrides_default() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+max_tokens = 64000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 64_000);
+    }
+
+    /// The removed `[llm].max_tokens` key is a hard error, not a silent drop.
+    ///
+    /// A dropped key would let the request fall back to the built-in default
+    /// (8000 here) with nothing in the output to say so — the same
+    /// "configured but ignored" trap the key's removal is meant to end.
+    #[test]
+    fn llm_max_tokens_is_rejected() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+max_tokens = 64000
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[llm].max_tokens was removed"), "got: {err}");
+        assert!(err.contains("[agent].max_tokens"), "got: {err}");
+    }
+
+    /// A config that never sets the removed key still resolves.
+    #[test]
+    fn absent_llm_max_tokens_still_resolves() {
+        let toml_cfg = openai_toml_config();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 8_000);
+    }
+
+    /// `[agent]` carries no thinking keys: writing them there used to be a
+    /// silent no-op, so the session ran at default thinking settings with
+    /// nothing in the output to say so.
+    ///
+    /// The report is serde's unknown-field error. Note it lists only the *real*
+    /// agent fields — `thinking_budget` / `reasoning_effort` are absent, which is
+    /// what points the reader at `[llm]` (see Ch 21 §3).
+    #[test]
+    fn agent_thinking_keys_are_rejected() {
+        for key in [
+            "thinking_budget = 8000",
+            // Wrong type on purpose: the report is "unknown field", not a type
+            // error, because the key itself does not exist here.
+            "thinking_budget = \"abc\"",
+            "reasoning_effort = \"low\"",
+            "reasoning_effort = 123",
+        ] {
+            let err = toml::from_str::<TactTomlConfig>(&format!(
+                r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+{key}
+"#
+            ))
+            .unwrap_err()
+            .to_string();
+            let name = key.split_whitespace().next().unwrap();
+            assert!(err.contains("unknown field"), "{key}: {err}");
+            assert!(err.contains(name), "{key}: {err}");
+            // The valid-field list must not advertise a key that is rejected.
+            let list = err.split("expected one of").nth(1).unwrap_or_default();
+            assert!(!list.contains(name), "{key}: {err}");
+        }
+    }
+
+    /// Any other unknown `[agent]` key is rejected by serde, not dropped.
+    #[test]
+    fn agent_unknown_key_is_rejected() {
+        // `model` is a runtime agent field, not a TOML one — the same shape of
+        // mistake as `thinking_budget` above, caught one layer earlier.
+        let err = toml::from_str::<TactTomlConfig>(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+model = "gpt-4o"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field"), "got: {err}");
+        assert!(err.contains("model"), "got: {err}");
+    }
+
+    /// The same guard applies inside `[agent.subagent]`.
+    #[test]
+    fn subagent_unknown_key_is_rejected() {
+        let err = toml::from_str::<TactTomlConfig>(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent.subagent]
+provider = "openai"
+max_token = 64000
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field"), "got: {err}");
+        assert!(err.contains("max_token"), "got: {err}");
+    }
+
+    /// The provider entry still wins over `[agent].max_tokens`.
+    #[test]
+    fn per_provider_max_tokens_overrides_agent() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+max_tokens = 32000
+
+[agent]
+max_tokens = 64000
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 32_000);
+    }
+
+    /// `--max-tokens` still wins over everything, `[agent]` included.
+    #[test]
+    fn cli_max_tokens_overrides_agent() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+max_tokens = 64000
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.max_tokens = Some(1000);
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 1000);
+    }
+
+    /// A subagent without its own `max_tokens` inherits the resolved main value,
+    /// which now includes the `[agent]` level.
+    #[test]
+    fn subagent_inherits_agent_max_tokens() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[agent]
+max_tokens = 64000
+
+[agent.subagent]
+provider = "openai"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_tokens, 64_000);
+        assert_eq!(resolved.agent.subagent.unwrap().max_tokens, 64_000);
     }
 
     #[test]
@@ -1511,13 +1894,15 @@ model = "gpt-4o"
             r#"
 [llm]
 provider = "openai"
-max_tokens = 128000
 thinking_budget = 32000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 thinking_budget = 64000
+
+[agent]
+max_tokens = 128000
 "#,
         )
         .unwrap();
@@ -1648,7 +2033,7 @@ api_key = "sk-test"
         let mut args = empty_cli_args();
         args.list_sessions = true;
         args.theme = Some("nord".to_string());
-        let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default(), None);
+        let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default(), None).unwrap();
         assert_eq!(resolved.ui.theme, "nord");
         assert!(resolved.llm.api_key.is_empty());
     }
@@ -1691,9 +2076,9 @@ model_context_window = 128000
     }
 
     #[test]
-    fn resolve_model_context_window_mapping_overrides_toml() {
-        // deepseek-v4-pro has a well-known 1M window; the model mapping wins
-        // over a stale `[agent] model_context_window` in the file.
+    fn resolve_model_context_window_toml_overrides_mapping() {
+        // deepseek-v4-pro has a well-known 1M window, but an explicit config
+        // value wins: the mapping is only a fallback.
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1709,11 +2094,34 @@ model_context_window = 128000
         )
         .unwrap();
         let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
-        assert_eq!(resolved.agent.model_context_window, 1_000_000);
+        assert_eq!(resolved.agent.model_context_window, 128_000);
     }
 
     #[test]
-    fn resolve_model_context_window_mapping_overrides_cli() {
+    fn resolve_model_context_window_cli_overrides_toml_and_mapping() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "deepseek-v4-pro"
+
+[agent]
+model_context_window = 128000
+"#,
+        )
+        .unwrap();
+        let mut args = empty_cli_args();
+        args.model_context_window = Some(64_000);
+        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.model_context_window, 64_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_mapping_is_the_fallback() {
+        // No CLI flag, no `[agent]` key → the built-in table still applies.
         let toml_cfg: TactTomlConfig = toml::from_str(
             r#"
 [llm]
@@ -1725,10 +2133,39 @@ model = "deepseek-v4-pro"
 "#,
         )
         .unwrap();
-        let mut args = empty_cli_args();
-        args.model_context_window = Some(128_000);
-        let resolved = resolve_config(&args, &toml_cfg, None).unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(resolved.agent.model_context_window, 1_000_000);
+    }
+
+    #[test]
+    fn resolve_model_context_window_maps_deepseek_v4_variants() {
+        // Experiment / vision suffixes and dot-separated minor versions must
+        // not fall through to the 200K default: every `deepseek-v4-*` /
+        // `deepseek-v4.*` id is a 1M-window model.
+        for model in [
+            "deepseek-v4-flash-version-exp",
+            "deepseek-v4-flash-vision-exp",
+            "deepseek-v4-pro-2026",
+            "deepseek-v4.1-flash",
+            "deepseek-flash",
+        ] {
+            let toml_cfg: TactTomlConfig = toml::from_str(&format!(
+                r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "{model}"
+"#
+            ))
+            .unwrap();
+            let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+            assert_eq!(
+                resolved.agent.model_context_window, 1_000_000,
+                "expected 1M window for {model}"
+            );
+        }
     }
 
     #[test]
@@ -1854,13 +2291,13 @@ model_context_window = 777_000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 
 [agent]
+max_tokens = 8000
 model_context_window = 8000
 "#,
         )
@@ -1871,7 +2308,7 @@ model_context_window = 8000
             .to_string();
         assert_eq!(
             err,
-            "invalid token limits: llm.max_tokens (8000) must be less than agent.model_context_window (8000)"
+            "invalid token limits: max_tokens (8000) must be less than agent.model_context_window (8000)"
         );
     }
 
@@ -1881,13 +2318,13 @@ model_context_window = 8000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 1000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 
 [agent]
+max_tokens = 1000
 model_context_window = 8000
 "#,
         )
@@ -1898,7 +2335,7 @@ model_context_window = 8000
         let err = resolve_config(&args, &toml_cfg, None)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("llm.max_tokens (9000)"));
+        assert!(err.contains("max_tokens (9000)"));
         assert!(err.contains("agent.model_context_window (8000)"));
     }
 
@@ -1908,13 +2345,13 @@ model_context_window = 8000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 7999
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 
 [agent]
+max_tokens = 7999
 model_context_window = 8000
 "#,
         )
@@ -1931,13 +2368,13 @@ model_context_window = 8000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 32000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "some-unknown-model"
 
 [agent]
+max_tokens = 32000
 model_context_window = 0
 "#,
         )
@@ -1954,7 +2391,6 @@ model_context_window = 0
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -1962,6 +2398,7 @@ model = "some-unknown-model"
 protocol = "responses"
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
@@ -1977,7 +2414,6 @@ model_context_window = 200000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -1986,6 +2422,7 @@ protocol = "responses"
 responses_compact_threshold = 160000
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
@@ -2000,7 +2437,6 @@ model_context_window = 200000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2009,6 +2445,7 @@ protocol = "responses"
 responses_compact_threshold = 0
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
@@ -2025,7 +2462,6 @@ model_context_window = 200000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2034,6 +2470,7 @@ protocol = "responses"
 responses_compact_threshold = 180000
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )
@@ -2055,7 +2492,6 @@ model_context_window = 200000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2064,6 +2500,7 @@ protocol = "responses"
 responses_compact_threshold = 160000
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 
 [agent.subagent]
@@ -2088,7 +2525,6 @@ max_tokens = 40000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2097,6 +2533,7 @@ protocol = "responses"
 responses_compact_threshold = 160000
 
 [agent]
+max_tokens = 8000
 model_context_window = 250000
 
 [agent.subagent]
@@ -2161,7 +2598,6 @@ max_tokens = 40000
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
@@ -2169,6 +2605,7 @@ model = "some-unknown-model"
 protocol = "responses"
 
 [agent]
+max_tokens = 8000
 model_context_window = 0
 "#,
         )
@@ -2183,13 +2620,13 @@ model_context_window = 0
             r#"
 [llm]
 provider = "openai"
-max_tokens = 8000
 
 [llm.providers.openai]
 api_key = "sk-test"
 model = "gpt-4o"
 
 [agent]
+max_tokens = 8000
 model_context_window = 200000
 "#,
         )

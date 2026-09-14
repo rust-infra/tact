@@ -41,7 +41,10 @@ impl ChatCompletionsAdapter {
     }
 
     pub fn set_user_id(&mut self, user_id: String) {
-        self.user_id = Some(user_id);
+        self.user_id = Some(user_id.clone());
+        // The Tact session id also feeds the OpenCode `x-opencode-session`
+        // header on OpenCode Go endpoints through this adapter's transport.
+        self.adapter.set_session_id(user_id);
     }
 
     fn assemble_body(

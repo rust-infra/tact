@@ -19,7 +19,7 @@
 
 TUI 用户无需让模型调用工具即可查看后台任务：**`/background`** slash 命令列出所有任务，**`/background <id>`** 显示单个任务（pretty JSON）。该命令向命令 driver 发送 `UserCommand::QueryBackground(Option<String>)`，driver 调用同一个 `SharedBackgroundManager::check`，并把结果以 Markdown（`AgentUpdate::MdInfo`）渲染到日志（[Ch 23](./23_chapter_tui_zh.md) §3）。
 
-**实时输出（类 bash）。** 任务运行期间，其 stdout/stderr 会实时流入 `background_run` 工具卡片（约 50ms 一批节流，实时预览保留最近 ~4 KB），与同步 `bash` 卡片完全一致。即使调用已返回，卡片仍保持运行态，进程退出时以 ✓/✗、耗时与最终输出收尾（见 §3 与 §6）。
+**实时输出（类 bash）。** 任务运行期间，其 stdout/stderr 会实时流入 `background_run` 工具卡片（约 50ms 一批节流，实时预览保留最近 ~4 KB），与同步 `bash` 卡片完全一致。即使调用已返回，卡片仍保持运行态，进程退出时以 ✓/✗、耗时与最终输出收尾（见 §3 与 §6）。收尾后与其它已完成的命令一样折叠：只剩 title + meta 两行，输出移到双击弹窗里（见 [Ch 23](./23_chapter_tui_zh.md) §6.16）。
 
 ---
 

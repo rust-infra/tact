@@ -6,7 +6,7 @@ use tact::{
     config::CliArgs,
     consts::TactPath,
     extract_text,
-    mcp::load_mcp_router,
+    mcp::load_mcp_router_with_report,
     memory::memory_manager,
     permission::{PermissionManager, settings::PermissionSettings},
     store::DynSessionStore,
@@ -88,13 +88,17 @@ async fn run_headless_locked(
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
     let subagent_manager = SharedSubagentManager::new(SubagentManager::new(&db_path).await?);
-    // Memory is user-global (`~/.tact/memory`, like Claude Code's `~/.claude`)
-    // so it persists across projects. Project-local `.tact/memory` is only the
-    // fallback when `$HOME` is unset.
+    // Memory is user-global (`~/.tact/memory`) so it persists across projects.
+    // Project-local `.tact/memory` is only the fallback when `$HOME` is unset.
     let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
         TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
     )?));
-    let mcp_router = load_mcp_router().await?;
+    let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
+    // Headless has no TUI channel; stderr keeps a broken server observable
+    // instead of silently missing its tools. A clean load prints nothing.
+    for line in mcp_report.notice_lines() {
+        eprintln!("[mcp] {line}");
+    }
 
     let mut tools = toolset();
     // Annotate `spawn_subagent` with the current subagent skill-card catalog
@@ -103,6 +107,7 @@ async fn run_headless_locked(
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
+        subagent_stop_hooks: tact::plugin::plugin_subagent_stop_hooks(tact_path.workdir())?,
         memory_manager,
         work_dir: work_dir.clone(),
         task_manager,
@@ -184,6 +189,9 @@ async fn run_headless_locked(
         .subagent_manager
         .cancel_all_and_persist()
         .await;
+
+    // SessionEnd hooks fire once at teardown, symmetrical with SessionStart.
+    let _ = agent.dispatch_session_end_hooks().await;
 
     agent.shutdown_mcp().await;
     Ok(())

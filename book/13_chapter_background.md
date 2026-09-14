@@ -18,7 +18,7 @@ Both tools are in the main `toolset()` only. `check_background` with no `task_id
 
 TUI users do not need the model to call a tool to see background jobs: the **`/background`** slash command lists all tasks, and **`/background <id>`** shows a single task (pretty JSON). It sends `UserCommand::QueryBackground(Option<String>)` to the command driver, which calls the same `SharedBackgroundManager::check` and renders the result into the log as Markdown (`AgentUpdate::MdInfo`) — see [Ch 23](./23_chapter_tui.md) §3.
 
-**Live output (bash-like).** While a task runs, its stdout/stderr stream into the `background_run` tool card in real time (throttled to ~50 ms batches, last ~4 KB kept for the live preview), exactly like the synchronous `bash` card. The card stays in a running state even though the invocation already returned, and closes with ✓/✗, elapsed time, and the final output when the process exits (see §3 and §6).
+**Live output (bash-like).** While a task runs, its stdout/stderr stream into the `background_run` tool card in real time (throttled to ~50 ms batches, last ~4 KB kept for the live preview), exactly like the synchronous `bash` card. The card stays in a running state even though the invocation already returned, and closes with ✓/✗, elapsed time, and the final output when the process exits (see §3 and §6). On completion the card collapses like any finished command — title + meta rows, with the captured output one double-click away (see [Ch 23](./23_chapter_tui.md) §6.16).
 
 ---
 

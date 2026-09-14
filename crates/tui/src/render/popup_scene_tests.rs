@@ -298,9 +298,9 @@ fn slash_popup_records_and_clears_mouse_area() {
 
 /// Seed the select popup (model picker) with `count` options.
 fn open_select_popup(app: &mut App, count: usize) {
-    use crate::widgets::state::SelectKind;
+    use crate::widgets::state::{ModelTarget, SelectKind};
     app.input_mode = InputMode::Select;
-    app.select_kind = SelectKind::ModelPick;
+    app.select_kind = SelectKind::ModelPick(ModelTarget::Main);
     app.select.set_local(
         "Select model".into(),
         (0..count).map(|i| format!("model-{i:02}")).collect(),

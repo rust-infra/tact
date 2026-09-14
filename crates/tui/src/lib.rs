@@ -94,6 +94,9 @@ pub(crate) fn should_repaint(app: &App) -> bool {
 /// - Idle: dirty only when bottom-bar `Up` whole-second changes (≤1 redraw/s).
 /// - Done: no-op here — `should_repaint` already force-draws for the 2s highlight.
 pub(crate) fn on_poll_timeout(app: &mut App) {
+    // Pull-based fallback: if a RequestSelect hint was lost, the broker
+    // snapshot still contains the pending request and this tick surfaces it.
+    app.reconcile_pending_ui();
     match app.status {
         Status::Idle => {
             let secs = chrono::Local::now()
@@ -138,6 +141,9 @@ pub struct TuiConfig {
     /// Shared session store used to inspect persisted request payloads.
     pub session_store: tact::store::DynSessionStore,
     pub skill_registry: tact::skill::SharedSkillRegistry,
+    /// Authoritative in-process pending UI request broker. The TUI reconciles
+    /// from `snapshot()` instead of trusting a single `RequestSelect` event.
+    pub pending_ui: tact::ui_responder::UiResponder,
     /// Voice-to-text settings (independent of LLM providers).
     pub voice: tact::config::VoiceSettings,
     /// Keyboard shortcut to start/stop voice recording (e.g. "ctrl+g").
@@ -167,6 +173,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
         skill_registry,
         session_store,
+        pending_ui,
         voice,
         voice_parsed_keybind,
     } = cfg;
@@ -199,6 +206,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
     );
 
+    app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
     app.model_context_window = model_context_window;
@@ -274,6 +282,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
             app.handle_plugin_event(event);
         }
         app.drain_voice_events();
+        // Apply any completed off-loop background tasks (git branch, skills).
+        app.poll_background_tasks();
 
         // Only repaint when the dirty flag is true or in Done state, avoiding pointless
         // high-frequency refreshes while idle.
@@ -301,21 +311,10 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 let pending_lines = app.pending_display_lines();
                 let input_height = input_lines + 2 + pending_lines;
                 let bottom_height = 2u16;
-                let log_area = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1),
-                        Constraint::Min(1),
-                        Constraint::Length(input_height),
-                        Constraint::Length(bottom_height),
-                    ])
-                    .split(size)[1];
-                if size != last_size {
-                    last_size = size;
-                    app.log_scroll.state =
-                        ScrollbarState::new(app.log.items.len().saturating_sub(1));
-                }
-                app.log_scroll.height = log_area.height.saturating_sub(2);
+                // One layout for the whole frame: the log rect the scrollbar
+                // maths reads and the rects the renderers draw into must come
+                // from the same `split`, or editing one constraint list would
+                // silently desync the two.
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -325,6 +324,13 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                         Constraint::Length(bottom_height),
                     ])
                     .split(size);
+                let log_area = chunks[1];
+                if size != last_size {
+                    last_size = size;
+                    app.log_scroll.state =
+                        ScrollbarState::new(app.log.items.len().saturating_sub(1));
+                }
+                app.log_scroll.height = log_area.height.saturating_sub(2);
                 render_status_bar(f, chunks[0], &app);
                 render_main_area(f, chunks[1], &mut app);
                 render_input_box(f, chunks[2], &mut app);
@@ -479,6 +485,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
 
     // Restore terminal state before exiting
     let exit_msg = app.msgs().exit_bye.to_string();
+    app.abort_background_tasks();
     app.shutdown_voice().await;
     drop(app);
     disable_raw_mode()?;

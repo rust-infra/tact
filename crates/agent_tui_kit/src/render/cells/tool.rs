@@ -20,14 +20,14 @@ use crate::{
     i18n::Messages,
     render::renderable::Renderable,
     widgets::tool_widget::{
-        TOOL_HEADER_ROWS, ToolPhase, ToolRenderOutput, build_meta_text, running_elapsed_us,
-        tool_card_inner_rows, tool_visual_rows,
+        TOOL_HEADER_ROWS, ToolPhase, ToolRenderOutput, build_meta_text, collapsed_output_hint,
+        meta_error, meta_suffixes, running_elapsed_us, tool_card_inner_rows, tool_visual_rows,
     },
 };
 
 pub struct ToolCell {
-    title_line: Line<'static>,
-    _title_raw: String,
+    /// Title row text (tool name + arguments); styled here with the live theme.
+    title_raw: String,
     phase: ToolPhase,
     permission_label: Option<String>,
     error_message: Option<String>,
@@ -42,6 +42,10 @@ pub struct ToolCell {
     detail_preview: Vec<ToolOutputLine>,
     detail_total_lines: usize,
     card_bottom: String,
+    /// Template for the card-bottom line-count prefix (`" {}/{} lines | {} "`).
+    card_progress_tmpl: &'static str,
+    /// Meta-row hint for a collapsed command card (line count + how to open it).
+    collapsed_output_hint: Option<String>,
     tool_phase_running: &'static str,
     tool_phase_success: &'static str,
     tool_phase_failed: &'static str,
@@ -75,9 +79,21 @@ impl ToolCell {
         card_border_type: BorderType,
         msgs: &Messages,
     ) -> Self {
+        // Collapsed output (command / read / edit) draws no card, so the meta
+        // row is the only place left to say that output exists and how to open
+        // it.
+        let collapsed_output_hint = output
+            .layout
+            .detail_collapsed
+            .then(|| collapsed_output_hint(msgs, output.detail_total_lines));
+        // Card chrome is localized too, and the cell is built once per frame
+        // with the *current* messages: deriving it here (instead of reading it
+        // off the output) is what keeps the card in the language the rest of the
+        // frame is drawn in after a `/lang` switch.
+        let detail_title = output.card_title(msgs);
+        let card_bottom = output.card_bottom(msgs);
         Self {
-            title_line: output.title_line,
-            _title_raw: output.title_raw,
+            title_raw: output.title_raw,
             phase: output.phase,
             permission_label: output.permission_label,
             error_message: output.error_message,
@@ -88,10 +104,12 @@ impl ToolCell {
             card_only,
             has_detail_card: output.layout.has_detail_card,
             use_diff_gutter: output.use_diff_gutter,
-            detail_title: output.detail_title,
+            detail_title,
             detail_preview: output.detail_preview,
             detail_total_lines: output.detail_total_lines,
-            card_bottom: output.card_bottom,
+            card_bottom,
+            card_progress_tmpl: msgs.tool_card_progress_tmpl,
+            collapsed_output_hint,
             tool_phase_running: msgs.tool_phase_running,
             tool_phase_success: msgs.tool_phase_success,
             tool_phase_failed: msgs.tool_phase_failed,
@@ -110,6 +128,14 @@ impl ToolCell {
         }
     }
 
+    /// Title row, styled with this frame's theme colors.
+    fn title_line(&self) -> Line<'static> {
+        Line::from(Span::styled(
+            self.title_raw.clone(),
+            Style::default().fg(self.fg).add_modifier(Modifier::BOLD),
+        ))
+    }
+
     fn meta_line(&self) -> Line<'static> {
         let duration_us = if self.phase == ToolPhase::Running {
             self.started_at.map(running_elapsed_us).or(self.duration_us)
@@ -121,9 +147,11 @@ impl ToolCell {
             self.permission_label.as_deref(),
             self.size_bytes,
             duration_us,
-            self.error_message
-                .as_deref()
-                .filter(|_| !(self.has_detail_card && self.phase == ToolPhase::Failed)),
+            meta_error(
+                self.phase,
+                self.has_detail_card,
+                self.error_message.as_deref(),
+            ),
             self.spinner_char,
             self.tool_phase_running,
             self.tool_phase_success,
@@ -132,15 +160,14 @@ impl ToolCell {
             self.step_success_prefix,
             self.step_fail_prefix,
         );
-        // Subagent metadata: model name + compact token total appended to meta row.
-        if let Some(ref model) = self.subagent_model {
-            text.push_str(self.tool_meta_sep);
-            text.push_str(&format!("🤖 {model}"));
-        }
-        if let Some(ref tokens) = self.subagent_tokens {
-            text.push_str(self.tool_meta_sep);
-            text.push_str(&format!("⚡ {}", format_tokens_compact(tokens.total)));
-        }
+        // Subagent metadata and the collapsed-output hint share one formatter
+        // with the widget, which needs the finished row's exact text.
+        text.push_str(&meta_suffixes(
+            self.tool_meta_sep,
+            self.subagent_model.as_deref(),
+            self.subagent_tokens.as_ref().map(|t| t.total),
+            self.collapsed_output_hint.as_deref(),
+        ));
         let style = match self.phase {
             ToolPhase::Running => Style::default().fg(self.warning),
             ToolPhase::Success => Style::default().fg(self.success),
@@ -209,14 +236,13 @@ impl ToolCell {
     }
 
     fn card_bottom_text(&self) -> String {
-        let base = self.card_bottom.trim();
         if self.detail_total_lines > self.detail_preview.len() {
-            format!(
-                " {}/{} lines | {} ",
-                self.detail_preview.len(),
-                self.detail_total_lines,
-                base
-            )
+            // The count prefix is chrome, so it is localized like the label it
+            // introduces (the template comes from the frame's messages).
+            self.card_progress_tmpl
+                .replacen("{}", &self.detail_preview.len().to_string(), 1)
+                .replacen("{}", &self.detail_total_lines.to_string(), 1)
+                .replacen("{}", self.card_bottom.trim(), 1)
         } else {
             self.card_bottom.clone()
         }
@@ -315,7 +341,12 @@ impl Renderable for ToolCell {
                 }
                 let row_area = Rect::new(area.x, area.y + vis_off as u16, area.width, 1);
                 if row == 0 {
-                    Paragraph::new(vec![self.title_line.clone()])
+                    // Title text is a fact of the call; its color is not — style
+                    // it here so a theme switch repaints blocks that already
+                    // exist. The paragraph keeps the row's own fg so the
+                    // untouched remainder of the row is painted exactly as the
+                    // rest of the theme paints every other row.
+                    Paragraph::new(vec![self.title_line()])
                         .style(Style::default().fg(self.fg).bg(self.bg))
                         .render(row_area, buf);
                 } else {
@@ -455,28 +486,6 @@ impl Renderable for ToolCell {
     }
 }
 
-/// Compact token count for tool-card meta rows (e.g. "4.2K", "1.3M").
-fn format_tokens_compact(n: u32) -> String {
-    let n = u64::from(n);
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        let k = n as f64 / 1_000.0;
-        if (k * 10.0).round() % 10.0 == 0.0 {
-            format!("{k:.0}K")
-        } else {
-            format!("{k:.1}K")
-        }
-    } else {
-        let m = n as f64 / 1_000_000.0;
-        if (m * 10.0).round() % 10.0 == 0.0 {
-            format!("{m:.0}M")
-        } else {
-            format!("{m:.1}M")
-        }
-    }
-}
-
 // ── Tests ────────────────────────────────────────────────────────────
 //
 // Tests use `ToolRenderOutput` / `ToolLayout` from `widgets::tool_widget`
@@ -504,7 +513,6 @@ mod tests {
             })
             .collect();
         ToolRenderOutput {
-            title_line: Line::from("Write  src/main.rs"),
             title_raw: "Write  src/main.rs".into(),
             phase: ToolPhase::Success,
             permission_label: None,
@@ -519,16 +527,12 @@ mod tests {
                 visual_rows: tool_visual_rows(has_card, preview_count, total, false),
                 preview_lines: preview_count,
                 has_detail_card: has_card,
+                detail_collapsed: false,
             },
-            detail_title: if has_card {
-                Some("Wrote src/main.rs (15 lines)".into())
-            } else {
-                None
-            },
+            live_detail: false,
             detail_preview: preview,
             detail_total_lines: total,
             detail_full: None,
-            card_bottom: " Double-click for full code ".into(),
             subagent_model: None,
             subagent_tokens: None,
             visual_kind: tact_protocol::ToolVisualKind::FileWrite,
@@ -537,6 +541,15 @@ mod tests {
 
     fn tool_cell(output: ToolRenderOutput) -> ToolCell {
         tool_cell_mode(output, false, None)
+    }
+
+    /// Plain text of the meta row (row 1 of the cell).
+    fn meta_text(cell: &ToolCell) -> String {
+        cell.meta_line()
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     fn tool_cell_mode(
@@ -700,6 +713,97 @@ mod tests {
         let bottom = cell.card_bottom_text();
         assert!(bottom.contains("3/10 lines"));
         assert!(bottom.contains("Double-click for full code"));
+    }
+
+    /// The overflow prefix is chrome, not a readout of the tool: it is drawn in
+    /// the frame's language like the label it introduces.
+    #[test]
+    fn overflow_prefix_is_localized() {
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::Chinese);
+        let theme = crate::theme::Theme::from(crate::theme::ThemeName::Retro);
+        let output = make_output(true, 3, 10);
+        let cell = ToolCell::from_output(
+            output,
+            None,
+            ' ',
+            false,
+            theme.accent,
+            theme.bg,
+            theme.fg,
+            theme.success,
+            theme.warning,
+            theme.error,
+            theme.block_border_type(),
+            &msgs,
+        );
+        let bottom = cell.card_bottom_text();
+        assert!(bottom.contains("3/10 行"), "{bottom:?}");
+        assert!(bottom.contains("双击查看完整代码"), "{bottom:?}");
+        assert!(!bottom.contains("lines"), "{bottom:?}");
+    }
+
+    /// The log hit test measures `ToolRenderOutput.meta_text`, while this cell
+    /// draws the meta row itself: the two must be the same string, or clicks
+    /// would land next to the text they are aimed at.
+    #[test]
+    fn widget_meta_text_matches_the_rendered_meta_row() {
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
+        let result = tact_protocol::StepResult {
+            tool: "bash".into(),
+            arg_summary: "cargo build".into(),
+            arg_full: Some("cargo build".into()),
+            status: tact_protocol::StepStatus::Success,
+            message: "ok".into(),
+            detail: Some("Compiling\ndone\n".into()),
+            duration_us: Some(4_820_000),
+            permission_label: Some("Always allow this tool".into()),
+            presentation: tact_protocol::ToolPresentationInfo::generic("bash"),
+        };
+        let output = crate::widgets::tool_widget::ToolWidget::from_step_result(&result).build();
+        let measured = output
+            .meta_text(&msgs)
+            .expect("a finished block has a meta row");
+        let cell = tool_cell(output);
+
+        assert_eq!(meta_text(&cell), measured);
+        assert!(
+            measured.contains("4 lines · double-click-result"),
+            "{measured}"
+        );
+    }
+
+    /// A collapsed command card draws no card, so the meta row must carry the
+    /// line count and the gesture that opens it.
+    #[test]
+    fn collapsed_command_meta_row_reports_hidden_output() {
+        let mut output = make_output(false, 0, 0);
+        output.layout.detail_collapsed = true;
+        output.detail_total_lines = 7;
+        output.tool_name = "bash".into();
+        output.visual_kind = tact_protocol::ToolVisualKind::Command;
+        let text = meta_text(&tool_cell(output));
+
+        assert!(text.contains("7 lines"), "meta row: {text}");
+        assert!(text.contains("double-click-result"), "meta row: {text}");
+    }
+
+    #[test]
+    fn collapsed_command_meta_row_uses_the_singular_for_one_line() {
+        let mut output = make_output(false, 0, 0);
+        output.layout.detail_collapsed = true;
+        output.detail_total_lines = 1;
+        output.tool_name = "bash".into();
+        output.visual_kind = tact_protocol::ToolVisualKind::Command;
+        let text = meta_text(&tool_cell(output));
+
+        assert!(text.contains("1 line ·"), "meta row: {text}");
+        assert!(!text.contains("1 lines"), "meta row: {text}");
+    }
+
+    #[test]
+    fn open_card_meta_row_has_no_collapsed_hint() {
+        let text = meta_text(&tool_cell(make_output(true, 3, 3)));
+        assert!(!text.contains("double-click-result"), "meta row: {text}");
     }
 
     #[test]

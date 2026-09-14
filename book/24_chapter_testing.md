@@ -98,7 +98,7 @@ Pre-push runs `./scripts/check-rust.sh` (fmt check, clippy, and integration test
 - `draw_full_ui` — mirrors `lib.rs` layout (status, main, input, bottom, palette/select/file-picker/slash overlays)
 - `render_app_text` / `render_main_area_text` — flatten buffer to plain text for assertions
 
-**Coverage includes:** idle/executing/done, tool cards, stream/thinking, errors, token/model info, command palette, slash commands, file picker (empty + selected row), diff/code/thinking popups (scroll + write_file gutter + bash output), `open_diff_popup` after real `StepFinished`, Normal mode, WaitingForUser full frame, plan multi-step, markdown/code cards in log, narrow terminal.
+**Coverage includes:** idle/executing/done, tool cards, stream/thinking, errors, token/model info, command palette, slash commands, file picker (empty + selected row), diff/code/thinking popups (scroll + write_file gutter + bash output), `open_diff_popup` after real `StepFinished`, Normal mode, the `RequestSelect` permission prompt in a full frame (select popup), plan multi-step, markdown/code cards in log, narrow terminal.
 
 **Handler tests:** `file_picker.rs`, `select.rs`, `palette.rs`, `normal.rs`, `mouse.rs` (keyboard, scroll wheel, tool double-click).
 

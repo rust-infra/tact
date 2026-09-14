@@ -29,6 +29,1098 @@ Newest entries first. Each entry should include:
 
 ---
 
+---
+
+
+## 1. 2026-09-14 — Dot-separated DeepSeek V4 ids keep their 1M window
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`, the `deepseek-v4-` prefix arm; `resolve_model_context_window_maps_deepseek_v4_variants`); `config.example.toml`; [Ch 21](./21_chapter_config.md); [Ch 5](./05_chapter_compact.md) |
+
+**Symptom / motivation:** A session on `deepseek-v4.1-flash` reported a 200K window. The V4 family arm matched the **hyphenated** prefix `deepseek-v4-` only, and the id puts a dot before its minor version (`v4` `.` `1`), so no arm matched and resolution fell through to the `200_000` default. The fallback is silent, and its cost is not cosmetic: the bottom bar's `ctx` meter reads `/200K`, and for `protocol = "responses"` the derived `responses_compact_threshold` is `window − max_tokens − 10% headroom` — 114,464 at 200K with `max_tokens = 65536`, versus 834,464 at 1M — so a 1M-context model was compacting roughly 7× early.
+
+**Decision:** Widen the family prefix to accept either separator — `starts_with("deepseek-v4-") || starts_with("deepseek-v4.")` — rather than dropping the hyphen entirely (a bare `starts_with("deepseek-v4")` would also swallow ids like `deepseek-v44`). The two explicit 1M aliases (`deepseek-flash`, `deepseek-reasoner`) are unchanged, as is the resolution order: CLI > `[agent]` > this mapping > the 200,000 default. The doc comment on the function was corrected while touching it: it still claimed the mapping had the *highest* priority and overrode CLI/TOML, which the code has not done since the order was flipped.
+
+**Behavior after:** `deepseek-v4.1-flash` — and any `deepseek-v4.*` sibling — resolves to `1_000_000` without any config change, so the `ctx` meter and the derived Responses compaction threshold follow the real window. Models the user configures explicitly are unaffected. Any other unknown id still falls through to the 200,000 default.
+
+**Pointers:** `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`); `config.example.toml` (the model→window list); [Ch 21](./21_chapter_config.md) §「模型 → 窗口映射」; [Ch 5](./05_chapter_compact.md) (window → auto-compact threshold).
+
+---
+
+
+## 1. 2026-09-14 — Compaction logging: units corrected, and every attempt announces its request envelope
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`, `think_block_bytes`, the `[compact summary …]` / `[compact continue …]` messages); [Ch 5](./05_chapter_compact.md) |
+
+**Symptom / motivation:** The compaction log was wrong in unit and thin in coverage. (a) The continuation notice read `summary truncated(8861 think tokens, 2000 max tokens)`, but that first number was `thinking.len() + signature.len()` — a **byte** length of the thinking block plus its opaque signature — printed in the unit of the *other* number on the same line; reading it as tokens invited exactly the wrong comparison against the 2000-token text budget or against the `reasoning_tokens: 2173` of the same response. (b) The request envelope was only visible on a retry: `[compact usage: …]` sat inside the truncation branch, so a first-try success (0 continuations) printed nothing at all, and the `max_tokens` actually handed to the provider was never printed on the success path.
+
+**Decision:** Fix the unit and make the ladder self-describing on *every* attempt, including attempt 1. `think_len` → `think_block_bytes`; the continuation notice prints `{think_block_bytes} think bytes` and names the next attempt's `max_tokens` instead of claiming the value it just used. Each attempt now emits two lines, outside the truncation branch: `[compact summary {stage}/{total}] request model=… max_tokens=N (text T + reasoning R), reasoning_effort=…, input C chars` before the call, and `[compact summary {stage}/{total}] response stop=… usage=…` after it. The request line's `max_tokens` is the wire value verbatim (`attempt_max_tokens = summary_text_max_tokens + attempt_reserve`), split into its two parts; the standalone `[compact usage: …]` emit is gone because the response line already carries the usage. No budgeting behavior changed.
+
+**Behavior after:** Six stages total (`continuation_attempt + 1` of `MAX_COMPACT_SUMMARY_ATTEMPTS + 1`), each logging one request line and one response line whether or not it truncates, e.g. `[compact summary 1/6] request model=deepseek-v4.1-flash max_tokens=2000 (text 2000 + reasoning 0), reasoning_effort=low, input 12044 chars` → `[compact summary 1/6] response stop=MaxTokens usage=TokenUsageInfo { … reasoning_tokens: 2173 … }` → `[compact continue 1/5] summary truncated (8861 think bytes), next attempt max_tokens=2000`. The truncation ladder, the reserve escalation and the wire `max_tokens` are all unchanged.
+
+**Pointers:** `crates/tact/src/agent/mod.rs` (`think_block_bytes`, the `[compact summary …]` / `[compact continue …]` messages); [Ch 5](./05_chapter_compact.md).
+
+---
+
+
+## 1. 2026-09-14 — The idle status bar gives the focused panel its own slot back
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`status_idle_tmpl`, both languages); `crates/agent_tui_kit/src/render/bar.rs` (`render_status_bar`, `Status::Idle` arm); `crates/tui/src/render/bar.rs` (`status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots`); [Ch 23](./23_chapter_tui.md) §6.6 |
+
+**Symptom / motivation:** While idle the top bar mislabelled two readouts at once, and silently dropped a third. `status_idle_tmpl` — `"{} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit"` — carried **three** placeholders, while the `Status::Idle` arm of `render_status_bar` substitutes **four** values in a fixed order: mode, focused panel, theme, language. `str::replacen("{}", …, 1)` is purely positional, so every slot shifted one place left: the focus label landed under the 🎨 theme glyph, the theme label landed under the 🌐 language glyph, and the fourth substitution found no `{}` left — `replacen` leaves the string unchanged when it does not match, it does not append — so the language label vanished entirely. Idle therefore read `◇ 插入 │ ⌨H Hist │ 🎨 Log │ 🌐 Dark │ ? Help │ ✕ Quit`: a panel name where the theme belongs, a theme where the language belongs, and no language at all. Mouse hit testing and every other `render_status_bar` arm were unaffected — Planning, Executing and Done build their line with an explicit `format!("{} {} │ …", mode_str, focus_str, …)` and never touch the template.
+
+**Decision:** The template declares the slot it was already being handed — `"{} {} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit"` / `"{} {} │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出"` — so the four placeholders line up with the four arguments (mode, focus, theme, language) and with the `{mode} {focus} │ …` opening the other three arms use. The arm's substitution list is untouched; only the template grew the missing slot.
+
+**Behavior after:** Idle renders `◇ 插入 Log │ ⌨H Hist │ 🎨 Dark │ 🌐 English │ ? Help │ ✕ Quit` in English and the mirror in Chinese, with the focused panel, the theme and the language each in its own slot. Pinned by `status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots`, which asserts the focus label is drawn, that it does *not* sit in the 🎨 slot, and that `🌐 EN` is present. (Harness note carried in the test: `buffer_text` reads a wide glyph's continuation cell as a space, so the assertion collapses whitespace runs before matching — otherwise `🎨  Log` would satisfy a `!contains("🎨 Log")` guard even when the slots really were misaligned.)
+
+**Pointers:** `crates/agent_tui_kit/src/i18n.rs` (`status_idle_tmpl`, en + zh); `crates/agent_tui_kit/src/render/bar.rs` (`render_status_bar`, `Status::Idle`); `crates/tui/src/render/bar.rs` (the test above); [Ch 23](./23_chapter_tui.md) §6.6 (top bar).
+
+---
+
+
+## 1. 2026-09-14 — The step label drops its denominator
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`status_executing_tmpl`, both languages); `crates/agent_tui_kit/src/render/bar.rs` (`Status::Executing` arm); `crates/tui/src/render/bar.rs` (`status_bar_executing_shows_the_step_label_without_a_gauge`); [Ch 23](./23_chapter_tui.md) §6.6 |
+
+**Symptom / motivation:** The top bar rendered `⠋ 正在执行步骤 4/10` / `⠋ Executing step 4/10`. The denominator described the *plan*, not the run: `total` is the plan's step count, while the numerator is derived from completed + active steps rather than from the plan's ordering, so with parallel tools `n/total` was two different measurements printed as one fraction.
+
+**Decision:** The template keeps a single placeholder — `Executing step {}` / `正在执行步骤 {}` — and the arm fills it with the derived step number only. The `total` clamp on that number stays — `(completed + 1).min(*total)` while a tool is in flight, `completed.max(1).min(*total)` otherwise — so `total` is still read, just never rendered.
+
+**Behavior after:** `Executing` renders `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4 │ 并行中 1`; the bar still renders no numbers of its own beyond the step count and the parallel-tool count. Pinned by `status_bar_executing_shows_the_step_label_without_a_gauge`, which now asserts the label *and* that neither `1/4` nor `step 1/` is drawn.
+
+**Pointers:** `crates/agent_tui_kit/src/i18n.rs` (`status_executing_tmpl`); `crates/agent_tui_kit/src/render/bar.rs` (`Status::Executing`); `crates/tui/src/render/bar.rs` (the test above); [Ch 23](./23_chapter_tui.md) §6.6 (top bar).
+
+---
+
+
+## 1. 2026-09-14 — Symlinked skills load, and the Assembled prompt shows the MCP skills it carried
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/skill/mod.rs` (`load_skills_from_dir_with_namespace`, `load_direct_plugin_skills` + `symlinked_skill_dir_is_loaded`, `symlinked_plugin_skill_dir_is_loaded`); `crates/tui/src/system_prompt.rs` (`extract_mcp_skill_paths`, `assemble_prompt_view`); `crates/tui/src/handlers/select.rs` (`SelectKind::ViewSystemPrompt`); [Ch 2](./02_chapter_skill.md) §2·§6; Ch 26 2026-09-10 (skill roots) |
+
+**Symptom / motivation:** Two ways an installed skill stayed invisible in `/view-system-prompt`, both reported against the "Assembled current prompt" popup. (1) Skill roots are assembled by **symlinking** directories into place — Omarchy ships `~/.agents/skills/omarchy -> /usr/share/omarchy/default/agents/skills/omarchy` — and `load_skills_from_dir_with_namespace` walked the root with `WalkDir` at its default `follow_links(false)`. A symlinked *directory* is neither descended into nor `is_file()`, so `omarchy` and `diagnose-crash` were silently missing from `# Available skills` (30 of the 32 entries under `~/.agents/skills`). (2) MCP servers advertise their skills from inside **tool descriptions** — Figma: "prefer the /figma-use skill if available, otherwise read `skill://figma/figma-use/SKILL.md`" — and Tact forwards MCP descriptions verbatim, so an ordinary request really does carry `skill://figma/{figma-use,figma-shaders,figma-design-to-code,figma-generative-plugins}/SKILL.md`. The popup rendered only the system prompt, so those paths were readable nowhere except the raw request body.
+
+**Decision:** Walk a standalone skill root with `.follow_links(true)`: a linked skill directory loads exactly like a copied one. Plugin roots get the same rule inside their flat scan — a child is tested with `Path::is_dir()` (stat, follows links) instead of `DirEntry::file_type()` (lstat), so a linked plugin skill directory loads too; the one-level, direct-children-only contract is unchanged. For the popup, "Assembled current prompt" gained a trailing `## MCP skills` section listing the `skill://…` paths found in the persisted request's **tool definitions only** (a URI quoted in the conversation is not the request advertising a skill), deduped and sorted. The extracted prompt itself is untouched and still opens the view verbatim: `# Available skills` stays disk-only, because no MCP server contributes to it and none ever has.
+
+**Behavior after:** A symlinked skill entry — standalone root or plugin `skills/` child — appears in `# Available skills` and is loadable through `load_skill` / `/skill-name`, exactly like a copied directory. `/view-system-prompt` → "Assembled current prompt" appends `## MCP skills` only when the request referenced any (4 paths for the Figma server in this repo); with none, the view is byte-identical to the extracted prompt. Pinned by `symlinked_skill_dir_is_loaded` and `symlinked_plugin_skill_dir_is_loaded` (both fail against the pre-fix lookups), `plugin_skills_only_load_direct_skill_children` (depth unchanged), `mcp_skill_paths_are_deduped_and_sorted`, `mcp_skill_paths_ignore_non_tool_text` and `assembled_view_keeps_the_prompt_and_appends_mcp_skills`.
+
+**Pointers:** `crates/tact/src/skill/mod.rs` (`load_skills_from_dir_with_namespace`, `load_direct_plugin_skills`, `symlinked_skill_dir_is_loaded`, `symlinked_plugin_skill_dir_is_loaded`); `crates/tui/src/system_prompt.rs` (`SKILL_PATH`, `extract_mcp_skill_paths`, `assemble_prompt_view` + its 4 tests); `crates/tui/src/handlers/select.rs` (`SelectKind::ViewSystemPrompt`); [Ch 2](./02_chapter_skill.md) §2 (discovery roots) · §6 (system prompt integration); Ch 26 2026-09-10 (skill roots converge).
+
+---
+
+
+## 1. 2026-09-14 — The running clock leaves the status bar for row 1, and the step gauge goes with it
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs` (`render_progress_bar` + `PROGRESS_BAR_WIDTH` removed, the `Status::Executing` / `Status::Planning` arms, row-1 group push order); `crates/tui/src/render/bar.rs` (tests); [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** While a task ran, the top status bar carried two numbers of its own: the `[██████░░░░░] 88%` gauge after the step label, and the live task clock at the end — `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1 [██████░░░░░] 88%  ⏱ 耗时 00:12`. The gauge only restated the step count (`4/10`) as glyphs, and the clock was on the wrong surface entirely: it is the third wall clock the bar system owns, and its two siblings — the process uptime (`⊙ 运行`) and the frozen turn timing (`⏱ 02:05 均 01:45`) — were a row apart on the bottom bar.
+
+**Decision:** The gauge is deleted outright, and the live clock joins the uptime on **row 1**, directly after it: row 1 carries the clocks that describe *this run* (process uptime, task elapsed) plus the permission mode, cwd and branch, while row 2 keeps the token/ctx readouts and the frozen per-turn timing. Both `Status::Planning` and `Status::Executing` lose their trailing clock, so the status bar renders no numbers of its own any more — it answers *what is happening* (phase, step count, parallel-tool count) and the bottom bar answers *how much has gone by*. The segment keeps its label (`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`): the uptime beside it is a bare `⊙ 运行 00:03`, and an unlabelled `⏱ 00:12` would read as a second uptime.
+
+**Behavior after:** Executing renders `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`; row 1 renders `… │ ⊙ 运行 00:03 │ ⏱ 耗时 00:12 │ ⎇ main` while a task runs, and the segment is skipped entirely (not rendered empty) when none is in flight — `task_start_time` is `None`, so `format_task_elapsed` returns `""`. It is pushed as row 1's last droppable, so the row drops `elapsed > uptime > path`: the transient task clock goes first, then the session uptime, then the cwd (permission mode, branch and account are never dropped). Row 2 is unchanged at 85–86 columns with every segment populated; row 1 holds all five segments at 100 columns, pinned by `bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns` and `bottom_bar_drops_the_task_elapsed_before_uptime_and_path`. Placement is pinned by `bottom_bar_puts_live_elapsed_next_to_uptime_on_row_1` (asserts row 1 order and that row 2 does *not* carry the clock) and `bottom_bar_omits_live_elapsed_without_a_task`; the status bar's side by `status_bar_executing_shows_the_step_label_without_a_gauge` and `status_bar_planning_has_no_elapsed`. The row-2 budget guard `bottom_bar_fits_every_segment_in_100_columns` is back to its pre-2026-09-14 form, since row 2 carries no clock again. *(Superseded later the same day: the step label dropped its denominator, so `Executing` renders `正在执行步骤 4` / `Executing step 4` — see the newest entry.)*
+
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`format_task_elapsed` doc, `render_bottom_bar` row-1 groups, `Status::Executing` arm); `crates/tui/src/render/bar.rs` (the six tests above); [Ch 23](./23_chapter_tui.md) §6.6 (top bar, row 1, row 2, compaction and turn-timing paragraphs); `docs/token_usage_schema.md` §"Session Stats Display".
+
+---
+
+## 1. 2026-09-14 — The card's line-count prefix is localized, like the label it introduces
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`tool_card_progress_tmpl`, `code_card_progress_tmpl`); `crates/agent_tui_kit/src/render/cells/tool.rs` (`card_bottom_text`); `crates/agent_tui_kit/src/render/cells/code.rs`; [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 |
+
+**Symptom / motivation:** A card that previews fewer lines than the result has prints the omission in front of its bottom label — ` 3/10 lines |  Double-click for full code `. The count prefix was a hardcoded English `" {}/{} lines | {} "`, so a Chinese UI read ` 3/10 lines |  双击查看完整代码 `. The code card had the same prefix (` +{} lines | {}`) with the same problem.
+
+**Decision:** Both prefixes are message templates (`tool_card_progress_tmpl`, `code_card_progress_tmpl`), filled by the cell that draws them — the count is chrome for the label it introduces, not a readout of the tool, so it belongs to the same string set. The English templates render byte-identical output to the previous `format!` calls.
+
+**Behavior after:** Chinese reads ` 3/10 行 |  双击查看完整代码 `; English is unchanged. Pinned by `overflow_prefix_is_localized` (asserts the Chinese prefix, and that no `lines` survives anywhere in the card bottom).
+
+**Pointers:** Tests `overflow_prefix_is_localized`, `overflow_is_merged_into_bottom_hint`; [Ch 23](./23_chapter_tui_zh.md) §6.16; `docs/tool_rendering.md` §5.
+
+---
+
+## 1. 2026-09-14 — The collapsed-output click window follows the drawn row, not the locale a block was built in
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`ToolRenderOutput::meta_text`, `collapsed_action_cols`, `hits_collapsed_action`, `card_title`, `card_bottom`, `card_title_text`); `crates/agent_tui_kit/src/render/cells/tool.rs` (`from_output`, `title_line`); `crates/tui/src/widgets/state/app/popups.rs` (`open_diff_popup_at`, `popup_from_tool_output`); `crates/tui/src/widgets/state/app/config.rs` (`toggle_language`); `crates/tui/src/widgets/state/app/construct.rs`; [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 |
+
+**Symptom / motivation:** After `/lang` (or Ctrl-L) the meta row of a finished collapsed command is painted in the new language — `✓ 成功 · 1us · 3 行 · 双击查看结果` — but the hint was only clickable where the *old* language would have put it. Measured on a 100-column frame: the glyphs sat at x=31..43 while the live click window was x=37..55, i.e. the tail of the English row (`✓ Success · 1us · 3 lines · double-click-result`) the block was built with. So the first glyphs of the visible hint did nothing, and blank space to the right of it opened the popup. The same freeze left card chrome in the build-time language: a failed card in a Chinese UI drew `┌ Error ─` / `└ Double-click for full error ─┘` above a Chinese meta row.
+
+This is **not** a CJK width problem: both sides already measured with `UnicodeWidthStr::width`, and when build and draw share one `Messages` the numbers agree exactly (Chinese action drawn at 34..46, measured 34..46). The distance came purely from the two sides reading different locales.
+
+**Decision:** `ToolRenderOutput` no longer stores language-derived text at all — it is a spec of facts (phase, counts, durations, kinds). The meta row is derived on demand in the locale being drawn (`meta_text(&msgs)`), and the click target follows from it (`collapsed_action_cols(&msgs)`, `hits_collapsed_action(row, col, &msgs)`), so the window can never describe anything but the row on screen. Card chrome is derived the same way (`card_title(&msgs)`, `card_bottom(&msgs)`, with the new `live_detail` spec field carrying the fact they depend on), and the cell styles the title row itself (`title_line` removed), which also ends the build-time *theme* freeze on that row. Because `Messages` was previously snapshotted at construction — `App::new` hardcodes `Language::English` and `/lang` only flips `App::language`, which the render path reads — `App::toggle_language` now also pushes the new `Messages` into the components that own one (tool / thinking / stream), making it the single place the locale changes.
+
+**Behavior after:** The hint opens exactly where it is drawn, in either language, and for blocks that already existed before the switch — a toggle repaints stored rows, it does not rebuild them. A Chinese UI now shows Chinese card chrome for cards created before the toggle as well. Tool cards keep their colors live under a theme switch (title row included). The builder no longer takes a theme or a locale at all (`ToolWidget::new()`, `ToolWidget::from_step_result(&result)`): with nothing localized left in the spec there was nothing for them to decide, and a constructor that cannot see a locale cannot freeze one. The one render-visible consequence of moving the title styling into the cell was verified cell-by-cell against the previous revision (fg/bg/modifiers of a 100×30 frame covering a collapsed command, a truncated failed card, a live card and a code card are identical apart from the running card's ticking elapsed time), and the new behavior is pinned by `theme_change_repaints_existing_tool_title_rows`. Both new regression tests were checked against the old behavior and fail there: `collapsed_hint_click_window_matches_the_drawn_glyphs` (renders the frame, locates the action's glyph columns from the buffer, and asserts those columns — and only those — open the popup, in both locales and for a block built before the toggle) and `language_toggle_repaints_tool_card_chrome`.
+
+**Pointers:** Tests `collapsed_hint_click_window_matches_the_drawn_glyphs`, `language_toggle_repaints_tool_card_chrome`, `widget_meta_text_matches_the_rendered_meta_row`, `completed_command_renders_header_rows_only`, `double_click_collapsed_command_hint_opens_diff_popup`, `finished_block_meta_row_matches_its_hit_range`; [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 "Collapsed output".
+
+---
+
+## 1. 2026-09-14 — The collapsed-output hint names the result it opens
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`tool_collapsed_output_action`, `tool_collapsed_output_hint`, `tool_collapsed_output_hint_one`); `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`collapsed_output_hint`, `collapsed_action_cols`); `crates/tui/src/widgets/state/app/popups.rs` (`open_diff_popup_at`); [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 |
+
+**Symptom / motivation:** The meta row of a card-less block advertised the gesture but not its effect: `… · 4 lines · double-click` and `… · 4 行 · 双击查看`. The same words also sit on the bottom bar of every popup card that *does* still draw one, so the single clickable string on the row never said that what it opens is *this tool's result*.
+
+**Decision:** The action word names what it opens — `double-click-result` / `双击查看结果` — and both hint templates follow it, because `collapsed_action_cols` derives the click target backwards from the row's end *as* the hint's trailing action, and `collapsed_output_hint_ends_with_its_action` pins that tail in every locale. Only the collapsed-output hint moves: the card-bottom strings (`Double-click for full code`, `双击查看完整代码`, …) are untouched, since they sit on a drawn card that already shows what it opens.
+
+**Behavior after:** A card-less finished block reads `✓ Success · 21ms · 4 lines · double-click-result` / `✓ 成功 · 21ms · 4 行 · 双击查看结果`. The clickable range is exactly those glyphs and nothing else — the line count and the rest of the row stay inert, unchanged from the 2026-09-13 entry above.
+
+**Pointers:** Tests `collapsed_output_hint_ends_with_its_action`, `collapsed_command_meta_row_reports_hidden_output`, `double_click_collapsed_command_hint_opens_diff_popup`, `collapsed_command_ignores_clicks_off_the_hint`, `edit_file_collapses_its_detail_card`, `read_file_collapses_its_detail_card`, `write_file_collapses_its_detail_card`, `multiline_result_of_a_cardless_kind_becomes_expandable`; [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 "Collapsed output".
+
+---
+
+---
+
+
+## 1. 2026-09-13 — Finished tool output: cards collapse to two rows, cardless results become reachable
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`ToolLayout::detail_collapsed`, `ToolWidget::collapses_detail`); `crates/agent_tui_kit/src/render/cells/tool.rs` (meta-row hint); `crates/agent_tui_kit/src/i18n.rs` (`tool_collapsed_output_hint`, `tool_collapsed_output_action`); `crates/tui/src/widgets/state/app/popups.rs` (`popup_from_tool_output`, `open_diff_popup_at`); `crates/tact/src/tool/read_file.rs` (`DetailPolicy::Result`); `crates/tact/src/tool/write_file.rs` (`DetailPolicy::InputField("content")`); `crates/tact/src/tool/edit_file.rs` (`DetailPolicy::InputField("new_text")`); `crates/tact/src/agent/tool_dispatch.rs` (MCP/plugin tools arrive as `Generic`); [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5/§8 |
+
+**Symptom / motivation:** Every finished `bash` call kept an inline card: two header rows plus a top/bottom border and one preview row. On a run that executes dozens of short commands the log was mostly card chrome, and the single retained line was the *tail* of the output (`1/27 lines | Double-click for full code`) — rarely the line anyone wants, while the card had to be opened anyway to read anything at all. The preview cost was fixed regardless of output size, so a one-line command paid the same card as a 27-line one. A finished `read_file`, `write_file` or `edit_file` paid that same toll for a body nobody reads inline — the card held one line of a file that has to be opened anyway.
+
+**Decision:** A finished tool of a collapsing kind draws no card at all. The rule is keyed on the visual kind, never on tool names, and needs phase `Success` plus a non-live card. `Command | FileRead | FileWrite | FileEdit` always collapse: those drew a card, so collapsing *saves* rows whatever the size of the content. `Subagent` never does — it is the transcript popup's entry point and the line it retains is the child's result summary. Every other kind (`Task` / `Sleep` / `Generic`) never drew a card at all, so its result was not collapsed but **unreachable**: `detail_full` stayed `None`, which also killed the popup and the click target. Collapsing those costs no extra row, so a multi-line result (`task_list`, `read_inbox`, `worktree_status`, `load_skill`, `check_background`, and every MCP/plugin tool, which arrives as `Generic`) becomes one double-click away; a one-line result still does not, and neither does `ask_user`, whose answer is already on the meta row (`compact_result_to_meta`) — an affordance that opens nothing worth reading is chrome. It surfaces as a new `ToolLayout.detail_collapsed` flag, not as a tool-name switch (a per-tool flag in this same renderer was tried and removed before). Two consequences were handled explicitly: `build()` keeps `detail_full` / `detail_total_lines` populated for collapsed cards so the popup path needed no new content plumbing, and `popup_from_tool_output` — which bailed on `!has_detail_card` — now also accepts a collapsed card. Since no card is drawn, the click target becomes the hint that names the gesture: `open_diff_popup_at` takes the click column and compares it with `ToolRenderOutput.collapsed_action_cols` — the columns of the trailing `double-click-result` action word on the meta row (`hits_collapsed_action`). Storing the *whole* header text as the target was the first attempt and was too wide in two directions: the parameter row above and the meta row's own earlier text (success mark, duration, line count) fired the popup although neither says anything about a click. Measuring needs the row's exact text, so the widget stores the finished meta row in `ToolRenderOutput.meta_text` (`None` while a tool runs, where the cell re-derives a ticking elapsed time); the widget and the cell assemble it through the same `build_meta_text` + `meta_suffixes`, and a test pins them equal. The action range is measured backwards from the row's end, which holds because the hint is the row's tail and every locale's hint ends with its action string. A tool that still draws a card keeps its header rows inert as before, so the 2026-07-15 rule `tool_card_double_click_detail_area_only` ([Ch 4](./04_chapter_prompt.md)) still holds wherever a card exists and is amended only for the card-less case.
+
+**Behavior after:** Running stays as it was (`Live output` card, 1→3 row tail). Success prints two rows and appends `… · {n} lines · double-click-result` to the meta row (`tool_collapsed_output_hint`, plus a singular `tool_collapsed_output_hint_one` for the one-line case reachable from the background-task finalize path) — without that hint a card-less block would silently hide output. `n` is `detail_total_lines`, the same count the popup reports, prefix line included, so hint and popup never disagree. Failures keep their five-preview-row `Error` card, and `background_run` collapses when `BackgroundTaskFinished` finalizes it. Every finished command now costs two rows instead of five, and the only clickable thing left is the `double-click-result` word: the parameter row and the earlier meta text stay inert. Finished file reads (`read_file`, and `read_image`, which rides the `FileRead` kind), writes (`write_file` — the `FileWrite` kind) and edits (`edit_file`, `apply_patch` — the `FileEdit` kind) follow the same rule: their body / content / diff card is gone too, the text stays reachable through the popup (the read body, the written content — read back from disk with the captured text as fallback — or the edit's git diff), and the meta hint carries its line count. A finished subagent keeps its summary card. Kinds that never had a card behave the mirror image: a multi-line result is now collapsed and openable at the same two rows it always cost, while a one-line one is left alone. Everything stays kind-keyed rather than tool-keyed, and the MCP/plugin case comes for free because those tools arrive as `Generic`. (The action word itself was renamed from `double-click` to `double-click-result` on 2026-09-14 — see the newest entry above.)
+
+**Superseded (2026-09-14):** the finished meta row is no longer *stored* in `ToolRenderOutput` — it is derived on demand in the locale being drawn, so that a `/lang` switch cannot leave the click window behind (see the entry above). The card-title and bottom strings follow the same rule.
+
+**Pointers:** `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`collapses_detail`, `layout`, `build`, `collapsed_action_cols`, `hits_collapsed_action`, `meta_suffixes`, `collapsed_output_hint`); `crates/agent_tui_kit/src/i18n.rs` (`tool_collapsed_output_action`); `crates/agent_tui_kit/src/render/cells/tool.rs`; `crates/tui/src/widgets/state/app/popups.rs` (`open_diff_popup_at`); `crates/tui/src/handlers/mouse.rs` (click column); tests `completed_command_renders_header_rows_only`, `double_click_collapsed_command_hint_opens_diff_popup`, `collapsed_command_ignores_clicks_off_the_hint`, `collapsed_output_hint_ends_with_its_action`, `double_click_collapsed_edit_hint_opens_diff_popup`, `double_click_collapsed_read_hint_opens_diff_popup`, `double_click_cardless_tool_hint_opens_result_popup`, `edit_file_collapses_its_detail_card`, `read_file_collapses_its_detail_card`, `write_file_collapses_its_detail_card`, `read_file_has_plain_gutter`, `read_image_collapses_with_the_file_read_kind`, `multiline_result_of_a_cardless_kind_becomes_expandable`, `multiline_mcp_result_becomes_expandable`, `one_line_result_of_a_cardless_kind_stays_plain`, `result_already_on_the_meta_row_is_not_collapsed`, `full_frame_edit_file_tool_shows_in_log`, `full_frame_read_file_tool_shows_in_log`, `full_frame_write_file_tool_shows_in_log`, `full_frame_cardless_tool_result_is_openable`, `double_click_subagent_header_does_not_open_diff_popup`, `failed_command_keeps_its_error_card`, `collapse_spares_running_commands_and_subagents`, `collapsed_command_meta_row_reports_hidden_output`, `widget_meta_text_matches_the_rendered_meta_row`, `finished_block_meta_row_matches_its_hit_range`; [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 "Collapsed output".
+
+---
+
+---
+
+
+## 1. 2026-09-13 — `[agent]` rejects unknown keys, so a misplaced thinking setting fails instead of vanishing
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/types.rs` (`AgentTomlConfig`, `SubagentTomlConfig`); `crates/tact/src/config/resolve.rs` (`resolve_config`); `config.example.toml`; [Ch 21](./21_chapter_config.md) §4 |
+
+**Symptom / motivation:** `AgentTomlConfig` was `#[serde(default)]` with no `deny_unknown_fields`, so any key that is not an agent field was dropped with no error, no warning, and no effect. The dangerous cases are not typos but keys that exist *elsewhere* and therefore look right here: `thinking_budget` and `reasoning_effort` are fields on the runtime agent settings (`AgentSettings`) — and on the subagent section — but as TOML keys they belong to `[llm]` (global) or a `[llm.providers.<name>]` entry, and `model` belongs to the provider entry. Measured before the fix: `[agent] max_tokens = "abc"` (a known key with a wrong type) failed at parse, while `[agent] thinking_budget = "abc"` plus `[agent] reasoning_effort = 123` started normally with both values discarded — the same "configured but ignored" class as `[llm].max_tokens` (removed the same day).
+
+**Decision:** `#[serde(deny_unknown_fields)]` on `AgentTomlConfig` and `SubagentTomlConfig`. The two keys stay absent from the schema, so serde's `unknown field` error lists only the real agent fields — which is what points the reader at `[llm]`. A targeted guard field per misplaced key was tried and **removed**: keeping `thinking_budget` in the struct makes serde advertise it in its own "expected one of …" list, so a config that then adds it would be told the key is valid and rejected one layer later. An error message that names an invalid key as valid is worse than a generic one. Other top-level sections are left as-is — `[llm]` still needs its `max_tokens` field to carry the removal guard.
+
+**Behavior after:** A `[agent]` or `[agent.subagent]` key that is not a real field fails at parse time with `unknown field \`thinking_budget\`, expected one of \`max_tokens\`, \`model_context_window\`, …`. Configs that only use real keys are unaffected (the shipped `config.example.toml`, the process's own `persist` writers, and every fixture in the test suite resolve unchanged).
+
+**Pointers:** `AgentTomlConfig` / `SubagentTomlConfig` in `crates/tact/src/config/types.rs`; tests `agent_thinking_keys_are_rejected`, `agent_unknown_key_is_rejected`, `subagent_unknown_key_is_rejected` in `crates/tact/src/config/resolve.rs`; [Ch 21](./21_chapter_config.md) §4 "Unknown keys are rejected"; `config.example.toml`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — `[llm].max_tokens` is removed, and a leftover key fails loudly
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact/src/config/types.rs` (`LlmTomlConfig`, `AgentTomlConfig`); `crates/tact/src/config/resolve.rs` (`resolve_config`); `config.example.toml`; [Ch 21](./21_chapter_config.md) §3/§4 |
+
+**Symptom / motivation:** The output-budget chain had five levels (`--max-tokens` > provider entry > `[agent].max_tokens` > `[llm].max_tokens` > built-in default), and the `[llm]` global was the only one that could never be observed: it sat *below* `[agent]`, so it applied solely to users who set nothing there. Anyone who set both had one of the two values silently ignored — the same "configured but ignored" class the `[agent]` level was added to fix, just moved one level down. A global that cannot take effect for the users most likely to set it is worse than no global: it invites a key that looks live.
+
+**Decision:** Drop the level. The chain is now `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[agent].max_tokens` > default (8000; 32000 for Kimi K2.x), and `[llm]` keeps only `provider`, `thinking_budget`, `providers`, `model_profiles`. The key stays in `LlmTomlConfig` **solely as a guard**: `resolve_config` bails when it is present, naming `[agent].max_tokens` as the replacement. Silently ignoring it was rejected because the request would fall back to the built-in default with nothing in the output to say so — the exact failure mode this removal is meant to end. This is the precedent already set by `[agent.subagent]` overrides without `provider` (2026-09-13, same day).
+
+**Behavior after:** A config that sets `[llm] max_tokens` fails to start with `[llm].max_tokens was removed. Set [agent].max_tokens instead (or [llm.providers.<name>].max_tokens for a per-provider value), or delete the key.` followed by the resolution order. Configs that never set it are unaffected, and `thinking_budget` keeps its `[llm]` global (it has no `[agent]` counterpart, so the global is the only non-provider switch). The `responses_compact_threshold` validation message no longer names `llm.max_tokens` — it says `max_tokens`, since the value can come from the CLI, an entry, or `[agent]`.
+
+**Pointers:** `resolve_config` in `crates/tact/src/config/resolve.rs`; tests `llm_max_tokens_is_rejected`, `absent_llm_max_tokens_still_resolves`, `agent_max_tokens_overrides_default`, `per_provider_max_tokens_overrides_default`, `cli_max_tokens_overrides_entry`, `parse_removed_llm_max_tokens_is_captured`; [Ch 21](./21_chapter_config.md) §3 priority table + §4 schema; `config.example.toml`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — The bar's `out` shows the request parameter, not a reasoning-share estimate
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs` (`format_max_out_tokens`); `crates/tact_llm/src/openai/responses/convert.rs`, `crates/tact_llm/src/convert.rs`, `crates/tact_llm/src/anthropic/mod.rs`; [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** The bottom bar's `out` segment rendered `max_tokens × 100/(100+pct)` for effort-semantic models (openai / deepseek / kimi k3), subtracting a reasoning share using the effort tier table (`high` → 75%). That made the readout disagree with the wire: the request is sent with the **full** `max_output_tokens` / `max_tokens`, and the reasoning-vs-text split inside that envelope is the endpoint's per-request decision. A fixed 75% is a guess, so on a `[agent] max_tokens = 65536` config at `high` the bar said `37.4K` while the endpoint was asked for 65536. The subtraction convention had been borrowed from the compaction reserve, where a size *must* be committed to before the call — a different problem from reading back a number that is already known exactly.
+
+**Decision:** `format_max_out_tokens` now takes only `(label, max_tokens)` and renders the value verbatim; `thinking_budget` / `reasoning_effort` are no longer inputs. The three subtests that pinned the subtraction (`..._subtracts_effort_share`, `..._budget_keeps_full_envelope`, `..._zero_budget_subtracts_effort_share`) collapse into `format_max_out_tokens_is_the_wire_value`. This also retires the previous bugfix in this area — the `None` vs `Some(0)` "thinking off" discriminator that decided *whether* to subtract can no longer move the segment, because the segment no longer depends on thinking settings at all. Reasoning-reserve estimation stays where a size has to be chosen: the compaction summary budget and `should_auto_compact`'s incoming-turn reserve.
+
+**Behavior after:** On `[agent] max_tokens = 65536` at any effort the bar reads `out 65.5K` — the number actually sent. It matches `ModelInfo.max_tokens` and the request body (`max_output_tokens` / `max_tokens`) by construction. The segment is stable across `/model` effort switches and across a session boundary.
+
+**Pointers:** `format_max_out_tokens` in `crates/agent_tui_kit/src/render/bar.rs`; test `format_max_out_tokens_is_the_wire_value`; [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — Explicit config beats the built-in model→window table, and a subagent section can no longer be dropped in silence
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs` (`resolve_config`, `resolve_subagent`); `config.example.toml`; [Ch 21](./21_chapter_config.md) §3 |
+
+**Symptom / motivation:** Two instances of one class of bug — configuration that *looks* applied but never reaches a request.
+
+1. `model_context_window` resolved as mapping > CLI > file, so the built-in model→window table **overrode both** the CLI flag and `[agent].model_context_window`. A user who deliberately set a window for a model with a built-in mapping had their value ignored. The documented rationale was safety (a stale manual window cannot under-report a well-known model), but the effect contradicted the project's "config wins" rule, and the same file could set `max_tokens` (honored) and `model_context_window` (ignored) side by side.
+2. `resolve_subagent` returned `Ok(None)` as soon as `provider` was absent, so `[agent.subagent] max_tokens = 64000` with `provider` commented out silently did nothing. A `tracing::warn!` would not have helped here: logging is only installed when `RUST_LOG`/tokio-console is set, and config resolution runs earlier (`init()` in `crates/tact-ui/src/main.rs`), so the warning would never be printed.
+
+**Decision:** (1) `model_context_window` now resolves CLI > `[agent]` > mapping > default `200_000`: the built-in table is a **fallback for unconfigured models**, not an override. The safety trade-off is documented instead of enforced — a stale manual window can under-report a long-context model and trigger premature auto-compaction, so the key should be deleted rather than left outdated. An explicit `0` still means "disabled/unknown window" and is *not* a fallback to the mapping. (2) A `[agent.subagent]` section that sets `model` / `max_tokens` / `thinking_budget` / `reasoning_effort` without `provider` is now a **hard resolve error** naming the fix, because `provider` is documented as required and the alternative is silently ignoring the overrides. A section with no overrides at all (a leftover header whose keys are all commented out) stays a silent no-op, so the guard does not fire on harmless templates.
+
+**Behavior after:** Setting `[agent] model_context_window = 128000` for `deepseek-v4-pro` (built-in 1M) now yields 128,000, and `--model-context-window` wins over both. A config carrying subagent overrides without `provider` fails to start with `[agent.subagent] sets overrides but \`provider\` is missing, so the whole section is ignored. … Set \`provider\` to a key from [llm.providers.*], or remove the section.` — surfacing a class of error that previously required reading the resolve source to notice.
+
+**Pointers:** `resolve_config` + `resolve_subagent` in `crates/tact/src/config/resolve.rs`; tests `resolve_model_context_window_toml_overrides_mapping`, `resolve_model_context_window_cli_overrides_toml_and_mapping`, `resolve_model_context_window_mapping_is_the_fallback`, `subagent_overrides_without_provider_errors`, `subagent_empty_section_without_provider_is_ignored`; [Ch 21](./21_chapter_config.md) §3.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — The bar's `out` budget no longer changes on the first prompt of a session
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs` (`format_max_out_tokens`); `crates/tact/src/agent/mod.rs` (`emit_model_status`, in-turn `ModelInfo`); [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** The bottom bar's `out` segment showed one value at startup and a larger one after the first prompt was sent, on an unchanged configuration. `out` is the *effective* text-output budget: for effort-semantic models (openai / deepseek / kimi k3) reasoning shares the `max_tokens` envelope, so the reasoning share is subtracted (`max_tokens × 100/(100+pct)`), while a budget-semantic model (Anthropic-style `thinking_budget`) keeps a separate envelope and shows the full value. The discriminator was `thinking_budget.is_some()`, but the two producers encode "thinking off" differently: the `/model` path emits `None` (`(budget > 0).then_some(..)`) while the in-turn request path emits `Some(0)` — it maps the always-present `Thinking` struct from `with_thinking`. So the first prompt of a session flipped the renderer from "shared envelope" to "separate envelope" and `out` went from the subtracted value to the full `max_tokens`, e.g. `36.6K` → `64K` on a 64000 envelope at `high`.
+
+**Decision:** The discriminator becomes a **non-zero** budget — `thinking_budget.is_some_and(|b| b > 0)`. `Some(0)` and `None` both mean "thinking off", i.e. shared-envelope semantics, so both subtract and render identically. Fixing it in the renderer (rather than aligning the in-turn emitter with `emit_model_status`) also covers the compaction-summary emitter, which sends `thinking_budget: None` with a small `max_tokens` and would otherwise still be able to flip the segment mid-session. The `think` segment already filtered on `> 0`, which is why only `out` moved.
+
+**Behavior after:** `out` stays put across a session boundary for a given config: on a 64000 envelope at `high` effort it reads `36.6K` before and after the first prompt, instead of `36.6K` → `64K`. A genuinely budget-semantic model (`thinking_budget > 0`) still shows the full `max_tokens`.
+
+**Pointers:** `format_max_out_tokens` in `crates/agent_tui_kit/src/render/bar.rs`; test `format_max_out_tokens_zero_budget_subtracts_effort_share`; [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md`.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — `[agent].max_tokens` becomes a real level in the output-budget chain
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/types.rs` (`AgentTomlConfig::max_tokens`); `crates/tact/src/config/resolve.rs` (`resolve_config`); `config.example.toml`; [Ch 21](./21_chapter_config.md) §3 |
+
+**Symptom / motivation:** `[agent] max_tokens = 64000` did nothing. `AgentTomlConfig` had no such field, and the struct is `#[serde(default)]` **without** `deny_unknown_fields`, so serde discarded the key silently — no error, no warning. The chain was `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[llm].max_tokens` > default 8000, so a config that only set `[agent] max_tokens` ran at 8000 while *looking* configured. Observed live: a config carrying `[agent] max_tokens = 64000` (file mtime 14:32) whose requests at 14:34 went out with `"max_tokens": 8000`, and no `token_usages.request_body` row in the project DB had ever held 64000. The same file's `[agent.subagent] max_tokens = 64000` was inert for a second reason — `resolve_subagent` returns `Ok(None)` when the section has no `provider`.
+
+**Decision:** `[agent].max_tokens` becomes a supported key and takes the slot **between the provider entry and the `[llm]` global**: `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[agent].max_tokens` > `[llm].max_tokens` > default (8000; 32000 for Kimi K2.x). It sits *above* the `[llm]` global so it stays live for users who also set the global — the reverse order would have reproduced the exact "configured but ignored" trap this fix removes. The `[llm]` global is retained so existing configs keep resolving. The `model_context_window` validator no longer names `llm.max_tokens` in its message, because the value can now originate from three places.
+
+**Behavior after:** A config that only sets `[agent] max_tokens = 64000` runs at 64000 on every provider whose entry omits `max_tokens`; a provider entry still wins over it, and `--max-tokens` still wins over all. A subagent without `[agent.subagent].max_tokens` inherits the resolved main value, `[agent]` level included. The window validator now reports `invalid token limits: max_tokens (N) must be less than agent.model_context_window (M)`.
+
+**Pointers:** `resolve_config` in `crates/tact/src/config/resolve.rs`; tests `agent_max_tokens_overrides_global`, `per_provider_max_tokens_overrides_agent`, `cli_max_tokens_overrides_agent`, `subagent_inherits_agent_max_tokens`; [Ch 21](./21_chapter_config.md) §3 precedence table + §4 schema.
+
+---
+
+---
+
+
+## 1. 2026-09-13 — Compaction summarizer uses an effort bucket + staged ladder instead of a fixed reserve
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`, `compact_effort_reserve_tokens`, `compact_summary_server_default_effort`, `compact_summary_effort`, `next_compaction_reserve`); `crates/tact/src/recovery.rs` (`MAX_COMPACT_SUMMARY_ATTEMPTS`, `MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS`) |
+
+**Symptom / motivation:** The summarizer's reasoning reserve was a percentage of the summary **text** budget (capped at 2,000 tokens), so `high` effort reserved only 1,500 tokens even though an effort tier names an absolute thinking allowance. The truncation recovery was also a fixed 3 continuations that could not converge on reasoning-heavy providers: DeepSeek does not replay historical `reasoning_content` and every call regenerates thinking from scratch, so each continuation repeated the same overrun until the loop accepted a partial — or bailed on empty text. Codex's own summarizer is single-shot, runs at the sampling effort, and tolerates a truncated summary, which shaped the fix below.
+
+**Decision:** (1) The initial reserve is the absolute token **bucket** of the effective effort — `none` 0 / `minimal|low` 2,000 / `medium` 4,000 / `high` 8,000 / `xhigh|max` 16,000 — not a percentage of the text budget; with no effort configured, DeepSeek / Kimi K3 (which reason at effort high by server default) take the `high` bucket and every other provider takes 0. (2) The single continuation loop becomes a **staged ladder**: stage 0 inherits the session effort, stage 1 minimizes it (`low` for DeepSeek / Kimi K3, `none` for OpenAI reasoning models, omitted elsewhere), and stage 2+ size the reserve from the previous attempt's `usage.reasoning_tokens` via `clamp(observed × 1.25, floor, cap)` with `floor = max(previous reserve, effort bucket, text/4)` and `cap = 2 × floor`, each capped so the request still fits the window. (3) `MAX_COMPACT_SUMMARY_ATTEMPTS` (new, 5) bounds the ladder independently of the main loop's `MAX_CONTINUATION_ATTEMPTS` (3), and the transport-retry budget `MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS` went 3 → 5. Empty summary text still fails.
+
+**Behavior after:** `max_tokens` = 2,000 text + the effort bucket — 10,000 at `high`, and the same for DeepSeek / Kimi K3 with no explicit effort (server-default high). A truncated summary emits `[compact continue n/5]` with the escalating budget, and `[compact fallback]` once the ladder is exhausted, accepting the partial summary instead of failing; compaction no longer bails just because a reasoning model consumed the previous envelope.
+
+**Design notes (vs Codex):** The summarizer *synthesizes* one tool-less `create_message` — instructions + optional focus + recent-file list + the recent message slice serialized as JSON text — instead of replaying the real history. Codex replays: it appends `SUMMARIZATION_PROMPT` to the native items and trims the oldest item on `ContextWindowExceeded`. Synthesis buys a request that is guaranteed to fit the input budget and is always structurally valid (no orphan `tool_use`/`tool_result`, no tools on the wire), and it is where `focus`, recent files, and oversized-media downgrades are injected; the cost is that tool-call nuance survives only as JSON. On the rebuild side both keep recent real user messages plus one summary cell under a 20k estimated-token cap, but Tact strips `ToolResult` blocks before retaining a user message (its tool results live inside user messages, unlike Codex's separate `FunctionCallOutput` items) and runs an outer fit-loop that shrinks the retained budget until `system prompt + tool specs + rebuilt + max_tokens + headroom` fits the window, while Codex keeps the flat 20k and leaves that to the caller. Tact also fails on an empty summary; Codex accepts `SUMMARY_PREFIX` alone. The prompt itself was tightened in the same change: it states that the conversation is appended as a JSON message array, grounds the summary in that content, and requires a compact, structured handoff that never paraphrases identifiers.
+
+**Pointers:** `compact_history_local_with_mode` + helpers in `crates/tact/src/agent/mod.rs`; constants in `crates/tact/src/recovery.rs`; tests `compact_effort_reserve_bucket_tiers`, `compact_summary_server_default_effort_tiers`, `compact_summary_effort_ladder_per_provider`, `next_compaction_reserve_*`, `local_compact_inherits_session_effort`, `local_compact_keeps_server_default_reasoning_reserve`, `local_compact_accepts_partial_summary_when_continuations_exhausted`; [Ch 5](./05_chapter_compact.md) §5 step 3.
+
+---
+
+## 1. 2026-09-12 — One `/model` flow instead of two, and the TUI stops forking git on the UI thread
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tui/src/widgets/state/mod.rs` (`ModelTarget`); `crates/tui/src/handlers/select.rs`; `crates/tui/src/widgets/state/app/background.rs` (new) |
+
+**Symptom / motivation:** Two independent problems.
+
+(1) `SelectKind` carried the `/model` flow twice: five `Subagent*` variants mirroring the main-agent ones (`SubagentModelProfileEffortPick` vs `ModelProfileEffortPick`, and so on), re-matched by three large parallel blocks in `handlers/select.rs`. One of those blocks ended in a 12-variant OR-pattern placed inside a match that also had a wildcard arm — so forgetting a variant when adding a new one would have silently fallen through rather than failing to compile.
+
+(2) Two blocking operations ran on the event loop: `App::maybe_refresh_git_branch` forked `git branch --show-current` (throttled to 5 s, but still a process spawn on the UI thread), and `refresh_skills` took a `std::sync::Mutex` and walked the filesystem while holding it. Neither task was tracked, so shutdown could not stop either one.
+
+**Decision:** (1) `ModelTarget { Main, Subagent }` parameterizes the model/effort/budget flow, and the five duplicate variants collapse into the shared ones via a `target` field — `SelectKind` goes 13 → 8 variants, the five duplicate `*_subagent_*` helpers are gone, and the three parallel matches become one dispatch. The remaining OR-pattern now covers every variant of a match with no wildcard arm, so a new variant is a compile error instead of a silent fallthrough.
+
+(2) Both operations moved to `tokio::task::spawn_blocking` in a new `app/background.rs`, each storing a `JoinHandle` plus a `oneshot::Receiver` in `App` (`git_branch_task` / `skills_task`). `poll_background_tasks` applies results each loop iteration and `abort_background_tasks` runs on shutdown. The git refresh keeps its 5 s throttle and is in-flight-gated (never a new task per frame). `reload_skills` is synchronous and lock-scoped, so no lock is held across an `.await`. When no tokio runtime is present both fall back to running inline, which keeps the existing tests working.
+
+**Behavior after:** `/model` and `/model-subagent` behave exactly as before — same popups, order, labels and resulting state; two tests pin the target-specific behavior the duplicate families used to encode (the subagent budget flow uses subagent persist templates, and the subagent effort pick writes `agent.subagent.reasoning_effort`). The status bar's git branch and the skill list now refresh off the UI thread. Known asymmetry, preserved and now commented: the subagent **effort** flow shares the main-agent persist/session-only templates, unlike the budget flow, which has dedicated subagent strings.
+
+**Pointers:** `crates/tui/src/widgets/state/mod.rs`; `crates/tui/src/handlers/select.rs`; `crates/tui/src/widgets/state/app/background.rs`.
+
+---
+
+## 1. 2026-09-12 — Responses stream events are classified by the SDK enum, not a hand-written list
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact_llm/src/openai/responses/mod.rs` (`sdk_event_types`, `parse_stream_event_with_raw`) |
+
+**Symptom / motivation:** `parse_stream_event_with_raw` decided whether to consume an SSE event by string-matching its `type` against a hardcoded allowlist of 23 `"response.*"` literals, *before* deserializing. The vendored SDK's `ResponseStreamEvent` enum models 48 types, so the list was a hand-maintained subset that had to stay in sync with two other places by hand (`stream.rs`'s match arms, and `wire.rs`'s output-item table). An event the SDK learned about in a later version — or one that was simply forgotten when the list was written — was dropped before the state machine ever saw it, with no log and no error.
+
+**Decision:** Ask serde. For an internally tagged enum, the unknown-variant error enumerates every valid tag, so `sdk_event_types()` derives the complete, authoritative set at runtime from the enum itself (`LazyLock`, one probe deserialization of a bogus tag). It follows SDK bumps automatically instead of needing a mirror. The allowlist is gone; the decision is now `sdk_knows_event(type)`.
+
+The derivation is deliberately used only to separate "a type this build does not model" (drop it — forward compatibility with a newer server) from "a malformed payload for a type the SDK *does* model" (still a hard error). It does **not** decide which events Tact acts on: that remains `stream.rs`'s `ResponsesStreamState::apply`, the single source of truth for stream semantics.
+
+Normalization (`normalize_stream_event_json`) still runs before deserialization, because it repairs wire shapes the typed parser would otherwise reject; it is now keyed on the two event categories that actually need repair (`output_item.{added,done}`, and the terminal `completed`/`incomplete`/`failed`).
+
+**Behavior after:** Every event the SDK models reaches the state machine; `stream.rs` ignores the ones Tact does not use, exactly as before. An event type outside the SDK's enum is still dropped rather than failing the stream. A malformed known event still errors. Since the derived set is parsed out of an error message, `sdk_event_types_are_derived_from_the_enum` pins that the derivation still works — otherwise a serde wording change would silently empty the set and kill every stream.
+
+**Pointers:** `crates/tact_llm/src/openai/responses/mod.rs`; `crates/tact_llm/src/openai/responses/stream.rs`; `crates/tact_llm/src/openai/responses/wire.rs`.
+
+---
+
+## 1. 2026-09-12 — One config orchestrator, and permission settings load in one place
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs` (`resolve_non_llm`, `NonLlmSettings`); `crates/tact/src/permission/settings.rs` (`PermissionSettings::load`) |
+
+**Symptom / motivation:** Two duplications, one of them with a crash. (1) `resolve_non_llm_settings` and `resolve_config` each resolved the same ~45 lines of non-LLM settings (notifications, snapshots, micro-compaction, skill dirs, instruction sources, theme, vision, bash timeout/nice, RTK filter, permission mode) with their own copy of the precedence chain — so a change to precedence had to be made twice or the two paths silently disagreed. (2) `PermissionSettings::load` and `load_from` had byte-identical merge blocks.
+
+Additionally the non-LLM path resolved `[agent].instruction_sources` with `.expect("invalid instruction_sources in config")`. That is library code reached from `main`, so a typo in a config key aborted the process with a panic instead of naming the offending key.
+
+**Decision:** Extracted `NonLlmSettings` + `resolve_non_llm(args, toml_cfg) -> Result<NonLlmSettings>`, used by both paths, with the precedence order documented once at the resolution site. The `.expect` became a `Err`, and `resolve_non_llm_settings` now returns `Result`; its caller in `config/mod.rs` propagates with `?`. `PermissionSettings::load` became a one-line delegate to `load_from`.
+
+One difference was deliberately **not** merged: a malformed `[voice]` is fatal on the full path (`resolve_voice(...)?`) but warns-and-degrades on the non-LLM path (which serves subcommands that never record audio). Collapsing it would have changed behavior, so `voice` stays resolved at each call site with a comment saying why.
+
+**Behavior after:** Precedence is unchanged (`CLI flag > TOML > built-in default`; `--no-notifications` / `--no-micro-compact` are absolute and skip the TOML value). Both paths now share one implementation, so they cannot drift. A bad `[agent].instruction_sources` reports `invalid [agent].instruction_sources: …` instead of panicking. Permission rule merge semantics are unchanged and now pinned by `load_from_unions_global_then_project_deduplicating`: global rules come first, project rules are appended, duplicates dropped — there is no per-layer override, because precedence is decided at match time (`deny > ask > allow`).
+
+**Pointers:** `crates/tact/src/config/resolve.rs`; `crates/tact/src/permission/settings.rs`; `crates/tact/src/config/mod.rs`.
+
+---
+
+## 1. 2026-09-12 — MCP handshake and tool calls are bounded by timeouts
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/mod.rs`; `crates/tact/src/mcp/remote.rs` |
+
+**Symptom / motivation:** The MCP loader awaits *every* server connection before returning, and neither the initialize handshake nor `tools/list` nor `tools/call` had a deadline. One hung third-party server therefore wedged `tact` startup forever, with no timeout, no error, and no way to tell which server was at fault — remote servers were worse, since only the OAuth legs (`OAUTH_CALLBACK_TIMEOUT`, `OAUTH_TOKEN_EXCHANGE_TIMEOUT`) were bounded.
+
+**Decision:** Added three named deadlines and applied them at the blocking awaits: `MCP_INIT_TIMEOUT` (60 s) for the initialize handshake on both the stdio and remote transports, `MCP_LIST_TOOLS_TIMEOUT` (30 s) for `tools/list`, and `MCP_CALL_TOOL_TIMEOUT` (600 s) for `tools/call`. A tool call is bounded generously rather than tightly: a long-running server-side tool is legitimate work, whereas an unbounded wait is not.
+
+**Behavior after:** A server that never completes its handshake is reported as a timeout failure and removed from the router instead of blocking startup; the same applies per call. Every timeout names its own duration in the error message.
+
+**Pointers:** `crates/tact/src/mcp/mod.rs` (`MCP_INIT_TIMEOUT`, `MCP_LIST_TOOLS_TIMEOUT`, `MCP_CALL_TOOL_TIMEOUT`); `crates/tact/src/mcp/remote.rs` (`REMOTE_INIT_TIMEOUT`).
+
+---
+
+## 1. 2026-09-12 — A hook subprocess is killed when its timeout expires
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/plugin/hooks.rs` |
+
+**Symptom / motivation:** Plugin command hooks spawn `sh -c` with a 60 s timeout. On expiry the `wait_with_output` future was dropped, which detaches the child rather than killing it: the hook was reported as timed out while its process kept running and kept holding the stdout/stderr pipes the parent had already moved on from. Leaked hook processes accumulated across a session, and a hook that outlived its timeout could still mutate the worktree after Tact had decided it had failed.
+
+**Decision:** Set `.kill_on_drop(true)` on the spawned command so dropping the future terminates the child. `tool/bash.rs` and `tool/background.rs` already did this; the hook path was the outlier.
+
+**Behavior after:** A hook that exceeds its timeout is terminated, not orphaned. No process outlives the tool result that reports it.
+
+**Pointers:** `crates/tact/src/plugin/hooks.rs`.
+
+---
+
+## 1. 2026-09-12 — A poisoned lock no longer aborts the process
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/utils/lock.rs`; `crates/tact_llm/src/lock.rs` |
+
+**Symptom / motivation:** 42 production sites took a lock with `.lock().expect("… lock poisoned")` or `.write().unwrap()`. Every one of those locks guards a cache, a counter, a registry or a config snapshot — none guards an invariant that a panic could leave torn. So an unrelated panic while a lock happened to be held escalated a recoverable state glitch into a process abort; in the TUI that tears down the entire session and loses the in-flight turn, rather than degrading the one subsystem that misbehaved.
+
+**Decision:** Added `LockExt::lock_recover` and `RwLockExt::{read_recover, write_recover}` (`utils/lock.rs`; mirrored as `tact_llm::lock`, since the two crates cannot share a module), which use `PoisonError::into_inner` instead of panicking. Safety argument: Rust guarantees the guarded data is still memory-safe after a poisoning panic; at worst it is logically stale, and for a counter/cache/registry that is precisely the case the next read already tolerates. All 42 sites were migrated across `agent/mod.rs`, `agent/tool_dispatch.rs`, `config/mod.rs`, `ui_responder.rs`, `store/sqlite.rs`, `voice/recorder.rs`, `prompt/mod.rs`, `tact_llm/provider.rs`, `tact_llm/models.rs` and `tact-ui/driver.rs`.
+
+**Behavior after:** A poisoned lock degrades to "the guarded value may be one update stale", never to an abort. The remaining intentional panics are uninitialized-global invariants (`LLM provider not initialized; call tact_llm::init_provider first`), which are not lock state and are left alone.
+
+**Pointers:** `crates/tact/src/utils/lock.rs`; `crates/tact_llm/src/lock.rs`.
+
+---
+
+## 1. 2026-09-12 — A subagent inherits its provider's compaction routing
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/mod.rs` (`Agent::provider_kind`, `Agent::new`); `crates/tact_llm/src/provider.rs` (`current_provider_kind`) |
+
+**Symptom / motivation:** `Agent::provider_kind` was initialised to a hardcoded `ProviderKind::OpenAi` and only corrected when a caller chained `.with_provider_kind(…)`. `tact-ui` does that for the top-level agent; `tool/subagent.rs` does not. A subagent therefore claimed to be OpenAI regardless of the real provider, and since the local `compact` tool is stripped from Responses tool sets, a DeepSeek subagent on a Responses-protocol endpoint would route compaction to `POST /responses/compact` — an endpoint DeepSeek does not implement.
+
+**Decision:** Made the field `Option<ProviderKind>`: `None` (the default) means "inherit from the live provider", and `Agent::provider_kind()` resolves it lazily, falling back to OpenAI only when no provider has been installed. Added `tact_llm::current_provider_kind()` for this — a non-panicking sibling of `read_provider`, which would have aborted on the pre-`init_provider` paths. It reports a generic OpenAI-compatible endpoint pointed at DeepSeek as `DeepSeek`, matching `is_deepseek`.
+
+**Behavior after:** Routing follows the actually-configured provider for every agent, including subagents. An explicit `.with_provider_kind(…)` still wins. Nothing changes when no provider is installed (tests).
+
+**Pointers:** `crates/tact/src/agent/mod.rs`; `crates/tact_llm/src/provider.rs`.
+
+---
+
+## 1. 2026-09-12 — Retries are decided by HTTP status, not by error prose
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/recovery.rs` (`FailureKind`, `classify_error`, `classify_llm_error`); `crates/tact/src/agent/mod.rs` (`stream_message`, `retry_compaction_call`) |
+
+**Symptom / motivation:** Two compounding defects. (1) The retry decider matched on `error.to_string()` against English substrings (`timeout`, `rate limit`, …), while `LlmError::HttpError { status, .. }` — the only variant carrying a status code — was ignored. A 429 and a 400 were indistinguishable, so a permanently malformed request could be retried with back-off until the budget ran out. (2) `Agent::stream_message` wrapped the typed error with `anyhow::anyhow!("{e}")`, stringifying it *before* the recovery loop ever saw it, and the loop's exit path re-wrapped again with `anyhow::anyhow!(error)`. The type was unrecoverable by the time the decision was made, and the cause chain was flattened for every caller up the stack.
+
+**Decision:** Added `is_transient_http_status` (408/429/5xx are retryable; other 4xx are not), `FailureKind { PromptTooLong, Transient, Permanent }`, and two classifiers: `classify_llm_error(&LlmError)` and `classify_error(&anyhow::Error)`, the latter downcasting to `LlmError` when the typed cause survived. `stream_message` now preserves the error via `anyhow::Error::from`, and the loop propagates it unchanged. A non-transient status is still checked for an over-long prompt, because that is normally reported as a 400 and *is* recoverable — by compacting, not by retrying verbatim. The duplicated retry/back-off/emit block in the two compaction paths became `Agent::retry_compaction_call`, which now classifies instead of substring-matching.
+
+**Behavior after:** 429/408/5xx back off and retry; 400/401/403/404 fail fast without burning quota; a 400 reporting an over-long context triggers compaction. Errors reaching callers keep their type and chain.
+
+**Pointers:** `crates/tact/src/recovery.rs`; `crates/tact/src/agent/mod.rs`.
+
+---
+
+## 1. 2026-09-12 — Worktree names are validated before becoming paths and refs
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/worktree/mod.rs` (`validate_worktree_name`) |
+
+**Symptom / motivation:** A worktree name is used twice: joined onto `<repo>/.worktrees` and interpolated into the `wt/<name>` branch ref. Nothing validated it. The only thing preventing escape was that `git worktree add` happens to reject ref-invalid names — git's rule, not Tact's, and not applied to the path.
+
+**Decision:** Added `validate_worktree_name`, called from `WorktreeManager::create` before the store is touched: ASCII alphanumerics plus `-`, `_`, `.` and `/`; ≤ 100 characters; must start with an alphanumeric; no `..`, no `//`, no `.lock` path component, no trailing `/` or `.`. The "starts with an alphanumeric" rule came from the test suite, not from theory: the first draft allowed `/abs`, and `Path::join` with an absolute path *replaces* the base, so the name would have escaped `.worktrees` entirely.
+
+**Behavior after:** A hazardous name is rejected with a specific message naming the offending character or pattern, before any path or ref is constructed. `subagent-<id>` and `feat/thing`-style names are unaffected.
+
+**Pointers:** `crates/tact/src/worktree/mod.rs`.
+
+---
+
+## 1. 2026-09-12 — SQLite runs in WAL, and a message insert is atomic
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/store/sqlite.rs` (`connect_with_pragmas`); `crates/tact/src/store/session_store/sqlite.rs` (`append_message`) |
+
+**Symptom / motivation:** Every domain store (sessions, tasks, background, team, worktrees) shares one `<workdir>/.tact/tact.db`, opened with the default rollback journal. Readers and writers therefore blocked each other, which the TUI feels directly: it reads session history while the agent appends to it. Separately, `append_message` issued the `messages` insert and the `sessions.updated_at` bump as two independent statements, so a failure between them left a persisted message whose session looked stale.
+
+**Decision:** Configure the pool through `SqliteConnectOptions` rather than a one-shot `PRAGMA`: `journal_mode = WAL`, `synchronous = NORMAL` (corruption-safe in WAL and avoids an fsync per commit; kept at `FULL` under the rollback journal), and `busy_timeout = 5 s`. Falling back rather than failing: switching a database *into* WAL needs an exclusive lock that `busy_timeout` cannot wait on, so a concurrent opener can legitimately fail the switch — that case logs a warning and retries with the default journal instead of refusing to start. `append_message` now runs both statements in one transaction.
+
+**Behavior after:** Readers proceed while a writer holds the lock. WAL is persisted in the database file, so existing databases are converted on the next open. A failed message write leaves no partial state.
+
+**Pointers:** `crates/tact/src/store/sqlite.rs`; `crates/tact/src/store/session_store/sqlite.rs`.
+
+---
+
+## 1. 2026-09-12 — Anthropic token counters saturate instead of truncating
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/anthropic/mod.rs` (`usage_from_json`, `clamp_token_count`) |
+
+**Symptom / motivation:** Eight sites converted wire token counts with `as u32`, which wraps. A provider (or a proxy, or a corrupted body) reporting more than `u32::MAX` prompt tokens would silently become a small plausible number, under-reporting usage in the bottom bar and in the persisted accounting. `total: prompt + completion` could also overflow and panic in a debug build. The Chat Completions path already saturated and the Responses path already validated with `try_from`; Anthropic was the outlier.
+
+**Decision:** Added `clamp_token_count` (saturating) plus `usage_field` / `usage_reasoning_tokens` / `usage_from_json` helpers, replacing all eight conversions and the duplicated inline extraction in both the streaming and non-streaming paths.
+
+**Behavior after:** An out-of-range counter saturates at `u32::MAX`; `total` saturates rather than overflowing. The three adapters now agree on out-of-range behaviour.
+
+**Pointers:** `crates/tact_llm/src/anthropic/mod.rs`.
+
+---
+
+## 1. 2026-09-12 — The ctx percentage leads the bottom bar; the gauge is gone
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`; `crates/tui/src/render/bar.rs`; `docs/token_usage_schema.md`; Ch 23 §6.6 |
+
+**Symptom / motivation:** The same-day row-2 compaction (entry below) had removed the ctx meter's `pct%` and kept the `■`/`·` gauge, leaving `ctx [▍···] 45K/1M`. Answering the question the segment exists for — "how close am I to auto-compact?" — required doing the division mentally, and the gauge only restated that same percentage as glyphs.
+
+**Decision:** Reverse the ctx part of that compaction, keeping the *one value, one rendering* rule but picking the other encoding:
+1. **Dropped the gauge entirely** — `render_usage_bar`, `partial_block_char`, the `■`/`·`/partial-block glyph constants and `USAGE_BAR_WIDTH` were deleted. The top status bar's step progress (`render_progress_bar`, `█`/`░`) is a different widget and is untouched. *(It was removed too on 2026-09-14 — see the newest entry.)*
+2. **Restored the percentage, first** — `format_context_meter` now renders `ctx 4% 45K/1M`. The absolute `used/window` stays, because a ratio cannot replace the two counts it came from; it is also what disambiguates small values (590/200K renders as `0%`).
+3. **Moved the `▣` cache segment to sit directly after `ctx`**, before the turn counters — both are session-wide ratios, so they now read together. Push order became `model → out → think → ctx → cache → turns → timing`; `fit_row_spans` drops from the end, so survival became `ctx > cache > turns > timing` (cache and the turn counters swapped).
+
+**Behavior after:** Row 2 renders `deepseek-v4  out 73.1K  think high  ctx 4% 45K/1M  ▣ 30%  ⟳ 12  ⇅ 3  ⏱ 02:05 avg 01:45` — **86 columns** (was 90). Order and the 100-column budget are pinned by `bottom_bar_orders_cache_before_turn_counters` and `bottom_bar_fits_every_segment_in_100_columns`; `format_context_meter_leads_with_the_percentage` asserts the gauge glyphs never come back.
+
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`format_context_meter`, `context_usage_pct`, row-2 `DropGroup` push order); `crates/tui/src/render/bar.rs`; `docs/token_usage_schema.md`; Ch 23 §6.6.
+
+---
+
+## 1. 2026-09-12 — A drained subagent result no longer spawns an empty wake-up turn
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-ui/src/driver.rs` (`spawn_wakeup_task`); `crates/tact/src/agent/mod.rs` (`Agent::has_pending_subagent_results`); Ch 12 |
+
+**Symptom:** a background subagent's `SubagentFinishedNotification` whose summary had *already* been drained and injected by the in-flight turn still spawned a wake-up turn. The queue was empty, so nothing was injected, and the parent received only the bare prompt `A background subagent finished. Review its result below.` — with no result below it. The user saw an extra turn whose only content was a notification with no payload, and the model had to answer a prompt that promised content it never got.
+
+**Decision:** gate the wake-up on the queue. `Agent::has_pending_subagent_results()` exposes whether `pending_subagent_results` is non-empty, and `spawn_wakeup_task` returns early when it is empty — a wake-up turn exists only to deliver queued results into the parent's context, so an empty queue means a previous turn already delivered the summary. The notification prompt also points at `check_subagent` as the fallback retrieval path instead of promising a result "below". The driver's retention logic is unchanged: a notification arriving mid-turn is still retained until that turn's `JoinHandle` completes, and a result enqueued after the turn's final drain still wakes the parent.
+
+**Behavior after:** a completion whose summary is still queued wakes the parent and is delivered in that turn; a completion whose summary was already drained is a no-op (no extra turn, no wasted LLM request); a poisoned queue lock falls back to the previous always-wake behavior rather than swallowing a completion.
+
+**Pointers:** `crates/tact-ui/src/driver.rs` (`spawn_wakeup_task`, `run_command_loop_with_account`); `crates/tact/src/agent/mod.rs` (`has_pending_subagent_results`, `agent_loop` drain); driver tests `subagent_finished_notification_is_not_lost_when_parent_finishes` and `subagent_notification_with_empty_queue_does_not_wake_parent`; Ch 12.
+
+---
+
+## 1. 2026-09-12 — Bottom-bar row 2 compacted to a 90-column budget
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`; `crates/agent_tui_kit/src/i18n.rs`; `crates/tui/src/render/bar.rs`; `docs/token_usage_schema.md`; Ch 23 §6.6 |
+
+**Symptom / motivation:** Adding the turn counters and turn timing pushed row 2 to ~138 columns, so on ordinary terminals `fit_row_spans` began silently dropping segments — the row was "full". Auditing the content found the same ratio or value rendered two or three times over: `∑ₜₒₖ {total}` and the `ctx` meter's `used` both read `StatusBarState.token_total`, and the ctx meter separately encoded its ratio as a gauge, a `pct%`, *and* `used/window`.
+
+**Decision:** Cut row 2 to **90 columns with no loss of distinct information**, by the rule *one value, one rendering*:
+1. **Deleted the `∑ₜₒₖ {total}` segment** — redundant with the `ctx` meter's `used`. The exact integer is still available in the task-stats block after each turn and in `/stats`, so only its duplicate rendering is lost. `ICON_TOKENS` / `format_token_total` were removed with it.
+2. **Deleted the ctx meter's `pct%`** (same rule) — it is a pure function of the `used/window` rendered immediately beside it — and **narrowed the gauge 10 → 6 cells**, since the gauge's exact value is also given twice over and it only needs to convey an at-a-glance sense. That segment went **24 → 17 columns (−29%)** while still distinguishing near-limit usage (`[■■■▍]` at 85% vs `[▍···]` at 4%). `format_context_meter` was left rendering `ctx [▍···] 45K/1M` — **superseded the same day** (see the newest entry): the gauge was dropped and the percentage restored, giving `ctx 4% 45K/1M`.
+3. **`max_out_token` → `out`** in both languages (ZH `输出`), matching the shorthand level of the neighbouring `ctx` / `think` labels.
+4. **`▣ cache% 30%` → `▣ 30%`** — the glyph plus `%` already identify the number.
+5. **`⟳ 12 turns ⇅ 3 turns` → `⟳ 12 ⇅ 3`** — the word was dropped from both counters; the adjacent glyph pair reads as one "turns" figure.
+6. **`⏱ 02:05 · avg 01:45` → `⏱ 02:05 avg 01:45`** — dropped the separator.
+
+The now-unused i18n fields (`bottom_cache_pct`, `bottom_turns`, `bottom_llm_turns`) were removed rather than left stale. The `render_usage_bar` unit tests were rewritten to derive expected widths from `USAGE_BAR_WIDTH` instead of hard-coding 8 inner cells, so the next width change cannot break them.
+
+**Behavior after:** With every segment populated the full row renders in 90 columns (`deepseek-v4  out 73.1K  think high  ctx [▍···] 45K/1M  ⟳ 12  ⇅ 3  ▣ 30%  ⏱ 02:05 avg 01:45`), so ordinary terminals no longer drop segments. The drop order is `ctx > turns > cache > timing`. A width-budget test (`bottom_bar_fits_every_segment_in_100_columns`) fails if a future segment pushes the row back over ~100 columns — the exact failure mode this change fixed. (Row width, drop order, and the ctx gauge helpers named below were all changed later the same day; see the newest entry.)
+
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`USAGE_BAR_WIDTH`, `format_context_meter`, `format_cache_pct`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`, row-2 group push order; `ICON_TOKENS`/`format_token_total` removed); `crates/agent_tui_kit/src/i18n.rs` (`bottom_out`, `bottom_avg`; three fields removed); `crates/tui/src/render/bar.rs` (`bottom_bar_fits_every_segment_in_100_columns`); `docs/token_usage_schema.md`; Ch 23 §6.6.
+
+---
+
+## 1. 2026-09-12 — TUI bottom bar shows turn counts and turn timing
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/protocol/src/agent.rs` (`AgentUpdate::TurnStats`); `crates/tact/src/agent/mod.rs` (`agent_loop`); `crates/agent_tui_kit/src/state/status_bar_state.rs`; `crates/agent_tui_kit/src/components/status_bar.rs`; `crates/agent_tui_kit/src/render/bar.rs`; `crates/tui/src/handlers/skills.rs`; `crates/tui/src/widgets/state/app/popups.rs`; `docs/token_usage_schema.md`; Ch 23 §6.6 |
+
+**Symptom / motivation:** The bottom bar reported tokens, cache rate and context usage but nothing about *turns*. The only timing surface was the frozen `⏱ mm:ss` on the task-end separator and the post-task stats block — historical log rows, never a live counter. There was no way to see how many turns a session had run, how many agent-loop iterations the current task was taking, or how long turns were taking on average.
+
+**Decision:** Add three counters to bottom-bar row 2, all derived from data already in memory (no new persistence, no schema change):
+1. `AgentUpdate::TurnStats { turns_taken, max_turns }` is emitted once per agent-loop iteration from `agent_loop`, right after `self.turns_taken += 1` — same cadence as `TokenUsage`, so no new event volume. The kit's `StatusBarComponent` claims it; the shell resets `turn_llm` at dispatch.
+2. Session user turns (`⟳`) are counted at the single dispatch choke point, `handlers/skills.rs::dispatch_user_task` (which also serves queued flushes and skill dispatch), and seeded on resume by counting persisted user messages in `load_history`.
+3. Turn timing accumulates in `add_task_end_separator`, the **only** place that actually freezes `task_start_time` (`freeze_last_prompt_cost` runs after it and always sees `None`), so a turn cannot be counted twice. Cancelled turns count — their wall time is real; synthetic separators (no start time) do not.
+4. `TurnStats` is registered as **per-call metadata** in `coordinator_prepass`, alongside `TokenUsage`/`ModelInfo`. It fires between turns while the loading spinner is up, so without this it would run the content gates and make the spinner vanish the moment the loop starts (regression test: `turn_stats_is_metadata_and_keeps_the_loading_placeholder`).
+5. `max_turns` is plumbed into `StatusBarState.turn_llm_cap` but deliberately **not rendered**: only `spawn_subagent` ever sets a cap and there is no CLI flag or TUI wiring for it, so a main-agent bar could never show `/cap`. Bare `⇅ {n}` renders instead; the field is kept so the segment is ready if a main-agent cap is ever added.
+
+**Behavior after:** Row 2 shows `⟳ 12 turns ⇅ 3 turns  ∑ₜₒₖ …  ▣ cache% 5%  ⏱ 02:05 · avg 01:45` (`⟳ 12 轮 ⇅ 3 轮次 … ⏱ 02:05 · 均 01:45`). The `⇅` segment is hidden until the task's first LLM call; `avg` is hidden until a turn completes; the whole timing group is hidden while no turn has finished. Live in-flight elapsed stays on the top status bar — the bottom bar shows only frozen values. *(Superseded 2026-09-14: the live elapsed is now a bottom-bar row-1 segment next to the uptime, and the status bar renders no clock; see the newest entry.)* On narrow terminals the new segments are droppable with survival order `ctx > turns > ∑ₜₒₖ > cache > timing`, preserving the pre-existing `ctx > ∑ > cache` priority. *(Superseded later the same day — this entry records the state when turn stats first shipped; see the row-2 compaction entry above for the current 90-column row.)*
+
+**Pointers:** `crates/protocol/src/agent.rs` (`AgentUpdate::TurnStats`); `crates/tact/src/agent/mod.rs` (`agent_loop` emit); `crates/agent_tui_kit/src/state/status_bar_state.rs` (`turn_user`, `turn_llm`, `turn_llm_cap`, `turn_last_secs`, `turn_done`, `turn_total_secs`); `crates/agent_tui_kit/src/render/bar.rs` (`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`); `crates/tui/src/widgets/state/app/popups.rs` (`add_task_end_separator`); `crates/tui/src/widgets/state/app/messages.rs` (`load_history` seeding); spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`; Ch 23 §6.6; `docs/token_usage_schema.md`.
+
+---
+
+## 1. 2026-09-11 — `bash` accepts a per-call `timeout`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/tool/bash.rs` (`BashInput::timeout`, `resolve_timeout_secs`); Ch 7 §8 |
+
+**Symptom / motivation:** The bash wall-clock limit was config-only (`[tools].bash_timeout_secs`, default 1,800 s). One long build could not extend it, an agent that wanted a *tighter* bound had no way to ask, and because unknown JSON fields deserialize away, a `timeout` the model invented was silently ignored instead of applied.
+
+**Decision:** Add an optional `timeout` field (seconds; serde alias `timeout_secs`) to `BashInput`, resolved by `resolve_timeout_secs(input_timeout, ctx.bash_timeout_secs)`. The per-call value wins: `Some(0)` disables the limit for that call, `None` inherits the configured value (including a configured `0` disable).
+
+**Behavior after:** `{"command": "cargo build", "timeout": 600}` caps that invocation at 10 minutes regardless of config; `"timeout": 0` runs without a wall-clock limit (user cancellation still applies). The failure text reports the effective limit, `Timeout (<n>s)`.
+
+**Pointers:** `crates/tact/src/tool/bash.rs` (`BashInput`, `resolve_timeout_secs`, `bash`); tests `tool::bash::tests::{resolve_timeout_prefers_input_then_config,bash_input_timeout_overrides_configured,bash_input_timeout_zero_disables_configured_timeout}`; Ch 7 §8.
+
+---
+
+
+## 1. 2026-09-11 — `/mcp list` gives the TUI a live MCP server view without reconnecting
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/protocol/src/agent.rs` (`UserCommand::McpList`); `crates/tact/src/mcp/mod.rs` (`McpLiveStatus`, `McpServerView`, `describe_servers`); `crates/tact-ui/src/mcp_cli.rs` (`render_live_listing`); `crates/tact-ui/src/driver.rs`; `crates/tui/src/handlers/mcp.rs`; Ch 8 §Step 1c |
+
+**Symptom / motivation:** MCP servers could only be listed from the shell — `tact-ui mcp list` — and that command dials every configured server. Inside a running TUI there was no way to see which servers the agent actually had, so a server that failed at startup, or a remote one waiting on OAuth, had no on-demand answer short of restarting.
+
+**Decision:** Add `/mcp list` as a second subcommand of the existing `/mcp` slash entry, answered by the driver.
+1. `UserCommand::McpList` carries the request. `tui::handlers::mcp` sends it **only when idle**; while `Planning`/`Executing` it flashes the busy hint, because the driver serializes ordinary commands behind an in-flight turn — queueing would show the table only after the turn ended.
+2. `tact::mcp::describe_servers(connected)` classifies every configured server against the **live** connection set without dialling: `Connected { tools }` when the router holds it, `NeedsAuthorization` for a remote OAuth server with no usable credential, otherwise `NotConnected`. The connected check runs first, so a working server is never mislabelled by the credential heuristic.
+3. The driver renders the views via `render_live_listing` into `AgentUpdate::MdInfo`, so the log shows a Markdown table (server / transport / source / status) through the same `MarkdownCell` as `/skills`. Cell values escape `|` and newlines, since a source path is user-controlled.
+
+**Behavior after:** `/mcp list` prints a table of every configured server with its live status and tool count. It **never** opens a connection, so it cannot duplicate a remote dial or contend with a live stdio child — unlike `tact-ui mcp list`, which still connects and reports fresh status. An empty configuration explains where to declare servers.
+
+**Pointers:** `crates/protocol/src/agent.rs` (`UserCommand::McpList`); `crates/tact/src/mcp/mod.rs` (`transport_kind`, `McpLiveStatus`, `McpServerView`, `describe_servers`, `describe_resolved`); `crates/tact-ui/src/mcp_cli.rs` (`render_live_listing`); `crates/tact-ui/src/driver.rs` (`UserCommand::McpList` arm); `crates/tui/src/handlers/mcp.rs`; `crates/agent_tui_kit/src/bridge.rs` (`TryFrom<UserCommand>`). Tests: `mcp::tests::{describe_resolved_classifies_against_the_live_connection_set,describe_resolved_lists_a_connected_oauth_server_as_connected}`; `mcp_cli::tests::{live_listing_has_a_row_per_server_with_its_status,live_listing_explains_how_to_configure_when_empty,live_listing_escapes_pipes_so_a_source_path_cannot_break_the_table}`; `driver::tests::mcp_list_emits_the_live_listing_without_reconnecting`; `handlers::mcp::tests::{mcp_list_queues_a_listing_request_when_idle,mcp_list_flashes_busy_instead_of_queueing_while_a_task_runs}`.
+
+---
+
+
+## 1. 2026-09-11 — The Mermaid popup shows the rendered diagram, and says when it cannot render
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/popups/mermaid_popup.rs`; `crates/agent_tui_kit/src/state/ui_types.rs` (`MermaidPopupView`, `MermaidPopup::new`); `crates/tui/src/handlers/overlay.rs`; Ch 23 §6.7 |
+
+**Symptom / motivation:** The log panel renders Mermaid diagrams, but only at the log column's width, and the double-click popup existed solely to **copy the source** — it never showed the diagram. Dense flowcharts (the common case for agent-authored diagrams) were cramped and hard to read in the main area, and the popup offered no better view. Worse, a fence using Mermaid `style` / `classDef` / `linkStyle` silently failed: the upstream `ratatui-markdown` grammar only accepts `chain` / `nodedef` / `comment` statements, so the whole block fell back to raw code with no indication of why.
+
+**Decision:** Make the popup the wide view of the diagram rather than a source viewer.
+1. `MermaidPopupView { Diagram, Source }` is added to the popup state, defaulting to `Diagram`; the existing `scroll` field is reused.
+2. The popup re-renders the fence body through `render_mermaid_block` at the popup's own width (`centered_popup_area`, ~80% of the frame) instead of showing raw lines — that width, not the log panel's, is the point of the popup.
+3. `Tab` toggles between the two views (theme-agnostic, not currently bound inside overlay popups) and re-anchors `scroll` to 0, since the views have different heights. `y` still copies the source in both views.
+4. When the diagram view cannot render, the popup downgrades to the source view **and** prints an explicit header note, so an unsupported-syntax fence is diagnosable instead of looking like an empty diagram.
+
+**Behavior after:** Double-clicking a diagram opens it rendered at ~80% of the frame width; `Tab` shows the source; `y` copies it; `Esc` closes. Unrenderable Mermaid shows its source plus `⚠ this diagram does not render (unsupported syntax) — showing source`. Main-area rendering is unchanged.
+
+**Pointers:** `crates/agent_tui_kit/src/render/popups/mermaid_popup.rs`; `crates/agent_tui_kit/src/state/ui_types.rs` (`MermaidPopupView`, `MermaidPopup::new`); `crates/tui/src/widgets/state/app/popups.rs` (`open_mermaid_popup`, `toggle_mermaid_popup_view`); `crates/tui/src/handlers/overlay.rs` (`Tab`). Tests: `render_gap_tests::mermaid_popup_opens_on_rendered_diagram_not_source`, `mermaid_popup_tab_switches_to_source_and_back`, `mermaid_popup_falls_back_to_source_and_labels_unsupported_syntax`, `mermaid_popup_renders_diagram_at_wider_width_than_log`, `mermaid_popup_paints_theme_bg_across_its_area`; `handlers::overlay::mermaid_view_tests::*`.
+
+---
+
+
+## 1. 2026-09-11 — Compaction no longer emits orphaned `role: tool` messages
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/compact/mod.rs` (`build_compacted_history`, `without_tool_results`); `crates/tact_llm/src/convert.rs` (`drop_orphaned_tool_messages`); Ch 5 |
+
+**Symptom / motivation:** After an auto-compact, the next OpenAI-compatible (chat-completions) request failed with a provider 400: `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`. Harness-style user turns mix a tool result with an image (`[ToolResult, Image]` — e.g. a screenshot tool that reads a PNG). `is_real_user_message` classifies those as real user turns because of the image, so the Codex-style rebuild retained them **verbatim** while dropping the assistant `tool_use` turn that produced the result. The retained block then converted to a wire `role: tool` message with no parent `tool_calls` list, and OpenAI-compatible providers reject the whole request. Replaying the triggering transcript through the old rebuild produced exactly 6 such orphans; the request failed until the session was restarted.
+
+**Decision:** Two layers, mirroring the existing forward-direction guard (`sanitize_assistant_messages`, which strips tool calls whose results are missing):
+1. **Rebuild strips tool results** — `build_compacted_history` runs each retained user message through `without_tool_results`, which removes `ToolResult` blocks and keeps the rest (text/image). A message that held *only* tool results is skipped entirely rather than becoming an empty turn.
+2. **Wire conversion is the last line of defense** — `drop_orphaned_tool_messages` deletes any `role: tool` message whose parent assistant `tool_calls` is absent, walking back over a run of consecutive tool messages first so parallel tool calls (one assistant turn → N results) are not falsely dropped.
+
+**Behavior after:** A compacted context never carries a tool result without its producing assistant turn. Retained harness turns keep their images and text; pure tool-result turns vanish with their parent. If some future path produces an orphan anyway, the request is still sent (with a `tracing::warn` naming the dropped `tool_call_id`) instead of failing with a 400.
+
+**Pointers:** `crates/tact/src/compact/mod.rs` (`without_tool_results`, `build_compacted_history`); `crates/tact_llm/src/convert.rs` (`drop_orphaned_tool_messages`). Tests: `compact::tests::build_compacted_history_drops_tool_results_from_retained_harness_turns`, `compact::tests::build_compacted_history_skips_pure_tool_result_turns`, `convert::tests::orphan_tool_messages_without_preceding_tool_calls_are_dropped`, `convert::tests::tool_message_with_preceding_tool_calls_is_kept`.
+
+---
+
+
+## 1. 2026-09-11 — `deepseek-v4-*` experiment variants get the 1M window, not the 200K default
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`); `config.example.toml`; Ch 21 §5, Ch 5 settings tables |
+
+**Symptom / motivation:** The model→context-window mapping matched DeepSeek V4 by exact id (`deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`). Any suffixed variant — `deepseek-v4-flash-version-exp`, `deepseek-v4-flash-vision-exp` — missed every arm and fell through to the `200_000` default. The bottom-bar `ctx` meter then showed `…/200K` for a real 1M model, and the derived auto-compaction threshold (80% of the window) fired around ~160k instead of ~800k, compacting sessions that had plenty of room left.
+
+**Decision:** Match the DeepSeek V4 family by prefix (`model.starts_with("deepseek-v4-")`) instead of a fixed id list, so experiment/vision/respin suffixes inherit the family window. The unversioned gateway alias `deepseek-flash` and `deepseek-reasoner` keep explicit 1M arms. The mapping keeps its highest-priority position over CLI/TOML.
+
+**Behavior after:** Every `deepseek-v4-*` id resolves to a `1_000_000`-token window, including `deepseek-v4-flash-version-exp` and `deepseek-v4-flash-vision-exp`; `deepseek-flash` (OpenAI-compatible gateway alias) and `deepseek-reasoner` also resolve to 1M. The `ctx` meter and 80% auto-compact threshold follow. Manual `model_context_window` still only applies to models without a built-in mapping.
+
+**Pointers:** `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`). Test: `config::resolve::tests::resolve_model_context_window_maps_deepseek_v4_variants`.
+
+---
+
+
+## 1. 2026-09-11 — `/mcp auth` survives stray loopback traffic, and the token exchange is bounded
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/remote.rs` (`await_oauth_callback`, `handle_callback_request`, `read_request_head`, `percent_decode`, `hex_nibble`, `redact_query_value`, `OAUTH_TOKEN_EXCHANGE_TIMEOUT`, `OAUTH_CALLBACK_PATH`, `MAX_REQUEST_BYTES`); Ch 8 §Step 1c |
+
+**Symptom / motivation:** The loopback callback listener accepted exactly one connection and treated any request that did not carry `code` + `state` as fatal. A browser prefetch, a `favicon.ico` probe, a manual visit to `http://127.0.0.1:<port>/`, or a local port scanner was therefore enough to win the single `accept()`; the flow bailed with "authorization callback did not carry a code and state", and the real redirect — arriving moments later — was never read, leaving the user to blame the provider for a flow that was actually broken locally. Three further defects sat on the same path: the request head was read with a single `read()`, so a head split across TCP segments produced a body-less parse and the same bogus error; `percent_decode` sliced the raw `&str` at byte offsets, so a malformed escape followed by a multi-byte UTF-8 character (`?code=%aé`) panicked with "byte index N is not a char boundary" inside the future the TUI polls, aborting the driver task; and `session.handle_callback` — the token POST — was awaited with no timeout at all, so a provider that accepted the connection and never answered hung `/mcp auth` forever. Separately, the authorization URL was logged at `info` with its query intact, durably recording the one-time CSRF `state`.
+
+**Decision:** Make the callback listener tolerant and bounded, and stop logging the secret half of the URL. `await_oauth_callback` now loops over `accept()`: only a request on `OAUTH_CALLBACK_PATH` carrying `code` + `state` completes the flow, a request carrying `error` fails it (including `error_description`), and anything else gets a short response and is ignored while the overall 300 s `OAUTH_CALLBACK_TIMEOUT` keeps running. The head is reassembled with `read_request_head` until the terminating blank line, EOF, or the 8 KiB `MAX_REQUEST_BYTES` cap. `percent_decode` works on bytes via `hex_nibble`, so a malformed escape degrades to the literal character instead of panicking. The exchange is wrapped in `tokio::time::timeout(OAUTH_TOKEN_EXCHANGE_TIMEOUT, …)` — a new, local 60 s bound — so a stalled token endpoint surfaces as an error the user can act on. `redact_query_value(&url, "state")` replaces only the `state` value with `[redacted]` and leaves the rest of the URL (endpoint, `client_id`) readable for troubleshooting.
+
+**Behavior after:** A stray or malformed localhost request no longer aborts `/mcp auth`; the listener keeps waiting for the real redirect inside the same 300 s window. A denial reports the provider's `error_description`, not just `error=access_denied`. A malformed percent escape cannot panic the driver. A hung token exchange fails after 60 s instead of hanging. `RUST_LOG=tact=info` shows the authorization URL with `state=[redacted]`.
+
+**Pointers:** `crates/tact/src/mcp/remote.rs`. Tests: `mcp::remote::tests::{a_stray_connection_before_the_callback_is_ignored,a_fragmented_request_head_is_reassembled,callback_listener_surfaces_denied_authorization,a_denial_reports_the_error_description,a_malformed_escape_on_the_callback_path_is_not_fatal,malformed_percent_escapes_degrade_instead_of_panicking,the_csrf_state_is_redacted_before_logging,callback_listener_times_out_without_a_request}`.
+
+---
+
+## 1. 2026-09-11 — Editing `mcp.json` keeps the file's permissions, uses a unique temp file, and tolerates a BOM
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/edit.rs` (`read_document`, `write_document`); `crates/tact/src/mcp/remote.rs` (`write_private`, `create_dir_private`); `crates/tact-ui/src/mcp_cli.rs` (`add`, `remove`) |
+
+**Symptom / motivation:** `mcp.json` legitimately stores secrets (`headers` — commonly `Authorization: Bearer …` — and `env`), so a user may harden it with `chmod 600`. The rewrite wrote a temporary sibling with `fs::write`, which creates it at the umask default (usually 0644), and `rename`d that inode over the original — silently widening a 0600 file to 0644 and exposing those header/env values to other local users. The temp name was a fixed `mcp.json.tmp`, so two concurrent `mcp add` invocations in the same scope interleaved and truncated each other's bytes and one addition was lost. A `mcp.json` saved with a UTF-8 BOM (common on Windows) failed to parse, blocking every edit with "fix or remove it". The OAuth credential store had the same class of issue: the token file was written first and `chmod 0600`'d afterwards, leaving a window at 0644, and its parent directory was created at the umask default, exposing the set of authorized server names.
+
+**Decision:** Write through a private handle or restore the mode before the file becomes visible, and make the temp name collision-proof. `write_document` creates a unique sibling (`mcp.json.<pid>.<nanos>.tmp`), copies the original file's `Permissions` onto it before `rename` via `set_permissions`, and removes the temp when the rename fails. `read_document` strips a leading `\u{feff}` before parsing. In `remote.rs`, `create_dir_private` creates the credential directory with `DirBuilder::mode(0o700)` and `write_private` opens the token with `OpenOptions::mode(0o600)`, so it is never reachable at a looser mode.
+
+**Behavior after:** A `chmod 600 ~/.tact/mcp.json` stays 0600 across `tact-ui mcp add …`/`remove`. Concurrent edits in one scope no longer clobber each other's temp file, and no `.tmp` sibling is left behind on failure. A BOM'd config is editable instead of being reported unparseable. `~/.tact/mcp/oauth` is 0700 and its token files are created 0600.
+
+**Pointers:** `crates/tact/src/mcp/edit.rs` (`read_document`, `write_document`), `crates/tact/src/mcp/remote.rs` (`create_dir_private`, `write_private`). Tests: `mcp::edit::tests::{rewriting_preserves_the_file_mode,the_written_file_has_no_leftover_temp_sibling,a_leading_bom_does_not_block_editing}`; `mcp::remote::tests::file_credential_store_round_trips_and_clears`.
+
+---
+
+## 1. 2026-09-11 — `mcp add`/`mcp list` respect scope precedence, and repeated credential flags are rejected
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/mod.rs` (`resolve_servers`); `crates/tact-ui/src/mcp_cli.rs` (`add`, `parse_pairs`, `scope_hint`); Ch 8 §`tact-ui mcp` |
+
+**Symptom / motivation:** Three scope-and-input bugs. (a) `tact-ui mcp add foo --user` when the project file already declared `foo` printed "Added MCP server 'foo' in ~/.tact/mcp.json" — but the loader resolves project over user, so the effective server was unchanged and the user got a success message for a no-op. (b) A server name with no usable `command`/`url` in one scope and a valid declaration in another was both pushed to `skipped_remote` and resolved into `order`, so `mcp list` listed it twice and counted it twice ("2 MCP server(s) configured" for one server). (c) `--header A:1 --header A:2` (and likewise `--env`) silently kept only the last value — exactly the quiet surprise a credential flag should not have.
+
+**Decision:** Report the shadowing instead of pretending success, de-duplicate the skip list against the servers that actually resolved, and reject a repeated flag name. `add` compares the written path against `mcp::resolved_server_for(name)` and, when another source wins, prints a warning naming that source and stating the change will not take effect until it is removed. `resolve_servers` calls `skipped_remote.retain(|name| !index_of.contains_key(name))` before sorting/deduplicating, so a name is either skipped or configured, never both. `parse_pairs` errors when a name is inserted twice, without echoing either value.
+
+**Behavior after:** `mcp add` never claims success for a declaration the loader will not reach; it names the winning file. `mcp list` lists and counts each server once. Duplicate `--header`/`--env` names fail with `--header NAME was given more than once` rather than dropping a value.
+
+**Pointers:** `crates/tact/src/mcp/mod.rs` (`resolve_servers`), `crates/tact-ui/src/mcp_cli.rs` (`add`, `parse_pairs`). Tests: `mcp::tests::a_name_configured_in_another_scope_is_not_also_reported_as_skipped`; `mcp_cli::tests::{a_repeated_pair_name_is_rejected,malformed_pairs_fail_without_echoing_the_value,pair_parsing_trims_the_name_and_value}`.
+
+---
+
+## 1. 2026-09-11 — `/mcp auth` now shows the OAuth URL while it waits for the browser
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-ui/src/driver.rs` (`stream_auth_progress`, the `UserCommand::McpAuth` arm); `crates/tact/src/mcp/remote.rs` (`authorize_remote_server`, `OAUTH_CALLBACK_TIMEOUT`); Ch 8 §Step 1c |
+
+**Symptom / motivation:** `/mcp auth figma` printed only `Starting MCP authorization for figma (watch for the URL below)...` and then nothing — the URL the message promises never appeared, so there was nothing to click and the command looked hung. The flow was not slow: `authorize_remote_server` reports the URL through `notify` *before* it blocks on the loopback callback, but the driver collected those lines in a `Vec` and flushed them only after the future resolved. That resolution happens at best after the user has already authorized (too late to be useful) and at worst after the 300 s `OAUTH_CALLBACK_TIMEOUT`, so the one line that matters was structurally unreachable — the CLI path (`tact-ui mcp login`) was unaffected only because it prints inside its own `notify`.
+
+**Decision:** Stream progress lines to the UI as they arrive instead of buffering them. `authorize_server` requires a `Send` notify closure, which rules out capturing `&Agent` inside it, so an unbounded channel decouples the two: the closure sends each line, and `stream_auth_progress` selects between the authorization future and the line receiver, emitting each line into `AgentUpdate::Info` the moment it arrives. Lines still queued when the flow resolves are drained after the `select!`, so a URL produced in the same poll that completes the flow cannot be lost to the race.
+
+**Behavior after:** The authorization URL is emitted as an `Info` update as soon as `authorize_server` produces it — while the flow is still blocked on the redirect — so the user has something to click without waiting for the command to finish. Authorization semantics are unchanged, including the 300 s window during which the callback listener stays open and the command keeps the driver's user-command loop busy. Because the URL travels as a normal `Info` update, it appears in the transcript rather than as a one-off overlay.
+
+**Pointers:** `crates/tact-ui/src/driver.rs` (`stream_auth_progress`, `UserCommand::McpAuth`). Tests: `crates/tact-ui/src/driver.rs` unit tests `driver::tests::{auth_progress_reaches_the_user_before_the_flow_finishes,auth_progress_drains_lines_sent_at_completion}`; end-to-end regression `crates/tact-ui/tests/mcp_auth_url_progress.rs`, which drives `handle_user_command` against a `wiremock` OAuth provider and fails against the buffering implementation. Related: Ch 8 §Step 1c (the documented `/mcp auth` behavior this change restores).
+
+---
+
+
+## 1. 2026-09-11 — `mcp.oauth_client_name`: OAuth registration identity, default `Codex`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/config/{types,resolve}.rs` (`McpTomlConfig`, `McpSettings`, `resolve_mcp`), `crates/tact/src/mcp/remote.rs` (`OauthRequestParameters`, `oauth_parameters`, `registration_message`, `authorize_remote_server`), `config.example.toml`; Ch 8 §Step 1c + FAQ (EN+ZH) |
+
+**Symptom / motivation:** With the cause identified (Figma gates dynamic client registration on an exact `client_name`, admitting `"Codex"` and refusing `"Tact"`), `tact-ui mcp login figma` was still unusable: the name was a hard-coded constant with no way to change it, so a user who knew the answer had no way to act on it. Figma's remote server — the recommended one, with the fullest feature set — was unreachable from Tact.
+
+**Decision:** Make the registration name configuration — `[mcp] oauth_client_name` in `config.toml`, defaulting to `"Codex"`, with a per-server `auth.clientName` override in `mcp.json` for the common case where one provider needs a different answer than the rest. The default is chosen so OAuth works out of the box against providers that admit only known clients; `McpSettings::TACT_OAUTH_CLIENT_NAME` documents the honest alternative (`"Tact"`), and both `config.example.toml` and the book state the trade-off plainly: the provider, and the consent screen shown to the user, sees `"Codex"` rather than `"Tact"`. Tact does not hide which name it used — it is logged with the other OAuth progress lines at `info` (`client_name=…`) and printed in any registration failure, alongside both override points. `oauth_parameters` returned a 3-tuple that grew to 4; it now returns a named `OauthRequestParameters` with `effective_client_name()`, which resolves per-server override → configured default → built-in default and treats a blank override as absent (every provider rejects an empty `client_name`). `McpSettings` has a hand-written `Default` rather than a derived one, since an empty name would be the wrong fallback. `resolve_mcp` trims the configured value and falls back on whitespace-only input.
+
+**Behavior after:** `tact-ui mcp login figma` reaches the authorization URL with no configuration (verified against the live Figma endpoint). Any provider that admits a known client name can be reached by setting it. `mcp.oauth_client_name = "Tact"` restores honest identification, and allowlisting providers then refuse with the actionable message. A per-server `clientName` wins over the global default (verified: global `"Tact"` + per-server `"Codex"` succeeds). The name used is visible in `RUST_LOG=tact=debug`/`info` logs.
+
+**Pointers:** `crates/tact/src/config/types.rs` (`McpTomlConfig`, `McpSettings::{DEFAULT_OAUTH_CLIENT_NAME,TACT_OAUTH_CLIENT_NAME,Default}`), `crates/tact/src/config/resolve.rs` (`resolve_mcp`), `crates/tact/src/mcp/remote.rs` (`OauthRequestParameters::effective_client_name`, `oauth_parameters`, `registration_message`, `authorize_remote_server`); `crates/tact-ui/src/test_support.rs`, `crates/tui/src/handlers/select.rs`, `crates/tact/src/{agent/mod.rs,tool/read_image.rs}`, `crates/tact-ui/tests/recovery_compaction.rs` (new required `mcp` field in test config literals). Tests: `config::resolve::tests::resolve_mcp_oauth_client_name_defaults_to_codex_and_is_overridable`, `mcp::remote::tests::{oauth_parameters_default_when_auth_is_not_declared,the_registration_name_falls_back_to_the_configured_default,refused_registration_explains_the_options_not_just_the_status}`. Docs: Ch 8 §Step 1c + FAQ table + a `[mcp]` block in `config.example.toml`; `README.md`.
+
+---
+
+## 1. 2026-09-11 — Figma's OAuth block is a client-name allowlist, not a bug
+
+| Field | Value |
+|-------|-------|
+| **Type** | docs + bugfix (error message) |
+| **Related** | `crates/tact/src/mcp/remote.rs` (`OAUTH_CLIENT_NAME`, `registration_message`); Ch 8 §Step 1c + FAQ (EN+ZH) |
+
+**Symptom / motivation:** `codex mcp add figma --url https://mcp.figma.com/mcp` authenticates successfully, while `tact-ui mcp login figma` fails with `HTTP 403 Forbidden` at dynamic client registration. That contrast was unexplainable from the previous entry's wording ("providers only admit clients they already know about"), which did not say what the provider actually keys on — and Codex demonstrably gets through.
+
+**Investigation:** Codex ships a `figma@codex-marketplace-global` plugin whose `.mcp.json` is an ordinary remote entry (no `client_id`), and each `codex mcp add` run produces a *different* `client_id` — so Codex registers dynamically like Tact does. The difference is the request body: `AuthorizationSession::new(..., Some("Tact"), None)` sends `client_name: "Tact"`, whereas Codex sends `"Codex"`. Posting otherwise byte-identical registration bodies to `https://api.figma.com/v1/oauth/mcp/register` gives a clean, reproducible split: `Codex` → `200` (three consecutive runs, fresh `client_id` + `client_secret`, `token_endpoint_auth_method: "none"`), `Claude Code` → `200`, while `Tact`, `Cursor`, `Visual Studio Code` and lowercase `codex` → `403`. Figma therefore allowlists dynamic registration by an **exact client-name string**, matching its documented MCP catalog. Discovery and everything else in the flow are fine.
+
+**Decision:** Tact keeps registering under its own name and reports the refusal honestly. Sending `"Codex"` would make the registration succeed, but it misrepresents the client to the provider and depends on another product's entitlement, so it is not done — not even silently behind a config flag. Instead: the constant `OAUTH_CLIENT_NAME` names the client once, the error message now states that registration is commonly gated on the client name and that Tact registers as `"Tact"`, and it offers three routes instead of two (a self-registered `auth.clientId`, a static token in `headers`, or the provider's own local server — for Figma, `http://127.0.0.1:3845/mcp`, which needs no OAuth). The measured table is recorded in the Ch 8 FAQ so this is not re-investigated later.
+
+**Behavior after:** Unchanged for every provider that accepts Tact's registration; the next `mcp login` after this fails with an explanation that names the client-name gate, so the user can act (self-register, use a token, or use the local server) instead of retrying. No code path attempts impersonation. Remaining known gap, unchanged and now documented next to the cause: a confidential client's `client_secret` still cannot be supplied, since rmcp's `StoredCredentials` persists only `client_id`.
+
+**Pointers:** `crates/tact/src/mcp/remote.rs` (`OAUTH_CLIENT_NAME`, `registration_message`, `authorize_remote_server`). Tests: `mcp::remote::tests::{refused_registration_explains_the_options_not_just_the_status,a_missing_registration_endpoint_does_not_blame_the_client_name}`. Docs: Ch 8 §Step 1c bullet + FAQ table (EN+ZH). Method: compared `codex mcp` against the live Figma endpoints and identified the `client_name` split by controlled registration requests.
+
+---
+
+## 1. 2026-09-11 — Loopback MCP servers are no longer sent through the environment proxy
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/remote.rs` (`http_client_for`, `is_loopback_url`, `serve_remote`), `crates/tact/Cargo.toml` (`reqwest13`); Ch 8 §Step 1c + gaps (EN+ZH) |
+
+**Symptom / motivation:** With `http_proxy` / `all_proxy` exported, Tact routed **loopback** MCP requests through the proxy. reqwest honours those variables for every host unless told otherwise, so `http://127.0.0.1:3845/mcp` (Figma's desktop server) never reached the local server: the proxy answered instead, and because a proxy error page carries no `Content-Type`, the failure surfaced as the deeply misleading `Unexpected content type: None` rather than "connection refused". Confirmed by contrasting the same server with and without the proxy exported (`Unexpected content type: None` vs `error sending request`), and by running a local listener that then reported `Some("text/plain")` — its own content type — proving the request had finally arrived locally. This matters because the documented workaround for providers that refuse OAuth registration (Figma) is a loopback URL, and the development setup for this repository exports exactly those variables.
+
+**Decision:** Build the transport's HTTP client explicitly and disable proxies when the endpoint is loopback. `reqwest13::Client::builder().no_proxy().build()` is passed through `StreamableHttpClientTransport::with_client`, which produces the same `StreamableHttpClientTransport<reqwest::Client>` type as the previous `from_config`, so nothing else changes. Non-loopback endpoints keep `Client::default()` and therefore the environment proxy, because a proxy is precisely what makes a remote MCP server reachable in a restricted network. Loopback detection is deliberately string-based (`127.0.0.0/8`, `localhost`, `::1`, with ports, userinfo, paths and queries handled): the URL comes from user config, and pulling in a parser or DNS just to recognise `localhost` would add failure modes where a simple check suffices. `localhost.evil.com` and `127.0.0.1.evil.com` are correctly *not* loopback. Failing to build the proxy-free client falls back to the default with a warning, so the connection attempt survives and the log says why it may now fail. One limitation is documented rather than hidden: the OAuth manager builds its own client, so discovery/registration against a loopback server would still use the environment proxy — irrelevant for the Figma desktop server, which needs no OAuth.
+
+**Behavior after:** A local MCP server works with a proxy exported, and a genuinely absent one reports a connection failure instead of a proxy status. Remote servers are unaffected and still use the proxy. `crates/tact` now depends on `reqwest13` (the same version rmcp 0.17 uses; the 0.12 crate it already used would not satisfy `StreamableHttpClient for reqwest::Client`).
+
+**Pointers:** `crates/tact/src/mcp/remote.rs` (`http_client_for`, `is_loopback_url`, `serve_remote`). Tests: `mcp::remote::tests::{loopback_urls_are_recognized_so_they_can_bypass_a_proxy,remote_urls_keep_using_the_environment_proxy}`. Docs: Ch 8 §Step 1c bullet, gaps table (EN+ZH), `README.md`. Live: `cargo test -p tact --test live_remote_mcp -- --ignored` still passes with the proxy exported.
+
+---
+
+## 1. 2026-09-11 — A refused OAuth client registration now says what to do
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/mcp/remote.rs` (`registration_error`, `registration_message`, `registration_reason`, `authorize_remote_server`); Ch 8 §Step 1c + FAQ (EN+ZH) |
+
+**Symptom / motivation:** Authorizing a provider that refuses dynamic client registration produced a message that named no cause and no remedy:
+
+```
+Error: MCP authorization failed for figma: OAuth client registration failed for figma:
+Registration failed: Dynamic registration failed: Registration failed: HTTP 403 Forbidden: Forbidden
+```
+
+The provider here is Figma: its remote server (`https://mcp.figma.com/mcp`) only admits clients listed in its MCP catalog (VS Code, Cursor, Claude Code), so `https://api.figma.com/v1/oauth/mcp/register` answers `403` to any other client. Discovery succeeds — the authorization server is `https://api.figma.com`, whose metadata advertises `client_secret_basic`/`client_secret_post` and *not* the public-client `none` — so the flow fails at its last step with a status that looks like a transient network problem. Verified against the live endpoint with and without a proxy, and with an `Authorization: Bearer`, a form-encoded body, and an empty body: `403` every time, i.e. a server-side policy, not a request-shape bug. `mcp list` correctly showed the server as `needs authorization`, so the dead end was only in the error text.
+
+**Decision:** Classify `AuthError::RegistrationFailed` at the one place the flow still holds the metadata, and replace the raw chain with an explanation plus the two real escape hatches. The guidance distinguishes "advertised a registration endpoint and refused us" from "never advertised one" (rmcp reports `Dynamic client registration not supported` in the latter case), and prints a concrete redirect URI — the pinned `http://127.0.0.1:<callbackPort>/callback` when `callbackPort` is set, since that is exactly what a provider asks for when a client is registered by hand. rmcp wraps its own message twice, so `registration_reason` strips the repeated `Registration failed:` / `Dynamic registration failed:` prefixes to leave the informative tail; if rmcp changes its wording the prefix stops matching and the full text is shown, so this degrades rather than misreports. The failure is logged with the server name, provider URL and whether a registration endpoint was advertised (never tokens), matching the troubleshooting convention for this subsystem. This intentionally does **not** claim to fix Figma: no client-side change can, and the docs now say so and point at the desktop server (`http://127.0.0.1:3845/mcp`, no OAuth) instead.
+
+**Behavior after:** `tact-ui mcp login figma` (and `/mcp auth figma`, which shares the code path) prints `OAuth client registration failed for figma: HTTP 403 Forbidden: Forbidden` followed by the reason, a warning that retrying will not help, and the options: register your own OAuth client and set `auth.clientId` with a pinned `callbackPort`, or supply a provider-issued static token via `headers`. DCR-capable providers are unaffected — the new branch is only reached on `RegistrationFailed`. A confidential client's *secret* still cannot be supplied (rmcp's `StoredCredentials` carries only `client_id`, so refresh would lose it), which is now documented as a known gap rather than a silent limitation.
+
+**Pointers:** `crates/tact/src/mcp/remote.rs` (`registration_error`, `registration_message`, `registration_reason`, `has_registration_endpoint` capture in `authorize_remote_server`, OAuth metadata `debug` log). Tests: `mcp::remote::tests::{registration_reason_unwraps_rmcps_nested_wrapping,refused_registration_explains_the_options_not_just_the_status,missing_registration_endpoint_reads_differently_from_a_refusal}`. Docs: Ch 8 §Step 1c bullet + FAQ entry + gaps table row (EN+ZH). Live check: `cargo test -p tact --test live_remote_mcp -- --ignored` still passes (DCR providers unaffected).
+
+---
+
+## 1. 2026-09-11 — `tact-ui mcp`: full MCP server management from the CLI
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/mcp/edit.rs` (new), `crates/tact/src/mcp/{mod,remote}.rs`, `crates/tact/src/config/cli.rs` (`McpSubcommand`), `crates/tact-ui/src/mcp_cli.rs`, `crates/tui/src/handlers/mcp.rs`; plan `docs/superpowers/plans/2026-09-11-remote-mcp.md` |
+
+**Symptom / motivation:** The CLI could inspect (`mcp list`) and authorize (`mcp auth`) servers but not create, remove or de-authorize one — declaring a server still meant hand-writing `mcp.json`, whose shape is easy to get wrong (remote vs stdio keys, `auth` spelling, quoting), and a headless user has no UI that could help. Credentials additionally had no deletion path at all: once authorized, a server stayed authorized forever, and `~/.tact/mcp/oauth/<server>.json` could only be removed by hand. `mcp list` also connected to *every* server, so inspecting one entry spawned and dialed the rest of the configuration.
+
+**Decision:** Ship the full surface as six subcommands split by the side effect they own, so no command silently does two things: `list` (all servers, connects), `get <name>` (one server, connects to that one only), `add` (writes config, never connects), `remove` (writes config, keeps credentials), `login` (OAuth flow, writes credentials; `auth` kept as a visible alias), `logout` (deletes credentials, never connects). `tact-ui mcp add <name> --url <URL> [--oauth] [--header N:V]…` / `--command <CMD> [--arg A]… [--env N=V]…` covers both transports; clap enforces the `--url` XOR `--command` split and that `--arg`/`--env`/`--header`/`--oauth` require their transport. `--user` selects the home file over the project file; `add --force` replaces, and a `remove` of an unknown name is an error rather than a silent no-op — the message says which file the server *is* declared in (`retry with --user`) or that a plugin contributes it. Validation (name charset, URL scheme, HTTP header names *and* values) happens before anything is written. Config writes **edit the raw JSON document** rather than round-tripping through `McpConfigFile`, so unknown keys and unrelated servers survive; they are atomic (temp file + rename), and an unparseable file becomes an error instead of a clobber target. Removing the last server leaves an empty `mcpServers` object (a predictable edit that still reads back as "no servers"). Server names are additionally refused if they contain whitespace, control characters or a path separator: a name is also the `<server>` segment of `mcp__<server>__<tool>` and the credential file name, so `mcp logout <name>` must never be pointable at an arbitrary file — `oauth_credential_path` now refuses unsafe names outright, which also hardens `login`/`auth` against a hostile `mcp.json` key. The TUI accepts `/mcp login <server>` as an alias for `/mcp auth <server>`, and both views share one status vocabulary via the extracted `connected_text`/`needs_auth_text`/`failed_text` helpers. `mcp list` additionally prints an **Overridden declarations** section naming the losing and winning files, since an override decides what removing a declaration actually changes. Header/env *values* are never echoed or logged.
+
+**Behavior after:** `tact-ui mcp add figma --url https://mcp.figma.com/mcp` creates or extends `.tact/mcp.json` and prints the path plus the new entry's transport; `--oauth` prints the follow-up `tact-ui mcp login figma` hint. `mcp get figma` prints transport, source, status and the tool names as the agent must call them (`mcp__figma__<tool>`), connecting only to that server. `mcp remove` deletes exactly one declaration and reports where to look when the name lives elsewhere; `mcp logout` deletes the credential file, is idempotent when nothing is stored, and works even after the declaration is gone. Re-adding an existing name errors unless `--force` is given. Keys Tact does not model survive the round trip; keys are re-serialized as sorted pretty JSON, so a hand-formatted file is reformatted once on first write.
+
+**Pointers:** `crates/tact/src/mcp/edit.rs` (`McpConfigScope`, `McpDraftTransport`, `McpServerDraft::{new,transport_kind}`, `add_mcp_server`, `RemovedMcpServer`, `remove_mcp_server`, `read_document`, `write_document`, `validate_remote_url`); `crates/tact/src/mcp/mod.rs` (`is_safe_server_name`, `validate_server_name`, `McpServerStatus`, `McpServerInspection`, `ConnectOutcome`, `connect_server`, `resolved_server_for`, `inspect_server`, refactored `load_mcp_router_with_report_inner`); `crates/tact/src/mcp/remote.rs` (`oauth_credential_path` hardening, `forget_credentials`); `crates/tact/src/config/cli.rs` (`McpSubcommand::{List,Get,Add,Remove,Login,Logout}`); `crates/tact-ui/src/mcp_cli.rs` (`get_server`, `render_server_detail`, `status_text`, `remove`, `scope_hint`, `scope_of`, `add`, `draft_from_args`, `parse_pairs`, `logout`); `crates/tui/src/handlers/mcp.rs`. Tests: `mcp::edit::tests::{creates_a_project_file_for_a_remote_server,writes_oauth_declaration_for_remote_server,writes_stdio_entry_with_args_and_env,adding_a_second_server_keeps_unknown_keys_and_the_first_server,refuses_to_replace_without_force_and_replaces_with_it,an_unparseable_file_is_never_overwritten,a_flat_mcp_servers_value_is_rejected,written_entries_load_back_through_the_reader,the_written_file_has_no_leftover_temp_sibling,invalid_names_and_transports_are_rejected_before_writing,project_scope_targets_the_workdir_and_user_scope_the_home_dir,remove_deletes_only_that_entry_and_keeps_everything_else,removing_the_last_server_leaves_an_empty_but_valid_config,remove_reports_an_absent_name_instead_of_succeeding_silently,an_unsafe_server_name_is_rejected_by_both_add_and_remove}`, `mcp::remote::tests::{an_unsafe_server_name_never_derives_a_credential_path,forgetting_credentials_rejects_an_unsafe_name_before_touching_disk,forgetting_a_missing_credential_is_not_an_error}`, `mcp_cli::tests::{overridden_declarations_name_the_file_that_wins,a_report_without_overrides_has_no_override_section,detail_view_shows_transport_source_status_and_qualified_tool_names,detail_view_reuses_the_list_wording_for_pending_and_failed_servers,detail_view_never_prints_an_empty_tool_list_as_success,scope_of_maps_the_user_flag,a_url_becomes_a_remote_draft_with_headers_and_oauth,a_command_becomes_a_stdio_draft_with_args_and_env,neither_or_both_transports_are_rejected,malformed_pairs_fail_without_echoing_the_value,pair_parsing_trims_the_name_and_value}`, `tui::handlers::mcp::tests::mcp_login_is_an_alias_for_auth`. Docs: Ch 8 Step 1 + Step 1c (EN+ZH), Ch 21 plugin paragraph (EN+ZH), `README.md`.
+
+---
+
+## 1. 2026-09-11 — Remote MCP servers: Streamable HTTP + OAuth 2.0
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/mcp/{mod,remote}.rs`, `crates/tact/src/consts.rs`, `crates/tact/src/agent/mod.rs` (`reload_mcp_router`), `crates/protocol/src/agent.rs` (`UserCommand::McpAuth`), `crates/tact-ui/src/driver.rs`, `crates/tui/src/handlers/mcp.rs`, `crates/agent_tui_kit/src/i18n.rs`; design `docs/superpowers/specs/2026-09-11-remote-mcp-design.md`; plan `docs/superpowers/plans/2026-09-11-remote-mcp.md` |
+
+**Symptom / motivation:** Tact's MCP client spoke only stdio. `McpProjectConfig` already parsed `type: "http" | "sse"` and `url`, but `resolve_servers` pushed every remote entry into `skipped_remote` and dropped it, so a `{ "url": … }` server produced no connection and only a terse "skipped" notice. The 2026-09-10 `openai-curated` catalog made this concrete: plugins whose MCP servers are remote could be installed but never used. Remote MCP endpoints also generally require OAuth (MCP 2025-06-18 / SEP-985), so transport alone would not have made them usable.
+
+**Decision:** Support remote entries end to end on top of `rmcp`'s Streamable HTTP client plus its OAuth support, keeping the existing `McpService` abstraction so routing, naming, and permissions are untouched. An entry is `command` (stdio) or `url` (remote), with optional `headers` (static auth) and `auth: { "type": "oauth", … }`. `command` wins when both are present; an entry with neither is reported as skipped. OAuth is the authorization-code + PKCE flow with metadata discovery, dynamic client registration (unless `clientId` is given), and a loopback redirect on `127.0.0.1`; tokens are persisted per server at `~/.tact/mcp/oauth/<server>.json` (`0600`) and refreshed automatically. Startup never blocks on the browser: a server with OAuth but no usable credential is reported as `pending_auth` (`MCP server <name> needs authorization — run /mcp auth <name>`) instead of being connected or failed. `/mcp auth <server>` runs the flow, prints the authorization URL, and then hot-reloads the MCP router (`Agent::reload_mcp_router`) so no restart is needed. Every step logs server names, URLs, and header *names* only — token values are never logged.
+
+Declaring `auth` is deliberately **not required** even for a server that needs OAuth. Live testing showed a bare `url` against Linear (which requires OAuth) surfaced as an opaque `Auth required` connection failure, so the 401 is now detected and upgraded to `pending_auth`. rmcp models this as `StreamableHttpError::AuthRequired`, but that variant holds a type implementing neither `Display` nor `Error` and `ClientInitializeError::TransportError` does not chain it via `#[source]`, so it cannot be downcast; what *is* reachable is `ClientInitializeError` itself (verified against rmcp 0.17), so `is_auth_required_error` matches that transport variant and checks rmcp's `"Auth required"` message — an unrecognised error degrades to a plain failure rather than misreporting. The complementary half is required for the notice not to be a dead end: `/mcp auth` works without an `auth` declaration (defaulting to dynamic registration, no scopes, ephemeral port), and a stored credential is honoured regardless of whether `auth` was declared.
+
+The interactive TUI reaches this through `/mcp auth <server>`; headless users have no TUI, so the same pair is exposed as CLI subcommands: `tact-ui mcp list` resolves and connects exactly like startup then prints every server with its transport, source, and status (connected / needs authorization / failed / skipped), and `tact-ui mcp auth <server>` runs the flow, prints the URL, and re-lists afterwards so the result is immediately visible. Both are registered as non-LLM commands, so they never require provider config or an API key. `mcp list` also covers the `/mcp status` surface originally deferred in this work; the TUI itself still learns status from the startup notices.
+
+**Behavior after:** `{ "url": … }` / `type: "http"` servers are connected instead of skipped; `skipped_remote` now means an unsupported/incomplete transport only. Installed plugins may contribute remote servers. An OAuth server appears once as a pending-authorization notice — whether it declared `auth` or was caught by its 401 — and after `/mcp auth <server>` its tools become available in the same session; later sessions connect without prompting. Expired, non-refreshable tokens return to `pending_auth` rather than surfacing as connection failures. A connection failure is still never fatal.
+
+**Pointers:** `crates/tact/src/mcp/remote.rs` (`McpRemoteConfig`, `McpAuthConfig`, `serve_remote`, `resolve_remote_auth`, `stored_access_token_at`, `oauth_parameters`, `is_auth_required_error`, `authorize_remote_server`, `FileCredentialStore`, `await_oauth_callback`, `percent_decode`); `crates/tact/src/mcp/mod.rs` (`McpTransportConfig`, `McpTransportKind`, `ConfiguredServer`, `to_transport`, `resolve_servers`, `ResolvedServers::configured`, `load_mcp_router_with_report`, `remote_config_for`, `authorize_server`, `McpLoadReport::{configured,pending_auth,notice_lines}`); `crates/tact-ui/src/mcp_cli.rs` (`run_mcp_cli`, `render_report`, `status_for`); `crates/tact/src/config/cli.rs` (`McpSubcommand`); `crates/tact/src/agent/mod.rs` (`rebuild_cached_tool_specs`, `reload_mcp_router`); `crates/tact/src/consts.rs` (`home_mcp_oauth_dir`). Tests: `remote_config_parses_url_headers_and_oauth`, `invalid_header_names_are_dropped_from_the_transport_config`, `oauth_token_becomes_the_bearer_auth_header`, `file_credential_store_round_trips_and_clears`, `callback_listener_{extracts_code_and_state,surfaces_denied_authorization,times_out_without_a_request}`, `commandless_entries_are_skipped_not_fatal_while_remote_entries_connect`, `remote_entry_with_oauth_needs_authorization_without_credentials`, `load_report_renders_pending_authorization`, `auth_required_detection_ignores_unrelated_errors`, `undeclared_auth_still_uses_a_stored_credential`, `oauth_parameters_default_when_auth_is_not_declared`, `mcp_cli::tests::{empty_report_explains_how_to_configure,renders_each_server_with_its_status,skipped_servers_are_listed_even_though_they_are_not_configured,a_server_with_no_recorded_outcome_is_not_reported_as_healthy}`. Live (opt-in) end-to-end checks against public remote servers: `crates/tact/tests/live_remote_mcp.rs` (`cargo test -p tact --test live_remote_mcp -- --ignored --nocapture`) covers DeepWiki + Cloudflare Docs connecting with `mcp__<key>__*` tools, Linear's 401 being upgraded to `pending_auth`, and the authorization URL being produced both with and without a declared `auth` (verifying discovery, dynamic registration, and PKCE S256 against a real provider). Docs: Ch 8 §3.2/Step 1b/1c/FAQ/Gaps (EN+ZH), Ch 21 plugin paragraph (EN+ZH).
+
+---
+
+## 1. 2026-09-10 — `default-features = false` on `tracing-subscriber` finally takes effect
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `Cargo.toml`, `crates/tact-ui/Cargo.toml`, `crates/tact-ui/src/main.rs` (`init_logging`); supersedes part of `24150b08` |
+
+**Symptom / motivation:** The 2026-09-08 fix that routed MCP logs into `tracing` and kept them out of the TUI also tried to drop `tracing-subscriber`'s default features, writing `tracing-subscriber = { workspace = true, default-features = false }` in `crates/tact-ui/Cargo.toml`. Cargo **ignores `default-features` when a dependency is inherited from the workspace** — it only emits a warning — so `ansi` and `tracing-log` stayed enabled. `tracing-log` being on makes `registry().init()` install the global `log` bridge, so every `log::` record from a dependency (rmcp's MCP handshake, reqwest, …) was forwarded into Tact's daily log file as a field-less line: exactly the noise the earlier fix was meant to remove. `ansi` was equally useless here, since `init_logging` writes to a file with `.with_ansi(false)`.
+
+**Decision:** Put the feature selection in the one place Cargo honours — the workspace dependency — and let the member inherit it verbatim: `tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }` in the root `Cargo.toml`, with `crates/tact-ui/Cargo.toml` reduced to `{ workspace = true }`. `fmt` and `env-filter` are the only features `init_logging` actually uses; `ansi` and `tracing-log` are now absent from the resolved graph.
+
+**Behavior after:** Dependency `log` records no longer reach Tact's log file — `.tact/logs/tact-<date>.log` carries only events emitted through `tracing` by Tact crates. `RUST_LOG` filtering is unchanged (`EnvFilter` is still built from the environment), and the interactive TUI still never installs a terminal fmt layer. Verified with `cargo tree -e features -i tracing-subscriber`, which no longer lists `ansi` or `tracing-log`, plus `cargo test -p tact --lib` (751 passed) and `cargo check -p tact-ui --all-targets`.
+
+**Pointers:** `Cargo.toml` (`[workspace.dependencies] tracing-subscriber`); `crates/tact-ui/Cargo.toml`; `crates/tact-ui/src/main.rs` (`init_logging`). Superseded commit: `24150b08`.
+
+---
+
+## 1. 2026-09-10 — MCP gains a native config file; plugin state and skill roots converge
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/mcp/mod.rs`, `crates/tact/src/consts.rs`, `crates/tact/src/plugin/store.rs`, `crates/tact-ui/src/{interactive,headless}.rs`; design `docs/superpowers/specs/2026-09-10-path-convergence-design.md`; plan `docs/superpowers/plans/2026-09-10-path-convergence.md` |
+
+**Symptom / motivation:** MCP configuration was spread across three ecosystems with no Tact-native home. A project's servers could only come from a cwd-scoped `.codex-plugin/plugin.json` manifest, and global scope required a marketplace → install → cache round trip; there was no `~/.tact/mcp.json` and no project-scoped MCP file at all. Three further defects compounded it: the cwd manifest used a *different* naming scheme (`{plugin}__{server}`) from plugin-contributed servers, so the same concept had two answers; a plugin-root `.mcp.json` was read while the same filename at the working directory was silently ignored; a failed server connection logged only `tracing::debug!` so a typo'd `command` produced no user-visible signal at all; and `~/.tact/plugins/` mixed a few KB of state with hundreds of MB of cache. Separately, `skill_search_dirs` returned `[workdir/.tact/skills, ~/.tact/skills, ~/.agents/skills]` with later-wins semantics, so the Codex compatibility root overrode Tact's own root.
+
+**Decision:** Give MCP a native `mcp.json` at both scopes — `~/.tact/mcp.json` (user) and `<workdir>/.tact/mcp.json` (project) — using the same `mcpServers` shape every MCP client accepts, with project overriding user by server name. A server declared there is named by its map key verbatim, so its tools are exactly `mcp__<key>__<tool>` with no manifest prefix. Project scope gets **exactly one** filename: Tact now reads neither a cwd `.mcp.json` nor a cwd `.codex-plugin/plugin.json`, so "where does this project declare its servers?" has a single answer and no directory needs to be interpreted as a "plugin". `PluginLoader` was deleted with that source — it had no other caller. Only installed marketplace plugins still contribute servers, keeping their `plugin__<plugin>__<server>` names, because a plugin is a distributable bundle rather than a config convention. Resolution order: `~/.tact/mcp.json` → `<workdir>/.tact/mcp.json` → installed plugins. It returns an `McpLoadReport` (connected / failures / shadowed / skipped_remote) instead of discarding failures, and plugin state moves to `~/.tact/plugins/state/` with a legacy fallback read plus best-effort one-time migration. Skill roots are reordered to `[~/.agents/skills, ~/.tact/skills, <workdir>/.tact/skills]` so the project always wins and Tact always beats Codex. `PluginHome` now stores `home` and `state` explicitly instead of deriving `$HOME` via `root.parent().parent()`.
+
+**Behavior after:** Adding an MCP server is one file, at project or user scope; no marketplace round trip, and no ambiguity about which project file to use. Only two places need to be checked when a server is missing: `~/.tact/mcp.json` and `.tact/mcp.json`. A broken server produces a visible startup notice (`AgentUpdate::Info` in the TUI, stderr in headless) naming the server and error, while a clean load stays silent; connection failures remain non-fatal so one bad server cannot stop the agent from starting. Overrides between sources are reported rather than silent. Remote (`http`/`sse`) and command-less entries are reported as skipped instead of aborting resolution. A malformed cwd manifest can no longer abort startup, because it is no longer read. Plugin state is written to `state/`, with legacy files read and left in place so an older binary sharing the home keeps working. A user-level skill present in both `~/.tact/skills` and `~/.agents/skills` now resolves to the `~/.tact/skills` body — an intentional precedence flip.
+
+**Pointers:** `crates/tact/src/mcp/mod.rs` (`McpConfigFile`, `McpLoadReport`, `collect_sourced_servers`, `resolve_servers`, `load_mcp_router_with_report`); `crates/tact/src/consts.rs` (`TactPath::{mcp_config_path, home_mcp_config_path}`, `skill_search_dirs`, `PluginHome::{home, state}`); `crates/tact/src/plugin/store.rs` (`state_file`, `read_state`); `crates/tact-ui/src/{interactive,headless}.rs`. Tests: `mcp_config_file_reads_servers_and_missing_is_none`, `mcp_config_file_parse_error_names_the_path`, `later_source_overrides_earlier_by_server_name`, `non_conflicting_sources_merge`, `remote_and_commandless_entries_are_skipped_not_fatal`, `native_config_key_is_the_server_name_without_a_prefix`, `project_mcp_json_is_read_and_a_cwd_dot_mcp_json_is_not`, `load_report_*`, `plugin_home_exposes_explicit_home_state_and_cache_paths`, `new_state_location_wins_when_both_exist`, `legacy_state_is_read_and_migrated_to_state_dir`, `state_is_written_to_the_state_directory`, `tact_skill_root_outranks_the_agents_compatibility_root`.
+
+---
+
+## 1. 2026-09-10 — Permission prompts reconcile from a shared pending-UI broker
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/ui_responder.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tui/src/handlers/select.rs`, `crates/tact-ui/src/interactive.rs`; Ch 25 §4.3; `docs/state_machines.md` §2/§8 |
+
+**Symptom / motivation:** A permission prompt could remain `Running` forever when its single `AgentUpdate::RequestSelect` event was lost or handled while another update reset `input_mode`. The previous `restore_pending_select_mode` fix covered the known `SessionStats` desync, but the event itself was still the only source of truth: if it was dropped, or the TUI did not process it, the `UiResponder` waiter had nothing that could answer it. The same failure class hit interactive `edit_file` prompts; one observed step sat in Running for roughly 30 minutes without writing the file or producing a `tool_result`.
+
+**Decision:** Keep the protocol types unchanged and make the in-process `UiResponder` the authoritative pending-request registry. `register_select` / `register_multi` record `PendingUiRequest` metadata before emitting the existing `RequestSelect` hint; `snapshot()` returns the ordered pending set; `respond()` atomically removes and wakes the waiter; `withdraw()` handles cancellation/drop. The TUI reconciles `InputMode::Select` from `snapshot()` after every agent update and on poll ticks, treating `RequestSelect` as a wake-up hint and answering directly through the broker when interactive. `RequestSelect` remains authoritative for headless/tests when no broker is attached. `PendingRequestGuard` withdraws a request if its waiter future is abandoned, so an aborted tool cannot leave a ghost popup.
+
+**Behavior after:** A lost or duplicated `RequestSelect` no longer leaves a tool stuck in Running: the TUI pulls the pending snapshot and surfaces the popup. Multiple prompts (concurrent subagents / `ask_user`) queue by request id in the broker rather than a separate `VecDeque`. Enter/Esc answer the broker directly; `/cancel` answers the active prompt with `None` before sending `UserCommand::Cancel`; aborting a waiter removes its pending entry. The `tact_protocol` enum and wire shape are unchanged; this is an in-process reconciliation layer intended to be promoted to a versioned snapshot protocol before a server transport is added.
+
+**Pointers:** `crates/tact/src/ui_responder.rs` (`PendingUiRequest`, `snapshot`, `respond`, `withdraw`, `PendingRequestGuard`); `crates/tui/src/widgets/state/app/agent.rs` (`reconcile_pending_ui`); `crates/tui/src/handlers/select.rs`; `crates/tact-ui/src/interactive.rs`; `crates/tui/src/lib.rs`; Ch 25 §4.3; `docs/state_machines.md` §2/§8. Tests: `ui_responder::tests::*`, `broker_snapshot_*`, `broker_mode_enter_wakes_registered_waiter`, `broker_mode_cancel_answers_pending_select_with_none`.
+
+---
+
+## 1. 2026-09-10 — Discover Codex local marketplaces for plugin install/list
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/plugin/{model,store,marketplace,install,mod}.rs`, `crates/tact-ui/src/plugin_cli.rs`; design `docs/superpowers/specs/2026-09-10-codex-marketplace-design.md`; plan `docs/superpowers/plans/2026-09-10-codex-marketplace.md` |
+
+**Symptom / motivation:** Tact adopted Codex plugin manifests/hooks/MCP, but marketplace discovery still exposed only the hardcoded Claude official Git marketplace. A Codex personal marketplace at `~/.agents/plugins/marketplace.json` was invisible to `tact-ui plugin marketplace list`; Codex `source: "local"` catalog entries could not be parsed; and a bare `plugin install <name>` defaulted to `claude-plugins-official`.
+
+**Decision:** Discover Codex local marketplaces from `$HOME/.agents/plugins/marketplace.json` and the nearest ancestor `.agents/plugins/marketplace.json`, store their roots as non-persisted `MarketplaceSource::LocalPath` records, and resolve `source: "local"` plugin paths relative to the marketplace root. Bare installs now scan discovered Codex marketplaces first and fall back to `claude-plugins-official`; local marketplace update re-reads the catalog instead of fetching.
+
+**Behavior after:** `tact-ui plugin marketplace list` shows Codex local marketplaces before the legacy official marketplace; `tact-ui plugin install build-ios-apps` can install from the user's Codex marketplace without an explicit `@marketplace`; `plugin marketplace update <codex-local-name>` refreshes from disk. The Claude official marketplace remains available as fallback.
+
+**Pointers:** `crates/tact/src/plugin/model.rs` (`LocalPath`, discovered state), `crates/tact/src/plugin/store.rs` (Codex marketplace discovery), `crates/tact/src/plugin/marketplace.rs` (`source: "local"`, catalog path), `crates/tact/src/plugin/install.rs` (local source root), `crates/tact/src/plugin/mod.rs` (default install resolution); tests `parses_codex_local_plugin_source`, `load_marketplaces_discovers_codex_personal_marketplace`, `install_from_codex_local_marketplace_resolves_relative_to_home`, `install_without_marketplace_prefers_discovered_codex_marketplace`.
+
+---
+
+## 1. 2026-09-10 — Seed the OpenAI Codex marketplace as a built-in
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/plugin/{model,install,hooks}.rs`; tests `codex_manifest_accepts_string_mcp_servers_and_inline_hooks`, `parses_inline_manifest_hooks`; Ch 21 §plugin |
+
+**Symptom / motivation:** Tact only had one built-in marketplace, `claude-plugins-official`. OpenAI's official Codex catalog `github.com/openai/plugins` (catalog `openai-curated`) was not available out of the box, and its plugins could not install because the Codex manifests do not inline `mcpServers`/`hooks`: `mcpServers` is a relative file path `"./.mcp.json"` and `hooks` may be an inline object, both of which the installer rejected.
+
+**Decision:** Register `openai-curated` (source `https://github.com/openai/plugins.git`) as a second built-in marketplace, protected like `claude-plugins-official` (cannot be replaced/removed) and restored on load/deserialize. The installer and hooks manifest parsers now accept both inline values and relative file paths for `mcpServers`/`hooks`; a missing declared file does not count as a feature. `mcp` features remain install-time validation only — runtime still connects stdio servers, while remote (`http`/`url`) MCP and `apps`-connector manifests that Tact does not interpret are not install blockers.
+
+**Behavior after:** `plugin marketplace list` shows `claude-plugins-official` and `openai-curated` by default; `plugin install linear@openai-curated` (and bare installs that fall back to a discovered Codex marketplace) can install 57 of the OpenAI catalog's plugins (the rest are pure `apps` connectors with no `mcpServers`/`skills`). Remote-HTTP-MCP plugins from `openai/plugins` install but their MCP is skipped at runtime.
+
+**Pointers:** `crates/tact/src/plugin/model.rs` (`OPENAI_MARKETPLACE`, `BUILTIN_MARKETPLACES`, `is_builtin_marketplace`, `builtin_record`), `crates/tact/src/plugin/install.rs` (`PluginManifest`, `manifest_declares_file_or_inline`), `crates/tact/src/plugin/hooks.rs` (`inline_hooks`, `load_installed_hooks`).
+
+---
+
+## 1. 2026-09-09 — Subagent sticky no longer stays open after the last subagent finishes
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/state/subagent_panel.rs` (`SubagentPanelState::apply_snapshot`); host render `crates/tui/src/render/task_panel.rs` |
+
+**Symptom / motivation:** After the last running subagent completed, the sticky subagent strip stayed **expanded** (`[Subagent] 0/1` + a `— Completed —` row with the summary) instead of closing. It only hid if the user manually collapsed it first. The Tasks sticky, by contrast, hides as soon as no open item remains.
+
+**Decision:** Mirror the Tasks rule — the subagent sticky is visible only while at least one subagent is **Running**. When the last one finishes, hide the whole strip (`visible = false`, `expanded = false`). The finished run's summary/detail is not lost: it stays on the parent `spawn_subagent` tool card / subagent popup, not the sticky.
+
+**Behavior after:** A running subagent pops the strip (expanded); once the final subagent reaches a terminal state the strip closes automatically. If several run concurrently, the strip stays until the last one finishes. Sticky show/timing no longer depends on the user's expand/collapse state.
+
+**Pointers:** `crates/agent_tui_kit/src/state/subagent_panel.rs`; sibling rule `crates/agent_tui_kit/src/state/task_panel.rs::apply_snapshot`; Ch 9 hook / agent-loop chapters reference the subagent overview. Tests: `agent_tui_kit` state `subagent_panel` (`hides_when_all_done`, `stays_visible_while_other_runs_are_running`) and `crates/tui` `sticky_host` render tests.
+
+---
+
+## 1. 2026-09-09 — Adopt the Codex plugin/ecosystem; remove Claude-directory compatibility
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact/src/plugin/{install,hooks,marketplace,store,model}.rs`, `crates/tact/src/mcp/mod.rs`, `crates/tact/src/consts.rs`, `crates/tact/src/skill/mod.rs`, `crates/tact/src/config/instruction_sources.rs`, `crates/tact/src/prompt/{mod.rs,system_prompt_template.md,responses_system_prompt_template.md}`, `crates/tact/src/agent/mod.rs`; design `docs/superpowers/plans/2026-09-09-codex-plugin-compat-and-memory.md`; Ch 2, 3, 4, 8, 9, 12, 18 |
+
+**Symptom / motivation:** Tact maintained two plugin ecosystems (Claude `.claude-plugin` and the Codex family). Both share the same command-hook kernel (subprocess + stdin JSON + `CLAUDE_PLUGIN_ROOT`), but maintaining two manifest/discovery systems is not worth it; Codex's layout is the cleaner, actively-maintained spec, and agentmemory ships `.codex-plugin`, so Codex-only still consumes it. Claude-directory compat (`.claude-plugin`, `.claude/`, `CLAUDE.md`, `.claude/skills`) was legacy surface.
+
+**Decision:** Standardise on the Codex plugin system and remove Claude-directory compatibility outright (not gated): plugin manifest dir is `.codex-plugin/plugin.json`; skill roots are `.tact/skills` → `~/.tact/skills` → `~/.agents/skills` (`.claude/skills` gone); `home_claude_dir()` / `claude_dir()` removed; `CLAUDE.md` instruction injection removed so `[agent].instruction_sources` only accepts `agents_md`; system-prompt `# Additional context` no longer carries a claude_md branch. `CLAUDE_PLUGIN_ROOT` env name is **kept** (Codex's own hook engine injects it); Claude/Anthropic as an **LLM provider and `claude-*` model names are untouched**; `~/.agents` is kept.
+
+**Behavior after:** Plugins are discovered only through `.codex-plugin/plugin.json` (+ default `hooks/hooks.json`). Project skills load from `.tact/skills` (plus `~/.tact/skills`, `~/.agents/skills`); a `.claude/skills` dir under the workdir is ignored. Only `AGENTS.md` is injected as an instruction file; a `claude_md*` value in `instruction_sources` is rejected. Users migrating from `.claude-plugin` must re-point to codex layouts.
+
+---
+
+## 1. 2026-09-08 — Remove permission-prompt timeout; fix the "missed popup" desync instead
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tui/src/widgets/state/app/agent.rs` (`restore_pending_select_mode`), `crates/tact/src/agent/tool_dispatch.rs` (Ask-path `request_select` wait) |
+
+**Symptom / motivation:** The intermediate timeout fix (`PERMISSION_PROMPT_TIMEOUT_SECS`, 300 s) was wrong on both counts. It only bounded the hang — the original desync that hid a pending popup remained. And its side effect was too large: any prompt left unattended for 300 s was silently auto-`deny`ed, dropping a tool the user may simply have stepped away from, with no way to distinguish "I said no" from "I wasn't there". A permission decision must come from the user, never from a clock.
+
+**Root cause:** A pending `RequestSelect` must keep `input_mode == Select` for the popup to render, but `AgentUpdate::SessionStats` (and any future update) reset `input_mode = Normal` unconditionally. When that happened while a permission prompt was outstanding, the popup vanished but `select.request_id` stayed set, so the waiter blocked forever (the original 14-minute `save_memory` hang).
+
+**Decision:** Two-part fix. (1) Remove the timeout entirely — the Ask-path wait is again an unbounded `request_select().await`, whose only terminations are a real user answer or a UI close (both already route through `UiResponder`: Esc → `choice: None`, UI close / dead channel → `Err(Closed)`, both deny). (2) Remove the desync that made a popup missable: after every `handle_agent_update`, if `select.request_id` is set but `input_mode` is no longer `Select`, restore `Select` (`restore_pending_select_mode`). A pending request can therefore never be rendered invisible, so the user always has a popup to answer and the ACK paths fire.
+
+**Behavior after:** No timeout exists for permission prompts. A prompt stays on screen and waits until the user answers (Allow once / Always allow / Deny) or the UI closes — never auto-denied by elapsed time. The "missed popup" desync that caused the original 14-minute hang is gone.
+
+---
+
+## 1. 2026-09-08 — Three more hooks complete agentmemory integration (PostToolUseFailure · Notification · TaskCompleted)
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/hook/mod.rs`, `crates/tact/src/agent/{mod,tool_dispatch}.rs`, `crates/tact/src/plugin/hooks.rs`, `crates/tact-ui/src/driver.rs` |
+
+**Symptom / motivation:** agentmemory's auto-capture plugin declares twelve Claude-Code hook events (`plugin/hooks/hooks.json`), but tact still lacked `PostToolUseFailure`, `Notification`, and `TaskCompleted` — failed tool calls, permission prompts, and task completion were invisible to memory capture.
+
+**Decision:** Add the three remaining events following Claude Code semantics. `PostToolUseFailure` fires after a tool *fails* (in addition to the success-oriented `PostToolUse`), carrying `tool_name` / `tool_input` / `tool_use_id` / `error`. `Notification` fires when the agent surfaces a user notification — only `permission_prompt` today — carrying `notification_type` / `title` / `message`. `TaskCompleted` fires once per completed user task at the driver's `SubmitTask` boundary, carrying `task_description` (the last assistant message). All three are observational (a `Block` is logged and ignored) and wired through `apply_plugin_hooks`.
+
+**Behavior after:** Tact now covers all twelve agentmemory hook events (plus `PostCompact`, which agentmemory does not consume). Failed tool calls, permission prompts, and completed tasks flow to plugin command hooks.
+
+---
+
+## 1. 2026-09-08 — Five more lifecycle hooks (SubagentStop · Stop · SessionEnd · PreCompact · PostCompact)
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat |
+| **Related** | `crates/tact/src/hook/mod.rs`, `crates/tact/src/agent/mod.rs`, `crates/tact/src/compact/mod.rs`, `crates/tact/src/tool/{mod,subagent}.rs`, `crates/tact/src/plugin/hooks.rs`, `crates/tact-ui/src/{interactive,headless,driver}.rs` |
+
+**Symptom / motivation:** Tact mapped only five Claude-Code-style hook events (`SessionStart`, `UserPromptSubmit`, `SubagentStart`, `PreToolUse`, `PostToolUse`), whereas Codex exposes twelve. Users porting Codex/Claude plugins that rely on `SubagentStop`, `Stop`, `SessionEnd`, `PreCompact`, or `PostCompact` found no loop point to attach to.
+
+**Decision:** Add the five events Codex has that tact lacked, following Codex's semantics (source: `codex-rs/hooks/src/events/{stop,compact,session_end}.rs`). `Stop` fires once at the outer turn boundary and a `Block(reason)` *continues* the turn with `reason` as the next prompt (Codex continuation fragment) — the one event where `Block` inverts to "continue". `PreCompact` fires before compaction and a `Block` vetoes it; `PostCompact` after success; both matched against a `CompactTrigger { Auto|Manual|Recovery|Command }` string. `SessionEnd` fires at teardown (observational). `SubagentStop` is a standalone `ToolContext` trait (like `SubagentStart`) that may rewrite the child summary; all events are wired through the plugin command layer (`apply_plugin_hooks`) and the `Hook` enum.
+
+**Behavior after:** Plugins can declare the ten events; `Stop` blocks loop the agent once more (bounded to 4 continuations per task); `PreCompact` blocks skip compaction; the other three are observational. Compaction call sites pass an explicit `CompactTrigger` so plugin matchers can distinguish auto/manual/recovery/command.
+
+---
+
+## 1. 2026-09-08 — Thinking-mode on a reasoning model forces reasoning replay on compatible base URLs
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/openai/responses/mod.rs` (`reasoning_replay_required`, `build_wire_request` / compact reasoning-replay policy); DeepSeek (OpenCode) provider support |
+
+**Symptom / motivation:** On an OpenAI-compatible base URL that is **not** `api.openai.com` (e.g. the OpenCode Go endpoint `opencode.ai/zen/go/v1` or `api.deepseek.com`), the adapter's base-URL heuristic defaults to *dropping* historical `reasoning` replay to save input tokens. But DeepSeek-style Reasoning models in **thinking mode** (`thinking` or `reasoning_effort` set) require the prior `reasoning_text` to be passed back on the next turn; dropping it made the provider return HTTP 400 (`reasoning_text in the thinking mode must be passed back to the API`).
+
+**Decision:** `reasoning_replay_required(request)` is true when the request is thinking-mode **and** the model id looks reasoning-capable (currently a `deepseek` substring on the lowercased model). The effective policy becomes `replay_prior_reasoning || reasoning_replay_required(...)`, so the explicit `with_replay_prior_reasoning` override is still honored. The base-URL-only heuristic still drops replay for ordinary (non-thinking) requests to save tokens.
+
+**Behavior after:** A thinking-mode request on a DeepSeek-style model over a compatible base URL replays the historical `reasoning` item, so the provider no longer 400s. Non-thinking requests and thinking-mode on models the heuristic does not recognize keep the prior token-saving default.
+
+---
+
+## 1. 2026-09-08 — Permission prompts time out instead of hanging a tool in "Running" (superseded — see newest entry)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/tool_dispatch.rs` (Ask-path `request_select` wait) |
+
+**Symptom / motivation:** A `save_memory` call sat in the TUI as `Running · 829s` (14 minutes) with no visible approval popup. `save_memory` is `PermissionPolicy::Write`, so in Default mode it raised an interactive `PermissionBehavior::Ask`, which dispatched `RequestSelect` to the TUI and then awaited the `UiResponder` oneshot. If the popup was missed, dismissed, or dropped while the UI was busy, the tool future blocked forever and the card's live elapsed counter kept climbing.
+
+**Decision (superseded):** This first attempt bounded every interactive permission `request_select` wait with `PERMISSION_PROMPT_TIMEOUT_SECS` (300 s), auto-denying on timeout. **Reverted** the same day: the timeout auto-denied prompts the user never answered (dropping tools they may have stepped away from), and it masked — rather than fixed — the desync that hid the popup. See the newest entry ("Remove permission-prompt timeout; fix the 'missed popup' desync instead") for the final root-cause fix.
+
+**Behavior after:** Interim state only; no timeout shipped in a release. The Ask-path wait is again unbounded (terminates on a real user answer or a UI close), and the popup-hiding desync is fixed at its source.
+
+---
+
 ## 1. 2026-09-07 — Plugin hook stdin broken pipe no longer swallows hook stdout
 
 | Field | Value |
@@ -56,6 +1148,21 @@ Newest entries first. Each entry should include:
 **Decision:** Mirror the Tasks pattern with a new `AgentUpdate::SubagentsChanged { runs }` full-snapshot event. `SubagentManager` keeps an in-memory `known` set of children started by the current process (not the whole `subagent_runs` table, which accumulates across sessions and orphan-repair noise), and emits after spawn start / sync+async finish / `cancel_subagent` tool / driver `CancelSubagent`. The TUI gains a `SubagentPanelComponent`/`SubagentPanelState` (kit) and a two-domain sticky host under the Log showing `[Tasks] [Subagent]` tab segments; each domain keeps its own visible/expanded/scroll state. The Subagent body groups runs Running → Completed → Failed → Cancelled with `{marker} {short-id} {summary-first-line} ⏱ {duration}`; rows are capped (`MAX_SUBAGENT_SNAPSHOT = 20` total, all Running preserved). Live detail still lives on the tool card / SubagentPopup.
 
 **Behavior after:** Spawning or finishing any subagent in the current process updates the sticky (hidden when no domain is active; first appearance defaults expanded; collapses to one row and hides once collapsed with nothing running). Clicking a visible inactive tab switches the active domain and expands it; wheel/`jk` scroll the active domain. Subagents are never added to the main Log (one row = the tool card) and never duplicate into Tasks.
+
+---
+
+## 1. 2026-09-07 — OpenCode Go `x-opencode-session` header re-wired (session-bound)
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/opencode.rs` (re-created; `endpoint_headers(base_url, session)`), `crates/tact_llm/src/openai/responses/mod.rs` (`OpenAiResponsesAdapter::set_session_id`, `ResponsesCompatConfig.opencode_session`, compact POST), `crates/tact_llm/src/openai/compatible/mod.rs` (`OpenAiAdapter::set_session_id`, `request_headers`, `CompatibleConfig::headers`), `crates/tact_llm/src/openai/compatible/multi_model.rs` (`ChatCompletionsAdapter::set_user_id` → forwards session), `crates/tact_llm/src/models.rs` (`fetch_model_ids`), `crates/tact_llm/src/client.rs` (`LlmProvider::set_user_id`); Ch 21 |
+
+**Symptom / motivation:** OpenCode's published client requirements for OpenCode Go (`https://opencode.ai/zen/go/v1`) again ask every coding-agent client to identify itself and send a **stable session id** in `x-opencode-session` on each request (routing + prompt caching); clients without session support are listed as "Known Problematic". The whole mechanism that satisfied this (session-bound header + `tact/<version>` User-Agent, ed480ec `revert(llm)` on 09-05) had been removed while the header was optional, so OpenCode Go requests went out bare again.
+
+**Decision:** Re-create the `opencode` helper module and re-attach the headers: the Responses SDK config (ordinary `/responses` via `create_byot` / `create_stream_byot`), the direct `/responses/compact` POST, the **Chat Completions transport** (`OpenAiAdapter::request_headers`, now session-aware), and the `/v1/models` picker fetch. The value is filled from the **Tact session id** only: `Agent::with_session` → `LlmProvider::set_user_id` → each adapter stores it (`OpenAiResponsesAdapter::set_session_id` for Responses; `ChatCompletionsAdapter::set_user_id` forwards to `OpenAiAdapter::set_session_id` for Chat Completions), so one Tact conversation (including a resumed session and each subagent's own child session) maps to exactly one OpenCode session/cache on either protocol. Unlike the 09-02 design there is **no per-`base_url` fallback token and no `TACT_OPENCODE_SESSION` env override** — the header is `session_id` verbatim or absent. Requests without a session (e.g. the `/v1/models` picker fetch, which predates `with_session`) omit `x-opencode-session` and send only the identifying `tact/<version>` `User-Agent`. Endpoint detection is unchanged from the pre-removal build (`opencode.ai` or a subdomain host).
+
+**Behavior after:** conversation requests to an OpenCode Go endpoint over either the Responses or Chat Completions protocol carry `x-opencode-session` equal to the Tact session id plus a `tact/<version>` `User-Agent`; sessionless requests (models picker) omit the session header but still identify via the User-Agent; non-OpenCode endpoints carry no additional headers. This is a re-add of the design removed on 09-05 — the entry below stays for history.
 
 ---
 
@@ -869,6 +1976,8 @@ registry.rs, construct.rs, config.rs}`, `crates/tui/src/render/log.rs`
 | Decision | Add `model_context_window_for_model(model)` in `resolve.rs` and resolve the window as: **model→window mapping (highest) → CLI/TOML → default `200_000`**. Values follow official model docs (2026-08): OpenAI `gpt-5.6` family + `gpt-5.5` → `1_050_000`, `gpt-5.4` → `1_000_000`, `gpt-5`…`gpt-5.3`/`gpt-5.4-mini` → `400_000`, `gpt-4o` family → `128_000`; Anthropic (API + Claude Code) `claude-sonnet-5`/`claude-fable-5`/`claude-opus-5`/`claude-opus-4-8`/`claude-opus-4-7`/`claude-opus-4-6`/`claude-sonnet-4-6` → `1_000_000`, `claude-sonnet-4-20250514`/`claude-opus-4-20250514`/`claude-haiku-4-5`/`claude-haiku-4-20250514` → `200_000`; DeepSeek V4 → `1_000_000`, `k3-256k` → `256_000`. A mapping match deliberately overrides user file config so a stale manual window can never under-report a well-known model. |
 | Behavior after | The `ctx` bottom-bar meter and the derived auto-compact threshold (80% of window) use the mapped window for the mapped models. GPT-5.6/5.5 models show `…/1.05M`, Claude 1M models (incl. Claude Code ids) `…/1M`, DeepSeek V4 `…/1M`, GPT-5.x `…/400K`, GPT-4o `…/128K`, `k3-256k` `…/256K`. Manual `model_context_window` only takes effect for models without a built-in mapping. The nonzero `model_context_window > max_tokens` validation still applies to the resolved value. |
 | Pointers | `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`, resolution at ~`:587`); `config.example.toml` `[agent]`; book [Ch 21](./21_chapter_config.md) §5, [Ch 5](./05_chapter_compact.md) §settings tables. |
+
+*(Superseded 2026-09-13 — the precedence was inverted: an explicit CLI flag or `[agent]` value now wins, and the mapping is only a fallback for unconfigured models. See the newest entry, which also keeps the "stale manual window under-reports a long-context model" trade-off as documentation rather than enforcement.)*
 
 ---
 

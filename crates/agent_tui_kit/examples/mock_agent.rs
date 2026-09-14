@@ -44,7 +44,6 @@ use agent_tui_kit::{
 /// Minimal host-side shell: kit state + a command outbox.
 struct MockShell {
     theme: Theme,
-    messages: Messages,
     log: LogCoordinator,
     log_scroll: LogScroll,
     stream: StreamState,
@@ -62,10 +61,8 @@ struct MockShell {
 
 impl MockShell {
     fn new() -> Self {
-        let messages = Messages::by_language(Language::English);
         Self {
             theme: Theme::from(ThemeName::Ink),
-            messages,
             log: LogCoordinator::default(),
             log_scroll: LogScroll::new(),
             stream: StreamState::default(),
@@ -125,14 +122,11 @@ impl MockShell {
                     current_step: idx,
                     total: self.plan.steps.len(),
                 };
-                let output = agent_tui_kit::widgets::tool_widget::ToolWidget::new(
-                    &self.theme,
-                    &self.messages,
-                )
-                .with_tool(tool_name)
-                .with_arg_summary(arg_summary)
-                .with_presentation(presentation)
-                .build();
+                let output = agent_tui_kit::widgets::tool_widget::ToolWidget::new()
+                    .with_tool(tool_name)
+                    .with_arg_summary(arg_summary)
+                    .with_presentation(presentation)
+                    .build();
                 self.tools
                     .active
                     .push(agent_tui_kit::state::ActiveToolBlock {

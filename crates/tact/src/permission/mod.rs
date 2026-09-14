@@ -402,11 +402,6 @@ impl PermissionManager {
     fn should_suggest_plan_mode(&self) -> bool {
         self.consecutive_denials >= self.max_consecutive_denials
     }
-
-    #[allow(dead_code)]
-    pub fn set_max_consecutive_denials(&mut self, max: usize) {
-        self.max_consecutive_denials = max;
-    }
 }
 
 /// Format a user-facing permission prompt using typed policy.
@@ -427,11 +422,6 @@ pub fn format_permission_prompt(
 /// MCP tools always start as High risk.
 pub fn normalize_mcp_capability(_server: &str, _tool: &str) -> CapabilityRisk {
     CapabilityRisk::High
-}
-
-#[allow(dead_code)]
-fn truncate_for_prompt(input: &Value, _max_chars: usize) -> String {
-    input.to_string()
 }
 
 #[cfg(test)]

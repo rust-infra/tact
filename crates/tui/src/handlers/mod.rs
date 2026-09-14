@@ -1,6 +1,7 @@
 // Input handlers — split by mode.
 mod file_picker;
 mod insert;
+mod mcp;
 mod mouse;
 mod normal;
 mod overlay;
@@ -21,6 +22,35 @@ pub(crate) use skills::flush_pending_when_idle;
 use tact_protocol::UserCommand;
 
 use crate::widgets::state::{App, InputMode, SelectKind, Status};
+
+/// Whether the active sticky panel (task / subagent) currently accepts scroll
+/// input — the panel must be on screen and its sticky tab expanded.
+///
+/// Shared by the keyboard (`normal`) and wheel (`mouse`) paths so the two can
+/// never disagree about what is scrollable.
+pub(crate) fn sticky_scrollable(app: &App) -> bool {
+    crate::render::task_panel::sticky_host_visible(app)
+        && crate::render::task_panel::sticky_tab_expanded(
+            app,
+            crate::render::task_panel::active_sticky_tab(app),
+        )
+}
+
+/// Scroll the active sticky domain's panel by `delta` rows (signed, clamped
+/// at zero).
+pub(crate) fn scroll_active_sticky(app: &mut App, delta: isize) {
+    use agent_tui_kit::state::StickyTab;
+    let tab = crate::render::task_panel::active_sticky_tab(app);
+    let scroll = match tab {
+        StickyTab::Tasks => &mut app.task_panel_mut().scroll,
+        StickyTab::Subagent => &mut app.subagent_panel_mut().scroll,
+    };
+    *scroll = if delta < 0 {
+        scroll.saturating_sub(delta.unsigned_abs())
+    } else {
+        scroll.saturating_add(delta as usize)
+    };
+}
 
 /// Returns the byte index of the previous char boundary before `cursor`.
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
@@ -229,7 +259,7 @@ pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
 /// Built-ins that take a subcommand / arguments: Enter should autocomplete
 /// `/{cmd} ` into the insert box instead of executing immediately.
 pub(crate) fn command_needs_args(cmd: &str) -> bool {
-    matches!(cmd, "plugin" | "subagent_cancel")
+    matches!(cmd, "plugin" | "mcp" | "subagent_cancel")
 }
 
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
@@ -339,31 +369,24 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             }
         }
         "skill-reload" => {
-            match refresh_skills(app) {
-                Ok(count) => {
-                    let msg = app
-                        .msgs()
-                        .skill_reloaded_tmpl
-                        .replace("{}", &count.to_string());
-                    app.add_system_message(msg);
-                }
-                Err(err) => {
-                    let msg = app.msgs().skill_reload_failed_tmpl.replace("{}", &err);
-                    app.add_system_message(msg);
-                }
-            }
+            // Off-loop: the reload scans the filesystem; the loop reports the
+            // outcome via the background-task poll.
+            app.start_skills_reload(
+                crate::widgets::state::app::background::SkillsReloadSource::Command,
+            );
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
             }
         }
         "plugin" => plugin::handle_plugin_command(app),
+        "mcp" => mcp::handle_mcp_command(app),
         "cancel" => {
             // Only cancel an in-flight task; Idle and Done have nothing to
             // abort. Queued (pending) messages are NOT touched — dropping
             // them is the `[Cancel]` button's job.
             if matches!(app.status, Status::Planning | Status::Executing { .. }) {
-                let _ = app.user_cmd_tx.send(UserCommand::Cancel);
+                app.cancel_task();
             } else {
                 app.flash_msg = Some((
                     app.msgs().cancel_noop_msg.to_string(),
@@ -574,12 +597,21 @@ fn skills_table_markdown(
 }
 
 /// Reload skills from disk into the shared registry (agent + TUI).
-pub(crate) fn refresh_skills(app: &mut App) -> Result<usize, String> {
-    let mut reg = tact::skill::lock_skills(&app.skill_registry);
+///
+/// Heavy: scans the filesystem while holding the registry mutex, so callers run
+/// it inside `spawn_blocking` (see `App::start_skills_reload`). Kept synchronous
+/// and lock-scoped: no lock is ever held across an `.await`.
+pub(crate) fn reload_skills(
+    registry: &tact::skill::SharedSkillRegistry,
+    work_dir: &std::path::Path,
+) -> Result<crate::widgets::state::app::background::SkillsSnapshot, String> {
+    use crate::widgets::state::app::background::SkillsSnapshot;
+
+    let mut reg = tact::skill::lock_skills(registry);
     // Keep search roots in sync with the current workdir (tests may set work_dir late).
-    *reg = tact::skill::get_skill_registry(&app.work_dir).map_err(|e| e.to_string())?;
-    app.skills_description = reg.describe_available();
-    app.skills_data = reg
+    *reg = tact::skill::get_skill_registry(work_dir).map_err(|e| e.to_string())?;
+    let description = reg.describe_available();
+    let data = reg
         .skills()
         .values()
         .map(|doc| crate::widgets::state::SkillEntry {
@@ -588,9 +620,7 @@ pub(crate) fn refresh_skills(app: &mut App) -> Result<usize, String> {
             body: doc.body.clone(),
         })
         .collect();
-    // Skill list affects log highlighting; force visual-cache rebuild.
-    app.log_scroll.visual_cache_ver = 0;
-    Ok(app.skills_data.len())
+    Ok(SkillsSnapshot { description, data })
 }
 
 /// Open the `/permission` SelectPopup from palette / slash command.

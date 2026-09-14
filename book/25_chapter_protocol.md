@@ -27,6 +27,8 @@ graph LR
 
 All channels use `tokio::sync::mpsc::unbounded_channel`. `AgentUpdate` is **pure data**: `RequestSelect` / `RequestMultiSelect` carry a `request_id` instead of an embedded `oneshot::Sender`, so the enum no longer carries a transport handle (and is free to derive `Serialize`/`Clone` later). The TUI answers over the reverse channel by sending `UserCommand::UiResponse` back to the driver, which routes it through the runtime's shared [`UiResponder`] registry (`crates/tact/src/ui_responder.rs`) to the waiting caller (parent agent or subagent).
 
+In interactive mode the shared `UiResponder` also exposes an ordered pending snapshot; the TUI reconciles `InputMode::Select` from that snapshot and treats `RequestSelect` / `RequestMultiSelect` as wake-up hints. The event remains authoritative for headless/tests with no broker attached.
+
 ---
 
 ## 2. Core Types
@@ -297,6 +299,8 @@ flowchart LR
 
 Permission prompts use a separate input-mode state machine. `RequestSelect` does **not** add a `Status` variant — the status bar can still read `Executing` while the select popup is open.
 
+In interactive/broker mode, `Select` is derived from `pending != empty`; a `RequestSelect` event only wakes the TUI and `UiResponder::snapshot()` is authoritative. The event-driven transition below describes the legacy/headless path when no broker is attached.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Normal: startup
@@ -309,8 +313,9 @@ stateDiagram-v2
     Select --> Normal: Enter confirms / Esc cancels
 
     note right of Select
-        Arrives while Status = Executing.
-        request_id → UiResponse on the reverse command channel
+        Status = Executing.
+        Broker mode: derived from pending snapshot.
+        Legacy: RequestSelect → UiResponse.
     end note
 ```
 
@@ -340,7 +345,7 @@ stateDiagram-v2
 |----------|----------|------------------|
 | **Content-producing** | `StepAdded`, `StepStarted`, `StepFinished`, `StepFailed`, `StreamChunk`, `ThinkingChunk`, `Info`, `TaskComplete`, `TaskCancelled`, `Error`, `RequestSelect`, `TasksChanged` | Prefer `ThinkingChunk::Finished` to close thinking; safety-flush on other content updates; remove loading placeholder; mutate log / plan |
 | **Metadata-only** | `TokenUsage(TokenUsageInfo)`, `ModelInfo(ModelCallParams)` | Update status bar only; keep loading placeholder; **do not** close an open thinking region |
-| **Request–response** | `RequestSelect { request_id }`, `RequestMultiSelect { request_id }` | Blocks on user choice via the shared `UiResponder` (reverse `UiResponse`) |
+| **Request–response** | `RequestSelect { request_id }`, `RequestMultiSelect { request_id }` | Broker mode: `snapshot()` is authoritative and `RequestSelect*` is a wake-up hint. Legacy/headless: blocks on user choice via the shared `UiResponder` (reverse `UiResponse`). |
 
 Thinking lifecycle is explicit: `ThinkingChunk::Started` opens the region, `Delta` appends text, `Finished` flushes and collapses. As a safety net, content-producing non-thinking updates still call `flush_and_close_thinking()` if a region is still open. `TokenUsage` / `ModelInfo` never close thinking (they may arrive mid-stream).
 

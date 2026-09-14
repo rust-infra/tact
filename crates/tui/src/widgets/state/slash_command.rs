@@ -191,8 +191,8 @@ mod tests {
     #[test]
     fn step_slash_selection_moves_and_clamps() {
         let mut app = open_app_with_skills(40);
-        // 19 builtins (incl. subagent_cancel) + 40 skills = 59 selectable
-        // items (index 0..58).
+        // 20 builtins (incl. mcp and subagent_cancel) + 40 skills = 60
+        // selectable items (index 0..59).
 
         app.step_slash_selection(1);
         assert_eq!(app.slash_command.selected, 1);
@@ -200,11 +200,11 @@ mod tests {
         assert_eq!(app.slash_command.selected, 0);
 
         // Clamp at the bottom.
-        app.slash_command.selected = 58;
+        app.slash_command.selected = 59;
         app.step_slash_selection(1);
-        assert_eq!(app.slash_command.selected, 58);
+        assert_eq!(app.slash_command.selected, 59);
         app.step_slash_selection(-1);
-        assert_eq!(app.slash_command.selected, 57);
+        assert_eq!(app.slash_command.selected, 58);
     }
 
     #[test]

@@ -807,8 +807,173 @@ fn full_frame_edit_file_tool_shows_in_log() {
     let text = render_app_text(&mut app, 120, 30);
 
     assert!(
-        text.contains("edit_file") || text.contains("lib.rs") || text.contains("fn new"),
-        "edit_file tool card should render in log, got:\n{text}"
+        text.contains("lib.rs"),
+        "the edit's path must stay visible in the title, got:\n{text}"
+    );
+    assert!(
+        !text.contains("fn old()") && !text.contains("fn new()"),
+        "a finished edit hides its diff behind the popup, got:\n{text}"
+    );
+    assert!(
+        text.contains("2 lines · double-click-result"),
+        "the meta row must report the hidden diff, got:\n{text}"
+    );
+}
+
+/// A finished read collapses like a command: the body is out of the log, the
+/// two header rows stay, and the meta row says how much it hid.
+#[test]
+fn full_frame_read_file_tool_shows_in_log() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "read lib",
+        "read_file",
+        "read1",
+        HashMap::from([("path".to_string(), "lib.rs".to_string())]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "read1".into(),
+        tool_name: "read_file".into(),
+        arg_summary: "lib.rs".into(),
+        arg_full: "lib.rs".into(),
+        presentation: ToolPresentationInfo::generic("read_file"),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "read1".into(),
+        result: StepResult {
+            tool: "read_file".into(),
+            arg_summary: "lib.rs".into(),
+            arg_full: Some("lib.rs".into()),
+            status: StepStatus::Success,
+            message: "ok".into(),
+            detail: Some("body-one\nbody-two\nbody-three".into()),
+            duration_us: Some(200),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("read_file"),
+        },
+    });
+
+    let text = render_app_text(&mut app, 120, 30);
+
+    assert!(
+        text.contains("lib.rs"),
+        "the read's path must stay visible in the title, got:\n{text}"
+    );
+    assert!(
+        !text.contains("body-one"),
+        "a finished read hides its body behind the popup, got:\n{text}"
+    );
+    assert!(
+        text.contains("3 lines · double-click-result"),
+        "the meta row must report the hidden body, got:\n{text}"
+    );
+}
+
+/// A finished write collapses like the rest: the content is out of the log, the
+/// two header rows stay, and the meta row says how much it hid.
+#[test]
+fn full_frame_write_file_tool_shows_in_log() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "write lib",
+        "write_file",
+        "w1",
+        HashMap::from([("path".to_string(), "lib.rs".to_string())]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "w1".into(),
+        tool_name: "write_file".into(),
+        arg_summary: "lib.rs".into(),
+        arg_full: "lib.rs".into(),
+        presentation: ToolPresentationInfo::generic("write_file"),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "w1".into(),
+        result: StepResult {
+            tool: "write_file".into(),
+            arg_summary: "lib.rs".into(),
+            arg_full: Some("lib.rs".into()),
+            status: StepStatus::Success,
+            message: "wrote".into(),
+            detail: Some("wrote-one\nwrote-two\nwrote-three".into()),
+            duration_us: Some(200),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("write_file"),
+        },
+    });
+
+    let text = render_app_text(&mut app, 120, 30);
+
+    assert!(
+        text.contains("lib.rs"),
+        "the write's path must stay visible in the title, got:\n{text}"
+    );
+    assert!(
+        !text.contains("wrote-one"),
+        "a finished write hides its content behind the popup, got:\n{text}"
+    );
+    assert!(
+        text.contains("3 lines · double-click-result"),
+        "the meta row must report the hidden content, got:\n{text}"
+    );
+}
+
+/// A kind that never drew a card used to lose its result outright. A multi-line
+/// readout (`task_list`) now costs the same two rows and says it can be opened.
+#[test]
+fn full_frame_cardless_tool_result_is_openable() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "list tasks",
+        "task_list",
+        "t1",
+        HashMap::<String, String>::new(),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "t1".into(),
+        tool_name: "task_list".into(),
+        arg_summary: String::new(),
+        arg_full: String::new(),
+        presentation: ToolPresentationInfo {
+            visual_kind: tact_protocol::ToolVisualKind::Task,
+            display_name: "📋 Task".into(),
+            ..ToolPresentationInfo::generic("task_list")
+        },
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "t1".into(),
+        result: StepResult {
+            tool: "task_list".into(),
+            arg_summary: String::new(),
+            arg_full: None,
+            status: StepStatus::Success,
+            message: "2 tasks".into(),
+            detail: Some("[1] pending  wire the parser\n[2] in_progress  run the suite".into()),
+            duration_us: Some(200),
+            permission_label: None,
+            presentation: ToolPresentationInfo {
+                visual_kind: tact_protocol::ToolVisualKind::Task,
+                display_name: "📋 Task".into(),
+                ..ToolPresentationInfo::generic("task_list")
+            },
+        },
+    });
+
+    let text = render_app_text(&mut app, 120, 30);
+
+    assert!(
+        !text.contains("wire the parser"),
+        "the task list stays behind the popup, got:\n{text}"
+    );
+    assert!(
+        text.contains("2 lines · double-click-result"),
+        "a multi-line result must advertise that it can be opened, got:\n{text}"
     );
 }
 
@@ -927,5 +1092,164 @@ fn toggle_theme_renders_changed_message_in_log() {
     assert!(
         !text.trim().is_empty(),
         "theme toggle should produce visible log update, got:\n{text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_opens_on_rendered_diagram_not_source() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    assert_eq!(app.mermaid_blocks.len(), 1);
+
+    app.open_mermaid_popup(0);
+    let popup = app.mermaid_popup.as_ref().expect("popup open");
+    assert_eq!(
+        popup.view,
+        agent_tui_kit::state::MermaidPopupView::Diagram,
+        "popup must open on the rendered diagram"
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("Alice") && text.contains("Bob"),
+        "diagram art missing from popup: {text}"
+    );
+    assert!(
+        !text.contains("sequenceDiagram"),
+        "raw Mermaid source leaked while in diagram view: {text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_tab_switches_to_source_and_back() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StreamChunk(
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    ));
+    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.open_mermaid_popup(0);
+
+    app.toggle_mermaid_popup_view();
+    let source_text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        source_text.contains("sequenceDiagram"),
+        "source view must show the fence body: {source_text}"
+    );
+    assert_eq!(
+        app.mermaid_popup.as_ref().unwrap().view,
+        agent_tui_kit::state::MermaidPopupView::Source
+    );
+
+    app.toggle_mermaid_popup_view();
+    let diagram_text = render_main_area_text(&mut app, 100, 30);
+    assert_eq!(
+        app.mermaid_popup.as_ref().unwrap().view,
+        agent_tui_kit::state::MermaidPopupView::Diagram
+    );
+    assert!(
+        !diagram_text.contains("sequenceDiagram"),
+        "toggling back must restore the diagram: {diagram_text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_falls_back_to_source_and_labels_unsupported_syntax() {
+    // `style` statements are not supported by the upstream renderer. The log
+    // already falls back to a code card, so register the block the way a
+    // rendered diagram would be and drive the popup directly.
+    let mut app = make_app();
+    app.mermaid_blocks
+        .push(crate::widgets::state::MermaidBlock {
+            start_idx: 0,
+            end_idx: 1,
+            source: "flowchart TD\n    A[Start] --> B[Done]\n    style B fill:#ddffdd".into(),
+        });
+    app.open_mermaid_popup(0);
+
+    assert_eq!(
+        app.mermaid_popup.as_ref().unwrap().view,
+        agent_tui_kit::state::MermaidPopupView::Diagram,
+        "popup still opens in diagram mode; the renderer downgrades it"
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("flowchart TD") && text.contains("style B"),
+        "unrenderable diagram must show its source instead of blank art: {text}"
+    );
+    assert!(
+        text.contains("does not render"),
+        "fallback must explain why no diagram is shown: {text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_renders_diagram_at_wider_width_than_log() {
+    // The popup's value is width: it re-lays out the diagram against ~80% of
+    // the frame instead of the narrower log panel.
+    let source = "flowchart TD\n    A[Context too large] --> B[collect user messages]\n    B --> C[rebuild history]";
+    let mut app = make_app();
+    app.mermaid_blocks
+        .push(crate::widgets::state::MermaidBlock {
+            start_idx: 0,
+            end_idx: 1,
+            source: source.into(),
+        });
+    app.open_mermaid_popup(0);
+
+    let text = render_main_area_text(&mut app, 120, 30);
+    assert!(
+        text.contains("Context") && text.contains("collect user messages"),
+        "diagram node labels missing from popup: {text}"
+    );
+    assert!(
+        !text.contains("flowchart TD"),
+        "diagram view must not leak the fence header: {text}"
+    );
+}
+
+#[test]
+fn mermaid_popup_paints_theme_bg_across_its_area() {
+    // AGENTS.md: a render unit must paint its own bg over its full area, or
+    // ratatui's cell diffing leaves stale styled cells behind.
+    let mut app = make_app();
+    app.mermaid_blocks
+        .push(crate::widgets::state::MermaidBlock {
+            start_idx: 0,
+            end_idx: 1,
+            source: "sequenceDiagram\n  Alice->>Bob: Hello".into(),
+        });
+    app.open_mermaid_popup(0);
+
+    let theme_bg = app.theme.bg;
+    let terminal = crate::render::test_harness::render_main_area_terminal(&mut app, 100, 30);
+    let buffer = terminal.backend().buffer();
+    let expected = theme_bg;
+
+    // The popup is 80% of the frame, centered.
+    let popup_x = (100u16 * 20) / 100;
+    let popup_y = (30u16 * 20) / 100;
+    let mut offenders = 0;
+    for y in popup_y..(30 - popup_y) {
+        for x in popup_x..(100 - popup_x) {
+            let cell = &buffer[(x, y)];
+            if cell.bg != expected {
+                offenders += 1;
+                if offenders <= 3 {
+                    eprintln!(
+                        "non-bg cell at ({x},{y}): {:?} {:?}",
+                        cell.symbol(),
+                        cell.bg
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        offenders, 0,
+        "popup area must be fully painted with theme bg"
     );
 }

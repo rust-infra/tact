@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::{InstalledState, MarketplaceState};
+use super::{InstalledState, MarketplaceRecord, MarketplaceSource, MarketplaceState};
 use crate::consts::PluginHome;
 
 const MARKETPLACES_FILE: &str = "marketplaces.json";
@@ -48,13 +48,11 @@ impl PluginStore {
 
     /// Loads marketplace state and restores the built-in official marketplace.
     pub fn load_marketplaces(&self) -> Result<MarketplaceState> {
-        let path = self.home.root.join(MARKETPLACES_FILE);
-        let mut state = if path.exists() {
-            read_json(&path)?
-        } else {
-            MarketplaceState::with_builtin()
-        };
+        let mut state = self
+            .read_state::<MarketplaceState>(MARKETPLACES_FILE)?
+            .unwrap_or_else(MarketplaceState::with_builtin);
         state.ensure_builtin();
+        state.merge_discovered(codex_marketplace_records(&self.home.home));
         Ok(state)
     }
 
@@ -63,16 +61,14 @@ impl PluginStore {
         let mut state = state.clone();
         state.ensure_builtin();
         state.validate()?;
-        write_json_atomically(&self.home.root.join(MARKETPLACES_FILE), &state)
+        write_json_atomically(&self.state_file(MARKETPLACES_FILE), &state)
     }
 
     /// Loads the installed-plugin state, returning an empty state when absent.
     pub fn load_installed(&self) -> Result<InstalledState> {
-        let path = self.home.root.join(INSTALLED_FILE);
-        if !path.exists() {
-            return Ok(InstalledState::default());
-        }
-        read_json(&path)
+        Ok(self
+            .read_state::<InstalledState>(INSTALLED_FILE)?
+            .unwrap_or_default())
     }
 
     /// Returns the cache root of every installed plugin whose cached content
@@ -123,7 +119,7 @@ impl PluginStore {
                 candidate.display()
             );
         }
-        write_json_atomically(&self.home.root.join(INSTALLED_FILE), state)
+        write_json_atomically(&self.state_file(INSTALLED_FILE), state)
     }
 
     /// Commits installed state after an uninstall.
@@ -131,8 +127,85 @@ impl PluginStore {
     /// Unlike [`Self::commit_install`] there is no candidate directory to
     /// validate — the cached plugin content has already been removed.
     pub fn commit_removal(&self, state: &InstalledState) -> Result<()> {
-        write_json_atomically(&self.home.root.join(INSTALLED_FILE), state)
+        write_json_atomically(&self.state_file(INSTALLED_FILE), state)
     }
+
+    /// `$HOME/.tact/plugins/state/<file>` — where state is written, always.
+    fn state_file(&self, file: &str) -> PathBuf {
+        self.home.state.join(file)
+    }
+
+    /// Reads a state file, preferring `state/` and falling back to the legacy
+    /// root location.
+    ///
+    /// A legacy-only file is migrated to `state/` on first read and left in
+    /// place, so an older Tact binary sharing this home keeps working. The
+    /// migration write is best-effort: a read-only home must not turn a
+    /// previously working setup into a hard failure, and the value is returned
+    /// either way.
+    fn read_state<T>(&self, file: &str) -> Result<Option<T>>
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+    {
+        let current = self.state_file(file);
+        if current.exists() {
+            return read_json(&current).map(Some);
+        }
+
+        let legacy = self.home.root.join(file);
+        if !legacy.exists() {
+            return Ok(None);
+        }
+
+        let value: T = read_json(&legacy)?;
+        let _ = write_json_atomically(&current, &value);
+        Ok(Some(value))
+    }
+}
+
+fn codex_marketplace_records(home_dir: &Path) -> Vec<MarketplaceRecord> {
+    let mut records = Vec::new();
+    let personal = home_dir
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    push_codex_marketplace(&mut records, &personal, home_dir);
+
+    if let Ok(cwd) = std::env::current_dir() {
+        for root in cwd.ancestors() {
+            let repo = root
+                .join(".agents")
+                .join("plugins")
+                .join("marketplace.json");
+            if repo.exists() {
+                push_codex_marketplace(&mut records, &repo, root);
+                break;
+            }
+        }
+    }
+
+    records
+}
+
+fn push_codex_marketplace(records: &mut Vec<MarketplaceRecord>, catalog: &Path, root: &Path) {
+    let Ok(content) = fs::read_to_string(catalog) else {
+        return;
+    };
+    #[derive(serde::Deserialize)]
+    struct CatalogName {
+        name: String,
+    }
+    let Ok(catalog) = serde_json::from_str::<CatalogName>(&content) else {
+        return;
+    };
+    let name = catalog.name.trim();
+    if name.is_empty() {
+        return;
+    }
+    records.push(MarketplaceRecord {
+        name: name.to_owned(),
+        source: MarketplaceSource::LocalPath(root.to_path_buf()),
+    });
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -223,6 +296,33 @@ mod tests {
                 .unwrap()
                 .get(OFFICIAL_MARKETPLACE)
                 .is_some()
+        );
+        assert!(
+            store
+                .load_marketplaces()
+                .unwrap()
+                .get(crate::plugin::OPENAI_MARKETPLACE)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn load_marketplaces_discovers_codex_personal_marketplace() {
+        let home = tempdir().unwrap();
+        let store = PluginStore::from_home(home.path());
+        fs::create_dir_all(home.path().join(".agents/plugins")).unwrap();
+        fs::write(
+            home.path().join(".agents/plugins/marketplace.json"),
+            r#"{"name":"codex-test-market","plugins":[]}"#,
+        )
+        .unwrap();
+
+        let state = store.load_marketplaces().unwrap();
+        let record = state.get("codex-test-market").unwrap();
+
+        assert_eq!(
+            record.source,
+            MarketplaceSource::LocalPath(home.path().to_path_buf())
         );
     }
 
@@ -426,5 +526,92 @@ mod tests {
                 skills_dir: plugin_root.canonicalize().unwrap().join("skills"),
             }]
         );
+    }
+
+    // ── State location and legacy migration ─────────────────────────────
+
+    #[test]
+    fn plugin_home_exposes_explicit_home_state_and_cache_paths() {
+        let home = tempdir().unwrap();
+        let plugin_home = crate::consts::PluginHome::from_home(home.path());
+
+        assert_eq!(plugin_home.home, home.path());
+        assert_eq!(plugin_home.root, home.path().join(".tact/plugins"));
+        assert_eq!(plugin_home.state, home.path().join(".tact/plugins/state"));
+        // Derived without walking `root`'s parents, so the value survives a
+        // root-layout change.
+        assert_eq!(
+            plugin_home.state,
+            plugin_home.root.join("state"),
+            "state stays under root"
+        );
+    }
+
+    #[test]
+    fn new_state_location_wins_when_both_exist() {
+        let home = tempdir().unwrap();
+        let store = PluginStore::from_home(home.path());
+        fs::create_dir_all(home.path().join(".tact/plugins/state")).unwrap();
+        fs::write(
+            home.path().join(".tact/plugins/installed.json"),
+            r#"{"plugins":{}}"#,
+        )
+        .unwrap();
+        fs::write(
+            home.path().join(".tact/plugins/state/installed.json"),
+            r#"{"plugins":{"acme/demo":{"id":"demo","marketplace":"acme"}}}"#,
+        )
+        .unwrap();
+
+        let loaded = store.load_installed().unwrap();
+
+        assert!(
+            loaded.plugins.contains_key("acme/demo"),
+            "the state/ copy must win over the legacy copy"
+        );
+    }
+
+    #[test]
+    fn legacy_state_is_read_and_migrated_to_state_dir() {
+        let home = tempdir().unwrap();
+        let store = PluginStore::from_home(home.path());
+        fs::create_dir_all(home.path().join(".tact/plugins")).unwrap();
+        fs::write(
+            home.path().join(".tact/plugins/installed.json"),
+            r#"{"plugins":{"acme/demo":{"id":"demo","marketplace":"acme"}}}"#,
+        )
+        .unwrap();
+
+        let loaded = store.load_installed().unwrap();
+
+        assert!(
+            loaded.plugins.contains_key("acme/demo"),
+            "a legacy-only home must still resolve"
+        );
+        // Migrated, and the legacy file is deliberately left in place so an
+        // older binary sharing this home keeps working.
+        assert!(
+            home.path()
+                .join(".tact/plugins/state/installed.json")
+                .is_file()
+        );
+        assert!(home.path().join(".tact/plugins/installed.json").is_file());
+    }
+
+    #[test]
+    fn state_is_written_to_the_state_directory() {
+        let home = tempdir().unwrap();
+        let store = PluginStore::from_home(home.path());
+
+        store
+            .save_marketplaces(&super::MarketplaceState::with_builtin())
+            .unwrap();
+
+        assert!(
+            home.path()
+                .join(".tact/plugins/state/marketplaces.json")
+                .is_file()
+        );
+        assert!(!home.path().join(".tact/plugins/marketplaces.json").exists());
     }
 }

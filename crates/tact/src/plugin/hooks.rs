@@ -1,6 +1,6 @@
-//! Claude Code plugin hooks: parsing, command execution, and registration.
+//! Plugin command hooks: parsing, command execution, and registration.
 //!
-//! Claude plugins declare hooks through `.claude-plugin/plugin.json`'s
+//! Codex plugins declare hooks through `.codex-plugin/plugin.json`'s
 //! `hooks` field, which points at a hooks JSON file of the form:
 //!
 //! ```json
@@ -20,10 +20,12 @@
 //! shape and the legacy `hookSpecificOutput` shape
 //! (`permissionDecision`/`permissionDecisionReason`/`additionalContext`).
 //!
-//! Tact maps five events to loop points:
-//! `SessionStart`, `UserPromptSubmit`, `SubagentStart`, `PreToolUse`,
-//! `PostToolUse`. Failures (non-zero exit, timeout, invalid JSON) never block
-//! the agent loop — they log a warning and continue.
+//! Tact maps thirteen events to loop points:
+//! `SessionStart`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`,
+//! `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Notification`,
+//! `TaskCompleted`, `Stop`, `SessionEnd`, `PreCompact`, `PostCompact`.
+//! Failures (non-zero exit, timeout, invalid JSON) never block the agent
+//! loop — they log a warning and continue.
 
 use std::{
     collections::HashMap,
@@ -41,8 +43,12 @@ use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 use tracing::warn;
 
 use crate::{
+    compact::CompactTrigger,
     consts::PluginHome,
-    hook::{HookControl, SubagentStartContext, SubagentStartFn, ToolResult, ToolUse},
+    hook::{
+        HookControl, NotificationContext, SubagentStartContext, SubagentStartFn,
+        SubagentStopContext, SubagentStopFn, ToolResult, ToolUse,
+    },
     plugin::PluginStore,
 };
 
@@ -52,8 +58,16 @@ pub enum HookEventKind {
     SessionStart,
     UserPromptSubmit,
     SubagentStart,
+    SubagentStop,
     PreToolUse,
     PostToolUse,
+    PostToolUseFailure,
+    Notification,
+    TaskCompleted,
+    Stop,
+    SessionEnd,
+    PreCompact,
+    PostCompact,
 }
 
 impl HookEventKind {
@@ -64,8 +78,16 @@ impl HookEventKind {
             Self::SessionStart => "SessionStart",
             Self::UserPromptSubmit => "UserPromptSubmit",
             Self::SubagentStart => "SubagentStart",
+            Self::SubagentStop => "SubagentStop",
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
+            Self::PostToolUseFailure => "PostToolUseFailure",
+            Self::Notification => "Notification",
+            Self::TaskCompleted => "TaskCompleted",
+            Self::Stop => "Stop",
+            Self::SessionEnd => "SessionEnd",
+            Self::PreCompact => "PreCompact",
+            Self::PostCompact => "PostCompact",
         }
     }
 
@@ -75,8 +97,16 @@ impl HookEventKind {
             "SessionStart" => Some(Self::SessionStart),
             "UserPromptSubmit" => Some(Self::UserPromptSubmit),
             "SubagentStart" => Some(Self::SubagentStart),
+            "SubagentStop" => Some(Self::SubagentStop),
             "PreToolUse" => Some(Self::PreToolUse),
             "PostToolUse" => Some(Self::PostToolUse),
+            "PostToolUseFailure" => Some(Self::PostToolUseFailure),
+            "Notification" => Some(Self::Notification),
+            "TaskCompleted" => Some(Self::TaskCompleted),
+            "Stop" => Some(Self::Stop),
+            "SessionEnd" => Some(Self::SessionEnd),
+            "PreCompact" => Some(Self::PreCompact),
+            "PostCompact" => Some(Self::PostCompact),
             _ => None,
         }
     }
@@ -226,6 +256,18 @@ async fn run_process(
     payload: &Value,
     timeout_secs: Option<u64>,
 ) -> Result<String> {
+    // Inject the Codex/Claude-Code hook-protocol env vars into the subprocess:
+    //   - `CLAUDE_PLUGIN_ROOT` = absolute plugin cache root (the dir holding
+    //     `.codex-plugin/`, `hooks/`, `skills/`, …). Hook scripts read it to
+    //     locate their own resources; it is also the value substituted for the
+    //     `${CLAUDE_PLUGIN_ROOT}` placeholder in the command string (see
+    //     [`expand_plugin_root`]).
+    //   - `CLAUDE_PROJECT_DIR` = the agent's current working directory, so a
+    //     hook knows which project scope it is running in.
+    // The variable names intentionally keep the `CLAUDE_` prefix: that is the
+    // standard Codex/Claude-Code hook engine injects, so third-party plugin
+    // scripts work unchanged inside tact. Only the manifest dir was renamed to
+    // `.codex-plugin`; these env names are part of the cross-tool hook ABI.
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -235,6 +277,10 @@ async fn run_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // On timeout the `wait_with_output` future is dropped; without this the
+        // `sh -c` child is merely detached and keeps running (and holding its
+        // stdio pipes) after the hook has been reported as timed out.
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("failed to spawn hook command: {command}"))?;
 
@@ -394,6 +440,13 @@ struct RawHookSpecificOutput {
 
 /// Expands `${CLAUDE_PLUGIN_ROOT}` (and `$CLAUDE_PLUGIN_ROOT`) in a command
 /// string to the plugin cache root.
+///
+/// Codex/Claude-Code plugins write commands like
+/// `node "${CLAUDE_PLUGIN_ROOT}/hooks/x.js"` because the revision-hashed cache
+/// path is unknowable ahead of time. We resolve the placeholder at spawn time
+/// so the hook needs no separate discovery step; the same value is also made
+/// available to the subprocess as the `CLAUDE_PLUGIN_ROOT` env var (see
+/// [`run_process`]).
 fn expand_plugin_root(command: &str, plugin_root: &Path) -> String {
     let root = plugin_root.to_string_lossy();
     command
@@ -417,12 +470,11 @@ fn matcher_matches(matcher: Option<&str>, subject: &str) -> bool {
     }
 }
 
-/// Resolves a plugin's hooks file path, honouring both the manifest `hooks`
-/// field and Claude Code's default discovery path `hooks/hooks.json` (several
-/// official marketplace plugins omit the manifest field and rely on the
-/// default).
+/// Resolves a plugin's hooks file path, honouring the manifest `hooks` string
+/// field and the default discovery path `hooks/hooks.json` (several official
+/// marketplace plugins omit the manifest field and rely on the default).
 fn resolve_hooks_path(root: &Path, manifest: &HookManifest) -> Option<PathBuf> {
-    if let Some(relative) = manifest.hooks.as_ref() {
+    if let Some(serde_json::Value::String(relative)) = manifest.hooks.as_ref() {
         let candidate = root.join(relative);
         if candidate.is_file() {
             return Some(candidate);
@@ -437,12 +489,31 @@ fn resolve_hooks_path(root: &Path, manifest: &HookManifest) -> Option<PathBuf> {
     default.is_file().then_some(default)
 }
 
+/// Parses an inlined manifest `hooks` map (`"hooks": { "SessionStart": [...] }`).
+///
+/// Codex plugins may embed the matcher map instead of naming a hooks file; the
+/// inline map is the same shape as a hooks file's `hooks` object.
+fn inline_hooks(manifest: &HookManifest) -> Option<HooksFile> {
+    let serde_json::Value::Object(map) = manifest.hooks.as_ref()? else {
+        return None;
+    };
+    let hooks =
+        match serde_json::from_value::<HashMap<String, Vec<HookMatcher>>>(map.clone().into()) {
+            Ok(hooks) => hooks,
+            Err(error) => {
+                warn!("plugin manifest has unparseable inline hooks: {error}");
+                return None;
+            }
+        };
+    Some(HooksFile { hooks })
+}
+
 /// Loads every installed plugin's hooks file.
 fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
     let store = PluginStore::new(home.clone());
     let mut out = Vec::new();
     for root in store.installed_plugin_roots()? {
-        let manifest_path = root.root.join(".claude-plugin").join("plugin.json");
+        let manifest_path = root.root.join(".codex-plugin").join("plugin.json");
         if !manifest_path.is_file() {
             continue;
         }
@@ -458,25 +529,39 @@ fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
                 continue;
             }
         };
-        let Some(hooks_path) = resolve_hooks_path(&root.root, &manifest) else {
+        let Some(hooks) = load_installed_hooks(&root.root, &manifest) else {
             continue;
         };
-        match HooksFile::from_file(&hooks_path) {
-            Ok(hooks) => out.push(InstalledHooks {
-                plugin_root: root.root,
-                hooks,
-            }),
-            Err(error) => warn!("plugin {} hooks file skipped: {error:#}", root.plugin_id),
-        }
+        out.push(InstalledHooks {
+            plugin_root: root.root,
+            hooks,
+        });
     }
     Ok(out)
+}
+
+/// Loads one installed plugin's hooks, preferring an inline manifest map and
+/// otherwise reading the manifest-named or default hooks file.
+fn load_installed_hooks(root: &Path, manifest: &HookManifest) -> Option<HooksFile> {
+    if let Some(hooks) = inline_hooks(manifest) {
+        return Some(hooks);
+    }
+    let hooks_path = resolve_hooks_path(root, manifest)?;
+    match HooksFile::from_file(&hooks_path) {
+        Ok(hooks) => Some(hooks),
+        Err(error) => {
+            warn!("plugin hooks at {} skipped: {error:#}", root.display());
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HookManifest {
+    /// Either a repository-relative hooks file path or an inline matcher map.
     #[serde(default)]
-    hooks: Option<String>,
+    hooks: Option<serde_json::Value>,
 }
 
 struct InstalledHooks {
@@ -551,14 +636,81 @@ fn plugin_subagent_start_hooks_with_home(
     Ok(out)
 }
 
-/// Applies every installed plugin's `SessionStart` / `UserPromptSubmit` /
-/// `PreToolUse` / `PostToolUse` command hooks to an agent builder.
+/// Builds `SubagentStop` command-hook closures for every installed plugin.
+///
+/// Stored on [`ToolContext`](crate::tool::ToolContext) and invoked by
+/// `spawn_subagent` after the child finishes; the `additionalContext` /
+/// `decision` output is read but a `block` is ignored (the child already
+/// returned), and the hook may not rewrite the summary in v1 — matching the
+/// observational SubagentStop contract.
+pub fn plugin_subagent_stop_hooks(work_dir: &Path) -> Result<Vec<Arc<dyn SubagentStopFn>>> {
+    match PluginHome::from_environment() {
+        Some(home) => plugin_subagent_stop_hooks_with_home(&home, work_dir),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn plugin_subagent_stop_hooks_with_home(
+    home: &PluginHome,
+    work_dir: &Path,
+) -> Result<Vec<Arc<dyn SubagentStopFn>>> {
+    let mut out: Vec<Arc<dyn SubagentStopFn>> = Vec::new();
+    for installed in installed_hooks(home)? {
+        for (matcher, command) in installed.hooks.commands_for(HookEventKind::SubagentStop) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let plugin_root = installed.plugin_root.clone();
+            let work_dir = work_dir.to_path_buf();
+            out.push(Arc::new(move |ctx: &mut SubagentStopContext| {
+                let command = command.clone();
+                let plugin_root = plugin_root.clone();
+                let work_dir = work_dir.clone();
+                let matcher = matcher.clone();
+                let agent_type = ctx.agent_type.clone();
+                let summary = ctx.summary.clone();
+                Box::pin(async move {
+                    if !matcher_matches(matcher.as_deref(), &agent_type) {
+                        return Ok(HookControl::Continue);
+                    }
+                    let output = run_command_hook(
+                        &command,
+                        &plugin_root,
+                        &HookRunInput {
+                            session_id: String::new(),
+                            work_dir,
+                            hook_event_name: "SubagentStop",
+                            event: json!({
+                                "agent_id": agent_type,
+                                "agent_type": agent_type,
+                                "last_assistant_message": summary,
+                            }),
+                        },
+                    )
+                    .await;
+                    // Observational: a block cannot resume a finished child;
+                    // ignore it but log nothing extra (run_command_hook already
+                    // warns on transport failures).
+                    let _ = output;
+                    Ok(HookControl::Continue)
+                })
+            }));
+        }
+    }
+    Ok(out)
+}
+
+/// Applies every installed plugin's command hooks to an agent builder.
 ///
 /// Hooks are appended after any existing Rust closures, per plugin in
-/// installation order. A `block` output from `PreToolUse` / `PostToolUse`
-/// propagates through [`HookControl`]; `UserPromptSubmit` appends
-/// `additionalContext` to the prompt; `SessionStart`'s `systemPrompt` output
-/// is logged but not applied (unsupported in v1).
+/// `<marketplace>/<plugin>` key order — the order of `installed.json`'s
+/// `BTreeMap`, not installation time.
+///
+/// A `block` output from `PreToolUse` / `PostToolUse` /
+/// `Stop` / `PreCompact` propagates through [`HookControl`]; `UserPromptSubmit`
+/// appends `additionalContext` to the prompt; `SessionStart`'s `systemPrompt`
+/// output is logged but not applied (unsupported in v1); `SessionEnd` /
+/// `PostCompact` / `SubagentStop` / `PostToolUseFailure` / `Notification` /
+/// `TaskCompleted` are observational.
 pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate::Agent> {
     let Some(home) = PluginHome::from_environment() else {
         return Ok(agent);
@@ -735,6 +887,268 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                 },
             );
         }
+
+        for (matcher, command) in installed
+            .hooks
+            .commands_for(HookEventKind::PostToolUseFailure)
+        {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let plugin_root = installed.plugin_root.clone();
+            let work_dir = work_dir.clone();
+            agent = agent.with_post_tool_failure(
+                move |_agent: &crate::Agent, tool_use: &ToolUse, error: &str| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let plugin_root = plugin_root.clone();
+                    let work_dir = work_dir.clone();
+                    let tool_name = tool_use.name.clone();
+                    let tool_input = tool_use.input.clone();
+                    let tool_use_id = tool_use.id.clone();
+                    let error = error.to_string();
+                    Box::pin(async move {
+                        if !matcher_matches(matcher.as_deref(), &tool_name) {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_command_hook(
+                            &command,
+                            &plugin_root,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "PostToolUseFailure",
+                                event: json!({
+                                    "tool_name": tool_name,
+                                    "tool_input": tool_input,
+                                    "tool_use_id": tool_use_id,
+                                    "error": error,
+                                    "is_interrupt": false,
+                                }),
+                            },
+                        )
+                        .await;
+                        // Observational: the tool already failed.
+                        let _ = output;
+                        Ok(HookControl::Continue)
+                    })
+                },
+            );
+        }
+
+        for (matcher, command) in installed.hooks.commands_for(HookEventKind::Notification) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let plugin_root = installed.plugin_root.clone();
+            let work_dir = work_dir.clone();
+            agent =
+                agent.with_notification(move |_agent: &crate::Agent, ctx: &NotificationContext| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let plugin_root = plugin_root.clone();
+                    let work_dir = work_dir.clone();
+                    let notification_type = ctx.notification_type.clone();
+                    let title = ctx.title.clone();
+                    let message = ctx.message.clone();
+                    Box::pin(async move {
+                        // Claude Code matches Notification against the
+                        // notification type (`permission_prompt`).
+                        if !matcher_matches(matcher.as_deref(), &notification_type) {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_command_hook(
+                            &command,
+                            &plugin_root,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "Notification",
+                                event: json!({
+                                    "notification_type": notification_type,
+                                    "title": title,
+                                    "message": message,
+                                }),
+                            },
+                        )
+                        .await;
+                        // Observational.
+                        let _ = output;
+                        Ok(HookControl::Continue)
+                    })
+                });
+        }
+
+        for (matcher, command) in installed.hooks.commands_for(HookEventKind::TaskCompleted) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let plugin_root = installed.plugin_root.clone();
+            let work_dir = work_dir.clone();
+            agent = agent.with_task_completed(move |agent: &crate::Agent| {
+                let matcher = matcher.clone();
+                let command = command.clone();
+                let plugin_root = plugin_root.clone();
+                let work_dir = work_dir.clone();
+                let task_description = agent.last_assistant_message().unwrap_or_default();
+                Box::pin(async move {
+                    // TaskCompleted has no matcher in Claude Code; an explicit
+                    // matcher is ignored (matching everything) for parity.
+                    if !matcher_matches(matcher.as_deref(), "") {
+                        return Ok(HookControl::Continue);
+                    }
+                    let output = run_command_hook(
+                        &command,
+                        &plugin_root,
+                        &HookRunInput {
+                            session_id: String::new(),
+                            work_dir,
+                            hook_event_name: "TaskCompleted",
+                            event: json!({
+                                "task_description": task_description,
+                            }),
+                        },
+                    )
+                    .await;
+                    // Observational.
+                    let _ = output;
+                    Ok(HookControl::Continue)
+                })
+            });
+        }
+
+        for (matcher, command) in installed.hooks.commands_for(HookEventKind::Stop) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let plugin_root = installed.plugin_root.clone();
+            let work_dir = work_dir.clone();
+            agent = agent.with_stop(move |agent: &crate::Agent| {
+                let matcher = matcher.clone();
+                let command = command.clone();
+                let plugin_root = plugin_root.clone();
+                let work_dir = work_dir.clone();
+                let last = agent.last_assistant_message();
+                Box::pin(async move {
+                    // Stop has no matcher in Codex; an explicit matcher is
+                    // ignored (matching everything) for parity.
+                    if !matcher_matches(matcher.as_deref(), "") {
+                        return Ok(HookControl::Continue);
+                    }
+                    let output = run_command_hook(
+                        &command,
+                        &plugin_root,
+                        &HookRunInput {
+                            session_id: String::new(),
+                            work_dir,
+                            hook_event_name: "Stop",
+                            event: json!({
+                                "stop_hook_active": false,
+                                "last_assistant_message": last,
+                            }),
+                        },
+                    )
+                    .await;
+                    // `block` means "continue the turn with reason as the next
+                    // prompt" (Codex continuation fragment); propagate it.
+                    Ok(output.control)
+                })
+            });
+        }
+
+        for (matcher, command) in installed.hooks.commands_for(HookEventKind::SessionEnd) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let plugin_root = installed.plugin_root.clone();
+            let work_dir = work_dir.clone();
+            agent = agent.with_session_end(move |_agent: &crate::Agent| {
+                let matcher = matcher.clone();
+                let command = command.clone();
+                let plugin_root = plugin_root.clone();
+                let work_dir = work_dir.clone();
+                Box::pin(async move {
+                    // Codex matches SessionEnd against `reason` ("other").
+                    if !matcher_matches(matcher.as_deref(), "other") {
+                        return Ok(HookControl::Continue);
+                    }
+                    let output = run_command_hook(
+                        &command,
+                        &plugin_root,
+                        &HookRunInput {
+                            session_id: String::new(),
+                            work_dir,
+                            hook_event_name: "SessionEnd",
+                            event: json!({ "reason": "other" }),
+                        },
+                    )
+                    .await;
+                    // Observational: a block cannot prevent teardown.
+                    let _ = output;
+                    Ok(HookControl::Continue)
+                })
+            });
+        }
+
+        for (matcher, command) in installed.hooks.commands_for(HookEventKind::PreCompact) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let plugin_root = installed.plugin_root.clone();
+            let work_dir = work_dir.clone();
+            agent =
+                agent.with_pre_compact(move |_agent: &crate::Agent, trigger: CompactTrigger| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let plugin_root = plugin_root.clone();
+                    let work_dir = work_dir.clone();
+                    Box::pin(async move {
+                        if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_command_hook(
+                            &command,
+                            &plugin_root,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "PreCompact",
+                                event: json!({ "trigger": trigger.as_str() }),
+                            },
+                        )
+                        .await;
+                        // `block` vetoes the compaction (Codex `should_stop`).
+                        Ok(output.control)
+                    })
+                });
+        }
+
+        for (matcher, command) in installed.hooks.commands_for(HookEventKind::PostCompact) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let plugin_root = installed.plugin_root.clone();
+            let work_dir = work_dir.clone();
+            agent =
+                agent.with_post_compact(move |_agent: &crate::Agent, trigger: CompactTrigger| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let plugin_root = plugin_root.clone();
+                    let work_dir = work_dir.clone();
+                    Box::pin(async move {
+                        if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_command_hook(
+                            &command,
+                            &plugin_root,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "PostCompact",
+                                event: json!({ "trigger": trigger.as_str() }),
+                            },
+                        )
+                        .await;
+                        // Observational: compaction already committed.
+                        let _ = output;
+                        Ok(HookControl::Continue)
+                    })
+                });
+        }
     }
 
     Ok(agent)
@@ -752,6 +1166,41 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn parses_inline_manifest_hooks() {
+        let manifest: HookManifest = serde_json::from_str(
+            r#"{
+                "hooks": {
+                    "SessionStart": [{
+                        "hooks": [{ "type": "command", "command": "echo hi" }]
+                    }]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let hooks = inline_hooks(&manifest).unwrap();
+
+        assert_eq!(hooks.commands_for(HookEventKind::SessionStart).len(), 1);
+    }
+
+    #[test]
+    fn empty_inline_manifest_hooks_yield_no_commands() {
+        let manifest: HookManifest = serde_json::from_str(r#"{"hooks":{}}"#).unwrap();
+
+        let hooks = inline_hooks(&manifest).unwrap();
+
+        assert!(hooks.commands_for(HookEventKind::SessionStart).is_empty());
+    }
+
+    #[test]
+    fn string_manifest_hooks_are_not_inline() {
+        let manifest: HookManifest =
+            serde_json::from_str(r#"{"hooks":"./hooks/hooks.json"}"#).unwrap();
+
+        assert!(inline_hooks(&manifest).is_none());
+    }
 
     #[test]
     fn parses_claude_hooks_file() {
@@ -788,6 +1237,24 @@ mod tests {
         let prompt = hooks.commands_for(HookEventKind::UserPromptSubmit);
         assert_eq!(prompt.len(), 1);
         assert_eq!(prompt[0].0.matcher, None);
+    }
+
+    #[test]
+    fn parses_new_hook_event_kinds() {
+        assert_eq!(
+            HookEventKind::parse("PostToolUseFailure"),
+            Some(HookEventKind::PostToolUseFailure)
+        );
+        assert_eq!(
+            HookEventKind::parse("Notification"),
+            Some(HookEventKind::Notification)
+        );
+        assert_eq!(
+            HookEventKind::parse("TaskCompleted"),
+            Some(HookEventKind::TaskCompleted)
+        );
+        assert_eq!(HookEventKind::TaskCompleted.as_str(), "TaskCompleted");
+        assert_eq!(HookEventKind::parse("Nope"), None);
     }
 
     #[test]
@@ -1205,10 +1672,10 @@ mod tests {
         let home = tempdir().unwrap();
         let plugin_home = PluginHome::from_home(home.path());
         let plugin_root = plugin_home.cache.join("acme/demo/abc123");
-        std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
         std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
         std::fs::write(
-            plugin_root.join(".claude-plugin/plugin.json"),
+            plugin_root.join(".codex-plugin/plugin.json"),
             r#"{ "name": "demo" }"#,
         )
         .unwrap();
@@ -1277,10 +1744,10 @@ mod tests {
         let home = tempdir().unwrap();
         let plugin_home = PluginHome::from_home(home.path());
         let plugin_root = plugin_home.cache.join("acme/demo/abc123");
-        std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
         std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
         std::fs::write(
-            plugin_root.join(".claude-plugin/plugin.json"),
+            plugin_root.join(".codex-plugin/plugin.json"),
             r#"{ "name": "demo" }"#,
         )
         .unwrap();

@@ -258,7 +258,58 @@ pub fn messages_to_openai(
     // assistant messages, which can happen after MaxTokens when thinking blocks
     // are dropped or a tool-call was truncated before any text was emitted).
     sanitize_assistant_messages(&mut result, &mut reasoning);
+    // Defensive: the mirror image — drop `role: tool` messages with no preceding
+    // assistant `tool_calls` (providers reject them with a 400).
+    drop_orphaned_tool_messages(&mut result, &mut reasoning);
     (result, reasoning)
+}
+
+/// Removes `role: tool` messages that are not answers to a preceding assistant
+/// `tool_calls` list.
+///
+/// [`sanitize_assistant_messages`] handles the *forward* direction (tool calls
+/// with missing results). This handles the *backward* direction: a tool result
+/// whose producing assistant turn is gone, which a provider rejects with
+/// `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`.
+/// Compaction rebuilds history from retained user turns and can leave exactly
+/// this shape, so the wire conversion is the last line of defense.
+fn drop_orphaned_tool_messages(
+    messages: &mut Vec<ChatCompletionRequestMessage>,
+    reasoning: &mut Vec<Option<String>>,
+) {
+    debug_assert_eq!(messages.len(), reasoning.len());
+    let mut i = 0;
+    while i < messages.len() {
+        let ChatCompletionRequestMessage::Tool(tool) = &messages[i] else {
+            i += 1;
+            continue;
+        };
+        // Parallel tool calls produce a *run* of consecutive tool messages that
+        // share one parent assistant message, so walk back over the whole run
+        // before looking for the parent.
+        let mut parent = i;
+        while parent > 0 && matches!(messages[parent - 1], ChatCompletionRequestMessage::Tool(_)) {
+            parent -= 1;
+        }
+        let answered_by_parent = parent
+            .checked_sub(1)
+            .and_then(|idx| match &messages[idx] {
+                ChatCompletionRequestMessage::Assistant(assistant) => assistant.tool_calls.as_ref(),
+                _ => None,
+            })
+            .is_some_and(|calls| calls.iter().any(|call| call.id == tool.tool_call_id));
+        if answered_by_parent {
+            i += 1;
+            continue;
+        }
+        tracing::warn!(
+            tool_call_id = %tool.tool_call_id,
+            "Dropping tool message with no preceding assistant tool_calls \
+             (context may have been compacted)."
+        );
+        messages.remove(i);
+        reasoning.remove(i);
+    }
 }
 
 /// Defensive validation of assistant messages for OpenAI-compatible APIs.
@@ -481,6 +532,14 @@ mod tests {
         // Harness-style: a tool result that emits an image cannot ride
         // `role:tool` (string-only), so it is folded into a following `user`
         // message with a text prefix + image_url part.
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "tool-1".to_string(),
+                name: "screenshot".to_string(),
+                input: serde_json::json!({"path": "pic.png"}),
+            }],
+        );
         let msg = Message::new_blocks(
             Role::User,
             vec![
@@ -498,14 +557,15 @@ mod tests {
             ],
         );
 
-        let (openai, _) = messages_to_openai(&[msg]);
-        // First: the string-only tool message. Second: the user image message.
-        assert_eq!(openai.len(), 2);
-        let ChatCompletionRequestMessage::Tool(tool) = &openai[0] else {
+        let (openai, _) = messages_to_openai(&[assistant, msg]);
+        // First: the assistant tool call. Second: the string-only tool message.
+        // Third: the user image message.
+        assert_eq!(openai.len(), 3);
+        let ChatCompletionRequestMessage::Tool(tool) = &openai[1] else {
             panic!("expected tool message");
         };
         assert_eq!(tool.tool_call_id, "tool-1");
-        let ChatCompletionRequestMessage::User(user) = &openai[1] else {
+        let ChatCompletionRequestMessage::User(user) = &openai[2] else {
             panic!("expected user image message");
         };
         let ChatCompletionRequestUserMessageContent::Array(parts) = &user.content else {
@@ -795,6 +855,77 @@ mod tests {
             )),
             "subsequent user messages must be preserved"
         );
+    }
+
+    #[test]
+    fn orphan_tool_messages_without_preceding_tool_calls_are_dropped() {
+        // Regression: compaction can rebuild history that starts with a harness
+        // turn whose tool_result survived while its assistant tool_use turn was
+        // dropped. Providers reject that with "Messages with role 'tool' must be
+        // a response to a preceding message with 'tool_calls'".
+        let orphan = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_gone".to_string(),
+                content: "<path>shot.png</path>".to_string(),
+            }],
+        );
+        let summary = Message::new_text(Role::User, "handoff summary".to_string());
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "mock".to_string(),
+            messages: vec![orphan, summary],
+            max_tokens: 1024,
+        });
+
+        let (openai_request, reasoning) = build_openai_request(&request);
+        assert_eq!(
+            openai_request.messages.len(),
+            reasoning.len(),
+            "reasoning must stay aligned after orphan tool message removal"
+        );
+        assert!(
+            openai_request
+                .messages
+                .iter()
+                .all(|m| !matches!(m, ChatCompletionRequestMessage::Tool(_))),
+            "tool message with no preceding tool_calls must be dropped"
+        );
+    }
+
+    #[test]
+    fn tool_message_with_preceding_tool_calls_is_kept() {
+        // The guard must not over-drop: a well-formed pair survives.
+        let assistant = Message::new_blocks(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "call_ok".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "a.rs"}),
+            }],
+        );
+        let result = Message::new_blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_ok".to_string(),
+                content: "file body".to_string(),
+            }],
+        );
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "mock".to_string(),
+            messages: vec![assistant, result],
+            max_tokens: 1024,
+        });
+
+        let (openai_request, _) = build_openai_request(&request);
+        let tool = openai_request
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                ChatCompletionRequestMessage::Tool(t) => Some(t),
+                _ => None,
+            })
+            .expect("well-formed tool message must be kept");
+        assert_eq!(tool.tool_call_id, "call_ok");
     }
 
     #[test]

@@ -5,7 +5,7 @@ use ratatui::{
 };
 use tact_protocol::{
     AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason,
-    ThinkingChunk, UserCommand,
+    ThinkingChunk, UiResponse, UserCommand,
 };
 
 use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
@@ -62,6 +62,136 @@ impl App {
         //    (log/status/scroll effects, select popups, plan writes).
         self.shell_handle(update);
         self.refresh_tail_scroll();
+        // 5. Invariant: a pending select request must stay visible. If an
+        //    update reset `input_mode` away from `Select` while a request is
+        //    still outstanding (the "missed popup" hang), restore it so the
+        //    popup keeps rendering and the user can still answer.
+        self.restore_pending_select_mode();
+        self.reconcile_pending_ui();
+    }
+
+    /// A select request is "pending" whenever `select.request_id` is set. The
+    /// popup only renders in [`InputMode::Select`], so the two must not be
+    /// allowed to drift apart: a request whose popup stopped rendering can
+    /// never be answered and its waiter hangs forever. Any agent update that
+    /// reset the mode while a request is outstanding is corrected here.
+    fn restore_pending_select_mode(&mut self) {
+        if self.select.request_id.is_some() && !matches!(self.input_mode, InputMode::Select) {
+            self.input_mode = InputMode::Select;
+        }
+    }
+
+    /// Install the in-process pending UI broker and reconcile immediately.
+    pub(crate) fn set_pending_ui(&mut self, pending_ui: tact::ui_responder::UiResponder) {
+        self.pending_ui = Some(pending_ui);
+        self.reconcile_pending_ui();
+    }
+
+    /// Reconcile the visible select popup with the broker's pending snapshot.
+    ///
+    /// This is the pull half of the Step 2 design: `RequestSelect` events may
+    /// be lost or duplicated, but the broker snapshot is authoritative.
+    pub(crate) fn reconcile_pending_ui(&mut self) {
+        let pending = match &self.pending_ui {
+            Some(ui) => ui.snapshot(),
+            None => return,
+        };
+        self.reconcile_pending_selects(&pending);
+    }
+
+    fn reconcile_pending_selects(&mut self, pending: &[tact::ui_responder::PendingUiRequest]) {
+        if let Some(current_id) = self.select.request_id {
+            if pending
+                .iter()
+                .any(|request| request.request_id == current_id)
+            {
+                // Same request: keep the popup (and the user's cursor) as-is,
+                // but never let another update hide it.
+                if self.select_kind == SelectKind::Agent
+                    && !matches!(self.input_mode, InputMode::Select)
+                {
+                    self.input_mode = InputMode::Select;
+                    self.dirty = true;
+                }
+                return;
+            }
+
+            // The request disappeared (answered, withdrawn, or stale): close
+            // the ghost popup and fall through to the next pending request.
+            self.select = SelectPopup::default();
+            self.select_kind = SelectKind::Agent;
+            if matches!(self.input_mode, InputMode::Select) {
+                self.input_mode = InputMode::Normal;
+            }
+            self.dirty = true;
+        }
+
+        // Never override a local (non-agent) select. The agent request stays in
+        // the broker and is picked up when the local flow closes.
+        if self.select_kind != SelectKind::Agent || self.select.request_id.is_some() {
+            return;
+        }
+
+        let Some(next) = pending.first() else {
+            return;
+        };
+
+        match next.kind {
+            tact::ui_responder::PendingUiRequestKind::Select => {
+                self.select.set(
+                    next.prompt.clone(),
+                    next.options.clone(),
+                    next.request_id,
+                    next.log_confirm,
+                );
+            }
+            tact::ui_responder::PendingUiRequestKind::MultiSelect => {
+                self.select.set_multi(
+                    next.prompt.clone(),
+                    next.options.clone(),
+                    next.request_id,
+                    false,
+                );
+            }
+        }
+        self.select_kind = SelectKind::Agent;
+        self.input_mode = InputMode::Select;
+        self.dirty = true;
+    }
+
+    /// Answer a UI request through the in-process broker when available; fall
+    /// back to the legacy `UserCommand::UiResponse` transport otherwise.
+    pub(crate) fn respond_ui(&self, response: UiResponse) {
+        if let Some(ui) = &self.pending_ui {
+            if !ui.respond(response) {
+                tracing::warn!("stale UI response for unknown request id");
+            }
+        } else {
+            let _ = self.user_cmd_tx.send(UserCommand::UiResponse(response));
+        }
+    }
+
+    /// Cancel the current task. If an agent select is open, answer it with
+    /// `None` first so the permission waiter is not left hanging.
+    pub(crate) fn cancel_task(&mut self) {
+        if let Some(request_id) = self.select.request_id {
+            let response = if self.select.multi {
+                UiResponse::MultiSelect {
+                    request_id,
+                    choices: None,
+                }
+            } else {
+                UiResponse::Select {
+                    request_id,
+                    choice: None,
+                }
+            };
+            self.respond_ui(response);
+        }
+        let _ = self.user_cmd_tx.send(UserCommand::Cancel);
+        // Broker mode: the response above removed the pending entry; reconcile
+        // now so the popup disappears immediately instead of on the next tick.
+        self.reconcile_pending_ui();
     }
 
     /// Route an update to the component registry (state-owner components).
@@ -282,42 +412,47 @@ impl App {
                 request_id,
                 log_confirm,
             } => {
-                self.select_kind = SelectKind::Agent;
-                if self.select.request_id.is_some() {
-                    // A prior agent select is still open — queue this one so a
-                    // concurrent subagent's permission prompt doesn't overwrite
-                    // (and hang) the first waiter.
-                    self.pending_agent_selects.push_back(AgentSelectRequest {
-                        prompt,
-                        options,
-                        request_id,
-                        multi: false,
-                        log_confirm,
-                    });
-                } else {
-                    self.select.set(prompt, options, request_id, log_confirm);
-                    self.input_mode = InputMode::Select;
+                if self.pending_ui.is_none() {
+                    self.select_kind = SelectKind::Agent;
+                    if self.select.request_id.is_some() {
+                        // Legacy path: the event itself is authoritative.
+                        self.pending_agent_selects.push_back(AgentSelectRequest {
+                            prompt,
+                            options,
+                            request_id,
+                            multi: false,
+                            log_confirm,
+                        });
+                    } else {
+                        self.select.set(prompt, options, request_id, log_confirm);
+                        self.input_mode = InputMode::Select;
+                    }
                 }
+                // Broker path: RequestSelect is only a wake-up hint; the
+                // actual state is reconciled from the broker snapshot.
             }
             AgentUpdate::RequestMultiSelect {
                 prompt,
                 options,
                 request_id,
             } => {
-                self.select_kind = SelectKind::Agent;
-                // Choice is shown on the ask_user tool meta row; no duplicate log line.
-                if self.select.request_id.is_some() {
-                    self.pending_agent_selects.push_back(AgentSelectRequest {
-                        prompt,
-                        options,
-                        request_id,
-                        multi: true,
-                        log_confirm: false,
-                    });
-                } else {
-                    self.select.set_multi(prompt, options, request_id, false);
-                    self.input_mode = InputMode::Select;
+                if self.pending_ui.is_none() {
+                    self.select_kind = SelectKind::Agent;
+                    if self.select.request_id.is_some() {
+                        // Legacy path: queue behind the currently-open select.
+                        self.pending_agent_selects.push_back(AgentSelectRequest {
+                            prompt,
+                            options,
+                            request_id,
+                            multi: true,
+                            log_confirm: false,
+                        });
+                    } else {
+                        self.select.set_multi(prompt, options, request_id, false);
+                        self.input_mode = InputMode::Select;
+                    }
                 }
+                // Broker path: RequestMultiSelect is only a wake-up hint.
             }
             AgentUpdate::ThinkingChunk(chunk) => {
                 match chunk {
@@ -350,12 +485,13 @@ impl App {
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed_tail(tasks, reason);
             }
-            // TokenUsage / ModelInfo → StatusBarComponent (dispatch).
+            // TokenUsage / ModelInfo / TurnStats → StatusBarComponent (dispatch).
             // ToolMeta → ToolComponent (dispatch).
             // StreamChunk → StreamComponent parse + apply_stream_events.
             // SubagentsChanged → SubagentPanelComponent (registry dispatch).
             AgentUpdate::TokenUsage(_)
             | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
             | AgentUpdate::SubagentsChanged { .. } => {}
@@ -375,6 +511,7 @@ impl App {
         match update {
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
+            | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::ToolProgress { .. } => {}
@@ -382,6 +519,7 @@ impl App {
         }
         match update {
             AgentUpdate::TokenUsage(_)
+            | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::ToolProgress { .. } => {}
@@ -761,7 +899,10 @@ mod lifecycle_tests {
     use crate::widgets::state::app::extensions::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
     use crate::{
         render::test_harness::render_log_panel_text,
-        widgets::state::{App, Status},
+        widgets::{
+            state::{App, Status},
+            tool_widget::TOOL_HEADER_ROWS,
+        },
     };
 
     fn make_app() -> App {
@@ -919,7 +1060,7 @@ mod lifecycle_tests {
     }
 
     fn write_skill(work_dir: &std::path::Path, name: &str) {
-        let skill_dir = work_dir.join(".claude/skills").join(name);
+        let skill_dir = work_dir.join(".tact/skills").join(name);
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
@@ -1504,12 +1645,18 @@ mod lifecycle_tests {
             },
         });
         let completed_rows = app.tools_mut().blocks[0].output.visual_rows(false);
+        let collapsed = app.tools_mut().blocks[0].output.layout.detail_collapsed;
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("late\n")],
         });
 
         assert!(completed_rows < live_rows);
+        assert!(
+            collapsed,
+            "completed command output must collapse to its header rows"
+        );
+        assert_eq!(completed_rows, TOOL_HEADER_ROWS);
         assert!(app.tools_mut().active.is_empty());
         assert_eq!(
             app.tools_mut().blocks[0].output.detail_full.as_deref(),
@@ -1678,6 +1825,75 @@ mod lifecycle_tests {
             joined.contains("150 tokens (prompt 100 · completion 50 · cache 10 · reasoning 5)"),
             "token part missing: {joined}"
         );
+    }
+
+    #[test]
+    fn turn_stats_update_reaches_status_bar() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::TurnStats {
+            turns_taken: 2,
+            max_turns: None,
+        });
+        assert_eq!(app.status_bar_mut().turn_llm, 2);
+        assert_eq!(app.status_bar_mut().turn_llm_cap, None);
+    }
+
+    #[test]
+    fn turn_stats_is_metadata_and_keeps_the_loading_placeholder() {
+        // `TurnStats` fires once per agent-loop iteration — i.e. at the start of
+        // the task and between turns, while the loading spinner is up. It is
+        // per-call metadata (same class as `TokenUsage`/`ModelInfo`), so it must
+        // not run the content-update gates: dropping the spinner here would make
+        // it vanish the moment the loop starts.
+        let mut app = make_app();
+        app.status = Status::Planning;
+        app.append_blank(crate::widgets::state::LogItemKind::SystemTool);
+        app.loading_idx = Some(app.log.items.len().saturating_sub(1));
+
+        app.handle_agent_update(AgentUpdate::TurnStats {
+            turns_taken: 1,
+            max_turns: None,
+        });
+
+        assert!(
+            app.loading_idx.is_some(),
+            "metadata update must keep the loading placeholder"
+        );
+    }
+
+    #[test]
+    fn completed_turns_accumulate_timing_and_average() {
+        let mut app = make_app();
+        // Two finished turns with distinct, easily-summed wall clocks.
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(60));
+        app.add_task_end_separator();
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(180));
+        app.add_task_end_separator();
+
+        let bar = app.status_bar_mut();
+        assert_eq!(bar.turn_done, 2, "both turns must be counted");
+        assert!(
+            bar.turn_total_secs >= 238 && bar.turn_total_secs <= 245,
+            "total turn seconds should sum both turns, got {}",
+            bar.turn_total_secs
+        );
+        assert!(
+            bar.turn_last_secs.is_some_and(|s| (178..=185).contains(&s)),
+            "last turn should be the second (180s) one, got {:?}",
+            bar.turn_last_secs
+        );
+    }
+
+    #[test]
+    fn synthetic_separator_does_not_accumulate_turn_timing() {
+        let mut app = make_app();
+        // No start time (the `add_task_end_separator` else-branch path).
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_end_separator();
+        let bar = app.status_bar_mut();
+        assert_eq!(bar.turn_done, 0, "no start time ⇒ no completed turn");
+        assert_eq!(bar.turn_total_secs, 0);
+        assert_eq!(bar.turn_last_secs, None);
     }
 
     #[test]
@@ -1958,6 +2174,102 @@ mod lifecycle_tests {
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(app.select.prompt.contains("Allow bash"));
         assert_eq!(app.select.request_id, Some(1));
+    }
+
+    #[test]
+    fn pending_select_stays_visible_after_other_updates() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        // A permission prompt is pending.
+        app.handle_agent_update(AgentUpdate::RequestSelect {
+            request_id: 7,
+            prompt: "Allow write?".into(),
+            options: vec!["Allow once".into(), "Deny".into()],
+            log_confirm: false,
+        });
+        assert!(matches!(app.input_mode, InputMode::Select));
+
+        // An unrelated update resets the mode (the historical "missed popup"
+        // hang). The pending request must force the popup back on screen.
+        app.handle_agent_update(AgentUpdate::SessionStats("tokens: 42".into()));
+        assert!(
+            matches!(app.input_mode, InputMode::Select),
+            "a pending select must stay rendered so it can still be answered"
+        );
+        assert_eq!(app.select.request_id, Some(7));
+    }
+
+    #[test]
+    fn broker_snapshot_shows_request_without_request_select_hint() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        let responder = tact::ui_responder::UiResponder::new();
+        app.set_pending_ui(responder.clone());
+
+        let (request_id, _rx) = responder.register_select(
+            "Allow write?".into(),
+            vec!["Allow once".into(), "Deny".into()],
+            false,
+        );
+
+        // No AgentUpdate::RequestSelect was delivered — reconcile still shows
+        // the authoritative broker state.
+        app.reconcile_pending_ui();
+        assert_eq!(app.select.request_id, Some(request_id));
+        assert!(matches!(app.input_mode, InputMode::Select));
+
+        assert!(responder.respond(tact_protocol::UiResponse::Select {
+            request_id,
+            choice: Some(0),
+        }));
+        app.reconcile_pending_ui();
+        assert_eq!(app.select.request_id, None);
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn broker_snapshot_restores_popup_when_input_mode_is_reset() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        let responder = tact::ui_responder::UiResponder::new();
+        app.set_pending_ui(responder.clone());
+        let (request_id, _rx) = responder.register_select(
+            "Allow write?".into(),
+            vec!["Allow once".into(), "Deny".into()],
+            false,
+        );
+        app.reconcile_pending_ui();
+        assert_eq!(app.select.request_id, Some(request_id));
+
+        app.input_mode = InputMode::Normal;
+        app.reconcile_pending_ui();
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert_eq!(app.select.request_id, Some(request_id));
+    }
+
+    #[test]
+    fn broker_snapshot_advances_to_next_pending_request() {
+        let mut app = make_app();
+        let responder = tact::ui_responder::UiResponder::new();
+        app.set_pending_ui(responder.clone());
+
+        let (first, _rx1) = responder.register_select("first".into(), vec!["1".into()], false);
+        let (second, _rx2) = responder.register_select("second".into(), vec!["2".into()], false);
+
+        app.reconcile_pending_ui();
+        assert_eq!(app.select.request_id, Some(first));
+        assert_eq!(app.select.prompt, "first");
+
+        assert!(responder.respond(tact_protocol::UiResponse::Select {
+            request_id: first,
+            choice: Some(0),
+        }));
+        app.reconcile_pending_ui();
+        assert_eq!(app.select.request_id, Some(second));
+        assert_eq!(app.select.prompt, "second");
     }
 
     #[test]

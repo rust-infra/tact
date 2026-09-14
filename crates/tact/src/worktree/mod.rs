@@ -49,6 +49,48 @@ pub struct SharedWorktreeManager {
     inner: Arc<WorktreeManager>,
 }
 
+/// Longest accepted worktree name. Well under every relevant limit (a path
+/// component, `wt/<name>` ref, and the SQLite column) while leaving room for
+/// the `.worktrees/` prefix.
+const MAX_WORKTREE_NAME_LEN: usize = 100;
+
+/// Rejects names that are unsafe as both a path component and a git ref.
+///
+/// Allowed: ASCII alphanumerics plus `-`, `_`, `.` and `/`, under
+/// [`MAX_WORKTREE_NAME_LEN`], with no `.`/`..` component, no leading `-` or
+/// `.`, and no `.lock` suffix. This mirrors `git check-ref-format` closely
+/// enough that `git worktree add` never sees a name we would reject later.
+fn validate_worktree_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("worktree name must not be empty");
+    }
+    if name.chars().count() > MAX_WORKTREE_NAME_LEN {
+        anyhow::bail!("worktree name is longer than {MAX_WORKTREE_NAME_LEN} characters: {name:?}");
+    }
+    // The name is joined onto `<repo>/.worktrees`; `Path::join` with an
+    // absolute path *replaces* the base, so a leading '/' is a real escape,
+    // not just invalid ref syntax.
+    if !name.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        anyhow::bail!("worktree name must start with an alphanumeric character: {name:?}");
+    }
+    if name.ends_with('/') || name.ends_with('.') {
+        anyhow::bail!("worktree name must not end with '/' or '.': {name:?}");
+    }
+    if name.contains("//") || name.contains("..") {
+        anyhow::bail!("worktree name must not contain '//' or '..': {name:?}");
+    }
+    if let Some(bad) = name
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
+    {
+        anyhow::bail!("worktree name contains an unsupported character {bad:?}: {name:?}");
+    }
+    if name.split('/').any(|part| part.ends_with(".lock")) {
+        anyhow::bail!("worktree name must not contain a '.lock' path component: {name:?}");
+    }
+    Ok(())
+}
+
 impl WorktreeManager {
     /// Creates a manager backed by the given SQLite database file.
     ///
@@ -80,6 +122,13 @@ impl WorktreeManager {
         base_ref: String,
         session_id: String,
     ) -> Result<String> {
+        // The name becomes both a path component and a git ref (`wt/<name>`).
+        // Today `git worktree add` happens to reject `..`/ref-invalid names, so
+        // nothing escapes — but that is git's rule, not ours. Validate here so
+        // the constraint is explicit and a future caller that skips git (a
+        // plain `mkdir`, or a name reused as a branch) cannot traverse out of
+        // `.worktrees` or inject ref syntax.
+        validate_worktree_name(&name)?;
         if self.store.find_worktree(&name).await?.is_some() {
             anyhow::bail!("worktree {name} already exists");
         }
@@ -277,6 +326,45 @@ impl SharedWorktreeManager {
 mod tests {
     use super::*;
     use crate::tool::test_support::test_context;
+
+    #[test]
+    fn worktree_name_validation_accepts_ordinary_names() {
+        for name in ["lane", "subagent-abc123", "feat/thing", "a_b.c-1"] {
+            assert!(validate_worktree_name(name).is_ok(), "rejected {name:?}");
+        }
+    }
+
+    #[test]
+    fn worktree_name_validation_rejects_path_and_ref_hazards() {
+        for name in [
+            "",
+            "..",
+            "../escape",
+            "a/../../b",
+            "/abs",
+            "a//b",
+            "-flag",
+            ".hidden",
+            "trailing/",
+            "trailing.",
+            "x.lock",
+            "a/b.lock",
+            "has space",
+            "emoji🙂",
+            "semi;colon",
+        ] {
+            assert!(
+                validate_worktree_name(name).is_err(),
+                "accepted hazardous name {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn worktree_name_validation_bounds_length() {
+        assert!(validate_worktree_name(&"a".repeat(MAX_WORKTREE_NAME_LEN)).is_ok());
+        assert!(validate_worktree_name(&"a".repeat(MAX_WORKTREE_NAME_LEN + 1)).is_err());
+    }
 
     /// Runs a git command in `dir`, asserting success.
     async fn git_run(dir: &Path, args: &[&str]) {

@@ -1,9 +1,8 @@
 //! Persistent memory (user preferences, project facts, feedback).
 //!
 //! Memories are stored as Markdown files under `~/.tact/memory/` — a
-//! user-global directory shared across all projects (like Claude Code's
-//! `~/.claude` user-level state) — each with YAML frontmatter declaring
-//! `name`, `description`, and `type`.
+//! user-global directory shared across all projects — each with YAML
+//! frontmatter declaring `name`, `description`, and `type`.
 //!
 //! ## Memory types
 //!

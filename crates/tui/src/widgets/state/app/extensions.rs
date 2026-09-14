@@ -260,9 +260,9 @@ impl App {
                     }
                     _ => self.add_system_message(format_plugin_result(&self.msgs(), &result)),
                 }
-                if refresh_skills && let Err(error) = crate::handlers::refresh_skills(self) {
-                    self.add_system_message(
-                        self.msgs().plugin_reload_failed_tmpl.replace("{}", &error),
+                if refresh_skills {
+                    self.start_skills_reload(
+                        crate::widgets::state::app::background::SkillsReloadSource::Plugin,
                     );
                 }
             }

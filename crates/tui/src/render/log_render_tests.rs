@@ -12,6 +12,7 @@ use super::test_harness::{
     buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
 use crate::widgets::state::{App, LogItemKind, LogSelection, Status};
+use crate::widgets::tool_widget::TOOL_HEADER_ROWS;
 
 fn seed_many_numbered_lines(app: &mut App, count: usize) {
     for i in 0..count {
@@ -19,38 +20,41 @@ fn seed_many_numbered_lines(app: &mut App, count: usize) {
     }
 }
 
-fn seed_tall_bash_tool(app: &mut App, line_count: usize) {
+/// A finished `spawn_subagent` with many lines: the one successful tool left
+/// that keeps a tall content card (commands, reads, writes and edits collapse to
+/// their two header rows).
+fn seed_tall_subagent_tool(app: &mut App, line_count: usize) {
     let output: String = (1..=line_count)
-        .map(|n| format!("bash-out-{n:02}"))
+        .map(|n| format!("child-out-{n:02}"))
         .collect::<Vec<_>>()
         .join("\n");
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "run shell",
-        "bash",
-        "bash-tall",
-        HashMap::from([("command".to_string(), "seq".to_string())]),
+        "audit the repo",
+        "spawn_subagent",
+        "sub-tall",
+        HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
     )));
     app.handle_agent_update(AgentUpdate::StepStarted {
         idx: 0,
-        tool_id: "bash-tall".into(),
-        tool_name: "bash".into(),
-        arg_summary: "seq".into(),
-        arg_full: "seq".into(),
-        presentation: ToolPresentationInfo::generic("bash"),
+        tool_id: "sub-tall".into(),
+        tool_name: "spawn_subagent".into(),
+        arg_summary: "audit the repo".into(),
+        arg_full: "audit the repo".into(),
+        presentation: ToolPresentationInfo::generic("spawn_subagent"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
-        tool_id: "bash-tall".into(),
+        tool_id: "sub-tall".into(),
         result: StepResult {
-            tool: "bash".into(),
-            arg_summary: "seq".into(),
-            arg_full: Some("seq".into()),
+            tool: "spawn_subagent".into(),
+            arg_summary: "audit the repo".into(),
+            arg_full: Some("audit the repo".into()),
             status: StepStatus::Success,
             message: "ok".into(),
             detail: Some(output),
             duration_us: Some(100),
             permission_label: None,
-            presentation: ToolPresentationInfo::generic("bash"),
+            presentation: ToolPresentationInfo::generic("spawn_subagent"),
         },
     });
 }
@@ -409,6 +413,71 @@ fn log_visual_cache_rebuilds_on_width_change() {
     );
 }
 
+/// A stored tool block repaints its title row when the theme changes: the title
+/// *text* is a fact of the call, its color is not, so the cell styles it from the
+/// frame's theme instead of a line built once at `StepFinished`.
+#[test]
+fn theme_change_repaints_existing_tool_title_rows() {
+    let mut app = make_app();
+    let mut themes = Vec::new();
+
+    for i in 0..3 {
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run",
+            "bash",
+            format!("theme-probe-{i}"),
+            HashMap::from([("command".to_string(), "echo hi".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: i,
+            tool_id: format!("theme-probe-{i}"),
+            tool_name: "bash".into(),
+            arg_summary: "echo hi".into(),
+            arg_full: "echo hi".into(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: i,
+            tool_id: format!("theme-probe-{i}"),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "echo hi".into(),
+                arg_full: Some("echo hi".into()),
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some("hi\n".into()),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        // `toggle_theme` only changes `app.theme`; the blocks above are already
+        // built and must still follow it.
+        app.toggle_theme();
+        let expect_fg = app.theme.fg;
+        let terminal = render_log_panel_terminal(&mut app, 100, 20);
+        let buf = terminal.backend().buffer();
+        let (x, y) = buffer_cell_of(buf, "echo hi").expect("title row is drawn");
+        assert_eq!(
+            buf[(x, y)].fg,
+            expect_fg,
+            "the title row must follow the current theme"
+        );
+        assert!(
+            buf[(x, y)].modifier.contains(Modifier::BOLD),
+            "the title stays bold"
+        );
+        themes.push(expect_fg);
+    }
+
+    themes.dedup();
+    assert!(
+        themes.len() > 1,
+        "the probe must actually cycle through different fg colors"
+    );
+}
+
 #[test]
 fn log_visual_cache_rebuilds_on_theme_change() {
     let mut app = make_app();
@@ -429,7 +498,7 @@ fn log_visual_cache_rebuilds_on_theme_change() {
 #[test]
 fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     let mut app = make_app();
-    seed_tall_bash_tool(&mut app, 25);
+    seed_tall_subagent_tool(&mut app, 25);
     let _ = render_log_panel_text(&mut app, 100, 14);
     let block = app.tools().blocks.last().expect("tool block");
     let summary_logical = app
@@ -453,16 +522,177 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     app.log_scroll.visual_top = app.log_scroll.visual_start_cache[placeholder_logical];
     let mid = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        mid.contains("bash") && mid.contains("Command output"),
+        mid.contains("audit the repo"),
         "starting viewport inside placeholder rows should still render full tool card, got:\n{mid}"
     );
 
     app.log_scroll.visual_top = usize::MAX;
     let bottom = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        bottom.contains("Command output") && bottom.contains("1/27"),
+        bottom.contains("Subagent") && bottom.contains("1/25"),
         "bottom scroll should keep tool card metadata visible, got:\n{bottom}"
     );
+}
+
+#[test]
+fn completed_command_renders_header_rows_only() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "run shell",
+        "bash",
+        "bash-collapsed",
+        HashMap::from([("command".to_string(), "cargo build".to_string())]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "bash-collapsed".into(),
+        tool_name: "bash".into(),
+        arg_summary: "cargo build".into(),
+        arg_full: "cargo build".into(),
+        presentation: ToolPresentationInfo::generic("bash"),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "bash-collapsed".into(),
+        result: StepResult {
+            tool: "bash".into(),
+            arg_summary: "cargo build".into(),
+            arg_full: Some("cargo build".into()),
+            status: StepStatus::Success,
+            message: "ok".into(),
+            detail: Some("Compiling tact\ndone\n".into()),
+            duration_us: Some(100),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
+        },
+    });
+
+    let block = app.tools().blocks.last().expect("tool block");
+    assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
+    assert!(block.output.layout.detail_collapsed);
+    let hint_cols = block
+        .output
+        .collapsed_action_cols(&app.msgs())
+        .expect("hint");
+
+    let text = render_log_panel_text(&mut app, 100, 14);
+    assert!(
+        text.contains("cargo build"),
+        "the command must stay visible in the title, got:\n{text}"
+    );
+    assert!(
+        !text.contains("Command output") && !text.contains("Compiling tact"),
+        "finished command output must not be drawn inline, got:\n{text}"
+    );
+    assert!(
+        text.contains("4 lines · double-click-result"),
+        "the meta row must report the hidden output, got:\n{text}"
+    );
+
+    // The click target is measured from the block indent, so pin it against the
+    // real buffer: the hint's range must cover exactly the `double-click-result`
+    // glyphs one column past the panel border, and no more.
+    let terminal = render_log_panel_terminal(&mut app, 100, 14);
+    let buf = terminal.backend().buffer();
+    let content_x = 1; // left border
+    let needle = "double-click-result";
+    let meta_row = (0..buf.area.height)
+        .find(|y| {
+            let line: String = (0..buf.area.width)
+                .map(|x| buf[(x, *y)].symbol().to_string())
+                .collect();
+            line.contains(needle)
+        })
+        .unwrap_or_else(|| panic!("row with {needle:?} not found in:\n{text}"));
+    // Compare column by column (the row holds `✓`/`·`, so byte offsets would
+    // drift): each buffer cell is one column.
+    let cells: Vec<String> = (content_x..buf.area.width)
+        .map(|x| buf[(x, meta_row)].symbol().to_string())
+        .collect();
+    let needle_cells: Vec<String> = needle.chars().map(|c| c.to_string()).collect();
+    let glyph_start = cells
+        .windows(needle_cells.len())
+        .position(|w| w == needle_cells.as_slice())
+        .expect("the hint is drawn");
+    assert_eq!(
+        glyph_start, hint_cols.start as usize,
+        "the hit range must start on the first glyph of {needle:?}"
+    );
+    assert_eq!(
+        hint_cols.end as usize,
+        glyph_start + needle.len(),
+        "the hit range must end on the last glyph of {needle:?}"
+    );
+}
+
+/// Card chrome (the border title and the bottom hint) is localized when the card
+/// is *painted*, not when the block is built: `/lang` has to repaint cards that
+/// already exist.
+///
+/// `App` is constructed in English regardless of the locale, so a tool that
+/// finishes and *then* flips the language is the everyday `/lang` case — and it
+/// is the case a build-time snapshot gets wrong.
+#[test]
+fn language_toggle_repaints_tool_card_chrome() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "run shell",
+        "bash",
+        "bash-failed",
+        HashMap::from([("command".to_string(), "false".to_string())]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "bash-failed".into(),
+        tool_name: "bash".into(),
+        arg_summary: "false".into(),
+        arg_full: "false".into(),
+        presentation: ToolPresentationInfo::generic("bash"),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "bash-failed".into(),
+        result: StepResult {
+            tool: "bash".into(),
+            arg_summary: "false".into(),
+            arg_full: Some("false".into()),
+            status: StepStatus::Failed,
+            message: "exit 1".into(),
+            detail: Some("boom\n".into()),
+            duration_us: Some(1),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
+        },
+    });
+
+    // The card is built while the UI is still English; only then does the
+    // language change.
+    app.toggle_language();
+    let msgs = app.msgs();
+    let text = render_log_panel_text(&mut app, 100, 14);
+
+    // Wide glyphs leave a filler cell behind them, so compare with whitespace
+    // squeezed out instead of matching the rendered text literally.
+    let squeezed = |s: &str| s.split_whitespace().collect::<String>();
+    let drawn = squeezed(&text);
+    for (label, localized, built_in) in [
+        ("meta row", msgs.tool_phase_failed, "Failed"),
+        ("card title", msgs.tool_error_card_title, "Error"),
+        (
+            "card bottom",
+            msgs.tool_error_card_bottom,
+            "Double-click for full error",
+        ),
+    ] {
+        assert!(
+            drawn.contains(&squeezed(localized)),
+            "{label} must be drawn in the current language ({localized:?}), got:\n{text}"
+        );
+        assert!(
+            !drawn.contains(&squeezed(built_in)),
+            "{label} must not keep the language it was built in ({built_in:?}), got:\n{text}"
+        );
+    }
 }
 
 #[test]
@@ -541,7 +771,7 @@ fn log_left_border_force_updates_and_stays_theme_border_color() {
         "Checking git status\nline2\nline3".into(),
     )));
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-    seed_tall_bash_tool(&mut app, 10);
+    seed_tall_subagent_tool(&mut app, 10);
 
     let terminal = render_log_panel_terminal(&mut app, 100, 30);
     let buf = terminal.backend().buffer();

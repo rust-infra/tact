@@ -32,8 +32,9 @@
 [llm]
 provider = "deepseek"
 
-# Optional globals (overridable per provider entry, then by CLI flags)
-# max_tokens = 8000
+# Optional globals (overridable per provider entry, then by CLI flags).
+# `max_tokens` is NOT settable here — use [agent].max_tokens (or the per-provider
+# entry); a leftover key is a hard startup error naming the replacement.
 # thinking_budget = 0  # off by default; set to e.g. 8000 to enable
 
 # Optional per-model thinking parameter options (model id → selectable tiers).
@@ -69,8 +70,8 @@ protocol = "responses"
 # Optional OpenAI Responses `context_management.compact_threshold` (tokens).
 # Sent on every ordinary `/responses` request so the endpoint compacts the
 # protocol baseline automatically at the threshold. When omitted, the
-# threshold is derived from agent.model_context_window / llm.max_tokens with
-# 10% headroom (only for protocol = "responses").
+# threshold is derived from agent.model_context_window / the resolved
+# max_tokens with 10% headroom (only for protocol = "responses").
 # responses_compact_threshold = 160000
 # Endpoints lacking native Responses compaction are unsupported; Tact never
 # falls back to local summary compaction for protocol = "responses".
@@ -134,11 +135,27 @@ mode = "default"
 # Agent runtime
 # ---------------------------------------------------------------------------
 [agent]
+# Keys that are not real [agent] fields are a startup error, not a silent
+# no-op: `thinking_budget` / `reasoning_effort` live in [llm] (or a provider
+# entry), and `model` lives in the provider entry.
+#
+# Max output tokens for the main agent.
+#
+# Resolution priority (highest first): --max-tokens > [llm.providers.<active>]
+# entry > this key > default 8000 (32000 for Kimi K2.x). Set this when you
+# switch providers often and want one number to apply to all of them; set it
+# per provider when the providers need different caps.
+# (There is no [llm] global for this: it used to sit below this key, where it
+# could only apply to users who set nothing here. A leftover [llm] max_tokens
+# is now a hard startup error, not a silent drop.)
+# Subagents without their own [agent.subagent].max_tokens inherit this value.
+# max_tokens = 64000
+
 # Model context window in tokens (must exceed max_tokens when nonzero;
 # auto-compaction + TUI usage meter; default: 200000).
 #
-# Resolution priority (highest first): built-in model→window mapping >
-# this file / --model-context-window > default 200000. Known mappings
+# Resolution priority (highest first): --model-context-window >
+# this key > built-in model→window mapping > default 200000. Known mappings
 # (per official model docs, 2026-08):
 #   gpt-5.6 / gpt-5.6-luna / gpt-5.6-terra / gpt-5.6-sol / gpt-5.5 -> 1050000
 #   gpt-5.4 -> 1000000
@@ -148,10 +165,15 @@ mode = "default"
 #   claude-opus-4-7 / claude-opus-4-6 / claude-sonnet-4-6 -> 1000000 (API + Claude Code)
 #   claude-opus-4-20250514 / claude-sonnet-4-20250514 / claude-haiku-4-5 /
 #   claude-haiku-4-20250514 -> 200000
-#   deepseek-v4-pro / deepseek-v4-flash / deepseek-reasoner -> 1000000
+#   deepseek-v4-* / deepseek-v4.* (any suffix or dot-separated minor version,
+#   e.g. deepseek-v4-pro, deepseek-v4-flash, deepseek-v4.1-flash,
+#   deepseek-v4-flash-version-exp, deepseek-v4-flash-vision-exp), the
+#   gateway alias deepseek-flash, and deepseek-reasoner -> 1000000
 #   k3-256k -> 256000
-# Setting this value is therefore only effective for models without a
-# built-in mapping.
+# The mapping is only a fallback: setting this key always wins, so a stale
+# value for a long-context model can under-report its real window and trigger
+# premature auto-compaction. Comment the key out to use the mapping instead
+# (an explicit 0 means "unknown window": it disables the window, not falls back).
 # model_context_window = 200000
 
 # Max entries in the system-prompt project structure snapshot (default: 80)
@@ -161,10 +183,8 @@ mode = "default"
 # micro_compact_enabled = true
 
 # Project instruction files injected into the system prompt (default: ["agents_md"]).
-# Options: agents_md, claude_md (all CLAUDE paths), claude_md_user,
-#          claude_md_project, claude_md_subdir
+# Options: agents_md
 # instruction_sources = ["agents_md"]
-# instruction_sources = ["agents_md", "claude_md"]
 
 # Desktop notifications on macOS (default: true)
 # notifications_enabled = true
@@ -179,7 +199,9 @@ mode = "default"
 # instead of the main agent's provider. References a key from
 # [llm.providers.*]; model and token overrides are optional.
 [agent.subagent]
-# Required: references [llm.providers.<name>], e.g. "deepseek" or "openai".
+# Required when any override below is set — without it the section is rejected
+# at startup instead of being silently ignored.
+# References [llm.providers.<name>], e.g. "deepseek" or "openai".
 # provider = "deepseek"
 # Optional model override (otherwise uses the provider's default model).
 # model = "deepseek-chat"
@@ -253,3 +275,19 @@ api_key = ""
 # (default: false). Opt-in only: enabling this sends command output to an
 # external process — review rtk's privacy guarantees first.
 # rtk_filter = true
+
+[mcp]
+# `client_name` sent when Tact registers itself with an OAuth MCP provider
+# (RFC 7591 dynamic client registration). Default: "Codex".
+#
+# Some providers gate registration on this exact string instead of verifying the
+# client. Figma's remote server is the measured example: an identical request
+# returns 200 for "Codex" and 403 for "Tact", so the default is what makes OAuth
+# work there. The trade-off is that the provider — and the consent screen shown
+# to you — sees "Codex" rather than "Tact".
+#
+# Set to "Tact" to identify honestly; allowlisting providers will then refuse
+# registration (Tact will say so and offer alternatives).
+# Per-server override: `auth.clientName` in mcp.json, e.g.
+#   { "mcpServers": { "figma": { "url": "...", "auth": { "type": "oauth", "clientName": "Codex" } } } }
+# oauth_client_name = "Codex"

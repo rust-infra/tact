@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
-  <img src="https://img.shields.io/badge/version-1.1.27-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-1.1.28-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey?style=flat-square" alt="Platform" />
   <a href="https://ko-fi.com/00x80">
     <img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Support on Ko-fi" />
@@ -123,8 +123,8 @@ cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the re
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
 
 ```bash
-git tag v1.1.27
-git push origin v1.1.27
+git tag v1.1.28
+git push origin v1.1.28
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.
@@ -199,6 +199,37 @@ tact-ui plugin update superpowers
 tact-ui plugin marketplace add owner/repository
 tact-ui plugin marketplace list
 tact-ui plugin reload
+```
+
+MCP servers are managed the same way — no hand-editing `mcp.json` required:
+
+```bash
+tact-ui mcp list                       # every configured server + its status
+tact-ui mcp get deepwiki               # one server: transport, source, tools
+tact-ui mcp add deepwiki --url https://mcp.deepwiki.com/mcp
+tact-ui mcp add linear --url https://mcp.linear.app/mcp --oauth
+tact-ui mcp add local --command npx --arg -y --arg some-mcp-server
+tact-ui mcp login linear               # run the OAuth browser flow
+tact-ui mcp logout linear              # delete the stored credentials
+tact-ui mcp remove local               # delete the declaration only
+```
+
+`add`/`remove` write the project file (`.tact/mcp.json`) by default; pass
+`--user` for `~/.tact/mcp.json` or `--force` to replace an existing
+declaration. `login`/`logout` own the tokens under `~/.tact/mcp/oauth/`, and
+`mcp auth` remains an alias for `mcp login`.
+
+Some providers gate OAuth registration on the *client name* rather than
+verifying the client: Figma answers `200` for `Codex` and `403` for `Tact` with
+an otherwise identical request. Tact therefore registers as
+`mcp.oauth_client_name`, default `"Codex"`, so these providers work out of the
+box. The trade-off is that the provider — and the OAuth consent screen — sees
+`"Codex"`; the name actually used is logged and printed on failure. Set it back
+to identify honestly, per config file or per server:
+
+```toml
+[mcp]
+oauth_client_name = "Tact"
 ```
 
 Self-upgrade is built in:

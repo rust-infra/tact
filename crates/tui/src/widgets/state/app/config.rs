@@ -139,11 +139,23 @@ impl App {
         }
     }
 
+    /// Flip the UI language and hand the new [`Messages`] to every component
+    /// that owns one.
+    ///
+    /// `self.language` is what the *render* path reads, so flipping it alone
+    /// would leave the components building their log text (event messages, card
+    /// chrome) in the old locale while the rows they anchor are drawn in the new
+    /// one. Components take a snapshot at construction, so the snapshot is
+    /// refreshed here — the one place the language changes.
     pub(crate) fn toggle_language(&mut self) {
         let next = self.language.next();
         let label = next.label();
         let old_msgs = self.msgs();
         self.language = next;
+        let msgs = self.msgs();
+        self.thinking_mut().set_messages(msgs);
+        self.stream_mut().set_messages(msgs);
+        self.tools_mut().set_messages(msgs);
         self.add_system_message(old_msgs.lang_changed_tmpl.replace("{}", label));
     }
 }

@@ -15,6 +15,17 @@ impl App {
         self.copy_text_inner(text, false);
     }
 
+    /// True when a native clipboard write succeeded via [`Self::system_clipboard`].
+    fn write_system_clipboard(&mut self, text: &str) -> bool {
+        if self.system_clipboard.is_none() {
+            self.system_clipboard = Clipboard::new().ok();
+        }
+        match &mut self.system_clipboard {
+            Some(clip) => clip.set_text(text.to_owned()).is_ok(),
+            None => false,
+        }
+    }
+
     fn copy_text_inner(&mut self, text: &str, include_preview: bool) {
         let preview: String = text.chars().take(40).collect();
         let copied = |template: &str| {
@@ -25,9 +36,11 @@ impl App {
             }
         };
 
-        if let Ok(mut clip) = Clipboard::new()
-            && clip.set_text(text).is_ok()
-        {
+        // Prefer the native clipboard. The `Clipboard` is kept alive for the
+        // whole app lifetime (see `system_clipboard`) because on Linux the
+        // copier owns the selection and must keep serving it; dropping the
+        // handle per-copy would make the text unpastable elsewhere.
+        if self.write_system_clipboard(text) {
             let msgs = self.msgs();
             self.add_system_message(copied(msgs.copied_tmpl));
             return;
@@ -369,6 +382,15 @@ impl App {
                 .num_seconds()
                 .max(0);
             self.last_prompt_elapsed_secs = Some(s);
+            // Turn timing: this is the ONLY place that actually freezes elapsed
+            // (the later `freeze_last_prompt_cost` always sees `None`), so
+            // accumulate here exactly once per finished turn. Cancelled turns
+            // count too — their wall time is real. Do not accumulate in the
+            // `else` branch below (synthetic separators have no start time).
+            let bar = self.status_bar_mut();
+            bar.turn_last_secs = Some(s as u64);
+            bar.turn_done = bar.turn_done.saturating_add(1);
+            bar.turn_total_secs = bar.turn_total_secs.saturating_add(s as u64);
             s
         } else {
             self.last_prompt_elapsed_secs.unwrap_or(0)
@@ -553,16 +575,18 @@ impl App {
         &self,
         output: &crate::widgets::tool_widget::ToolRenderOutput,
     ) -> Option<DiffPopup> {
-        if !output.layout.has_detail_card {
+        // A collapsed command draws no card, but its detail is still reachable.
+        if !output.layout.has_detail_card && !output.layout.detail_collapsed {
             return None;
         }
+        // The card title is localized, so it is derived here rather than read
+        // off the output: a popup opened after `/lang` must be titled in the
+        // language the block on screen is drawn in.
+        let card_title = output.card_title(&self.msgs());
         if output.phase == ToolPhase::Failed {
             let content = output.detail_full.clone()?;
             return Some(DiffPopup {
-                title: output
-                    .detail_title
-                    .clone()
-                    .unwrap_or_else(|| output.tool_name.clone()),
+                title: card_title.unwrap_or_else(|| output.tool_name.clone()),
                 file_path: None,
                 git_diff_path: None,
                 workspace_dir: None,
@@ -637,10 +661,7 @@ impl App {
                 };
                 Some(DiffPopup {
                     title: if full_arg.is_empty() {
-                        output
-                            .detail_title
-                            .clone()
-                            .unwrap_or_else(|| "Command output".to_string())
+                        card_title.unwrap_or_else(|| "Command output".to_string())
                     } else {
                         format!("bash ({full_arg})")
                     },
@@ -660,10 +681,7 @@ impl App {
             _ => {
                 let content = output.detail_full.clone()?;
                 Some(DiffPopup {
-                    title: output
-                        .detail_title
-                        .clone()
-                        .unwrap_or_else(|| output.tool_name.clone()),
+                    title: card_title.unwrap_or_else(|| output.tool_name.clone()),
                     file_path: None,
                     git_diff_path: None,
                     workspace_dir: None,
@@ -690,11 +708,26 @@ impl App {
         }
     }
 
-    /// Open a tool detail popup only if the click was inside the detail card area.
-    pub(crate) fn open_diff_popup_at_row(&mut self, phys_idx: usize, relative_row: usize) {
+    /// Open a tool detail popup for a click at (`relative_row`, `col`), where
+    /// `col` counts from the block's own left edge.
+    ///
+    /// Two shapes are clickable, and only on what the user can actually see:
+    /// a drawn detail card (its whole rectangle) and a collapsed command's
+    /// `double-click-result` hint — not its parameter row, and not the meta row's
+    /// earlier text (success mark, duration, line count) either.
+    pub(crate) fn open_diff_popup_at(&mut self, phys_idx: usize, relative_row: usize, col: usize) {
         let Some(output) = self.tool_output_at(phys_idx) else {
             return;
         };
+        // The hint is measured from the row the cell draws, which is rendered in
+        // the *current* language — so the hit test must read the same locale.
+        let msgs = self.msgs();
+        if output.layout.detail_collapsed {
+            if output.hits_collapsed_action(relative_row, col, &msgs) {
+                self.open_diff_popup(phys_idx);
+            }
+            return;
+        }
         if !output.layout.has_detail_card {
             return;
         }
@@ -782,15 +815,25 @@ impl App {
 
     // ========== Mermaid Popup ==========
 
-    /// Open the Mermaid source popup for a rendered diagram block.
+    /// Open the Mermaid popup for a rendered diagram block.
+    ///
+    /// Opens on the rendered diagram (re-laid out at the popup's wider width);
+    /// `Tab` switches to the raw fence body.
     pub(crate) fn open_mermaid_popup(&mut self, block_idx: usize) {
         if block_idx < self.mermaid_blocks.len()
             && !self.mermaid_blocks[block_idx].source.is_empty()
         {
-            self.mermaid_popup = Some(MermaidPopup {
-                block_idx,
-                scroll: 0,
-            });
+            self.mermaid_popup = Some(MermaidPopup::new(block_idx));
+        }
+    }
+
+    /// Switch the Mermaid popup between the rendered diagram and its source.
+    pub(crate) fn toggle_mermaid_popup_view(&mut self) {
+        if let Some(popup) = self.mermaid_popup.as_mut() {
+            popup.view = popup.view.toggled();
+            // The two views have different heights, so a stale scroll offset
+            // would land past the end; the renderer clamps, so just re-anchor.
+            popup.scroll = 0;
         }
     }
 
@@ -1014,8 +1057,7 @@ mod tests {
             permission_label: None,
             presentation: ToolPresentationInfo::generic("bash"),
         };
-        let msgs = app.msgs();
-        let output = ToolWidget::from_step_result(&result, &app.theme, &msgs)
+        let output = ToolWidget::from_step_result(&result)
             .with_phase(ToolPhase::Success)
             .build();
         let popup = app.popup_from_tool_output(&output).expect("bash popup");

@@ -388,9 +388,8 @@ block-beta
         status_bar["Status Bar (height 1)<br/>Mode / focus / Status"]
     end
     block:main
-        columns 2
-        plan["Plan Panel<br/>(40% width)<br/>Execution plan list<br/>▼ expanded / ▶ collapsed"]
-        log["Log Panel<br/>(60% width)<br/>Streaming messages<br/>Tool blocks / thinking / code cards"]
+        columns 1
+        log["Log Panel (full width, single column)<br/>Streaming messages<br/>Tool blocks / thinking / code cards<br/>+ sticky task strip when tasks are visible"]
     end
     block:input
         columns 1
@@ -398,12 +397,11 @@ block-beta
     end
     block:bottom
         columns 1
-        bottom_bar["Bottom Bar (height 2)<br/>cwd / branch / account · model / tokens / uptime"]
+        bottom_bar["Bottom Bar (height 2)<br/>row 1: permission / cwd / uptime / task clock / branch / account<br/>row 2: model / out / think / ctx / cache / turns / timing"]
     end
     space
 
     style status_bar fill:#2e3440,color:#eceff4
-    style plan fill:#2e3440,color:#eceff4
     style log fill:#2e3440,color:#eceff4
     style input_box fill:#2e3440,color:#eceff4
     style bottom_bar fill:#2e3440,color:#eceff4

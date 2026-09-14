@@ -270,6 +270,14 @@ pub enum AgentUpdate {
     Error(AgentErrorKind),
     /// Token usage stats
     TokenUsage(TokenUsageInfo),
+    /// Agent-loop turn counter for the current task, emitted once per loop
+    /// iteration (one LLM call). `max_turns` is the loop cap when the agent
+    /// has one (`Agent::max_turns`; `None` = unbounded, which is the case for
+    /// the main agent — only subagents set it today).
+    TurnStats {
+        turns_taken: u32,
+        max_turns: Option<u32>,
+    },
     /// Model call parameters (name, max_tokens, thinking budget, etc.)
     ModelInfo(ModelCallParams),
     /// Informational notice (does not change state)
@@ -455,6 +463,14 @@ pub enum UserCommand {
     /// or the TUI tool-card cancel button). The driver flips the child's
     /// cooperative cancel flag and marks its run record Cancelled.
     CancelSubagent { child_id: String },
+    /// Run the interactive OAuth authorization flow for a remote MCP server
+    /// (triggered by `/mcp auth <server>`). On success the driver reloads the
+    /// MCP router so the server becomes usable without restarting.
+    McpAuth { server: String },
+    /// List the configured MCP servers with their live status (triggered by
+    /// `/mcp list`). The driver renders it from the agent's **already-connected**
+    /// router, so it never reconnects and cannot disturb in-flight work.
+    McpList,
     /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
     /// (see [`UiResponse`]). Routed by the driver to the shared responder.
     UiResponse(UiResponse),

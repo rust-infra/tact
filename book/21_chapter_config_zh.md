@@ -91,9 +91,15 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 |------|--------|
 | `api_key` / `model` | CLI → 条目（必填） |
 | `base_url` | CLI → 条目 → `ProviderKind::default_base_url()` |
-| `max_tokens` / `thinking_budget` | CLI → 条目 → `[llm]` 全局 → 代码默认值 |
+| `max_tokens` | CLI → 条目 → `[agent]` → 代码默认值 |
+| `thinking_budget` | CLI → 条目 → `[llm]` 全局 → 代码默认值 |
 | `protocol` | 条目 → 默认 `chat_completions` |
 | `reasoning_effort` | entry（openai / deepseek / kimi / 自定义）→ provider 默认（模型相关） |
+
+`max_tokens` 是唯一**没有 `[llm]` 全局**的字段（2026-09-13 移除）：该级原本排在
+`[agent]` **之下**，因此只对"没在 `[agent]` 里设过"的用户生效，两级同时设置时必然静默忽略其一。
+现在残留的 `[llm] max_tokens` 会触发**resolve 阶段的硬报错**并指明替代键，而不是被静默丢弃——
+详见 §3 与 [Ch 26](./26_chapter_issue_zh.md)。
 
 必填：**`llm.provider`**，以及活跃条目上的 **`api_key`** 和 **`model`**。`anthropic` 没有默认 `base_url`，必须显式设置。缺失活跃条目会在 resolve 时报错。
 
@@ -109,6 +115,8 @@ base_url = "https://api.moonshot.cn/v1"   # 自定义 provider 必填
 model = "kimi-k2.5"
 ```
 
+**OpenCode Go 端点**（`https://opencode.ai/zen/go/v1` 及 `opencode.ai` 子域）：Tact 自动为每个请求附加 `x-opencode-session` 头，并发送 `tact/<version>` 作为 `User-Agent` 让端点识别工具。头值即 **Tact session id** —— OpenCode 以它作为区分各会话缓存的键：同一会话（含 resume）复用同一值，不同会话得到不同值。无会话的请求（如 `/v1/models` 选择器拉取）不发送该头（仍发送标识用的 User-Agent）。
+
 ---
 
 ## 4. TOML 模式
@@ -118,8 +126,7 @@ model = "kimi-k2.5"
 ```toml
 [llm]
 provider = "kimi"          # 活跃 ProviderKind：anthropic | openai | deepseek | kimi | 任意自定义名称
-max_tokens = 32000         # 可选全局默认
-thinking_budget = 32000
+thinking_budget = 32000    # 可选全局默认（`max_tokens` 不能设在这里——见 §3）
 
 # 可选：按模型的思考参数选项（模型 id → 可选档位）。
 # /model 第二步只显示该模型映射的档位；无映射的模型回落 provider 默认档位。
@@ -150,10 +157,29 @@ base_url = "https://api.anthropic.com"   # anthropic 必填
 mode = "default"           # default | plan | auto
 
 [agent]
+max_tokens = 64000         # 活跃 provider 条目未设置时的回退值
 model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
+# 额外 skill 根目录（可选）。每个目录下应包含 */SKILL.md。
+# 相对路径按 workdir 解析；~ 展开为 $HOME。
+# 在内建根之后加载；同名冲突时靠后的条目胜出。
+# skill_dirs = ["~/shared-skills", "./vendor/skills"]
+# 注入系统提示的项目指令文件（默认 ["agents_md"]）。
+# instruction_sources = ["agents_md"]
+# 每轮都把 skill 全文注入系统提示（默认 false）。
+# skill_body_auto_inject = false
+
+# Subagent LLM 配置（可选）。配置后 spawn_subagent 改用该 provider/模型，
+# 而不是主 agent 的。只要设置了下面任一覆盖项，`provider` 就是必填；
+# 凭证与端点取自该条目。
+# [agent.subagent]
+# provider = "deepseek"       # 必填；[llm.providers.*] 中的键
+# model = "deepseek-chat"     # 可选；否则用该条目的 model
+# max_tokens = 8000           # 可选；否则用该条目的，再用主 agent 的
+# thinking_budget = 0         # 可选；否则用该条目的，再用主 agent 的
+# reasoning_effort = "high"   # 可选；否则用该条目的（openai/deepseek/kimi k3）
 
 [ui]
 theme = "ink"
@@ -180,9 +206,16 @@ theme = "ink"
 bash_timeout_secs = 1800
 ```
 
+### 未知键会被拒绝
+
+`[agent]` 与 `[agent.subagent]` 都是 `deny_unknown_fields`：这里不存在的键会在**解析阶段**
+直接失败并列出合法字段，而不是被静默丢弃（2026-09-13）。最容易踩的是那些"别处确实存在、
+写在这里看起来也合理"的键——`thinking_budget` / `reasoning_effort` 是**运行时** agent 设置的字段，
+但作为 TOML 键它们属于 `[llm]`（见 §3）或 `[llm.providers.<name>]` 条目；`model` 属于 provider 条目。
+在此改动之前，把其中任何一个写在 `[agent]` 下，都会让会话以默认思考设置运行，而输出里没有任何提示。
+
 可选 `models` 是 TUI `/model` slash 命令的**主要**候选列表（仅限同一 provider）。在会话中首次使用 `/model` 时，兼容 OpenAI 的 provider（`openai` / `deepseek` / `kimi`）也会调用 `GET {base_url}/models`，并将不在 config 列表中的 id 附加到末尾（config 的顺序和重复 id 优先）。API 结果按 `(base_url, api_key)` 在进程内缓存。如果 config 和 API 均未提供任何候选，`/model` 打印提示而非打开选择器。选择模型立即生效；可选写回已加载配置文件中该 provider 的 `model` 字段。
 
-可选 `protocol` 默认为 `chat_completions`。`responses` 对 `openai` 与 `deepseek` provider 有效；配置 resolve 会拒绝 Anthropic 或 Kimi 使用该值。DeepSeek 配 `responses` 时复用与 OpenAI 相同的 Responses 适配器，指向其配置的 `base_url`（含自动 `context_management` 压缩与 reasoning effort；显式 `/responses/compact` 取决于端点支持——DeepSeek 目前未实现，错误会如实透传而不回退）。此字段没有 CLI override。
 可选 `protocol` 默认为 `chat_completions`。`responses` 对 `openai` 与 `deepseek` provider 有效；配置 resolve 会拒绝 Anthropic 或 Kimi 使用该值。DeepSeek 配 `responses` 时复用与 OpenAI 相同的 Responses 适配器，指向其配置的 `base_url`（含自动 `context_management` 压缩与 reasoning effort；显式 `/responses/compact` 取决于端点支持——DeepSeek 目前未实现，显式压缩会回落本地摘要流水线）。此字段没有 CLI override。
 
 可选 `reasoning_effort` 对 `openai`、`deepseek` 与 `kimi` provider 有效，接受
@@ -210,10 +243,13 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 |------|------|----------------|
 | `max_tokens` | 8_000 | 32_000 |
 | `thinking_budget` | 32_000 | — |
-| `model_context_window` | 200_000 | —（tokens；全局；模型→窗口映射会覆盖文件配置，见下文） |
+| `model_context_window` | 200_000 | —（tokens；全局；解析顺序见下文） |
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `instruction_sources` | `["agents_md"]` | — |
+| `skill_dirs` | 空（无额外根） | — |
+| `skill_body_auto_inject` | `false` | — |
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
 | `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
@@ -226,6 +262,57 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `voice.language` | `zh` | Google 示例：`zh-CN`、`en-US` |
 | `voice.max_duration_secs` | `300`（openai/whisper_cpp，有效 `1..=600`）/ `60`（google，有效 `1..=60`） | — |
 | `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`） |
+
+### `[agent]` — skill 根目录、指令文件、全文注入
+
+三个 `[agent]` 字段决定除内建根与默认值之外还有什么进入提示。
+
+`skill_dirs` 追加额外 skill 根目录。每个条目必须是一个包含 `*/SKILL.md` 的目录；相对路径按 **workdir** 解析，`~` 展开为 `$HOME`，空白条目被跳过。这些根按列出顺序追加在三个内建根（`~/.agents/skills`、`~/.tact/skills`、`<workdir>/.tact/skills`）之后，因此同名冲突时配置根胜过所有内建根；解析后与已有路径重复的条目会被丢弃。扫描方式与内建根完全一致，均为递归。`/skill-reload` 可重新读取，无需重启。见 [Ch 2](./02_chapter_skill_zh.md)。
+
+`instruction_sources` 选择注入系统提示的项目指令文件。`agents_md` 是唯一可接受的值（默认 `["agents_md"]`）；空列表，或 `claude_md` 等任何其他值，都会导致配置 resolve 失败。见 [Ch 4](./04_chapter_prompt_zh.md)。
+
+`skill_body_auto_inject` 在「描述」与「全文」之间二选一。`false`（默认）时每轮只带 `describe_available()` 产出的 skill 名称与描述，全文按需经 `load_skill` 工具取得。`true` 时每个 skill 全文都会注入每一轮系统提示——精确，但每次调用都要付出代价，除非某个 skill 必须无条件在上下文中，否则建议保持默认。CLI 等价开关为 `--skill-body-auto-inject`。
+
+### `[agent.subagent]` — 给 `spawn_subagent` 单独的 provider/模型
+
+可选。配置后 `spawn_subagent` 改用该 provider，而不是主 agent 的，因此可以用便宜/快的模型驱动
+worker，主循环仍用自己的模型。该段**引用**既有 provider 条目，不重复配置凭证：
+`base_url`、`api_key`、`protocol` 均取自被引用的 `[llm.providers.<name>]` 条目。
+
+只要设置了任一覆盖项，`provider` 就是必填。缺 `provider` 会在 resolve 阶段报错并给出修法；
+provider 名称不存在则报错并列出可用键。完全没有任何覆盖项的段——键全被注释掉的遗留表头，
+`config.example.toml` 里即是这种形状——保持静默 no-op，因此永远不会阻断启动。
+
+| 字段 | 解析顺序 |
+|------|---------|
+| `provider` | 设置任一覆盖项时必填；必须是 `[llm.providers.*]` 中的键 |
+| `model` | `[agent.subagent].model` → 被引用条目的 `model`；两者都没有则报错 |
+| `max_tokens` | `[agent.subagent].max_tokens` → 被引用条目的 → **主 agent 已解析的 `max_tokens`**（subagent 模型属 Kimi K2.x 时则回退 `32_000`） |
+| `thinking_budget` | `[agent.subagent].thinking_budget` → 被引用条目的 → 主 agent 已解析的值 |
+| `reasoning_effort` | `[agent.subagent].reasoning_effort` → 被引用条目的（openai / deepseek / kimi k3 语义） |
+
+最后一级刻意采用**主 agent 已解析的值**，而非字面默认 8_000：因此调高 `[agent] max_tokens`
+（见 §3）也会同时调高所有未覆盖该项的 subagent。有两点容易想当然出错，因为 subagent 这条链
+**不是**主 agent 那条：
+
+- `--max-tokens` 只能**间接**影响 subagent——它先改变主 agent 的解析结果，再由最后一级继承。
+  没有办法只给主 agent 设 `max_tokens`。
+- `[llm].max_tokens`（`[llm]` 全局）**已不存在**——它作为一级已被移除（见 §4），因此也不可能
+  再经由最后一级间接传入。仍写有该键的配置会 resolve 失败。
+
+`[llm.providers.<被引用>].max_tokens` **会**被读到——注意是 `provider` 指定的那个条目，
+不是活跃条目。因此某个 provider 条目一旦设了 `max_tokens`，所有指向它的 subagent 都会被该值封顶
+（上表第 2 级），即使 subagent 段根本没提 `max_tokens`。
+
+resolve 阶段的校验：
+
+- `thinking_budget` 必须严格小于 subagent 自己的 `max_tokens`。
+- 被引用的 **DeepSeek** 条目上 `protocol = "responses"` 会被拒绝——与主 agent 同属不受支持的组合。
+- 被引用条目的 `responses_compact_threshold` 会被复用，但需按 *subagent 自己的* `max_tokens` 与共享窗口重新校验（原本适配主 agent 较小预算的阈值未必适配 subagent）。条目未设置该项时，阈值由 subagent 的 `max_tokens` 推导；非 Responses 协议与零窗口解析为无阈值。
+
+`model_context_window` **不**按 subagent 区分：worker 调用与主 agent 共享窗口。
+`/model-subagent` 选择器的候选列表来自被引用条目的 `models`，在其中选定模型或思考预算会写回
+`[agent.subagent].model` 及其预算/effort 键。运行时一侧见 [Ch 12](./12_chapter_subagent_zh.md)。
 
 ### `[voice]` — 语音转文字输入（macOS 优先）
 
@@ -244,9 +331,11 @@ Cloud 项目中启用 Speech-to-Text API。Google API key 模式不支持 Servic
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
 
-`model_context_window` 按三级优先级解析（从高到低）：
+`model_context_window` 按四级优先级解析（从高到低）：
 
-1. **模型→窗口映射** — 以解析后的模型 id 为键的内置查找表，数值依据官方模型文档（2026-08）：
+1. **CLI `--model-context-window`**。
+2. **TOML `[agent].model_context_window`**。
+3. **模型→窗口映射** — 以解析后的模型 id 为键的内置查找表，数值依据官方模型文档（2026-08）：
    - OpenAI：`gpt-5.6` / `gpt-5.6-luna` / `gpt-5.6-terra` / `gpt-5.6-sol` /
      `gpt-5.5` → `1_050_000`；`gpt-5.4` → `1_000_000`；`gpt-5` / `gpt-5.1` /
      `gpt-5.2` / `gpt-5.3` / `gpt-5.3-codex` / `gpt-5.4-mini` → `400_000`；
@@ -256,12 +345,16 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
      `claude-sonnet-4-6` → `1_000_000`；`claude-opus-4-20250514` /
      `claude-sonnet-4-20250514` / `claude-haiku-4-5` / `claude-haiku-4-20250514`
      → `200_000`。
-   - DeepSeek：`deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-reasoner` →
+   - DeepSeek：任意 `deepseek-v4-*` 或 `deepseek-v4.*` id（前缀匹配，因此实验 /
+     视觉后缀如 `deepseek-v4-flash-version-exp`、`deepseek-v4-flash-vision-exp`，
+     以及点号分隔的小版本如 `deepseek-v4.1-flash` 均被覆盖）、
+     无版本号的网关别名 `deepseek-flash`，以及 `deepseek-reasoner` →
      `1_000_000`；Kimi：`k3-256k` → `256_000`。
-   命中时同时覆盖 CLI 标志与 TOML 文件，因此过时的
-   手工窗口不会低估已知模型（否则会触发过早自动压缩）。
-2. **CLI `--model-context-window` / TOML `[agent].model_context_window`**。
-3. **默认 `200_000`**。
+   该映射只是**回退**值，仅用于用户未配置的模型：显式的 CLI 标志或 `[agent]` 配置优先。
+   代价是真实的——为长上下文模型留下的过时手工窗口会低估真实窗口，从而触发
+   **过早自动压缩**，因此应删除该键，而不是留着过期值。显式 `0` 不构成回退：它保留下文
+   所述的"禁用/未知窗口"语义。
+4. **默认 `200_000`**。
 
 合并 CLI 与 TOML 值后，若非零 `model_context_window` 小于或等于
 `max_tokens`，配置会立即报错：输出预留必须给输入留下空间。窗口为零时保留现有的
@@ -284,10 +377,14 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
 |------|--------|
 | `--provider` | 选择活跃 `llm.providers.*` 条目（`ProviderKind`） |
 | `--model`、`--api-key`、`--base-url` | 覆盖该条目字段 |
-| `--max-tokens`、`--thinking-budget` | CLI → 条目 → `[llm]` 全局 → 默认值 |
+| `--max-tokens` | CLI → 条目 → `[agent]` → `[llm]` 全局 → 默认值 |
+| `--thinking-budget` | CLI → 条目 → `[llm]` 全局 → 默认值 |
 | `-m` / `--permission-mode` | `[permission].mode` |
 | `--model-context-window`、`--snapshot-max-items` | `[agent]` |
 | `--notifications` / `--no-notifications` | `[agent].notifications_enabled` |
+| `--skill-body-auto-inject` | `[agent].skill_body_auto_inject`（仅开启，无 `--no-` 形式） |
+| `--no-micro-compact` | `[agent].micro_compact_enabled`（仅关闭） |
+| `--tokio-console` | 启用 tokio-console 调试 subscriber（无对应 TOML 字段） |
 | `--theme` | `[ui].theme` |
 | `--brave-search-api-key` | `[tools]` |
 | `--session`、`--resume-last`、`--list-sessions` | session store（不在 TOML 中）。`--resume-last` 与 `--list-sessions` 传 `list_sessions(Some(root_dir))`，仅显示当前工作目录的 session。 |
@@ -299,7 +396,7 @@ Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./
 tact-ui headless "Summarize this repo"
 ```
 
-插件管理在 `tact plugin` / `/plugin` 下：`list` 打印每个已安装插件的功能摘要（`skills=N commands=M hooks mcp`），`install` / `uninstall` / `update` / `reload` 管理 `~/.tact/plugins` 下的修订锁定缓存。Marketplace 命令（`tact plugin marketplace add|list|update|remove`）管理 Git/catalog 源。已安装插件内容贡献 skills（`plugin:<name>`）、`commands/*.md` 斜杠命令、MCP 服务器与生命周期 hook——见 Ch 2、8、9、12。
+插件管理在 `tact plugin` / `/plugin` 下：`list` 打印每个已安装插件的功能摘要（`skills=N commands=M hooks mcp`），`install` / `uninstall` / `update` / `reload` 管理 `~/.tact/plugins` 下的修订锁定缓存。插件**状态**（`installed.json`、`marketplaces.json`）单独放在 `~/.tact/plugins/state/`；插件根下的旧副本仍会被读取并在首次使用时迁移，因此共享同一 home 的旧版二进制仍可用。Marketplace 命令（`tact plugin marketplace add|list|update|remove`）管理 Git/catalog 源，并会发现 `~/.agents/plugins/marketplace.json` 与 最近的仓库 `.agents/plugins/marketplace.json` 下的 Codex 本地 marketplace。始终注册两个内置 Git marketplace：`claude-plugins-official` 与 OpenAI Codex 目录 `openai-curated`（`github.com/openai/plugins`）。不带 `@marketplace` 的 `plugin install <name>` 优先匹配已发现的 Codex marketplace，找不到才回退到 `claude-plugins-official`。已安装插件内容贡献 skills（`plugin:<name>`）、`commands/*.md` 斜杠命令、MCP 服务器与生命周期 hook——见 Ch 2、8、9、12。MCP 服务器声明在 `~/.tact/mcp.json`（用户级）或 `<workdir>/.tact/mcp.json`（项目级）——每个作用域只有一个文件名；不读取 cwd 级 manifest 与 `.mcp.json`；已安装插件仍会提供 server。条目可以是本地（`command`，通过 stdio 启动）或远程（`url`，Streamable HTTP），可选静态 `headers` 或 `auth: { "type": "oauth", ... }`；OAuth token 按 server 存放在 `~/.tact/mcp/oauth/` 下，用 `/mcp auth <server>`（交互式）或 `tact-ui mcp login <server>`（CLI）授权；`/mcp list` 在 TUI 内显示已配置 server 及其实时状态（仅空闲、绝不重连）。CLI 覆盖完整生命周期——`tact-ui mcp list`（每个 server 的传输方式与状态）、`get <name>`（单个 server 及其工具）、`add`/`remove`（`--user` 写入 home 文件，`--force` 覆盖）、`login`/`logout`（已存凭据）——见 Ch 8。
 
 两个入口点均通过 `crates/tact-ui/src/permission.rs` 中的 `permission_mode_from_config()` 读取 `permission_mode`。
 

@@ -213,25 +213,76 @@ DeepSeek uses **Context Caching on Disk**, which persists KV cache in "cache pre
 
 This means consecutive multi-turn conversations typically achieve high cache hit rates as the full prefix (system prompt + prior messages) matches.
 
-**TUI bottom-bar usage display:** The second row shows:
+**TUI bottom-bar usage display:** The first row carries the non-token context —
+permission mode, cwd, process uptime (`⊙ Up …` / `⊙ 运行 …`), the live task
+elapsed (`⏱ Elapsed …` / `⏱ 耗时 …`) and the git branch; the elapsed sits
+directly after the uptime it is the per-task counterpart of, renders only while
+a task is in flight (`task_start_time`; omitted, not blank, otherwise), and is
+the first row-1 segment dropped when columns run short.
 
-- **Max output tokens** — `max_out_token {n}`, the effective text-output
-  budget. For effort-semantic models (openai / deepseek / kimi k3) reasoning
-  shares the same `max_tokens` envelope, so the reasoning share is subtracted
-  (same tier convention as the compaction reserve: text = envelope ×
-  `100/(100+pct)`, e.g. `high` → `73K` on a 128K envelope). Budget-semantic
-  models (Anthropic-style `thinking_budget`) keep a separate thinking
-  envelope, so the full `max_tokens` is shown.
-- **Context meter** — `ctx [■■··] pct used/window`, where `used` is the latest
-  main-loop `TokenUsageInfo.total` and `window` is `model_context_window`.
+The second row shows:
+
+- **Max output tokens** — `out {n}` (labelled `max_out_token` before the
+  2026-09-12 compaction), the `max_tokens` value **verbatim**: the same number
+  the request carries (`max_output_tokens` on the Responses protocol,
+  `max_tokens` on chat completions / Anthropic), so the bar always agrees with
+  what the endpoint was asked for. No reasoning share is subtracted, not even
+  for effort-semantic models (openai / deepseek / kimi k3), whose reasoning is
+  counted inside this same envelope — the reasoning/text split is the endpoint's
+  per-request decision, so any fixed reserve here would be a guess. Estimating a
+  reasoning reserve belongs to the compaction path (summary budget,
+  `should_auto_compact`'s incoming-turn reserve), which must commit to a size;
+  this segment only reads one that is already known. Because `out` no longer
+  depends on the thinking settings, the earlier `None`-vs-`Some(0)` discriminator
+  (and the first-prompt value jump it caused) is structurally gone.
+- **Context meter** — `ctx {pct}% used/window` (e.g. `ctx 4% 45K/1M`), where
+  `used` is the latest main-loop
+  `TokenUsageInfo.total` and `window` is `model_context_window`.
   Subagent LLM calls persist under their own `sessions.id` (linked via
   `sessions.ref_id`); subagent `TokenUsage` is **not** forwarded to the shared
   UI channel — the bottom bar reflects the main agent only.
-- **Last-call total** — `∑ₜₒₖ {total}` from the **same** `TokenUsageInfo.total`
-  (precise integer; droppable when narrow).
-- **Cache hit rate** — `▣ 缓存%` / `▣ cache%` plus `pct%` or `--`, from
+- **Cache hit rate** — `▣ pct%` or `▣ --` (the `cache%` label was dropped in
+  the 2026-09-12 compaction: `▣` plus `%` already identify the number), from
   `prompt_cache_hit_tokens / (hit + miss)` on that latest call. Counts cover the
   entire prompt (system, tools, history), not only the latest user message.
+- **Turn counters** — `⟳ {n}` for user turns dispatched this session
+  (seeded from persisted user messages on resume) and `⇅ {n}` for the
+  current task's agent-loop iterations, from `AgentUpdate::TurnStats`
+  (`{ turns_taken, max_turns }`, emitted once per loop iteration). The `⇅`
+  segment is hidden until the task's first LLM call. `max_turns` is carried into
+  `StatusBarState.turn_llm_cap` but **not rendered**: only `spawn_subagent` sets
+  a cap, so the main-agent bar would never show one. The `turns` word label was
+  dropped in the compaction; the glyph pair carries it (see Ch 23 §6.6).
+- **Turn timing** — `⏱ {mm:ss}` for the most recently finished turn plus
+  `avg {mm:ss}` across the session. Accumulated in
+  `add_task_end_separator` (the only place that freezes `task_start_time`);
+  cancelled turns count, synthetic separators do not. Frozen values only — the
+  live clock is the row-1 segment above, and the top status bar renders no clock
+  at all (since 2026-09-14).
+
+**The ctx segment leads with the percentage, gauge dropped (2026-09-12):** it was
+`ctx [▍·······] 4% 45K/1M` (the same ratio encoded three times), was compacted to
+`ctx [▍···] 45K/1M`, and is now `ctx 4% 45K/1M`. The gauge was dropped because it
+only restated the percentage as glyphs, and `used/window` made the reader do the
+division to answer "how close am I to auto-compact". The absolute counts stay: a
+ratio cannot replace the two counts it came from. The segment went 24 → 17 → **14
+columns**.
+
+**No `∑ₜₒₖ` segment (removed 2026-09-12):** the previous `∑ₜₒₖ {total}` read the
+same `StatusBarState.token_total` that the `ctx` meter renders as `used`, so it
+was a second format of one number (precise integer vs compact). It was removed
+to free the row; the exact integer remains in the task-stats block and `/stats`.
+
+These segments are droppable on narrow terminals. Push order on the row is
+`model → out → think → ctx → cache → turns → timing`, and
+`fit_row_spans` removes the last droppable first, so survival is
+`ctx > cache > turns > timing`. The row is **85–86 columns** with every segment
+populated (the `out` value moves it by one), enforced by
+`render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`. Row 1
+drops in the reverse of its own push order — `elapsed > uptime > path`, i.e. the
+transient task clock goes first and the cwd last — pinned by
+`bottom_bar_drops_the_task_elapsed_before_uptime_and_path` and
+`bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`.
 
 **Subagent tool-card display:** A subagent's model name and token total
 are shown on the tool card's meta row (e.g. `🤖 deepseek-v3 · ⚡ 4.2K`)
