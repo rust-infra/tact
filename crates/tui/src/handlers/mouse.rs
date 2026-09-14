@@ -1181,6 +1181,135 @@ mod tests {
         assert_eq!(app.tools_mut().popup.as_ref().unwrap().scroll, 1);
     }
 
+    /// Feed a finished, collapsed `bash` block (the shape whose hint is the only
+    /// thing left to click) into an app already in `language`.
+    fn app_with_collapsed_command(language: crate::i18n::Language) -> App {
+        let mut app = make_app();
+        app.language = language;
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run",
+            "bash",
+            "b1",
+            HashMap::from([("command".to_string(), "echo hi".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "b1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "echo hi".into(),
+            arg_full: "echo hi".into(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "b1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "echo hi".into(),
+                arg_full: Some("echo hi".into()),
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some("hi\n".into()),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+        app
+    }
+
+    /// Screen row and first column of `needle`'s glyphs in a rendered frame —
+    /// read off the buffer, so wide characters are located where they are drawn.
+    fn glyph_origin(buf: &ratatui::buffer::Buffer, needle: &str) -> (u16, u16) {
+        let wanted: Vec<char> = needle.chars().collect();
+        for y in 0..buf.area.height {
+            let glyphs: Vec<(u16, char)> = (0..buf.area.width)
+                .filter_map(|x| {
+                    let sym = buf[(x, y)].symbol();
+                    let ch = sym.chars().next()?;
+                    (!ch.is_whitespace()).then_some((x, ch))
+                })
+                .collect();
+            if let Some(i) = glyphs
+                .windows(wanted.len())
+                .position(|w| w.iter().map(|(_, c)| *c).eq(wanted.iter().copied()))
+            {
+                return (glyphs[i].0, y);
+            }
+        }
+        panic!("{needle:?} is not drawn");
+    }
+
+    /// Does a double-click at (`column`, `row`) open the collapsed block's popup?
+    fn double_click_opens(app: &mut App, column: u16, row: u16) -> bool {
+        app.tools_mut().popup = None;
+        handle_log_click(app, mouse_down(column, row));
+        handle_log_click(app, mouse_down(column, row));
+        let opened = app.tools_mut().popup.is_some();
+        app.tools_mut().popup = None;
+        opened
+    }
+
+    /// The hint's click window has to be the glyphs the row **draws**, in every
+    /// locale — including blocks built before a `/lang` switch, whose row is
+    /// painted in the new language while the block itself is not rebuilt.
+    ///
+    /// The other collapsed-hint tests feed `collapsed_action_cols` back into the
+    /// handler, which only proves the arithmetic agrees with itself; this one
+    /// reads the rendered frame, which is what the user clicks on.
+    #[test]
+    fn collapsed_hint_click_window_matches_the_drawn_glyphs() {
+        use crate::i18n::Language;
+        use crate::render::test_harness::render_main_area_terminal;
+        use unicode_width::UnicodeWidthStr;
+
+        for lang in [Language::English, Language::Chinese] {
+            for toggled_after_build in [false, true] {
+                // Either the app is already in `lang` when the command finishes,
+                // or it finishes in the other language and `/lang` flips after —
+                // a toggle repaints rows, it does not rebuild them.
+                let mut app = if toggled_after_build {
+                    let other = if lang == Language::English {
+                        Language::Chinese
+                    } else {
+                        Language::English
+                    };
+                    let mut app = app_with_collapsed_command(other);
+                    app.toggle_language();
+                    app
+                } else {
+                    app_with_collapsed_command(lang)
+                };
+                assert_eq!(app.language, lang, "{lang:?}");
+
+                let action = app.msgs().tool_collapsed_output_action;
+                let width = UnicodeWidthStr::width(action) as u16;
+                let terminal = render_main_area_terminal(&mut app, 100, 20);
+                let buf = terminal.backend().buffer().clone();
+                let (start, row) = glyph_origin(&buf, action);
+                let end = start + width;
+                let ctx = format!("{lang:?} (toggled after build: {toggled_after_build})");
+
+                assert!(
+                    double_click_opens(&mut app, start, row),
+                    "{ctx}: the hint's first glyph must open the popup"
+                );
+                assert!(
+                    double_click_opens(&mut app, end - 1, row),
+                    "{ctx}: the hint's last glyph must open the popup"
+                );
+                assert!(
+                    !double_click_opens(&mut app, end, row),
+                    "{ctx}: the blank column after the hint must stay inert"
+                );
+                assert!(
+                    !double_click_opens(&mut app, start - 1, row),
+                    "{ctx}: the meta text before the hint must stay inert"
+                );
+            }
+        }
+    }
+
     /// A finished command collapses its output card, so the meta row's
     /// `double-click-result` hint is the only thing left to click.
     #[test]
@@ -1219,14 +1348,14 @@ mod tests {
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         // The collapsed block is exactly the two header rows, and its one target
         // is the hint at the end of the meta row.
-        let block = app.tools_mut().blocks.last().unwrap();
+        let msgs = app.msgs();
+        let block = app.tools().blocks.last().unwrap();
         assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
         let hint_cols = block
             .output
-            .collapsed_action_cols
-            .clone()
+            .collapsed_action_cols(&msgs)
             .expect("the hint is the target");
-        let meta = block.output.meta_text.clone().expect("meta text");
+        let meta = block.output.meta_text(&msgs).expect("meta row");
         assert!(meta.ends_with("double-click-result"), "{meta}");
         assert!(
             hint_cols.end as usize - hint_cols.start as usize == "double-click-result".len(),
@@ -1327,8 +1456,9 @@ mod tests {
         });
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
-        let block = app.tools_mut().blocks.last().unwrap();
-        let hint_cols = block.output.collapsed_action_cols.clone().unwrap();
+        let msgs = app.msgs();
+        let block = app.tools().blocks.last().unwrap();
+        let hint_cols = block.output.collapsed_action_cols(&msgs).unwrap();
         assert!(
             block.output.title_raw.len() as u16 > hint_cols.start,
             "the report's case: the command outruns the hint's columns"
@@ -1417,10 +1547,11 @@ mod tests {
         });
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
-        let block = app.tools_mut().blocks.last().unwrap();
+        let msgs = app.msgs();
+        let block = app.tools().blocks.last().unwrap();
         assert!(block.output.layout.detail_collapsed);
         assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
-        let hint_cols = block.output.collapsed_action_cols.clone().unwrap();
+        let hint_cols = block.output.collapsed_action_cols(&msgs).unwrap();
 
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
@@ -1477,10 +1608,11 @@ mod tests {
         });
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
-        let block = app.tools_mut().blocks.last().unwrap();
+        let msgs = app.msgs();
+        let block = app.tools().blocks.last().unwrap();
         assert!(block.output.layout.detail_collapsed);
         assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
-        let hint_cols = block.output.collapsed_action_cols.clone().unwrap();
+        let hint_cols = block.output.collapsed_action_cols(&msgs).unwrap();
 
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);
@@ -1547,10 +1679,11 @@ mod tests {
         });
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
-        let block = app.tools_mut().blocks.last().unwrap();
+        let msgs = app.msgs();
+        let block = app.tools().blocks.last().unwrap();
         assert!(block.output.layout.detail_collapsed);
         assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
-        let hint_cols = block.output.collapsed_action_cols.clone().unwrap();
+        let hint_cols = block.output.collapsed_action_cols(&msgs).unwrap();
 
         app.mouse.click_count = 2;
         app.mouse.last_click_tool = Some(0);

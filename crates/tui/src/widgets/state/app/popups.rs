@@ -579,13 +579,14 @@ impl App {
         if !output.layout.has_detail_card && !output.layout.detail_collapsed {
             return None;
         }
+        // The card title is localized, so it is derived here rather than read
+        // off the output: a popup opened after `/lang` must be titled in the
+        // language the block on screen is drawn in.
+        let card_title = output.card_title(&self.msgs());
         if output.phase == ToolPhase::Failed {
             let content = output.detail_full.clone()?;
             return Some(DiffPopup {
-                title: output
-                    .detail_title
-                    .clone()
-                    .unwrap_or_else(|| output.tool_name.clone()),
+                title: card_title.unwrap_or_else(|| output.tool_name.clone()),
                 file_path: None,
                 git_diff_path: None,
                 workspace_dir: None,
@@ -660,10 +661,7 @@ impl App {
                 };
                 Some(DiffPopup {
                     title: if full_arg.is_empty() {
-                        output
-                            .detail_title
-                            .clone()
-                            .unwrap_or_else(|| "Command output".to_string())
+                        card_title.unwrap_or_else(|| "Command output".to_string())
                     } else {
                         format!("bash ({full_arg})")
                     },
@@ -683,10 +681,7 @@ impl App {
             _ => {
                 let content = output.detail_full.clone()?;
                 Some(DiffPopup {
-                    title: output
-                        .detail_title
-                        .clone()
-                        .unwrap_or_else(|| output.tool_name.clone()),
+                    title: card_title.unwrap_or_else(|| output.tool_name.clone()),
                     file_path: None,
                     git_diff_path: None,
                     workspace_dir: None,
@@ -724,8 +719,11 @@ impl App {
         let Some(output) = self.tool_output_at(phys_idx) else {
             return;
         };
+        // The hint is measured from the row the cell draws, which is rendered in
+        // the *current* language — so the hit test must read the same locale.
+        let msgs = self.msgs();
         if output.layout.detail_collapsed {
-            if output.hits_collapsed_action(relative_row, col) {
+            if output.hits_collapsed_action(relative_row, col, &msgs) {
                 self.open_diff_popup(phys_idx);
             }
             return;
@@ -1059,8 +1057,7 @@ mod tests {
             permission_label: None,
             presentation: ToolPresentationInfo::generic("bash"),
         };
-        let msgs = app.msgs();
-        let output = ToolWidget::from_step_result(&result, &app.theme, &msgs)
+        let output = ToolWidget::from_step_result(&result)
             .with_phase(ToolPhase::Success)
             .build();
         let popup = app.popup_from_tool_output(&output).expect("bash popup");

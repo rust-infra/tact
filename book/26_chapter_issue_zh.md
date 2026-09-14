@@ -32,6 +32,42 @@
 ---
 
 
+## 1. 2026-09-14 — 卡片的行数前缀随它引导的那句标签一起本地化
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`tool_card_progress_tmpl`、`code_card_progress_tmpl`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（`card_bottom_text`）；`crates/agent_tui_kit/src/render/cells/code.rs`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
+
+**症状 / 动机：** 只预览了部分行的卡片会在底栏标签前标出省略量——` 3/10 lines |  Double-click for full code `。这个前缀是硬编码英文 `" {}/{} lines | {} "`，于是中文界面读到 ` 3/10 lines |  双击查看完整代码 `。代码卡片有同样的前缀（` +{} lines | {}`），问题相同。
+
+**决策：** 两个前缀都变成消息模板（`tool_card_progress_tmpl`、`code_card_progress_tmpl`），由绘制它们的 cell 填充——这个计数是它引导的那句标签的装饰，不是工具读数的回显，因此属于同一份字符串集。英文模板渲染出的字节与原先的 `format!` 完全一致。
+
+**之后的行为：** 中文显示 ` 3/10 行 |  双击查看完整代码 `；英文不变。由 `overflow_prefix_is_localized` 钉住（断言中文前缀，并断言底栏里不再残留 `lines`）。
+
+**指针：** 测试 `overflow_prefix_is_localized`、`overflow_is_merged_into_bottom_hint`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5。
+
+---
+
+## 1. 2026-09-14 — 折叠输出的点击窗口跟随**画出来的**那一行，而不是块构建时的语言
+
+| Field | Value |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`ToolRenderOutput::meta_text`、`collapsed_action_cols`、`hits_collapsed_action`、`card_title`、`card_bottom`、`card_title_text`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（`from_output`、`title_line`）；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`、`popup_from_tool_output`）；`crates/tui/src/widgets/state/app/config.rs`（`toggle_language`）；`crates/tui/src/widgets/state/app/construct.rs`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
+
+**症状 / 动机：** `/lang`（或 Ctrl-L）切到中文后，已完成折叠命令的 meta 行确实用新语言绘制——`✓ 成功 · 1us · 3 行 · 双击查看结果`——但提示只在**旧语言**会放它的位置可点。在 100 列的画面上实测：字形落在 x=31..43，而真实可点的列是 x=37..55，也就是这个块构建时那行英文（`✓ Success · 1us · 3 lines · double-click-result`）的尾部。于是看得见的提示前几个字点了没反应，反而提示右侧的空白能弹出弹窗。同一份冻结还让卡片外壳停在构建时的语言：中文界面里的失败卡片在中文 meta 行上方画出 `┌ Error ─` / `└ Double-click for full error ─┘`。
+
+这**不是** CJK 宽度问题：两侧本来就都用 `UnicodeWidthStr::width` 测量，只要构建与绘制共用同一份 `Messages`，数字完全一致（中文动作词画在 34..46，测得 34..46）。偏差只来自两侧读了不同的语言。
+
+**决策：** `ToolRenderOutput` 不再存任何语言相关文本——它是一份「事实」规格（阶段、计数、耗时、kind）。meta 行改为在**绘制时**按当前语言现推（`meta_text(&msgs)`），点击目标随之现算（`collapsed_action_cols(&msgs)`、`hits_collapsed_action(row, col, &msgs)`），于是它描述的永远只可能是屏幕上那一行。卡片外壳同理现推（`card_title(&msgs)`、`card_bottom(&msgs)`，它们依赖的事实由新的 `live_detail` 字段承载），标题行改由 cell 自己上色（删掉 `title_line`），顺带终结了标题行上的**主题**冻结。根因是 `Messages` 曾在构造时被快照进组件——`App::new` 写死 `Language::English`，而 `/lang` 只翻转渲染路径读取的 `App::language`——因此 `App::toggle_language` 现在同时把新的 `Messages` 推给持有它的组件（tool / thinking / stream），让语言变更只有这一个入口。
+
+**之后的行为：** 提示恰好在自己被画出来的位置可点，两种语言都如此，**切换之前就已存在的块**也一样——切换是重绘已有行，不是重建它们。中文界面下，切换之前建的卡片也显示中文外壳。工具卡片在切主题后颜色随主题走（含标题行）。builder 也不再接收主题与语言（`ToolWidget::new()`、`ToolWidget::from_step_result(&result)`）：规格里已经没有语言相关内容可让它们决定，而一个拿不到语言的构造函数也就无法冻结语言。把标题行的上色搬进 cell 是唯一会碰到渲染的改动，已逐格比对过上一版：100×30 帧（折叠命令、截断的失败卡片、实时卡片、代码卡片）的 fg/bg/modifier 完全一致，只有运行中卡片的走动耗时不同；新行为由 `theme_change_repaints_existing_tool_title_rows` 钉住。两条新增回归测试均已对旧行为验证过、在旧实现上失败：`collapsed_hint_click_window_matches_the_drawn_glyphs`（渲染整帧、从 buffer 量出动作词的字形列，断言这些列——且仅这些列——能打开弹窗，覆盖两种语言以及「切换前建好的块」）与 `language_toggle_repaints_tool_card_chrome`。
+
+**指针：** 测试 `collapsed_hint_click_window_matches_the_drawn_glyphs`、`language_toggle_repaints_tool_card_chrome`、`widget_meta_text_matches_the_rendered_meta_row`、`completed_command_renders_header_rows_only`、`double_click_collapsed_command_hint_opens_diff_popup`、`finished_block_meta_row_matches_its_hit_range`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
+
+---
+
 ## 1. 2026-09-14 — 折叠输出提示改为点名它打开的结果
 
 | Field | Value |
@@ -65,7 +101,9 @@
 
 **之后的行为：** 运行中不变（`Live output` 卡片，1→3 行 tail）。成功时只打印两行，并在 meta 行追加 `… · {n} 行 · 双击查看结果`（`tool_collapsed_output_hint`，另有单数形 `tool_collapsed_output_hint_one`，对应后台任务收尾路径可能出现的单行文本）——没有这条提示，无卡片的 block 就等于悄悄藏起了输出。`n` 取 `detail_total_lines`，与弹窗报告的行数完全一致（含 `$ <command>` 前缀行），因此提示与弹窗永远对得上。失败仍保留五行预览的 `Error` 卡片，`background_run` 在 `BackgroundTaskFinished` 收尾时折叠。每条完成的命令从 5 行降到 2 行；剩下的可点区域只有 `双击查看结果` 这几个字——参数行与其前面的 meta 文字都不响应。文件读取（`read_file`，以及共用 `FileRead` kind 的 `read_image`）、文件写入（`write_file`，`FileWrite`）与文件编辑（`edit_file`、`apply_patch`，`FileEdit`）适用同一条规则：正文卡片 / diff 卡片同样消失，内容仍可从弹窗读到（读取读文件正文，写入优先从磁盘读回该文件、失败时回落到工具返回的内容，编辑读 git diff），meta 提示带上它的行数。已完成 subagent 保留摘要卡片。从来没有卡片的 kind 是镜像情形：多行结果现在折叠，行数成本与从前一样是两行但变得可打开，单行结果则不动。划分始终按 kind 而非按工具名，MCP / 插件那条路径因为走 `Generic` 而自动受益。（动作词本身在 2026-09-14 由 `double-click` / `双击查看` 改名为 `double-click-result` / `双击查看结果`——见上面最新那条。）
 
-**Pointers:** `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapses_detail`、`layout`、`build`、`collapsed_action_cols`、`hits_collapsed_action`、`meta_suffixes`、`collapsed_output_hint`）；`crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_action`）；`crates/agent_tui_kit/src/render/cells/tool.rs`；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`）；`crates/tui/src/handlers/mouse.rs`（点击列）；测试 `completed_command_renders_header_rows_only`、`double_click_collapsed_command_hint_opens_diff_popup`、`collapsed_command_ignores_clicks_off_the_hint`、`collapsed_output_hint_ends_with_its_action`、`double_click_collapsed_edit_hint_opens_diff_popup`、`double_click_collapsed_read_hint_opens_diff_popup`、`double_click_cardless_tool_hint_opens_result_popup`、`edit_file_collapses_its_detail_card`、`read_file_collapses_its_detail_card`、`write_file_collapses_its_detail_card`、`read_file_has_plain_gutter`、`read_image_collapses_with_the_file_read_kind`、`multiline_result_of_a_cardless_kind_becomes_expandable`、`multiline_mcp_result_becomes_expandable`、`one_line_result_of_a_cardless_kind_stays_plain`、`result_already_on_the_meta_row_is_not_collapsed`、`full_frame_edit_file_tool_shows_in_log`、`full_frame_read_file_tool_shows_in_log`、`full_frame_write_file_tool_shows_in_log`、`full_frame_cardless_tool_result_is_openable`、`double_click_subagent_header_does_not_open_diff_popup`、`failed_command_keeps_its_error_card`、`collapse_spares_running_commands_and_subagents`、`collapsed_command_meta_row_reports_hidden_output`、`widget_meta_text_matches_the_rendered_meta_row`、`finished_block_stores_its_meta_text_for_hit_testing`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
+**已被取代（2026-09-14）：** 已完成块的 meta 行不再**存**进 `ToolRenderOutput`，而是按绘制时所用语言现推，这样 `/lang` 切换不会把点击窗口落在后面（见上面那条）。卡片标题与底栏同理。
+
+**Pointers:** `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapses_detail`、`layout`、`build`、`collapsed_action_cols`、`hits_collapsed_action`、`meta_suffixes`、`collapsed_output_hint`）；`crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_action`）；`crates/agent_tui_kit/src/render/cells/tool.rs`；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`）；`crates/tui/src/handlers/mouse.rs`（点击列）；测试 `completed_command_renders_header_rows_only`、`double_click_collapsed_command_hint_opens_diff_popup`、`collapsed_command_ignores_clicks_off_the_hint`、`collapsed_output_hint_ends_with_its_action`、`double_click_collapsed_edit_hint_opens_diff_popup`、`double_click_collapsed_read_hint_opens_diff_popup`、`double_click_cardless_tool_hint_opens_result_popup`、`edit_file_collapses_its_detail_card`、`read_file_collapses_its_detail_card`、`write_file_collapses_its_detail_card`、`read_file_has_plain_gutter`、`read_image_collapses_with_the_file_read_kind`、`multiline_result_of_a_cardless_kind_becomes_expandable`、`multiline_mcp_result_becomes_expandable`、`one_line_result_of_a_cardless_kind_stays_plain`、`result_already_on_the_meta_row_is_not_collapsed`、`full_frame_edit_file_tool_shows_in_log`、`full_frame_read_file_tool_shows_in_log`、`full_frame_write_file_tool_shows_in_log`、`full_frame_cardless_tool_result_is_openable`、`double_click_subagent_header_does_not_open_diff_popup`、`failed_command_keeps_its_error_card`、`collapse_spares_running_commands_and_subagents`、`collapsed_command_meta_row_reports_hidden_output`、`widget_meta_text_matches_the_rendered_meta_row`、`finished_block_meta_row_matches_its_hit_range`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
 
 ---
 

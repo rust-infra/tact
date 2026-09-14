@@ -413,6 +413,71 @@ fn log_visual_cache_rebuilds_on_width_change() {
     );
 }
 
+/// A stored tool block repaints its title row when the theme changes: the title
+/// *text* is a fact of the call, its color is not, so the cell styles it from the
+/// frame's theme instead of a line built once at `StepFinished`.
+#[test]
+fn theme_change_repaints_existing_tool_title_rows() {
+    let mut app = make_app();
+    let mut themes = Vec::new();
+
+    for i in 0..3 {
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run",
+            "bash",
+            format!("theme-probe-{i}"),
+            HashMap::from([("command".to_string(), "echo hi".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: i,
+            tool_id: format!("theme-probe-{i}"),
+            tool_name: "bash".into(),
+            arg_summary: "echo hi".into(),
+            arg_full: "echo hi".into(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: i,
+            tool_id: format!("theme-probe-{i}"),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "echo hi".into(),
+                arg_full: Some("echo hi".into()),
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: Some("hi\n".into()),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        // `toggle_theme` only changes `app.theme`; the blocks above are already
+        // built and must still follow it.
+        app.toggle_theme();
+        let expect_fg = app.theme.fg;
+        let terminal = render_log_panel_terminal(&mut app, 100, 20);
+        let buf = terminal.backend().buffer();
+        let (x, y) = buffer_cell_of(buf, "echo hi").expect("title row is drawn");
+        assert_eq!(
+            buf[(x, y)].fg,
+            expect_fg,
+            "the title row must follow the current theme"
+        );
+        assert!(
+            buf[(x, y)].modifier.contains(Modifier::BOLD),
+            "the title stays bold"
+        );
+        themes.push(expect_fg);
+    }
+
+    themes.dedup();
+    assert!(
+        themes.len() > 1,
+        "the probe must actually cycle through different fg colors"
+    );
+}
+
 #[test]
 fn log_visual_cache_rebuilds_on_theme_change() {
     let mut app = make_app();
@@ -505,7 +570,10 @@ fn completed_command_renders_header_rows_only() {
     let block = app.tools().blocks.last().expect("tool block");
     assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
     assert!(block.output.layout.detail_collapsed);
-    let hint_cols = block.output.collapsed_action_cols.clone().expect("hint");
+    let hint_cols = block
+        .output
+        .collapsed_action_cols(&app.msgs())
+        .expect("hint");
 
     let text = render_log_panel_text(&mut app, 100, 14);
     assert!(
@@ -555,6 +623,76 @@ fn completed_command_renders_header_rows_only() {
         glyph_start + needle.len(),
         "the hit range must end on the last glyph of {needle:?}"
     );
+}
+
+/// Card chrome (the border title and the bottom hint) is localized when the card
+/// is *painted*, not when the block is built: `/lang` has to repaint cards that
+/// already exist.
+///
+/// `App` is constructed in English regardless of the locale, so a tool that
+/// finishes and *then* flips the language is the everyday `/lang` case — and it
+/// is the case a build-time snapshot gets wrong.
+#[test]
+fn language_toggle_repaints_tool_card_chrome() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "run shell",
+        "bash",
+        "bash-failed",
+        HashMap::from([("command".to_string(), "false".to_string())]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "bash-failed".into(),
+        tool_name: "bash".into(),
+        arg_summary: "false".into(),
+        arg_full: "false".into(),
+        presentation: ToolPresentationInfo::generic("bash"),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "bash-failed".into(),
+        result: StepResult {
+            tool: "bash".into(),
+            arg_summary: "false".into(),
+            arg_full: Some("false".into()),
+            status: StepStatus::Failed,
+            message: "exit 1".into(),
+            detail: Some("boom\n".into()),
+            duration_us: Some(1),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
+        },
+    });
+
+    // The card is built while the UI is still English; only then does the
+    // language change.
+    app.toggle_language();
+    let msgs = app.msgs();
+    let text = render_log_panel_text(&mut app, 100, 14);
+
+    // Wide glyphs leave a filler cell behind them, so compare with whitespace
+    // squeezed out instead of matching the rendered text literally.
+    let squeezed = |s: &str| s.split_whitespace().collect::<String>();
+    let drawn = squeezed(&text);
+    for (label, localized, built_in) in [
+        ("meta row", msgs.tool_phase_failed, "Failed"),
+        ("card title", msgs.tool_error_card_title, "Error"),
+        (
+            "card bottom",
+            msgs.tool_error_card_bottom,
+            "Double-click for full error",
+        ),
+    ] {
+        assert!(
+            drawn.contains(&squeezed(localized)),
+            "{label} must be drawn in the current language ({localized:?}), got:\n{text}"
+        );
+        assert!(
+            !drawn.contains(&squeezed(built_in)),
+            "{label} must not keep the language it was built in ({built_in:?}), got:\n{text}"
+        );
+    }
 }
 
 #[test]

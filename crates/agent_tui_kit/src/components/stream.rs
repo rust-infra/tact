@@ -36,6 +36,13 @@ impl StreamComponent {
         }
     }
 
+    /// Swap the locale. Components own a `Messages` because they write log
+    /// text that outlives the frame that produced it, so a language change has
+    /// to reach them too — see `App::toggle_language`.
+    pub fn set_messages(&mut self, messages: Messages) {
+        self.messages = messages;
+    }
+
     /// Borrow the parse state (the shell reads `buffer` to render the
     /// in-flight line; event application updates the log).
     pub fn state(&self) -> &StreamState {

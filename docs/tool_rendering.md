@@ -112,14 +112,20 @@ pub(crate) struct ToolBlock {
 
 ## 4. Two-stage render pipeline
 
-Tool display splits **layout** (borrowed i18n/theme) from **render** (owned, storable):
+Tool display splits **layout** from **render** (owned, storable):
 
 ```text
   ToolWidget (builder)          ToolRenderOutput (owned)         ToolCell (Renderable)
   ───────────────────          ────────────────────────         ─────────────────────
-  borrows Theme, Messages  →   title_line, meta fields,    →   ratatui draw + height()
-                                 layout, detail_preview           skip_lines clipping
+  tool call facts          →   non-localized spec:         →   ratatui draw + height()
+  (takes no Theme/Messages)      title_raw, counts, phase,        skip_lines clipping
+                                 layout, detail_preview           + live Theme/Messages
 ```
+
+`ToolRenderOutput` intentionally carries **no rendered text and no colors**: the cell borrows
+the live `Theme`/`Messages` per frame, and the log hit test asks the same spec for the row in
+the current locale (see §5 "Collapsed output"). Storing either would freeze the frame's language
+or palette into objects that outlive the frame that built them.
 
 | Type | File | Role |
 |---|---|---|
@@ -210,11 +216,13 @@ Two exclusions keep the hint meaningful rather than universal:
 - **A one-line result does not collapse.** `sleep`, `save_memory`, `send_message` and friends answer with a confirmation the meta row already implies; `· 1 line · double-click-result` on all of them would be chrome that opens nothing worth reading.
 - **A result already printed on the meta row does not collapse** (`compact_result_to_meta`, i.e. `ask_user`): a second affordance for the same text is noise, not reach.
 
-Whenever a block collapses (or keeps a card), the full text is kept in `ToolRenderOutput.detail_full` and `detail_total_lines` carries its line count, so the popup path is unchanged — only the inline card is gone. What that detail *is* varies by tool: for an edit the `new_text` input field (`DetailPolicy::InputField`), which is what the card used to preview and count (the popup itself shows the git diff via `git_diff_path`, so the count on the meta row describes the payload, not the rendered diff); for a write the `content` input field, with the popup preferring the file on disk and falling back to the captured text; for a read the file body the tool returned, with the same path-then-text fallback, so a collapsed read is never a dead end (a read's gutter stays plain — no `+` column — in the popup, and `read_image`, which rides `FileRead`, falls back to its text envelope for a binary path it cannot read as text); for a cardless kind it is simply the tool's result string. Collapsed blocks keep `detail_title` too (the title the card would have carried, e.g. `<tool> output`), so a cardless kind's popup is not headed by its bare tool name.
+Whenever a block collapses (or keeps a card), the full text is kept in `ToolRenderOutput.detail_full` and `detail_total_lines` carries its line count, so the popup path is unchanged — only the inline card is gone. What that detail *is* varies by tool: for an edit the `new_text` input field (`DetailPolicy::InputField`), which is what the card used to preview and count (the popup itself shows the git diff via `git_diff_path`, so the count on the meta row describes the payload, not the rendered diff); for a write the `content` input field, with the popup preferring the file on disk and falling back to the captured text; for a read the file body the tool returned, with the same path-then-text fallback, so a collapsed read is never a dead end (a read's gutter stays plain — no `+` column — in the popup, and `read_image`, which rides `FileRead`, falls back to its text envelope for a binary path it cannot read as text); for a cardless kind it is simply the tool's result string. Collapsed blocks keep a card title too — `ToolRenderOutput::card_title(&msgs)` derives the title the card would have carried (e.g. `<tool> output`) so a cardless kind's popup is not headed by its bare tool name.
 
-**Click target.** With no card to hit, the affordance is the hint that names the gesture: `ToolRenderOutput.collapsed_action_cols` is the column range of `tool_collapsed_output_action` (`double-click-result` / `双击查看结果`) at the end of the meta row, measured from the block's own left edge (`LOG_TOOL_BLOCK_INDENT .. indent + display width(meta_text)`), and `ToolRenderOutput::hits_collapsed_action(row, col)` opens the popup only inside it — on the meta row (`TOOL_META_ROW`) alone. The title/parameter row and the rest of the meta row (success mark, duration, line count) stay inert, so what can be clicked is not merely visible but exactly the words that advertise the gesture.
+**Click target.** With no card to hit, the affordance is the hint that names the gesture: `ToolRenderOutput::collapsed_action_cols(&msgs)` is the column range of `tool_collapsed_output_action` (`double-click-result` / `双击查看结果`) at the end of the meta row, measured from the block's own left edge (`LOG_TOOL_BLOCK_INDENT .. indent + display width(meta_text)`), and `ToolRenderOutput::hits_collapsed_action(row, col, &msgs)` opens the popup only inside it — on the meta row (`TOOL_META_ROW`) alone. The title/parameter row and the rest of the meta row (success mark, duration, line count) stay inert, so what can be clicked is not merely visible but exactly the words that advertise the gesture.
 
 The range is derived backwards from the row's end, which only holds because the hint is the row's tail: `meta_suffixes` appends `collapsed_output_hint()` last, and every locale's hint ends with its action string (pinned by `collapsed_output_hint_ends_with_its_action`).
+
+**The measurement is taken in the locale being drawn, not the one the block was built in.** `ToolRenderOutput` stores no rendered text at all — the meta row is derived on demand by `meta_text(&msgs)` (same `build_meta_text` + `meta_suffixes` the cell uses) and its line count/phase/kind live on the spec. It has to be that way because `/lang` (and Ctrl-L) only flips `App::language`, which the render path reads: the cell repaints every stored block in the new language, so a row frozen at build time would stop describing the screen and the click window would sit off the drawn hint. The same reason put `card_title(&msgs)` / `card_bottom(&msgs)` on the output: card chrome is localized where the card is painted — the card's line-count prefix included (`tool_card_progress_tmpl`, filled by the cell that draws it). (Until 2026-09-14 the finished row *was* stored, which is exactly the drift the bilingual regression test in `handlers/mouse.rs` now pins: the drawn glyph columns of the action must be the columns that open the popup, in both locales and for a block built before the toggle.)
 
 | State | Block rows | Output visible inline |
 |---|---|---|
@@ -227,7 +235,7 @@ The range is derived backwards from the row's end, which only holds because the 
 
 Because a card-less block would otherwise hide the fact that output exists, the meta row appends `… · {n} lines · double-click-result` (`collapsed_output_hint()`, from `tool_collapsed_output_hint` / `..._one`). `n` is `detail_total_lines` — for a command, the same number the popup reports, prefix line included; for an edit, the new text's line count; for a read or a write, the body's line count; for a cardless kind, the result's line count. Only the trailing action is clickable: the count is readout, not a button.
 
-`ToolRenderOutput.meta_text` holds the **finished** block's exact meta row (the widget and the cell assemble it through `build_meta_text` + `meta_suffixes`, so the measured text and the drawn text cannot drift; a test asserts they are equal). It is `None` while a tool runs, where the cell re-derives a ticking elapsed time — and a running block has no card-less hit area to measure.
+`ToolRenderOutput::meta_text(&msgs)` returns the **finished** block's exact meta row for the locale asked for (the cell draws the same row through `build_meta_text` + `meta_suffixes`, so the measured text and the drawn text cannot drift; a test asserts they are equal). It is `None` while a tool runs, where the cell re-derives a ticking elapsed time — and a running block has no card-less hit area to measure.
 
 ---
 
@@ -292,7 +300,7 @@ the terminal `StepResult.detail` becomes authoritative after completion.
 
 Centered modal styling (no drop shadow); scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
 
-A collapsed finished tool (`ToolLayout.detail_collapsed`) draws no card, so its click target is the trailing `double-click-result` hint on the meta row (`collapsed_action_cols` / `hits_collapsed_action`) — everything else in those two rows is inert. A tool that still draws a card (a finished subagent, a running or failed tool) opens only from a click inside that card. See §5 "Collapsed output".
+A collapsed finished tool (`ToolLayout.detail_collapsed`) draws no card, so its click target is the trailing `double-click-result` hint on the meta row (`collapsed_action_cols(&msgs)` / `hits_collapsed_action(row, col, &msgs)`, measured in the locale the row is drawn in) — everything else in those two rows is inert. A tool that still draws a card (a finished subagent, a running or failed tool) opens only from a click inside that card. See §5 "Collapsed output".
 
 Tool detail popups support left-button text selection over the visible body. Hit testing stores UTF-8-safe byte offsets into the original cached content, so line numbers, green diff gutters, borders, titles, and scrollbars are never selected or copied. Display cells map to complete extended grapheme clusters using Ratatui-compatible widths; forward and backward drags therefore include the whole visible grapheme under both endpoints, including combining and emoji sequences. Dragging above or below the body clamps to the first or last visible source boundary without changing popup scroll; scrolling otherwise preserves the current selection. Automatic drag-edge scrolling is intentionally out of scope.
 
@@ -373,4 +381,4 @@ Integration-style unit tests live in `render/cells/tool.rs` (`make_output`, heig
 cargo test -p tui tool_cell
 ```
 
-Collapse-specific coverage: `collapsed_command_meta_row_reports_hidden_output` / `collapsed_command_meta_row_uses_the_singular_for_one_line` / `open_card_meta_row_has_no_collapsed_hint` / `widget_meta_text_matches_the_rendered_meta_row` (agent_tui_kit cells), `failed_command_keeps_its_error_card` + `collapse_applies_only_to_finished_commands` + `from_step_result_maps_permission_and_duration` + `finished_block_stores_its_meta_text_for_hit_testing` + `running_block_stores_no_meta_text` (widget layer), `completed_command_renders_header_rows_only` (log render, incl. the buffer-level indent check), `double_click_collapsed_command_header_opens_diff_popup` / `collapsed_command_ignores_clicks_past_the_text` / `double_click_tool_header_does_not_open_diff_popup` (mouse hit test).
+Collapse-specific coverage: `collapsed_command_meta_row_reports_hidden_output` / `collapsed_command_meta_row_uses_the_singular_for_one_line` / `open_card_meta_row_has_no_collapsed_hint` / `widget_meta_text_matches_the_rendered_meta_row` (agent_tui_kit cells), `failed_command_keeps_its_error_card` + `collapse_applies_only_to_finished_commands` + `from_step_result_maps_permission_and_duration` + `finished_block_meta_row_matches_its_hit_range` + `running_block_has_no_meta_row_to_measure` (widget layer), `overflow_prefix_is_localized` (cells), `collapsed_hint_click_window_matches_the_drawn_glyphs` + `language_toggle_repaints_tool_card_chrome` + `theme_change_repaints_existing_tool_title_rows` (rendered-frame checks that a `/lang` switch keeps hits and chrome on the drawn glyphs), `completed_command_renders_header_rows_only` (log render, incl. the buffer-level indent check), `double_click_collapsed_command_header_opens_diff_popup` / `collapsed_command_ignores_clicks_past_the_text` / `double_click_tool_header_does_not_open_diff_popup` (mouse hit test).

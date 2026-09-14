@@ -1,9 +1,5 @@
 use std::{ops::Range, time::Instant};
 
-use ratatui::{
-    style::{Modifier, Style},
-    text::{Line, Span},
-};
 use tact_protocol::{
     StepResult, StepStatus, TokenUsageInfo, ToolOutputBuffer, ToolOutputLine, ToolOutputSpan,
     ToolOutputStream, ToolPresentationInfo,
@@ -12,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::render::{bar::format_tokens_compact, util::LOG_TOOL_BLOCK_INDENT};
 
-use crate::{i18n::Messages, theme::Theme};
+use crate::i18n::Messages;
 
 const DEFAULT_MAX_DETAIL_LINES: usize = 200;
 const DEFAULT_PREVIEW_LINES: usize = 1;
@@ -374,9 +370,21 @@ pub fn tool_visual_rows(
 }
 
 /// Render-ready output produced by [`ToolWidget`].
+///
+/// **Nothing here is language-derived.** Every string in this spec is a fact
+/// about the call (tool name, arguments, phase, counts, durations); the locale
+/// is applied where the block is drawn ([`crate::render::cells::tool::ToolCell`])
+/// and where it is hit-tested ([`ToolRenderOutput::hits_collapsed_action`]),
+/// both of which read the *current* [`Messages`].
+///
+/// Storing a rendered row here instead would freeze the locale of the moment the
+/// output was built: `/lang` flips the language the cell draws with, so a stored
+/// row would stop describing what is on screen — and the click target measured
+/// from it would drift off the drawn hint (see `book/26_chapter_issue.md`,
+/// 2026-09-14).
 #[derive(Debug, Clone)]
 pub struct ToolRenderOutput {
-    pub title_line: Line<'static>,
+    /// Title row text (tool name + arguments); the cell styles it with the live theme.
     pub title_raw: String,
     pub phase: ToolPhase,
     pub permission_label: Option<String>,
@@ -390,26 +398,14 @@ pub struct ToolRenderOutput {
     /// Full tool argument summary (untruncated), used by popups/details.
     pub arg_full: String,
     pub layout: ToolLayout,
-    pub detail_title: Option<String>,
+    /// Whether the detail card is the *live output* card of a streaming command
+    /// (as opposed to a finished card). Decides the localized card title and
+    /// bottom strings, which are derived on demand.
+    pub live_detail: bool,
     pub detail_preview: Vec<ToolOutputLine>,
     pub detail_total_lines: usize,
     /// Full detail text for popup display (preview may be truncated).
     pub detail_full: Option<String>,
-    pub card_bottom: String,
-    /// Plain text of the meta row for a **finished** block (`None` while a tool
-    /// runs, where the cell re-derives the ticking elapsed time).
-    ///
-    /// The log hit test measures this to know where the row's text ends: a
-    /// collapsed command is opened by clicking its own hint, not by clicking the
-    /// invisible remainder of the row.
-    pub meta_text: Option<String>,
-    /// Columns of the clickable action hint (`"double-click-result"`) at the end of a
-    /// collapsed command's meta row ([`TOOL_META_ROW`]), measured from the
-    /// block's own left edge (indent included). `None` for every other block.
-    ///
-    /// Those glyphs are the whole affordance of a card-less command: the title
-    /// (parameter) row and the rest of the meta row stay inert.
-    pub collapsed_action_cols: Option<Range<u16>>,
     /// Subagent model name for tool-card header display.
     pub subagent_model: Option<String>,
     /// Subagent token usage for tool-card header display.
@@ -432,19 +428,131 @@ impl ToolRenderOutput {
         self.visual_rows(false).saturating_sub(1)
     }
 
+    /// Localized title of the detail card (its top border label), or `None` when
+    /// no card is drawn and no popup title is needed.
+    ///
+    /// Also used as the popup's title, so a card-less block still has one.
+    pub fn card_title(&self, msgs: &Messages) -> Option<String> {
+        (self.layout.has_detail_card || self.layout.detail_collapsed)
+            .then(|| self.card_title_text(msgs))
+    }
+
+    fn card_title_text(&self, msgs: &Messages) -> String {
+        if self.live_detail {
+            return msgs.tool_live_output_title.to_string();
+        }
+        if matches!(self.phase, ToolPhase::Failed) {
+            return msgs.tool_error_card_title.to_string();
+        }
+        if matches!(self.visual_kind, tact_protocol::ToolVisualKind::Subagent) {
+            return format!("Summary ({} lines)", self.detail_total_lines);
+        }
+        match self.visual_kind {
+            tact_protocol::ToolVisualKind::FileWrite | tact_protocol::ToolVisualKind::FileEdit => {
+                msgs.diff_card_title
+                    .replacen("{}", &self.detail_total_lines.to_string(), 1)
+                    .replacen("{}", &self.arg_summary, 1)
+            }
+            tact_protocol::ToolVisualKind::FileRead => format!("Read {}", self.arg_summary),
+            tact_protocol::ToolVisualKind::Command => "Command output".to_string(),
+            tact_protocol::ToolVisualKind::Task
+            | tact_protocol::ToolVisualKind::Generic
+            | tact_protocol::ToolVisualKind::Sleep
+            | tact_protocol::ToolVisualKind::Subagent => {
+                format!("{} output", self.tool_name)
+            }
+        }
+    }
+
+    /// Localized bottom label of the detail card. The cell prefixes the preview
+    /// counts when the card shows less than the whole result.
+    pub fn card_bottom(&self, msgs: &Messages) -> String {
+        if self.live_detail {
+            msgs.tool_live_output_bottom.to_string()
+        } else if matches!(self.phase, ToolPhase::Failed) {
+            msgs.tool_error_card_bottom.to_string()
+        } else {
+            msgs.diff_card_bottom.to_string()
+        }
+    }
+
+    /// Plain text of the meta row, in the given locale.
+    ///
+    /// `None` while a tool runs, where the row carries a ticking elapsed time
+    /// that only the cell can produce.
+    ///
+    /// This is the row the cell draws (both sides go through
+    /// [`build_meta_text`] + [`meta_suffixes`]), so the hit test measures the
+    /// text that is actually on screen — see [`Self::collapsed_action_cols`].
+    pub fn meta_text(&self, msgs: &Messages) -> Option<String> {
+        if matches!(self.phase, ToolPhase::Running) {
+            return None;
+        }
+        let hint = self
+            .layout
+            .detail_collapsed
+            .then(|| collapsed_output_hint(msgs, self.detail_total_lines));
+        let mut text = build_meta_text(
+            self.phase,
+            self.permission_label.as_deref(),
+            self.size_bytes,
+            self.duration_us,
+            meta_error(
+                self.phase,
+                self.layout.has_detail_card,
+                self.error_message.as_deref(),
+            ),
+            ' ',
+            msgs.tool_phase_running,
+            msgs.tool_phase_success,
+            msgs.tool_phase_failed,
+            msgs.tool_meta_sep,
+            msgs.step_success_prefix,
+            msgs.step_fail_prefix,
+        );
+        text.push_str(&meta_suffixes(
+            msgs.tool_meta_sep,
+            self.subagent_model.as_deref(),
+            self.subagent_tokens.as_ref().map(|t| t.total),
+            hint.as_deref(),
+        ));
+        Some(text)
+    }
+
+    /// Columns of the clickable action hint at the end of a collapsed command's
+    /// meta row ([`TOOL_META_ROW`]), measured from the block's own left edge
+    /// (indent included). `None` for every other block.
+    ///
+    /// Measured from the row the *current* locale produces, because that is the
+    /// row the cell draws: those glyphs are the whole affordance of a card-less
+    /// command, so they have to be the ones on screen.
+    pub fn collapsed_action_cols(&self, msgs: &Messages) -> Option<Range<u16>> {
+        if !self.layout.detail_collapsed {
+            return None;
+        }
+        let text = self.meta_text(msgs)?;
+        collapsed_action_cols(msgs, &text)
+    }
+
     /// Whether a click at (`row`, `col`) — `col` from the block's own left edge —
     /// lands on the collapsed command's expand hint.
-    pub fn hits_collapsed_action(&self, row: usize, col: usize) -> bool {
+    pub fn hits_collapsed_action(&self, row: usize, col: usize, msgs: &Messages) -> bool {
         row == TOOL_META_ROW
             && self
-                .collapsed_action_cols
-                .as_ref()
+                .collapsed_action_cols(msgs)
                 .is_some_and(|cols| cols.contains(&(col as u16)))
     }
 }
 
 /// Unified tool invocation renderer.
-pub struct ToolWidget<'a> {
+///
+/// The widget turns a tool call into a [`ToolRenderOutput`] — a **spec**, not a
+/// picture: it holds no rendered text, no colors, and no locale, which is why it
+/// takes neither a [`Theme`] nor [`Messages`]. Both are applied where they belong:
+/// [`crate::render::cells::tool::ToolCell`] draws with the live theme and locale,
+/// and the log hit test measures the same live row
+/// ([`ToolRenderOutput::hits_collapsed_action`]).
+pub struct ToolWidget {
     tool_name: String,
     arg_summary: String,
     arg_full: String,
@@ -454,8 +562,6 @@ pub struct ToolWidget<'a> {
     duration_us: Option<u64>,
     permission_label: Option<String>,
     error_message: Option<String>,
-    theme: &'a Theme,
-    msgs: &'a Messages,
     max_detail_lines: usize,
     preview_lines: usize,
     detail_lines: Option<Vec<ToolOutputLine>>,
@@ -466,8 +572,14 @@ pub struct ToolWidget<'a> {
     presentation: ToolPresentationInfo,
 }
 
-impl<'a> ToolWidget<'a> {
-    pub fn new(theme: &'a Theme, msgs: &'a Messages) -> Self {
+impl Default for ToolWidget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ToolWidget {
+    pub fn new() -> Self {
         Self {
             tool_name: String::new(),
             arg_summary: String::new(),
@@ -478,8 +590,6 @@ impl<'a> ToolWidget<'a> {
             duration_us: None,
             permission_label: None,
             error_message: None,
-            theme,
-            msgs,
             max_detail_lines: DEFAULT_MAX_DETAIL_LINES,
             preview_lines: DEFAULT_PREVIEW_LINES,
             detail_lines: None,
@@ -587,7 +697,7 @@ impl<'a> ToolWidget<'a> {
         self
     }
 
-    pub fn from_step_result(result: &StepResult, theme: &'a Theme, msgs: &'a Messages) -> Self {
+    pub fn from_step_result(result: &StepResult) -> Self {
         let failed = matches!(ToolPhase::from_status(&result.status), ToolPhase::Failed);
         // ask_user answers compress onto the meta row (same slot as permission labels),
         // not a separate detail card line.
@@ -634,8 +744,6 @@ impl<'a> ToolWidget<'a> {
             duration_us: result.duration_us,
             permission_label,
             error_message: None,
-            theme,
-            msgs,
             max_detail_lines: DEFAULT_MAX_DETAIL_LINES,
             preview_lines: DEFAULT_PREVIEW_LINES,
             detail_lines: None,
@@ -696,15 +804,6 @@ impl<'a> ToolWidget<'a> {
         } else {
             base
         }
-    }
-
-    pub fn title_line(&self) -> Line<'static> {
-        Line::from(Span::styled(
-            self.title_text(),
-            Style::default()
-                .fg(self.theme.fg)
-                .add_modifier(Modifier::BOLD),
-        ))
     }
 
     pub fn size_bytes(&self) -> Option<usize> {
@@ -773,7 +872,7 @@ impl<'a> ToolWidget<'a> {
             kind_from_presentation(&self.presentation, &self.tool_name),
             tact_protocol::ToolVisualKind::FileWrite | tact_protocol::ToolVisualKind::FileEdit
         );
-        let (detail_title, detail_preview, detail_total_lines) = if layout.has_detail_card {
+        let (detail_preview, detail_total_lines) = if layout.has_detail_card {
             let detail = self.display_detail().unwrap_or_default();
             let lines: Vec<ToolOutputLine> = self.detail_lines.clone().unwrap_or_else(|| {
                 detail
@@ -805,7 +904,7 @@ impl<'a> ToolWidget<'a> {
             } else {
                 lines.iter().take(layout.preview_lines).cloned().collect()
             };
-            (Some(self.detail_card_title(total)), preview, total)
+            (preview, total)
         } else if layout.detail_collapsed {
             // No card is drawn, but the popup still needs the text, its line
             // count, and a title for the kinds that have no other one to fall
@@ -813,61 +912,15 @@ impl<'a> ToolWidget<'a> {
             // tool name).
             let detail = self.display_detail().unwrap_or_default();
             let total = detail.lines().count();
-            (Some(self.detail_card_title(total)), Vec::new(), total)
+            (Vec::new(), total)
         } else {
-            (None, Vec::new(), 0)
+            (Vec::new(), 0)
         };
 
         let title_raw = self.title_text();
         let has_detail_card = layout.has_detail_card;
         let detail_collapsed = layout.detail_collapsed;
-        let card_bottom = if self.live_detail {
-            self.msgs.tool_live_output_bottom.to_string()
-        } else if matches!(self.phase, ToolPhase::Failed) {
-            self.msgs.tool_error_card_bottom.to_string()
-        } else {
-            self.msgs.diff_card_bottom.to_string()
-        };
-        // Exact meta row text for a finished block, so the log hit test can tell
-        // the drawn text apart from the empty rest of the row. A running block
-        // re-derives this in the cell (its elapsed time ticks), so it stays
-        // `None` and no stale text is left behind.
-        let meta_text = match self.phase {
-            ToolPhase::Running => None,
-            finished => {
-                let hint =
-                    detail_collapsed.then(|| collapsed_output_hint(self.msgs, detail_total_lines));
-                let mut text = build_meta_text(
-                    finished,
-                    self.permission_label.as_deref(),
-                    self.size_bytes(),
-                    self.duration_us,
-                    meta_error(finished, has_detail_card, self.error_message.as_deref()),
-                    ' ',
-                    self.msgs.tool_phase_running,
-                    self.msgs.tool_phase_success,
-                    self.msgs.tool_phase_failed,
-                    self.msgs.tool_meta_sep,
-                    self.msgs.step_success_prefix,
-                    self.msgs.step_fail_prefix,
-                );
-                text.push_str(&meta_suffixes(
-                    self.msgs.tool_meta_sep,
-                    self.subagent_model.as_deref(),
-                    self.subagent_tokens.as_ref().map(|t| t.total),
-                    hint.as_deref(),
-                ));
-                Some(text)
-            }
-        };
-        // Only a collapsed command is opened by clicking its own text, and only
-        // by the hint that names the gesture.
-        let collapsed_action_cols = meta_text
-            .as_deref()
-            .filter(|_| detail_collapsed)
-            .and_then(|text| collapsed_action_cols(self.msgs, text));
         ToolRenderOutput {
-            title_line: self.title_line(),
             title_raw,
             phase: self.phase,
             permission_label: self.permission_label.clone(),
@@ -883,7 +936,7 @@ impl<'a> ToolWidget<'a> {
                 self.arg_full.clone()
             },
             layout,
-            detail_title,
+            live_detail: self.live_detail,
             detail_preview,
             detail_total_lines,
             detail_full: if has_detail_card || detail_collapsed {
@@ -891,9 +944,6 @@ impl<'a> ToolWidget<'a> {
             } else {
                 None
             },
-            card_bottom,
-            meta_text,
-            collapsed_action_cols,
             subagent_model: self.subagent_model.clone(),
             subagent_tokens: self.subagent_tokens.clone(),
             visual_kind: kind_from_presentation(&self.presentation, &self.tool_name),
@@ -978,37 +1028,6 @@ impl<'a> ToolWidget<'a> {
                 | tact_protocol::ToolVisualKind::Subagent
         ) && matches!(self.phase, ToolPhase::Success)
     }
-
-    fn detail_card_title(&self, total_lines: usize) -> String {
-        if self.live_detail {
-            return self.msgs.tool_live_output_title.to_string();
-        }
-        if matches!(self.phase, ToolPhase::Failed) {
-            return self.msgs.tool_error_card_title.to_string();
-        }
-        if matches!(
-            kind_from_presentation(&self.presentation, &self.tool_name),
-            tact_protocol::ToolVisualKind::Subagent
-        ) {
-            return format!("Summary ({} lines)", total_lines);
-        }
-        match kind_from_presentation(&self.presentation, &self.tool_name) {
-            tact_protocol::ToolVisualKind::FileWrite | tact_protocol::ToolVisualKind::FileEdit => {
-                self.msgs
-                    .diff_card_title
-                    .replacen("{}", &total_lines.to_string(), 1)
-                    .replacen("{}", &self.arg_summary, 1)
-            }
-            tact_protocol::ToolVisualKind::FileRead => format!("Read {}", self.arg_summary),
-            tact_protocol::ToolVisualKind::Command => "Command output".to_string(),
-            tact_protocol::ToolVisualKind::Task
-            | tact_protocol::ToolVisualKind::Generic
-            | tact_protocol::ToolVisualKind::Sleep
-            | tact_protocol::ToolVisualKind::Subagent => {
-                format!("{} output", self.tool_name)
-            }
-        }
-    }
 }
 
 fn command_detail(
@@ -1024,23 +1043,19 @@ fn command_detail(
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
-    use crate::{i18n::Language, theme::ThemeName};
+    use crate::i18n::Language;
 
-    fn fixture() -> (Theme, Messages) {
-        let theme_name = ThemeName::from_str("retro").unwrap();
-        (
-            Theme::from(theme_name),
-            Messages::by_language(Language::English),
-        )
+    /// The English string set — what the render path uses while the app is in
+    /// its default locale. The widget itself is locale-free, so only the
+    /// assertions that render or measure a row need it.
+    fn test_msgs() -> Messages {
+        Messages::by_language(Language::English)
     }
 
     #[test]
     fn title_for_bash_shows_command() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("bash")
             .with_arg_summary("echo hello")
             .with_phase(ToolPhase::Running);
@@ -1050,8 +1065,7 @@ mod tests {
 
     #[test]
     fn web_search_title_and_detail_render_as_command() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("web_search")
             .with_arg_summary("Rust async best practices")
             .with_phase(ToolPhase::Success)
@@ -1074,14 +1088,14 @@ mod tests {
 
     #[test]
     fn running_bash_live_output_uses_available_lines_up_to_three() {
-        let (theme, msgs) = fixture();
+        let msgs = test_msgs();
         let mut live = tact_protocol::ToolOutputBuffer::new(50_000);
         live.push_chunks(&[
             tact_protocol::ToolOutputChunk::stdout("building\n"),
             tact_protocol::ToolOutputChunk::stderr("warning\n"),
         ]);
 
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("bash")
             .with_phase(ToolPhase::Running)
             .with_live_output(&live)
@@ -1089,13 +1103,7 @@ mod tests {
 
         assert!(output.layout.has_detail_card);
         assert_eq!(output.detail_preview.len(), 2);
-        assert!(
-            output
-                .detail_title
-                .as_deref()
-                .unwrap()
-                .contains("Live output")
-        );
+        assert!(output.card_title(&msgs).unwrap().contains("Live output"));
         assert_eq!(
             output.detail_preview[1].spans[0].stream,
             tact_protocol::ToolOutputStream::Stderr
@@ -1104,13 +1112,13 @@ mod tests {
 
     #[test]
     fn live_output_total_excludes_command_prefix_but_popup_keeps_it() {
-        let (theme, msgs) = fixture();
+        let msgs = test_msgs();
         let mut live = tact_protocol::ToolOutputBuffer::new(50_000);
         live.push_chunks(&[tact_protocol::ToolOutputChunk::stdout(
             "[feat/sdk abc] chore: cargo fmt\n6 files changed, 23 insertions(+), 19 deletions(-)\n",
         )]);
 
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("bash")
             .with_arg_full("git commit -m \"chore: cargo fmt\"")
             .with_phase(ToolPhase::Running)
@@ -1122,7 +1130,7 @@ mod tests {
             "live card count must match streamed output lines, not $ command prefix"
         );
         assert_eq!(output.detail_preview.len(), 2);
-        assert_eq!(output.detail_title.as_deref(), Some("Live output"));
+        assert_eq!(output.card_title(&msgs).as_deref(), Some("Live output"));
         assert_eq!(
             output.detail_full.as_deref(),
             Some(
@@ -1133,7 +1141,7 @@ mod tests {
 
     #[test]
     fn meta_running_includes_spinner_and_zero_ms() {
-        let (_theme, msgs) = fixture();
+        let msgs = test_msgs();
         let text = build_meta_text(
             ToolPhase::Running,
             None,
@@ -1154,7 +1162,7 @@ mod tests {
 
     #[test]
     fn meta_failed_includes_error_message() {
-        let (_theme, msgs) = fixture();
+        let msgs = test_msgs();
         let text = build_meta_text(
             ToolPhase::Failed,
             None,
@@ -1176,8 +1184,7 @@ mod tests {
 
     #[test]
     fn widget_stores_error_message() {
-        let (theme, msgs) = fixture();
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("bash")
             .with_phase(ToolPhase::Failed)
             .with_message("hook blocked execution")
@@ -1196,9 +1203,9 @@ mod tests {
 
     #[test]
     fn failed_tool_shows_error_card_with_preview() {
-        let (theme, msgs) = fixture();
+        let msgs = test_msgs();
         let error = "Permission denied by user for edit_file";
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("edit_file")
             .with_phase(ToolPhase::Failed)
             .with_detail(error)
@@ -1206,7 +1213,7 @@ mod tests {
         assert!(output.layout.has_detail_card);
         assert_eq!(output.layout.preview_lines, 1);
         assert_eq!(output.detail_preview.len(), 1);
-        assert!(output.card_bottom.contains("error"));
+        assert!(output.card_bottom(&msgs).contains("error"));
     }
 
     /// A finished write collapses like the rest: the written content stays
@@ -1214,12 +1221,12 @@ mod tests {
     /// `+` gutter is kept for that popup.
     #[test]
     fn write_file_collapses_its_detail_card() {
-        let (theme, msgs) = fixture();
+        let msgs = test_msgs();
         let detail = (0..15)
             .map(|i| format!("line-{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("write_file")
             .with_arg_summary("a.rs")
             .with_phase(ToolPhase::Success)
@@ -1233,14 +1240,19 @@ mod tests {
         assert_eq!(output.detail_full.as_deref(), Some(detail.as_str()));
         assert_eq!(output.detail_total_lines, 15);
         assert!(
-            output.meta_text.as_deref().unwrap().contains("15 lines"),
+            output
+                .meta_text(&msgs)
+                .as_deref()
+                .unwrap()
+                .contains("15 lines"),
             "{:?}",
-            output.meta_text
+            output.meta_text(&msgs)
         );
         assert!(
             output.hits_collapsed_action(
                 TOOL_META_ROW,
-                output.collapsed_action_cols.as_ref().unwrap().start as usize
+                output.collapsed_action_cols(&msgs).as_ref().unwrap().start as usize,
+                &msgs
             ),
             "the hint opens the written content"
         );
@@ -1248,8 +1260,7 @@ mod tests {
 
     #[test]
     fn read_file_has_plain_gutter() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("read_file")
             .with_arg_summary("Cargo.toml")
             .with_phase(ToolPhase::Success)
@@ -1267,8 +1278,8 @@ mod tests {
     /// keep exactly what the cell will draw — and a collapsed command's target
     /// is the `double-click-result` tail of that row, nothing else.
     #[test]
-    fn finished_block_stores_its_meta_text_for_hit_testing() {
-        let (theme, msgs) = fixture();
+    fn finished_block_meta_row_matches_its_hit_range() {
+        let msgs = test_msgs();
         let result = StepResult {
             tool: "bash".to_string(),
             arg_summary: "echo hi".to_string(),
@@ -1280,28 +1291,34 @@ mod tests {
             permission_label: None,
             presentation: ToolPresentationInfo::generic("bash"),
         };
-        let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
+        let output = ToolWidget::from_step_result(&result).build();
 
         let meta = output
-            .meta_text
-            .as_deref()
-            .expect("a finished block keeps its meta text");
+            .meta_text(&msgs)
+            .expect("a finished block has a meta row");
         assert!(meta.contains("Success"), "{meta}");
         assert!(meta.contains("3 lines · double-click-result"), "{meta}");
 
         // The target is the hint's action word, measured back from the row's end.
         let action = UnicodeWidthStr::width(msgs.tool_collapsed_output_action);
-        let end = LOG_TOOL_BLOCK_INDENT + UnicodeWidthStr::width(meta) as u16;
-        assert_eq!(output.collapsed_action_cols, Some(end - action as u16..end));
-        assert!(output.hits_collapsed_action(TOOL_META_ROW, (end - 1) as usize));
-        assert!(!output.hits_collapsed_action(TOOL_META_ROW, end as usize));
+        let end = LOG_TOOL_BLOCK_INDENT + UnicodeWidthStr::width(meta.as_str()) as u16;
+        assert_eq!(
+            output.collapsed_action_cols(&msgs),
+            Some(end - action as u16..end)
+        );
+        assert!(output.hits_collapsed_action(TOOL_META_ROW, (end - 1) as usize, &msgs));
+        assert!(!output.hits_collapsed_action(TOOL_META_ROW, end as usize, &msgs));
 
         // The parameter row is inert, and so is the rest of the meta row: the
         // success mark, the duration and the line count are not the gesture.
         assert_eq!(output.title_raw, "$ Bash  echo hi");
-        assert!(!output.hits_collapsed_action(0, LOG_TOOL_BLOCK_INDENT as usize));
-        assert!(!output.hits_collapsed_action(TOOL_META_ROW, LOG_TOOL_BLOCK_INDENT as usize));
-        assert!(!output.hits_collapsed_action(2, (end - 1) as usize));
+        assert!(!output.hits_collapsed_action(0, LOG_TOOL_BLOCK_INDENT as usize, &msgs));
+        assert!(!output.hits_collapsed_action(
+            TOOL_META_ROW,
+            LOG_TOOL_BLOCK_INDENT as usize,
+            &msgs
+        ));
+        assert!(!output.hits_collapsed_action(2, (end - 1) as usize, &msgs));
     }
 
     /// A collapsed hint is only measurable because its action word is its tail,
@@ -1326,25 +1343,28 @@ mod tests {
     /// A running block draws a ticking meta row, so it stores none — and with no
     /// collapsed hint there is no hit area to mis-measure.
     #[test]
-    fn running_block_stores_no_meta_text() {
-        let (theme, msgs) = fixture();
-        let output = ToolWidget::new(&theme, &msgs)
+    fn running_block_has_no_meta_row_to_measure() {
+        let msgs = test_msgs();
+        let output = ToolWidget::new()
             .with_tool("bash")
             .with_arg_summary("sleep 1")
             .with_phase(ToolPhase::Running)
             .with_duration_us(500_000)
             .build();
 
-        assert!(output.meta_text.is_none());
-        assert!(output.collapsed_action_cols.is_none());
-        assert!(!output.hits_collapsed_action(TOOL_META_ROW, LOG_TOOL_BLOCK_INDENT as usize));
+        assert!(output.meta_text(&msgs).is_none());
+        assert!(output.collapsed_action_cols(&msgs).is_none());
+        assert!(!output.hits_collapsed_action(
+            TOOL_META_ROW,
+            LOG_TOOL_BLOCK_INDENT as usize,
+            &msgs
+        ));
     }
 
     #[test]
     fn failed_command_keeps_its_error_card() {
         // Only a *successful* command collapses — a failure must stay readable
         // without a click.
-        let (theme, msgs) = fixture();
         let result = StepResult {
             tool: "bash".to_string(),
             arg_summary: "cargo build".to_string(),
@@ -1356,7 +1376,7 @@ mod tests {
             permission_label: None,
             presentation: ToolPresentationInfo::generic("bash"),
         };
-        let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
+        let output = ToolWidget::from_step_result(&result).build();
 
         assert!(
             output.layout.has_detail_card && !output.layout.detail_collapsed,
@@ -1371,8 +1391,7 @@ mod tests {
     /// only cards a successful tool can draw.
     #[test]
     fn collapse_spares_running_commands_and_subagents() {
-        let (theme, msgs) = fixture();
-        let live = ToolWidget::new(&theme, &msgs)
+        let live = ToolWidget::new()
             .with_tool("bash")
             .with_arg_summary("sleep 1")
             .with_phase(ToolPhase::Running)
@@ -1384,7 +1403,7 @@ mod tests {
             .build();
         assert!(live.layout.has_detail_card && !live.layout.detail_collapsed);
 
-        let subagent = ToolWidget::new(&theme, &msgs)
+        let subagent = ToolWidget::new()
             .with_tool("spawn_subagent")
             .with_arg_summary("audit the repo")
             .with_phase(ToolPhase::Success)
@@ -1401,9 +1420,9 @@ mod tests {
     /// now collapses like the rest, at no extra row cost.
     #[test]
     fn multiline_result_of_a_cardless_kind_becomes_expandable() {
-        let (theme, msgs) = fixture();
+        let msgs = test_msgs();
         let detail = "[1] pending  wire the parser\n[2] in_progress  run the suite";
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("task_list")
             .with_presentation(ToolPresentationInfo {
                 visual_kind: tact_protocol::ToolVisualKind::Task,
@@ -1419,13 +1438,18 @@ mod tests {
         assert_eq!(output.visual_rows(false), TOOL_HEADER_ROWS);
         assert_eq!(output.detail_full.as_deref(), Some(detail));
         assert!(
-            output.meta_text.as_deref().unwrap().contains("2 lines"),
+            output
+                .meta_text(&msgs)
+                .as_deref()
+                .unwrap()
+                .contains("2 lines"),
             "{:?}",
-            output.meta_text
+            output.meta_text(&msgs)
         );
         assert!(output.hits_collapsed_action(
             TOOL_META_ROW,
-            output.collapsed_action_cols.as_ref().unwrap().start as usize
+            output.collapsed_action_cols(&msgs).as_ref().unwrap().start as usize,
+            &msgs
         ));
     }
 
@@ -1433,8 +1457,7 @@ mod tests {
     /// too; a multi-line result is what makes it worth opening.
     #[test]
     fn multiline_mcp_result_becomes_expandable() {
-        let (theme, msgs) = fixture();
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("mcp__demo__search")
             .with_phase(ToolPhase::Success)
             .with_detail("hit one\nhit two\nhit three")
@@ -1452,8 +1475,8 @@ mod tests {
     /// `· 1 line · double-click-result` for text the meta row already implies.
     #[test]
     fn one_line_result_of_a_cardless_kind_stays_plain() {
-        let (theme, msgs) = fixture();
-        let output = ToolWidget::new(&theme, &msgs)
+        let msgs = test_msgs();
+        let output = ToolWidget::new()
             .with_tool("save_memory")
             .with_phase(ToolPhase::Success)
             .with_detail("Saved memory 'tabs'")
@@ -1465,12 +1488,11 @@ mod tests {
         assert_eq!(output.detail_full, None);
         assert!(
             !output
-                .meta_text
-                .as_deref()
+                .meta_text(&msgs)
                 .unwrap()
                 .contains("double-click-result"),
             "{:?}",
-            output.meta_text
+            output.meta_text(&msgs)
         );
     }
 
@@ -1479,8 +1501,7 @@ mod tests {
     /// noise.
     #[test]
     fn result_already_on_the_meta_row_is_not_collapsed() {
-        let (theme, msgs) = fixture();
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("ask_user")
             .with_presentation(ToolPresentationInfo {
                 compact_result_to_meta: true,
@@ -1496,7 +1517,6 @@ mod tests {
 
     #[test]
     fn from_step_result_failed_keeps_detail_only() {
-        let (theme, msgs) = fixture();
         let result = StepResult {
             tool: "edit_file".to_string(),
             arg_summary: "src/lib.rs".to_string(),
@@ -1508,7 +1528,7 @@ mod tests {
             permission_label: Some("Always allow this tool".to_string()),
             presentation: ToolPresentationInfo::generic("edit_file"),
         };
-        let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
+        let output = ToolWidget::from_step_result(&result).build();
         assert!(output.error_message.is_none());
         assert!(output.layout.has_detail_card);
         assert_eq!(output.detail_full.as_deref(), Some("full error\nline two"));
@@ -1516,7 +1536,6 @@ mod tests {
 
     #[test]
     fn from_step_result_maps_permission_and_duration() {
-        let (theme, msgs) = fixture();
         let result = StepResult {
             tool: "bash".to_string(),
             arg_summary: "sleep 1".to_string(),
@@ -1528,7 +1547,7 @@ mod tests {
             permission_label: Some("Always allow this tool".to_string()),
             presentation: ToolPresentationInfo::generic("bash"),
         };
-        let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
+        let widget = ToolWidget::from_step_result(&result);
         let output = widget.build();
 
         assert_eq!(output.duration_us, Some(1_200_000));
@@ -1549,7 +1568,7 @@ mod tests {
 
     #[test]
     fn ask_user_selection_compresses_onto_meta_row() {
-        let (theme, msgs) = fixture();
+        let msgs = test_msgs();
         let result = StepResult {
             tool: "ask_user".to_string(),
             arg_summary: "Pick one".to_string(),
@@ -1561,7 +1580,7 @@ mod tests {
             permission_label: None,
             presentation: ToolPresentationInfo::generic("ask_user"),
         };
-        let widget = ToolWidget::from_step_result(&result, &theme, &msgs);
+        let widget = ToolWidget::from_step_result(&result);
         let output = widget.build();
 
         assert_eq!(
@@ -1592,7 +1611,6 @@ mod tests {
 
     #[test]
     fn ask_user_keeps_permission_label_and_selection() {
-        let (theme, msgs) = fixture();
         let result = StepResult {
             tool: "ask_user".to_string(),
             arg_summary: "Pick one".to_string(),
@@ -1604,7 +1622,7 @@ mod tests {
             permission_label: Some("Allow once".to_string()),
             presentation: ToolPresentationInfo::generic("ask_user"),
         };
-        let output = ToolWidget::from_step_result(&result, &theme, &msgs).build();
+        let output = ToolWidget::from_step_result(&result).build();
         assert_eq!(
             output.permission_label.as_deref(),
             Some("Allow once · Selected: B. the")
@@ -1616,9 +1634,9 @@ mod tests {
     /// gutter is kept for that popup.
     #[test]
     fn edit_file_collapses_its_detail_card() {
-        let (theme, msgs) = fixture();
+        let msgs = test_msgs();
         let detail = "new line one\nnew line two".to_string();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("edit_file")
             .with_arg_summary("src/lib.rs")
             .with_phase(ToolPhase::Success)
@@ -1632,14 +1650,19 @@ mod tests {
         assert_eq!(output.detail_full.as_deref(), Some(detail.as_str()));
         assert_eq!(output.detail_total_lines, 2);
         assert!(
-            output.meta_text.as_deref().unwrap().contains("2 lines"),
+            output
+                .meta_text(&msgs)
+                .as_deref()
+                .unwrap()
+                .contains("2 lines"),
             "{:?}",
-            output.meta_text
+            output.meta_text(&msgs)
         );
         assert!(
             output.hits_collapsed_action(
                 TOOL_META_ROW,
-                output.collapsed_action_cols.as_ref().unwrap().start as usize
+                output.collapsed_action_cols(&msgs).as_ref().unwrap().start as usize,
+                &msgs
             ),
             "the hint opens the diff popup"
         );
@@ -1650,9 +1673,9 @@ mod tests {
     /// carries its line count.
     #[test]
     fn read_file_collapses_its_detail_card() {
-        let (theme, msgs) = fixture();
+        let msgs = test_msgs();
         let detail = "fn main() {}\n";
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("read_file")
             .with_arg_summary("src/lib.rs")
             .with_phase(ToolPhase::Success)
@@ -1666,14 +1689,19 @@ mod tests {
         assert_eq!(output.detail_full.as_deref(), Some(detail));
         assert_eq!(output.detail_total_lines, 1);
         assert!(
-            output.meta_text.as_deref().unwrap().contains("1 line ·"),
+            output
+                .meta_text(&msgs)
+                .as_deref()
+                .unwrap()
+                .contains("1 line ·"),
             "{:?}",
-            output.meta_text
+            output.meta_text(&msgs)
         );
         assert!(
             output.hits_collapsed_action(
                 TOOL_META_ROW,
-                output.collapsed_action_cols.as_ref().unwrap().start as usize
+                output.collapsed_action_cols(&msgs).as_ref().unwrap().start as usize,
+                &msgs
             ),
             "the hint opens the body popup"
         );
@@ -1684,8 +1712,7 @@ mod tests {
     /// envelope rather than a file body.
     #[test]
     fn read_image_collapses_with_the_file_read_kind() {
-        let (theme, msgs) = fixture();
-        let output = ToolWidget::new(&theme, &msgs)
+        let output = ToolWidget::new()
             .with_tool("read_image")
             .with_presentation(ToolPresentationInfo {
                 visual_kind: tact_protocol::ToolVisualKind::FileRead,
@@ -1704,8 +1731,7 @@ mod tests {
 
     #[test]
     fn header_only_layout_is_two_rows() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("grep")
             .with_arg_summary(r#"{"pattern":"foo"}"#)
             .with_phase(ToolPhase::Success)
@@ -1716,8 +1742,7 @@ mod tests {
 
     #[test]
     fn sleep_title_formats_duration() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("sleep")
             .with_arg_summary("5000")
             .with_phase(ToolPhase::Success)
@@ -1727,8 +1752,7 @@ mod tests {
 
     #[test]
     fn sleep_zero_ms_shows_zero() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("sleep")
             .with_arg_summary("0")
             .with_phase(ToolPhase::Success)
@@ -1738,8 +1762,7 @@ mod tests {
 
     #[test]
     fn sleep_minutes_format() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("sleep")
             .with_arg_summary("125000")
             .with_phase(ToolPhase::Success)
@@ -1749,8 +1772,7 @@ mod tests {
 
     #[test]
     fn sleep_exact_minute_drops_zero_seconds() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("sleep")
             .with_arg_summary("60000")
             .with_phase(ToolPhase::Success)
@@ -1760,8 +1782,7 @@ mod tests {
 
     #[test]
     fn sleep_fractional_second_keeps_decimal() {
-        let (theme, msgs) = fixture();
-        let widget = ToolWidget::new(&theme, &msgs)
+        let widget = ToolWidget::new()
             .with_tool("sleep")
             .with_arg_summary("1500")
             .with_phase(ToolPhase::Success)

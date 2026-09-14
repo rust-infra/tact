@@ -36,6 +36,9 @@ impl Language {
 ///   `_tmpl` suffix = template strings with `{}` placeholders, filled via `format!()`.
 ///   Others are static text.
 ///   `_pl` suffix = strings involving plural forms (can generally be ignored in Chinese).
+/// Every field is a `&'static str`, so the whole set is `Copy`: it is cheap to
+/// hand to whoever needs to render or measure a row.
+#[derive(Clone, Copy, Debug)]
 #[allow(non_snake_case, dead_code)]
 pub struct Messages {
     // ---- 面板标题 ----
@@ -47,6 +50,11 @@ pub struct Messages {
     pub tool_error_card_title: &'static str,
     pub tool_error_card_bottom: &'static str,
     pub code_card_bottom: &'static str, // " Click for full code "
+    /// Card-bottom prefix shown when a card previews fewer lines than the result
+    /// has: `preview`, `total`, then the card's own bottom label.
+    pub tool_card_progress_tmpl: &'static str, // " {}/{} lines | {} "
+    /// Code-card variant: how many lines the card left out, then the label.
+    pub code_card_progress_tmpl: &'static str, // " +{} lines | {}", len
     pub tool_phase_running: &'static str,
     pub tool_phase_success: &'static str,
     pub tool_phase_failed: &'static str,
@@ -347,6 +355,8 @@ impl Messages {
             tool_error_card_title: " Error ",
             tool_error_card_bottom: " Double-click for full error ",
             code_card_bottom: " Click for full code ",
+            tool_card_progress_tmpl: " {}/{} lines | {} ",
+            code_card_progress_tmpl: " +{} lines | {}",
             tool_phase_running: "Running",
             tool_phase_success: "Success",
             tool_phase_failed: "Failed",
@@ -624,6 +634,8 @@ impl Messages {
             tool_error_card_title: " 错误 ",
             tool_error_card_bottom: " 双击查看完整错误 ",
             code_card_bottom: " 点击查看完整代码 ",
+            tool_card_progress_tmpl: " {}/{} 行 | {} ",
+            code_card_progress_tmpl: " +{} 行 | {}",
             tool_phase_running: "运行中",
             tool_phase_success: "成功",
             tool_phase_failed: "失败",

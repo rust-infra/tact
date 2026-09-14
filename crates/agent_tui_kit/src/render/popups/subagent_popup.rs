@@ -276,8 +276,6 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
 mod tests {
     use std::time::Instant;
 
-    use ratatui::text::Line;
-
     use crate::{
         state::{ActiveToolBlock, ToolState},
         theme::{Theme, ThemeName},
@@ -288,7 +286,6 @@ mod tests {
 
     fn render_output(arg_full: &str) -> ToolRenderOutput {
         ToolRenderOutput {
-            title_line: Line::from("53. Subagent"),
             title_raw: "53. Subagent".into(),
             phase: ToolPhase::Running,
             permission_label: None,
@@ -305,13 +302,10 @@ mod tests {
                 has_detail_card: false,
                 detail_collapsed: false,
             },
-            detail_title: None,
+            live_detail: false,
             detail_preview: Vec::new(),
             detail_total_lines: 0,
             detail_full: None,
-            card_bottom: String::new(),
-            meta_text: None,
-            collapsed_action_cols: None,
             subagent_model: None,
             subagent_tokens: None,
             visual_kind: tact_protocol::ToolVisualKind::Subagent,

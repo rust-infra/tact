@@ -78,7 +78,7 @@ impl App {
             Messages::by_language(language),
         ));
         registry.push(StreamComponent::new(theme, Messages::by_language(language)));
-        registry.push(ToolComponent::new(theme, Messages::by_language(language)));
+        registry.push(ToolComponent::new(Messages::by_language(language)));
         registry.push(StatusBarComponent::new(git_branch));
         registry.push(TaskPanelComponent::new());
         registry.push(SubagentPanelComponent::new());

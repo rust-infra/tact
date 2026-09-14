@@ -105,11 +105,9 @@ pub fn render_code_cards(
             ))
             .title_bottom(if total_styled > shown {
                 Line::from(Span::styled(
-                    format!(
-                        " +{} lines | {}",
-                        total_styled - shown,
-                        msgs.code_card_bottom
-                    ),
+                    msgs.code_card_progress_tmpl
+                        .replacen("{}", &(total_styled - shown).to_string(), 1)
+                        .replacen("{}", msgs.code_card_bottom, 1),
                     Style::default().fg(ctx.theme.muted_fg()),
                 ))
             } else {
