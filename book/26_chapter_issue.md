@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-14 — The running clock leaves the status bar, and the step gauge goes with it
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs` (`render_progress_bar` + `PROGRESS_BAR_WIDTH` removed, the `Status::Executing` / `Status::Planning` arms, row-2 group push order); `crates/tui/src/render/bar.rs` (tests); [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md` |
+
+**Symptom / motivation:** While a task ran, the top status bar carried two numbers of its own: the `[██████░░░░░] 88%` gauge after the step label, and the live task clock at the end — `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1 [██████░░░░░] 88%  ⏱ 耗时 00:12`. The gauge only restated the step count (`4/10`) as glyphs, and the clock sat far from the one quantity it belongs with: the frozen turn timing on bottom-bar row 2 (`⏱ 02:05 均 01:45`), which is the same wall clock for the turns that already finished.
+
+**Decision:** The gauge is deleted outright, and the live clock moves to row 2 as its own droppable segment pushed immediately before the turn timing. Both `Status::Planning` and `Status::Executing` lose their trailing clock, so the status bar renders no numbers of its own any more — it answers *what is happening* (phase, step count, parallel-tool count) while row 2 answers *how much has gone by*. The live segment keeps its label (`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`): two bare `⏱` numbers side by side would be indistinguishable. The label is not free — it is why the running row is 102 columns rather than 95.
+
+**Behavior after:** Executing renders `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`; row 2 renders `… ⟳ 12 ⇅ 3  ⏱ 耗时 00:12  ⏱ 02:05 均 01:45` while a task runs, and the live segment disappears (rather than rendering empty) when none is in flight — `task_start_time` is `None`, so `format_task_elapsed` returns `""`. Row width is **85–86 columns** idle and **102–103** running; because the live segment is pushed *before* the frozen one, `fit_row_spans` drops the frozen timing first (`ctx > cache > turns > elapsed > timing`), so a running task never loses the clock it is being judged by. Pinned by `bottom_bar_puts_live_elapsed_before_turn_timing`, `bottom_bar_omits_live_elapsed_without_a_task`, `bottom_bar_drops_turn_timing_before_the_live_elapsed`, `bottom_bar_fits_a_running_row_in_110_columns`, `status_bar_executing_shows_the_step_label_without_a_gauge` and `status_bar_planning_has_no_elapsed`; the idle budget guard `bottom_bar_fits_every_segment_in_100_columns` is unchanged.
+
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`format_task_elapsed` doc, `render_bottom_bar` row-2 groups, `Status::Executing` arm); `crates/tui/src/render/bar.rs` (the six tests above); [Ch 23](./23_chapter_tui.md) §6.6 (top bar, row 2, compaction and turn-timing paragraphs); `docs/token_usage_schema.md` §"Session Stats Display".
+
+---
+
 ## 1. 2026-09-14 — The card's line-count prefix is localized, like the label it introduces
 
 | Field | Value |
@@ -463,7 +480,7 @@ One difference was deliberately **not** merged: a malformed `[voice]` is fatal o
 **Symptom / motivation:** The same-day row-2 compaction (entry below) had removed the ctx meter's `pct%` and kept the `■`/`·` gauge, leaving `ctx [▍···] 45K/1M`. Answering the question the segment exists for — "how close am I to auto-compact?" — required doing the division mentally, and the gauge only restated that same percentage as glyphs.
 
 **Decision:** Reverse the ctx part of that compaction, keeping the *one value, one rendering* rule but picking the other encoding:
-1. **Dropped the gauge entirely** — `render_usage_bar`, `partial_block_char`, the `■`/`·`/partial-block glyph constants and `USAGE_BAR_WIDTH` were deleted. The top status bar's step progress (`render_progress_bar`, `█`/`░`) is a different widget and is untouched.
+1. **Dropped the gauge entirely** — `render_usage_bar`, `partial_block_char`, the `■`/`·`/partial-block glyph constants and `USAGE_BAR_WIDTH` were deleted. The top status bar's step progress (`render_progress_bar`, `█`/`░`) is a different widget and is untouched. *(It was removed too on 2026-09-14 — see the newest entry.)*
 2. **Restored the percentage, first** — `format_context_meter` now renders `ctx 4% 45K/1M`. The absolute `used/window` stays, because a ratio cannot replace the two counts it came from; it is also what disambiguates small values (590/200K renders as `0%`).
 3. **Moved the `▣` cache segment to sit directly after `ctx`**, before the turn counters — both are session-wide ratios, so they now read together. Push order became `model → out → think → ctx → cache → turns → timing`; `fit_row_spans` drops from the end, so survival became `ctx > cache > turns > timing` (cache and the turn counters swapped).
 
@@ -531,7 +548,7 @@ The now-unused i18n fields (`bottom_cache_pct`, `bottom_turns`, `bottom_llm_turn
 4. `TurnStats` is registered as **per-call metadata** in `coordinator_prepass`, alongside `TokenUsage`/`ModelInfo`. It fires between turns while the loading spinner is up, so without this it would run the content gates and make the spinner vanish the moment the loop starts (regression test: `turn_stats_is_metadata_and_keeps_the_loading_placeholder`).
 5. `max_turns` is plumbed into `StatusBarState.turn_llm_cap` but deliberately **not rendered**: only `spawn_subagent` ever sets a cap and there is no CLI flag or TUI wiring for it, so a main-agent bar could never show `/cap`. Bare `⇅ {n}` renders instead; the field is kept so the segment is ready if a main-agent cap is ever added.
 
-**Behavior after:** Row 2 shows `⟳ 12 turns ⇅ 3 turns  ∑ₜₒₖ …  ▣ cache% 5%  ⏱ 02:05 · avg 01:45` (`⟳ 12 轮 ⇅ 3 轮次 … ⏱ 02:05 · 均 01:45`). The `⇅` segment is hidden until the task's first LLM call; `avg` is hidden until a turn completes; the whole timing group is hidden while no turn has finished. Live in-flight elapsed stays on the top status bar — the bottom bar shows only frozen values. On narrow terminals the new segments are droppable with survival order `ctx > turns > ∑ₜₒₖ > cache > timing`, preserving the pre-existing `ctx > ∑ > cache` priority. *(Superseded later the same day — this entry records the state when turn stats first shipped; see the row-2 compaction entry above for the current 90-column row.)*
+**Behavior after:** Row 2 shows `⟳ 12 turns ⇅ 3 turns  ∑ₜₒₖ …  ▣ cache% 5%  ⏱ 02:05 · avg 01:45` (`⟳ 12 轮 ⇅ 3 轮次 … ⏱ 02:05 · 均 01:45`). The `⇅` segment is hidden until the task's first LLM call; `avg` is hidden until a turn completes; the whole timing group is hidden while no turn has finished. Live in-flight elapsed stays on the top status bar — the bottom bar shows only frozen values. *(Superseded 2026-09-14: the live elapsed is now a row-2 segment immediately before the turn timing, and the status bar renders no clock; see the newest entry.)* On narrow terminals the new segments are droppable with survival order `ctx > turns > ∑ₜₒₖ > cache > timing`, preserving the pre-existing `ctx > ∑ > cache` priority. *(Superseded later the same day — this entry records the state when turn stats first shipped; see the row-2 compaction entry above for the current 90-column row.)*
 
 **Pointers:** `crates/protocol/src/agent.rs` (`AgentUpdate::TurnStats`); `crates/tact/src/agent/mod.rs` (`agent_loop` emit); `crates/agent_tui_kit/src/state/status_bar_state.rs` (`turn_user`, `turn_llm`, `turn_llm_cap`, `turn_last_secs`, `turn_done`, `turn_total_secs`); `crates/agent_tui_kit/src/render/bar.rs` (`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`); `crates/tui/src/widgets/state/app/popups.rs` (`add_task_end_separator`); `crates/tui/src/widgets/state/app/messages.rs` (`load_history` seeding); spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`; Ch 23 §6.6; `docs/token_usage_schema.md`.
 

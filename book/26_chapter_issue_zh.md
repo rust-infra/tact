@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-14 — 实时耗时搬进底栏，状态栏的步骤进度条一并删除
+
+| Field | Value |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/agent_tui_kit/src/render/bar.rs`（删除 `render_progress_bar` 与 `PROGRESS_BAR_WIDTH`、`Status::Executing` / `Status::Planning` 分支、第 2 行 group 推入顺序）；`crates/tui/src/render/bar.rs`（测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
+
+**症状 / 动机：** 任务运行期间，顶栏自己带着两个数字：步骤标签后面的 `[██████░░░░░] 88%` 进度条，以及行尾的实时任务耗时——`◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1 [██████░░░░░] 88%  ⏱ 耗时 00:12`。进度条只是把步骤数（`4/10`）用字符重画了一遍；而那只时钟离它真正该挨着的东西很远——底栏第 2 行的冻结合耗时（`⏱ 02:05 均 01:45`），那是**已经结束的回合**的同一个墙钟量。
+
+**决策：** 进度条直接删除；实时时钟作为独立可丢弃段移到第 2 行，紧插在回合耗时**之前**。`Status::Planning` 与 `Status::Executing` 同时去掉行尾时钟，于是状态栏不再渲染任何自有数字——它回答*正在发生什么*（阶段、步骤数、并行工具数），第 2 行回答*已经过去多久*。实时段保留标签（`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`）：两个光秃秃的 `⏱` 数字并排将无法区分。标签不是免费的——它正是运行行 102 列而非 95 列的原因。
+
+**之后的行为：** `Executing` 渲染 `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`；第 2 行在任务运行时渲染 `… ⟳ 12 ⇅ 3  ⏱ 耗时 00:12  ⏱ 02:05 均 01:45`，无任务在跑时该段**消失**（不是渲染成空）——`task_start_time` 为 `None`，`format_task_elapsed` 返回 `""`。行宽：空闲 **85–86 列**、运行 **102–103 列**；由于实时段在冻结段**之前**推入，`fit_row_spans` 会先丢冻结合耗时（`ctx > cache > 回合计数 > 实时耗时 > 回合耗时`），因此运行中的任务永远不会丢掉它正在被评判的那只时钟。由 `bottom_bar_puts_live_elapsed_before_turn_timing`、`bottom_bar_omits_live_elapsed_without_a_task`、`bottom_bar_drops_turn_timing_before_the_live_elapsed`、`bottom_bar_fits_a_running_row_in_110_columns`、`status_bar_executing_shows_the_step_label_without_a_gauge`、`status_bar_planning_has_no_elapsed` 钉住；空闲行的预算测试 `bottom_bar_fits_every_segment_in_100_columns` 不变。
+
+**指针：** `crates/agent_tui_kit/src/render/bar.rs`（`format_task_elapsed` 文档、`render_bottom_bar` 第 2 行 groups、`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（上面六个测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6（顶栏、第 2 行、瘦身与回合耗时三段）；`docs/token_usage_schema.md` §"Session Stats Display"。
+
+---
+
 ## 1. 2026-09-14 — 卡片的行数前缀随它引导的那句标签一起本地化
 
 | Field | Value |
@@ -463,7 +480,7 @@
 **症状 / 动机：** 同日的第 2 行瘦身（见下一条）删掉了 ctx 的 `pct%` 却保留了 `■`/`·` 进度条，于是显示为 `ctx [▍···] 45K/1M`。要回答这个段存在的唯一问题——"离自动压缩还有多远"——读者得自己心算除法，而进度条不过把这个百分比用字符又画了一遍。
 
 **决策：** 反转那次瘦身中 ctx 的部分：仍然遵守**一个值只留一种渲染**，但选择另一种编码：
-1. **彻底删除进度条**——`render_usage_bar`、`partial_block_char`、`■`/`·`/半格字符常量与 `USAGE_BAR_WIDTH` 全部删除。顶栏的步骤进度（`render_progress_bar`，`█`/`░`）是另一个 widget，未受影响。
+1. **彻底删除进度条**——`render_usage_bar`、`partial_block_char`、`■`/`·`/半格字符常量与 `USAGE_BAR_WIDTH` 全部删除。顶栏的步骤进度（`render_progress_bar`，`█`/`░`）是另一个 widget，未受影响。*（该进度条也已在 2026-09-14 删除——见最新一条。）*
 2. **恢复百分比并前置**——`format_context_meter` 现渲染 `ctx 4% 45K/1M`。绝对 `used/window` 保留：比率无法替代它来自的两个计数；它也是小数值唯一的区分方式（590/200K 渲染为 `0%`）。
 3. **把 `▣` 缓存段移到紧接 `ctx` 之后**、回合计数之前——两者都是会话级比率，现在挨着读。push 顺序变为 `model → out → think → ctx → cache → turns → timing`；`fit_row_spans` 从末尾开始丢弃，因此存活顺序变为 `ctx > cache > 回合 > 耗时`（缓存与回合计数对调）。
 
@@ -531,7 +548,7 @@
 4. `TurnStats` 在 `coordinator_prepass` 中登记为**按次调用的元数据**，与 `TokenUsage`/`ModelInfo` 同级。它在回合计间隙、loading 转圈仍在时到达，若不登记就会走内容门、让转圈在循环刚开始时消失（回归测试：`turn_stats_is_metadata_and_keeps_the_loading_placeholder`）。
 5. `max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**：只有 `spawn_subagent` 会设置 cap，主 agent 也没有 CLI flag 或 TUI 接线，底栏永远不可能显示 `/cap`。因此渲染裸 `⇅ {n}`；字段保留，以便将来为主 agent 加 cap 时立即可用。
 
-**Behavior after：** 第 2 行显示 `⟳ 12 轮 ⇅ 3 轮次  ∑ₜₒₖ …  ▣ 缓存% 5%  ⏱ 02:05 · 均 01:45`（英文对应 `⟳ 12 turns ⇅ 3 turns … ⏱ 02:05 · avg 01:45`）。任务的首次 LLM 调用前隐藏 `⇅` 段；回合完成前隐藏 `avg`；尚无回合完成时隐藏整个耗时组。运行中的实时耗时仍只在顶栏——底栏只显示冻结值。窄终端下新段可被丢弃，存活顺序 `ctx > 回合 > ∑ₜₒₖ > 缓存 > 耗时`，原有 `ctx > ∑ > cache` 优先级不变。*（同日稍后已被取代——本条记录的是回合统计刚落地时的状态；当前 90 列的行见上方"第 2 行瘦身"条目。）*
+**Behavior after：** 第 2 行显示 `⟳ 12 轮 ⇅ 3 轮次  ∑ₜₒₖ …  ▣ 缓存% 5%  ⏱ 02:05 · 均 01:45`（英文对应 `⟳ 12 turns ⇅ 3 turns … ⏱ 02:05 · avg 01:45`）。任务的首次 LLM 调用前隐藏 `⇅` 段；回合完成前隐藏 `avg`；尚无回合完成时隐藏整个耗时组。运行中的实时耗时仍只在顶栏——底栏只显示冻结值。*（2026-09-14 起已取代：实时耗时现在是第 2 行紧挨回合耗时的那一段，顶栏不再渲染时钟；见最新一条。）* 窄终端下新段可被丢弃，存活顺序 `ctx > 回合 > ∑ₜₒₖ > 缓存 > 耗时`，原有 `ctx > ∑ > cache` 优先级不变。*（同日稍后已被取代——本条记录的是回合统计刚落地时的状态；当前 90 列的行见上方"第 2 行瘦身"条目。）*
 
 **Pointers：** `crates/protocol/src/agent.rs`（`AgentUpdate::TurnStats`）；`crates/tact/src/agent/mod.rs`（`agent_loop` 发送）；`crates/agent_tui_kit/src/state/status_bar_state.rs`（`turn_user`、`turn_llm`、`turn_llm_cap`、`turn_last_secs`、`turn_done`、`turn_total_secs`）；`crates/agent_tui_kit/src/render/bar.rs`（`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`）；`crates/tui/src/widgets/state/app/popups.rs`（`add_task_end_separator`）；`crates/tui/src/widgets/state/app/messages.rs`（`load_history` 播种）；spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`；Ch 23 §6.6；`docs/token_usage_schema.md`。
 

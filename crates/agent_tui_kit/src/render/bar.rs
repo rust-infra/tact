@@ -18,9 +18,6 @@ use crate::render::ctx::RenderCtx;
 /// Spinner animation frames for typing/loading indicator.
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/// Progress bar width in cells.
-const PROGRESS_BAR_WIDTH: u16 = 15;
-
 /// Bottom bar icons (language-invariant Unicode glyphs).
 const ICON_UPTIME: &str = "⊙";
 const ICON_BRANCH: &str = "⎇";
@@ -30,12 +27,17 @@ const ICON_CACHE: &str = "▣";
 const ICON_TURNS: &str = "⟳";
 /// U+21C5 — LLM turns (agent-loop iterations) in the current task.
 const ICON_LLM_TURNS: &str = "⇅";
-/// Wall-clock turn timing (same glyph as `format_task_elapsed`).
+/// Frozen last/average turn wall clock (same glyph as the live task elapsed
+/// drawn by `format_task_elapsed`).
 const ICON_ELAPSED: &str = "⏱";
 const SEP_ROW1: &str = " │ ";
 const SEP_ROW2: &str = "  ";
 
-/// Short elapsed label for the status bar during active runs.
+/// Live task elapsed, rendered on the bottom bar while a task is in flight
+/// (empty string when no task is running, which is how the segment is omitted).
+///
+/// It moved there from the top status bar on 2026-09-14, so that the live
+/// number reads next to the frozen per-turn timing it belongs with.
 ///
 /// Derived-method migration of `App::format_task_elapsed` (design doc §2.2):
 /// pure function of the i18n label + task start time.
@@ -233,33 +235,6 @@ fn context_usage_pct(used: u32, window: usize) -> u8 {
     }
 }
 
-/// Render a text-based progress bar like `[█████░░░░░] 50%`
-/// Uses a smooth formula: (current + 0.5) / total, so the current step
-/// is treated as half-done. This avoids showing 0% on the first step
-/// and 100% before the last step finishes.
-fn render_progress_bar(current: usize, total: usize, _theme: &crate::theme::Theme) -> String {
-    if total == 0 {
-        return String::new();
-    }
-    // Smooth progress: current step is half-done
-    let filled = ((current as f64 + 0.5) / total as f64).min(1.0);
-    // PROGRESS_BAR_WIDTH - 2 for the '[' and ']'
-    let inner_width = PROGRESS_BAR_WIDTH.saturating_sub(2) as usize;
-    let fill_chars = (filled * inner_width as f64).round() as usize;
-    let mut bar = String::from("[");
-    for i in 0..inner_width {
-        if i < fill_chars {
-            bar.push('█');
-        } else {
-            bar.push('░');
-        }
-    }
-    bar.push(']');
-    let pct = (filled * 100.0).round() as u8;
-    bar.push_str(&format!(" {}%", pct));
-    bar
-}
-
 /// Drop group: if `droppable`, the segment can be removed when space is tight.
 struct DropGroup {
     droppable: bool,
@@ -411,8 +386,10 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         turn_str.push_str(SEP_ROW2);
         turn_str.push_str(&format_turn_llm(ctx.status_bar.turn_llm));
     }
-    // Frozen last/average turn wall-clock (live in-flight elapsed lives on the
-    // top status bar via `format_task_elapsed`).
+    // Live task wall clock. It reads directly before the frozen turn timing
+    // below, which is why the top status bar no longer carries it (2026-09-14).
+    let task_elapsed = format_task_elapsed(msgs, ctx.task_start_time);
+    // Frozen last/average turn wall-clock.
     let turn_timing = ctx.status_bar.turn_last_secs.map(|last| {
         format_turn_timing(
             last,
@@ -445,9 +422,10 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             ],
         });
     }
-    // Display order: ctx → cache → turns → timing. Push order *is* survival
-    // priority and `fit_row_spans` drops from the end, so the drop order is the
-    // reverse: timing → turns → cache → ctx, i.e. `ctx` survives longest.
+    // Display order: ctx → cache → turns → elapsed → timing. Push order *is*
+    // survival priority and `fit_row_spans` drops from the end, so the drop
+    // order is the reverse: timing → elapsed → turns → cache → ctx, i.e. `ctx`
+    // survives longest.
     row2_groups.push(DropGroup {
         droppable: true,
         spans: vec![
@@ -469,6 +447,15 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             Span::styled(turn_str, secondary),
         ],
     });
+    if !task_elapsed.is_empty() {
+        row2_groups.push(DropGroup {
+            droppable: true,
+            spans: vec![
+                Span::styled(SEP_ROW2.to_string(), dim),
+                Span::styled(task_elapsed, secondary),
+            ],
+        });
+    }
     if let Some(timing) = turn_timing {
         row2_groups.push(DropGroup {
             droppable: true,
@@ -577,11 +564,10 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         }
         Status::Planning => {
             let spinner = SPINNER_FRAMES[ctx.spinner_frame as usize];
-            let elapsed = format_task_elapsed(&ctx.messages, ctx.task_start_time);
             (
                 format!(
-                    "{} {} │ {} {}  {}",
-                    mode_str, focus_str, spinner, msgs.status_planning, elapsed
+                    "{} {} │ {} {}",
+                    mode_str, focus_str, spinner, msgs.status_planning
                 ),
                 Style::default()
                     .bg(ctx.theme.status_bar_bg)
@@ -617,33 +603,17 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             let running_label = msgs
                 .status_running_tmpl
                 .replacen("{}", &running.to_string(), 1);
-            // Smooth progress: treat the current step as half-done so the bar
-            // never shows 0% (we're actively working) nor 100% (not done yet).
-            // Formula: (current_step + 0.5) / total
-            //   1 step:  0.5/1 = 50%
-            //   3-step step 0: 0.5/3 ≈ 17%
-            //   3-step step 1: 1.5/3 = 50%
-            //   3-step step 2: 2.5/3 ≈ 83%
-            let progress_idx = if *total == 0 {
-                0
-            } else {
-                completed.min(total.saturating_sub(1))
-            };
-            let progress_bar = render_progress_bar(progress_idx, *total, ctx.theme);
+            // The step count is this bar's only progress readout. The
+            // `[████░░] n%` gauge was dropped on 2026-09-14 (it restated the
+            // label as glyphs) and the live task elapsed moved down to the
+            // bottom bar, next to the frozen per-turn timing it belongs with.
             let exec_right = if running > 0 {
-                format!("{} │ {} {}", step_label, running_label, progress_bar)
+                format!("{} │ {}", step_label, running_label)
             } else {
-                format!("{} {}", step_label, progress_bar)
+                step_label
             };
             (
-                format!(
-                    "{} {} │ {} {}  {}",
-                    mode_str,
-                    focus_str,
-                    spinner,
-                    exec_right,
-                    format_task_elapsed(&ctx.messages, ctx.task_start_time)
-                ),
+                format!("{} {} │ {} {}", mode_str, focus_str, spinner, exec_right),
                 Style::default()
                     .bg(ctx.theme.status_bar_bg)
                     .fg(ctx.theme.warning),

@@ -32,8 +32,9 @@ mod render_tests {
 
     use super::{
         super::test_harness::{buffer_text, make_app, render_app_text},
-        render_bottom_bar,
+        render_bottom_bar, render_status_bar,
     };
+    use crate::widgets::state::Status;
 
     #[test]
     fn bottom_bar_shows_balance_row_when_available() {
@@ -250,8 +251,8 @@ mod render_tests {
         );
     }
 
-    /// Width budget: with every row-2 segment populated, nothing may be
-    /// dropped at a 100-column terminal.
+    /// Width budget: the idle row (every segment but the live elapsed, which
+    /// only exists while a task runs) must fit a 100-column terminal.
     ///
     /// The 2026-09-12 compaction got the full row down to 90 columns (from
     /// ~138) by removing the `∑ₜₒₖ` segment — whose value was a second format
@@ -260,7 +261,8 @@ mod render_tests {
     /// with the percentage the same day took it to 86. This test is the guard:
     /// if a future segment pushes the row past ~100 columns it will start
     /// silently dropping segments on ordinary terminals, which is the exact
-    /// problem this compaction fixed.
+    /// problem this compaction fixed. The running row (85 → 102) has its own
+    /// guard in `bottom_bar_fits_a_running_row_in_110_columns`.
     #[test]
     fn bottom_bar_fits_every_segment_in_100_columns() {
         let mut app = make_app();
@@ -303,7 +305,56 @@ mod render_tests {
         }
     }
 
-    /// Segment order on row 2: `ctx` → cache → turns → timing.
+    /// Width budget while a task runs: the live elapsed (2026-09-14) adds 17
+    /// columns, taking the row from 85 to 102 — so it needs a 110-column
+    /// terminal, and below that the *frozen* turn timing is what drops first
+    /// (`bottom_bar_drops_turn_timing_before_the_live_elapsed`). The running
+    /// clock must never be the segment that disappears.
+    #[test]
+    fn bottom_bar_fits_a_running_row_in_110_columns() {
+        let mut app = make_app();
+        app.status_bar_mut().model_name = "deepseek-v4".into();
+        app.status_bar_mut().model_max_tokens = 128_000;
+        app.status_bar_mut().model_reasoning_effort = Some("high".into());
+        app.status_bar_mut().token_total = 45_000;
+        app.status_bar_mut().token_cache_hit = 30;
+        app.status_bar_mut().token_cache_miss = 70;
+        app.status_bar_mut().turn_user = 12;
+        app.status_bar_mut().turn_llm = 3;
+        app.status_bar_mut().turn_last_secs = Some(125);
+        app.status_bar_mut().turn_done = 2;
+        app.status_bar_mut().turn_total_secs = 210;
+        app.model_context_window = 1_000_000;
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+
+        let backend = TestBackend::new(110, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 110, 2), &app))
+            .expect("draw");
+        let text = buffer_text(terminal.backend().buffer());
+        let row2 = text.lines().nth(1).unwrap_or_default().to_string();
+
+        for marker in [
+            "deepseek-v4",
+            "out 128K",
+            "think high",
+            "ctx 4% 45K/1M",
+            "⟳",
+            "⇅",
+            "▣",
+            "Elapsed 01:05",
+            "02:05",
+            "avg",
+        ] {
+            assert!(
+                row2.contains(marker),
+                "row 2 dropped {marker:?} at 110 columns (budget exceeded), got:\n{row2}"
+            );
+        }
+    }
+
+    /// Segment order on row 2: `ctx` → cache → turns → live elapsed → timing.
     ///
     /// Requested 2026-09-12: the cache percentage reads directly after the ctx
     /// meter (both are session-wide ratios), with the turn counters pushed after
@@ -481,6 +532,165 @@ mod render_tests {
         assert!(
             timing_w > cache_w,
             "expected a width band where cache shows but timing is already dropped"
+        );
+    }
+
+    /// The live task elapsed sits directly before the frozen turn timing, and
+    /// after the turn counters.
+    ///
+    /// Moved here (from the top status bar) 2026-09-14: the running clock reads
+    /// next to the last/average turn times it belongs with, and the status bar
+    /// keeps only the step label.
+    #[test]
+    fn bottom_bar_puts_live_elapsed_before_turn_timing() {
+        let mut app = make_app();
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+        app.status_bar_mut().turn_user = 12;
+        app.status_bar_mut().turn_llm = 3;
+        app.status_bar_mut().turn_last_secs = Some(125);
+        app.status_bar_mut().turn_done = 2;
+        app.status_bar_mut().turn_total_secs = 210;
+
+        let backend = TestBackend::new(200, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 200, 2), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        let row2 = text.lines().nth(1).unwrap_or_default().to_string();
+        let pos = |needle: &str| {
+            row2.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from row 2:\n{row2}"))
+        };
+        let elapsed_at = pos("Elapsed 01:05");
+        assert!(
+            pos("⟳ 12") < elapsed_at,
+            "the elapsed must follow the turn counters, got:\n{row2}"
+        );
+        assert!(
+            elapsed_at < pos("02:05"),
+            "the elapsed must precede the frozen turn timing, got:\n{row2}"
+        );
+    }
+
+    /// No task in flight → no elapsed segment (`task_start_time` is what makes
+    /// the label non-empty, and `make_app` leaves it `None`).
+    #[test]
+    fn bottom_bar_omits_live_elapsed_without_a_task() {
+        let mut app = make_app();
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().turn_user = 4;
+
+        let backend = TestBackend::new(200, 2);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 200, 2), &app))
+            .expect("draw");
+
+        let row2 = buffer_text(terminal.backend().buffer())
+            .lines()
+            .nth(1)
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !row2.contains("Elapsed") && !row2.contains("耗时"),
+            "no task is running, so no elapsed must render, got:\n{row2}"
+        );
+    }
+
+    /// Drop order with both clocks on screen: the frozen timing goes first, the
+    /// live elapsed second, so the running clock outlives the historical one.
+    #[test]
+    fn bottom_bar_drops_turn_timing_before_the_live_elapsed() {
+        let mut app = make_app();
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+        app.status_bar_mut().turn_user = 12;
+        app.status_bar_mut().turn_llm = 3;
+        app.status_bar_mut().turn_last_secs = Some(125);
+        app.status_bar_mut().turn_done = 2;
+        app.status_bar_mut().turn_total_secs = 210;
+
+        let mut first_elapsed: Option<u16> = None;
+        let mut first_timing: Option<u16> = None;
+        for width in 20u16..=160 {
+            let backend = TestBackend::new(width, 2);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| {
+                    render_bottom_bar(frame, Rect::new(0, 0, width, 2), &app);
+                })
+                .expect("draw");
+            let text = buffer_text(terminal.backend().buffer());
+            if first_elapsed.is_none() && text.contains("Elapsed") {
+                first_elapsed = Some(width);
+            }
+            // The frozen timing is the only segment carrying the average.
+            if first_timing.is_none() && text.contains("avg") {
+                first_timing = Some(width);
+            }
+        }
+
+        let elapsed_w = first_elapsed.expect("elapsed segment never rendered at any probed width");
+        let timing_w = first_timing.expect("turn timing never rendered at any probed width");
+        assert!(
+            elapsed_w <= timing_w,
+            "the live elapsed must survive at least as long as the frozen timing \
+             (elapsed at {elapsed_w}, timing at {timing_w})"
+        );
+    }
+
+    /// The status bar carries the step label only — no `[████░░] n%` gauge, no
+    /// running clock (both left it on 2026-09-14; the clock moved to row 2).
+    #[test]
+    fn status_bar_executing_shows_the_step_label_without_a_gauge() {
+        let mut app = make_app();
+        app.status_bar_mut().model_name = "mock-model".into();
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+        app.status = Status::Executing {
+            current_step: 1,
+            total: 4,
+        };
+
+        let backend = TestBackend::new(120, 1);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_status_bar(frame, Rect::new(0, 0, 120, 1), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(
+            text.contains("Executing step 1/4"),
+            "the step label must stay, got:\n{text}"
+        );
+        for banned in ['█', '░', '%', '⏱'] {
+            assert!(
+                !text.contains(banned),
+                "{banned:?} must not render on the status bar, got:\n{text}"
+            );
+        }
+    }
+
+    /// Same rule while planning: the spinner and the phase word, nothing else.
+    #[test]
+    fn status_bar_planning_has_no_elapsed() {
+        let mut app = make_app();
+        app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+        app.status = Status::Planning;
+
+        let backend = TestBackend::new(120, 1);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_status_bar(frame, Rect::new(0, 0, 120, 1), &app))
+            .expect("draw");
+
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Planning"), "got:\n{text}");
+        assert!(
+            !text.contains('⏱') && !text.contains("Elapsed"),
+            "the live elapsed belongs to the bottom bar, got:\n{text}"
         );
     }
 }

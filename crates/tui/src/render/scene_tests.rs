@@ -332,7 +332,7 @@ fn plan_step_added_tracks_step_description() {
 }
 
 #[test]
-fn status_bar_executing_shows_progress_hint() {
+fn status_bar_executing_renders_step_tracking() {
     let mut app = make_app();
     seed_executing_read_step(&mut app);
 

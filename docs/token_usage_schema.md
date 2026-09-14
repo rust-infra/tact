@@ -246,11 +246,16 @@ This means consecutive multi-turn conversations typically achieve high cache hit
   `StatusBarState.turn_llm_cap` but **not rendered**: only `spawn_subagent` sets
   a cap, so the main-agent bar would never show one. The `turns` word label was
   dropped in the compaction; the glyph pair carries it (see Ch 23 §6.6).
+- **Live elapsed** — `⏱ Elapsed {mm:ss}` / `⏱ 耗时 {mm:ss}` while a task is in
+  flight, read from `task_start_time` (set at dispatch, taken at task end) and
+  omitted entirely when no task is running. It moved onto this row on
+  2026-09-14, directly before the turn timing below so the running clock reads
+  next to the frozen one; the top status bar therefore renders no clock at all.
 - **Turn timing** — `⏱ {mm:ss}` for the most recently finished turn plus
   `avg {mm:ss}` across the session. Accumulated in
   `add_task_end_separator` (the only place that freezes `task_start_time`);
-  cancelled turns count, synthetic separators do not. Frozen values only — live
-  in-flight elapsed stays on the top status bar.
+  cancelled turns count, synthetic separators do not. Frozen values only — the
+  live clock is the separate segment above.
 
 **The ctx segment leads with the percentage, gauge dropped (2026-09-12):** it was
 `ctx [▍·······] 4% 45K/1M` (the same ratio encoded three times), was compacted to
@@ -266,11 +271,14 @@ was a second format of one number (precise integer vs compact). It was removed
 to free the row; the exact integer remains in the task-stats block and `/stats`.
 
 These segments are droppable on narrow terminals. Push order on the row is
-`model → out → think → ctx → cache → turns → timing`, and
+`model → out → think → ctx → cache → turns → elapsed → timing`, and
 `fit_row_spans` removes the last droppable first, so survival is
-`ctx > cache > turns > timing`. With every segment populated the full row is
-**86 columns**, enforced by
-`render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`.
+`ctx > cache > turns > elapsed > timing`: when columns run short the *frozen*
+turn timing goes first and the running clock outlives it. The idle row is
+**85–86 columns** (the `out` value moves it by one), enforced by
+`render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`; with
+the live elapsed on it the running row is **102–103**, guarded by
+`render::bar::render_tests::bottom_bar_fits_a_running_row_in_110_columns`.
 
 **Subagent tool-card display:** A subagent's model name and token total
 are shown on the tool card's meta row (e.g. `🤖 deepseek-v3 · ⚡ 4.2K`)
