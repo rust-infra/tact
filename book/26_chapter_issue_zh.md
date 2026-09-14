@@ -32,6 +32,26 @@
 ---
 
 
+## 1. 2026-09-14 — 折叠输出提示改为点名它打开的结果
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_action`、`tool_collapsed_output_hint`、`tool_collapsed_output_hint_one`）；`crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapsed_output_hint`、`collapsed_action_cols`）；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`）；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
+
+**症状 / 动机：** 无卡片 block 的 meta 行只说出了手势，没说出手势的效果：`… · 4 lines · double-click` 与 `… · 4 行 · 双击查看`。同样的字也出现在**仍然画卡片**的弹窗卡片底栏上，于是这一行里唯一可点的字符串始终没有说明：它打开的是**这次工具的结果**。
+
+**决策：** 动作词点名它打开的东西——`double-click-result` / `双击查看结果`——两个提示模板随之跟进，因为 `collapsed_action_cols` 正是从行尾往回、把提示末尾的动作词当作点击目标来测量的，而 `collapsed_output_hint_ends_with_its_action` 对每种语言都钉住了这个尾部。只动折叠输出这一条提示：卡片底栏那些串（`Double-click for full code`、`双击查看完整代码` 等）不动，因为它们坐在已经画出内容的卡片上。
+
+**之后的行为：** 无卡片的已完成 block 显示为 `✓ Success · 21ms · 4 lines · double-click-result` / `✓ 成功 · 21ms · 4 行 · 双击查看结果`。可点范围恰好是这几个字形、其余都不响应——行数与同一行前面的文字照旧无响应，与上面 2026-09-13 那条一致。
+
+**Pointers:** 测试 `collapsed_output_hint_ends_with_its_action`、`collapsed_command_meta_row_reports_hidden_output`、`double_click_collapsed_command_hint_opens_diff_popup`、`collapsed_command_ignores_clicks_off_the_hint`、`edit_file_collapses_its_detail_card`、`read_file_collapses_its_detail_card`、`write_file_collapses_its_detail_card`、`multiline_result_of_a_cardless_kind_becomes_expandable`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
+
+---
+
+---
+
+
 ## 1. 2026-09-13 — 已完成工具的输出：卡片收起为两行，无卡片的结果变得可打开
 
 | Field | Value |

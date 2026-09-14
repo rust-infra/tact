@@ -32,6 +32,26 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-14 — The collapsed-output hint names the result it opens
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`tool_collapsed_output_action`, `tool_collapsed_output_hint`, `tool_collapsed_output_hint_one`); `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`collapsed_output_hint`, `collapsed_action_cols`); `crates/tui/src/widgets/state/app/popups.rs` (`open_diff_popup_at`); [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 |
+
+**Symptom / motivation:** The meta row of a card-less block advertised the gesture but not its effect: `… · 4 lines · double-click` and `… · 4 行 · 双击查看`. The same words also sit on the bottom bar of every popup card that *does* still draw one, so the single clickable string on the row never said that what it opens is *this tool's result*.
+
+**Decision:** The action word names what it opens — `double-click-result` / `双击查看结果` — and both hint templates follow it, because `collapsed_action_cols` derives the click target backwards from the row's end *as* the hint's trailing action, and `collapsed_output_hint_ends_with_its_action` pins that tail in every locale. Only the collapsed-output hint moves: the card-bottom strings (`Double-click for full code`, `双击查看完整代码`, …) are untouched, since they sit on a drawn card that already shows what it opens.
+
+**Behavior after:** A card-less finished block reads `✓ Success · 21ms · 4 lines · double-click-result` / `✓ 成功 · 21ms · 4 行 · 双击查看结果`. The clickable range is exactly those glyphs and nothing else — the line count and the rest of the row stay inert, unchanged from the 2026-09-13 entry above.
+
+**Pointers:** Tests `collapsed_output_hint_ends_with_its_action`, `collapsed_command_meta_row_reports_hidden_output`, `double_click_collapsed_command_hint_opens_diff_popup`, `collapsed_command_ignores_clicks_off_the_hint`, `edit_file_collapses_its_detail_card`, `read_file_collapses_its_detail_card`, `write_file_collapses_its_detail_card`, `multiline_result_of_a_cardless_kind_becomes_expandable`; [Ch 23](./23_chapter_tui.md) §6.16; `docs/tool_rendering.md` §5 "Collapsed output".
+
+---
+
+---
+
+
 ## 1. 2026-09-13 — Finished tool output: cards collapse to two rows, cardless results become reachable
 
 | Field | Value |
