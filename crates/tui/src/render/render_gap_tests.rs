@@ -807,8 +807,173 @@ fn full_frame_edit_file_tool_shows_in_log() {
     let text = render_app_text(&mut app, 120, 30);
 
     assert!(
-        text.contains("edit_file") || text.contains("lib.rs") || text.contains("fn new"),
-        "edit_file tool card should render in log, got:\n{text}"
+        text.contains("lib.rs"),
+        "the edit's path must stay visible in the title, got:\n{text}"
+    );
+    assert!(
+        !text.contains("fn old()") && !text.contains("fn new()"),
+        "a finished edit hides its diff behind the popup, got:\n{text}"
+    );
+    assert!(
+        text.contains("2 lines · double-click"),
+        "the meta row must report the hidden diff, got:\n{text}"
+    );
+}
+
+/// A finished read collapses like a command: the body is out of the log, the
+/// two header rows stay, and the meta row says how much it hid.
+#[test]
+fn full_frame_read_file_tool_shows_in_log() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "read lib",
+        "read_file",
+        "read1",
+        HashMap::from([("path".to_string(), "lib.rs".to_string())]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "read1".into(),
+        tool_name: "read_file".into(),
+        arg_summary: "lib.rs".into(),
+        arg_full: "lib.rs".into(),
+        presentation: ToolPresentationInfo::generic("read_file"),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "read1".into(),
+        result: StepResult {
+            tool: "read_file".into(),
+            arg_summary: "lib.rs".into(),
+            arg_full: Some("lib.rs".into()),
+            status: StepStatus::Success,
+            message: "ok".into(),
+            detail: Some("body-one\nbody-two\nbody-three".into()),
+            duration_us: Some(200),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("read_file"),
+        },
+    });
+
+    let text = render_app_text(&mut app, 120, 30);
+
+    assert!(
+        text.contains("lib.rs"),
+        "the read's path must stay visible in the title, got:\n{text}"
+    );
+    assert!(
+        !text.contains("body-one"),
+        "a finished read hides its body behind the popup, got:\n{text}"
+    );
+    assert!(
+        text.contains("3 lines · double-click"),
+        "the meta row must report the hidden body, got:\n{text}"
+    );
+}
+
+/// A finished write collapses like the rest: the content is out of the log, the
+/// two header rows stay, and the meta row says how much it hid.
+#[test]
+fn full_frame_write_file_tool_shows_in_log() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "write lib",
+        "write_file",
+        "w1",
+        HashMap::from([("path".to_string(), "lib.rs".to_string())]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "w1".into(),
+        tool_name: "write_file".into(),
+        arg_summary: "lib.rs".into(),
+        arg_full: "lib.rs".into(),
+        presentation: ToolPresentationInfo::generic("write_file"),
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "w1".into(),
+        result: StepResult {
+            tool: "write_file".into(),
+            arg_summary: "lib.rs".into(),
+            arg_full: Some("lib.rs".into()),
+            status: StepStatus::Success,
+            message: "wrote".into(),
+            detail: Some("wrote-one\nwrote-two\nwrote-three".into()),
+            duration_us: Some(200),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("write_file"),
+        },
+    });
+
+    let text = render_app_text(&mut app, 120, 30);
+
+    assert!(
+        text.contains("lib.rs"),
+        "the write's path must stay visible in the title, got:\n{text}"
+    );
+    assert!(
+        !text.contains("wrote-one"),
+        "a finished write hides its content behind the popup, got:\n{text}"
+    );
+    assert!(
+        text.contains("3 lines · double-click"),
+        "the meta row must report the hidden content, got:\n{text}"
+    );
+}
+
+/// A kind that never drew a card used to lose its result outright. A multi-line
+/// readout (`task_list`) now costs the same two rows and says it can be opened.
+#[test]
+fn full_frame_cardless_tool_result_is_openable() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "list tasks",
+        "task_list",
+        "t1",
+        HashMap::<String, String>::new(),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "t1".into(),
+        tool_name: "task_list".into(),
+        arg_summary: String::new(),
+        arg_full: String::new(),
+        presentation: ToolPresentationInfo {
+            visual_kind: tact_protocol::ToolVisualKind::Task,
+            display_name: "📋 Task".into(),
+            ..ToolPresentationInfo::generic("task_list")
+        },
+    });
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "t1".into(),
+        result: StepResult {
+            tool: "task_list".into(),
+            arg_summary: String::new(),
+            arg_full: None,
+            status: StepStatus::Success,
+            message: "2 tasks".into(),
+            detail: Some("[1] pending  wire the parser\n[2] in_progress  run the suite".into()),
+            duration_us: Some(200),
+            permission_label: None,
+            presentation: ToolPresentationInfo {
+                visual_kind: tact_protocol::ToolVisualKind::Task,
+                display_name: "📋 Task".into(),
+                ..ToolPresentationInfo::generic("task_list")
+            },
+        },
+    });
+
+    let text = render_app_text(&mut app, 120, 30);
+
+    assert!(
+        !text.contains("wire the parser"),
+        "the task list stays behind the popup, got:\n{text}"
+    );
+    assert!(
+        text.contains("2 lines · double-click"),
+        "a multi-line result must advertise that it can be opened, got:\n{text}"
     );
 }
 

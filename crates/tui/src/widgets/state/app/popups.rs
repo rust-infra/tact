@@ -717,18 +717,15 @@ impl App {
     /// `col` counts from the block's own left edge.
     ///
     /// Two shapes are clickable, and only on what the user can actually see:
-    /// a drawn detail card (its whole rectangle) and a collapsed command (the
-    /// text of the clicked header row — not the empty rest of the row).
+    /// a drawn detail card (its whole rectangle) and a collapsed command's
+    /// `double-click` hint — not its parameter row, and not the meta row's
+    /// earlier text (success mark, duration, line count) either.
     pub(crate) fn open_diff_popup_at(&mut self, phys_idx: usize, relative_row: usize, col: usize) {
         let Some(output) = self.tool_output_at(phys_idx) else {
             return;
         };
         if output.layout.detail_collapsed {
-            // No card is drawn, so the header text is the whole affordance.
-            let on_text = output
-                .header_text_cols(relative_row)
-                .is_some_and(|cols| cols.contains(&(col as u16)));
-            if on_text {
+            if output.hits_collapsed_action(relative_row, col) {
                 self.open_diff_popup(phys_idx);
             }
             return;

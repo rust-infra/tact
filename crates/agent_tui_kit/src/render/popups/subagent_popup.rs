@@ -311,6 +311,7 @@ mod tests {
             detail_full: None,
             card_bottom: String::new(),
             meta_text: None,
+            collapsed_action_cols: None,
             subagent_model: None,
             subagent_tokens: None,
             visual_kind: tact_protocol::ToolVisualKind::Subagent,

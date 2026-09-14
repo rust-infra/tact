@@ -58,6 +58,10 @@ pub struct Messages {
     /// Singular form of [`Self::tool_collapsed_output_hint`] — reachable when
     /// the collapsed text is one line (a background task's summary, say).
     pub tool_collapsed_output_hint_one: &'static str,
+    /// The clickable action inside [`Self::tool_collapsed_output_hint`], which
+    /// must end with it: those glyphs are the whole double-click target of a
+    /// collapsed command, and the line count left of them stays inert.
+    pub tool_collapsed_output_action: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
     pub command_title: &'static str,
@@ -351,6 +355,7 @@ impl Messages {
             tool_live_output_bottom: " Double-click for buffered output ",
             tool_collapsed_output_hint: "{} lines · double-click",
             tool_collapsed_output_hint_one: "1 line · double-click",
+            tool_collapsed_output_action: "double-click",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
             command_title: " ⌘ Command ",
@@ -627,6 +632,7 @@ impl Messages {
             tool_live_output_bottom: " 双击查看已缓冲输出 ",
             tool_collapsed_output_hint: "{} 行 · 双击查看",
             tool_collapsed_output_hint_one: "1 行 · 双击查看",
+            tool_collapsed_output_action: "双击查看",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
             command_title: " ⌘ 命令 ",

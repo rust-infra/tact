@@ -20,40 +20,41 @@ fn seed_many_numbered_lines(app: &mut App, count: usize) {
     }
 }
 
-/// A finished `read_file` with many lines: still a tall card (commands no
-/// longer keep one — completed command output is collapsed).
-fn seed_tall_read_file_tool(app: &mut App, line_count: usize) {
+/// A finished `spawn_subagent` with many lines: the one successful tool left
+/// that keeps a tall content card (commands, reads, writes and edits collapse to
+/// their two header rows).
+fn seed_tall_subagent_tool(app: &mut App, line_count: usize) {
     let output: String = (1..=line_count)
-        .map(|n| format!("file-out-{n:02}"))
+        .map(|n| format!("child-out-{n:02}"))
         .collect::<Vec<_>>()
         .join("\n");
     app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "read file",
-        "read_file",
-        "read-tall",
-        HashMap::from([("path".to_string(), "src/tall.rs".to_string())]),
+        "audit the repo",
+        "spawn_subagent",
+        "sub-tall",
+        HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
     )));
     app.handle_agent_update(AgentUpdate::StepStarted {
         idx: 0,
-        tool_id: "read-tall".into(),
-        tool_name: "read_file".into(),
-        arg_summary: "src/tall.rs".into(),
-        arg_full: "src/tall.rs".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
+        tool_id: "sub-tall".into(),
+        tool_name: "spawn_subagent".into(),
+        arg_summary: "audit the repo".into(),
+        arg_full: "audit the repo".into(),
+        presentation: ToolPresentationInfo::generic("spawn_subagent"),
     });
     app.handle_agent_update(AgentUpdate::StepFinished {
         idx: 0,
-        tool_id: "read-tall".into(),
+        tool_id: "sub-tall".into(),
         result: StepResult {
-            tool: "read_file".into(),
-            arg_summary: "src/tall.rs".into(),
-            arg_full: Some("src/tall.rs".into()),
+            tool: "spawn_subagent".into(),
+            arg_summary: "audit the repo".into(),
+            arg_full: Some("audit the repo".into()),
             status: StepStatus::Success,
             message: "ok".into(),
             detail: Some(output),
             duration_us: Some(100),
             permission_label: None,
-            presentation: ToolPresentationInfo::generic("read_file"),
+            presentation: ToolPresentationInfo::generic("spawn_subagent"),
         },
     });
 }
@@ -432,7 +433,7 @@ fn log_visual_cache_rebuilds_on_theme_change() {
 #[test]
 fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     let mut app = make_app();
-    seed_tall_read_file_tool(&mut app, 25);
+    seed_tall_subagent_tool(&mut app, 25);
     let _ = render_log_panel_text(&mut app, 100, 14);
     let block = app.tools().blocks.last().expect("tool block");
     let summary_logical = app
@@ -456,14 +457,14 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     app.log_scroll.visual_top = app.log_scroll.visual_start_cache[placeholder_logical];
     let mid = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        mid.contains("src/tall.rs"),
+        mid.contains("audit the repo"),
         "starting viewport inside placeholder rows should still render full tool card, got:\n{mid}"
     );
 
     app.log_scroll.visual_top = usize::MAX;
     let bottom = render_log_panel_text(&mut app, 100, 14);
     assert!(
-        bottom.contains("Read src/tall.rs") && bottom.contains("1/25"),
+        bottom.contains("Subagent") && bottom.contains("1/25"),
         "bottom scroll should keep tool card metadata visible, got:\n{bottom}"
     );
 }
@@ -504,8 +505,7 @@ fn completed_command_renders_header_rows_only() {
     let block = app.tools().blocks.last().expect("tool block");
     assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
     assert!(block.output.layout.detail_collapsed);
-    let title_cols = block.output.header_text_cols(0).expect("title text");
-    let meta_cols = block.output.header_text_cols(1).expect("meta text");
+    let hint_cols = block.output.collapsed_action_cols.clone().expect("hint");
 
     let text = render_log_panel_text(&mut app, 100, 14);
     assert!(
@@ -521,39 +521,40 @@ fn completed_command_renders_header_rows_only() {
         "the meta row must report the hidden output, got:\n{text}"
     );
 
-    // The click target is derived from header_text_cols(), which starts at the
-    // block indent. Pin that arithmetic against the real buffer: the text must
-    // begin one column past the panel border plus the indent, so a click that
-    // lands on the first glyph is inside the range and one past the last glyph
-    // is outside it.
+    // The click target is measured from the block indent, so pin it against the
+    // real buffer: the hint's range must cover exactly the `double-click` glyphs
+    // one column past the panel border, and no more.
     let terminal = render_log_panel_terminal(&mut app, 100, 14);
     let buf = terminal.backend().buffer();
     let content_x = 1; // left border
-    for (needle, cols) in [
-        ("cargo build", title_cols.clone()),
-        ("4 lines", meta_cols.clone()),
-    ] {
-        let row = (0..buf.area.height)
-            .find(|y| {
-                let line: String = (0..buf.area.width)
-                    .map(|x| buf[(x, *y)].symbol().to_string())
-                    .collect();
-                line.contains(needle)
-            })
-            .unwrap_or_else(|| panic!("row with {needle:?} not found in:\n{text}"));
-        let first_glyph = (content_x..buf.area.width)
-            .find(|x| buf[(*x, row)].symbol() != " ")
-            .expect("text row is not blank");
-        assert_eq!(
-            first_glyph as usize,
-            content_x as usize + cols.start as usize,
-            "{needle:?} must start where the hit range starts"
-        );
-        assert!(
-            cols.end as usize >= cols.start as usize + needle.len(),
-            "{needle:?} hit range {cols:?} must cover its own text"
-        );
-    }
+    let needle = "double-click";
+    let meta_row = (0..buf.area.height)
+        .find(|y| {
+            let line: String = (0..buf.area.width)
+                .map(|x| buf[(x, *y)].symbol().to_string())
+                .collect();
+            line.contains(needle)
+        })
+        .unwrap_or_else(|| panic!("row with {needle:?} not found in:\n{text}"));
+    // Compare column by column (the row holds `✓`/`·`, so byte offsets would
+    // drift): each buffer cell is one column.
+    let cells: Vec<String> = (content_x..buf.area.width)
+        .map(|x| buf[(x, meta_row)].symbol().to_string())
+        .collect();
+    let needle_cells: Vec<String> = needle.chars().map(|c| c.to_string()).collect();
+    let glyph_start = cells
+        .windows(needle_cells.len())
+        .position(|w| w == needle_cells.as_slice())
+        .expect("the hint is drawn");
+    assert_eq!(
+        glyph_start, hint_cols.start as usize,
+        "the hit range must start on the first glyph of {needle:?}"
+    );
+    assert_eq!(
+        hint_cols.end as usize,
+        glyph_start + needle.len(),
+        "the hit range must end on the last glyph of {needle:?}"
+    );
 }
 
 #[test]
@@ -632,7 +633,7 @@ fn log_left_border_force_updates_and_stays_theme_border_color() {
         "Checking git status\nline2\nline3".into(),
     )));
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
-    seed_tall_read_file_tool(&mut app, 10);
+    seed_tall_subagent_tool(&mut app, 10);
 
     let terminal = render_log_panel_terminal(&mut app, 100, 30);
     let buf = terminal.backend().buffer();

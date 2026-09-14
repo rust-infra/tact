@@ -77,8 +77,9 @@ impl ToolCell {
         card_border_type: BorderType,
         msgs: &Messages,
     ) -> Self {
-        // Collapsed command output draws no card, so the meta row is the only
-        // place left to say that output exists and how to open it.
+        // Collapsed output (command / read / edit) draws no card, so the meta
+        // row is the only place left to say that output exists and how to open
+        // it.
         let collapsed_output_hint = output
             .layout
             .detail_collapsed
@@ -519,6 +520,7 @@ mod tests {
             detail_full: None,
             card_bottom: " Double-click for full code ".into(),
             meta_text: None,
+            collapsed_action_cols: None,
             subagent_model: None,
             subagent_tokens: None,
             visual_kind: tact_protocol::ToolVisualKind::FileWrite,

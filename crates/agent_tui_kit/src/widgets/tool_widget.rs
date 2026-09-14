@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{ops::Range, time::Instant};
 
 use ratatui::{
     style::{Modifier, Style},
@@ -20,6 +20,9 @@ const ERROR_PREVIEW_LINES: usize = 5;
 const LIVE_OUTPUT_PREVIEW_LINES: usize = 3;
 const SUBAGENT_LIVE_OUTPUT_PREVIEW_LINES: usize = 8;
 pub const TOOL_HEADER_ROWS: usize = 2;
+/// Row index of the meta line inside a tool block's header rows (the title row
+/// is `0`). A collapsed command's click target lives here.
+pub const TOOL_META_ROW: usize = TOOL_HEADER_ROWS - 1;
 
 const RUNNING_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 pub const TOOL_RUNNING_SPINNER: &[char] = RUNNING_SPINNER;
@@ -239,6 +242,22 @@ pub fn collapsed_output_hint(msgs: &Messages, total_lines: usize) -> String {
     }
 }
 
+/// Columns of the clickable action hint at the end of a collapsed command's
+/// meta row, measured from the block's own left edge (block indent included).
+///
+/// The action is the tail of [`collapsed_output_hint`], which is itself the tail
+/// of the row the cell draws — so measuring backwards from the row's end lands
+/// on the drawn glyphs and cannot drift from them.
+pub fn collapsed_action_cols(msgs: &Messages, row_text: &str) -> Option<Range<u16>> {
+    let action_width = UnicodeWidthStr::width(msgs.tool_collapsed_output_action);
+    let end = LOG_TOOL_BLOCK_INDENT as usize + UnicodeWidthStr::width(row_text);
+    if action_width == 0 || end > u16::MAX as usize {
+        return None;
+    }
+    let start = end.checked_sub(action_width)?;
+    Some(start as u16..end as u16)
+}
+
 /// Trailing labels shared by every meta row: subagent model / token total, then
 /// the collapsed-output hint.
 ///
@@ -381,9 +400,16 @@ pub struct ToolRenderOutput {
     /// runs, where the cell re-derives the ticking elapsed time).
     ///
     /// The log hit test measures this to know where the row's text ends: a
-    /// collapsed command is opened by clicking its text, not by clicking the
+    /// collapsed command is opened by clicking its own hint, not by clicking the
     /// invisible remainder of the row.
     pub meta_text: Option<String>,
+    /// Columns of the clickable action hint (`"double-click"`) at the end of a
+    /// collapsed command's meta row ([`TOOL_META_ROW`]), measured from the
+    /// block's own left edge (indent included). `None` for every other block.
+    ///
+    /// Those glyphs are the whole affordance of a card-less command: the title
+    /// (parameter) row and the rest of the meta row stay inert.
+    pub collapsed_action_cols: Option<Range<u16>>,
     /// Subagent model name for tool-card header display.
     pub subagent_model: Option<String>,
     /// Subagent token usage for tool-card header display.
@@ -406,23 +432,14 @@ impl ToolRenderOutput {
         self.visual_rows(false).saturating_sub(1)
     }
 
-    /// Columns, measured from the block's own left edge (indent included), that
-    /// hold the header text of `row` — `0` is the title row, `1` the meta row.
-    ///
-    /// `None` for any other row or when that row has no text. Used by the log
-    /// hit test so a collapsed command's expand target is the text the user can
-    /// see instead of a full-width invisible band.
-    pub fn header_text_cols(&self, row: usize) -> Option<std::ops::Range<u16>> {
-        let text = match row {
-            0 => self.title_raw.as_str(),
-            1 => self.meta_text.as_deref()?,
-            _ => return None,
-        };
-        let width =
-            UnicodeWidthStr::width(text).min(u16::MAX as usize - LOG_TOOL_BLOCK_INDENT as usize);
-        let start = LOG_TOOL_BLOCK_INDENT;
-        let end = start + width as u16;
-        (end > start).then_some(start..end)
+    /// Whether a click at (`row`, `col`) — `col` from the block's own left edge —
+    /// lands on the collapsed command's expand hint.
+    pub fn hits_collapsed_action(&self, row: usize, col: usize) -> bool {
+        row == TOOL_META_ROW
+            && self
+                .collapsed_action_cols
+                .as_ref()
+                .is_some_and(|cols| cols.contains(&(col as u16)))
     }
 }
 
@@ -710,7 +727,10 @@ impl<'a> ToolWidget<'a> {
                 detail_collapsed: false,
             };
         };
-        if self.collapses_detail() {
+        let detail_lines = self
+            .detail_total_lines
+            .unwrap_or_else(|| detail.lines().count());
+        if self.collapses_detail(detail_lines) {
             return ToolLayout {
                 visual_rows: tool_visual_rows(false, 0, 0, false),
                 preview_lines: 0,
@@ -787,10 +807,13 @@ impl<'a> ToolWidget<'a> {
             };
             (Some(self.detail_card_title(total)), preview, total)
         } else if layout.detail_collapsed {
-            // No card is drawn, but the popup still needs the text and its
-            // line count.
+            // No card is drawn, but the popup still needs the text, its line
+            // count, and a title for the kinds that have no other one to fall
+            // back on (a cardless tool would otherwise be headed by its bare
+            // tool name).
             let detail = self.display_detail().unwrap_or_default();
-            (None, Vec::new(), detail.lines().count())
+            let total = detail.lines().count();
+            (Some(self.detail_card_title(total)), Vec::new(), total)
         } else {
             (None, Vec::new(), 0)
         };
@@ -837,6 +860,12 @@ impl<'a> ToolWidget<'a> {
                 Some(text)
             }
         };
+        // Only a collapsed command is opened by clicking its own text, and only
+        // by the hint that names the gesture.
+        let collapsed_action_cols = meta_text
+            .as_deref()
+            .filter(|_| detail_collapsed)
+            .and_then(|text| collapsed_action_cols(self.msgs, text));
         ToolRenderOutput {
             title_line: self.title_line(),
             title_raw,
@@ -864,6 +893,7 @@ impl<'a> ToolWidget<'a> {
             },
             card_bottom,
             meta_text,
+            collapsed_action_cols,
             subagent_model: self.subagent_model.clone(),
             subagent_tokens: self.subagent_tokens.clone(),
             visual_kind: kind_from_presentation(&self.presentation, &self.tool_name),
@@ -881,21 +911,49 @@ impl<'a> ToolWidget<'a> {
         }
     }
 
-    /// Whether a finished command's output is hidden behind the header rows.
+    /// Whether a finished tool's output is hidden behind the header rows.
     ///
-    /// Completed commands used to keep a one-line tail; that still left a card
-    /// on screen for output nobody asked to read. The card is dropped entirely
-    /// instead — the block is its two header rows, and the full text stays one
-    /// double-click away in the detail popup. While the command runs the live
-    /// card is unchanged, and failures keep their card so the error stays
-    /// visible without a click.
-    fn collapses_detail(&self) -> bool {
-        !self.live_detail
-            && matches!(self.phase, ToolPhase::Success)
-            && matches!(
-                kind_from_presentation(&self.presentation, &self.tool_name),
-                tact_protocol::ToolVisualKind::Command
-            )
+    /// Commands, reads, writes and edits used to keep a small preview card; that
+    /// still left a card on screen for output nobody asked to read, and the
+    /// single retained line was rarely the one that mattered. The card is
+    /// dropped entirely instead — the block is its two header rows, and the full
+    /// text (command output, the read body, the written content, or the new text
+    /// behind the popup's git diff) stays one double-click away. While the tool
+    /// runs the live card is unchanged, and failures keep their card so the
+    /// error stays visible without a click.
+    ///
+    /// Keyed on the visual kind, never on tool names:
+    ///
+    /// * `Command` / `FileRead` / `FileEdit` / `FileWrite` — these drew a card,
+    ///   so collapsing **saves** rows; the hint explains where the content went,
+    ///   whatever its size.
+    /// * `Subagent` — keeps its card: it is the entry point of the transcript
+    ///   popup, and the line it retains is the child's result summary.
+    /// * every other kind (`Generic` / `Task` / `Sleep`) draws no card at all,
+    ///   which left its result *unreachable* rather than merely collapsed — no
+    ///   card, no popup, no click target. A multi-line result is a readout worth
+    ///   keeping one double-click away, and collapsing it costs no extra row.
+    ///   A one-line result is skipped: `sleep` / `save_memory` / `send_message`
+    ///   answer with a confirmation the meta row already implies, and
+    ///   `· 1 line · double-click` on all of them would be chrome that opens
+    ///   nothing. A result already surfaced on the meta row
+    ///   (`compact_result_to_meta`) is skipped for the same reason — a second
+    ///   affordance for the same text is noise, not reach.
+    fn collapses_detail(&self, detail_lines: usize) -> bool {
+        if self.live_detail
+            || !matches!(self.phase, ToolPhase::Success)
+            || self.presentation.compact_result_to_meta
+        {
+            return false;
+        }
+        match kind_from_presentation(&self.presentation, &self.tool_name) {
+            tact_protocol::ToolVisualKind::Command
+            | tact_protocol::ToolVisualKind::FileRead
+            | tact_protocol::ToolVisualKind::FileEdit
+            | tact_protocol::ToolVisualKind::FileWrite => true,
+            tact_protocol::ToolVisualKind::Subagent => false,
+            _ => detail_lines > 1,
+        }
     }
 
     fn should_show_detail(&self, detail: &str) -> bool {
@@ -1151,8 +1209,11 @@ mod tests {
         assert!(output.card_bottom.contains("error"));
     }
 
+    /// A finished write collapses like the rest: the written content stays
+    /// reachable through the popup (which reads the file from disk), and the
+    /// `+` gutter is kept for that popup.
     #[test]
-    fn write_file_builds_detail_card_layout() {
+    fn write_file_collapses_its_detail_card() {
         let (theme, msgs) = fixture();
         let detail = (0..15)
             .map(|i| format!("line-{i}"))
@@ -1162,15 +1223,26 @@ mod tests {
             .with_tool("write_file")
             .with_arg_summary("a.rs")
             .with_phase(ToolPhase::Success)
-            .with_detail(detail);
+            .with_detail(detail.clone());
 
         let output = widget.build();
-        assert!(output.layout.has_detail_card);
-        assert!(output.use_diff_gutter);
-        assert_eq!(output.layout.preview_lines, DEFAULT_PREVIEW_LINES);
-        assert_eq!(
-            output.layout.visual_rows,
-            tool_visual_rows(true, DEFAULT_PREVIEW_LINES, 15, false)
+        assert!(!output.layout.has_detail_card);
+        assert!(output.layout.detail_collapsed);
+        assert_eq!(output.visual_rows(false), TOOL_HEADER_ROWS);
+        assert!(output.use_diff_gutter, "the popup renders the written text");
+        assert_eq!(output.detail_full.as_deref(), Some(detail.as_str()));
+        assert_eq!(output.detail_total_lines, 15);
+        assert!(
+            output.meta_text.as_deref().unwrap().contains("15 lines"),
+            "{:?}",
+            output.meta_text
+        );
+        assert!(
+            output.hits_collapsed_action(
+                TOOL_META_ROW,
+                output.collapsed_action_cols.as_ref().unwrap().start as usize
+            ),
+            "the hint opens the written content"
         );
     }
 
@@ -1184,12 +1256,16 @@ mod tests {
             .with_detail("[package]\n");
 
         let output = widget.build();
-        assert!(output.layout.has_detail_card);
-        assert!(!output.use_diff_gutter);
+        assert!(output.layout.detail_collapsed);
+        assert!(
+            !output.use_diff_gutter,
+            "the popup that now carries the body keeps the plain gutter"
+        );
     }
 
     /// The log hit test measures the stored meta text, so a finished block must
-    /// keep exactly what the cell will draw.
+    /// keep exactly what the cell will draw — and a collapsed command's target
+    /// is the `double-click` tail of that row, nothing else.
     #[test]
     fn finished_block_stores_its_meta_text_for_hit_testing() {
         let (theme, msgs) = fixture();
@@ -1212,31 +1288,43 @@ mod tests {
             .expect("a finished block keeps its meta text");
         assert!(meta.contains("Success"), "{meta}");
         assert!(meta.contains("3 lines · double-click"), "{meta}");
-        assert_eq!(
-            output.header_text_cols(1),
-            Some(
-                LOG_TOOL_BLOCK_INDENT..LOG_TOOL_BLOCK_INDENT + UnicodeWidthStr::width(meta) as u16
-            )
-        );
-        // The title row is measured the same way, indent included.
+
+        // The target is the hint's action word, measured back from the row's end.
+        let action = UnicodeWidthStr::width(msgs.tool_collapsed_output_action);
+        let end = LOG_TOOL_BLOCK_INDENT + UnicodeWidthStr::width(meta) as u16;
+        assert_eq!(output.collapsed_action_cols, Some(end - action as u16..end));
+        assert!(output.hits_collapsed_action(TOOL_META_ROW, (end - 1) as usize));
+        assert!(!output.hits_collapsed_action(TOOL_META_ROW, end as usize));
+
+        // The parameter row is inert, and so is the rest of the meta row: the
+        // success mark, the duration and the line count are not the gesture.
         assert_eq!(output.title_raw, "$ Bash  echo hi");
-        assert_eq!(
-            output.header_text_cols(0),
-            Some(
-                LOG_TOOL_BLOCK_INDENT
-                    ..LOG_TOOL_BLOCK_INDENT
-                        + UnicodeWidthStr::width(output.title_raw.as_str()) as u16
-            )
-        );
-        assert_eq!(
-            output.header_text_cols(2),
-            None,
-            "a block has two header rows"
-        );
+        assert!(!output.hits_collapsed_action(0, LOG_TOOL_BLOCK_INDENT as usize));
+        assert!(!output.hits_collapsed_action(TOOL_META_ROW, LOG_TOOL_BLOCK_INDENT as usize));
+        assert!(!output.hits_collapsed_action(2, (end - 1) as usize));
+    }
+
+    /// A collapsed hint is only measurable because its action word is its tail,
+    /// in every locale.
+    #[test]
+    fn collapsed_output_hint_ends_with_its_action() {
+        for lang in [Language::English, Language::Chinese] {
+            let msgs = Messages::by_language(lang);
+            for hint in [
+                collapsed_output_hint(&msgs, 1),
+                collapsed_output_hint(&msgs, 42),
+            ] {
+                assert!(
+                    hint.ends_with(msgs.tool_collapsed_output_action),
+                    "{lang:?}: {hint:?} must end with {:?}",
+                    msgs.tool_collapsed_output_action
+                );
+            }
+        }
     }
 
     /// A running block draws a ticking meta row, so it stores none — and with no
-    /// stored text there is no meta-row hit area to mis-measure.
+    /// collapsed hint there is no hit area to mis-measure.
     #[test]
     fn running_block_stores_no_meta_text() {
         let (theme, msgs) = fixture();
@@ -1248,8 +1336,8 @@ mod tests {
             .build();
 
         assert!(output.meta_text.is_none());
-        assert!(output.header_text_cols(1).is_none());
-        assert!(output.header_text_cols(0).is_some());
+        assert!(output.collapsed_action_cols.is_none());
+        assert!(!output.hits_collapsed_action(TOOL_META_ROW, LOG_TOOL_BLOCK_INDENT as usize));
     }
 
     #[test]
@@ -1277,10 +1365,12 @@ mod tests {
         assert!(output.visual_rows(false) > TOOL_HEADER_ROWS);
     }
 
-    /// A running command's live card is untouched by the collapse rule, and a
-    /// non-command card (e.g. a file read) stays open when it finishes.
+    /// The collapse rule needs a finished phase *and* a kind that gives up its
+    /// card: a running command keeps its live card, and the subagent — the
+    /// transcript's entry point — keeps its summary card. Those two are now the
+    /// only cards a successful tool can draw.
     #[test]
-    fn collapse_applies_only_to_finished_commands() {
+    fn collapse_spares_running_commands_and_subagents() {
         let (theme, msgs) = fixture();
         let live = ToolWidget::new(&theme, &msgs)
             .with_tool("bash")
@@ -1294,13 +1384,114 @@ mod tests {
             .build();
         assert!(live.layout.has_detail_card && !live.layout.detail_collapsed);
 
-        let read = ToolWidget::new(&theme, &msgs)
-            .with_tool("read_file")
-            .with_arg_summary("src/lib.rs")
+        let subagent = ToolWidget::new(&theme, &msgs)
+            .with_tool("spawn_subagent")
+            .with_arg_summary("audit the repo")
             .with_phase(ToolPhase::Success)
-            .with_detail("line one\nline two")
+            .with_detail("child summary\nsecond line")
             .build();
-        assert!(read.layout.has_detail_card && !read.layout.detail_collapsed);
+        assert!(
+            subagent.layout.has_detail_card && !subagent.layout.detail_collapsed,
+            "a subagent keeps its card and transcript popup"
+        );
+    }
+
+    /// A kind that never drew a card (`Task`, `Generic`, …) used to lose its
+    /// result outright — no card, no popup, no click target. A multi-line result
+    /// now collapses like the rest, at no extra row cost.
+    #[test]
+    fn multiline_result_of_a_cardless_kind_becomes_expandable() {
+        let (theme, msgs) = fixture();
+        let detail = "[1] pending  wire the parser\n[2] in_progress  run the suite";
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("task_list")
+            .with_presentation(ToolPresentationInfo {
+                visual_kind: tact_protocol::ToolVisualKind::Task,
+                display_name: "📋 Task".into(),
+                ..ToolPresentationInfo::generic("task_list")
+            })
+            .with_phase(ToolPhase::Success)
+            .with_detail(detail)
+            .build();
+
+        assert!(!output.layout.has_detail_card);
+        assert!(output.layout.detail_collapsed);
+        assert_eq!(output.visual_rows(false), TOOL_HEADER_ROWS);
+        assert_eq!(output.detail_full.as_deref(), Some(detail));
+        assert!(
+            output.meta_text.as_deref().unwrap().contains("2 lines"),
+            "{:?}",
+            output.meta_text
+        );
+        assert!(output.hits_collapsed_action(
+            TOOL_META_ROW,
+            output.collapsed_action_cols.as_ref().unwrap().start as usize
+        ));
+    }
+
+    /// An MCP / plugin tool arrives as `Generic`, so its output was invisible
+    /// too; a multi-line result is what makes it worth opening.
+    #[test]
+    fn multiline_mcp_result_becomes_expandable() {
+        let (theme, msgs) = fixture();
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("mcp__demo__search")
+            .with_phase(ToolPhase::Success)
+            .with_detail("hit one\nhit two\nhit three")
+            .build();
+
+        assert!(output.layout.detail_collapsed);
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some("hit one\nhit two\nhit three")
+        );
+    }
+
+    /// A one-line confirmation is not worth an affordance: `sleep`,
+    /// `save_memory` and `send_message` would all grow
+    /// `· 1 line · double-click` for text the meta row already implies.
+    #[test]
+    fn one_line_result_of_a_cardless_kind_stays_plain() {
+        let (theme, msgs) = fixture();
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("save_memory")
+            .with_phase(ToolPhase::Success)
+            .with_detail("Saved memory 'tabs'")
+            .build();
+
+        assert!(!output.layout.has_detail_card);
+        assert!(!output.layout.detail_collapsed);
+        assert_eq!(output.visual_rows(false), TOOL_HEADER_ROWS);
+        assert_eq!(output.detail_full, None);
+        assert!(
+            !output
+                .meta_text
+                .as_deref()
+                .unwrap()
+                .contains("double-click"),
+            "{:?}",
+            output.meta_text
+        );
+    }
+
+    /// `ask_user` already prints the answer on its meta row
+    /// (`compact_result_to_meta`), so a second affordance for the same text is
+    /// noise.
+    #[test]
+    fn result_already_on_the_meta_row_is_not_collapsed() {
+        let (theme, msgs) = fixture();
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("ask_user")
+            .with_presentation(ToolPresentationInfo {
+                compact_result_to_meta: true,
+                ..ToolPresentationInfo::generic("ask_user")
+            })
+            .with_phase(ToolPhase::Success)
+            .with_detail("User selected: B\nthe long note")
+            .build();
+
+        assert!(!output.layout.detail_collapsed);
+        assert!(!output.layout.has_detail_card);
     }
 
     #[test]
@@ -1420,27 +1611,95 @@ mod tests {
         );
     }
 
+    /// A finished edit collapses like a command: the block is its two header
+    /// rows, the new text stays reachable through the popup's diff, and the
+    /// gutter is kept for that popup.
     #[test]
-    fn edit_file_builds_detail_card_with_diff_gutter() {
+    fn edit_file_collapses_its_detail_card() {
         let (theme, msgs) = fixture();
         let detail = "new line one\nnew line two".to_string();
         let widget = ToolWidget::new(&theme, &msgs)
             .with_tool("edit_file")
             .with_arg_summary("src/lib.rs")
             .with_phase(ToolPhase::Success)
-            .with_detail(detail);
+            .with_detail(detail.clone());
 
         let output = widget.build();
-        assert!(output.layout.has_detail_card);
-        assert!(output.use_diff_gutter);
+        assert!(!output.layout.has_detail_card);
+        assert!(output.layout.detail_collapsed);
+        assert_eq!(output.visual_rows(false), TOOL_HEADER_ROWS);
+        assert!(output.use_diff_gutter, "the popup renders the diff");
+        assert_eq!(output.detail_full.as_deref(), Some(detail.as_str()));
+        assert_eq!(output.detail_total_lines, 2);
         assert!(
-            output
-                .detail_title
-                .as_deref()
-                .unwrap()
-                .contains("src/lib.rs")
+            output.meta_text.as_deref().unwrap().contains("2 lines"),
+            "{:?}",
+            output.meta_text
         );
-        assert_eq!(output.detail_preview[0].plain_text(), "new line one");
+        assert!(
+            output.hits_collapsed_action(
+                TOOL_META_ROW,
+                output.collapsed_action_cols.as_ref().unwrap().start as usize
+            ),
+            "the hint opens the diff popup"
+        );
+    }
+
+    /// A finished read collapses like a command: the block is its two header
+    /// rows, the body stays reachable through the popup, and the meta row
+    /// carries its line count.
+    #[test]
+    fn read_file_collapses_its_detail_card() {
+        let (theme, msgs) = fixture();
+        let detail = "fn main() {}\n";
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("read_file")
+            .with_arg_summary("src/lib.rs")
+            .with_phase(ToolPhase::Success)
+            .with_detail(detail)
+            .build();
+
+        assert!(!output.layout.has_detail_card);
+        assert!(output.layout.detail_collapsed);
+        assert_eq!(output.visual_rows(false), TOOL_HEADER_ROWS);
+        assert!(!output.use_diff_gutter, "a read popup has no `+` column");
+        assert_eq!(output.detail_full.as_deref(), Some(detail));
+        assert_eq!(output.detail_total_lines, 1);
+        assert!(
+            output.meta_text.as_deref().unwrap().contains("1 line ·"),
+            "{:?}",
+            output.meta_text
+        );
+        assert!(
+            output.hits_collapsed_action(
+                TOOL_META_ROW,
+                output.collapsed_action_cols.as_ref().unwrap().start as usize
+            ),
+            "the hint opens the body popup"
+        );
+    }
+
+    /// The collapse is keyed on the kind, so every tool that presents itself as
+    /// `FileRead` folds — `read_image` included, whose detail is the text
+    /// envelope rather than a file body.
+    #[test]
+    fn read_image_collapses_with_the_file_read_kind() {
+        let (theme, msgs) = fixture();
+        let output = ToolWidget::new(&theme, &msgs)
+            .with_tool("read_image")
+            .with_presentation(ToolPresentationInfo {
+                visual_kind: tact_protocol::ToolVisualKind::FileRead,
+                display_name: "🌄 Read Image".into(),
+                ..ToolPresentationInfo::generic("read_image")
+            })
+            .with_arg_summary("docs/shot.png")
+            .with_phase(ToolPhase::Success)
+            .with_detail("<path>/tmp/shot.png</path>\n<type>image</type>")
+            .build();
+
+        assert!(output.layout.detail_collapsed);
+        assert!(!output.layout.has_detail_card);
+        assert_eq!(output.visual_rows(false), TOOL_HEADER_ROWS);
     }
 
     #[test]
