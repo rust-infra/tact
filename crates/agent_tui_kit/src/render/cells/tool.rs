@@ -731,7 +731,10 @@ mod tests {
         let cell = tool_cell(output);
 
         assert_eq!(meta_text(&cell), measured);
-        assert!(measured.contains("4 lines · double-click"), "{measured}");
+        assert!(
+            measured.contains("4 lines · double-click-result"),
+            "{measured}"
+        );
     }
 
     /// A collapsed command card draws no card, so the meta row must carry the
@@ -746,7 +749,7 @@ mod tests {
         let text = meta_text(&tool_cell(output));
 
         assert!(text.contains("7 lines"), "meta row: {text}");
-        assert!(text.contains("double-click"), "meta row: {text}");
+        assert!(text.contains("double-click-result"), "meta row: {text}");
     }
 
     #[test]
@@ -765,7 +768,7 @@ mod tests {
     #[test]
     fn open_card_meta_row_has_no_collapsed_hint() {
         let text = meta_text(&tool_cell(make_output(true, 3, 3)));
-        assert!(!text.contains("double-click"), "meta row: {text}");
+        assert!(!text.contains("double-click-result"), "meta row: {text}");
     }
 
     #[test]

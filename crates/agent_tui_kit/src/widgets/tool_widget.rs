@@ -403,7 +403,7 @@ pub struct ToolRenderOutput {
     /// collapsed command is opened by clicking its own hint, not by clicking the
     /// invisible remainder of the row.
     pub meta_text: Option<String>,
-    /// Columns of the clickable action hint (`"double-click"`) at the end of a
+    /// Columns of the clickable action hint (`"double-click-result"`) at the end of a
     /// collapsed command's meta row ([`TOOL_META_ROW`]), measured from the
     /// block's own left edge (indent included). `None` for every other block.
     ///
@@ -935,7 +935,7 @@ impl<'a> ToolWidget<'a> {
     ///   keeping one double-click away, and collapsing it costs no extra row.
     ///   A one-line result is skipped: `sleep` / `save_memory` / `send_message`
     ///   answer with a confirmation the meta row already implies, and
-    ///   `· 1 line · double-click` on all of them would be chrome that opens
+    ///   `· 1 line · double-click-result` on all of them would be chrome that opens
     ///   nothing. A result already surfaced on the meta row
     ///   (`compact_result_to_meta`) is skipped for the same reason — a second
     ///   affordance for the same text is noise, not reach.
@@ -1265,7 +1265,7 @@ mod tests {
 
     /// The log hit test measures the stored meta text, so a finished block must
     /// keep exactly what the cell will draw — and a collapsed command's target
-    /// is the `double-click` tail of that row, nothing else.
+    /// is the `double-click-result` tail of that row, nothing else.
     #[test]
     fn finished_block_stores_its_meta_text_for_hit_testing() {
         let (theme, msgs) = fixture();
@@ -1287,7 +1287,7 @@ mod tests {
             .as_deref()
             .expect("a finished block keeps its meta text");
         assert!(meta.contains("Success"), "{meta}");
-        assert!(meta.contains("3 lines · double-click"), "{meta}");
+        assert!(meta.contains("3 lines · double-click-result"), "{meta}");
 
         // The target is the hint's action word, measured back from the row's end.
         let action = UnicodeWidthStr::width(msgs.tool_collapsed_output_action);
@@ -1449,7 +1449,7 @@ mod tests {
 
     /// A one-line confirmation is not worth an affordance: `sleep`,
     /// `save_memory` and `send_message` would all grow
-    /// `· 1 line · double-click` for text the meta row already implies.
+    /// `· 1 line · double-click-result` for text the meta row already implies.
     #[test]
     fn one_line_result_of_a_cardless_kind_stays_plain() {
         let (theme, msgs) = fixture();
@@ -1468,7 +1468,7 @@ mod tests {
                 .meta_text
                 .as_deref()
                 .unwrap()
-                .contains("double-click"),
+                .contains("double-click-result"),
             "{:?}",
             output.meta_text
         );

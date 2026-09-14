@@ -1182,7 +1182,7 @@ mod tests {
     }
 
     /// A finished command collapses its output card, so the meta row's
-    /// `double-click` hint is the only thing left to click.
+    /// `double-click-result` hint is the only thing left to click.
     #[test]
     fn double_click_collapsed_command_hint_opens_diff_popup() {
         let mut app = make_app();
@@ -1227,9 +1227,9 @@ mod tests {
             .clone()
             .expect("the hint is the target");
         let meta = block.output.meta_text.clone().expect("meta text");
-        assert!(meta.ends_with("double-click"), "{meta}");
+        assert!(meta.ends_with("double-click-result"), "{meta}");
         assert!(
-            hint_cols.end as usize - hint_cols.start as usize == "double-click".len(),
+            hint_cols.end as usize - hint_cols.start as usize == "double-click-result".len(),
             "the target is the action word alone: {hint_cols:?}"
         );
 
@@ -1289,7 +1289,7 @@ mod tests {
         );
     }
 
-    /// The trigger is the `double-click` hint alone — not the row it sits in,
+    /// The trigger is the `double-click-result` hint alone — not the row it sits in,
     /// and not the parameter row the command is written on.
     #[test]
     fn collapsed_command_ignores_clicks_off_the_hint() {

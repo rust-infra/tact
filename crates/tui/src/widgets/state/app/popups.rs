@@ -718,7 +718,7 @@ impl App {
     ///
     /// Two shapes are clickable, and only on what the user can actually see:
     /// a drawn detail card (its whole rectangle) and a collapsed command's
-    /// `double-click` hint — not its parameter row, and not the meta row's
+    /// `double-click-result` hint — not its parameter row, and not the meta row's
     /// earlier text (success mark, duration, line count) either.
     pub(crate) fn open_diff_popup_at(&mut self, phys_idx: usize, relative_row: usize, col: usize) {
         let Some(output) = self.tool_output_at(phys_idx) else {

@@ -815,7 +815,7 @@ fn full_frame_edit_file_tool_shows_in_log() {
         "a finished edit hides its diff behind the popup, got:\n{text}"
     );
     assert!(
-        text.contains("2 lines · double-click"),
+        text.contains("2 lines · double-click-result"),
         "the meta row must report the hidden diff, got:\n{text}"
     );
 }
@@ -866,7 +866,7 @@ fn full_frame_read_file_tool_shows_in_log() {
         "a finished read hides its body behind the popup, got:\n{text}"
     );
     assert!(
-        text.contains("3 lines · double-click"),
+        text.contains("3 lines · double-click-result"),
         "the meta row must report the hidden body, got:\n{text}"
     );
 }
@@ -917,7 +917,7 @@ fn full_frame_write_file_tool_shows_in_log() {
         "a finished write hides its content behind the popup, got:\n{text}"
     );
     assert!(
-        text.contains("3 lines · double-click"),
+        text.contains("3 lines · double-click-result"),
         "the meta row must report the hidden content, got:\n{text}"
     );
 }
@@ -972,7 +972,7 @@ fn full_frame_cardless_tool_result_is_openable() {
         "the task list stays behind the popup, got:\n{text}"
     );
     assert!(
-        text.contains("2 lines · double-click"),
+        text.contains("2 lines · double-click-result"),
         "a multi-line result must advertise that it can be opened, got:\n{text}"
     );
 }
