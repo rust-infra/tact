@@ -180,9 +180,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                             })
                             .ok()
                             .flatten()
-                            .and_then(|body| {
-                                crate::system_prompt::extract_system_prompt(&body).ok()
-                            })
+                            .and_then(|body| crate::system_prompt::assemble_prompt_view(&body).ok())
                             .map(|content| ("Assembled current system prompt", content))
                         })
                     };

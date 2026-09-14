@@ -85,6 +85,8 @@ graph TB
 
 旧式 `commands/*.md` 在插件的 `skills/` **之后**加载进同一注册表（Claude Code 两种布局加载方式相同，只是文件布局不同），因此同名命令覆盖技能。命令名取自文件 stem：`commands/commit.md` → `/plugin:commit`。
 
+根目录下的条目可以是**符号链接**：遍历使用 `follow_links(true)`，因此把 skill 目录链接进位的安装方式（`~/.agents/skills/omarchy -> /usr/share/omarchy/default/agents/skills/omarchy`）与复制一份完全等价。`walkdir` 默认不跟随链接，而被链接的目录既不会被下降进入、也不满足 `is_file()`，这些 skill 过去会被无提示地丢弃。插件根在它那套扁平扫描允许的范围内遵守同一条规则：判断子项用 `Path::is_dir()`（stat，跟随链接）而不是 `DirEntry::file_type()`（lstat），因此符号链接形式的插件 skill 目录同样能加载——深度仍然只有一层。
+
 ---
 
 ## 3. 数据模型
@@ -188,6 +190,8 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry>
 ```
 
 在模板中渲染为 `# Available skills`。见 [系统提示词](./04_chapter_prompt_zh.md)——该节在动态边界之上（除非会话中途在磁盘上增删 skills 且未 reload，否则基本稳定）。
+
+`# Available skills` **只来自磁盘**：注册表里从来不会有 MCP server 提供的东西。MCP server 是在*工具描述*里宣传自己 skill 的（`skill://<server>/<skill>/SKILL.md`），Tact 原样转发，因此请求确实携带它们，而 system prompt 对此一字不提。`/view-system-prompt` 弹窗的 "Assembled current prompt" 视图会在末尾的 `## MCP skills` 段列出这些路径。
 
 ### load_skill 工具
 

@@ -32,7 +32,25 @@
 ---
 
 
-## 1. 2026-09-14 — 实时耗时搬进底栏，状态栏的步骤进度条一并删除
+## 1. 2026-09-14 — 符号链接的 skill 能加载了，Assembled prompt 也显示它携带的 MCP skills
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/skill/mod.rs`（`load_skills_from_dir_with_namespace`、`load_direct_plugin_skills` + `symlinked_skill_dir_is_loaded`、`symlinked_plugin_skill_dir_is_loaded`）；`crates/tui/src/system_prompt.rs`（`extract_mcp_skill_paths`、`assemble_prompt_view`）；`crates/tui/src/handlers/select.rs`（`SelectKind::ViewSystemPrompt`）；[Ch 2](./02_chapter_skill_zh.md) §2·§6；Ch 26 2026-09-10（skill 根收敛） |
+
+**现象 / 动机：** 已安装的 skill 有两条路会在 `/view-system-prompt` 里消失，用户都是在 "Assembled current prompt" 弹窗上发现的。(1) skill 根目录是靠**符号链接**组装出来的——Omarchy 提供 `~/.agents/skills/omarchy -> /usr/share/omarchy/default/agents/skills/omarchy`——而 `load_skills_from_dir_with_namespace` 用 `WalkDir` 的默认 `follow_links(false)` 遍历：符号链接的**目录**既不会被下降进入、也不满足 `is_file()`，于是 `omarchy` 与 `diagnose-crash` 从 `# Available skills` 里静默消失（`~/.agents/skills` 下 32 个条目只出现 30 个）。(2) MCP server 是在**工具描述**里宣传自己 skill 的——Figma：`prefer the /figma-use skill if available, otherwise read skill://figma/figma-use/SKILL.md`——而 Tact 原样转发 MCP 描述，所以一个普通请求确实携带 `skill://figma/{figma-use,figma-shaders,figma-design-to-code,figma-generative-plugins}/SKILL.md`。弹窗只渲染 system prompt，于是这些路径除了翻原始请求体之外无处可读。
+
+**决策：** 独立 skill 根改用 `.follow_links(true)` 遍历：被链接的 skill 目录与复制一份完全等价。插件根在它那套扁平扫描里遵守同一条规则——判断子项用 `Path::is_dir()`（stat，跟随链接）而不是 `DirEntry::file_type()`（lstat），因此符号链接形式的插件 skill 目录同样能加载；「只扫一层、只认直接子项」的契约不变。弹窗侧，"Assembled current prompt" 末尾新增 `## MCP skills` 段，列出持久化请求里 **仅工具定义** 中出现的 `skill://…` 路径（对话里引用的 URI 不算请求在宣传 skill），去重并排序。被提取的 prompt 本身一字未改、仍是视图开头：`# Available skills` 依旧只来自磁盘，因为没有任何 MCP server 向它贡献过内容。
+
+**改后行为：** 符号链接形式的 skill 条目——无论是独立根还是插件的 `skills/` 子项——都会出现在 `# Available skills` 中，并可通过 `load_skill` / `/skill-name` 加载，与复制目录一致。`/view-system-prompt` → "Assembled current prompt" 只在该请求确实引用了 MCP skill 时才追加 `## MCP skills`（本仓库的 Figma server 为 4 条路径）；没有时视图与被提取的 prompt 逐字节相同。由 `symlinked_skill_dir_is_loaded` 与 `symlinked_plugin_skill_dir_is_loaded`（两者对修复前的判断方式都会失败）、`plugin_skills_only_load_direct_skill_children`（深度不变）、`mcp_skill_paths_are_deduped_and_sorted`、`mcp_skill_paths_ignore_non_tool_text`、`assembled_view_keeps_the_prompt_and_appends_mcp_skills` 钉住。
+
+**指针：** `crates/tact/src/skill/mod.rs`（`load_skills_from_dir_with_namespace`、`load_direct_plugin_skills`、`symlinked_skill_dir_is_loaded`、`symlinked_plugin_skill_dir_is_loaded`）；`crates/tui/src/system_prompt.rs`（`SKILL_PATH`、`extract_mcp_skill_paths`、`assemble_prompt_view` 及其 4 个测试）；`crates/tui/src/handlers/select.rs`（`SelectKind::ViewSystemPrompt`）；[Ch 2](./02_chapter_skill_zh.md) §2（发现根目录）· §6（系统提示词集成）；Ch 26 2026-09-10（skill 根收敛）。
+
+---
+
+
+## 1. 2026-09-14 — 实时耗时搬到底栏第 1 行，状态栏的步骤进度条一并删除
 
 | Field | Value |
 |-------|-------|

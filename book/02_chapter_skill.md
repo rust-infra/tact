@@ -84,6 +84,8 @@ Load order (ascending — later roots win on a name clash): `~/.agents/skills/` 
 
 Legacy `commands/*.md` files load into the same registry **after** a plugin's `skills/` (Claude Code treats both layouts identically — only the file layout differs), so a same-named command wins over the skill. Command names come from the file stem: `commands/commit.md` → `/plugin:commit`.
 
+A root's entries may be **symlinks**: the walk runs with `follow_links(true)`, so an install that links a skill directory into place (`~/.agents/skills/omarchy -> /usr/share/omarchy/default/agents/skills/omarchy`) loads exactly like a copied one. `walkdir` does not follow links by default, and a linked directory is neither descended into nor `is_file()`, so those skills used to be dropped with no message. Plugin roots obey the same rule in the form their flat scan allows: a child is tested with `Path::is_dir()` (stat, follows links) rather than `DirEntry::file_type()` (lstat), so a linked plugin skill directory loads too — the one-level depth is unchanged.
+
 ---
 
 ## 3. Data Model
@@ -187,6 +189,8 @@ Used in `interactive.rs` / `headless.rs` at startup; result wrapped in `Arc<Skil
 ```
 
 Rendered under `# Available skills` in the template. See [System Prompt](./04_chapter_prompt.md) — this section is above the dynamic boundary (mostly stable unless skills are added on disk mid-session without reload).
+
+`# Available skills` is **disk-only**: the registry never holds anything an MCP server provides. MCP servers advertise their skills from inside *tool descriptions* (`skill://<server>/<skill>/SKILL.md`), which Tact forwards verbatim, so a request carries them without the system prompt mentioning them. The `/view-system-prompt` popup's "Assembled current prompt" view surfaces those paths in a trailing `## MCP skills` section.
 
 ### load_skill tool
 

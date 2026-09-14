@@ -32,7 +32,25 @@ Newest entries first. Each entry should include:
 ---
 
 
-## 1. 2026-09-14 — The running clock leaves the status bar, and the step gauge goes with it
+## 1. 2026-09-14 — Symlinked skills load, and the Assembled prompt shows the MCP skills it carried
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/skill/mod.rs` (`load_skills_from_dir_with_namespace`, `load_direct_plugin_skills` + `symlinked_skill_dir_is_loaded`, `symlinked_plugin_skill_dir_is_loaded`); `crates/tui/src/system_prompt.rs` (`extract_mcp_skill_paths`, `assemble_prompt_view`); `crates/tui/src/handlers/select.rs` (`SelectKind::ViewSystemPrompt`); [Ch 2](./02_chapter_skill.md) §2·§6; Ch 26 2026-09-10 (skill roots) |
+
+**Symptom / motivation:** Two ways an installed skill stayed invisible in `/view-system-prompt`, both reported against the "Assembled current prompt" popup. (1) Skill roots are assembled by **symlinking** directories into place — Omarchy ships `~/.agents/skills/omarchy -> /usr/share/omarchy/default/agents/skills/omarchy` — and `load_skills_from_dir_with_namespace` walked the root with `WalkDir` at its default `follow_links(false)`. A symlinked *directory* is neither descended into nor `is_file()`, so `omarchy` and `diagnose-crash` were silently missing from `# Available skills` (30 of the 32 entries under `~/.agents/skills`). (2) MCP servers advertise their skills from inside **tool descriptions** — Figma: "prefer the /figma-use skill if available, otherwise read `skill://figma/figma-use/SKILL.md`" — and Tact forwards MCP descriptions verbatim, so an ordinary request really does carry `skill://figma/{figma-use,figma-shaders,figma-design-to-code,figma-generative-plugins}/SKILL.md`. The popup rendered only the system prompt, so those paths were readable nowhere except the raw request body.
+
+**Decision:** Walk a standalone skill root with `.follow_links(true)`: a linked skill directory loads exactly like a copied one. Plugin roots get the same rule inside their flat scan — a child is tested with `Path::is_dir()` (stat, follows links) instead of `DirEntry::file_type()` (lstat), so a linked plugin skill directory loads too; the one-level, direct-children-only contract is unchanged. For the popup, "Assembled current prompt" gained a trailing `## MCP skills` section listing the `skill://…` paths found in the persisted request's **tool definitions only** (a URI quoted in the conversation is not the request advertising a skill), deduped and sorted. The extracted prompt itself is untouched and still opens the view verbatim: `# Available skills` stays disk-only, because no MCP server contributes to it and none ever has.
+
+**Behavior after:** A symlinked skill entry — standalone root or plugin `skills/` child — appears in `# Available skills` and is loadable through `load_skill` / `/skill-name`, exactly like a copied directory. `/view-system-prompt` → "Assembled current prompt" appends `## MCP skills` only when the request referenced any (4 paths for the Figma server in this repo); with none, the view is byte-identical to the extracted prompt. Pinned by `symlinked_skill_dir_is_loaded` and `symlinked_plugin_skill_dir_is_loaded` (both fail against the pre-fix lookups), `plugin_skills_only_load_direct_skill_children` (depth unchanged), `mcp_skill_paths_are_deduped_and_sorted`, `mcp_skill_paths_ignore_non_tool_text` and `assembled_view_keeps_the_prompt_and_appends_mcp_skills`.
+
+**Pointers:** `crates/tact/src/skill/mod.rs` (`load_skills_from_dir_with_namespace`, `load_direct_plugin_skills`, `symlinked_skill_dir_is_loaded`, `symlinked_plugin_skill_dir_is_loaded`); `crates/tui/src/system_prompt.rs` (`SKILL_PATH`, `extract_mcp_skill_paths`, `assemble_prompt_view` + its 4 tests); `crates/tui/src/handlers/select.rs` (`SelectKind::ViewSystemPrompt`); [Ch 2](./02_chapter_skill.md) §2 (discovery roots) · §6 (system prompt integration); Ch 26 2026-09-10 (skill roots converge).
+
+---
+
+
+## 1. 2026-09-14 — The running clock leaves the status bar for row 1, and the step gauge goes with it
 
 | Field | Value |
 |-------|-------|
