@@ -313,7 +313,7 @@ flowchart LR
 - **阶段 1 — 最小化。** 在 provider 允许的范围内压低思考：DeepSeek / Kimi K3 转发 `low`（其 body hook 无法完全关闭 thinking），OpenAI 推理模型发 `none`，其余 provider 省略该字段。
 - **阶段 2+ — 自适应。** 依据上一次尝试实际消耗的 `reasoning_tokens` 设定预留：`clamp(observed × 1.25, floor, cap)`，其中 `floor = max(上次预留, effort 桶, 文本/4)`、`cap = 2 × floor`。每次信封都受窗口上限约束，保证初始 prompt + `max_tokens` + headroom 仍放得下。
 
-reasoning 与文本共用同一个 `max_tokens` 信封，没有预留时推理模型会挤占摘要文本。如果连固定的摘要指令本身都超过输入上限，压缩会提前失败，因为即使删除全部历史也无法构造合法请求。瞬时传输错误最多退避重试五次。`MaxTokens` 截断的摘要会**续写**（最多 `MAX_COMPACT_SUMMARY_ATTEMPTS` = 5 次，`[compact continue n/5]`）：把已产生的部分摘要作为 assistant 消息、追加一条续写提示。阶梯用尽后，部分摘要以 `[compact fallback]` 被接受为 best-effort（Codex-style 重建反正会保留最近的真实用户消息）。拒绝/其它异常终止原因和空文本仍会被拒绝，旧 context 不会被替换。指令还说明对话以 JSON 消息数组形式附在后面（工具结果与附件可能被省略），摘要必须仅基于该内容。摘要要求模型保留：
+reasoning 与文本共用同一个 `max_tokens` 信封，没有预留时推理模型会挤占摘要文本。如果连固定的摘要指令本身都超过输入上限，压缩会提前失败，因为即使删除全部历史也无法构造合法请求。瞬时传输错误最多退避重试五次。每次摘要尝试都会打印自己的信封——调用前 `[compact summary n/6] request … max_tokens=… (text … + reasoning …)`，调用后 `[compact summary n/6] response stop=… usage=…`，一次成功（0 次续写）时同样打印——因此实际发出的 `max_tokens` 永远在日志里。`MaxTokens` 截断的摘要会**续写**（最多 `MAX_COMPACT_SUMMARY_ATTEMPTS` = 5 次，`[compact continue n/5]`）：把已产生的部分摘要作为 assistant 消息、追加一条续写提示。阶梯用尽后，部分摘要以 `[compact fallback]` 被接受为 best-effort（Codex-style 重建反正会保留最近的真实用户消息）。拒绝/其它异常终止原因和空文本仍会被拒绝，旧 context 不会被替换。指令还说明对话以 JSON 消息数组形式附在后面（工具结果与附件可能被省略），摘要必须仅基于该内容。摘要要求模型保留：
 
 1. 当前目标与已完成工作  
 2. 关键发现、决策、架构洞见  

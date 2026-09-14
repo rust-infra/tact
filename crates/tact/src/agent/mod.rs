@@ -1663,28 +1663,41 @@ impl Agent {
         let mut messages = vec![Message::new_text(Role::User, prompt.clone())];
         let mut blocks_all: Vec<ContentBlock> = Vec::new();
         let (stop_reason, token_usage, request_body) = loop {
+            let stage = continuation_attempt.saturating_add(1);
+            let total_stages = MAX_COMPACT_SUMMARY_ATTEMPTS.saturating_add(1);
+            let attempt_effort =
+                compact_summary_effort(&provider_kind, session_effort, continuation_attempt);
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: messages.clone(),
                 max_tokens: attempt_max_tokens,
             })
-            .with_reasoning_effort(compact_summary_effort(
-                &provider_kind,
-                session_effort,
-                continuation_attempt,
-            ));
+            .with_reasoning_effort(attempt_effort);
+            let request_chars = serde_json::to_string(&request)
+                .map(|body| body.chars().count())
+                .unwrap_or(0);
+            // Every attempt announces its exact request envelope: the printed
+            // `max_tokens` is verbatim what the provider receives, split into the
+            // summary text budget and the reasoning reserve.
+            self.emit_update(AgentUpdate::Info(format!(
+                "[compact summary {stage}/{total_stages}] request model={model_name} max_tokens={attempt_max_tokens} (text {summary_text_max_tokens} + reasoning {attempt_reserve}), reasoning_effort={}, input {request_chars} chars",
+                attempt_effort.map_or("provider-default", OpenAiReasoningEffort::as_str),
+            )));
             match self.runtime.client.create_message(&request, None).await {
                 Ok(response) => {
                     let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
+                    self.emit_update(AgentUpdate::Info(format!(
+                        "[compact summary {stage}/{total_stages}] response stop={:?} usage={:?}",
+                        response.stop_reason, response.usage,
+                    )));
                     if truncated && continuation_attempt < MAX_COMPACT_SUMMARY_ATTEMPTS {
                         let usage = response.usage.clone();
-                        if let Some(usage) = &usage {
-                            self.emit_update(AgentUpdate::Info(format!(
-                                "[compact usage: {:?}]",
-                                usage,
-                            )));
-                        }
-                        let think_len = response.blocks.iter().fold(0, |acc, block| {
+                        // Byte length of the thinking block that ate into this
+                        // attempt's budget (`String::len() + signature.len()`),
+                        // NOT a token count. The tokens actually spent are
+                        // `usage.reasoning_tokens` below (`observed_think`),
+                        // which is what sizes the next reserve.
+                        let think_block_bytes = response.blocks.iter().fold(0, |acc, block| {
                             if let ContentBlock::Thinking {
                                 thinking,
                                 signature,
@@ -1722,7 +1735,7 @@ impl Agent {
                         attempt_max_tokens =
                             summary_text_max_tokens.saturating_add(attempt_reserve);
                         self.emit_update(AgentUpdate::Info(format!(
-                            "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated({think_len} think tokens, {attempt_max_tokens} max tokens), continuing"
+                            "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated ({think_block_bytes} think bytes), next attempt max_tokens={attempt_max_tokens}"
                         )));
                         continue;
                     }
@@ -2959,9 +2972,8 @@ mod tests {
     async fn local_compact_inherits_session_effort() {
         ensure_config();
         let context = test_context("local_compact_inherits_effort");
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut tool_context = context;
-        tool_context.ui_tx = Some(tx);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let tool_context = context;
 
         // Capture the summarizer request so we can assert the first attempt
         // inherits the session's reasoning effort while never enabling a
@@ -2988,7 +3000,8 @@ mod tests {
             .unwrap(),
             AgentSystemPrompt::Static("You are a test agent.".to_string()),
         )
-        .with_provider_kind(tact_llm::ProviderKind::OpenAi);
+        .with_provider_kind(tact_llm::ProviderKind::OpenAi)
+        .with_ui_channel(tx);
         // High effort + a Claude-style thinking budget on a 128k window: the
         // effort is inherited, the budget is not.
         agent.agent_settings.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::High);
@@ -3033,6 +3046,33 @@ mod tests {
         assert!(
             context_text.contains("reasoning-aware summary"),
             "rebuilt context must contain the summary: {context_text}"
+        );
+
+        // A successful first attempt (0 continuations) must still log its
+        // envelope, and the printed `max_tokens` must be the wire value split
+        // into its text and reasoning parts.
+        drop(requests);
+        let mut updates = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            updates.push(update);
+        }
+        let infos: Vec<&str> = updates
+            .iter()
+            .filter_map(|u| match u {
+                AgentUpdate::Info(msg) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            infos.iter().any(|msg| msg.starts_with(
+                "[compact summary 1/6] request model=mock-model max_tokens=10000 (text 2000 + reasoning 8000), reasoning_effort=high, input "
+            ) && msg.ends_with(" chars")),
+            "first attempt must log its request envelope: {infos:?}"
+        );
+        assert!(
+            infos.iter().any(|msg| msg
+                .starts_with("[compact summary 1/6] response stop=Some(EndTurn) usage=None")),
+            "first attempt must log its response even without truncation: {infos:?}"
         );
     }
 

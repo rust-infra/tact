@@ -32,6 +32,78 @@
 ---
 
 
+## 1. 2026-09-14 — 点号分隔的 DeepSeek V4 id 保住 1M 窗口
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs`（`model_context_window_for_model` 的 `deepseek-v4-` 前缀臂；`resolve_model_context_window_maps_deepseek_v4_variants`）；`config.example.toml`；[第 21 章](./21_chapter_config_zh.md)；[第 5 章](./05_chapter_compact_zh.md) |
+
+**现象 / 动机：** 使用 `deepseek-v4.1-flash` 的会话窗口报成了 200K。V4 家族那条臂只匹配**连字符**前缀 `deepseek-v4-`，而这个 id 在小版本号前用的是点号（`v4` `.` `1`），于是没有任何一条臂命中，解析落到 `200_000` 默认值。这个回退是静默的，代价也不止于显示：底栏 `ctx` 显示 `/200K`，而在 `protocol = "responses"` 下推导出的 `responses_compact_threshold` 是 `窗口 − max_tokens − 10% 余量`——200K 且 `max_tokens = 65536` 时为 114,464，1M 时为 834,464——也就是说 1M 上下文的模型提前约 7 倍触发压缩。
+
+**决策：** 把家族前缀放宽为接受两种分隔符——`starts_with("deepseek-v4-") || starts_with("deepseek-v4.")`——而不是干脆去掉连字符（裸 `starts_with("deepseek-v4")` 会连 `deepseek-v44` 之类一起吞掉）。两个显式 1M 别名（`deepseek-flash`、`deepseek-reasoner`）不变，解析顺序也不变：CLI > `[agent]` > 该映射 > 默认 200,000。顺手修正了该函数的文档注释——它仍声称映射优先级**最高**、会压过 CLI/TOML，而代码自从顺序翻转后就不是这样了。
+
+**改后行为：** `deepseek-v4.1-flash`——以及任何 `deepseek-v4.*` 兄弟 id——无需改配置即解析为 `1_000_000`，`ctx` 用量条与推导出的 Responses 压缩阈值随真实窗口走。用户显式配置过的模型不受影响；其它未知 id 仍回退到 200,000。
+
+**指针：** `crates/tact/src/config/resolve.rs`（`model_context_window_for_model`）；`config.example.toml`（模型→窗口清单）；[第 21 章](./21_chapter_config_zh.md)「模型 → 窗口映射」；[第 5 章](./05_chapter_compact_zh.md)（窗口 → 自动压缩阈值）。
+
+---
+
+
+## 1. 2026-09-14 — 压缩日志：单位修正，且每次尝试都打印它的请求信封
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/mod.rs`（`compact_history_local_with_mode`、`think_block_bytes`、`[compact summary …]` / `[compact continue …]` 消息）；[第 5 章](./05_chapter_compact_zh.md) |
+
+**现象 / 动机：** 压缩日志一错一缺。（a）续写提示写作 `summary truncated(8861 think tokens, 2000 max tokens)`，但前一个数字其实是 `thinking.len() + signature.len()`——思考块的**字节**长度加上它那段不透明的签名——却用了同一行另一个数字的单位；把它当 token 读，会引导出恰好错误的对比：拿 8861 去对 2000 的正文预算，或去对同一响应报出的 `reasoning_tokens: 2173`。（b）请求信封只在重试时才可见：`[compact usage: …]` 位于截断分支内部，因此一次成功（0 次续写）什么都不打印，而真正发给 provider 的 `max_tokens` 在成功路径上也从不显示。
+
+**决策：** 修正单位，并让阶梯在**每一次**尝试上都自述，包括第 1 次。`think_len` 更名为 `think_block_bytes`；续写提示打印 `{think_block_bytes} think bytes`，并改为点名下一次的 `max_tokens`，而不是复述刚刚用掉的那个值。每次尝试现在都在截断分支之外发两行：调用前 `[compact summary {stage}/{total}] request model=… max_tokens=N (text T + reasoning R), reasoning_effort=…, input C chars`，调用后 `[compact summary {stage}/{total}] response stop=… usage=…`。请求行里的 `max_tokens` 就是实际发出的值（`attempt_max_tokens = summary_text_max_tokens + attempt_reserve`），并按两部分拆开；原先独立的 `[compact usage: …]` 已删除，因为响应行本身就带 usage。预算逻辑没有任何改动。
+
+**改后行为：** 共六级（`continuation_attempt + 1` / `MAX_COMPACT_SUMMARY_ATTEMPTS + 1`），不论是否截断，每级都各打一行请求、一行响应，例如 `[compact summary 1/6] request model=deepseek-v4.1-flash max_tokens=2000 (text 2000 + reasoning 0), reasoning_effort=low, input 12044 chars` → `[compact summary 1/6] response stop=MaxTokens usage=TokenUsageInfo { … reasoning_tokens: 2173 … }` → `[compact continue 1/5] summary truncated (8861 think bytes), next attempt max_tokens=2000`。截断阶梯、预留升级与实际发出的 `max_tokens` 均不变。
+
+**指针：** `crates/tact/src/agent/mod.rs`（`think_block_bytes`、`[compact summary …]` / `[compact continue …]` 消息）；[第 5 章](./05_chapter_compact_zh.md)。
+
+---
+
+
+## 1. 2026-09-14 — 空闲状态栏把聚焦面板还回它自己的槽位
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`status_idle_tmpl`，中英各一处）；`crates/agent_tui_kit/src/render/bar.rs`（`render_status_bar` 的 `Status::Idle` 分支）；`crates/tui/src/render/bar.rs`（`status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots`）；[第 23 章](./23_chapter_tui_zh.md) §6.6 |
+
+**现象 / 动机：** 空闲时顶栏一次搞错了两个读数，还悄悄丢掉了第三个。`status_idle_tmpl`——`"{} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit"`——只有**三个**占位符，而 `render_status_bar` 的 `Status::Idle` 分支按固定顺序替换**四个**值：模式、聚焦面板、主题、语言。`str::replacen("{}", …, 1)` 完全按位置替换，于是每个槽位整体左移一格：聚焦标签落到了 🎨 主题的字符下，主题标签落到了 🌐 语言的字符下，而第四次替换已经找不到 `{}`——`replacen` 匹配不到时原样返回字符串，**不会**追加——语言标签就此彻底消失。空闲时因此渲染成 `◇ 插入 │ ⌨H Hist │ 🎨 Log │ 🌐 Dark │ ? Help │ ✕ Quit`：主题的位置上放着面板名，语言的位置上放着主题，而语言本身没了。鼠标点击判定以及其他 `render_status_bar` 分支都不受影响——Planning、Executing、Done 都用显式的 `format!("{} {} │ …", mode_str, focus_str, …)` 拼行，根本不碰这个模板。
+
+**决策：** 模板补上它本来就该接的那一槽——`"{} {} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit"` / `"{} {} │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出"`——四个占位符与四个实参（模式、聚焦面板、主题、语言）一一对应，也与另外三个分支开头的 `{mode} {focus} │ …` 一致。该分支的替换列表一字未改，只有模板补上了缺失的槽位。
+
+**改后行为：** 空闲时英文渲染 `◇ 插入 Log │ ⌨H Hist │ 🎨 Dark │ 🌐 English │ ? Help │ ✕ Quit`，中文为对应镜像，聚焦面板、主题、语言各就其位。由 `status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots` 钉住：它断言聚焦标签被画出、且**不在** 🎨 槽里，同时断言 `🌐 EN` 存在。（测试里带了一条测试桩说明：`buffer_text` 会把宽字符（`🎨`、`🌐`）的续格读成空格，所以匹配前要先折叠连续空白——否则即使槽位真的错位，`🎨  Log` 也会满足 `!contains("🎨 Log")` 这类守卫。）
+
+**指针：** `crates/agent_tui_kit/src/i18n.rs`（`status_idle_tmpl`，中英）；`crates/agent_tui_kit/src/render/bar.rs`（`render_status_bar`、`Status::Idle`）；`crates/tui/src/render/bar.rs`（上述测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6（顶栏）。
+
+---
+
+
+## 1. 2026-09-14 — 步骤标签去掉分母
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`status_executing_tmpl`，中英各一处）；`crates/agent_tui_kit/src/render/bar.rs`（`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（`status_bar_executing_shows_the_step_label_without_a_gauge`）；[Ch 23](./23_chapter_tui_zh.md) §6.6 |
+
+**现象 / 动机：** 顶栏渲染 `⠋ 正在执行步骤 4/10` / `⠋ Executing step 4/10`。分母描述的是**计划**而不是这次运行：`total` 是计划的步骤数，而分子是由「已完成 + 进行中」推导出来的，并不来自计划的顺序——于是有并行工具时，`n/total` 其实是两个不同的测量被印成一个分数。
+
+**决策：** 模板只保留一个占位符——`Executing step {}` / `正在执行步骤 {}`——由该分支只填入推导出的步骤号。对该数字的 `total` 钳制保留——有工具在跑时是 `(completed + 1).min(*total)`，否则是 `completed.max(1).min(*total)`——因此 `total` 仍被读取，只是不再渲染。
+
+**改后行为：** `Executing` 渲染 `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4 │ 并行中 1`；除步骤数与并行工具数之外，顶栏依旧不渲染任何自有数字。由 `status_bar_executing_shows_the_step_label_without_a_gauge` 钉住——它现在同时断言标签存在、且 `1/4` 与 `step 1/` 都不会被画出。
+
+**指针：** `crates/agent_tui_kit/src/i18n.rs`（`status_executing_tmpl`）；`crates/agent_tui_kit/src/render/bar.rs`（`Status::Executing`）；`crates/tui/src/render/bar.rs`（上述测试）；[Ch 23](./23_chapter_tui_zh.md) §6.6（顶栏）。
+
+---
+
+
 ## 1. 2026-09-14 — 符号链接的 skill 能加载了，Assembled prompt 也显示它携带的 MCP skills
 
 | Field | Value |
@@ -55,15 +127,15 @@
 | Field | Value |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/agent_tui_kit/src/render/bar.rs`（删除 `render_progress_bar` 与 `PROGRESS_BAR_WIDTH`、`Status::Executing` / `Status::Planning` 分支、第 2 行 group 推入顺序）；`crates/tui/src/render/bar.rs`（测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
+| **相关** | `crates/agent_tui_kit/src/render/bar.rs`（删除 `render_progress_bar` 与 `PROGRESS_BAR_WIDTH`、`Status::Executing` / `Status::Planning` 分支、第 1 行 group 推入顺序）；`crates/tui/src/render/bar.rs`（测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
 
-**症状 / 动机：** 任务运行期间，顶栏自己带着两个数字：步骤标签后面的 `[██████░░░░░] 88%` 进度条，以及行尾的实时任务耗时——`◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1 [██████░░░░░] 88%  ⏱ 耗时 00:12`。进度条只是把步骤数（`4/10`）用字符重画了一遍；而那只时钟离它真正该挨着的东西很远——底栏第 2 行的冻结合耗时（`⏱ 02:05 均 01:45`），那是**已经结束的回合**的同一个墙钟量。
+**症状 / 动机：** 任务运行期间，顶栏自己带着两个数字：步骤标签后面的 `[██████░░░░░] 88%` 进度条，以及行尾的实时任务耗时——`◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1 [██████░░░░░] 88%  ⏱ 耗时 00:12`。进度条只是把步骤数（`4/10`）用字符重画了一遍；而那只时钟放错了地方——它是这套 bar 拥有的第三只墙钟，而它的两个同类（进程运行 `⊙ 运行`、冻结合耗时 `⏱ 02:05 均 01:45`）都在底栏、却各占一行。
 
-**决策：** 进度条直接删除；实时时钟作为独立可丢弃段移到第 2 行，紧插在回合耗时**之前**。`Status::Planning` 与 `Status::Executing` 同时去掉行尾时钟，于是状态栏不再渲染任何自有数字——它回答*正在发生什么*（阶段、步骤数、并行工具数），第 2 行回答*已经过去多久*。实时段保留标签（`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`）：两个光秃秃的 `⏱` 数字并排将无法区分。标签不是免费的——它正是运行行 102 列而非 95 列的原因。
+**决策：** 进度条直接删除；实时时钟并入底栏**第 1 行**、紧跟运行之后：第 1 行承载描述*本次运行*的时钟（进程运行、任务耗时）以及权限模式、cwd、分支；第 2 行继续承载 token/ctx 读数与冻结合耗时。`Status::Planning` 与 `Status::Executing` 同时去掉行尾时钟，于是状态栏不再渲染任何自有数字——它回答*正在发生什么*（阶段、步骤数、并行工具数），底栏回答*已经过去多久*。该段保留标签（`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`）：旁边的运行是裸的 `⊙ 运行 00:03`，一个无标签的 `⏱ 00:12` 会被读成第二个运行时间。
 
-**之后的行为：** `Executing` 渲染 `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`；第 2 行在任务运行时渲染 `… ⟳ 12 ⇅ 3  ⏱ 耗时 00:12  ⏱ 02:05 均 01:45`，无任务在跑时该段**消失**（不是渲染成空）——`task_start_time` 为 `None`，`format_task_elapsed` 返回 `""`。行宽：空闲 **85–86 列**、运行 **102–103 列**；由于实时段在冻结段**之前**推入，`fit_row_spans` 会先丢冻结合耗时（`ctx > cache > 回合计数 > 实时耗时 > 回合耗时`），因此运行中的任务永远不会丢掉它正在被评判的那只时钟。由 `bottom_bar_puts_live_elapsed_before_turn_timing`、`bottom_bar_omits_live_elapsed_without_a_task`、`bottom_bar_drops_turn_timing_before_the_live_elapsed`、`bottom_bar_fits_a_running_row_in_110_columns`、`status_bar_executing_shows_the_step_label_without_a_gauge`、`status_bar_planning_has_no_elapsed` 钉住；空闲行的预算测试 `bottom_bar_fits_every_segment_in_100_columns` 不变。
+**之后的行为：** `Executing` 渲染 `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`；第 1 行在任务运行时渲染 `… │ ⊙ 运行 00:03 │ ⏱ 耗时 00:12 │ ⎇ main`，无任务在跑时该段直接**不渲染**（不是渲染成空）——`task_start_time` 为 `None`，`format_task_elapsed` 返回 `""`。它作为第 1 行最后一个可丢弃段推入，因此丢弃顺序为 `实时耗时 > 运行 > cwd`：先丢临时的任务时钟，再丢会话运行，最后才是路径（权限模式、分支与账户永不丢弃）。第 2 行恢复原样：所有段填充时 85–86 列；第 1 行五段在 100 列内仍全部保留，由 `bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns` 与 `bottom_bar_drops_the_task_elapsed_before_uptime_and_path` 钉住。位置由 `bottom_bar_puts_live_elapsed_next_to_uptime_on_row_1`（断言第 1 行顺序，并断言第 2 行**不带**该时钟）与 `bottom_bar_omits_live_elapsed_without_a_task` 钉住；状态栏一侧由 `status_bar_executing_shows_the_step_label_without_a_gauge` 与 `status_bar_planning_has_no_elapsed` 钉住。第 2 行的预算测试 `bottom_bar_fits_every_segment_in_100_columns` 回到 2026-09-14 之前的形式，因为第 2 行不再有时钟。*（同日稍后被取代：步骤标签去掉了分母，`Executing` 渲染 `正在执行步骤 4` / `Executing step 4`——见最新条目。）*
 
-**指针：** `crates/agent_tui_kit/src/render/bar.rs`（`format_task_elapsed` 文档、`render_bottom_bar` 第 2 行 groups、`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（上面六个测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6（顶栏、第 2 行、瘦身与回合耗时三段）；`docs/token_usage_schema.md` §"Session Stats Display"。
+**指针：** `crates/agent_tui_kit/src/render/bar.rs`（`format_task_elapsed` 文档、`render_bottom_bar` 第 1 行 groups、`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（上面六个测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6（顶栏、第 1 行、第 2 行、瘦身与回合耗时各段）；`docs/token_usage_schema.md` §"Session Stats Display"。
 
 ---
 
@@ -566,7 +638,7 @@
 4. `TurnStats` 在 `coordinator_prepass` 中登记为**按次调用的元数据**，与 `TokenUsage`/`ModelInfo` 同级。它在回合计间隙、loading 转圈仍在时到达，若不登记就会走内容门、让转圈在循环刚开始时消失（回归测试：`turn_stats_is_metadata_and_keeps_the_loading_placeholder`）。
 5. `max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**：只有 `spawn_subagent` 会设置 cap，主 agent 也没有 CLI flag 或 TUI 接线，底栏永远不可能显示 `/cap`。因此渲染裸 `⇅ {n}`；字段保留，以便将来为主 agent 加 cap 时立即可用。
 
-**Behavior after：** 第 2 行显示 `⟳ 12 轮 ⇅ 3 轮次  ∑ₜₒₖ …  ▣ 缓存% 5%  ⏱ 02:05 · 均 01:45`（英文对应 `⟳ 12 turns ⇅ 3 turns … ⏱ 02:05 · avg 01:45`）。任务的首次 LLM 调用前隐藏 `⇅` 段；回合完成前隐藏 `avg`；尚无回合完成时隐藏整个耗时组。运行中的实时耗时仍只在顶栏——底栏只显示冻结值。*（2026-09-14 起已取代：实时耗时现在是第 2 行紧挨回合耗时的那一段，顶栏不再渲染时钟；见最新一条。）* 窄终端下新段可被丢弃，存活顺序 `ctx > 回合 > ∑ₜₒₖ > 缓存 > 耗时`，原有 `ctx > ∑ > cache` 优先级不变。*（同日稍后已被取代——本条记录的是回合统计刚落地时的状态；当前 90 列的行见上方"第 2 行瘦身"条目。）*
+**Behavior after：** 第 2 行显示 `⟳ 12 轮 ⇅ 3 轮次  ∑ₜₒₖ …  ▣ 缓存% 5%  ⏱ 02:05 · 均 01:45`（英文对应 `⟳ 12 turns ⇅ 3 turns … ⏱ 02:05 · avg 01:45`）。任务的首次 LLM 调用前隐藏 `⇅` 段；回合完成前隐藏 `avg`；尚无回合完成时隐藏整个耗时组。运行中的实时耗时仍只在顶栏——底栏只显示冻结值。*（2026-09-14 起已取代：实时耗时现在是底栏第 1 行紧挨运行的那一段，顶栏不再渲染时钟；见最新一条。）* 窄终端下新段可被丢弃，存活顺序 `ctx > 回合 > ∑ₜₒₖ > 缓存 > 耗时`，原有 `ctx > ∑ > cache` 优先级不变。*（同日稍后已被取代——本条记录的是回合统计刚落地时的状态；当前 90 列的行见上方"第 2 行瘦身"条目。）*
 
 **Pointers：** `crates/protocol/src/agent.rs`（`AgentUpdate::TurnStats`）；`crates/tact/src/agent/mod.rs`（`agent_loop` 发送）；`crates/agent_tui_kit/src/state/status_bar_state.rs`（`turn_user`、`turn_llm`、`turn_llm_cap`、`turn_last_secs`、`turn_done`、`turn_total_secs`）；`crates/agent_tui_kit/src/render/bar.rs`（`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`）；`crates/tui/src/widgets/state/app/popups.rs`（`add_task_end_separator`）；`crates/tui/src/widgets/state/app/messages.rs`（`load_history` 播种）；spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`；Ch 23 §6.6；`docs/token_usage_schema.md`。
 

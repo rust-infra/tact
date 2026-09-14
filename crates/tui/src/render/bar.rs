@@ -251,8 +251,8 @@ mod render_tests {
         );
     }
 
-    /// Width budget: the idle row (every segment but the live elapsed, which
-    /// only exists while a task runs) must fit a 100-column terminal.
+    /// Width budget: row 2 with every segment populated must fit a 100-column
+    /// terminal.
     ///
     /// The 2026-09-12 compaction got the full row down to 90 columns (from
     /// ~138) by removing the `∑ₜₒₖ` segment — whose value was a second format
@@ -261,8 +261,9 @@ mod render_tests {
     /// with the percentage the same day took it to 86. This test is the guard:
     /// if a future segment pushes the row past ~100 columns it will start
     /// silently dropping segments on ordinary terminals, which is the exact
-    /// problem this compaction fixed. The running row (85 → 102) has its own
-    /// guard in `bottom_bar_fits_a_running_row_in_110_columns`.
+    /// problem this compaction fixed. The task clock that row 1 gained on
+    /// 2026-09-14 has its own guard in
+    /// `bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`.
     #[test]
     fn bottom_bar_fits_every_segment_in_100_columns() {
         let mut app = make_app();
@@ -305,56 +306,37 @@ mod render_tests {
         }
     }
 
-    /// Width budget while a task runs: the live elapsed (2026-09-14) adds 17
-    /// columns, taking the row from 85 to 102 — so it needs a 110-column
-    /// terminal, and below that the *frozen* turn timing is what drops first
-    /// (`bottom_bar_drops_turn_timing_before_the_live_elapsed`). The running
-    /// clock must never be the segment that disappears.
+    /// Width budget with the task clock on row 1: permission, path, uptime, the
+    /// live elapsed and the branch all survive at 100 columns.
+    ///
+    /// The elapsed is the last droppable of the row (pushed after uptime), so it
+    /// is the first segment to go on a narrower terminal — the row sheds the
+    /// transient task clock before the session uptime and the cwd.
     #[test]
-    fn bottom_bar_fits_a_running_row_in_110_columns() {
+    fn bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns() {
         let mut app = make_app();
+        app.workspace_dir = "/tmp/tact-ws".into();
         app.status_bar_mut().model_name = "deepseek-v4".into();
-        app.status_bar_mut().model_max_tokens = 128_000;
-        app.status_bar_mut().model_reasoning_effort = Some("high".into());
-        app.status_bar_mut().token_total = 45_000;
-        app.status_bar_mut().token_cache_hit = 30;
-        app.status_bar_mut().token_cache_miss = 70;
-        app.status_bar_mut().turn_user = 12;
-        app.status_bar_mut().turn_llm = 3;
-        app.status_bar_mut().turn_last_secs = Some(125);
-        app.status_bar_mut().turn_done = 2;
-        app.status_bar_mut().turn_total_secs = 210;
-        app.model_context_window = 1_000_000;
+        app.status_bar_mut().git_branch = "main".into();
         app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
 
-        let backend = TestBackend::new(110, 2);
+        let backend = TestBackend::new(100, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 110, 2), &app))
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 100, 2), &app))
             .expect("draw");
         let text = buffer_text(terminal.backend().buffer());
-        let row2 = text.lines().nth(1).unwrap_or_default().to_string();
+        let row1 = text.lines().next().unwrap_or_default().to_string();
 
-        for marker in [
-            "deepseek-v4",
-            "out 128K",
-            "think high",
-            "ctx 4% 45K/1M",
-            "⟳",
-            "⇅",
-            "▣",
-            "Elapsed 01:05",
-            "02:05",
-            "avg",
-        ] {
+        for marker in ["/tmp/tact-ws", "Up", "Elapsed 01:05", "main"] {
             assert!(
-                row2.contains(marker),
-                "row 2 dropped {marker:?} at 110 columns (budget exceeded), got:\n{row2}"
+                row1.contains(marker),
+                "row 1 dropped {marker:?} at 100 columns (budget exceeded), got:\n{row1}"
             );
         }
     }
 
-    /// Segment order on row 2: `ctx` → cache → turns → live elapsed → timing.
+    /// Segment order on row 2: `ctx` → cache → turns → timing.
     ///
     /// Requested 2026-09-12: the cache percentage reads directly after the ctx
     /// meter (both are session-wide ratios), with the turn counters pushed after
@@ -535,48 +517,50 @@ mod render_tests {
         );
     }
 
-    /// The live task elapsed sits directly before the frozen turn timing, and
-    /// after the turn counters.
+    /// The live task elapsed renders on row 1, directly after the uptime.
     ///
-    /// Moved here (from the top status bar) 2026-09-14: the running clock reads
-    /// next to the last/average turn times it belongs with, and the status bar
-    /// keeps only the step label.
+    /// Moved there (from the top status bar) 2026-09-14: row 1 carries the two
+    /// clocks that describe *this run* — the process uptime and the task
+    /// elapsed — while row 2 keeps the token/ctx readouts and the frozen
+    /// per-turn timing.
     #[test]
-    fn bottom_bar_puts_live_elapsed_before_turn_timing() {
+    fn bottom_bar_puts_live_elapsed_next_to_uptime_on_row_1() {
         let mut app = make_app();
+        app.workspace_dir = "/tmp/tact-ws".into();
         app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().git_branch = "main".into();
         app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
-        app.status_bar_mut().turn_user = 12;
-        app.status_bar_mut().turn_llm = 3;
-        app.status_bar_mut().turn_last_secs = Some(125);
-        app.status_bar_mut().turn_done = 2;
-        app.status_bar_mut().turn_total_secs = 210;
 
-        let backend = TestBackend::new(200, 2);
+        let backend = TestBackend::new(140, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 200, 2), &app))
+            .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 140, 2), &app))
             .expect("draw");
 
         let text = buffer_text(terminal.backend().buffer());
+        let row1 = text.lines().next().unwrap_or_default().to_string();
         let row2 = text.lines().nth(1).unwrap_or_default().to_string();
         let pos = |needle: &str| {
-            row2.find(needle)
-                .unwrap_or_else(|| panic!("{needle:?} missing from row 2:\n{row2}"))
+            row1.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from row 1:\n{row1}"))
         };
         let elapsed_at = pos("Elapsed 01:05");
         assert!(
-            pos("⟳ 12") < elapsed_at,
-            "the elapsed must follow the turn counters, got:\n{row2}"
+            pos("Up 00:0") < elapsed_at,
+            "the elapsed must follow the uptime, got:\n{row1}"
         );
         assert!(
-            elapsed_at < pos("02:05"),
-            "the elapsed must precede the frozen turn timing, got:\n{row2}"
+            elapsed_at < pos("main"),
+            "the elapsed must precede the branch, got:\n{row1}"
+        );
+        assert!(
+            !row2.contains("Elapsed") && !row2.contains("01:05"),
+            "the live clock belongs to row 1 only, got:\n{row2}"
         );
     }
 
-    /// No task in flight → no elapsed segment (`task_start_time` is what makes
-    /// the label non-empty, and `make_app` leaves it `None`).
+    /// No task in flight → no elapsed segment on either row (`task_start_time`
+    /// is what makes the label non-empty, and `make_app` leaves it `None`).
     #[test]
     fn bottom_bar_omits_live_elapsed_without_a_task() {
         let mut app = make_app();
@@ -589,33 +573,30 @@ mod render_tests {
             .draw(|frame| render_bottom_bar(frame, Rect::new(0, 0, 200, 2), &app))
             .expect("draw");
 
-        let row2 = buffer_text(terminal.backend().buffer())
-            .lines()
-            .nth(1)
-            .unwrap_or_default()
-            .to_string();
+        let text = buffer_text(terminal.backend().buffer());
         assert!(
-            !row2.contains("Elapsed") && !row2.contains("耗时"),
-            "no task is running, so no elapsed must render, got:\n{row2}"
+            !text.contains("Elapsed") && !text.contains("耗时"),
+            "no task is running, so no elapsed must render, got:\n{text}"
         );
     }
 
-    /// Drop order with both clocks on screen: the frozen timing goes first, the
-    /// live elapsed second, so the running clock outlives the historical one.
+    /// Row-1 drop order with the task clock on the row: the transient elapsed
+    /// goes first, then the session uptime, then the cwd.
+    ///
+    /// Probing a range of widths and comparing the first width each segment
+    /// survives is robust; asserting on one fixed width is not.
     #[test]
-    fn bottom_bar_drops_turn_timing_before_the_live_elapsed() {
+    fn bottom_bar_drops_the_task_elapsed_before_uptime_and_path() {
         let mut app = make_app();
+        app.workspace_dir = "/tmp/tact-ws".into();
         app.status_bar_mut().model_name = "mock-model".into();
+        app.status_bar_mut().git_branch = "main".into();
         app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
-        app.status_bar_mut().turn_user = 12;
-        app.status_bar_mut().turn_llm = 3;
-        app.status_bar_mut().turn_last_secs = Some(125);
-        app.status_bar_mut().turn_done = 2;
-        app.status_bar_mut().turn_total_secs = 210;
 
         let mut first_elapsed: Option<u16> = None;
-        let mut first_timing: Option<u16> = None;
-        for width in 20u16..=160 {
+        let mut first_uptime: Option<u16> = None;
+        let mut first_path: Option<u16> = None;
+        for width in 10u16..=140 {
             let backend = TestBackend::new(width, 2);
             let mut terminal = Terminal::new(backend).expect("terminal");
             terminal
@@ -627,23 +608,30 @@ mod render_tests {
             if first_elapsed.is_none() && text.contains("Elapsed") {
                 first_elapsed = Some(width);
             }
-            // The frozen timing is the only segment carrying the average.
-            if first_timing.is_none() && text.contains("avg") {
-                first_timing = Some(width);
+            if first_uptime.is_none() && text.contains("Up ") {
+                first_uptime = Some(width);
+            }
+            if first_path.is_none() && text.contains("/tmp/tact-ws") {
+                first_path = Some(width);
             }
         }
 
         let elapsed_w = first_elapsed.expect("elapsed segment never rendered at any probed width");
-        let timing_w = first_timing.expect("turn timing never rendered at any probed width");
+        let uptime_w = first_uptime.expect("uptime segment never rendered at any probed width");
+        let path_w = first_path.expect("path segment never rendered at any probed width");
         assert!(
-            elapsed_w <= timing_w,
-            "the live elapsed must survive at least as long as the frozen timing \
-             (elapsed at {elapsed_w}, timing at {timing_w})"
+            elapsed_w > uptime_w,
+            "the elapsed must drop before the uptime (elapsed at {elapsed_w}, uptime at {uptime_w})"
+        );
+        assert!(
+            uptime_w > path_w,
+            "the uptime must drop before the path (uptime at {uptime_w}, path at {path_w})"
         );
     }
 
     /// The status bar carries the step label only — no `[████░░] n%` gauge, no
-    /// running clock (both left it on 2026-09-14; the clock moved to row 2).
+    /// running clock (both left it on 2026-09-14; the clock moved to bottom-bar
+    /// row 1, next to the uptime), and no denominator after the step number.
     #[test]
     fn status_bar_executing_shows_the_step_label_without_a_gauge() {
         let mut app = make_app();
@@ -662,8 +650,12 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         assert!(
-            text.contains("Executing step 1/4"),
+            text.contains("Executing step 1 "),
             "the step label must stay, got:\n{text}"
+        );
+        assert!(
+            !text.contains("1/4") && !text.contains("step 1/"),
+            "the step label must not carry the plan's denominator, got:\n{text}"
         );
         for banned in ['█', '░', '%', '⏱'] {
             assert!(
@@ -671,6 +663,42 @@ mod render_tests {
                 "{banned:?} must not render on the status bar, got:\n{text}"
             );
         }
+    }
+
+    /// Regression (2026-09-14): `status_idle_tmpl` carried three placeholders
+    /// while the arm substituted four values, so `Log` landed in the 🎨 theme
+    /// slot and the language label was dropped outright. The focus label is
+    /// rendered by every `render_status_bar` arm; Idle keeps its own theme and
+    /// language hints in their own slots.
+    #[test]
+    fn status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots() {
+        let app = make_app();
+
+        let backend = TestBackend::new(120, 1);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_status_bar(frame, Rect::new(0, 0, 120, 1), &app))
+            .expect("draw");
+
+        // `buffer_text` reads the continuation cell of a wide glyph (`🎨`, `🌐`)
+        // as a space, so each emoji is followed by one extra space. Collapse
+        // whitespace runs before matching the one-space templates, otherwise
+        // `🎨  Log` would satisfy a `!contains("🎨 Log")` guard even when the
+        // focus label really did land in the theme slot.
+        let text = buffer_text(terminal.backend().buffer());
+        let norm = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            norm.contains("Log"),
+            "the focused-panel label must render while idle, got:\n{norm}"
+        );
+        assert!(
+            !norm.contains("🎨 Log"),
+            "the focus label must not occupy the theme slot, got:\n{norm}"
+        );
+        assert!(
+            norm.contains("🌐 EN"),
+            "the language label must keep its own slot, got:\n{norm}"
+        );
     }
 
     /// Same rule while planning: the spinner and the phase word, nothing else.

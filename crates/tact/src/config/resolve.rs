@@ -644,9 +644,11 @@ pub(super) fn resolve_non_llm_settings(
 
 /// Returns the context window (total input + output tokens) for a known model id.
 ///
-/// This mapping has the **highest** priority in resolution: it overrides both
-/// the CLI flag and the TOML file so the window stays correct for models with
-/// a well-known size regardless of stale manual config.
+/// This mapping is a **fallback** for models the user did not configure: the
+/// resolution order is CLI `--model-context-window` > `[agent]
+/// model_context_window` > this mapping > the 200,000 default. An explicit
+/// value therefore always wins, so a stale manual window can under-report a
+/// long-context model.
 ///
 /// Values follow official docs (2026-08):
 /// - OpenAI (developers.openai.com/api/docs/models): GPT-5.6 family and GPT-5.5
@@ -678,11 +680,14 @@ fn model_context_window_for_model(model: &str) -> Option<usize> {
         | "claude-haiku-4-5"
         | "claude-haiku-4-20250514" => Some(200_000),
         // DeepSeek V4 family — 1M default. Ids can carry experiment/vision
-        // suffixes (e.g. `deepseek-v4-flash-vision-exp`), so match the family
-        // prefix rather than a fixed id list. `deepseek-flash` is the
-        // unversioned alias OpenAI-compatible gateways expose for the same V4
-        // Flash model; `deepseek-reasoner` is the official reasoning id.
-        _ if model.starts_with("deepseek-v4-") => Some(1_000_000),
+        // suffixes (e.g. `deepseek-v4-flash-vision-exp`) and dot-separated minor
+        // versions (`deepseek-v4.1-flash`), so match the family prefix rather
+        // than a fixed id list. `deepseek-flash` is the unversioned alias
+        // OpenAI-compatible gateways expose for the same V4 Flash model;
+        // `deepseek-reasoner` is the official reasoning id.
+        _ if model.starts_with("deepseek-v4-") || model.starts_with("deepseek-v4.") => {
+            Some(1_000_000)
+        }
         "deepseek-flash" | "deepseek-reasoner" => Some(1_000_000),
         // Kimi — k3-256k.
         "k3-256k" => Some(256_000),
@@ -2134,12 +2139,14 @@ model = "deepseek-v4-pro"
 
     #[test]
     fn resolve_model_context_window_maps_deepseek_v4_variants() {
-        // Experiment / vision suffixes must not fall through to the 200K
-        // default: every `deepseek-v4-*` id is a 1M-window model.
+        // Experiment / vision suffixes and dot-separated minor versions must
+        // not fall through to the 200K default: every `deepseek-v4-*` /
+        // `deepseek-v4.*` id is a 1M-window model.
         for model in [
             "deepseek-v4-flash-version-exp",
             "deepseek-v4-flash-vision-exp",
             "deepseek-v4-pro-2026",
+            "deepseek-v4.1-flash",
             "deepseek-flash",
         ] {
             let toml_cfg: TactTomlConfig = toml::from_str(&format!(

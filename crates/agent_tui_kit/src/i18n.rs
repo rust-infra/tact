@@ -401,9 +401,12 @@ impl Messages {
             theme_brutal: "Brutal",
             theme_ink: "Ink",
             theme_ink_light: "InkLight",
-            status_idle_tmpl: "{} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit",
+            // Four placeholders, filled in this order: mode, focused panel,
+            // theme, language. The focused-panel slot mirrors the other
+            // `render_status_bar` arms (`{mode} {focus} │ …`).
+            status_idle_tmpl: "{} {} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit",
             status_planning: "Planning...",
-            status_executing_tmpl: "Executing step {}/{}",
+            status_executing_tmpl: "Executing step {}",
             status_running_tmpl: "running {}",
             status_done_tmpl: "{} {} | ✅ Task completed",
 
@@ -680,9 +683,9 @@ impl Messages {
             theme_brutal: "粗野",
             theme_ink: "墨色",
             theme_ink_light: "墨色亮",
-            status_idle_tmpl: "{} │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出",
+            status_idle_tmpl: "{} {} │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出",
             status_planning: "规划中...",
-            status_executing_tmpl: "正在执行步骤 {}/{}",
+            status_executing_tmpl: "正在执行步骤 {}",
             status_running_tmpl: "并行中 {}",
             status_done_tmpl: "{} {} | ✅ 任务完成",
 

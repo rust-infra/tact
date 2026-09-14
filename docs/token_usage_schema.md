@@ -213,7 +213,14 @@ DeepSeek uses **Context Caching on Disk**, which persists KV cache in "cache pre
 
 This means consecutive multi-turn conversations typically achieve high cache hit rates as the full prefix (system prompt + prior messages) matches.
 
-**TUI bottom-bar usage display:** The second row shows:
+**TUI bottom-bar usage display:** The first row carries the non-token context —
+permission mode, cwd, process uptime (`⊙ Up …` / `⊙ 运行 …`), the live task
+elapsed (`⏱ Elapsed …` / `⏱ 耗时 …`) and the git branch; the elapsed sits
+directly after the uptime it is the per-task counterpart of, renders only while
+a task is in flight (`task_start_time`; omitted, not blank, otherwise), and is
+the first row-1 segment dropped when columns run short.
+
+The second row shows:
 
 - **Max output tokens** — `out {n}` (labelled `max_out_token` before the
   2026-09-12 compaction), the `max_tokens` value **verbatim**: the same number
@@ -246,16 +253,12 @@ This means consecutive multi-turn conversations typically achieve high cache hit
   `StatusBarState.turn_llm_cap` but **not rendered**: only `spawn_subagent` sets
   a cap, so the main-agent bar would never show one. The `turns` word label was
   dropped in the compaction; the glyph pair carries it (see Ch 23 §6.6).
-- **Live elapsed** — `⏱ Elapsed {mm:ss}` / `⏱ 耗时 {mm:ss}` while a task is in
-  flight, read from `task_start_time` (set at dispatch, taken at task end) and
-  omitted entirely when no task is running. It moved onto this row on
-  2026-09-14, directly before the turn timing below so the running clock reads
-  next to the frozen one; the top status bar therefore renders no clock at all.
 - **Turn timing** — `⏱ {mm:ss}` for the most recently finished turn plus
   `avg {mm:ss}` across the session. Accumulated in
   `add_task_end_separator` (the only place that freezes `task_start_time`);
   cancelled turns count, synthetic separators do not. Frozen values only — the
-  live clock is the separate segment above.
+  live clock is the row-1 segment above, and the top status bar renders no clock
+  at all (since 2026-09-14).
 
 **The ctx segment leads with the percentage, gauge dropped (2026-09-12):** it was
 `ctx [▍·······] 4% 45K/1M` (the same ratio encoded three times), was compacted to
@@ -271,14 +274,15 @@ was a second format of one number (precise integer vs compact). It was removed
 to free the row; the exact integer remains in the task-stats block and `/stats`.
 
 These segments are droppable on narrow terminals. Push order on the row is
-`model → out → think → ctx → cache → turns → elapsed → timing`, and
+`model → out → think → ctx → cache → turns → timing`, and
 `fit_row_spans` removes the last droppable first, so survival is
-`ctx > cache > turns > elapsed > timing`: when columns run short the *frozen*
-turn timing goes first and the running clock outlives it. The idle row is
-**85–86 columns** (the `out` value moves it by one), enforced by
-`render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`; with
-the live elapsed on it the running row is **102–103**, guarded by
-`render::bar::render_tests::bottom_bar_fits_a_running_row_in_110_columns`.
+`ctx > cache > turns > timing`. The row is **85–86 columns** with every segment
+populated (the `out` value moves it by one), enforced by
+`render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`. Row 1
+drops in the reverse of its own push order — `elapsed > uptime > path`, i.e. the
+transient task clock goes first and the cwd last — pinned by
+`bottom_bar_drops_the_task_elapsed_before_uptime_and_path` and
+`bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`.
 
 **Subagent tool-card display:** A subagent's model name and token total
 are shown on the tool card's meta row (e.g. `🤖 deepseek-v3 · ⚡ 4.2K`)

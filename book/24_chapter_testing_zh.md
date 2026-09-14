@@ -99,7 +99,7 @@ Pre-push 运行 `./scripts/check-rust.sh`（fmt check、clippy、集成测试）
 - `draw_full_ui` — 镜像 `lib.rs` 布局（status、main、input、bottom、palette/select/file-picker/slash overlays）
 - `render_app_text` / `render_main_area_text` — 将 buffer 压平为纯文本供断言
 
-**覆盖包括：** idle/executing/done、tool cards、stream/thinking、errors、token/model info、command palette、slash commands、file picker（空 + 选中行）、diff/code/thinking popups（scroll + write_file gutter + bash output）、真实 `StepFinished` 后 `open_diff_popup`、Normal mode、WaitingForUser 全帧、plan 多步、log 中 markdown/code cards、窄终端。
+**覆盖包括：** idle/executing/done、tool cards、stream/thinking、errors、token/model info、command palette、slash commands、file picker（空 + 选中行）、diff/code/thinking popups（scroll + write_file gutter + bash output）、真实 `StepFinished` 后 `open_diff_popup`、Normal mode、`RequestSelect` 权限询问全帧（选择弹窗）、plan 多步、log 中 markdown/code cards、窄终端。
 
 **Handler 测试：** `file_picker.rs`、`select.rs`、`palette.rs`、`normal.rs`、`mouse.rs`（键盘、滚轮、tool 双击）。
 

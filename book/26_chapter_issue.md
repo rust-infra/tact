@@ -32,6 +32,78 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-14 — Dot-separated DeepSeek V4 ids keep their 1M window
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`, the `deepseek-v4-` prefix arm; `resolve_model_context_window_maps_deepseek_v4_variants`); `config.example.toml`; [Ch 21](./21_chapter_config.md); [Ch 5](./05_chapter_compact.md) |
+
+**Symptom / motivation:** A session on `deepseek-v4.1-flash` reported a 200K window. The V4 family arm matched the **hyphenated** prefix `deepseek-v4-` only, and the id puts a dot before its minor version (`v4` `.` `1`), so no arm matched and resolution fell through to the `200_000` default. The fallback is silent, and its cost is not cosmetic: the bottom bar's `ctx` meter reads `/200K`, and for `protocol = "responses"` the derived `responses_compact_threshold` is `window − max_tokens − 10% headroom` — 114,464 at 200K with `max_tokens = 65536`, versus 834,464 at 1M — so a 1M-context model was compacting roughly 7× early.
+
+**Decision:** Widen the family prefix to accept either separator — `starts_with("deepseek-v4-") || starts_with("deepseek-v4.")` — rather than dropping the hyphen entirely (a bare `starts_with("deepseek-v4")` would also swallow ids like `deepseek-v44`). The two explicit 1M aliases (`deepseek-flash`, `deepseek-reasoner`) are unchanged, as is the resolution order: CLI > `[agent]` > this mapping > the 200,000 default. The doc comment on the function was corrected while touching it: it still claimed the mapping had the *highest* priority and overrode CLI/TOML, which the code has not done since the order was flipped.
+
+**Behavior after:** `deepseek-v4.1-flash` — and any `deepseek-v4.*` sibling — resolves to `1_000_000` without any config change, so the `ctx` meter and the derived Responses compaction threshold follow the real window. Models the user configures explicitly are unaffected. Any other unknown id still falls through to the 200,000 default.
+
+**Pointers:** `crates/tact/src/config/resolve.rs` (`model_context_window_for_model`); `config.example.toml` (the model→window list); [Ch 21](./21_chapter_config.md) §「模型 → 窗口映射」; [Ch 5](./05_chapter_compact.md) (window → auto-compact threshold).
+
+---
+
+
+## 1. 2026-09-14 — Compaction logging: units corrected, and every attempt announces its request envelope
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`, `think_block_bytes`, the `[compact summary …]` / `[compact continue …]` messages); [Ch 5](./05_chapter_compact.md) |
+
+**Symptom / motivation:** The compaction log was wrong in unit and thin in coverage. (a) The continuation notice read `summary truncated(8861 think tokens, 2000 max tokens)`, but that first number was `thinking.len() + signature.len()` — a **byte** length of the thinking block plus its opaque signature — printed in the unit of the *other* number on the same line; reading it as tokens invited exactly the wrong comparison against the 2000-token text budget or against the `reasoning_tokens: 2173` of the same response. (b) The request envelope was only visible on a retry: `[compact usage: …]` sat inside the truncation branch, so a first-try success (0 continuations) printed nothing at all, and the `max_tokens` actually handed to the provider was never printed on the success path.
+
+**Decision:** Fix the unit and make the ladder self-describing on *every* attempt, including attempt 1. `think_len` → `think_block_bytes`; the continuation notice prints `{think_block_bytes} think bytes` and names the next attempt's `max_tokens` instead of claiming the value it just used. Each attempt now emits two lines, outside the truncation branch: `[compact summary {stage}/{total}] request model=… max_tokens=N (text T + reasoning R), reasoning_effort=…, input C chars` before the call, and `[compact summary {stage}/{total}] response stop=… usage=…` after it. The request line's `max_tokens` is the wire value verbatim (`attempt_max_tokens = summary_text_max_tokens + attempt_reserve`), split into its two parts; the standalone `[compact usage: …]` emit is gone because the response line already carries the usage. No budgeting behavior changed.
+
+**Behavior after:** Six stages total (`continuation_attempt + 1` of `MAX_COMPACT_SUMMARY_ATTEMPTS + 1`), each logging one request line and one response line whether or not it truncates, e.g. `[compact summary 1/6] request model=deepseek-v4.1-flash max_tokens=2000 (text 2000 + reasoning 0), reasoning_effort=low, input 12044 chars` → `[compact summary 1/6] response stop=MaxTokens usage=TokenUsageInfo { … reasoning_tokens: 2173 … }` → `[compact continue 1/5] summary truncated (8861 think bytes), next attempt max_tokens=2000`. The truncation ladder, the reserve escalation and the wire `max_tokens` are all unchanged.
+
+**Pointers:** `crates/tact/src/agent/mod.rs` (`think_block_bytes`, the `[compact summary …]` / `[compact continue …]` messages); [Ch 5](./05_chapter_compact.md).
+
+---
+
+
+## 1. 2026-09-14 — The idle status bar gives the focused panel its own slot back
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`status_idle_tmpl`, both languages); `crates/agent_tui_kit/src/render/bar.rs` (`render_status_bar`, `Status::Idle` arm); `crates/tui/src/render/bar.rs` (`status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots`); [Ch 23](./23_chapter_tui.md) §6.6 |
+
+**Symptom / motivation:** While idle the top bar mislabelled two readouts at once, and silently dropped a third. `status_idle_tmpl` — `"{} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit"` — carried **three** placeholders, while the `Status::Idle` arm of `render_status_bar` substitutes **four** values in a fixed order: mode, focused panel, theme, language. `str::replacen("{}", …, 1)` is purely positional, so every slot shifted one place left: the focus label landed under the 🎨 theme glyph, the theme label landed under the 🌐 language glyph, and the fourth substitution found no `{}` left — `replacen` leaves the string unchanged when it does not match, it does not append — so the language label vanished entirely. Idle therefore read `◇ 插入 │ ⌨H Hist │ 🎨 Log │ 🌐 Dark │ ? Help │ ✕ Quit`: a panel name where the theme belongs, a theme where the language belongs, and no language at all. Mouse hit testing and every other `render_status_bar` arm were unaffected — Planning, Executing and Done build their line with an explicit `format!("{} {} │ …", mode_str, focus_str, …)` and never touch the template.
+
+**Decision:** The template declares the slot it was already being handed — `"{} {} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit"` / `"{} {} │ H 历史 │ 🎨 {} │ 🌐 {} │ ? 帮助 │ ✕ 退出"` — so the four placeholders line up with the four arguments (mode, focus, theme, language) and with the `{mode} {focus} │ …` opening the other three arms use. The arm's substitution list is untouched; only the template grew the missing slot.
+
+**Behavior after:** Idle renders `◇ 插入 Log │ ⌨H Hist │ 🎨 Dark │ 🌐 English │ ? Help │ ✕ Quit` in English and the mirror in Chinese, with the focused panel, the theme and the language each in its own slot. Pinned by `status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots`, which asserts the focus label is drawn, that it does *not* sit in the 🎨 slot, and that `🌐 EN` is present. (Harness note carried in the test: `buffer_text` reads a wide glyph's continuation cell as a space, so the assertion collapses whitespace runs before matching — otherwise `🎨  Log` would satisfy a `!contains("🎨 Log")` guard even when the slots really were misaligned.)
+
+**Pointers:** `crates/agent_tui_kit/src/i18n.rs` (`status_idle_tmpl`, en + zh); `crates/agent_tui_kit/src/render/bar.rs` (`render_status_bar`, `Status::Idle`); `crates/tui/src/render/bar.rs` (the test above); [Ch 23](./23_chapter_tui.md) §6.6 (top bar).
+
+---
+
+
+## 1. 2026-09-14 — The step label drops its denominator
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`status_executing_tmpl`, both languages); `crates/agent_tui_kit/src/render/bar.rs` (`Status::Executing` arm); `crates/tui/src/render/bar.rs` (`status_bar_executing_shows_the_step_label_without_a_gauge`); [Ch 23](./23_chapter_tui.md) §6.6 |
+
+**Symptom / motivation:** The top bar rendered `⠋ 正在执行步骤 4/10` / `⠋ Executing step 4/10`. The denominator described the *plan*, not the run: `total` is the plan's step count, while the numerator is derived from completed + active steps rather than from the plan's ordering, so with parallel tools `n/total` was two different measurements printed as one fraction.
+
+**Decision:** The template keeps a single placeholder — `Executing step {}` / `正在执行步骤 {}` — and the arm fills it with the derived step number only. The `total` clamp on that number stays — `(completed + 1).min(*total)` while a tool is in flight, `completed.max(1).min(*total)` otherwise — so `total` is still read, just never rendered.
+
+**Behavior after:** `Executing` renders `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4 │ 并行中 1`; the bar still renders no numbers of its own beyond the step count and the parallel-tool count. Pinned by `status_bar_executing_shows_the_step_label_without_a_gauge`, which now asserts the label *and* that neither `1/4` nor `step 1/` is drawn.
+
+**Pointers:** `crates/agent_tui_kit/src/i18n.rs` (`status_executing_tmpl`); `crates/agent_tui_kit/src/render/bar.rs` (`Status::Executing`); `crates/tui/src/render/bar.rs` (the test above); [Ch 23](./23_chapter_tui.md) §6.6 (top bar).
+
+---
+
+
 ## 1. 2026-09-14 — Symlinked skills load, and the Assembled prompt shows the MCP skills it carried
 
 | Field | Value |
@@ -55,15 +127,15 @@ Newest entries first. Each entry should include:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/render/bar.rs` (`render_progress_bar` + `PROGRESS_BAR_WIDTH` removed, the `Status::Executing` / `Status::Planning` arms, row-2 group push order); `crates/tui/src/render/bar.rs` (tests); [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md` |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs` (`render_progress_bar` + `PROGRESS_BAR_WIDTH` removed, the `Status::Executing` / `Status::Planning` arms, row-1 group push order); `crates/tui/src/render/bar.rs` (tests); [Ch 23](./23_chapter_tui.md) §6.6; `docs/token_usage_schema.md` |
 
-**Symptom / motivation:** While a task ran, the top status bar carried two numbers of its own: the `[██████░░░░░] 88%` gauge after the step label, and the live task clock at the end — `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1 [██████░░░░░] 88%  ⏱ 耗时 00:12`. The gauge only restated the step count (`4/10`) as glyphs, and the clock sat far from the one quantity it belongs with: the frozen turn timing on bottom-bar row 2 (`⏱ 02:05 均 01:45`), which is the same wall clock for the turns that already finished.
+**Symptom / motivation:** While a task ran, the top status bar carried two numbers of its own: the `[██████░░░░░] 88%` gauge after the step label, and the live task clock at the end — `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1 [██████░░░░░] 88%  ⏱ 耗时 00:12`. The gauge only restated the step count (`4/10`) as glyphs, and the clock was on the wrong surface entirely: it is the third wall clock the bar system owns, and its two siblings — the process uptime (`⊙ 运行`) and the frozen turn timing (`⏱ 02:05 均 01:45`) — were a row apart on the bottom bar.
 
-**Decision:** The gauge is deleted outright, and the live clock moves to row 2 as its own droppable segment pushed immediately before the turn timing. Both `Status::Planning` and `Status::Executing` lose their trailing clock, so the status bar renders no numbers of its own any more — it answers *what is happening* (phase, step count, parallel-tool count) while row 2 answers *how much has gone by*. The live segment keeps its label (`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`): two bare `⏱` numbers side by side would be indistinguishable. The label is not free — it is why the running row is 102 columns rather than 95.
+**Decision:** The gauge is deleted outright, and the live clock joins the uptime on **row 1**, directly after it: row 1 carries the clocks that describe *this run* (process uptime, task elapsed) plus the permission mode, cwd and branch, while row 2 keeps the token/ctx readouts and the frozen per-turn timing. Both `Status::Planning` and `Status::Executing` lose their trailing clock, so the status bar renders no numbers of its own any more — it answers *what is happening* (phase, step count, parallel-tool count) and the bottom bar answers *how much has gone by*. The segment keeps its label (`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`): the uptime beside it is a bare `⊙ 运行 00:03`, and an unlabelled `⏱ 00:12` would read as a second uptime.
 
-**Behavior after:** Executing renders `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`; row 2 renders `… ⟳ 12 ⇅ 3  ⏱ 耗时 00:12  ⏱ 02:05 均 01:45` while a task runs, and the live segment disappears (rather than rendering empty) when none is in flight — `task_start_time` is `None`, so `format_task_elapsed` returns `""`. Row width is **85–86 columns** idle and **102–103** running; because the live segment is pushed *before* the frozen one, `fit_row_spans` drops the frozen timing first (`ctx > cache > turns > elapsed > timing`), so a running task never loses the clock it is being judged by. Pinned by `bottom_bar_puts_live_elapsed_before_turn_timing`, `bottom_bar_omits_live_elapsed_without_a_task`, `bottom_bar_drops_turn_timing_before_the_live_elapsed`, `bottom_bar_fits_a_running_row_in_110_columns`, `status_bar_executing_shows_the_step_label_without_a_gauge` and `status_bar_planning_has_no_elapsed`; the idle budget guard `bottom_bar_fits_every_segment_in_100_columns` is unchanged.
+**Behavior after:** Executing renders `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`; row 1 renders `… │ ⊙ 运行 00:03 │ ⏱ 耗时 00:12 │ ⎇ main` while a task runs, and the segment is skipped entirely (not rendered empty) when none is in flight — `task_start_time` is `None`, so `format_task_elapsed` returns `""`. It is pushed as row 1's last droppable, so the row drops `elapsed > uptime > path`: the transient task clock goes first, then the session uptime, then the cwd (permission mode, branch and account are never dropped). Row 2 is unchanged at 85–86 columns with every segment populated; row 1 holds all five segments at 100 columns, pinned by `bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns` and `bottom_bar_drops_the_task_elapsed_before_uptime_and_path`. Placement is pinned by `bottom_bar_puts_live_elapsed_next_to_uptime_on_row_1` (asserts row 1 order and that row 2 does *not* carry the clock) and `bottom_bar_omits_live_elapsed_without_a_task`; the status bar's side by `status_bar_executing_shows_the_step_label_without_a_gauge` and `status_bar_planning_has_no_elapsed`. The row-2 budget guard `bottom_bar_fits_every_segment_in_100_columns` is back to its pre-2026-09-14 form, since row 2 carries no clock again. *(Superseded later the same day: the step label dropped its denominator, so `Executing` renders `正在执行步骤 4` / `Executing step 4` — see the newest entry.)*
 
-**Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`format_task_elapsed` doc, `render_bottom_bar` row-2 groups, `Status::Executing` arm); `crates/tui/src/render/bar.rs` (the six tests above); [Ch 23](./23_chapter_tui.md) §6.6 (top bar, row 2, compaction and turn-timing paragraphs); `docs/token_usage_schema.md` §"Session Stats Display".
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs` (`format_task_elapsed` doc, `render_bottom_bar` row-1 groups, `Status::Executing` arm); `crates/tui/src/render/bar.rs` (the six tests above); [Ch 23](./23_chapter_tui.md) §6.6 (top bar, row 1, row 2, compaction and turn-timing paragraphs); `docs/token_usage_schema.md` §"Session Stats Display".
 
 ---
 
@@ -566,7 +638,7 @@ The now-unused i18n fields (`bottom_cache_pct`, `bottom_turns`, `bottom_llm_turn
 4. `TurnStats` is registered as **per-call metadata** in `coordinator_prepass`, alongside `TokenUsage`/`ModelInfo`. It fires between turns while the loading spinner is up, so without this it would run the content gates and make the spinner vanish the moment the loop starts (regression test: `turn_stats_is_metadata_and_keeps_the_loading_placeholder`).
 5. `max_turns` is plumbed into `StatusBarState.turn_llm_cap` but deliberately **not rendered**: only `spawn_subagent` ever sets a cap and there is no CLI flag or TUI wiring for it, so a main-agent bar could never show `/cap`. Bare `⇅ {n}` renders instead; the field is kept so the segment is ready if a main-agent cap is ever added.
 
-**Behavior after:** Row 2 shows `⟳ 12 turns ⇅ 3 turns  ∑ₜₒₖ …  ▣ cache% 5%  ⏱ 02:05 · avg 01:45` (`⟳ 12 轮 ⇅ 3 轮次 … ⏱ 02:05 · 均 01:45`). The `⇅` segment is hidden until the task's first LLM call; `avg` is hidden until a turn completes; the whole timing group is hidden while no turn has finished. Live in-flight elapsed stays on the top status bar — the bottom bar shows only frozen values. *(Superseded 2026-09-14: the live elapsed is now a row-2 segment immediately before the turn timing, and the status bar renders no clock; see the newest entry.)* On narrow terminals the new segments are droppable with survival order `ctx > turns > ∑ₜₒₖ > cache > timing`, preserving the pre-existing `ctx > ∑ > cache` priority. *(Superseded later the same day — this entry records the state when turn stats first shipped; see the row-2 compaction entry above for the current 90-column row.)*
+**Behavior after:** Row 2 shows `⟳ 12 turns ⇅ 3 turns  ∑ₜₒₖ …  ▣ cache% 5%  ⏱ 02:05 · avg 01:45` (`⟳ 12 轮 ⇅ 3 轮次 … ⏱ 02:05 · 均 01:45`). The `⇅` segment is hidden until the task's first LLM call; `avg` is hidden until a turn completes; the whole timing group is hidden while no turn has finished. Live in-flight elapsed stays on the top status bar — the bottom bar shows only frozen values. *(Superseded 2026-09-14: the live elapsed is now a bottom-bar row-1 segment next to the uptime, and the status bar renders no clock; see the newest entry.)* On narrow terminals the new segments are droppable with survival order `ctx > turns > ∑ₜₒₖ > cache > timing`, preserving the pre-existing `ctx > ∑ > cache` priority. *(Superseded later the same day — this entry records the state when turn stats first shipped; see the row-2 compaction entry above for the current 90-column row.)*
 
 **Pointers:** `crates/protocol/src/agent.rs` (`AgentUpdate::TurnStats`); `crates/tact/src/agent/mod.rs` (`agent_loop` emit); `crates/agent_tui_kit/src/state/status_bar_state.rs` (`turn_user`, `turn_llm`, `turn_llm_cap`, `turn_last_secs`, `turn_done`, `turn_total_secs`); `crates/agent_tui_kit/src/render/bar.rs` (`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`); `crates/tui/src/widgets/state/app/popups.rs` (`add_task_end_separator`); `crates/tui/src/widgets/state/app/messages.rs` (`load_history` seeding); spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`; Ch 23 §6.6; `docs/token_usage_schema.md`.
 

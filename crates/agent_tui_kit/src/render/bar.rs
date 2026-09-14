@@ -33,11 +33,13 @@ const ICON_ELAPSED: &str = "⏱";
 const SEP_ROW1: &str = " │ ";
 const SEP_ROW2: &str = "  ";
 
-/// Live task elapsed, rendered on the bottom bar while a task is in flight
+/// Live task elapsed, rendered on bottom-bar row 1 while a task is in flight
 /// (empty string when no task is running, which is how the segment is omitted).
 ///
-/// It moved there from the top status bar on 2026-09-14, so that the live
-/// number reads next to the frozen per-turn timing it belongs with.
+/// It moved there from the top status bar on 2026-09-14, next to the uptime it
+/// is the per-task counterpart of: row 1 carries the clocks that describe *this
+/// run* (`运行` for the process, `耗时` for the task), row 2 the token/ctx
+/// readouts and the frozen per-turn timing.
 ///
 /// Derived-method migration of `App::format_task_elapsed` (design doc §2.2):
 /// pure function of the i18n label + task start time.
@@ -295,6 +297,9 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             format!("{:02}:{:02}", m, s)
         }
     };
+    // Live task wall clock, shown next to the uptime it pairs with — and only
+    // while a task is in flight (`format_task_elapsed` returns `""` otherwise).
+    let task_elapsed = format_task_elapsed(msgs, ctx.task_start_time);
 
     #[allow(clippy::vec_init_then_push)]
     let mut row1_groups: Vec<DropGroup> = vec![
@@ -327,7 +332,7 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
                 Span::styled(SEP_ROW1.to_string(), dim),
             ],
         },
-        // Uptime: last droppable on row1 so it drops before path
+        // Uptime: droppable, so it goes before the path
         DropGroup {
             droppable: true,
             spans: vec![
@@ -336,15 +341,27 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
                 Span::styled(SEP_ROW1.to_string(), dim),
             ],
         },
-        // Branch: ⎇ branchname
-        DropGroup {
-            droppable: false,
-            spans: vec![
-                Span::styled(ICON_BRANCH.to_string(), dim),
-                Span::styled(format!(" {}", branch), accent),
-            ],
-        },
     ];
+    // Task elapsed, immediately after the uptime. Pushed *after* it, i.e. as the
+    // last droppable of row 1, so on a narrow terminal the transient task clock
+    // is what goes first — then uptime, then the path.
+    if !task_elapsed.is_empty() {
+        row1_groups.push(DropGroup {
+            droppable: true,
+            spans: vec![
+                Span::styled(task_elapsed, secondary),
+                Span::styled(SEP_ROW1.to_string(), dim),
+            ],
+        });
+    }
+    // Branch: ⎇ branchname
+    row1_groups.push(DropGroup {
+        droppable: false,
+        spans: vec![
+            Span::styled(ICON_BRANCH.to_string(), dim),
+            Span::styled(format!(" {}", branch), accent),
+        ],
+    });
     // Account (if present, never dropped)
     #[allow(clippy::vec_init_then_push)]
     if let Some(acct_spans) = build_account_spans(ctx, theme) {
@@ -386,10 +403,8 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         turn_str.push_str(SEP_ROW2);
         turn_str.push_str(&format_turn_llm(ctx.status_bar.turn_llm));
     }
-    // Live task wall clock. It reads directly before the frozen turn timing
-    // below, which is why the top status bar no longer carries it (2026-09-14).
-    let task_elapsed = format_task_elapsed(msgs, ctx.task_start_time);
-    // Frozen last/average turn wall-clock.
+    // Frozen last/average turn wall clock — the per-turn counterpart of the
+    // live task elapsed rendered up on row 1.
     let turn_timing = ctx.status_bar.turn_last_secs.map(|last| {
         format_turn_timing(
             last,
@@ -422,10 +437,9 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             ],
         });
     }
-    // Display order: ctx → cache → turns → elapsed → timing. Push order *is*
-    // survival priority and `fit_row_spans` drops from the end, so the drop
-    // order is the reverse: timing → elapsed → turns → cache → ctx, i.e. `ctx`
-    // survives longest.
+    // Display order: ctx → cache → turns → timing. Push order *is* survival
+    // priority and `fit_row_spans` drops from the end, so the drop order is the
+    // reverse: timing → turns → cache → ctx, i.e. `ctx` survives longest.
     row2_groups.push(DropGroup {
         droppable: true,
         spans: vec![
@@ -447,15 +461,6 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             Span::styled(turn_str, secondary),
         ],
     });
-    if !task_elapsed.is_empty() {
-        row2_groups.push(DropGroup {
-            droppable: true,
-            spans: vec![
-                Span::styled(SEP_ROW2.to_string(), dim),
-                Span::styled(task_elapsed, secondary),
-            ],
-        });
-    }
     if let Some(timing) = turn_timing {
         row2_groups.push(DropGroup {
             droppable: true,
@@ -596,17 +601,18 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             } else {
                 completed.max(1).min(*total)
             };
-            let step_label = msgs
-                .status_executing_tmpl
-                .replacen("{}", &display_step.to_string(), 1)
-                .replacen("{}", &total.to_string(), 1);
+            let step_label =
+                msgs.status_executing_tmpl
+                    .replacen("{}", &display_step.to_string(), 1);
             let running_label = msgs
                 .status_running_tmpl
                 .replacen("{}", &running.to_string(), 1);
             // The step count is this bar's only progress readout. The
             // `[████░░] n%` gauge was dropped on 2026-09-14 (it restated the
-            // label as glyphs) and the live task elapsed moved down to the
-            // bottom bar, next to the frozen per-turn timing it belongs with.
+            // label as glyphs) and the live task elapsed moved to bottom-bar
+            // row 1, next to the uptime it is the per-task counterpart of.
+            // The denominator went on 2026-09-14 too: it is the plan's step
+            // count, not what a running task is judged by.
             let exec_right = if running > 0 {
                 format!("{} │ {}", step_label, running_label)
             } else {
