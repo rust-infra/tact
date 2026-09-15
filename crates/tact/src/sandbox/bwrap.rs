@@ -403,4 +403,18 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn guard_accepts_a_project_directory_under_the_home_directory() {
+        // The common case: the workspace lives *inside* `$HOME` (e.g.
+        // ~/Projects/tact). Only `$HOME` itself and its ancestors are refused;
+        // a descendant is a normal workspace and must stay usable.
+        let Some(home) = home_dir() else {
+            return; // no $HOME on this host; nothing to assert
+        };
+        let project = home.join("Projects").join("sandbox-guard-probe");
+        let args = bwrap_args_with(&project, &everything_exists).unwrap();
+        let at = index_of(&args, "--bind");
+        assert_eq!(args[at + 1], project.display().to_string());
+    }
 }
