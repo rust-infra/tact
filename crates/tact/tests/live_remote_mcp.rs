@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-/// Writes `<home>/.tact/mcp.json` and restores the previous `HOME` on drop.
+/// Writes `<home>/.tact/.mcp.json` and restores the previous `HOME` on drop.
 struct TempHome {
     _dir: tempfile::TempDir,
     previous: Option<std::ffi::OsString>,
@@ -28,10 +28,10 @@ impl TempHome {
         let previous = std::env::var_os("HOME");
         std::fs::create_dir_all(dir.path().join(".tact")).expect("create .tact");
         std::fs::write(
-            dir.path().join(".tact/mcp.json"),
+            dir.path().join(".tact/.mcp.json"),
             format!(r#"{{"mcpServers":{mcp_servers}}}"#),
         )
-        .expect("write mcp.json");
+        .expect("write .mcp.json");
         // SAFETY: this test binary is single-threaded per process and nothing
         // else reads HOME concurrently.
         unsafe { std::env::set_var("HOME", dir.path()) };

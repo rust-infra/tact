@@ -476,8 +476,8 @@ prefers a matching discovered Codex marketplace and falls back to
 `claude-plugins-official`. Installed plugin content contributes skills
 (`plugin:<name>`), `commands/*.md` slash commands, MCP servers, and lifecycle
 hooks — see Ch 2,
-8, 9, 12. MCP servers are declared in `~/.tact/mcp.json` (user) or
-`<workdir>/.tact/mcp.json` (project); a Claude Code `<workdir>/.mcp.json` is
+8, 9, 12. MCP servers are declared in `~/.tact/.mcp.json` (user) or
+`<workdir>/.tact/.mcp.json` (project); a Claude Code `<workdir>/.mcp.json` is
 also read, at the lowest precedence, and installed plugins still contribute
 servers. There is no cwd-level Codex manifest read — that file lives in
 `CODEX_HOME`. An entry with `"enabled": false` is resolved but never connected,

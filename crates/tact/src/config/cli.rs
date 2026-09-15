@@ -131,14 +131,14 @@ pub enum McpSubcommand {
     ///
     /// Example: `tact-ui mcp get deepwiki`
     Get {
-        /// Server name as declared in `mcp.json`
+        /// Server name as declared in `.mcp.json`
         name: String,
     },
-    /// Add an MCP server to `mcp.json`
+    /// Add an MCP server to `.mcp.json`
     ///
     /// Exactly one transport is required: `--url` for a remote Streamable HTTP
     /// server, or `--command` for a local stdio server. The project file
-    /// (`<workdir>/.tact/mcp.json`) is written unless `--user` is given.
+    /// (`<workdir>/.tact/.mcp.json`) is written unless `--user` is given.
     ///
     /// Example: `tact-ui mcp add deepwiki --url https://mcp.deepwiki.com/mcp`
     /// — add `--oauth` when the server requires authorization, and
@@ -170,23 +170,23 @@ pub enum McpSubcommand {
         /// Declare OAuth 2.0 (authorize afterwards with `mcp login`)
         #[arg(long, requires = "url")]
         oauth: bool,
-        /// Write `$HOME/.tact/mcp.json` instead of the project file
+        /// Write `$HOME/.tact/.mcp.json` instead of the project file
         #[arg(long)]
         user: bool,
         /// Replace an existing server with the same name
         #[arg(long)]
         force: bool,
     },
-    /// Remove an MCP server from `mcp.json`
+    /// Remove an MCP server from `.mcp.json`
     ///
     /// Only the declaration is deleted; stored OAuth credentials are kept (use
     /// `mcp logout` to delete those).
     ///
     /// Example: `tact-ui mcp remove deepwiki --user`
     Remove {
-        /// Server name as declared in `mcp.json`
+        /// Server name as declared in `.mcp.json`
         name: String,
-        /// Remove from `$HOME/.tact/mcp.json` instead of the project file
+        /// Remove from `$HOME/.tact/.mcp.json` instead of the project file
         #[arg(long)]
         user: bool,
     },
@@ -198,7 +198,7 @@ pub enum McpSubcommand {
     /// Example: `tact-ui mcp login linear`
     #[command(visible_alias = "auth")]
     Login {
-        /// Server name as declared in `mcp.json`
+        /// Server name as declared in `.mcp.json`
         server: String,
     },
     /// Delete the stored OAuth credentials for a server

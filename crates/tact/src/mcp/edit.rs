@@ -1,4 +1,4 @@
-//! The write side of Tact's native `mcp.json`.
+//! The write side of Tact's native `.mcp.json`.
 //!
 //! [`McpConfigFile`](super::McpConfigFile) only reads. `mcp add` must write
 //! without disturbing anything Tact does not model, so this module edits the
@@ -28,12 +28,12 @@ use serde_json::{Map, Value, json};
 use super::McpTransportKind;
 use crate::consts::TactPath;
 
-/// Which `mcp.json` an edit targets.
+/// Which `.mcp.json` an edit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpConfigScope {
-    /// `<workdir>/.tact/mcp.json` — wins over the user file by server name.
+    /// `<workdir>/.tact/.mcp.json` — wins over the user file by server name.
     Project,
-    /// `$HOME/.tact/mcp.json` — shared by every project.
+    /// `$HOME/.tact/.mcp.json` — shared by every project.
     User,
 }
 
@@ -43,7 +43,7 @@ impl McpConfigScope {
         match self {
             Self::Project => Ok(TactPath::new(workdir).mcp_config_path()),
             Self::User => TactPath::home_mcp_config_path()
-                .context("cannot locate the user mcp.json: HOME is not set"),
+                .context("cannot locate the user .mcp.json: HOME is not set"),
         }
     }
 }
@@ -187,7 +187,7 @@ pub struct AddedMcpServer {
     pub replaced: bool,
 }
 
-/// Adds, or with `force` replaces, one server in the `mcp.json` for `scope`.
+/// Adds, or with `force` replaces, one server in the `.mcp.json` for `scope`.
 ///
 /// A missing file is created. An existing file keeps every key Tact does not
 /// model, including keys of unrelated servers. A file that cannot be parsed is
@@ -262,7 +262,7 @@ pub struct RemovedMcpServer {
     pub removed: Value,
 }
 
-/// Removes one server declaration from the `mcp.json` for `scope`.
+/// Removes one server declaration from the `.mcp.json` for `scope`.
 ///
 /// An unknown name is an error rather than a silent no-op: the caller (a CLI
 /// or an agent) needs to know the config did not change, and a name that is
@@ -358,10 +358,10 @@ fn read_document(path: &Path) -> Result<Value> {
 /// Writes `document` to `path` via a sibling temp file and a rename.
 ///
 /// The rename keeps the previous file intact if the write fails halfway, so a
-/// failed `mcp add` can never leave a truncated, unparseable `mcp.json`.
+/// failed `mcp add` can never leave a truncated, unparseable `.mcp.json`.
 ///
 /// The original file's permissions are carried over to the replacement: an
-/// `mcp.json` may hold `headers` / `env` secrets, and a user who hardened it
+/// `.mcp.json` may hold `headers` / `env` secrets, and a user who hardened it
 /// with `chmod 600` must not have that silently widened by a rename onto a
 /// umask-default inode.
 fn write_document(path: &Path, document: &Value) -> Result<()> {
@@ -476,7 +476,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            outcome.path.ends_with(".tact/mcp.json"),
+            outcome.path.ends_with(".tact/.mcp.json"),
             "{:?}",
             outcome.path
         );
@@ -537,7 +537,7 @@ mod tests {
         // The whole reason this module edits the raw document: a field Tact
         // does not model (here `disabled` and a top-level `note`) must survive.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".tact/mcp.json");
+        let path = dir.path().join(".tact/.mcp.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
@@ -582,7 +582,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let path = dir.path().join(".tact/mcp.json");
+        let path = dir.path().join(".tact/.mcp.json");
         // A hand-added key outside `mcpServers` must survive a removal.
         let document: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let mut document = document;
@@ -590,7 +590,7 @@ mod tests {
         fs::write(&path, serde_json::to_string_pretty(&document).unwrap()).unwrap();
 
         let outcome = remove_mcp_server(dir.path(), McpConfigScope::Project, "drop").unwrap();
-        assert!(outcome.path.ends_with(".tact/mcp.json"));
+        assert!(outcome.path.ends_with(".tact/.mcp.json"));
         assert_eq!(
             outcome.removed["url"],
             json!("https://mcp.example.invalid/mcp")
@@ -620,7 +620,7 @@ mod tests {
 
         // The key stays (predictable edit); the loader must read this as an
         // empty configuration rather than a malformed one.
-        let file = McpConfigFile::read(&dir.path().join(".tact/mcp.json"))
+        let file = McpConfigFile::read(&dir.path().join(".tact/.mcp.json"))
             .unwrap()
             .unwrap();
         assert!(file.mcp_servers.is_empty());
@@ -649,7 +649,7 @@ mod tests {
         );
 
         // And the existing entry is untouched.
-        let file = McpConfigFile::read(&dir.path().join(".tact/mcp.json"))
+        let file = McpConfigFile::read(&dir.path().join(".tact/.mcp.json"))
             .unwrap()
             .unwrap();
         assert!(file.mcp_servers.contains_key("present"));
@@ -676,7 +676,7 @@ mod tests {
             let error = remove_mcp_server(dir.path(), McpConfigScope::Project, name).unwrap_err();
             assert!(format!("{error:#}").contains("name"), "{name}: {error:#}");
         }
-        assert!(!dir.path().join(".tact/mcp.json").exists());
+        assert!(!dir.path().join(".tact/.mcp.json").exists());
     }
 
     #[test]
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn an_unparseable_file_is_never_overwritten() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".tact/mcp.json");
+        let path = dir.path().join(".tact/.mcp.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "{ not json").unwrap();
 
@@ -728,14 +728,14 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(format!("{error:#}").contains("mcp.json"), "{error:#}");
+        assert!(format!("{error:#}").contains(".mcp.json"), "{error:#}");
         assert_eq!(fs::read_to_string(&path).unwrap(), "{ not json");
     }
 
     #[test]
     fn a_flat_mcp_servers_value_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".tact/mcp.json");
+        let path = dir.path().join(".tact/.mcp.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, r#"{"mcpServers":[]}"#).unwrap();
 
@@ -772,7 +772,7 @@ mod tests {
         );
     }
 
-    /// `mcp.json` can hold `headers`/`env` secrets, so a user who hardened it
+    /// `.mcp.json` can hold `headers`/`env` secrets, so a user who hardened it
     /// must not have that mode silently widened by the rewrite.
     #[cfg(unix)]
     #[test]
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn a_leading_bom_does_not_block_editing() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".tact/mcp.json");
+        let path = dir.path().join(".tact/.mcp.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
@@ -903,7 +903,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            !dir.path().join(".tact/mcp.json").exists(),
+            !dir.path().join(".tact/.mcp.json").exists(),
             "a rejected draft must not create a file"
         );
     }
@@ -936,7 +936,7 @@ mod tests {
         )
         .unwrap();
 
-        let path = dir.path().join(".tact/mcp.json");
+        let path = dir.path().join(".tact/.mcp.json");
         let file = McpConfigFile::read(&path).unwrap().unwrap();
 
         let local = file.mcp_servers["local"].to_transport().unwrap();
@@ -965,7 +965,7 @@ mod tests {
             McpConfigScope::Project
                 .path(Path::new("/tmp/project"))
                 .unwrap(),
-            Path::new("/tmp/project/.tact/mcp.json")
+            Path::new("/tmp/project/.tact/.mcp.json")
         );
         if let Some(home) = TactPath::home_mcp_config_path() {
             assert_eq!(

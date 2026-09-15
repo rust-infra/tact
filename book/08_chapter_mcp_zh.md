@@ -86,7 +86,7 @@ Tact **两者都支持**：带 `command` 的条目录用 stdio 启动，带 `url
 
 启动前，Host 必须知道如何拉起每个 Server。
 
-**首选：Tact 原生的 `mcp.json`。** 两个位置，都可选——`~/.tact/mcp.json`（用户级）与 `<workdir>/.tact/mcp.json`（项目级）。结构与所有 MCP 客户端通用的 Claude 格式一致：
+**首选：Tact 原生的 `.mcp.json`。** 两个位置，都可选——`~/.tact/.mcp.json`（用户级）与 `<workdir>/.tact/.mcp.json`（项目级）。结构与所有 MCP 客户端通用的 Claude 格式一致：
 
 ```json
 {
@@ -109,8 +109,8 @@ Tact **两者都支持**：带 `command` 的条目录用 stdio 启动，带 `url
 | # | 来源 | 服务器名 |
 |---|------|----------|
 | 1 | `<workdir>/.mcp.json`（Claude Code 项目文件） | map key |
-| 2 | `~/.tact/mcp.json`（用户级） | map key |
-| 3 | `<workdir>/.tact/mcp.json`（项目级） | map key |
+| 2 | `~/.tact/.mcp.json`（用户级） | map key |
+| 3 | `<workdir>/.tact/.mcp.json`（项目级） | map key |
 | 4 | 已安装插件 | `plugin__<plugin>__<server>` |
 
 Tact 自己的两个文件排在前面，因为那才是"让你去写"的文件：仓库里的 `.mcp.json` 会被读取（这样随仓库共享的配置开箱可用），但它是最低优先级，**永远不会静默顶掉你自己声明的 server**。被顶掉的声明会以上下文注明 `MCP server X overrides <file>`，不静默。
@@ -145,7 +145,7 @@ tact-ui mcp login linear                      # 浏览器流程，token 落盘
 tact-ui mcp logout linear                     # 删除 token
 ```
 
-`add`/`remove` 默认作用于项目文件（`.tact/mcp.json`），加 `--user` 则作用于用户文件。`add --force` 覆盖同名声明；不加时同名是报错而非静默覆盖。`remove` 一个不存在的名字也是报错而非无声成功——它会告知该 server **究竟**声明在哪个文件（`retry with --user`），或说明它由插件提供。当所编辑的作用域并非最终生效的那个时，`add` 会明确提示并指名胜出的文件，否则更高优先级的声明会让这条命令变成静默的空操作。写入是原子的（唯一命名的临时文件 + rename，并保留原文件权限），并且直接编辑**原始 JSON 文档**，因此 Tact 未建模的键——包括其他 server 上的键——都会保留；删除最后一个 server 会留下空的 `mcpServers` 对象，读回来即「无 server」。`remove` 保留已存凭据（重新添加的 server 应当继续可用），删除凭据由 `logout` 负责，且它不要求 server 仍被声明，因此声明删掉后仍可清理凭据。
+`add`/`remove` 默认作用于项目文件（`.tact/.mcp.json`），加 `--user` 则作用于用户文件。`add --force` 覆盖同名声明；不加时同名是报错而非静默覆盖。`remove` 一个不存在的名字也是报错而非无声成功——它会告知该 server **究竟**声明在哪个文件（`retry with --user`），或说明它由插件提供。当所编辑的作用域并非最终生效的那个时，`add` 会明确提示并指名胜出的文件，否则更高优先级的声明会让这条命令变成静默的空操作。写入是原子的（唯一命名的临时文件 + rename，并保留原文件权限），并且直接编辑**原始 JSON 文档**，因此 Tact 未建模的键——包括其他 server 上的键——都会保留；删除最后一个 server 会留下空的 `mcpServers` 对象，读回来即「无 server」。`remove` 保留已存凭据（重新添加的 server 应当继续可用），删除凭据由 `logout` 负责，且它不要求 server 仍被声明，因此声明删掉后仍可清理凭据。
 
 名称、URL、header 名与 header 值都会预先校验。server 名还会额外拒绝空白、控制字符与路径分隔符：名称同时是 `mcp__<server>__<tool>` 的 `<server>` 段与 OAuth 凭据文件名（`~/.tact/mcp/oauth/<server>.json`），因此 `mcp logout <name>` 绝不能被指向任意文件。header/env 的**值**绝不回显或记录日志（它们常含密钥），且 `add` 绝不发起连接。重复的 `--header`/`--env` 名会报错，而不是静默地后者覆盖前者。
 
@@ -522,7 +522,7 @@ sequenceDiagram
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 配置扫描 | `crates/tact/src/mcp/mod.rs` — `collect_sourced_servers` | 依次读 `<workdir>/.mcp.json`、`~/.tact/mcp.json`、`<workdir>/.tact/mcp.json`、已安装插件 |
+| 配置扫描 | `crates/tact/src/mcp/mod.rs` — `collect_sourced_servers` | 依次读 `<workdir>/.mcp.json`、`~/.tact/.mcp.json`、`<workdir>/.tact/.mcp.json`、已安装插件 |
 | 插件服务器 | `installed_plugin_mcp_servers` | 读取已安装插件包 |
 | 来源优先级 | `collect_sourced_servers`、`resolve_servers` | 分层合并所有来源并上报覆盖 |
 | 加载报告 | `McpLoadReport` | 把失败 / 覆盖 / 跳过暴露出来，而非 `debug!` |

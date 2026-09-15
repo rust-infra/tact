@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-15 — The native MCP config is renamed to `.mcp.json`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/consts.rs` (`MCP_CONFIG_FILE`); `crates/tact-ui/src/mcp_cli.rs`; [Ch 8](./08_chapter_mcp.md); [Ch 21](./21_chapter_config.md) |
+
+**Symptom / motivation:** Tact's two native config files were named `mcp.json` (`~/.tact/mcp.json`, `<workdir>/.tact/mcp.json`) while the same thing is called `.mcp.json` everywhere else in the ecosystem: Claude Code's project file, the file a plugin bundle's `mcpServers` points at, VS Code's `.vscode/mcp.json`. One concept with two names buys nothing but a moment of doubt about which name to write.
+
+**Decision:** Rename both scopes to `.mcp.json` (`~/.tact/.mcp.json`, `<workdir>/.tact/.mcp.json`), with the path kept in a single constant (`MCP_CONFIG_FILE`) so the rename is one place. The **old name is no longer read, and nothing is done for compatibility**: a leftover `mcp.json` is just an unrelated file — neither a source nor reported.
+
+**Behavior after:** Source order is unchanged (`<workdir>/.mcp.json` → `~/.tact/.mcp.json` → `<workdir>/.tact/.mcp.json` → installed plugins); only the two native files gained a leading dot. `mcp add` / `remove` write the new paths. A file at the old path has no effect and is not mentioned.
+
+**Pointers:** `crates/tact/src/consts.rs` (`MCP_CONFIG_FILE = ".mcp.json"`); `crates/tact-ui/src/mcp_cli.rs` (`scope_hint` now matches the Claude project file by full path); [Ch 8](./08_chapter_mcp.md) Step 1 source table.
+
+---
+
 ## 1. 2026-09-15 — A working-directory `.mcp.json` is read; `enabled: false` and unmodelled keys stop being silent
 
 | Field | Value |

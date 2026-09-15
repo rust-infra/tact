@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-15 — 原生 MCP 配置改名 `.mcp.json`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/consts.rs`（`MCP_CONFIG_FILE`）；`crates/tact-ui/src/mcp_cli.rs`；[第 8 章](./08_chapter_mcp_zh.md)；[第 21 章](./21_chapter_config_zh.md) |
+
+**现象 / 动机：** Tact 的两个原生配置文件叫 `mcp.json`（`~/.tact/mcp.json`、`<workdir>/.tact/mcp.json`），而同一份东西在整个生态里都叫 `.mcp.json`：Claude Code 的项目文件、插件包 `mcpServers` 指向的文件、VS Code 的 `.vscode/mcp.json`。同一个概念挂两个名字，唯一的效果是让人在"我这份该叫哪个"上多犹豫一次。
+
+**决策：** 两个作用域统一改名为 `.mcp.json`（`~/.tact/.mcp.json`、`<workdir>/.tact/.mcp.json`），路径集中在 `MCP_CONFIG_FILE` 一个常量上，改名因此只有一处。**旧名不再读取，也不做任何兼容处理** —— 残留的 `mcp.json` 就是一个普通的不相关文件，既不是来源也不会被上报。
+
+**改后行为：** 来源顺序不变（`<workdir>/.mcp.json` → `~/.tact/.mcp.json` → `<workdir>/.tact/.mcp.json` → 已安装插件），只是两个原生文件的名字带上了点。`mcp add` / `remove` 写入的是新路径；旧路径上的文件不再产生任何影响，也不会被提及。
+
+**指针：** `crates/tact/src/consts.rs`（`MCP_CONFIG_FILE = ".mcp.json"`）；`crates/tact-ui/src/mcp_cli.rs`（`scope_hint` 改为按完整路径比对 Claude 项目文件）；[第 8 章](./08_chapter_mcp_zh.md) Step 1 来源表。
+
+---
+
 ## 1. 2026-09-15 — 工作目录的 `.mcp.json` 会被读取；`enabled: false` 与未建模的键都不再无声
 
 | Field | Value |

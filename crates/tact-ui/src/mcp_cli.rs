@@ -6,7 +6,7 @@
 //! `/mcp auth <server>`. Both paths call the same `tact::mcp` functions.
 //!
 //! Command roles are deliberately separated: `list`/`get` are the only ones
-//! that connect, `add`/`remove` are the only ones that write `mcp.json`, and
+//! that connect, `add`/`remove` are the only ones that write `.mcp.json`, and
 //! `login`/`logout` are the only ones that touch stored credentials. A command
 //! that creates state never silently connects, and a command that inspects
 //! never writes.
@@ -183,11 +183,13 @@ fn scope_hint(workdir: &Path, scope: McpConfigScope, name: &str) -> String {
     }
     // A Claude Code project file is a third source a user can edit, even though
     // `add`/`remove` never write it; pointing at the plugin path below would
-    // send them looking for a plugin that does not exist.
-    if source.ends_with(".mcp.json") {
+    // send them looking for a plugin that does not exist. Matched by full path
+    // rather than by suffix: Tact's own project file, `.tact/.mcp.json`, also
+    // ends in `.mcp.json` and is handled above.
+    if source == &workdir.join(".mcp.json").display().to_string() {
         return format!(
             "\n'{name}' is declared in {source}, a Claude Code project file — \
-             edit that file, or declare it in .tact/mcp.json to override it."
+             edit that file, or declare it in .tact/.mcp.json to override it."
         );
     }
     format!(
@@ -345,7 +347,7 @@ async fn list_servers() -> Result<()> {
 pub fn render_report(report: &McpLoadReport) -> String {
     if report.configured.is_empty() && report.skipped_remote.is_empty() {
         return "No MCP servers configured.\n\n\
-                Declare servers in ~/.tact/mcp.json (user) or .tact/mcp.json (project):\n\
+                Declare servers in ~/.tact/.mcp.json (user) or .tact/.mcp.json (project):\n\
                 \x20 { \"mcpServers\": { \"my-server\": { \"command\": \"...\" } } }\n\
                 \x20 { \"mcpServers\": { \"remote\": { \"url\": \"https://.../mcp\" } } }"
             .to_string();
@@ -437,7 +439,7 @@ pub fn render_report(report: &McpLoadReport) -> String {
 pub fn render_live_listing(views: &[mcp::McpServerView]) -> String {
     if views.is_empty() {
         return "## 🔌 MCP Servers\n\nNo MCP servers configured.\n\n\
-                Declare servers in `~/.tact/mcp.json` (user) or `.tact/mcp.json` (project), \
+                Declare servers in `~/.tact/.mcp.json` (user) or `.tact/.mcp.json` (project), \
                 then restart or run `/mcp auth <server>` for a remote OAuth server."
             .to_string();
     }
@@ -528,7 +530,7 @@ async fn authorize(server: &str) -> Result<()> {
     let oauth_declared = matches!(config.auth, Some(tact::mcp::McpAuthConfig::Oauth { .. }));
     if !oauth_declared {
         eprintln!(
-            "Note: '{server}' does not declare `auth` in mcp.json. \
+            "Note: '{server}' does not declare `auth` in .mcp.json. \
              Authorizing anyway — the server's 401 is what requires it."
         );
     }
@@ -573,7 +575,7 @@ mod tests {
                 url: format!("https://example.invalid/{name}"),
                 oauth,
             },
-            source: "~/.tact/mcp.json".to_string(),
+            source: "~/.tact/.mcp.json".to_string(),
             disabled: false,
         }
     }
@@ -582,7 +584,7 @@ mod tests {
     fn empty_report_explains_how_to_configure() {
         let text = render_report(&McpLoadReport::default());
         assert!(text.contains("No MCP servers configured."), "{text}");
-        assert!(text.contains("~/.tact/mcp.json"), "{text}");
+        assert!(text.contains("~/.tact/.mcp.json"), "{text}");
         assert!(text.contains("mcpServers"), "{text}");
     }
 
@@ -758,17 +760,17 @@ mod tests {
                 transport: mcp::McpTransportKind::Stdio {
                     command: "/bin/project".to_string(),
                 },
-                source: "/proj/.tact/mcp.json".to_string(),
+                source: "/proj/.tact/.mcp.json".to_string(),
                 disabled: false,
             }],
-            shadowed: vec![("shared".to_string(), "/home/me/.tact/mcp.json".to_string())],
+            shadowed: vec![("shared".to_string(), "/home/me/.tact/.mcp.json".to_string())],
             ..McpLoadReport::default()
         };
 
         let text = render_report(&report);
         assert!(text.contains("Overridden declarations:"), "{text}");
         assert!(
-            text.contains("/home/me/.tact/mcp.json is shadowed by /proj/.tact/mcp.json"),
+            text.contains("/home/me/.tact/.mcp.json is shadowed by /proj/.tact/.mcp.json"),
             "{text}"
         );
     }
@@ -800,7 +802,7 @@ mod tests {
             text.contains("figma  remote https://example.invalid/figma"),
             "{text}"
         );
-        assert!(text.contains("source  ~/.tact/mcp.json"), "{text}");
+        assert!(text.contains("source  ~/.tact/.mcp.json"), "{text}");
         assert!(text.contains("status  connected (2 tools)"), "{text}");
         // Full names are what the agent must call, so they are qualified here.
         assert!(text.contains("mcp__figma__get_file"), "{text}");
@@ -938,7 +940,7 @@ mod tests {
             server: mcp::ConfiguredServer {
                 name: name.to_string(),
                 transport,
-                source: "~/.tact/mcp.json".to_string(),
+                source: "~/.tact/.mcp.json".to_string(),
                 disabled: false,
             },
             status,
@@ -990,7 +992,7 @@ mod tests {
     fn live_listing_explains_how_to_configure_when_empty() {
         let text = render_live_listing(&[]);
         assert!(text.contains("No MCP servers configured."), "{text}");
-        assert!(text.contains("~/.tact/mcp.json"), "{text}");
+        assert!(text.contains("~/.tact/.mcp.json"), "{text}");
     }
 
     #[test]

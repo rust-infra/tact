@@ -5,8 +5,8 @@
 //!
 //! ## Architecture
 //!
-//! - [`McpConfigFile`] reads Tact's native `mcp.json` (project
-//!   `<workdir>/.tact/mcp.json`, user `~/.tact/mcp.json`) and is the only way
+//! - [`McpConfigFile`] reads Tact's native `.mcp.json` (project
+//!   `<workdir>/.tact/.mcp.json`, user `~/.tact/.mcp.json`) and is the only way
 //!   a user is expected to declare a server.
 //! - [`installed_plugin_mcp_servers`] reads servers contributed by installed
 //!   marketplace plugins.
@@ -24,8 +24,8 @@
 //! name**, and every override is recorded in [`McpLoadReport::shadowed`]:
 //!
 //! 1. `<workdir>/.mcp.json` (Claude Code project file)
-//! 2. `~/.tact/mcp.json` (user)
-//! 3. `<workdir>/.tact/mcp.json` (project)
+//! 2. `~/.tact/.mcp.json` (user)
+//! 3. `<workdir>/.tact/.mcp.json` (project)
 //! 4. installed plugins (`plugin__<plugin>__<server>`)
 //!
 //! Tact's own files come first in that list because they are the ones the user
@@ -113,7 +113,7 @@ pub struct McpServerConfig {
     pub env: HashMap<String, String>,
 }
 
-/// Tact's native MCP configuration file (`mcp.json`), using the same
+/// Tact's native MCP configuration file (`.mcp.json`), using the same
 /// Claude-compatible shape every MCP client accepts:
 ///
 /// ```json
@@ -272,7 +272,7 @@ pub struct McpServerView {
 /// duplicate (or, for stdio servers, contend with) the live connections.
 ///
 /// Returns an error only when the configuration on disk cannot be resolved
-/// (an unparseable `mcp.json`); a missing file is simply an empty listing.
+/// (an unparseable `.mcp.json`); a missing file is simply an empty listing.
 pub fn describe_servers(connected: &[(String, usize)]) -> Result<Vec<McpServerView>> {
     Ok(describe_resolved(resolve_current()?, connected))
 }
@@ -493,7 +493,7 @@ pub struct PluginManifest {
     pub mcp_servers: HashMap<String, McpProjectConfig>,
 }
 
-/// MCP server entry in `mcp.json` / a plugin `.mcp.json`.
+/// MCP server entry in `.mcp.json` / a plugin `.mcp.json`.
 ///
 /// Exactly one transport is expected:
 ///
@@ -614,7 +614,7 @@ impl McpProjectConfig {
 ///
 /// This is the only remaining multi-file bundle source. A plugin is a
 /// distributable package, so its bundle-relative `.mcp.json` and manifest are
-/// read here — but never at the working directory, where `.tact/mcp.json` is
+/// read here — but never at the working directory, where `.tact/.mcp.json` is
 /// the single answer.
 pub fn installed_plugin_mcp_servers(home: &PluginHome) -> Result<Vec<(String, McpProjectConfig)>> {
     let store = PluginStore::new(home.clone());
@@ -653,7 +653,7 @@ fn collect_plugin_mcp_servers(
 
     // A plugin-root `.mcp.json` is part of the plugin *bundle* format, not a
     // project config convention. Tact deliberately does not read a `.mcp.json`
-    // at the working directory — that role belongs to `<workdir>/.tact/mcp.json`.
+    // at the working directory — that role belongs to `<workdir>/.tact/.mcp.json`.
     let mcp_path = root.root.join(".mcp.json");
     if mcp_path.is_file() {
         let raw = fs::read_to_string(&mcp_path)
@@ -1109,7 +1109,7 @@ struct SourcedServer {
 /// Reads every MCP source in ascending precedence order.
 ///
 /// A compatibility source is read *before* the native files so it can never
-/// silently outrank a declaration the user wrote in `.tact/mcp.json`.
+/// silently outrank a declaration the user wrote in `.tact/.mcp.json`.
 fn collect_sourced_servers(cwd: &Path) -> Result<Vec<SourcedServer>> {
     let mut servers: Vec<SourcedServer> = Vec::new();
 
@@ -1201,7 +1201,7 @@ struct ResolvedServers {
 impl ResolvedServers {
     /// Describes each server for diagnostics (`tact-ui mcp list`).
     ///
-    /// Sorted by name: `mcp.json` is parsed into a `HashMap`, so there is no
+    /// Sorted by name: `.mcp.json` is parsed into a `HashMap`, so there is no
     /// meaningful declaration order to preserve and an unstable listing would
     /// make repeated runs needlessly hard to compare.
     fn configured(&self) -> Vec<ConfiguredServer> {
@@ -1563,8 +1563,9 @@ mod tests {
         PluginManifest, RealMcpService, SourcedServer, UnmodelledKeys, collect_sourced_servers,
         describe_resolved, drain_mcp_stderr, installed_plugin_mcp_servers, resolve_servers,
     };
+
     use crate::{
-        consts::PluginHome,
+        consts::{PluginHome, TactPath},
         plugin::{InstalledPlugin, InstalledState, PluginStore},
     };
 
@@ -1982,7 +1983,7 @@ mod tests {
         assert_eq!(output, "hello");
     }
 
-    // ── Native `mcp.json` sources ───────────────────────────────────────
+    // ── Native `.mcp.json` sources ───────────────────────────────────────
 
     fn sourced(name: &str, source: &str, command: &str) -> SourcedServer {
         SourcedServer {
@@ -2005,9 +2006,9 @@ mod tests {
     /// reported once (as configured), not also as skipped.
     #[test]
     fn a_name_configured_in_another_scope_is_not_also_reported_as_skipped() {
-        let mut broken = sourced("shared", "~/.tact/mcp.json", "/bin/unused");
+        let mut broken = sourced("shared", "~/.tact/.mcp.json", "/bin/unused");
         broken.config.command = None;
-        let working = sourced("shared", "./.tact/mcp.json", "/bin/project");
+        let working = sourced("shared", "./.tact/.mcp.json", "/bin/project");
 
         let resolved = resolve_servers(vec![broken, working]);
 
@@ -2022,7 +2023,7 @@ mod tests {
     #[test]
     fn mcp_config_file_reads_servers_and_missing_is_none() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mcp.json");
+        let path = dir.path().join(".mcp.json");
         assert!(McpConfigFile::read(&path).unwrap().is_none());
 
         std::fs::write(
@@ -2044,18 +2045,18 @@ mod tests {
     #[test]
     fn mcp_config_file_parse_error_names_the_path() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mcp.json");
+        let path = dir.path().join(".mcp.json");
         std::fs::write(&path, "{ not json").unwrap();
 
         let message = format!("{:#}", McpConfigFile::read(&path).unwrap_err());
-        assert!(message.contains("mcp.json"), "{message}");
+        assert!(message.contains(".mcp.json"), "{message}");
     }
 
     #[test]
     fn later_source_overrides_earlier_by_server_name() {
         let resolved = resolve_servers(vec![
-            sourced("shared", "~/.tact/mcp.json", "/bin/user"),
-            sourced("shared", "./.tact/mcp.json", "/bin/project"),
+            sourced("shared", "~/.tact/.mcp.json", "/bin/user"),
+            sourced("shared", "./.tact/.mcp.json", "/bin/project"),
         ]);
 
         assert_eq!(resolved.servers.len(), 1);
@@ -2065,7 +2066,7 @@ mod tests {
         ));
         assert_eq!(
             resolved.shadowed,
-            vec![("shared".to_owned(), "~/.tact/mcp.json".to_owned())]
+            vec![("shared".to_owned(), "~/.tact/.mcp.json".to_owned())]
         );
         assert!(resolved.skipped_remote.is_empty());
     }
@@ -2073,8 +2074,8 @@ mod tests {
     #[test]
     fn non_conflicting_sources_merge() {
         let resolved = resolve_servers(vec![
-            sourced("user-only", "~/.tact/mcp.json", "/bin/user"),
-            sourced("project-only", "./.tact/mcp.json", "/bin/project"),
+            sourced("user-only", "~/.tact/.mcp.json", "/bin/user"),
+            sourced("project-only", "./.tact/.mcp.json", "/bin/project"),
         ]);
 
         let names: Vec<&str> = resolved
@@ -2090,7 +2091,7 @@ mod tests {
     fn commandless_entries_are_skipped_not_fatal_while_remote_entries_connect() {
         let remote = SourcedServer {
             name: "hosted".to_owned(),
-            source: "~/.tact/mcp.json".to_owned(),
+            source: "~/.tact/.mcp.json".to_owned(),
             config: McpProjectConfig {
                 server_type: Some("http".to_owned()),
                 command: None,
@@ -2104,7 +2105,7 @@ mod tests {
         };
         let commandless = SourcedServer {
             name: "typo".to_owned(),
-            source: "~/.tact/mcp.json".to_owned(),
+            source: "~/.tact/.mcp.json".to_owned(),
             config: McpProjectConfig {
                 server_type: None,
                 command: None,
@@ -2136,11 +2137,11 @@ mod tests {
 
     #[test]
     fn native_config_key_is_the_server_name_without_a_prefix() {
-        // The whole point of `mcp.json`: a plain key, so the agent-side tool
+        // The whole point of `.mcp.json`: a plain key, so the agent-side tool
         // name is exactly `mcp__<key>__<tool>`.
         let resolved = resolve_servers(vec![sourced(
             "basic-memory",
-            "~/.tact/mcp.json",
+            "~/.tact/.mcp.json",
             "/bin/echo",
         )]);
         let client = McpClient::with_service(
@@ -2174,14 +2175,14 @@ mod tests {
         assert!(lines[0].contains("broken"), "{lines:?}");
     }
 
-    /// Sorted by name: `mcp.json` is parsed into a `HashMap`, so the listing
+    /// Sorted by name: `.mcp.json` is parsed into a `HashMap`, so the listing
     /// must not inherit its random iteration order.
     #[test]
     fn configured_servers_are_sorted_by_name() {
         let mut resolved = resolve_servers(vec![
-            sourced("zeta", "~/.tact/mcp.json", "/bin/z"),
-            sourced("alpha", "~/.tact/mcp.json", "/bin/a"),
-            sourced("mid", "~/.tact/mcp.json", "/bin/m"),
+            sourced("zeta", "~/.tact/.mcp.json", "/bin/z"),
+            sourced("alpha", "~/.tact/.mcp.json", "/bin/a"),
+            sourced("mid", "~/.tact/.mcp.json", "/bin/m"),
         ]);
         resolved.servers.reverse();
 
@@ -2196,7 +2197,7 @@ mod tests {
     #[test]
     fn load_report_renders_overrides_and_skipped_servers() {
         let report = McpLoadReport {
-            shadowed: vec![("shared".to_owned(), "~/.tact/mcp.json".to_owned())],
+            shadowed: vec![("shared".to_owned(), "~/.tact/.mcp.json".to_owned())],
             skipped_remote: vec!["hosted".to_owned()],
             ..McpLoadReport::default()
         };
@@ -2262,7 +2263,7 @@ mod tests {
     #[test]
     fn a_cwd_dot_mcp_json_is_read_and_never_outranks_a_native_file() {
         // The temp dir stands in for the working directory; assertions look at
-        // these two names only, so a real `~/.tact/mcp.json` on the machine
+        // these two names only, so a real `~/.tact/.mcp.json` on the machine
         // running the tests cannot make this flaky.
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path();
@@ -2279,7 +2280,7 @@ mod tests {
         .unwrap();
         std::fs::create_dir_all(cwd.join(".tact")).unwrap();
         std::fs::write(
-            cwd.join(".tact/mcp.json"),
+            cwd.join(".tact/.mcp.json"),
             r#"{"mcpServers":{"claude-shared-name":{"command":"/bin/native"}}}"#,
         )
         .unwrap();
@@ -2310,6 +2311,14 @@ mod tests {
                 .any(|(name, _, _)| name == "claude-town"),
             "a name only the cwd .mcp.json declares must still be usable",
         );
+    }
+
+    #[test]
+    fn the_native_config_file_is_dot_mcp_json_in_the_tact_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = TactPath::new(dir.path()).mcp_config_path();
+
+        assert!(project.ends_with(".tact/.mcp.json"), "{project:?}");
     }
 
     #[test]
@@ -2383,7 +2392,7 @@ mod tests {
 
         assert_eq!(resolved.unmodelled.len(), 1, "{:?}", resolved.unmodelled);
         assert_eq!(resolved.unmodelled[0].server, "codexish");
-        assert_eq!(resolved.unmodelled[0].source, "/tmp/mcp.json");
+        assert_eq!(resolved.unmodelled[0].source, "/tmp/.mcp.json");
         assert_eq!(
             resolved.unmodelled[0].keys,
             vec!["startup_timeout_sec", "tools"]
@@ -2455,7 +2464,7 @@ mod tests {
     fn sourced_config(name: &str, config: McpProjectConfig) -> SourcedServer {
         SourcedServer {
             name: name.to_string(),
-            source: "/tmp/mcp.json".to_string(),
+            source: "/tmp/.mcp.json".to_string(),
             config,
         }
     }

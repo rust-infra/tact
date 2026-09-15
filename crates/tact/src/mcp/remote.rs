@@ -1,6 +1,6 @@
 //! Remote MCP servers: Streamable HTTP transport and OAuth 2.0 authorization.
 //!
-//! A remote entry in `mcp.json` declares a `url` instead of a `command`:
+//! A remote entry in `.mcp.json` declares a `url` instead of a `command`:
 //!
 //! ```json
 //! {
@@ -972,7 +972,7 @@ fn redact_query_value(url: &str, key: &str) -> String {
 /// `~/.tact/mcp/oauth/<server>.json` — credential file for one server.
 ///
 /// Returns `None` for a name that is unsafe as a path component, so a hostile
-/// or malformed `mcp.json` key — or a `mcp logout <name>` argument — can never
+/// or malformed `.mcp.json` key — or a `mcp logout <name>` argument — can never
 /// read or delete a file outside this directory. Callers treat `None` the same
 /// way they treat "no credential", which is the safe direction: the server is
 /// reported as needing authorization rather than silently trusting a file.

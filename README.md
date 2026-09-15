@@ -214,8 +214,8 @@ tact-ui mcp logout linear              # delete the stored credentials
 tact-ui mcp remove local               # delete the declaration only
 ```
 
-`add`/`remove` write the project file (`.tact/mcp.json`) by default; pass
-`--user` for `~/.tact/mcp.json` or `--force` to replace an existing
+`add`/`remove` write the project file (`.tact/.mcp.json`) by default; pass
+`--user` for `~/.tact/.mcp.json` or `--force` to replace an existing
 declaration. `login`/`logout` own the tokens under `~/.tact/mcp/oauth/`, and
 `mcp auth` remains an alias for `mcp login`.
 
