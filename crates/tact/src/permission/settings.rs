@@ -723,6 +723,20 @@ mod tests {
     // Task 1 tests — path accessors, loading, soft failures, preservation
     // ===================================================================
 
+    /// Load a project's settings with **no** global layer.
+    ///
+    /// `PermissionSettings::load` also reads `$HOME/.tact/settings.json`, which
+    /// makes every rule-count assertion here depend on the machine running the
+    /// test. That dependency is not hypothetical: inside the `bwrap` sandbox
+    /// (`HOME=/workspace`) the global path resolves to
+    /// `<workdir>/.tact/settings.json` — the repository's own project settings —
+    /// so four of these tests failed on a workspace that had one. `load_from` is
+    /// the documented injection point for exactly this, so the tests below use it
+    /// and assert only on what they wrote.
+    fn load_project_only(project_dir: &std::path::Path) -> PermissionSettings {
+        PermissionSettings::load_from(&project_dir.join(".tact/settings.json"), None)
+    }
+
     // ——— Path accessor tests ——————————————————————————————
 
     #[test]
@@ -749,14 +763,14 @@ mod tests {
     #[test]
     fn missing_settings_are_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = PermissionSettings::load(&TactPath::new(dir.path()));
+        let settings = load_project_only(dir.path());
         assert!(settings.rules().is_empty());
     }
 
     #[test]
     fn missing_settings_have_empty_project_doc() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = PermissionSettings::load(&TactPath::new(dir.path()));
+        let settings = load_project_only(dir.path());
         assert_eq!(settings.project_doc(), &Value::Object(Map::new()));
         assert_eq!(settings.allow_rules().len(), 0);
         assert_eq!(settings.ask_rules().len(), 0);
@@ -770,7 +784,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
         std::fs::write(&project_file, "not valid json").unwrap();
 
-        let settings = PermissionSettings::load(&TactPath::new(dir.path()));
+        let settings = load_project_only(dir.path());
         assert!(settings.rules().is_empty());
     }
 
@@ -791,7 +805,7 @@ mod tests {
         )
         .unwrap();
 
-        let settings = PermissionSettings::load(&TactPath::new(dir.path()));
+        let settings = load_project_only(dir.path());
         assert_eq!(settings.allow_rules().len(), 2);
         assert_eq!(settings.ask_rules().len(), 1);
         assert_eq!(settings.deny_rules().len(), 0);
@@ -884,7 +898,7 @@ mod tests {
         )
         .unwrap();
 
-        let settings = PermissionSettings::load(&TactPath::new(dir.path()));
+        let settings = load_project_only(dir.path());
         assert_eq!(settings.deny_rules().len(), 1);
         // Top-level unknown
         assert_eq!(

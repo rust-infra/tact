@@ -140,10 +140,12 @@ All nine work items shipped. Deviations from the plan as written, each deliberat
 | Startup warning in `interactive.rs` / `headless.rs` via `tracing::warn!` | TUI `AgentUpdate::Info` / `eprintln!` there, `tracing::warn!` on the first degraded command in `bash.rs` | `tact-ui` does not depend on `tracing`. The visible channel is at startup; the log line is emitted by the crate that owns the subscriber. |
 | Workspace guard: `/`, `$HOME`, ancestors of `$HOME`, `/etc` `/usr` `/boot` | Also refuses `/bin`, `/lib`, `/lib64` | Same class of mistake as `/etc`; refusing them costs nothing. |
 
-Two findings from implementing, both now recorded in code comments:
+Three findings from implementing; the first two are recorded in code comments:
 
 - **The toolchain binds create an empty `/home/<user>` mount point inside the sandbox.** The homes are the only entries under it (`.ssh` and everything else are still absent), so this is the documented allowlist, not an accidental home mount — but the sandbox test asserts on the home's *contents*, not on the directory.
 - **`--unshare-pid` + `--die-with-parent` teardown verified end-to-end.** Timeout and cancellation both return promptly, both pipes reach EOF, and no `bwrap`/`sh`/`sleep` survives (`tool::bash::sandbox_tests`).
+- **`HOME=/workspace` collides with `<workdir>/.tact` when the workspace is a repo root**, because `<workdir>` *is* `/workspace` inside the sandbox. Four `permission::settings` tests read the ambient `$HOME/.tact/settings.json` as their global layer, so running the suite from a sandboxed `bash` picked up the repository's own project settings and failed on rule counts. Those tests now use `PermissionSettings::load_from(project, None)` (the injection point the type already documents) and are independent of the machine's `$HOME`. Verified by pointing `HOME` at a directory holding a non-empty global settings file: all 53 pass.
+  The same shape affects any process the sandboxed shell spawns that consults `~/.tact/...`. The tact *process* itself is unaffected — it keeps the real `$HOME`.
 
 Verification run: `cargo fmt -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo test --workspace` (876 lib tests + integration suites, 0 failures; the six sandboxed-bash
