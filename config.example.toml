@@ -194,6 +194,14 @@ mode = "default"
 # Loaded after built-in roots; later entries override same-named skills.
 # skill_dirs = ["~/shared-skills", "./vendor/skills"]
 
+# Inject every skill BODY into every system prompt (default: false).
+# false: each turn carries only skill names + descriptions from
+#        describe_available(); the full body arrives on demand via `load_skill`.
+# true:  every skill body is injected into every system prompt — exact, but paid
+#        for on each call; use only when a skill must be in context unconditionally.
+# CLI equivalent: --skill-body-auto-inject (enable only; there is no --no- form).
+# skill_body_auto_inject = false
+
 # Subagent LLM configuration (optional).
 # When configured, spawn_subagent uses a separate provider/model
 # instead of the main agent's provider. References a key from
@@ -208,6 +216,13 @@ mode = "default"
 # Optional token overrides (otherwise falls back to the provider entry defaults).
 # max_tokens = 8000
 # thinking_budget = 0
+# Optional reasoning effort override (otherwise falls back to the referenced
+# provider entry's value, then the main agent's resolved value).
+# openai / deepseek / kimi k3 semantics: none|minimal|low|medium|high|xhigh|max
+# reasoning_effort = "high"
+#
+# NOTE: [agent.subagent] is deny_unknown_fields — a misspelled key here is a
+# startup error, not a silent no-op.
 
 # ---------------------------------------------------------------------------
 # TUI
