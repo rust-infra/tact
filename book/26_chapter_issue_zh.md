@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-15 — 只收到 reasoning 的 Responses 流会自报身份，不再读起来像空流
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/openai/responses/stream.rs`（`ResponsesStreamState`、`finish()`）；[Ch 22](./22_chapter_llm_zh.md) §6.2 |
+
+**症状 / 动机：** 在一个兼容端点上（`protocol = "responses"` + `https://opencode.ai/zen/go/v1`，模型 `deepseek-v4.1-flash`，`reasoning_effort = "low"`），只产出 reasoning 的一轮以 `unsupported response state: OpenAI Responses stream ended without a terminal event` 结束。这条文案描述的是**空流**，排查方向也就被带偏了——实际上 reasoning delta 是到达过的（TUI 上显示为 thinking）。它们只被转发给 UI、哪里都没存，于是在 `finish()` 内部，"只收到 reasoning 的流"和"什么都没收到的流"完全无法区分。
+
+**决策：** 保持硬失败不变——既没有可见文本、也没有已完成 output item 的回合不是完整回合；而"恢复"它只会产出一条仅含 thinking block 的 assistant 消息，正是 `sanitize_assistant_messages` 专门在打补丁的形态（[Ch 22](./22_chapter_llm_zh.md) §6.1）——但让状态可观测：在流状态里统计 reasoning delta 数，把判定所依据的三个量（reasoning delta 数、已完成 output item 数、已 announce 但未完成数）都报出来，并按"是否收到过 reasoning"分流文案。该端点上的根因是网关未发送终态事件就关闭了流；把该条目改成 `protocol = "chat_completions"` 可以完全绕开。
+
+**行为变化：** "只有 reasoning 的流"与"真正的空流"现在给出不同的句子，前者会同时点明端点行为，以及为什么这是协议失败而不是空回答。除此之外没有变化：完整 `output_item.done` 序列与已流式可见文本这两条恢复路径未被触碰，判定逻辑本身也未改。
+
+**指针：** `crates/tact_llm/src/openai/responses/stream.rs`（`reasoning_deltas`、`thinking_delta`、`finish()` 的终态事件分支）；测试 `no_terminal_event_after_reasoning_only_names_the_reasoning` 与 `no_terminal_event_empty_stream_is_error`；[Ch 22](./22_chapter_llm_zh.md) §6.2。
+
+---
+
 ## 1. 2026-09-15 — `bash` 可以在可选开启的 bubblewrap 沙箱中运行
 
 | Field | Value |

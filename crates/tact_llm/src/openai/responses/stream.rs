@@ -112,6 +112,15 @@ fn web_search_finished(
 pub(crate) struct ResponsesStreamState {
     thinking_open: bool,
     output_text: String,
+    /// Number of reasoning deltas seen (`reasoning_summary_text.delta` /
+    /// `reasoning_text.delta`).
+    ///
+    /// They are forwarded to the TUI but never accumulated as visible text, so
+    /// without this counter `finish()` cannot tell "the endpoint sent only
+    /// reasoning" from "the endpoint sent nothing" — and those two need
+    /// different diagnostics (the first is a compatible endpoint omitting the
+    /// terminal event; the second is an empty stream).
+    reasoning_deltas: usize,
     terminal: Option<Response>,
     /// Completed output items keyed by `output_index`, in output order. Used
     /// to reconstruct the terminal output when compatible endpoints omit the
@@ -148,6 +157,9 @@ impl ResponsesStreamState {
         if delta.is_empty() {
             return Vec::new();
         }
+        // Counted here (not in `visible_delta`): reasoning is the one content
+        // class that reaches the user and leaves no trace in the state.
+        self.reasoning_deltas += 1;
         let mut updates = Vec::with_capacity(2);
         if !self.thinking_open {
             self.thinking_open = true;
@@ -308,6 +320,7 @@ impl ResponsesStreamState {
     pub(crate) fn finish(self) -> Result<NormalizedResponse, LlmError> {
         let ResponsesStreamState {
             output_text,
+            reasoning_deltas,
             terminal,
             done_items,
             pending_added,
@@ -347,9 +360,24 @@ impl ResponsesStreamState {
                     ));
                 }
                 if done_sequence.is_none() && output_text.is_empty() {
-                    return Err(LlmError::Unsupported(
-                        "OpenAI Responses stream ended without a terminal event".into(),
-                    ));
+                    // The two causes need different actions, so name the one
+                    // that actually happened instead of one wording for both.
+                    let cause = if reasoning_deltas > 0 {
+                        "the stream carried only reasoning, and a turn with no visible \
+                         text and no completed output item is not a complete turn — a \
+                         compatible endpoint is closing the stream without its terminal \
+                         event"
+                    } else {
+                        "the stream carried no output at all, and the endpoint never sent \
+                         response.completed / response.incomplete / response.failed"
+                    };
+                    return Err(LlmError::Unsupported(format!(
+                        "OpenAI Responses stream ended without a terminal event \
+                         (reasoning deltas: {reasoning_deltas}, completed output items: {}, \
+                         announced but never completed: {}): {cause}",
+                        done_items.len(),
+                        pending_added.len(),
+                    )));
                 }
                 serde_json::from_value(serde_json::json!({
                     "id": "compat-response",
@@ -390,11 +418,10 @@ impl ResponsesStreamState {
             // hard protocol error in `normalize_response`.
             normalize_response(response)?
         } else {
-            return Err(LlmError::Unsupported(
+            return Err(LlmError::Unsupported(format!(
                 "OpenAI Responses terminal event carried no output and the \
-                 output_item.done sequence is incomplete"
-                    .to_string(),
-            ));
+                 output_item.done sequence is incomplete (reasoning deltas: {reasoning_deltas})"
+            )));
         };
         // Never combine streamed deltas with authoritative message text: the
         // deltas are appended only when the normalized output has no text at
@@ -426,6 +453,17 @@ mod tests {
 
     fn event(value: serde_json::Value) -> ResponseStreamEvent {
         serde_json::from_value(value).unwrap()
+    }
+
+    fn reasoning_delta(delta: &str) -> ResponseStreamEvent {
+        event(serde_json::json!({
+            "type": "response.reasoning_summary_text.delta",
+            "sequence_number": 1,
+            "item_id": "rs_1",
+            "output_index": 0,
+            "summary_index": 0,
+            "delta": delta
+        }))
     }
 
     #[test]
@@ -1163,6 +1201,41 @@ mod tests {
         assert!(
             error.contains("without a terminal event"),
             "empty stream must keep the terminal-event error, got: {error}"
+        );
+        // A truly empty stream must not claim reasoning arrived.
+        assert!(error.contains("reasoning deltas: 0"), "got: {error}");
+        assert!(
+            error.contains("carried no output at all"),
+            "an empty stream must say so: {error}"
+        );
+        assert!(
+            !error.contains("carried only reasoning"),
+            "an empty stream must not be reported as reasoning-only: {error}"
+        );
+    }
+
+    #[test]
+    fn no_terminal_event_after_reasoning_only_names_the_reasoning() {
+        // Measured against a compatible endpoint (opencode.ai zen, model
+        // deepseek-v4.1-flash, protocol = "responses"): the model thinks, emits
+        // reasoning deltas, and the endpoint closes the SSE stream without a
+        // terminal event. Reasoning never reaches `output_text`, so without the
+        // counter this looked exactly like an empty stream and the error sent
+        // the reader looking for a stream that never arrived.
+        let mut state = ResponsesStreamState::default();
+        state.apply(reasoning_delta("let me think")).unwrap();
+        state.apply(reasoning_delta(" about this")).unwrap();
+
+        let error = state.finish().unwrap_err().to_string();
+        assert!(error.contains("without a terminal event"), "got: {error}");
+        assert!(error.contains("reasoning deltas: 2"), "got: {error}");
+        assert!(
+            error.contains("carried only reasoning"),
+            "the error must name reasoning as the cause: {error}"
+        );
+        assert!(
+            !error.contains("carried no output at all"),
+            "a reasoning-only stream must not be reported as empty: {error}"
         );
     }
 

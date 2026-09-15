@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-15 — A reasoning-only Responses stream names itself instead of reading as an empty stream
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/openai/responses/stream.rs` (`ResponsesStreamState`, `finish()`); [Ch 22](./22_chapter_llm.md) §6.2 |
+
+**Symptom / motivation:** Against a compatible endpoint (`protocol = "responses"` on `https://opencode.ai/zen/go/v1`, model `deepseek-v4.1-flash`, `reasoning_effort = "low"`) a turn that produced only reasoning ended with `unsupported response state: OpenAI Responses stream ended without a terminal event`. That wording describes an *empty* stream, and that is where it sent the reader — but reasoning deltas had arrived (they are what the TUI showed as thinking). They are forwarded to the UI and stored nowhere, so a stream that carried only reasoning was indistinguishable inside `finish()` from a stream that carried nothing at all.
+
+**Decision:** Keep the hard failure — a turn with no visible text and no completed output item is not a complete turn, and "recovering" it would produce an assistant message containing only a thinking block, the exact shape `sanitize_assistant_messages` exists to patch ([Ch 22](./22_chapter_llm.md) §6.1) — but make the state observable: count reasoning deltas on the stream state, report the three inputs of the decision (reasoning deltas, completed output items, announced-but-never-completed items), and branch the wording on whether reasoning arrived. For this endpoint the underlying cause is the gateway closing the stream without its terminal event; `protocol = "chat_completions"` on that entry avoids it entirely.
+
+**Behavior after:** A reasoning-only stream and a genuinely empty stream produce different sentences, and the reasoning-only one names both the endpoint behaviour and why it is a protocol failure rather than an empty answer. Nothing else changed: the recovery paths for a complete `output_item.done` sequence or for streamed visible text are untouched, and the decision itself is unchanged.
+
+**Pointers:** `crates/tact_llm/src/openai/responses/stream.rs` (`reasoning_deltas`, `thinking_delta`, the `finish()` terminal-event branch); tests `no_terminal_event_after_reasoning_only_names_the_reasoning` and `no_terminal_event_empty_stream_is_error`; [Ch 22](./22_chapter_llm.md) §6.2.
+
+---
+
 ## 1. 2026-09-15 — `bash` can run in an opt-in bubblewrap sandbox
 
 | Field | Value |

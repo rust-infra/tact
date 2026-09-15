@@ -386,7 +386,11 @@ mod tests {
             .to_string();
         assert!(error.contains("home directory"), "unexpected: {error}");
 
-        if let Some(ancestor) = home.parent() {
+        if let Some(ancestor) = home.parent().filter(|path| *path != Path::new("/")) {
+            // A parent of `/` is the root itself, which `guard_rejects_the_
+            // filesystem_root` already covers; asserting "ancestor" there would
+            // only fail (this is the shape `$HOME` takes inside the sandbox,
+            // where `HOME=/workspace`).
             let error = bwrap_args_with(ancestor, &everything_exists)
                 .unwrap_err()
                 .to_string();

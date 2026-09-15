@@ -399,8 +399,13 @@ block. If a compatible endpoint closes the stream without any terminal event
 EOF is treated as terminal when the output sequence is complete (all announced
 `output_item.done` events received) or visible text was streamed: the adapter
 synthesizes a minimal completed response and reconstructs output from the done
-sequence / streamed text; a missing compaction boundary or an empty stream
-remains a hard protocol error. This avoids duplicating content found in both
+sequence / streamed text; a missing compaction boundary, an empty stream, and a
+stream that carried only reasoning remain hard protocol errors — a turn with no
+visible text and no completed output item is not a complete turn. The error
+names which of the three happened (reasoning-delta count, completed output
+items, announced-but-never-completed items), because only that distinguishes the
+common compatible-endpoint case from a genuinely empty stream. This avoids
+duplicating content found in both
 delta and terminal events.
 The stream adapter deserializes only the event types it consumes; unrelated or
 newer provider events are ignored. For terminal events from compatible
