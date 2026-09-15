@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-15 — A working-directory `.mcp.json` is read; `enabled: false` and unmodelled keys stop being silent
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/mcp/mod.rs` (`collect_sourced_servers`, `resolve_servers`, `McpProjectConfig`, `report_unmodelled_keys`); `crates/tact-ui/src/mcp_cli.rs` (`scope_hint`, `disabled_text`); [Ch 8](./08_chapter_mcp.md); [Ch 21](./21_chapter_config.md) |
+
+**Symptom / motivation:** Two mismatches with the Codex / Claude Code ecosystem. First, a `.mcp.json` in the working directory — Claude Code's project scope, the file a team commits — was deliberately ignored, so checking out someone else's repository left its shared servers needing a manual copy into `.tact/mcp.json`. Second, Codex's per-entry fields were dropped in silence: `McpProjectConfig` has no `deny_unknown_fields`, so `"enabled": false` (what OpenAI's own bundled `unified-computer-use` writes) parsed as an ordinary entry and was **connected anyway** — a server declared *off* was launched; `enabled_tools`, `omit_tools_from`, `startup_timeout_sec` and `tools.<name>.output_token_limit` left no trace at all.
+
+**Decision:** Adopt the cwd `.mcp.json` as the **lowest**-precedence source (`<workdir>/.mcp.json` → `~/.tact/mcp.json` → `<workdir>/.tact/mcp.json` → installed plugins), so a repository's shared configuration works out of the box while it can never silently take over a server the user declared (a displaced declaration is still reported as `MCP server X overrides <file>`). It belongs to the project rather than to the user, so a file that cannot be parsed is a warning and a skip rather than the hard error `mcp.json` gets — otherwise one bad file in a clone would stop Tact from starting in that directory at all. `McpProjectConfig` gains two fields: `enabled` (defaulting to true) and a `#[serde(flatten)] extra` that collects unmodelled keys. A declaration with `enabled: false` is still resolved (it can shadow an enabled one below it, and be shadowed by an enabled one above it) but is **never connected**; `mcp list` shows it as `disabled (enabled: false)` instead of `unknown`. Unmodelled keys are named one by one in `mcp list` (and in the log file) instead of vanishing. **Deliberately not implemented:** `enabled_tools`, `omit_tools_from`, `startup_timeout_sec` and `tools.<name>.output_token_limit` only warn — Tact's MCP layer has no tool allowlist, no output cap and no per-server startup timeout, and `omit_tools_from` is a Codex-internal concept (`code_mode` / `deferred`) with no counterpart here.
+
+**Behavior after:** After a checkout, the servers a repository declares in `.mcp.json` are usable immediately, with the same verbatim naming as a native `mcp.json` (`mcp__<key>__<tool>`, no prefix). On a name clash Tact's own files always win, and the outcome is named in the startup notice and in the "Overridden declarations" block of `mcp list`. A server switched off with `enabled: false` costs no startup time and exposes no tools, yet stays visible in `mcp list` / `/mcp list` / `mcp get` marked disabled. Codex-only fields are named one by one in the log, so configuration no longer disappears in silence. A foreign `.mcp.json` that cannot be parsed produces one warning.
+
+**Pointers:** `crates/tact/src/mcp/mod.rs` (`collect_sourced_servers` source order and prefixes; `Resolution` / `disabled` in `resolve_servers`; `unmodelled_keys` and `McpLoadReport::unmodelled`); `crates/tact-ui/src/mcp_cli.rs` (`disabled_text`, the Claude-project branch of `scope_hint`); [Ch 8](./08_chapter_mcp.md) Step 1 source table; [Ch 21](./21_chapter_config.md).
+
+---
+
 ## 1. 2026-09-14 — Dot-separated DeepSeek V4 ids keep their 1M window
 
 | Field | Value |

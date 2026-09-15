@@ -477,9 +477,11 @@ prefers a matching discovered Codex marketplace and falls back to
 (`plugin:<name>`), `commands/*.md` slash commands, MCP servers, and lifecycle
 hooks — see Ch 2,
 8, 9, 12. MCP servers are declared in `~/.tact/mcp.json` (user) or
-`<workdir>/.tact/mcp.json` (project) — one filename per scope, with no
-cwd-level manifest or `.mcp.json` read; installed plugins still contribute
-servers. An entry is either local (`command`, spawned over stdio) or remote
+`<workdir>/.tact/mcp.json` (project); a Claude Code `<workdir>/.mcp.json` is
+also read, at the lowest precedence, and installed plugins still contribute
+servers. There is no cwd-level Codex manifest read — that file lives in
+`CODEX_HOME`. An entry with `"enabled": false` is resolved but never connected,
+and entry keys Tact does not model are reported rather than ignored. An entry is either local (`command`, spawned over stdio) or remote
 (`url`, Streamable HTTP), optionally with static `headers` or
 `auth: { "type": "oauth", ... }`; OAuth tokens are stored per server under
 `~/.tact/mcp/oauth/` and authorized with `/mcp auth <server>` (interactive) or

@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-15 — 工作目录的 `.mcp.json` 会被读取；`enabled: false` 与未建模的键都不再无声
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/mcp/mod.rs`（`collect_sourced_servers`、`resolve_servers`、`McpProjectConfig`、`report_unmodelled_keys`）；`crates/tact-ui/src/mcp_cli.rs`（`scope_hint`、`disabled_text`）；[第 8 章](./08_chapter_mcp_zh.md)；[第 21 章](./21_chapter_config_zh.md) |
+
+**现象 / 动机：** 与 Codex / Claude Code 生态有两处不一致。其一，工作目录下的 `.mcp.json`——Claude Code 的项目作用域文件，也就是团队随仓库提交的那一份——被刻意忽略，于是检出别人的仓库后，随仓库共享的 server 必须手工抄进 `.tact/mcp.json` 才能用。其二，Codex 的条目级字段被静默丢弃：`McpProjectConfig` 没有 `deny_unknown_fields`，于是 `"enabled": false`（OpenAI 自带的 `unified-computer-use` 正是这么写的）被解析成一个普通条目并**照常连接**——一个声明"关掉"的 server 反被拉起；`enabled_tools`、`omit_tools_from`、`startup_timeout_sec`、`tools.<name>.output_token_limit` 更是连痕迹都不留。
+
+**决策：** 把 cwd 的 `.mcp.json` 接纳为**最低优先级**来源（`<workdir>/.mcp.json` → `~/.tact/mcp.json` → `<workdir>/.tact/mcp.json` → 已安装插件），让仓库文件开箱可用，同时永远不会静默顶掉用户自己声明的 server（被顶掉的声明照旧以 `MCP server X overrides <file>` 上报）。它属于项目而不属于用户，因此解析失败只记一条 warning 并跳过，而不像 `mcp.json` 那样硬报错——否则 clone 到一个坏文件就能让 Tact 在那个目录里根本起不来。`McpProjectConfig` 新增两个字段：`enabled`（缺省为真）与收容未知键的 `#[serde(flatten)] extra`。`enabled: false` 的声明照常参与解析（能顶掉更低优先级的启用声明，也能被更高优先级的启用声明顶掉），但**绝不连接**，`mcp list` 把它显示为 `disabled (enabled: false)` 而不是 `unknown`；未知键不再丢弃，而是在 `mcp list` 与日志文件里逐条点名。**刻意未实现**：`enabled_tools`、`omit_tools_from`、`startup_timeout_sec`、`tools.<name>.output_token_limit` 只告警、不生效——Tact 的 MCP 层目前没有工具白名单、输出上限或 per-server 启动超时，`omit_tools_from` 更是 Codex 内部概念（`code_mode` / `deferred`），没有对应物。
+
+**改后行为：** `mcp list` 多出一块「Entry keys Tact does not model」，点名哪个 server、被忽略的键、以及来源于哪个文件。检出仓库后，仓库 `.mcp.json` 里的 server 直接可用，工具名与原生 `mcp.json` 一样是 `mcp__<key>__<tool>`（不带前缀）。同名冲突时赢的永远是 Tact 自己的文件，且胜负会在启动提示与 `mcp list` 的 "Overridden declarations" 里点名。被 `enabled: false` 关掉的 server 不占启动时间、不出现在工具列表里，但仍在 `mcp list` / `/mcp list` / `mcp get` 里可见并标为 disabled。Codex 专有字段会在日志里逐条点名，配置不再无声消失。解析失败的外来 `.mcp.json` 只产生一条 warning。
+
+**指针：** `crates/tact/src/mcp/mod.rs`（`collect_sourced_servers` 的来源顺序与前缀；`resolve_servers` 的 `Resolution` / `disabled`；`unmodelled_keys` 与 `McpLoadReport::unmodelled`）；`crates/tact-ui/src/mcp_cli.rs`（`disabled_text`、`scope_hint` 的 Claude 项目文件分支）；[第 8 章](./08_chapter_mcp_zh.md) Step 1 的来源表；[第 21 章](./21_chapter_config_zh.md)。
+
+---
+
 ## 1. 2026-09-14 — 点号分隔的 DeepSeek V4 id 保住 1M 窗口
 
 | Field | Value |
