@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-15 — `bash` can run in an opt-in bubblewrap sandbox
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/sandbox/{mod,bwrap}.rs`; `crates/tact/src/tool/bash.rs`; `crates/tact/src/config/types.rs` (`SandboxBackend`); [Ch 7](./07_chapter_tool.md) §7.1; [Ch 10](./10_chapter_permission.md); [Ch 21](./21_chapter_config.md); [design](../docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md); [plan](../docs/superpowers/plans/2026-09-15-bwrap-sandbox.md) |
+
+**Symptom / motivation:** An approved `bash` command ran as an ordinary host process: it could read the user's home directory (SSH keys, cloud credentials), any unrelated repository, and the host network. Permission answers *may this command run*, not *what can it reach*, and the failure mode that matters is not the agent's own command but the third-party code it pulls in — `cargo` build scripts, `npm` lifecycle scripts, test binaries, `make` recipes.
+
+**Decision:** Add a second, opt-in layer instead of changing the permission model. `[tools] sandbox = "none" | "bwrap"` (default `"none"`) selects a backend that wraps the existing `sh -c` process; the sandbox builds the invocation only, so spawning, streaming, timeout, cancellation and process-group teardown are untouched. The policy is a read-write bind of `work_dir` at `/workspace`, read-only `/usr` `/bin` `/lib` `/lib64` `/etc` plus a fixed toolchain allowlist (`~/.rustup`, `~/.cargo`, `~/.config/git`, `~/.npm`, wired through `RUSTUP_HOME` / `CARGO_HOME` / `GIT_CONFIG_GLOBAL` / `NPM_CONFIG_CACHE`), a fresh `/proc` and `/dev`, a tmpfs `/tmp`, `--clearenv` with an explicit variable allowlist, `--unshare-net`, `--unshare-pid` and `--die-with-parent`. `--new-session` is **forbidden**: measured, it detaches the command into its own process group, so the existing `killpg` teardown kills only `bwrap` while grandchildren hold the pipes open and the tool call never returns. A backend that cannot start degrades to `"none"` with a startup warning (fail-open, never silent) rather than failing the tool.
+
+**Behavior after:** With the default `"none"` nothing changes at all. With `"bwrap"`, `pwd` is `/workspace`, host paths outside the workspace and the host home directory are unreachable, `curl`/`git fetch`/`npm install` have no network, and the mounted `/proc` shows only sandbox processes (no host process table, no signalling same-uid host processes). `cargo`/`git`/`npm` still work because of the read-only toolchain allowlist. The `bash` description is rewritten at startup from the *resolved* state to state `/workspace` + no network, so the split path space (host absolute paths in every in-process tool result) is visible to the model. Scope is stated in the docs: the sandbox bounds third-party code an approved command runs, **not** the agent — `background_run` and `worktree_run` still spawn unsandboxed host shells ([Ch 13](./13_chapter_background.md), [Ch 15](./15_chapter_worktree.md)).
+
+**Pointers:** `crates/tact/src/sandbox/mod.rs` (`Sandbox`, `resolve`, `SandboxDegradation`); `crates/tact/src/sandbox/bwrap.rs` (pure `bwrap_args`, workspace guard, probe); `crates/tact/src/tool/bash.rs` (`SANDBOXED_BASH_DESCRIPTION`, the `match &ctx.sandbox` start, the one-time degraded notice); `crates/tact-ui/src/{interactive,headless}.rs` (startup resolve + notice + description override); `config.example.toml` `[tools] sandbox`.
+
+---
+
 ## 1. 2026-09-15 — The native MCP config is renamed to `.mcp.json`
 
 | Field | Value |

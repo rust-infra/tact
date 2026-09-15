@@ -24,6 +24,22 @@ It does **not** execute tools. It classifies intent, applies the active mode and
 
 Shell commands get **two** defenses: high-risk patterns trigger permission prompts; a smaller set is rejected outright inside the `bash` tool even after approval.
 
+### Permission vs sandbox
+
+Permission answers *may this command run*. It says nothing about what the command
+can reach once it does. Those are deliberately separate layers:
+
+```text
+Permission  = authorization    (may the agent run this?)
+Sandbox     = execution boundary (what can the running command access?)
+```
+
+The optional `bash` sandbox ([Tool System §7.1](./07_chapter_tool.md)) sits in
+the second layer and changes nothing in this chapter: enabling
+`[tools] sandbox = "bwrap"` adds no prompt and removes no check. A command can be
+`Permission = allow` and still be unable to read the host home or reach the
+network.
+
 ---
 
 ## 2. Intent Classification

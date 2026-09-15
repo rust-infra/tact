@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
-use tact_protocol::{ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
+use tact_protocol::{AgentUpdate, ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
 use tokio::{
     process::{Child, Command},
     sync::mpsc,
@@ -135,11 +135,47 @@ pub struct BashInput {
     pub timeout: Option<u64>,
 }
 
+/// Announce — once per session — that a configured sandbox is not in effect.
+///
+/// A `[tools] sandbox = "none"` session is unsandboxed by choice and stays
+/// quiet; this only fires when the user asked for a backend that could not
+/// start. Startup already reported the degradation, but that line scrolls away,
+/// so the notice is repeated at the point of use.
+fn notice_unsandboxed(ctx: &ToolContext) {
+    let Some(degraded) = &ctx.sandbox_degraded else {
+        return;
+    };
+    if !degraded.first_command_notice() {
+        return;
+    }
+    tracing::warn!(reason = %degraded.reason, "bash: command not sandboxed");
+    if let Some(tx) = &ctx.ui_tx {
+        let _ = tx.send(AgentUpdate::Info(degraded.reason.clone()));
+    }
+}
+
 /// Resolve the effective wall-clock limit: a per-call `timeout` (if given)
 /// wins over the configured `[tools].bash_timeout_secs`, and `0` disables it.
 fn resolve_timeout_secs(input_timeout: Option<u64>, configured_secs: u64) -> u64 {
     input_timeout.unwrap_or(configured_secs)
 }
+
+/// `bash` tool description used when the sandbox is active.
+///
+/// The description is the only place the split path space is surfaced to the
+/// model: inside the sandbox `pwd` is `/workspace`, while every in-process tool
+/// reports host absolute paths. It is applied at startup via
+/// [`ToolRouter::set_tool_description`](crate::tool::ToolRouter::set_tool_description)
+/// from the *resolved* sandbox state — a session whose effective backend is
+/// `none` must not advertise `/workspace` or a disabled network.
+pub const SANDBOXED_BASH_DESCRIPTION: &str = "\
+Run a shell command in the current workspace.
+
+The command runs inside a sandbox: the workspace is mounted at `/workspace` and is the \
+working directory, and the host workspace path is not visible inside. The network is \
+disabled, and the host home directory is not mounted. In-process tools (`read_file`, \
+`edit_file`, …) still report host absolute paths, so a host path inside the workspace must \
+be rewritten to `/workspace/...` before it is used in a command here.";
 
 pub const BASH_METADATA: ToolMetadata = ToolMetadata {
     name: "bash",
@@ -178,11 +214,30 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
 
     validate_shell_command(&command)?;
 
-    let mut process = Command::new("sh");
+    // The sandbox (if any) only changes how the process is started; everything
+    // after `spawn` — piped stdio, process group, timeout, cancellation,
+    // process-group teardown — is unchanged.
+    let mut process = match &ctx.sandbox {
+        Some(sandbox) => {
+            let args = vec!["-c".to_string(), command];
+            sandbox
+                .command("sh", &args, &ctx.work_dir)
+                .with_context(|| {
+                    format!(
+                        "failed to build the {} sandbox invocation",
+                        sandbox.describe()
+                    )
+                })?
+        }
+        None => {
+            // Default, or a sandbox that degraded at startup (§ sandbox module).
+            notice_unsandboxed(&ctx);
+            let mut direct = Command::new("sh");
+            direct.arg("-c").arg(command).current_dir(&ctx.work_dir);
+            direct
+        }
+    };
     process
-        .arg("-c")
-        .arg(command)
-        .current_dir(&ctx.work_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -542,5 +597,243 @@ mod tests {
             gap >= Duration::from_millis(40),
             "regular progress became eligible only {gap:?} after the immediate batch"
         );
+    }
+}
+
+/// Integration tests for the opt-in bubblewrap sandbox.
+///
+/// Gated on `bwrap` actually working on the host: CI runners without
+/// bubblewrap (or with user namespaces restricted) skip these instead of going
+/// red. The degradation path is covered by the ungated `sandbox::` tests.
+#[cfg(all(test, target_os = "linux"))]
+mod sandbox_tests {
+    use super::*;
+    use crate::tool::test_support::{run_tool, test_context};
+
+    /// A context whose bash calls run inside a real sandbox, or `None` when
+    /// this host cannot run bubblewrap.
+    fn sandboxed_context(name: &str) -> Option<ToolContext> {
+        let mut context = test_context(name);
+        let (sandbox, _) =
+            crate::sandbox::resolve(crate::config::SandboxBackend::Bwrap, &context.work_dir);
+        context.sandbox = Some(sandbox?);
+        Some(context)
+    }
+
+    async fn run(context: &ToolContext, command: &str) -> anyhow::Result<String> {
+        run_tool(
+            context,
+            BashTool,
+            "bash",
+            serde_json::json!({ "command": command }),
+        )
+        .await
+    }
+
+    /// Number of live processes whose command line mentions `needle`.
+    fn processes_matching(needle: &str) -> usize {
+        std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+            .filter(|cmdline| String::from_utf8_lossy(cmdline).contains(needle))
+            .count()
+    }
+
+    /// Wait (bounded) for the command's processes to disappear.
+    ///
+    /// `SIGKILL` is asynchronous, so a process can still be listed
+    /// momentarily after the tool call has returned; the assertion is about
+    /// survivors, not about how fast the kernel reaps them.
+    async fn wait_for_no_processes(needle: &str) -> usize {
+        for _ in 0..150 {
+            let count = processes_matching(needle);
+            if count == 0 {
+                return 0;
+            }
+
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        processes_matching(needle)
+    }
+
+    #[tokio::test]
+    async fn workspace_is_mounted_at_workspace_and_the_host_home_is_not() {
+        let Some(context) = sandboxed_context("bash_sandbox_workspace") else {
+            return;
+        };
+
+        assert_eq!(run(&context, "pwd").await.unwrap(), "/workspace");
+
+        run(&context, "echo hello > /workspace/sandbox-probe.txt")
+            .await
+            .unwrap();
+        let written = std::fs::read_to_string(context.work_dir.join("sandbox-probe.txt")).unwrap();
+        assert_eq!(written.trim(), "hello");
+
+        // `$HOME` is the workspace inside the sandbox, not the host home.
+        assert_eq!(
+            run(&context, "printf %s \"$HOME\"").await.unwrap(),
+            "/workspace"
+        );
+
+        // The host workspace path is not visible: only `/workspace` is bound.
+        let host_workspace_probe =
+            format!("test -e {}/sandbox-probe.txt", context.work_dir.display());
+        assert!(
+            run(&context, &host_workspace_probe).await.is_err(),
+            "the host workspace path should not be visible inside the sandbox"
+        );
+
+        // Home is not exposed beyond the read-only toolchain allowlist. The
+        // bind `~/.rustup → ~/.rustup` necessarily creates an empty `~` mount
+        // point, so the assertion is about the home's *contents*.
+        if let Some(home) = std::env::var_os("HOME") {
+            let probe = format!("test -e {}/.ssh", home.to_string_lossy());
+            assert!(
+                run(&context, &probe).await.is_err(),
+                "host home contents should not be visible inside the sandbox"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn system_files_are_readable_and_proxies_are_absent() {
+        let Some(context) = sandboxed_context("bash_sandbox_system") else {
+            return;
+        };
+
+        assert!(run(&context, "cat /etc/passwd").await.is_ok());
+
+        // Proxy variables are dropped: inherited they would only produce a
+        // confusing "connection refused" error inside a network-less sandbox.
+        for variable in ["http_proxy", "https_proxy", "all_proxy"] {
+            let probe = format!("printf %s \"${{{variable}:-unset}}\"");
+            assert_eq!(run(&context, &probe).await.unwrap(), "unset");
+        }
+    }
+
+    #[tokio::test]
+    async fn network_is_blocked() {
+        let Some(context) = sandboxed_context("bash_sandbox_network") else {
+            return;
+        };
+        let Ok(probe) = run(&context, "command -v python3").await else {
+            return; // no interpreter to probe with
+        };
+        assert!(
+            !probe.is_empty(),
+            "python3 reported by `command -v` but empty"
+        );
+
+        let output = run(
+            &context,
+            r#"python3 -c 'import socket; socket.create_connection(("1.1.1.1", 443), 3)' 2>/dev/null && echo CONNECTED || echo BLOCKED"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.trim(), "BLOCKED");
+    }
+
+    #[tokio::test]
+    async fn pid_namespace_hides_the_host_process_table() {
+        let Some(context) = sandboxed_context("bash_sandbox_pidns") else {
+            return;
+        };
+        let host_pid = std::process::id();
+        let probe = format!("test -d /proc/{host_pid} && echo VISIBLE || echo HIDDEN");
+        assert_eq!(run(&context, &probe).await.unwrap(), "HIDDEN");
+    }
+
+    #[tokio::test]
+    async fn timeout_returns_promptly_and_leaves_no_survivors() {
+        let Some(mut context) = sandboxed_context("bash_sandbox_timeout") else {
+            return;
+        };
+        context.bash_timeout_secs = 1;
+
+        let started = std::time::Instant::now();
+        // A marker unique to this test: the process matcher reads full command
+        // lines, and the sibling cancellation test runs in parallel.
+        let error = run(&context, "sh -c 'sleep 311 & wait'")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Timeout (1s)"), "unexpected error: {error}");
+        // The regression this guards: with a detached command (e.g.
+        // `--new-session`) `killpg` misses the grandchildren, the pipes never
+        // reach EOF, and the call hangs past the timeout.
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "sandboxed timeout took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            wait_for_no_processes("sleep 311").await,
+            0,
+            "sandbox survivor left behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_leaves_no_survivors() {
+        let Some(context) = sandboxed_context("bash_sandbox_cancel") else {
+            return;
+        };
+        let cancel_flag = context.cancel_flag.clone();
+        let mut task = tokio::spawn(bash(
+            context,
+            BashInput {
+                command: "sh -c 'sleep 322 & wait'".to_string(),
+                timeout: None,
+            },
+        ));
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        cancel_flag.store(true, Ordering::Relaxed);
+        let result = tokio::time::timeout(Duration::from_secs(15), &mut task).await;
+        if result.is_err() {
+            task.abort();
+        }
+        let error = result
+            .expect("cancellation should have terminated the sandbox")
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Cancelled by user"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            wait_for_no_processes("sleep 322").await,
+            0,
+            "sandbox survivor left behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn toolchain_homes_are_mounted_read_only() {
+        let Some(context) = sandboxed_context("bash_sandbox_toolchain") else {
+            return;
+        };
+        let Ok(version) = run(&context, "cargo --version").await else {
+            return; // no cargo on this host
+        };
+        assert!(
+            version.contains("cargo"),
+            "unexpected cargo output: {version}"
+        );
+
+        // The homes are mounted read-only: `cargo fetch` / `npm install` still
+        // fail by design (no network), but nothing can be written there.
+        let probe = run(
+            &context,
+            r#"test -w "$CARGO_HOME" && echo WRITABLE || echo READONLY"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(probe, "READONLY");
     }
 }

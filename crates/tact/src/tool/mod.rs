@@ -75,6 +75,7 @@ mod write_file;
 use background_run::{BackgroundRunTool, CheckBackgroundTool};
 #[cfg(test)]
 use bash::BashTool;
+pub use bash::SANDBOXED_BASH_DESCRIPTION;
 #[cfg(test)]
 use edit_file::EditFileTool;
 #[cfg(test)]
@@ -134,6 +135,15 @@ pub struct ToolContext {
     /// Default 10 so TUI stays responsive during heavy commands like `cargo test`.
     /// 0 disables. Maximum is 19 (lowest priority).
     pub bash_nice: i32,
+    /// Resolved sandbox for shell execution, or `None` to run `sh -c` directly.
+    ///
+    /// Resolved **once at startup** (`crate::sandbox::resolve`) and shared by
+    /// every clone of this context, so all `bash` calls in a session agree on
+    /// the backend.
+    pub sandbox: Option<Arc<dyn crate::sandbox::Sandbox>>,
+    /// Set when a configured sandbox backend could not start. The `bash` tool
+    /// uses it to emit the one-time "running unsandboxed" notice.
+    pub sandbox_degraded: Option<Arc<crate::sandbox::SandboxDegradation>>,
     /// Parent agent session id when persistence is wired (`with_session`).
     pub session_id: Option<String>,
     /// Shared SQLite session store from the parent agent, if any.

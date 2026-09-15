@@ -6,8 +6,9 @@ use super::{
     cli::CliArgs,
     instruction_sources::InstructionSources,
     types::{
-        AgentSettings, LlmSettings, McpSettings, ResolvedConfig, SubagentSettings, TactTomlConfig,
-        ToolSettings, UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
+        AgentSettings, LlmSettings, McpSettings, ResolvedConfig, SandboxBackend, SubagentSettings,
+        TactTomlConfig, ToolSettings, UiSettings, VisionImageSettings, VoiceProvider,
+        VoiceSettings,
     },
 };
 
@@ -497,6 +498,7 @@ struct NonLlmSettings {
     bash_timeout_secs: u64,
     bash_nice: i32,
     rtk_filter: bool,
+    sandbox: SandboxBackend,
     permission_mode: Option<String>,
     mcp: McpSettings,
 }
@@ -562,6 +564,9 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
 
     let rtk_filter = toml_cfg.tools.rtk_filter.unwrap_or(false);
 
+    // Opt-in: absent means "none", so a default install is unchanged.
+    let sandbox = toml_cfg.tools.sandbox.unwrap_or_default();
+
     let permission_mode = args
         .permission_mode
         .clone()
@@ -579,6 +584,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         bash_timeout_secs,
         bash_nice,
         rtk_filter,
+        sandbox,
         permission_mode,
         mcp: resolve_mcp(toml_cfg),
     })
@@ -628,6 +634,7 @@ pub(super) fn resolve_non_llm_settings(
             bash_timeout_secs: non_llm.bash_timeout_secs,
             bash_nice: non_llm.bash_nice,
             rtk_filter: non_llm.rtk_filter,
+            sandbox: non_llm.sandbox,
         },
         // A malformed `[voice]` warns and degrades to disabled here: this path
         // serves subcommands that never record audio, so it must not fail.
@@ -826,6 +833,7 @@ pub(super) fn resolve_config(
             bash_timeout_secs: non_llm.bash_timeout_secs,
             bash_nice: non_llm.bash_nice,
             rtk_filter: non_llm.rtk_filter,
+            sandbox: non_llm.sandbox,
         },
         voice,
         mcp: non_llm.mcp,
@@ -1510,6 +1518,22 @@ jpeg_quality = 0
         let cfg: TactTomlConfig = toml::from_str("[tools]\nbash_timeout_secs = 0\n").unwrap();
         let disabled = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
         assert_eq!(disabled.tools.bash_timeout_secs, 0);
+    }
+
+    #[test]
+    fn sandbox_is_opt_in_and_rejects_unknown_backends() {
+        // Absent key: the sandbox is off, so a default install is unchanged.
+        let default =
+            resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None).unwrap();
+        assert_eq!(default.tools.sandbox, SandboxBackend::None);
+
+        let cfg: TactTomlConfig = toml::from_str("[tools]\nsandbox = \"bwrap\"\n").unwrap();
+        let opted_in = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
+        assert_eq!(opted_in.tools.sandbox, SandboxBackend::Bwrap);
+
+        // An unusable backend must be a config error, not a silent fallback.
+        let bad = toml::from_str::<TactTomlConfig>("[tools]\nsandbox = \"firejail\"\n");
+        assert!(bad.is_err(), "unknown sandbox backend should not parse");
     }
 
     #[test]

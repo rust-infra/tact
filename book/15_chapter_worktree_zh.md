@@ -128,6 +128,8 @@ let worktree_manager =
 
 `worktree_run` 执行任意 shell 字符串，并经过与 `bash` 相同的 `validate_shell_command` 门槛——高风险子串（`sudo`、`shutdown`、破坏性 `rm`、设备重定向）会被拦截。其权限分类由 [权限模型](./10_chapter_permission_zh.md) 赋予 `worktree_run` 工具名；嵌入的命令字符串额外检查高风险模式。将泳道视为与 `bash` 相同的爆炸半径。
 
+有一点不同：可选的 `bash` 沙箱（[Ch 7](./07_chapter_tool_zh.md) §7.1）只覆盖 `bash` 工具。`worktree_run` 与泳道管理用的 `git` 调用各自启动宿主进程，因此即使开启了沙箱，agent 离一个未沙箱的 shell 也只有一次工具调用之遥。
+
 ---
 
 ## 7. 启动时对账

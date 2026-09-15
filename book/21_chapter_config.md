@@ -220,6 +220,8 @@ theme = "ink"
 [tools]
 # Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)
 bash_timeout_secs = 1800
+# OS-level sandbox for the `bash` tool: "none" (default) | "bwrap" (opt-in)
+# sandbox = "bwrap"
 ```
 
 ### Unknown keys are rejected
@@ -291,6 +293,7 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `skill_dirs` | empty (no extra roots) | — |
 | `skill_body_auto_inject` | `false` | — |
 | `tools.bash_timeout_secs` | `1_800` (`0` disables) | — |
+| `tools.sandbox` | `"none"` | `"none"` / `"bwrap"` |
 | `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | — (token size only; does not enable vision) |
 | `ui.vision_image.max_edge` | `1280` (clamped 256–4096) | — |
@@ -493,6 +496,15 @@ server, its tools), `add`/`remove` (`--user` for the home file, `--force` to
 replace), `login`/`logout` (stored credentials) — see Ch 8.
 
 Both entry points read `permission_mode` via `permission_mode_from_config()` in `crates/tact-ui/src/permission.rs`.
+
+`tools.sandbox` is TOML-only in v1 and **opt-in**: `"none"` (the default) runs
+`bash` exactly as before, and `"bwrap"` selects the Linux bubblewrap backend
+described in [Tool System §7.1](./07_chapter_tool.md). The value is only the
+*request*; the effective backend is resolved once at startup, and a backend
+that cannot start (missing `bwrap`, restricted user namespaces, non-Linux)
+degrades to `"none"` with a warning — fail-open, never a hard tool error. An
+unknown value is a parse error rather than a silent fallback. There is no CLI
+flag.
 
 `tools.bash_timeout_secs` is TOML-only in v1. Resolution preserves `0` as
 "disabled" and otherwise carries the value through `ToolSettings` into each

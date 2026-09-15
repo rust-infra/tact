@@ -54,6 +54,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
             bash_nice: tact::config::ToolSettings::DEFAULT_BASH_NICE,
             rtk_filter: false,
+            sandbox: tact::config::SandboxBackend::None,
         },
         voice: tact::config::VoiceSettings::disabled_defaults(),
         mcp: tact::config::McpSettings::default(),
