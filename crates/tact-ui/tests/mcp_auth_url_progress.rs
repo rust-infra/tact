@@ -80,10 +80,10 @@ async fn oauth_url_reaches_the_ui_before_the_callback_arrives() {
         }
     });
     std::fs::write(
-        project.path().join(".tact/mcp.json"),
+        project.path().join(".tact/.mcp.json"),
         serde_json::to_vec_pretty(&declaration).expect("serialize declaration"),
     )
-    .expect("write mcp.json");
+    .expect("write .mcp.json");
     std::env::set_current_dir(project.path()).expect("enter the temp project");
 
     let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();

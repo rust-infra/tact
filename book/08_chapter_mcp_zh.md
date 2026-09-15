@@ -86,7 +86,7 @@ Tact **两者都支持**：带 `command` 的条目录用 stdio 启动，带 `url
 
 启动前，Host 必须知道如何拉起每个 Server。
 
-**首选：Tact 原生的 `mcp.json`。** 两个位置，都可选——`~/.tact/mcp.json`（用户级）与 `<workdir>/.tact/mcp.json`（项目级）。结构与所有 MCP 客户端通用的 Claude 格式一致：
+**首选：Tact 原生的 `.mcp.json`。** 两个位置，都可选——`~/.tact/.mcp.json`（用户级）与 `<workdir>/.tact/.mcp.json`（项目级）。结构与所有 MCP 客户端通用的 Claude 格式一致：
 
 ```json
 {
@@ -104,19 +104,24 @@ Tact **两者都支持**：带 `command` 的条目录用 stdio 启动，带 `url
 
 项目级条目按 **server 名**覆盖用户级条目；两者不冲突的条目会合并。`mcp.json` 解析失败是硬错误并会指明路径（用户手写的配置无法解析时不能被静默忽略）；这与"server 连不上"不同，后者只上报。
 
-**全部来源**，优先级自低到高。第 3 项是已安装的 marketplace 插件——可分发的**包**，只读，保留各自带 manifest 前缀的命名，永远不是引导用户配置 MCP 的方式：
+**全部来源**，优先级自低到高。第 1 项是 Claude Code 的项目文件（团队随仓库共享的那种）；第 4 项是已安装的 marketplace 插件——可分发的**包**，只读，保留各自带 manifest 前缀的命名，永远不是引导用户配置 MCP 的方式：
 
 | # | 来源 | 服务器名 |
 |---|------|----------|
-| 1 | `~/.tact/mcp.json` | map key |
-| 2 | `<workdir>/.tact/mcp.json` | map key |
-| 3 | 已安装插件 | `plugin__<plugin>__<server>` |
+| 1 | `<workdir>/.mcp.json`（Claude Code 项目文件） | map key |
+| 2 | `~/.tact/.mcp.json`（用户级） | map key |
+| 3 | `<workdir>/.tact/.mcp.json`（项目级） | map key |
+| 4 | 已安装插件 | `plugin__<plugin>__<server>` |
 
-两个文件，一条规则：**用户级是 `~/.tact/mcp.json`，项目级是 `<workdir>/.tact/mcp.json`。** Tact 不读取 cwd 级 Codex manifest，也不读取 cwd 的 `.mcp.json`，"这个项目的 server 声明在哪"因此只有一个答案。
+Tact 自己的两个文件排在前面，因为那才是"让你去写"的文件：仓库里的 `.mcp.json` 会被读取（这样随仓库共享的配置开箱可用），但它是最低优先级，**永远不会静默顶掉你自己声明的 server**。被顶掉的声明会以上下文注明 `MCP server X overrides <file>`，不静默。
 
-**已安装的 marketplace 插件**在启动时由 `installed_plugin_mcp_servers` 扫描：它读取 `.codex-plugin/plugin.json` 的 `mcpServers` 与插件根下的 `.mcp.json`。这些属于插件**包**格式——同样的文件名在工作目录下刻意**不**读取。
+Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`）在 `CODEX_HOME` 里，不在项目里。**已安装的 marketplace 插件**在启动时由 `installed_plugin_mcp_servers` 扫描：它读取 `.codex-plugin/plugin.json` 的 `mcpServers` 与插件**根目录**下的 `.mcp.json`。那是插件的**包**格式：一个用户显式装过的发行包，而不是项目里的约定。
+
+一份 `mcp.json` 无法解析是硬错误并指明路径（用户手写的配置不能被静默忽略）。工作目录下的 `.mcp.json` 不同：它属于项目而不属于你，解析失败只记一条 warning 并跳过——否则 clone 一个坏文件就能让 Tact 在那个目录里根本起不来。
 
 每个条目只声明一种传输：`command`（本地 stdio）或 `url`（远程 Streamable HTTP，可选 `headers` 与 `auth`）。两者同时存在时 `command` 优先。两者都没有的条目按**已跳过**上报，绝不当作硬错误。
+
+条目可以用 `"enabled": false` 关掉（Codex 的写法，OpenAI 自带的 `unified-computer-use` 就这么写）。被关掉的声明照常参与解析——它能顶掉更低优先级的启用声明，也能被更高优先级的启用声明顶掉——但**绝不连接**，`mcp list` 会把它显示为 `disabled (enabled: false)`。Codex 专有的条目字段（`enabled_tools`、`omit_tools_from`、`startup_timeout_sec`、`tools`）Tact 没有对应能力，会被解析出来并在 `mcp list` 里**逐条点名**（日志文件里同时有一条 warning），而不是无声丢弃——tracing 只在设了 `RUST_LOG` 或 `tokio_console` 时才装 subscriber，只靠日志等于没说。
 
 **从命令行管理 server。** 六个子命令按「允许触碰什么」划分——`list`/`get` 负责连接，`add`/`remove` 负责写 `mcp.json`，`login`/`logout` 负责已存凭据：
 
@@ -140,7 +145,7 @@ tact-ui mcp login linear                      # 浏览器流程，token 落盘
 tact-ui mcp logout linear                     # 删除 token
 ```
 
-`add`/`remove` 默认作用于项目文件（`.tact/mcp.json`），加 `--user` 则作用于用户文件。`add --force` 覆盖同名声明；不加时同名是报错而非静默覆盖。`remove` 一个不存在的名字也是报错而非无声成功——它会告知该 server **究竟**声明在哪个文件（`retry with --user`），或说明它由插件提供。当所编辑的作用域并非最终生效的那个时，`add` 会明确提示并指名胜出的文件，否则更高优先级的声明会让这条命令变成静默的空操作。写入是原子的（唯一命名的临时文件 + rename，并保留原文件权限），并且直接编辑**原始 JSON 文档**，因此 Tact 未建模的键——包括其他 server 上的键——都会保留；删除最后一个 server 会留下空的 `mcpServers` 对象，读回来即「无 server」。`remove` 保留已存凭据（重新添加的 server 应当继续可用），删除凭据由 `logout` 负责，且它不要求 server 仍被声明，因此声明删掉后仍可清理凭据。
+`add`/`remove` 默认作用于项目文件（`.tact/.mcp.json`），加 `--user` 则作用于用户文件。`add --force` 覆盖同名声明；不加时同名是报错而非静默覆盖。`remove` 一个不存在的名字也是报错而非无声成功——它会告知该 server **究竟**声明在哪个文件（`retry with --user`），或说明它由插件提供。当所编辑的作用域并非最终生效的那个时，`add` 会明确提示并指名胜出的文件，否则更高优先级的声明会让这条命令变成静默的空操作。写入是原子的（唯一命名的临时文件 + rename，并保留原文件权限），并且直接编辑**原始 JSON 文档**，因此 Tact 未建模的键——包括其他 server 上的键——都会保留；删除最后一个 server 会留下空的 `mcpServers` 对象，读回来即「无 server」。`remove` 保留已存凭据（重新添加的 server 应当继续可用），删除凭据由 `logout` 负责，且它不要求 server 仍被声明，因此声明删掉后仍可清理凭据。
 
 名称、URL、header 名与 header 值都会预先校验。server 名还会额外拒绝空白、控制字符与路径分隔符：名称同时是 `mcp__<server>__<tool>` 的 `<server>` 段与 OAuth 凭据文件名（`~/.tact/mcp/oauth/<server>.json`），因此 `mcp logout <name>` 绝不能被指向任意文件。header/env 的**值**绝不回显或记录日志（它们常含密钥），且 `add` 绝不发起连接。重复的 `--header`/`--env` 名会报错，而不是静默地后者覆盖前者。
 
@@ -517,7 +522,7 @@ sequenceDiagram
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 配置扫描 | `crates/tact/src/mcp/mod.rs` — `McpConfigFile` | 读 `~/.tact/mcp.json` 与 `<workdir>/.tact/mcp.json` |
+| 配置扫描 | `crates/tact/src/mcp/mod.rs` — `collect_sourced_servers` | 依次读 `<workdir>/.mcp.json`、`~/.tact/.mcp.json`、`<workdir>/.tact/.mcp.json`、已安装插件 |
 | 插件服务器 | `installed_plugin_mcp_servers` | 读取已安装插件包 |
 | 来源优先级 | `collect_sourced_servers`、`resolve_servers` | 分层合并所有来源并上报覆盖 |
 | 加载报告 | `McpLoadReport` | 把失败 / 覆盖 / 跳过暴露出来，而非 `debug!` |

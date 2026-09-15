@@ -121,7 +121,11 @@ const TOOL_RESULTS_SUBDIR: &str = "tool-results";
 
 /// Tact's native MCP server declaration file, read from `.tact/` at both
 /// project and user scope.
-const MCP_CONFIG_FILE: &str = "mcp.json";
+///
+/// Dot-prefixed so the name matches the one every other client gives this file
+/// — Claude Code's project file at `<workdir>/.mcp.json`, a plugin bundle's at
+/// its root — instead of the bare `mcp.json` that used to live here.
+const MCP_CONFIG_FILE: &str = ".mcp.json";
 
 /// User-global MCP support directory under `~/.tact/`, holding per-server
 /// OAuth credential files at `<MCP_DIR>/<MCP_OAUTH_DIR>/<server>.json`.
@@ -215,7 +219,7 @@ impl TactPath {
         self.tact_dir().join(TRANSCRIPT_SUBDIR)
     }
 
-    /// `<workdir>/.tact/mcp.json` — project-scoped MCP server declarations.
+    /// `<workdir>/.tact/.mcp.json` — project-scoped MCP server declarations.
     ///
     /// The only project-scoped source Tact reads: a cwd-level `.mcp.json` or
     /// `.codex-plugin/plugin.json` is **not** consulted (installed plugins are
@@ -243,7 +247,7 @@ impl TactPath {
         Self::home_tact_dir().map(|dir| dir.join("settings.json"))
     }
 
-    /// `$HOME/.tact/mcp.json` — user-global MCP server declarations.
+    /// `$HOME/.tact/.mcp.json` — user-global MCP server declarations.
     ///
     /// Lower precedence than the project file: a project entry of the same
     /// server name overrides it.

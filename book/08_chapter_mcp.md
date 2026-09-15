@@ -85,7 +85,7 @@ Before connecting, remember: **Host owns the big picture, Client owns one connec
 
 Before startup, the Host must know how to launch each Server.
 
-**Preferred: Tact's native `mcp.json`.** Two locations, both optional — `~/.tact/mcp.json` (user) and `<workdir>/.tact/mcp.json` (project). The shape is the same Claude-compatible one every MCP client accepts:
+**Preferred: Tact's native `.mcp.json`.** Two locations, both optional — `~/.tact/.mcp.json` (user) and `<workdir>/.tact/.mcp.json` (project). The shape is the same Claude-compatible one every MCP client accepts:
 
 ```json
 {
@@ -101,21 +101,26 @@ Before startup, the Host must know how to launch each Server.
 
 Meaning: run `command` as a subprocess—that process is the MCP Server. A server declared here is named by its map key **verbatim**, so its agent-side tool names are exactly `mcp__postgres__<tool>` with no manifest prefix — the most predictable naming available, and the reason to prefer this file.
 
-A project entry overrides a user entry **by server name**; non-colliding entries from both are merged. A malformed `mcp.json` is a hard error naming the path (a user-authored config that cannot be parsed must not be ignored silently), unlike a broken server, which is only reported.
+A project entry overrides a user entry **by server name**; non-colliding entries from both are merged. A malformed native `.mcp.json` is a hard error naming the path (a user-authored config that cannot be parsed must not be ignored silently), unlike a broken server, which is only reported.
 
-**All sources**, lowest precedence first. Entry 3 is an installed marketplace plugin — a distributable *bundle*, read-only, keeping its own manifest-prefixed naming and never how a user is told to configure MCP:
+**All sources**, lowest precedence first. Entry 1 is the Claude Code project file (the kind a team commits); entry 4 is an installed marketplace plugin — a distributable *bundle*, read-only, keeping its own manifest-prefixed naming and never how a user is told to configure MCP:
 
 | # | Source | Server name |
 |---|--------|-------------|
-| 1 | `~/.tact/mcp.json` | map key |
-| 2 | `<workdir>/.tact/mcp.json` | map key |
-| 3 | installed plugins | `plugin__<plugin>__<server>` |
+| 1 | `<workdir>/.mcp.json` (Claude Code project file) | map key |
+| 2 | `~/.tact/.mcp.json` (user) | map key |
+| 3 | `<workdir>/.tact/.mcp.json` (project) | map key |
+| 4 | installed plugins | `plugin__<plugin>__<server>` |
 
-Two files, one rule: **user scope is `~/.tact/mcp.json`, project scope is `<workdir>/.tact/mcp.json`.** Tact reads no cwd-level Codex manifest and no cwd `.mcp.json`, so "where does this project declare its servers?" has exactly one answer.
+Tact's own two files come first because those are the ones the user is told to write: a repository's `.mcp.json` is read so a shared project configuration works out of the box, but it is the *lowest*-precedence source and **never silently takes over a server you declared**. A displaced declaration is reported as `MCP server X overrides <file>` rather than dropped.
 
-**Installed marketplace plugins** are scanned at startup by `installed_plugin_mcp_servers`, which reads both `.codex-plugin/plugin.json` `mcpServers` and a `.mcp.json` at the plugin root. Those belong to the plugin *bundle* format — the same filenames are deliberately **not** read at the working directory.
+Tact still reads no cwd-level Codex manifest — that file (`config.toml`) lives in `CODEX_HOME`, not in a project. **Installed marketplace plugins** are scanned at startup by `installed_plugin_mcp_servers`, which reads both `.codex-plugin/plugin.json` `mcpServers` and a `.mcp.json` at the plugin **root**. That is the plugin *bundle* format: a package the user deliberately installed, not a project convention.
+
+A malformed native `.mcp.json` is a hard error naming the path (a user-authored config must not be ignored silently). A `.mcp.json` in the working directory is different: it belongs to the project, not to the user, so a file that cannot be parsed is reported as a warning and skipped — otherwise cloning one bad file would stop Tact from starting in that directory at all.
 
 Each entry declares exactly one transport: `command` (local stdio) or `url` (remote Streamable HTTP, optionally with `headers` and `auth`). `command` wins if both are present. An entry with neither is reported as **skipped**, never treated as a hard error.
+
+An entry can be switched off with `"enabled": false` (the Codex convention; OpenAI's bundled `unified-computer-use` uses it). A disabled declaration is still resolved — it can shadow an enabled one below it, and be shadowed by an enabled one above it — but is **never connected**, and `mcp list` shows it as `disabled (enabled: false)`. The Codex-only entry fields (`enabled_tools`, `omit_tools_from`, `startup_timeout_sec`, `tools`) have no Tact equivalent: they are parsed and named one by one in `mcp list` (with a warning in the log file as well) rather than dropped in silence — a tracing subscriber is only installed when `RUST_LOG` or `tokio_console` asks for one, so the log alone would say nothing to a default run.
 
 **Managing servers from the CLI.** Six subcommands, split by what they are allowed to touch — `list`/`get` connect, `add`/`remove` write `mcp.json`, `login`/`logout` own the stored credentials:
 
@@ -139,7 +144,7 @@ tact-ui mcp login linear                      # browser flow, token stored
 tact-ui mcp logout linear                     # token deleted
 ```
 
-`add`/`remove` target the project file (`.tact/mcp.json`) unless `--user` is given. `add --force` replaces an existing declaration of the same name; without it a name clash is an error rather than a silent overwrite, and `remove` of an unknown name is an error rather than a no-op — it tells you which file the server *is* declared in (`retry with --user`) or that a plugin contributes it. When the scope you edited is not the one that wins, `add` says so and names the winning file, because a higher-precedence declaration would otherwise make the command a silent no-op. Writes are atomic (a uniquely named temp file + rename, preserving the original file's permissions) and edit the **raw JSON document**, so keys Tact does not model — including keys on unrelated servers — survive; removing the last server leaves an empty `mcpServers` object, which reads back as "no servers". `remove` keeps stored credentials (a re-added server should keep working); `logout` is what deletes them, and it needs no configured server, so credentials can be cleaned up after a declaration is gone.
+`add`/`remove` target the project file (`.tact/.mcp.json`) unless `--user` is given. `add --force` replaces an existing declaration of the same name; without it a name clash is an error rather than a silent overwrite, and `remove` of an unknown name is an error rather than a no-op — it tells you which file the server *is* declared in (`retry with --user`) or that a plugin contributes it. When the scope you edited is not the one that wins, `add` says so and names the winning file, because a higher-precedence declaration would otherwise make the command a silent no-op. Writes are atomic (a uniquely named temp file + rename, preserving the original file's permissions) and edit the **raw JSON document**, so keys Tact does not model — including keys on unrelated servers — survive; removing the last server leaves an empty `mcpServers` object, which reads back as "no servers". `remove` keeps stored credentials (a re-added server should keep working); `logout` is what deletes them, and it needs no configured server, so credentials can be cleaned up after a declaration is gone.
 
 Names, URLs, header names and header values are validated up front. Server names are additionally refused if they contain whitespace, control characters or a path separator: a name is also the `<server>` segment of `mcp__<server>__<tool>` and the file name of the OAuth credential (`~/.tact/mcp/oauth/<server>.json`), so `mcp logout <name>` must never be pointable at an arbitrary file. Header/env *values* are never echoed or logged (they commonly carry secrets), and `add` never connects. A repeated `--header`/`--env` name is an error rather than a silent last-one-wins.
 
@@ -516,7 +521,7 @@ sequenceDiagram
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| Config scan | `crates/tact/src/mcp/mod.rs` — `McpConfigFile` | Read `~/.tact/mcp.json` and `<workdir>/.tact/mcp.json` |
+| Config scan | `crates/tact/src/mcp/mod.rs` — `collect_sourced_servers` | Read `<workdir>/.mcp.json`, `~/.tact/.mcp.json`, `<workdir>/.tact/.mcp.json`, then installed plugins |
 | Plugin servers | `installed_plugin_mcp_servers` | Read installed plugin bundles |
 | Source precedence | `collect_sourced_servers`, `resolve_servers` | Layer all sources, report overrides |
 | Load report | `McpLoadReport` | Surface failures / overrides / skipped instead of `debug!` |

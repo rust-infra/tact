@@ -6,7 +6,7 @@
 //! `/mcp auth <server>`. Both paths call the same `tact::mcp` functions.
 //!
 //! Command roles are deliberately separated: `list`/`get` are the only ones
-//! that connect, `add`/`remove` are the only ones that write `mcp.json`, and
+//! that connect, `add`/`remove` are the only ones that write `.mcp.json`, and
 //! `login`/`logout` are the only ones that touch stored credentials. A command
 //! that creates state never silently connects, and a command that inspects
 //! never writes.
@@ -181,6 +181,17 @@ fn scope_hint(workdir: &Path, scope: McpConfigScope, name: &str) -> String {
         }
         return format!("\n'{name}' is declared in the project config — retry without `--user`.");
     }
+    // A Claude Code project file is a third source a user can edit, even though
+    // `add`/`remove` never write it; pointing at the plugin path below would
+    // send them looking for a plugin that does not exist. Matched by full path
+    // rather than by suffix: Tact's own project file, `.tact/.mcp.json`, also
+    // ends in `.mcp.json` and is handled above.
+    if source == &workdir.join(".mcp.json").display().to_string() {
+        return format!(
+            "\n'{name}' is declared in {source}, a Claude Code project file — \
+             edit that file, or declare it in .tact/.mcp.json to override it."
+        );
+    }
     format!(
         "\n'{name}' is contributed by a source that cannot be edited here ({source}); \
          uninstall the plugin that provides it instead."
@@ -336,7 +347,7 @@ async fn list_servers() -> Result<()> {
 pub fn render_report(report: &McpLoadReport) -> String {
     if report.configured.is_empty() && report.skipped_remote.is_empty() {
         return "No MCP servers configured.\n\n\
-                Declare servers in ~/.tact/mcp.json (user) or .tact/mcp.json (project):\n\
+                Declare servers in ~/.tact/.mcp.json (user) or .tact/.mcp.json (project):\n\
                 \x20 { \"mcpServers\": { \"my-server\": { \"command\": \"...\" } } }\n\
                 \x20 { \"mcpServers\": { \"remote\": { \"url\": \"https://.../mcp\" } } }"
             .to_string();
@@ -352,7 +363,13 @@ pub fn render_report(report: &McpLoadReport) -> String {
 
     let mut lines = Vec::new();
     for server in &report.configured {
-        let status = status_for(report, &server.name);
+        // Checked first: a disabled server was never dialled, so
+        // `status_for` would report "unknown" instead of "disabled".
+        let status = if server.disabled {
+            disabled_text()
+        } else {
+            status_for(report, &server.name)
+        };
         lines.push(format!(
             "  {:<width$}  {:<34}  {}",
             server.name,
@@ -392,6 +409,23 @@ pub fn render_report(report: &McpLoadReport) -> String {
         out.push_str("\n\nOverridden declarations:\n");
         out.push_str(&notes.join("\n"));
     }
+
+    // Codex-only entry fields are parsed but not implemented. Naming them here
+    // is the only place a default run can see it: `tracing::warn!` reaches a
+    // log file only when `RUST_LOG` (or `tokio_console`) installed a subscriber.
+    if !report.unmodelled.is_empty() {
+        let mut notes = Vec::new();
+        for entry in &report.unmodelled {
+            notes.push(format!(
+                "  {}  {}  (ignored, from {})",
+                entry.server,
+                entry.keys.join(", "),
+                entry.source,
+            ));
+        }
+        out.push_str("\n\nEntry keys Tact does not model:\n");
+        out.push_str(&notes.join("\n"));
+    }
     out
 }
 
@@ -405,7 +439,7 @@ pub fn render_report(report: &McpLoadReport) -> String {
 pub fn render_live_listing(views: &[mcp::McpServerView]) -> String {
     if views.is_empty() {
         return "## 🔌 MCP Servers\n\nNo MCP servers configured.\n\n\
-                Declare servers in `~/.tact/mcp.json` (user) or `.tact/mcp.json` (project), \
+                Declare servers in `~/.tact/.mcp.json` (user) or `.tact/.mcp.json` (project), \
                 then restart or run `/mcp auth <server>` for a remote OAuth server."
             .to_string();
     }
@@ -420,6 +454,7 @@ pub fn render_live_listing(views: &[mcp::McpServerView]) -> String {
                 format!("needs authorization — run `/mcp auth {}`", view.server.name)
             }
             McpLiveStatus::NotConnected => "not connected".to_string(),
+            McpLiveStatus::Disabled => disabled_text(),
         };
         out.push_str(&format!(
             "| {} | {} | {} | {} |\n",
@@ -469,10 +504,17 @@ fn failed_text(error: &str) -> String {
     format!("failed: {error}")
 }
 
+/// Shown for a server its own declaration switched off (`enabled: false`), so
+/// "configured but doing nothing" is never mistaken for a broken server.
+fn disabled_text() -> String {
+    "disabled (enabled: false)".to_string()
+}
+
 /// The status line for the single-server view.
 fn status_text(inspection: &mcp::McpServerInspection) -> String {
     match &inspection.status {
         McpServerStatus::Connected => connected_text(inspection.tools.len()),
+        McpServerStatus::Disabled => disabled_text(),
         McpServerStatus::PendingAuthorization => needs_auth_text(&inspection.server.name),
         McpServerStatus::Failed(error) => failed_text(error),
     }
@@ -488,7 +530,7 @@ async fn authorize(server: &str) -> Result<()> {
     let oauth_declared = matches!(config.auth, Some(tact::mcp::McpAuthConfig::Oauth { .. }));
     if !oauth_declared {
         eprintln!(
-            "Note: '{server}' does not declare `auth` in mcp.json. \
+            "Note: '{server}' does not declare `auth` in .mcp.json. \
              Authorizing anyway — the server's 401 is what requires it."
         );
     }
@@ -533,7 +575,8 @@ mod tests {
                 url: format!("https://example.invalid/{name}"),
                 oauth,
             },
-            source: "~/.tact/mcp.json".to_string(),
+            source: "~/.tact/.mcp.json".to_string(),
+            disabled: false,
         }
     }
 
@@ -541,7 +584,7 @@ mod tests {
     fn empty_report_explains_how_to_configure() {
         let text = render_report(&McpLoadReport::default());
         assert!(text.contains("No MCP servers configured."), "{text}");
-        assert!(text.contains("~/.tact/mcp.json"), "{text}");
+        assert!(text.contains("~/.tact/.mcp.json"), "{text}");
         assert!(text.contains("mcpServers"), "{text}");
     }
 
@@ -590,6 +633,57 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("typo"), "{text}");
+    }
+
+    #[test]
+    fn unmodelled_keys_are_named_in_the_listing() {
+        // The log line only reaches a file when RUST_LOG or tokio_console
+        // installed a subscriber, so the listing is the visible half.
+        let report = McpLoadReport {
+            configured: vec![configured("codexish", false)],
+            unmodelled: vec![mcp::UnmodelledKeys {
+                server: "codexish".to_string(),
+                source: "/proj/.mcp.json".to_string(),
+                keys: vec!["enabled_tools".to_string(), "tools".to_string()],
+            }],
+            ..McpLoadReport::default()
+        };
+
+        let text = render_report(&report);
+        assert!(text.contains("Entry keys Tact does not model"), "{text}");
+        assert!(text.contains("enabled_tools, tools"), "{text}");
+        assert!(text.contains("/proj/.mcp.json"), "{text}");
+    }
+
+    #[test]
+    fn a_disabled_server_is_reported_as_disabled_not_unknown() {
+        // A disabled server was never dialled, so it has no connection
+        // outcome; reporting "unknown" would read as a broken server.
+        let mut server = configured("switched-off", false);
+        server.disabled = true;
+        let report = McpLoadReport {
+            configured: vec![server],
+            ..McpLoadReport::default()
+        };
+
+        let text = render_report(&report);
+        assert!(text.contains("disabled (enabled: false)"), "{text}");
+        assert!(!text.contains("unknown"), "{text}");
+    }
+
+    #[test]
+    fn the_live_listing_marks_a_disabled_server() {
+        let mut view = live_view(
+            "switched-off",
+            mcp::McpTransportKind::Stdio {
+                command: "/bin/off".to_string(),
+            },
+            McpLiveStatus::Disabled,
+        );
+        view.server.disabled = true;
+
+        let text = render_live_listing(&[view]);
+        assert!(text.contains("disabled (enabled: false)"), "{text}");
     }
 
     #[test]
@@ -666,16 +760,17 @@ mod tests {
                 transport: mcp::McpTransportKind::Stdio {
                     command: "/bin/project".to_string(),
                 },
-                source: "/proj/.tact/mcp.json".to_string(),
+                source: "/proj/.tact/.mcp.json".to_string(),
+                disabled: false,
             }],
-            shadowed: vec![("shared".to_string(), "/home/me/.tact/mcp.json".to_string())],
+            shadowed: vec![("shared".to_string(), "/home/me/.tact/.mcp.json".to_string())],
             ..McpLoadReport::default()
         };
 
         let text = render_report(&report);
         assert!(text.contains("Overridden declarations:"), "{text}");
         assert!(
-            text.contains("/home/me/.tact/mcp.json is shadowed by /proj/.tact/mcp.json"),
+            text.contains("/home/me/.tact/.mcp.json is shadowed by /proj/.tact/.mcp.json"),
             "{text}"
         );
     }
@@ -707,7 +802,7 @@ mod tests {
             text.contains("figma  remote https://example.invalid/figma"),
             "{text}"
         );
-        assert!(text.contains("source  ~/.tact/mcp.json"), "{text}");
+        assert!(text.contains("source  ~/.tact/.mcp.json"), "{text}");
         assert!(text.contains("status  connected (2 tools)"), "{text}");
         // Full names are what the agent must call, so they are qualified here.
         assert!(text.contains("mcp__figma__get_file"), "{text}");
@@ -845,7 +940,8 @@ mod tests {
             server: mcp::ConfiguredServer {
                 name: name.to_string(),
                 transport,
-                source: "~/.tact/mcp.json".to_string(),
+                source: "~/.tact/.mcp.json".to_string(),
+                disabled: false,
             },
             status,
         }
@@ -896,7 +992,7 @@ mod tests {
     fn live_listing_explains_how_to_configure_when_empty() {
         let text = render_live_listing(&[]);
         assert!(text.contains("No MCP servers configured."), "{text}");
-        assert!(text.contains("~/.tact/mcp.json"), "{text}");
+        assert!(text.contains("~/.tact/.mcp.json"), "{text}");
     }
 
     #[test]
