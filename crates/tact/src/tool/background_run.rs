@@ -1,7 +1,7 @@
 use crate::{
     background::{
         BackgroundProgressSink, BackgroundTaskRecord, BackgroundTaskStatus, WaitOutcome,
-        record_in_session,
+        output_tail, record_in_session,
     },
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
@@ -23,17 +23,16 @@ use crate::tool::ToolContext;
 const DEFAULT_WAIT_MS: u64 = 300_000;
 const MAX_WAIT_MS: u64 = 300_000;
 
-/// How much of a finished task's captured output is inlined into the result.
-/// The full stream stays in the task's log file, whose path is reported.
-const WAIT_OUTPUT_TAIL_CHARS: usize = 4_000;
-
 fn capped_wait_ms(ms: u64) -> u64 {
     ms.min(MAX_WAIT_MS)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BackgroundRunInput {
-    #[schemars(description = "Shell command to run in the background.")]
+    #[schemars(
+        description = "Shell command to run in the background (executed as `sh -c` on the host, \
+                       outside the opt-in bash sandbox)."
+    )]
     pub command: String,
     #[schemars(
         description = "Optional: block up to this many milliseconds for the command to finish and \
@@ -47,8 +46,12 @@ pub struct BackgroundRunInput {
 /// Metadata for the `background_run` tool.
 pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
     name: "background_run",
-    description: "Run a shell command in the background. Set wait_ms to block until it finishes \
-                  and get its output back in this same call.",
+    description: "Run a shell command in the background and return its id immediately — for slow \
+                  commands (builds, test suites, installs) while you have other work to do. Pass \
+                  wait_ms to block until it finishes and get its output in this same call, or use \
+                  bash when you need the result before your next step. It runs as an ordinary host \
+                  shell: the opt-in bash sandbox does not cover it, so use host paths, not \
+                  /workspace.",
     permission: PermissionPolicy::ShellCommand {
         command_field: "command",
     },
@@ -113,15 +116,20 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CheckBackgroundInput {
-    #[schemars(description = "Optional background task id.")]
+    #[schemars(
+        description = "Background task id to report. Omit to list the background tasks started in \
+                       this session."
+    )]
     pub task_id: Option<String>,
 }
 
 /// Metadata for the `check_background` tool.
 pub const CHECK_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
     name: "check_background",
-    description: "Check background task status without waiting. To block until a task finishes, \
-                  call wait_background instead of polling this in a loop.",
+    description: "Inspect background task status without waiting. With no task_id it lists this \
+                  session's tasks; naming an id reports that task (and truncates its output — the \
+                  full log path is included). To wait for a result, call wait_background once \
+                  instead of polling this in a loop.",
     permission: PermissionPolicy::Read,
     permission_prompt: PermissionPromptPolicy::Json,
     resources: ResourcePolicy::Independent,
@@ -168,8 +176,11 @@ pub struct WaitBackgroundInput {
 /// Metadata for the `wait_background` tool.
 pub const WAIT_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
     name: "wait_background",
-    description: "Wait for background tasks to finish, returning the moment they do. Use this \
-                  instead of polling check_background in a loop or sleeping to burn time.",
+    description: "Wait for background tasks to finish, returning the moment they do (up to 5 \
+                  minutes). With no task_id it waits for every background task of this session; \
+                  the result carries the task's status, elapsed time, the tail of its output and \
+                  the full log path. Use this instead of sleeping to burn time or polling \
+                  check_background in a loop.",
     permission: PermissionPolicy::Read,
     permission_prompt: PermissionPromptPolicy::Json,
     resources: ResourcePolicy::Independent,
@@ -339,23 +350,6 @@ fn elapsed(record: &BackgroundTaskRecord) -> String {
     let end = record.finished_at.unwrap_or_else(chrono::Utc::now);
     let millis = (end - record.started_at).num_milliseconds().max(0);
     format!("{:.1}s", millis as f64 / 1000.0)
-}
-
-/// The tail of a task's captured output, bounded for the model's context; the
-/// full stream stays in the task's log file.
-fn output_tail(output: &str) -> String {
-    let trimmed = output.trim_end();
-    if trimmed.is_empty() {
-        return "(no output)".to_string();
-    }
-    let chars: Vec<char> = trimmed.chars().collect();
-    if chars.len() <= WAIT_OUTPUT_TAIL_CHARS {
-        return trimmed.to_string();
-    }
-    let tail: String = chars[chars.len() - WAIT_OUTPUT_TAIL_CHARS..]
-        .iter()
-        .collect();
-    format!("… (truncated to the last {WAIT_OUTPUT_TAIL_CHARS} chars)\n{tail}")
 }
 
 #[cfg(test)]
@@ -573,16 +567,5 @@ mod tests {
         assert_eq!(capped_wait_ms(0), 0);
         assert_eq!(capped_wait_ms(1_000), 1_000);
         assert_eq!(capped_wait_ms(999_999), MAX_WAIT_MS);
-    }
-
-    #[test]
-    fn output_tail_keeps_the_end_and_marks_truncation() {
-        assert_eq!(output_tail("  "), "(no output)");
-
-        let long = "x".repeat(WAIT_OUTPUT_TAIL_CHARS * 5) + "TAIL";
-        let tail = output_tail(&long);
-        assert!(tail.contains("truncated"));
-        assert!(tail.ends_with("TAIL"));
-        assert!(tail.chars().count() < long.chars().count());
     }
 }

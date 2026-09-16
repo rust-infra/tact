@@ -54,6 +54,28 @@ use crate::{
 const MAX_OUTPUT_CHARS: usize = 50_000;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How much of a task's captured output is inlined when the model reads a
+/// result (`check_background <id>`, `wait_background`, `background_run(wait_ms)`).
+///
+/// The record itself keeps up to [`MAX_OUTPUT_CHARS`], and the **full** stream is
+/// in the task's log file — both far too much to put in context per poll, so
+/// every model-facing read reports this tail plus the log path instead.
+pub(crate) const OUTPUT_TAIL_CHARS: usize = 4_000;
+
+/// The tail of a task's captured output, bounded for the model's context.
+pub(crate) fn output_tail(output: &str) -> String {
+    let trimmed = output.trim_end();
+    if trimmed.is_empty() {
+        return "(no output)".to_string();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= OUTPUT_TAIL_CHARS {
+        return trimmed.to_string();
+    }
+    let tail: String = chars[chars.len() - OUTPUT_TAIL_CHARS..].iter().collect();
+    format!("… (truncated to the last {OUTPUT_TAIL_CHARS} chars)\n{tail}")
+}
+
 /// Poll interval for [`BackgroundManager::wait`].
 ///
 /// Completion is written by the detached process task, so there is nothing to
@@ -344,13 +366,26 @@ impl BackgroundManager {
                 .get(task_id)
                 .await?
                 .with_context(|| format!("Unknown background task {task_id}"))?;
-            return serde_json::to_string_pretty(&record).context("failed to serialize task");
+            // The record keeps up to `MAX_OUTPUT_CHARS` and the full stream is in
+            // the log file, so a raw record dump would drop ~12k tokens of build
+            // log into context per poll. Report the same bounded tail the wait
+            // path uses; `output_path` still points at everything.
+            let bounded = BackgroundTaskRecord {
+                output: output_tail(&record.output),
+                ..record
+            };
+            return serde_json::to_string_pretty(&bounded).context("failed to serialize task");
         }
 
         let mut records = self.records.list().await?;
         records.retain(|record| record_in_session(record, session_id));
         if records.is_empty() {
-            return Ok("No background tasks.".to_string());
+            // Session-scoped, so say whose list this is.
+            return Ok(if session_id.is_some_and(|id| !id.is_empty()) {
+                "No background tasks in this session.".to_string()
+            } else {
+                "No background tasks.".to_string()
+            });
         }
         records.sort_by_key(|record| record.started_at);
         Ok(records
@@ -750,6 +785,50 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn output_tail_keeps_the_end_and_marks_truncation() {
+        assert_eq!(output_tail("  "), "(no output)");
+
+        let long = "x".repeat(OUTPUT_TAIL_CHARS * 5) + "TAIL";
+        let tail = output_tail(&long);
+        assert!(tail.contains("truncated"));
+        assert!(tail.ends_with("TAIL"));
+        assert!(tail.chars().count() < long.chars().count());
+    }
+
+    #[tokio::test]
+    async fn check_bounds_the_output_of_a_single_task() {
+        let (manager, _tmp) = temp_manager("check_bounds_output");
+        let long = "y".repeat(OUTPUT_TAIL_CHARS * 3);
+        manager
+            .inner
+            .records
+            .upsert(&BackgroundTaskRecord {
+                id: "big00001".to_string(),
+                status: BackgroundTaskStatus::Completed,
+                command: "make".to_string(),
+                session_id: "sess-a".to_string(),
+                started_at: Utc::now(),
+                finished_at: Some(Utc::now()),
+                output: long.clone(),
+                output_path: Some("/tmp/big00001.log".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let json = manager.check(Some("big00001"), None).await.unwrap();
+        assert!(
+            json.len() < long.len(),
+            "the dump must be bounded: {}",
+            json.len()
+        );
+        assert!(json.contains("truncated"), "json: {json}");
+        assert!(
+            json.contains("/tmp/big00001.log"),
+            "the log path must survive"
+        );
+    }
+
     #[tokio::test]
     async fn check_lists_only_the_requested_session() {
         let (manager, _tmp) = temp_manager("check_session_scope");
@@ -775,7 +854,11 @@ mod tests {
 
         assert_eq!(
             manager.check(None, Some("sess-z")).await.unwrap(),
-            "No background tasks."
+            "No background tasks in this session."
+        );
+        assert!(
+            !manager.check(None, None).await.unwrap().is_empty(),
+            "an unfiltered call still sees the other sessions' records"
         );
 
         // A record named by id is answered from any session: the caller asked
