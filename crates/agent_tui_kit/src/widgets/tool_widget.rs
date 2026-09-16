@@ -76,7 +76,7 @@ fn kind_from_presentation(
             tact_protocol::ToolVisualKind::Task
         }
         "spawn_subagent" => tact_protocol::ToolVisualKind::Subagent,
-        "sleep" => tact_protocol::ToolVisualKind::Sleep,
+        "sleep" | "wait_background" => tact_protocol::ToolVisualKind::Sleep,
         _ => tact_protocol::ToolVisualKind::Generic,
     }
 }
@@ -106,6 +106,7 @@ pub fn tool_display_name(tool: &str) -> String {
         "sleep" => "💤 Sleep".to_string(),
         "background_run" => "⚙️ Background Run".to_string(),
         "check_background" => "⚙️ Background Check".to_string(),
+        "wait_background" => "⏳ Wait Background".to_string(),
         "load_skill" => "📚 Skill".to_string(),
         "save_memory" => "🧠 Memory".to_string(),
         "compact" => "📦 Compact".to_string(),

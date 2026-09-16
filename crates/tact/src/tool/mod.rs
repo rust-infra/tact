@@ -480,9 +480,14 @@ mod tests {
 
         let schema = SleepTool.tool_spec().input_schema;
         assert_eq!(schema["properties"]["ms"]["type"], "integer");
-        assert_eq!(
-            schema["properties"]["ms"]["description"],
-            "Duration to sleep in milliseconds (max 300000 = 5 minutes)."
+        // The field description comes from the `#[schemars]` attribute on the
+        // input struct; assert it carries the cap so the macro wired it through.
+        let description = schema["properties"]["ms"]["description"]
+            .as_str()
+            .expect("ms description should be a string");
+        assert!(
+            description.starts_with("Duration to sleep in milliseconds (max 300000 = 5 minutes)."),
+            "unexpected description: {description}"
         );
     }
 

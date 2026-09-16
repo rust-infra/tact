@@ -11,6 +11,10 @@
 //! - [`BackgroundTaskRecord`] captures the command, status, start/finish
 //!   timestamps, combined stdout+stderr output, and the full-output log
 //!   file path.
+//! - [`BackgroundManager::wait`] blocks until a task (or every task of a
+//!   session) reaches a terminal status, which is what the `wait_background`
+//!   tool and `background_run(wait_ms:)` are built on — the model no longer has
+//!   to guess a sleep duration and poll.
 //!
 //! Output is stored hybrid: the DB record keeps the metadata plus the
 //! first [`MAX_OUTPUT_CHARS`] chars (bounded, cheap to poll), while the
@@ -23,9 +27,9 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -49,6 +53,24 @@ use crate::{
 
 const MAX_OUTPUT_CHARS: usize = 50_000;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Poll interval for [`BackgroundManager::wait`].
+///
+/// Completion is written by the detached process task, so there is nothing to
+/// subscribe to — the wait is a read loop over the store. 150 ms keeps the added
+/// latency imperceptible while costing a few small SQLite reads per second.
+const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(150);
+
+/// Why [`BackgroundManager::wait`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitOutcome {
+    /// The task (or every task of the session) reached a terminal status.
+    Finished,
+    /// The deadline elapsed while at least one task was still running.
+    TimedOut,
+    /// The caller's cancel flag was set.
+    Cancelled,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,7 +163,15 @@ impl BackgroundManager {
         })
     }
 
-    pub async fn run(
+    /// Like [`Self::run`], but returns the new task id instead of the
+    /// user-facing "started" line — for callers that keep working with the task
+    /// (e.g. `background_run` with `wait_ms`).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the command is rejected by validation or the record cannot be
+    /// persisted.
+    pub async fn start(
         &self,
         command: String,
         work_dir: &Path,
@@ -190,7 +220,105 @@ impl BackgroundManager {
             let _ = manager.upsert(&record).await;
         });
 
+        Ok(id)
+    }
+
+    /// Starts `command` in the background and returns the "started" line.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::start`].
+    pub async fn run(
+        &self,
+        command: String,
+        work_dir: &Path,
+        session_id: String,
+        progress: Option<BackgroundProgressSink>,
+    ) -> Result<String> {
+        let id = self
+            .start(command.clone(), work_dir, session_id, progress)
+            .await?;
         Ok(format!("Background task {id} started: {command}"))
+    }
+
+    /// Blocks until `task_id` — or every task of `session_id` when it is
+    /// `None` — is no longer running, the deadline elapses, or `cancel` is set.
+    ///
+    /// The condition is checked *before* the first sleep, so an already-finished
+    /// task returns immediately. With `task_id: None` an empty `session_id`
+    /// waits for every task in the store, which is the behaviour of callers
+    /// without a session (e.g. unit tests).
+    ///
+    /// A `cancel` flag is observed at the next poll (≤
+    /// [`WAIT_POLL_INTERVAL`]), so an in-flight wait is interruptible in a way
+    /// the `sleep` tool is not.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `task_id` is unknown or the store cannot be read.
+    pub async fn wait(
+        &self,
+        task_id: Option<&str>,
+        session_id: &str,
+        timeout: Duration,
+        cancel: &AtomicBool,
+    ) -> Result<WaitOutcome> {
+        if let Some(task_id) = task_id {
+            self.records
+                .get(task_id)
+                .await?
+                .with_context(|| format!("Unknown background task {task_id}"))?;
+        }
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(WaitOutcome::Cancelled);
+            }
+            if !self.has_running(task_id, session_id).await? {
+                return Ok(WaitOutcome::Finished);
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(WaitOutcome::TimedOut);
+            }
+            tokio::time::sleep(WAIT_POLL_INTERVAL.min(deadline - now)).await;
+        }
+    }
+
+    /// Reads one record by id (`None` when unknown).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be read.
+    pub async fn record(&self, task_id: &str) -> Result<Option<BackgroundTaskRecord>> {
+        self.records.get(task_id).await
+    }
+
+    /// Lists every known record, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store cannot be read.
+    pub async fn records(&self) -> Result<Vec<BackgroundTaskRecord>> {
+        self.records.list().await
+    }
+
+    /// Whether a task (or any task of the session) is still running.
+    async fn has_running(&self, task_id: Option<&str>, session_id: &str) -> Result<bool> {
+        let is_running =
+            |record: &BackgroundTaskRecord| record.status == BackgroundTaskStatus::Running;
+        Ok(match task_id {
+            Some(task_id) => self
+                .records
+                .get(task_id)
+                .await?
+                .is_some_and(|record| is_running(&record)),
+            None => self.records.list().await?.iter().any(|record| {
+                is_running(record) && (session_id.is_empty() || record.session_id == session_id)
+            }),
+        })
     }
 
     pub async fn check(&self, task_id: Option<&str>) -> Result<String> {
@@ -245,8 +373,38 @@ impl SharedBackgroundManager {
             .await
     }
 
+    pub async fn start(
+        &self,
+        command: String,
+        work_dir: &Path,
+        session_id: String,
+        progress: Option<BackgroundProgressSink>,
+    ) -> Result<String> {
+        self.inner
+            .start(command, work_dir, session_id, progress)
+            .await
+    }
+
     pub async fn check(&self, task_id: Option<&str>) -> Result<String> {
         self.inner.check(task_id).await
+    }
+
+    pub async fn wait(
+        &self,
+        task_id: Option<&str>,
+        session_id: &str,
+        timeout: Duration,
+        cancel: &AtomicBool,
+    ) -> Result<WaitOutcome> {
+        self.inner.wait(task_id, session_id, timeout, cancel).await
+    }
+
+    pub async fn record(&self, task_id: &str) -> Result<Option<BackgroundTaskRecord>> {
+        self.inner.record(task_id).await
+    }
+
+    pub async fn records(&self) -> Result<Vec<BackgroundTaskRecord>> {
+        self.inner.records().await
     }
 }
 
@@ -541,6 +699,170 @@ mod tests {
                 .join()
                 .expect("block_on thread panicked")
         })
+    }
+
+    /// Starts a command and returns its task id.
+    async fn start_task(
+        manager: &SharedBackgroundManager,
+        work_dir: &std::path::Path,
+        command: &str,
+        session_id: &str,
+    ) -> String {
+        manager
+            .start(command.to_string(), work_dir, session_id.to_string(), None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn wait_returns_as_soon_as_a_running_task_finishes() {
+        let (manager, tmp) = temp_manager("wait_finishes");
+        let id = start_task(&manager, tmp.path(), "sleep 0.2 && echo wait-ok", "sess-1").await;
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.wait(
+                Some(&id),
+                "sess-1",
+                Duration::from_secs(10),
+                &AtomicBool::new(false),
+            ),
+        )
+        .await
+        .expect("wait must return once the task finishes")
+        .unwrap();
+
+        assert_eq!(outcome, WaitOutcome::Finished);
+        let record = manager.record(&id).await.unwrap().unwrap();
+        assert_eq!(record.status, BackgroundTaskStatus::Completed);
+        assert!(
+            record.output.contains("wait-ok"),
+            "output: {:?}",
+            record.output
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_returns_immediately_for_an_already_finished_task() {
+        let (manager, tmp) = temp_manager("wait_already_finished");
+        let id = start_task(&manager, tmp.path(), "echo done", "sess-1").await;
+        // Let the detached task record completion, then wait on a finished task.
+        for _ in 0..100 {
+            let finished = manager
+                .record(&id)
+                .await
+                .unwrap()
+                .is_some_and(|record| record.status != BackgroundTaskStatus::Running);
+            if finished {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let started = Instant::now();
+        let outcome = manager
+            .wait(
+                Some(&id),
+                "sess-1",
+                Duration::from_secs(30),
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, WaitOutcome::Finished);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a finished task must not be waited on"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_reports_timeout_while_the_task_still_runs() {
+        let (manager, tmp) = temp_manager("wait_timeout");
+        let id = start_task(&manager, tmp.path(), "sleep 30", "sess-1").await;
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.wait(
+                Some(&id),
+                "sess-1",
+                Duration::from_millis(300),
+                &AtomicBool::new(false),
+            ),
+        )
+        .await
+        .expect("wait must honour its deadline")
+        .unwrap();
+
+        assert_eq!(outcome, WaitOutcome::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn wait_is_interrupted_by_the_cancel_flag() {
+        let (manager, tmp) = temp_manager("wait_cancelled");
+        let id = start_task(&manager, tmp.path(), "sleep 30", "sess-1").await;
+        let cancel = AtomicBool::new(true);
+
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            manager.wait(Some(&id), "sess-1", Duration::from_secs(30), &cancel),
+        )
+        .await
+        .expect("wait must observe the cancel flag")
+        .unwrap();
+
+        assert_eq!(outcome, WaitOutcome::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn wait_rejects_an_unknown_task_id() {
+        let (manager, _tmp) = temp_manager("wait_unknown");
+        let error = manager
+            .wait(
+                Some("nope"),
+                "sess-1",
+                Duration::from_millis(50),
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Unknown background task"), "error: {error}");
+    }
+
+    #[tokio::test]
+    async fn wait_without_a_task_id_ignores_other_sessions() {
+        let (manager, tmp) = temp_manager("wait_other_session");
+        start_task(&manager, tmp.path(), "sleep 30", "sess-a").await;
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            manager.wait(
+                None,
+                "sess-b",
+                Duration::from_secs(30),
+                &AtomicBool::new(false),
+            ),
+        )
+        .await
+        .expect("a foreign session's task must not block the wait")
+        .unwrap();
+        assert_eq!(outcome, WaitOutcome::Finished);
+
+        // The owner session still sees it running.
+        let outcome = manager
+            .wait(
+                None,
+                "sess-a",
+                Duration::from_millis(200),
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, WaitOutcome::TimedOut);
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 use super::{
     ToolRouter,
     ask_user::AskUserTool,
-    background_run::{BackgroundRunTool, CheckBackgroundTool},
+    background_run::{BackgroundRunTool, CheckBackgroundTool, WaitBackgroundTool},
     bash::BashTool,
     compact::CompactTool,
     edit_file::EditFileTool,
@@ -32,6 +32,7 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(BashTool)?
         .route(BackgroundRunTool)?
         .route(CheckBackgroundTool)?
+        .route(WaitBackgroundTool)?
         .route(ReadFileTool)?
         .route(ReadImageTool)?
         .route(SleepTool)?
