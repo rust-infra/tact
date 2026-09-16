@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-16 — 每个工具的弹窗都以它发起的那次调用开头
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`with_command_detail`、`popup_detail`、`argument_line`、`is_written_argument`、`command_detail`）、`crates/agent_tui_kit/src/components/tool.rs`（`on_background_task_finished`）、`crates/agent_tui_kit/src/render/popups/subagent_popup.rs`（既有的 `Prompt:` 前置）；[第 13 章](./13_chapter_background_zh.md) §1；[第 23 章](./23_chapter_tui_zh.md) §6.16 |
+
+**症状 / 动机：** 弹窗是读取已折叠块内容的唯一途径，所以它既要显示结果、也要显示调用本身。已完成的 `bash` 块与**运行中**的 `background_run` 卡片都以 `$ <命令>` 开头；有三处比用户刚刚在读的那张卡片显示得更少。(1) **收尾后**的 `background_run` 卡片：`BackgroundTaskFinished` 不携带 `StepResult`，该路径只用进程输出拼 detail。(2) **失败**的命令（`bash`、`worktree_run`、`web_search`、`background_run`）：`from_step_result` 对失败刻意不加前缀，好让报错占住卡片前几行预览——而失败弹窗的标题是通用的错误卡片标题，于是失败命令的参数在弹窗里彻底消失。(3) **Task** 类工具（`task_create/get/list/update`）与 `ask_user`：弹窗正文只有结果，任务标题、以及用户正在回答的那个问题，都不在弹窗里。
+
+**决策：** 一条规则，按视觉种类分派，统一在 `ToolWidget::popup_detail` 里拼装（`detail_full` 的唯一产出点，而只有弹窗会读它）：弹窗以调用开头。`Command` → 所有阶段都以 `$ <命令>` 开头（keep-live 收尾路径由 `with_command_detail` 提供，失败时它原样存下 detail，再由 `argument_line` 补上该行，因此卡片仍然报错优先）；`FileRead`/`FileWrite`/`FileEdit` → 不再额外加，正文**就是**这次调用（文件、写入内容、差异），路径本来就在弹窗标题里；`Subagent` → 这里也不加，它自己的弹窗会用同一个 `arg_full` 前置 `Prompt:`；`Task`/`Generic`/`Sleep` → 加参数行，**除非它是工具的序列化输入对象**（`is_written_argument`）——JSON dump 是一条超长转义行，与日志参数行重复，还会把弹窗存在的理由（结果）往下挤。`detail_preview` 不变；折叠块的提示现在按 `detail_full` 计数，所以提示与弹窗仍然打印同一个数字。
+
+**改后行为：** 已完成或失败的 `background_run` 弹窗、失败的 `bash`/`worktree_run`/`web_search` 弹窗、折叠后的 `task_*` 弹窗、以及 `ask_user` 弹窗，都以那次调用开头（`$ <命令>`／任务标题／问题），而所有卡片形态不变——失败命令的卡片依旧报错优先。JSON 入参的工具（`save_memory`、`load_skill`、`wait_background`、所有 MCP/插件工具）刻意保持原样：它们的参数是 dump，不是给人读的文字。两条需要留档的审查更正：第一轮审查把 `spawn_subagent` 报成"prompt 不在弹窗里"，这是错的——双击子代理块打开的是专用的 subagent 弹窗（永远不会走 diff 弹窗），而那个弹窗从写下起就会前置 `Prompt:\n<arg_full>`，由 `live_layout_prepends_prompt_to_transcript` / `completed_layout_prepends_prompt_to_summary` 钉住。刻意留待决定、已上报的缺口：`apply_patch` 把 patch 预览当文件路径去 `git diff`（所以它的弹窗只显示执行结果，patch 全文看不到）；`read_file` 的 `offset`/`limit` 任何地方都不显示；命令类弹窗标题仍硬编码 `bash (…)`，其他类型则用原始工具名（`save_memory output`）；弹窗正文行仍是横向截断而非换行。
+
+**指向：** `crates/agent_tui_kit/src/widgets/tool_widget.rs` 的 `popup_detail` / `argument_line` / `is_written_argument` / `with_command_detail` / `command_detail`；`crates/agent_tui_kit/src/components/tool.rs` 的 `on_background_task_finished`；测试 `failed_command_card_stays_error_first_but_its_popup_opens_with_the_command`、`failed_command_detail_is_not_double_prefixed`、`failed_non_command_keeps_its_raw_detail_in_the_popup`、`task_popup_opens_with_the_task_title`、`ask_user_popup_opens_with_the_question`、`json_argument_is_not_repeated_in_the_popup`、`kinds_whose_body_is_the_call_do_not_repeat_it`、`failed_task_popup_shows_the_title_before_the_error`、`background_run_popup_opens_with_the_command_like_bash`、`failed_command_popup_opens_with_the_command`、`collapsed_task_popup_opens_with_the_task_title`、`ask_user_popup_opens_with_the_question`、`json_input_tool_popup_does_not_repeat_its_argument`。
+
+---
+
 ## 1. 2026-09-16 — 后台任务不再有时间上限，取消则终止整棵进程树
 
 | 字段 | 值 |

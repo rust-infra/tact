@@ -370,7 +370,7 @@ impl ToolComponent {
                 ToolPhase::Failed
             })
             .with_duration_us(elapsed_us)
-            .with_detail(output_text.to_string());
+            .with_command_detail(output_text.to_string());
         if !success {
             widget = widget.with_message(message.to_string());
         }

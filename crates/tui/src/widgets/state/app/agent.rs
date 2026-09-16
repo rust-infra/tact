@@ -1573,6 +1573,14 @@ mod lifecycle_tests {
                 .contains("build failed"),
             "failed card should expose the output"
         );
+        // Exactly one `$ cargo build` line: the popup's prefix is added by the
+        // widget's `build()` for a failure, and `with_command_detail` must not
+        // add a second one on top of it.
+        assert_eq!(
+            block.output.detail_full.as_deref(),
+            Some("$ cargo build\n\nerror: build failed"),
+            "failed background popup must open with the command once"
+        );
     }
 
     #[test]
