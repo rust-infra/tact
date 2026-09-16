@@ -2319,7 +2319,7 @@ mod tests {
                     bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
                     bash_nice: crate::config::ToolSettings::DEFAULT_BASH_NICE,
                     rtk_filter: false,
-                    sandbox: crate::config::SandboxBackend::None,
+                    sandbox: false,
                 },
                 voice: crate::config::VoiceSettings::disabled_defaults(),
                 mcp: crate::config::McpSettings::default(),

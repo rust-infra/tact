@@ -282,21 +282,27 @@ v1 adds exactly one knob:
 
 ```toml
 [tools]
-sandbox = "none"   # "none" (default) | "bwrap"
+sandbox = false   # false (default) | true
 ```
 
-- `"none"` (default) — no sandbox; `bash` runs exactly as it does today (direct
+> Changed 2026-09-16: the knob is a boolean, not a backend name. The backend is a
+> platform decision made in the code (`sandbox::resolve`), so the user-facing
+> config only says whether the sandbox is wanted. See the plan's "Result and
+> deviations" table.
+
+- `false` (default) — no sandbox; `bash` runs exactly as it does today (direct
   `sh -c`). A user who does not opt in sees zero behaviour change.
-- `"bwrap"` — the Linux bubblewrap backend with the §4 policy. On a non-Linux host
-  the value is unavailable by definition and takes the degradation path below.
+- `true` — the platform's backend with the §4 policy, Linux bubblewrap in v1. On a
+  platform with no implementation the switch is inert and takes the degradation
+  path below.
 
 The backend is resolved **once at startup**, not per `bash` call. If the selected
 backend cannot initialize — `bwrap` missing from PATH, the §3.1 probe failing,
 the kernel refusing unprivileged user namespaces — the sandbox **degrades to
-`"none"`**:
+unsandboxed**:
 
 ```text
-[tools] sandbox = "bwrap"  →  probe fails  →  warn  →  run unsandboxed
+[tools] sandbox = true  →  no implementation / probe fails  →  warn  →  run unsandboxed
 ```
 
 Degradation is announced, never silent: a startup log line, plus one visible
@@ -808,9 +814,9 @@ mod bwrap;
 
 ### 14.1 Non-Linux behaviour
 
-Resolved by §3.2: the only backend that exists on every platform is `"none"`.
-`[tools] sandbox = "bwrap"` on macOS/Windows is unavailable by definition, so it
-takes the same degradation path as a failed probe — warn at startup and run
+Resolved by §3.2: enabling the switch on a platform with no implementation is
+inert. `[tools] sandbox = true` on macOS/Windows is unavailable by definition, so
+it takes the same degradation path as a failed probe — warn at startup and run
 unsandboxed. There is no Seatbelt/Windows backend in v1, and no code path that
 hard-fails the `bash` tool on a non-Linux host.
 
@@ -841,7 +847,7 @@ Only the existing `bash` tool is sandboxed in this version.
 Current state:
 
 ```text
-bash             → BwrapSandbox  (only when [tools] sandbox = "bwrap"; else direct sh -c)
+bash             → BwrapSandbox  (only when [tools] sandbox = true; else direct sh -c)
 background_run   → unchanged
 worktree_run     → unchanged
 ```
@@ -1535,11 +1541,11 @@ pins it; a future change that drops the flag must fail that test.
 
 * **Should the sandbox decide whether a command is allowed?** No. Existing command validation and Permission remain responsible for authorization.
 
-* **What happens if `bwrap` is unavailable?** The sandbox degrades to `"none"` — commands run unsandboxed — and the degradation is announced at startup and on the first affected command (§3.1, §3.2). Fail-open, not fail-closed: this is the explicit product decision, kept loud rather than silent.
+* **What happens if `bwrap` is unavailable?** The sandbox degrades to unsandboxed — and the degradation is announced at startup and on the first affected command (§3.1, §3.2). Fail-open, not fail-closed: this is the explicit product decision, kept loud rather than silent.
 
-* **Should sandbox policy be configurable in v1?** One knob: `[tools] sandbox = "none" | "bwrap"`, default `"none"`. No per-mount, per-network, or per-tool policy; that stays out of v1.
+* **Should sandbox policy be configurable in v1?** One knob: a `[tools] sandbox` boolean, default `false`. No per-mount, per-network, or per-tool policy; that stays out of v1.
 
-* **Should the sandbox be enabled by default?** No. Default `"none"`; the user opts in. A default install behaves exactly as today.
+* **Should the sandbox be enabled by default?** No. Default `false`; the user opts in. A default install behaves exactly as today.
 
 * **What is the intended long-term architecture?**
 

@@ -201,11 +201,14 @@ model:
 Hook → Permission → bash tool → Sandbox (optional) → bwrap → sh -c → command
 ```
 
-It is selected by `[tools] sandbox` (`"none"` by default, `"bwrap"` for Linux
-bubblewrap — see [Configuration](./21_chapter_config.md)), resolved **once at
-startup** by `crates/tact/src/sandbox/`, and carried on `ToolContext`
-(`sandbox`, `sandbox_degraded`). A backend that cannot start degrades to
-`"none"` with a warning rather than failing the tool.
+It is switched on by `[tools] sandbox = true` (`false` by default — see
+[Configuration](./21_chapter_config.md)) and resolved **once at startup** by
+`crates/tact/src/sandbox/`, then carried on `ToolContext` (`sandbox`,
+`sandbox_degraded`). The switch is a boolean on purpose: *which* mechanism
+implements it is a platform decision (Linux: bubblewrap; no other platform has
+an implementation yet, so the switch is inert there). Anything that prevents a
+sandbox from starting degrades to unsandboxed with a warning rather than
+failing the tool.
 
 When active it mounts the workspace read-write at `/workspace` (**not** at its
 host path), binds `/usr`, `/bin`, `/lib`, `/lib64`, `/etc` and a fixed
@@ -220,6 +223,9 @@ Scope: the sandbox bounds **third-party code an approved command runs** — buil
 scripts, `postinstall` hooks, test binaries. It is not a boundary around the
 agent: `background_run` and `worktree_run` still spawn unsandboxed shells
 ([Background Tasks](./13_chapter_background.md), [Worktrees](./15_chapter_worktree.md)).
+
+Full detail — the switch, per-platform resolution, the whole flag list, degradation
+and current gaps — is in [Bash Sandbox](./27_chapter_sandbox.md).
 
 ---
 

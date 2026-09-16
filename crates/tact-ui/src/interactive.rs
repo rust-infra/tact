@@ -308,7 +308,7 @@ async fn build_agent_for_interactive(
     tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
     // Opt-in sandbox, resolved once: it is constant for the session lifetime, so
     // the bash description below can state the sandbox semantics truthfully.
-    // A backend that cannot start degrades to unsandboxed and is announced.
+    // A switch that cannot be honoured degrades to unsandboxed and is announced.
     let (sandbox, sandbox_degraded) =
         tact::sandbox::resolve(tact::config::settings().tools.sandbox, &work_dir);
     if let Some(degraded) = &sandbox_degraded {

@@ -104,7 +104,8 @@ async fn run_headless_locked(
     // Annotate `spawn_subagent` with the current subagent skill-card catalog
     // so the main agent can discover valid `skill:` names.
     tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
-    // Opt-in sandbox, resolved once at startup; a backend that cannot start
+    // Opt-in sandbox, resolved once at startup. The switch is a boolean and the
+    // platform picks the implementation; if it cannot be honoured the session
     // degrades to unsandboxed and says so on stderr (headless has no TUI).
     let (sandbox, sandbox_degraded) =
         tact::sandbox::resolve(tact::config::settings().tools.sandbox, &work_dir);

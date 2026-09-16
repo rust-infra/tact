@@ -6,9 +6,8 @@ use super::{
     cli::CliArgs,
     instruction_sources::InstructionSources,
     types::{
-        AgentSettings, LlmSettings, McpSettings, ResolvedConfig, SandboxBackend, SubagentSettings,
-        TactTomlConfig, ToolSettings, UiSettings, VisionImageSettings, VoiceProvider,
-        VoiceSettings,
+        AgentSettings, LlmSettings, McpSettings, ResolvedConfig, SubagentSettings, TactTomlConfig,
+        ToolSettings, UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
     },
 };
 
@@ -498,7 +497,7 @@ struct NonLlmSettings {
     bash_timeout_secs: u64,
     bash_nice: i32,
     rtk_filter: bool,
-    sandbox: SandboxBackend,
+    sandbox: bool,
     permission_mode: Option<String>,
     mcp: McpSettings,
 }
@@ -564,8 +563,8 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
 
     let rtk_filter = toml_cfg.tools.rtk_filter.unwrap_or(false);
 
-    // Opt-in: absent means "none", so a default install is unchanged.
-    let sandbox = toml_cfg.tools.sandbox.unwrap_or_default();
+    // Opt-in: absent means off, so a default install is unchanged.
+    let sandbox = toml_cfg.tools.sandbox.unwrap_or(false);
 
     let permission_mode = args
         .permission_mode
@@ -1521,19 +1520,31 @@ jpeg_quality = 0
     }
 
     #[test]
-    fn sandbox_is_opt_in_and_rejects_unknown_backends() {
+    fn sandbox_is_an_opt_in_switch() {
         // Absent key: the sandbox is off, so a default install is unchanged.
         let default =
             resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None).unwrap();
-        assert_eq!(default.tools.sandbox, SandboxBackend::None);
+        assert!(!default.tools.sandbox);
 
-        let cfg: TactTomlConfig = toml::from_str("[tools]\nsandbox = \"bwrap\"\n").unwrap();
+        let cfg: TactTomlConfig = toml::from_str("[tools]\nsandbox = true\n").unwrap();
         let opted_in = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
-        assert_eq!(opted_in.tools.sandbox, SandboxBackend::Bwrap);
+        assert!(opted_in.tools.sandbox);
 
-        // An unusable backend must be a config error, not a silent fallback.
-        let bad = toml::from_str::<TactTomlConfig>("[tools]\nsandbox = \"firejail\"\n");
-        assert!(bad.is_err(), "unknown sandbox backend should not parse");
+        let cfg: TactTomlConfig = toml::from_str("[tools]\nsandbox = false\n").unwrap();
+        let opted_out = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
+        assert!(!opted_out.tools.sandbox);
+
+        // Backend names are no longer part of the config surface; the old
+        // spelling must be a parse error rather than a silently ignored key.
+        for bad in [
+            "[tools]\nsandbox = \"bwrap\"\n",
+            "[tools]\nsandbox = \"none\"\n",
+        ] {
+            assert!(
+                toml::from_str::<TactTomlConfig>(bad).is_err(),
+                "{bad:?} should not parse: the switch is a boolean"
+            );
+        }
     }
 
     #[test]

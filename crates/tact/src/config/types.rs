@@ -231,34 +231,12 @@ pub struct ToolsTomlConfig {
     /// Defaults to false — opt-in only, because piping to an external process
     /// has privacy implications.
     pub rtk_filter: Option<bool>,
-    /// OS-level sandbox for the `bash` tool. Defaults to `"none"` (opt-in).
-    pub sandbox: Option<SandboxBackend>,
-}
-
-/// Backend for the opt-in OS-level sandbox around the `bash` tool.
-///
-/// Defined in the config layer (not in `crate::sandbox`) so configuration never
-/// depends on the execution layer that implements it. A backend that cannot
-/// start degrades to [`SandboxBackend::None`] with a warning — see
-/// `crate::sandbox::resolve`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum SandboxBackend {
-    /// No sandbox: shell commands run directly on the host (default).
-    #[default]
-    None,
-    /// Linux `bubblewrap` (`bwrap`).
-    Bwrap,
-}
-
-impl SandboxBackend {
-    /// Config-file spelling of the backend.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Bwrap => "bwrap",
-        }
-    }
+    /// OS-level sandbox for the `bash` tool. Defaults to `false` (opt-in).
+    ///
+    /// A plain on/off switch: *which* mechanism implements it is a platform
+    /// decision made in `crate::sandbox` (Linux: bubblewrap; any other platform:
+    /// not implemented, so enabling the switch there has no effect).
+    pub sandbox: Option<bool>,
 }
 
 /// `[mcp]` section of `config.toml`.
@@ -405,12 +383,12 @@ pub struct ToolSettings {
     pub bash_nice: i32,
     /// Whether to pipe bash outputs through `rtk pipe` (opt-in, default false).
     pub rtk_filter: bool,
-    /// Requested sandbox backend for `bash` (opt-in, default `None`).
+    /// Whether the `bash` sandbox is requested (opt-in, default `false`).
     ///
-    /// This is the *requested* value: whether the sandbox is actually active is
-    /// decided at startup by `crate::sandbox::resolve`, which may degrade to
-    /// unsandboxed and reports why.
-    pub sandbox: SandboxBackend,
+    /// This is the *requested* value: whether a sandbox is actually active is
+    /// decided at startup by `crate::sandbox::resolve`, which picks the
+    /// platform's implementation and may degrade to unsandboxed, reporting why.
+    pub sandbox: bool,
 }
 
 impl ToolSettings {

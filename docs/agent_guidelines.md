@@ -21,11 +21,12 @@ ensure consistent and efficient tool usage in this project.
 
 - By default `bash` runs on the host and `pwd` is the project directory, so host
   absolute paths from `read_file` / `grep` results can be used as-is.
-- When the session has the opt-in sandbox enabled (`[tools] sandbox = "bwrap"`),
-  the `bash` tool description says so. Then the shell sees the workspace at
+- When the session has the opt-in sandbox enabled (`[tools] sandbox = true`,
+  Linux only), the `bash` tool description says so. Then the shell sees the workspace at
   `/workspace` (the host path is *not* mounted), the network is disabled, and the
   host home directory is unavailable. Rewrite host paths under the workspace to
   `/workspace/...` before using them in a command — in-process tools keep
   reporting host absolute paths.
 - Never rely on the sandbox for correctness: it is opt-in, best-effort, and
-  degrades to unsandboxed execution (with a warning) when `bwrap` cannot start.
+  degrades to unsandboxed execution (with a warning) whenever no sandbox can
+  start (a platform without an implementation, `bwrap` missing).

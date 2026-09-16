@@ -204,8 +204,8 @@ theme = "ink"
 [tools]
 # Bash 墙钟超时秒数（默认 1800；0 表示禁用）
 bash_timeout_secs = 1800
-# `bash` 工具的 OS 级沙箱："none"（默认）| "bwrap"（需显式开启）
-# sandbox = "bwrap"
+# `bash` 工具的 OS 级沙箱：false（默认）| true（需显式开启）
+# sandbox = true
 ```
 
 ### 未知键会被拒绝
@@ -253,7 +253,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `skill_dirs` | 空（无额外根） | — |
 | `skill_body_auto_inject` | `false` | — |
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
-| `tools.sandbox` | `"none"` | `"none"` / `"bwrap"` |
+| `tools.sandbox` | `false` | `true` / `false`（Linux：bubblewrap） |
 | `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
@@ -403,12 +403,14 @@ tact-ui headless "Summarize this repo"
 
 两个入口点均通过 `crates/tact-ui/src/permission.rs` 中的 `permission_mode_from_config()` 读取 `permission_mode`。
 
-`tools.sandbox` 在 v1 仅可由 TOML 设置，且**默认关闭**：`"none"`（默认）时
-`bash` 行为与以前完全一致，`"bwrap"` 选用 Linux bubblewrap 后端
-（见[工具系统 §7.1](./07_chapter_tool_zh.md)）。该值只是**请求**；实际生效的后端在
-启动时解析一次，若后端无法启动（缺少 `bwrap`、内核限制 user namespace、非 Linux）则
-降级为 `"none"` 并告警——fail-open，绝不因此让工具报错。未知取值是解析错误，而不是
-静默回落。没有对应 CLI 参数。
+`tools.sandbox` 在 v1 仅可由 TOML 设置，**默认关闭**，且只是一个布尔开关：
+`false`（默认）时 `bash` 行为与以前完全一致，`true` 请求
+[工具系统 §7.1](./07_chapter_tool_zh.md) 与 [Bash 沙箱](./27_chapter_sandbox_zh.md) 描述的沙箱。该开关刻意**不**指定后端——
+用什么机制是平台决策，写在 `crates/tact/src/sandbox/` 里（Linux 用 bubblewrap；其他
+平台尚无实现，开关在那里是空操作）。开关只是**请求**：实际生效的沙箱在启动时解析
+一次，任何导致无法启动的原因（平台无实现、缺少 `bwrap`、内核限制 user namespace）
+都会降级为不沙箱并告警——fail-open，绝不因此让工具报错。非布尔取值是解析错误，
+而不是静默回落。没有对应 CLI 参数。
 
 `tools.bash_timeout_secs` 在 v1 仅可由 TOML 设置。Resolve 保留 `0` 的“禁用”
 语义，否则经 `ToolSettings` 将该值传到每个 `ToolContext`；没有对应 CLI flag。

@@ -1,18 +1,21 @@
 //! Opt-in OS-level sandbox for shell execution.
 //!
-//! v1 wraps the `bash` tool's `sh -c` process in Linux `bubblewrap`. It is
-//! selected by `[tools] sandbox` (default `"none"`), so a default install runs
-//! exactly as before.
+//! v1 wraps the `bash` tool's `sh -c` process. It is switched on by
+//! `[tools] sandbox = true` (default `false`), so a default install runs
+//! exactly as before. The switch is a plain boolean because the *mechanism* is
+//! a platform decision, not a user choice: Linux selects `bubblewrap`, every
+//! other platform has no implementation yet, so enabling the switch there is
+//! inert (a reported degradation, never a silent one).
 //!
 //! ## Fail-open, never silent
 //!
-//! The backend is resolved **once at startup**. When the requested backend
-//! cannot start — `bwrap` missing from `PATH`, the construction probe failing,
-//! a kernel that forbids unprivileged user namespaces, a non-Linux host — the
-//! session degrades to unsandboxed execution instead of failing the `bash`
-//! tool. Every degradation carries a reason ([`SandboxDegradation::reason`])
-//! that the caller announces at startup, so the downgrade is loud even though
-//! it is not fatal.
+//! The backend is resolved **once at startup**. When the switch is on but no
+//! sandbox can start — a platform without an implementation, `bwrap` missing
+//! from `PATH`, the construction probe failing, a kernel that forbids
+//! unprivileged user namespaces — the session degrades to unsandboxed
+//! execution instead of failing the `bash` tool. Every degradation carries a
+//! reason ([`SandboxDegradation::reason`]) that the caller announces at startup,
+//! so the downgrade is loud even though it is not fatal.
 //!
 //! ## What this does and does not bound
 //!
@@ -24,8 +27,6 @@
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
-
-use crate::config::SandboxBackend;
 
 #[cfg(target_os = "linux")]
 mod bwrap;
@@ -58,7 +59,7 @@ pub trait Sandbox: Send + Sync {
     fn describe(&self) -> &'static str;
 }
 
-/// Why the requested sandbox backend is not active for this session.
+/// Why a requested sandbox is not active for this session.
 ///
 /// Shared through an `Arc` on [`ToolContext`](crate::tool::ToolContext), which
 /// is cloned for every tool invocation — so the one-time notice fires once per
@@ -85,35 +86,43 @@ impl SandboxDegradation {
     }
 }
 
-/// Resolve the configured backend for a session.
+/// Resolve the session's sandbox for the current platform.
 ///
-/// Returns the active sandbox (if any) and, when the requested backend could
-/// not start, the degradation to announce. `SandboxBackend::None` yields
-/// `(None, None)`: unsandboxed by configuration, which is not a degradation.
+/// `enabled` is the raw `[tools] sandbox` switch. When it is off the result is
+/// `(None, None)` — unsandboxed by configuration, which is not a degradation.
+/// When it is on, the platform picks the implementation: Linux uses
+/// `bubblewrap`, every other platform has none, so the switch is inert there and
+/// the returned degradation says so.
 pub fn resolve(
-    backend: SandboxBackend,
+    enabled: bool,
     work_dir: &Path,
 ) -> (Option<Arc<dyn Sandbox>>, Option<Arc<SandboxDegradation>>) {
-    match backend {
-        SandboxBackend::None => (None, None),
-        SandboxBackend::Bwrap => resolve_bwrap(work_dir),
+    if !enabled {
+        return (None, None);
     }
+    resolve_platform(work_dir)
 }
 
 #[cfg(target_os = "linux")]
-fn resolve_bwrap(work_dir: &Path) -> (Option<Arc<dyn Sandbox>>, Option<Arc<SandboxDegradation>>) {
+fn resolve_platform(
+    work_dir: &Path,
+) -> (Option<Arc<dyn Sandbox>>, Option<Arc<SandboxDegradation>>) {
     match BwrapSandbox::probe(work_dir) {
         Ok(sandbox) => (Some(Arc::new(sandbox)), None),
         Err(detail) => (None, Some(SandboxDegradation::new(&detail))),
     }
 }
 
+/// No implementation outside Linux: the switch is accepted, resolved, and
+/// inert — with a reason, so "I enabled it and nothing happened" is explained.
 #[cfg(not(target_os = "linux"))]
-fn resolve_bwrap(_work_dir: &Path) -> (Option<Arc<dyn Sandbox>>, Option<Arc<SandboxDegradation>>) {
+fn resolve_platform(
+    _work_dir: &Path,
+) -> (Option<Arc<dyn Sandbox>>, Option<Arc<SandboxDegradation>>) {
     (
         None,
         Some(SandboxDegradation::new(
-            "backend 'bwrap' is Linux-only and unavailable on this host",
+            "no sandbox implementation for this platform yet (Linux uses bubblewrap)",
         )),
     )
 }
@@ -124,8 +133,8 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn none_backend_is_not_a_degradation() {
-        let (sandbox, degraded) = resolve(SandboxBackend::None, &PathBuf::from("/tmp/ws"));
+    fn the_switch_being_off_is_not_a_degradation() {
+        let (sandbox, degraded) = resolve(false, &PathBuf::from("/tmp/ws"));
         assert!(sandbox.is_none());
         assert!(degraded.is_none());
     }
@@ -144,17 +153,22 @@ mod tests {
         assert!(degradation.reason.contains("unsandboxed"));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn bwrap_backend_resolves_to_a_handle_or_a_reasoned_degradation() {
-        // Either outcome is valid here (the host may not have bubblewrap); what
-        // must hold is that a failure is never silent.
-        let (sandbox, degraded) = resolve(SandboxBackend::Bwrap, &PathBuf::from("/tmp/ws"));
+    fn an_enabled_switch_resolves_to_a_handle_or_a_reasoned_degradation() {
+        // Either outcome is valid here (the platform may have no implementation,
+        // and the host may not have bubblewrap); what must hold is that enabling
+        // the switch and getting nothing is never silent.
+        let (sandbox, degraded) = resolve(true, &PathBuf::from("/tmp/ws"));
         match (sandbox, degraded) {
-            (Some(sandbox), None) => assert_eq!(sandbox.describe(), "bwrap"),
+            (Some(sandbox), None) => {
+                #[cfg(target_os = "linux")]
+                assert_eq!(sandbox.describe(), "bwrap");
+                #[cfg(not(target_os = "linux"))]
+                panic!("no sandbox implementation exists on this platform");
+            }
             (None, Some(degraded)) => assert!(!degraded.reason.is_empty()),
             (Some(_), Some(_)) => panic!("a sandbox and a degradation are mutually exclusive"),
-            (None, None) => panic!("an unusable backend must report why"),
+            (None, None) => panic!("an enabled switch that cannot sandbox must report why"),
         }
     }
 }

@@ -21,9 +21,9 @@ pub use cli::{CliArgs, CliCommand, MarketplaceSubcommand, McpSubcommand, PluginS
 pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
     AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, McpSettings, McpTomlConfig,
-    ModelProfileToml, PermissionTomlConfig, ResolvedConfig, SandboxBackend, SubagentSettings,
-    SubagentTomlConfig, TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig,
-    VisionImageSettings, VisionImageTomlConfig, VoiceProvider, VoiceSettings, VoiceTomlConfig,
+    ModelProfileToml, PermissionTomlConfig, ResolvedConfig, SubagentSettings, SubagentTomlConfig,
+    TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig, VisionImageSettings,
+    VisionImageTomlConfig, VoiceProvider, VoiceSettings, VoiceTomlConfig,
 };
 
 use crate::utils::RwLockExt;

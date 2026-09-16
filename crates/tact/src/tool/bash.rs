@@ -137,9 +137,9 @@ pub struct BashInput {
 
 /// Announce — once per session — that a configured sandbox is not in effect.
 ///
-/// A `[tools] sandbox = "none"` session is unsandboxed by choice and stays
-/// quiet; this only fires when the user asked for a backend that could not
-/// start. Startup already reported the degradation, but that line scrolls away,
+/// A `[tools] sandbox = false` session is unsandboxed by choice and stays
+/// quiet; this only fires when the switch is on and no sandbox could be
+/// started. Startup already reported the degradation, but that line scrolls away,
 /// so the notice is repeated at the point of use.
 fn notice_unsandboxed(ctx: &ToolContext) {
     let Some(degraded) = &ctx.sandbox_degraded else {
@@ -167,7 +167,8 @@ fn resolve_timeout_secs(input_timeout: Option<u64>, configured_secs: u64) -> u64
 /// reports host absolute paths. It is applied at startup via
 /// [`ToolRouter::set_tool_description`](crate::tool::ToolRouter::set_tool_description)
 /// from the *resolved* sandbox state — a session whose effective backend is
-/// `none` must not advertise `/workspace` or a disabled network.
+/// `none` (the switch is off, or the platform has no implementation) must not
+/// advertise `/workspace` or a disabled network.
 pub const SANDBOXED_BASH_DESCRIPTION: &str = "\
 Run a shell command in the current workspace.
 
@@ -614,8 +615,7 @@ mod sandbox_tests {
     /// this host cannot run bubblewrap.
     fn sandboxed_context(name: &str) -> Option<ToolContext> {
         let mut context = test_context(name);
-        let (sandbox, _) =
-            crate::sandbox::resolve(crate::config::SandboxBackend::Bwrap, &context.work_dir);
+        let (sandbox, _) = crate::sandbox::resolve(true, &context.work_dir);
         context.sandbox = Some(sandbox?);
         Some(context)
     }

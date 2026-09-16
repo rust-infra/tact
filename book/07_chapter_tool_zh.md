@@ -199,10 +199,11 @@ pub(crate) fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<Pat
 Hook → Permission → bash 工具 → Sandbox（可选）→ bwrap → sh -c → command
 ```
 
-由 `[tools] sandbox` 选择（默认 `"none"`，Linux 下可设 `"bwrap"`
-bubblewrap，见[配置](./21_chapter_config_zh.md)），在**启动时解析一次**
-（`crates/tact/src/sandbox/`），并挂在 `ToolContext` 上（`sandbox`、
-`sandbox_degraded`）。后端无法启动时降级为 `"none"` 并告警，而不是让工具失败。
+由 `[tools] sandbox = true` 开启（默认 `false`，见[配置](./21_chapter_config_zh.md)），
+在**启动时解析一次**（`crates/tact/src/sandbox/`），并挂在 `ToolContext` 上
+（`sandbox`、`sandbox_degraded`）。开关特意做成布尔值：用什么机制实现是平台决策
+（Linux 用 bubblewrap；其他平台尚无实现，开关在那里是空操作）。任何导致沙箱无法
+启动的情况都降级为不沙箱并告警，而不是让工具失败。
 
 启用时：工作区以读写方式挂载到 `/workspace`（**不**暴露宿主路径），`/usr`、
 `/bin`、`/lib`、`/lib64`、`/etc` 与固定的工具链白名单（`~/.rustup`、
@@ -215,6 +216,8 @@ bubblewrap，见[配置](./21_chapter_config_zh.md)），在**启动时解析一
 钩子、测试二进制。它不是对 agent 的边界：`background_run` 与 `worktree_run`
 仍会启动未沙箱的 shell（[后台任务](./13_chapter_background_zh.md)、
 [Worktree](./15_chapter_worktree_zh.md)）。
+
+开关、按平台解析、完整 flag 列表、降级与现存缺口见 [Bash 沙箱](./27_chapter_sandbox_zh.md)。
 
 ---
 
