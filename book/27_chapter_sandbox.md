@@ -1,7 +1,7 @@
 # Bash Sandbox
 > Language: [English](./27_chapter_sandbox.md) · [中文](./27_chapter_sandbox_zh.md)
 
-This chapter explains Tact's **opt-in OS-level sandbox** for shell execution: one boolean in `config.toml` wraps the `bash` tool's `sh -c` process in the platform's sandbox implementation (Linux: `bubblewrap`), so third-party code an approved command pulls in — `cargo` build scripts, `npm` lifecycle scripts, test binaries, `make` recipes — cannot read the host home directory or reach the network.
+This chapter explains Tact's **opt-in OS-level sandbox** for shell execution: one boolean in `config.toml` wraps the `bash` tool's `sh -c` process in the platform's sandbox implementation (Linux: `bubblewrap`), so third-party code an approved command pulls in — `cargo` build scripts, `npm` lifecycle scripts, test binaries, `make` recipes — cannot read the host home directory or write anywhere outside the workspace. The host **network** is deliberately left shared: the sandbox bounds the filesystem, not connectivity.
 
 The implementation lives in `crates/tact/src/sandbox/` (`mod.rs` resolves, `bwrap.rs` is the Linux backend); the only call site is the `bash` tool in `crates/tact/src/tool/bash.rs`. Permissions are untouched: the sandbox answers *what a command can reach*, not *whether it may run* ([Permission Model](./10_chapter_permission.md)).
 
@@ -71,12 +71,13 @@ Every path that does not produce a sandbox produces a **reason** (`SandboxDegrad
 
 ## 3. The Policy
 
-The flag list is built by a **pure** function, `bwrap_args_with(work_dir, exists)`, so every rule below is unit-testable without bubblewrap on the host (`bwrap_args` is the real-filesystem wrapper).
+The flag list is built by a **pure** function, `bwrap_args_with(work_dir, exists, env)`, so every rule below is unit-testable without bubblewrap on the host (`bwrap_args` is the real-filesystem wrapper, probing the real filesystem and the real environment).
 
 | Element | Flags | Notes |
 |---|---|---|
 | Lifecycle | `--die-with-parent` | bwrap dies with Tact |
-| Network | `--unshare-net` | no DNS, no proxy listener, no host loopback |
+| Network | `--share-net` | the **host** network namespace: whatever the host can reach, the command can reach — including a proxy listening on the host's loopback. `--share-net` is the explicit spelling of bwrap's default |
+| Name resolution | `--ro-bind /run/systemd/resolve` | sharing the namespace is not enough: `/etc/resolv.conf` is normally a symlink *into* `/run/systemd/resolve`, and `/run` is not otherwise mounted, so without this bind every lookup fails with "Temporary failure in name resolution". Skipped quietly on hosts with a plain `resolv.conf` |
 | Process namespace | `--unshare-pid` | the sandbox sees its own `/proc` (measured: ~5 pids instead of the host's ~475, and Tact's own host pid is absent — asserted by `pid_namespace_hides_the_host_process_table`), so it cannot signal same-uid host processes |
 | Workspace | `--bind <work_dir> /workspace` | the **only** read-write host directory, and it is *not* visible under its host path |
 | System paths | `--ro-bind /usr /bin /lib /etc` | skipped with a `tracing::warn!` when absent |
@@ -90,7 +91,7 @@ The workspace bind is the reason shell commands and in-process tools disagree ab
 
 ### Environment allowlist
 
-`--clearenv` is not hygiene for its own sake: the host environment leaks `HOME` (a directory that is *not* mounted) and `http_proxy` / `https_proxy` / `all_proxy` (a listener that does not exist inside), which turns real failures into misleading ones — a blocked `curl` would report a *proxy* error.
+`--clearenv` is not hygiene for its own sake: the host environment leaks `HOME` (a directory that is *not* mounted) and any credential the shell happens to export. The allowlist is therefore explicit, variable by variable — the proxy variables being the one deliberate exception, because the sandbox shares the host network namespace and on a host where the proxy is the only route out, dropping them turns a working command into a connection error.
 
 | Variable | Value | Why |
 |---|---|---|
@@ -98,6 +99,7 @@ The workspace bind is the reason shell commands and in-process tools disagree ab
 | `HOME` | `/workspace` | `~` resolves into the workspace, never the host home |
 | `TERM` | `dumb` | no terminal is attached |
 | `LANG`, `LC_ALL` | passed through when set | keeps output encodings stable |
+| `http_proxy`, `https_proxy`, `all_proxy`, `no_proxy` (and the uppercase spellings) | passed through when set | the host's proxy *is* reachable from inside; carrying both spellings because they disagree about which one wins |
 | `RUSTUP_HOME`, `CARGO_HOME`, `GIT_CONFIG_GLOBAL`, `NPM_CONFIG_CACHE` | host paths of the mounted homes | because `HOME=/workspace`, `~` no longer finds the toolchain — these four are load-bearing |
 
 ### Workspace guard
@@ -135,7 +137,7 @@ sequenceDiagram
     alt sandbox resolved
         T->>S: command("sh", ["-c", cmd], work_dir)
         S->>B: spawn bwrap <policy> -- sh -c cmd
-        B->>C: pid namespace + /workspace + no network
+        B->>C: pid namespace + /workspace + host network
     else no sandbox
         T->>T: notice_unsandboxed (once per session)
         T->>C: spawn sh -c cmd directly in work_dir
@@ -185,7 +187,7 @@ It is also best-effort by construction: it is opt-in, and any host condition tha
 |---|---|
 | Resolution (`sandbox/mod.rs`) | `the_switch_being_off_is_not_a_degradation`, `an_enabled_switch_resolves_to_a_handle_or_a_reasoned_degradation`, `degradation_notice_fires_only_once`, `degradation_reason_names_the_cause_and_the_effect` |
 | Flag construction (`sandbox/bwrap.rs`, no bwrap needed) | `emits_the_documented_flag_order`, `never_passes_new_session`, `missing_lib64_is_a_hard_error`, `absent_optional_system_path_is_skipped`, `clears_the_environment_and_sets_an_allowlist`, `guard_rejects_the_filesystem_root`, `guard_rejects_the_home_directory_and_its_ancestors`, `guard_rejects_system_directories`, `guard_accepts_a_project_directory_under_the_home_directory` |
-| Real sandbox (`tool/bash.rs`, `#[cfg(all(test, target_os = "linux"))]`, skips when bwrap is unresolvable) | `workspace_is_mounted_at_workspace_and_the_host_home_is_not`, `system_files_are_readable_and_proxies_are_absent`, `network_is_blocked`, `pid_namespace_hides_the_host_process_table`, `toolchain_homes_are_mounted_read_only`, `timeout_returns_promptly_and_leaves_no_survivors`, `cancellation_leaves_no_survivors` |
+| Real sandbox (`tool/bash.rs`, `#[cfg(all(test, target_os = "linux"))]`, skips when bwrap is unresolvable) | `workspace_is_mounted_at_workspace_and_the_host_home_is_not`, `system_files_are_readable_and_proxies_follow_the_host`, `shares_the_host_network_namespace`, `pid_namespace_hides_the_host_process_table`, `toolchain_homes_are_mounted_read_only`, `timeout_returns_promptly_and_leaves_no_survivors`, `cancellation_leaves_no_survivors` |
 
 Two traps the integration tests encode:
 

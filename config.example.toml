@@ -293,9 +293,11 @@ api_key = ""
 # OS-level sandbox for the `bash` tool (default: false). Opt-in, on/off only:
 # *which* mechanism implements it is a platform decision, not a config value.
 # On Linux it runs each command under bubblewrap with the workspace mounted at
-# /workspace, the host home directory unmounted, and the network disabled — so
-# third-party code an approved command pulls in (cargo build scripts, npm
-# lifecycle scripts, test binaries) cannot read credentials or reach the network.
+# /workspace and the host home directory unmounted — so third-party code an
+# approved command pulls in (cargo build scripts, npm lifecycle scripts, test
+# binaries) cannot read credentials or write outside the workspace. The host
+# network is shared (a proxy on the host's loopback included), so `cargo fetch`
+# / `npm install` / `curl` keep working.
 # Install `bubblewrap` first. Platforms with no implementation yet (anything but
 # Linux) accept the switch but cannot honour it, so enabling it there has no
 # effect; Tact always warns and runs unsandboxed instead of failing the tool.

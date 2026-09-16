@@ -168,13 +168,14 @@ fn resolve_timeout_secs(input_timeout: Option<u64>, configured_secs: u64) -> u64
 /// [`ToolRouter::set_tool_description`](crate::tool::ToolRouter::set_tool_description)
 /// from the *resolved* sandbox state — a session whose effective backend is
 /// `none` (the switch is off, or the platform has no implementation) must not
-/// advertise `/workspace` or a disabled network.
+/// advertise `/workspace`.
 pub const SANDBOXED_BASH_DESCRIPTION: &str = "\
 Run a shell command in the current workspace.
 
 The command runs inside a sandbox: the workspace is mounted at `/workspace` and is the \
-working directory, and the host workspace path is not visible inside. The network is \
-disabled, and the host home directory is not mounted. In-process tools (`read_file`, \
+working directory, and the host workspace path is not visible inside. The host home \
+directory is not mounted; the host network is shared, so outbound requests (and any proxy \
+the host uses) work as they do outside the sandbox. In-process tools (`read_file`, \
 `edit_file`, …) still report host absolute paths, so a host path inside the workspace must \
 be rewritten to `/workspace/...` before it is used in a command here.";
 
@@ -699,26 +700,40 @@ mod sandbox_tests {
     }
 
     #[tokio::test]
-    async fn system_files_are_readable_and_proxies_are_absent() {
+    async fn system_files_are_readable_and_proxies_follow_the_host() {
         let Some(context) = sandboxed_context("bash_sandbox_system") else {
             return;
         };
 
         assert!(run(&context, "cat /etc/passwd").await.is_ok());
 
-        // Proxy variables are dropped: inherited they would only produce a
-        // confusing "connection refused" error inside a network-less sandbox.
-        for variable in ["http_proxy", "https_proxy", "all_proxy"] {
+        // The sandbox shares the host network namespace, so a proxy the host can
+        // reach is reachable from inside as well; the variables are forwarded
+        // verbatim rather than dropped.
+        for variable in ["http_proxy", "https_proxy", "all_proxy", "no_proxy"] {
+            let expected = std::env::var(variable).unwrap_or_else(|_| "unset".to_string());
             let probe = format!("printf %s \"${{{variable}:-unset}}\"");
-            assert_eq!(run(&context, &probe).await.unwrap(), "unset");
+            assert_eq!(
+                run(&context, &probe).await.unwrap(),
+                expected,
+                "{variable} was not forwarded as the host has it"
+            );
         }
     }
 
     #[tokio::test]
-    async fn network_is_blocked() {
+    async fn shares_the_host_network_namespace() {
         let Some(context) = sandboxed_context("bash_sandbox_network") else {
             return;
         };
+
+        // A listener on the *host's* loopback is the discriminating probe, and
+        // it needs no external network: under `--unshare-net` the sandbox has an
+        // empty namespace of its own, so the host's 127.0.0.1 is not there and
+        // the connect fails.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
         let Ok(probe) = run(&context, "command -v python3").await else {
             return; // no interpreter to probe with
         };
@@ -729,11 +744,25 @@ mod sandbox_tests {
 
         let output = run(
             &context,
-            r#"python3 -c 'import socket; socket.create_connection(("1.1.1.1", 443), 3)' 2>/dev/null && echo CONNECTED || echo BLOCKED"#,
+            &format!(
+                r#"python3 -c 'import socket; socket.create_connection(("127.0.0.1", {port}), 3)' 2>/dev/null && echo REACHED || echo BLOCKED"#
+            ),
         )
         .await
         .unwrap();
-        assert_eq!(output.trim(), "BLOCKED");
+        assert_eq!(output.trim(), "REACHED");
+
+        // Sharing the namespace is not enough for name resolution: the host's
+        // `/etc/resolv.conf` is a symlink into `/run/systemd/resolve`, so that
+        // directory must be mounted too. Asserted on the file the symlink
+        // points at — no external lookup involved.
+        if std::path::Path::new("/run/systemd/resolve").is_dir() {
+            let resolv = run(&context, "cat /etc/resolv.conf").await.unwrap();
+            assert!(
+                resolv.contains("nameserver"),
+                "resolv.conf does not resolve inside the sandbox: {resolv:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -826,8 +855,8 @@ mod sandbox_tests {
             "unexpected cargo output: {version}"
         );
 
-        // The homes are mounted read-only: `cargo fetch` / `npm install` still
-        // fail by design (no network), but nothing can be written there.
+        // The homes are mounted read-only: `cargo fetch` / `npm install` can
+        // reach the network now, but nothing can be written there.
         let probe = run(
             &context,
             r#"test -w "$CARGO_HOME" && echo WRITABLE || echo READONLY"#,

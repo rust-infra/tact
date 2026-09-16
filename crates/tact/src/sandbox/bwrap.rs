@@ -1,8 +1,9 @@
 //! Linux `bubblewrap` backend.
 //!
 //! The flag list is produced by a **pure** function ([`bwrap_args`]) so the
-//! "only bind paths that exist" rule and the "`--new-session` must never be
-//! passed" rule can be unit-tested without a sandbox on the host.
+//! "only bind paths that exist" rule, the "`--new-session` must never be
+//! passed" rule and the environment allowlist can be unit-tested without a
+//! sandbox on the host.
 
 use std::path::{Path, PathBuf};
 
@@ -13,11 +14,42 @@ use super::Sandbox;
 /// Read-only system paths bound into the sandbox when they exist on the host.
 const OPTIONAL_SYSTEM_PATHS: &[&str] = &["/usr", "/bin", "/lib", "/etc"];
 
+/// Read-only paths that must be mounted for name resolution to work.
+///
+/// The sandbox shares the host network namespace, but `/etc/resolv.conf` is
+/// normally a symlink into `/run/systemd/resolve`, and `/run` is not part of
+/// the mount list — so without this bind every lookup fails with "Temporary
+/// failure in name resolution" even though the host's network is right there.
+/// Absent on hosts that keep a plain `/etc/resolv.conf`, hence a quiet skip.
+const RESOLVER_PATHS: &[&str] = &["/run/systemd/resolve"];
+
 /// Read-only system paths that must exist: `/lib64` carries the dynamic loader
 /// on glibc hosts, and without it every command fails with a misleading
 /// `bwrap: execvp sh: No such file or directory`. Treated as a construction
 /// failure rather than a silently skipped mount.
 const REQUIRED_SYSTEM_PATHS: &[&str] = &["/lib64"];
+
+/// Host variables carried into the sandbox verbatim when they are set.
+const LOCALE_ENV_VARS: &[&str] = &["LANG", "LC_ALL"];
+
+/// Host proxy variables carried into the sandbox verbatim when they are set.
+///
+/// The one deliberate exception to the environment allowlist: the sandbox
+/// shares the host network namespace, so a proxy listening on the host's
+/// loopback *is* reachable from inside, and on a host where the proxy is the
+/// only route out, dropping these variables turns a working command into a
+/// connection error. Both spellings are forwarded because they disagree about
+/// which one wins.
+const PROXY_ENV_VARS: &[&str] = &[
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+];
 
 /// Read-only toolchain homes, mounted at their **host** absolute paths.
 ///
@@ -104,18 +136,25 @@ impl Sandbox for BwrapSandbox {
 
 /// The full policy flag list, ending with the `--` separator.
 ///
-/// Existence is probed against the real filesystem; [`bwrap_args_with`] takes
-/// the probe as a parameter so the layout rules are unit-testable.
+/// Existence is probed against the real filesystem and the environment against
+/// the real process; [`bwrap_args_with`] takes both as parameters so the layout
+/// rules and the environment allowlist are unit-testable.
 ///
 /// # Errors
 ///
 /// Returns an error when the workspace guard refuses `work_dir` or a required
 /// host mount is missing.
 pub fn bwrap_args(work_dir: &Path) -> Result<Vec<String>> {
-    bwrap_args_with(work_dir, &|path| path.exists())
+    bwrap_args_with(work_dir, &|path| path.exists(), &|name| {
+        std::env::var(name).ok()
+    })
 }
 
-fn bwrap_args_with(work_dir: &Path, exists: &dyn Fn(&Path) -> bool) -> Result<Vec<String>> {
+fn bwrap_args_with(
+    work_dir: &Path,
+    exists: &dyn Fn(&Path) -> bool,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<String>> {
     let work_dir = guard_workspace(work_dir)?;
     let home = home_dir();
 
@@ -126,9 +165,14 @@ fn bwrap_args_with(work_dir: &Path, exists: &dyn Fn(&Path) -> bool) -> Result<Ve
     // would then never return. `--unshare-pid` gives stronger teardown (the pid
     // namespace dies with bwrap) and keeps the mounted `/proc` from showing the
     // host process table.
+    //
+    // `--share-net` is the explicit form of bwrap's default: the sandbox keeps
+    // the host's network namespace, so a command can reach whatever the host can
+    // (including a proxy on the host's loopback). Name resolution additionally
+    // needs [`RESOLVER_PATHS`].
     push(
         &mut args,
-        &["--die-with-parent", "--unshare-net", "--unshare-pid"],
+        &["--die-with-parent", "--share-net", "--unshare-pid"],
     );
 
     // The workspace is the only host directory mounted read-write, and it is
@@ -156,6 +200,17 @@ fn bwrap_args_with(work_dir: &Path, exists: &dyn Fn(&Path) -> bool) -> Result<Ve
         }
     }
 
+    // `/run` is otherwise unmounted, which would leave the host's
+    // `/etc/resolv.conf` symlink dangling and DNS broken.
+    for path in RESOLVER_PATHS {
+        let path = Path::new(path);
+        if exists(path) {
+            ro_bind(&mut args, path);
+        } else {
+            tracing::debug!(path = %path.display(), "sandbox: resolver path absent, not bound");
+        }
+    }
+
     let mut toolchain_env = Vec::new();
     if let Some(home) = &home {
         for (relative, variable, file) in TOOLCHAIN_HOMES {
@@ -180,15 +235,16 @@ fn bwrap_args_with(work_dir: &Path, exists: &dyn Fn(&Path) -> bool) -> Result<Ve
     );
     push(&mut args, &["--chdir", "/workspace"]);
 
-    // The host environment is not inherited: it leaks the host home (not
-    // mounted) and proxy variables pointing at a listener that does not exist
-    // inside the sandbox — both turn real failures into misleading ones.
+    // The host environment is not inherited wholesale: it leaks the host home
+    // (not mounted) and credentials unrelated to the command. The allowlist is
+    // explicit; the proxy variables are the one deliberate exception, because
+    // the sandbox shares the host network namespace (see [`PROXY_ENV_VARS`]).
     push(&mut args, &["--clearenv"]);
     setenv(&mut args, "PATH", "/usr/local/bin:/usr/bin:/bin");
     setenv(&mut args, "HOME", "/workspace");
     setenv(&mut args, "TERM", "dumb");
-    for variable in ["LANG", "LC_ALL"] {
-        if let Ok(value) = std::env::var(variable) {
+    for variable in LOCALE_ENV_VARS.iter().chain(PROXY_ENV_VARS) {
+        if let Some(value) = env(variable) {
             setenv(&mut args, variable, &value);
         }
     }
@@ -281,6 +337,13 @@ mod tests {
         true
     }
 
+    /// An environment with no variables set: the allowlist is then only the
+    /// fixed entries (`PATH`, `HOME`, `TERM`) plus whatever the toolchain
+    /// mounts contribute.
+    fn no_env(_name: &str) -> Option<String> {
+        None
+    }
+
     fn exists_except(missing: &'static str) -> impl Fn(&Path) -> bool {
         move |path: &Path| path != Path::new(missing)
     }
@@ -299,10 +362,10 @@ mod tests {
 
     #[test]
     fn emits_the_documented_flag_order() {
-        let args = bwrap_args_with(&workspace(), &everything_exists).unwrap();
+        let args = bwrap_args_with(&workspace(), &everything_exists, &no_env).unwrap();
 
         assert_eq!(args[0], "--die-with-parent");
-        assert_eq!(args[1], "--unshare-net");
+        assert_eq!(args[1], "--share-net");
         assert_eq!(args[2], "--unshare-pid");
         assert_eq!(args[3], "--bind");
         // The workspace is mounted at /workspace, never at its host path.
@@ -328,13 +391,13 @@ mod tests {
     fn never_passes_new_session() {
         // Regression guard: `--new-session` detaches the command into its own
         // process group and breaks the existing killpg teardown.
-        let args = bwrap_args_with(&workspace(), &everything_exists).unwrap();
+        let args = bwrap_args_with(&workspace(), &everything_exists, &no_env).unwrap();
         assert!(!args.iter().any(|arg| arg == "--new-session"));
     }
 
     #[test]
     fn missing_lib64_is_a_hard_error() {
-        let error = bwrap_args_with(&workspace(), &exists_except("/lib64"))
+        let error = bwrap_args_with(&workspace(), &exists_except("/lib64"), &no_env)
             .unwrap_err()
             .to_string();
         assert!(error.contains("/lib64"), "unexpected error: {error}");
@@ -342,7 +405,7 @@ mod tests {
 
     #[test]
     fn absent_optional_system_path_is_skipped() {
-        let args = bwrap_args_with(&workspace(), &exists_except("/etc")).unwrap();
+        let args = bwrap_args_with(&workspace(), &exists_except("/etc"), &no_env).unwrap();
         let etc_bind = args
             .windows(2)
             .any(|pair| pair[0] == "--ro-bind" && pair[1] == "/etc");
@@ -351,7 +414,7 @@ mod tests {
 
     #[test]
     fn clears_the_environment_and_sets_an_allowlist() {
-        let args = bwrap_args_with(&workspace(), &everything_exists).unwrap();
+        let args = bwrap_args_with(&workspace(), &everything_exists, &no_env).unwrap();
 
         let clearenv = index_of(&args, "--clearenv");
         let first_setenv = index_of(&args, "--setenv");
@@ -362,15 +425,74 @@ mod tests {
         let path = index_of(&args, "PATH");
         assert_eq!(args[path + 1], "/usr/local/bin:/usr/bin:/bin");
 
-        // Proxy variables are not carried into the sandbox.
-        for variable in ["http_proxy", "https_proxy", "all_proxy"] {
-            assert!(!args.iter().any(|arg| arg == variable));
+        // An empty host environment contributes nothing beyond the fixed
+        // entries: the allowlist is opt-in, variable by variable.
+        for variable in ["LANG", "LC_ALL", "http_proxy", "https_proxy", "all_proxy"] {
+            assert!(
+                !args.iter().any(|arg| arg == variable),
+                "{variable} leaked: {args:?}"
+            );
         }
     }
 
     #[test]
+    fn carries_proxy_variables_and_nothing_else() {
+        // The proxy variables reach the sandbox because it shares the host
+        // network namespace and, on a host where the proxy is the only route
+        // out, dropping them turns a working command into a connection error.
+        let env = |name: &str| match name {
+            "https_proxy" => Some("http://127.0.0.1:7890".to_string()),
+            "no_proxy" => Some("127.0.0.1,localhost".to_string()),
+            "LANG" => Some("en_US.UTF-8".to_string()),
+            "SECRET_TOKEN" => Some("must-not-leak".to_string()),
+            _ => None,
+        };
+        let args = bwrap_args_with(&workspace(), &everything_exists, &env).unwrap();
+
+        let https = index_of(&args, "https_proxy");
+        assert_eq!(args[https + 1], "http://127.0.0.1:7890");
+        let no = index_of(&args, "no_proxy");
+        assert_eq!(args[no + 1], "127.0.0.1,localhost");
+        let lang = index_of(&args, "LANG");
+        assert_eq!(args[lang + 1], "en_US.UTF-8");
+
+        // Carrying the proxies is an entry in the allowlist, not "inherit the
+        // rest of the host environment" — everything else still has to be
+        // named to get in.
+        assert!(
+            !args.iter().any(|arg| arg == "SECRET_TOKEN"),
+            "unlisted variable leaked: {args:?}"
+        );
+    }
+
+    #[test]
+    fn shares_the_host_network_and_binds_the_resolver() {
+        // Regression guard, both halves measured on a systemd-resolved host:
+        // `--unshare-net` gives an empty namespace, and a `/run` that is not
+        // mounted leaves `/etc/resolv.conf` (a symlink into
+        // `/run/systemd/resolve`) dangling — DNS then fails even though the
+        // host's network is present.
+        let args = bwrap_args_with(&workspace(), &everything_exists, &no_env).unwrap();
+        assert!(args.iter().any(|arg| arg == "--share-net"));
+        assert!(!args.iter().any(|arg| arg == "--unshare-net"));
+
+        let resolver = index_of(&args, "/run/systemd/resolve");
+        assert_eq!(args[resolver - 1], "--ro-bind");
+
+        // A host without that directory must still construct successfully: it
+        // uses a plain resolv.conf, which `/etc` already covers.
+        let args = bwrap_args_with(
+            &workspace(),
+            &exists_except("/run/systemd/resolve"),
+            &no_env,
+        )
+        .unwrap();
+        assert!(!args.iter().any(|arg| arg == "/run/systemd/resolve"));
+    }
+
+    #[test]
     fn guard_rejects_the_filesystem_root() {
-        let error = bwrap_args_with(Path::new("/"), &everything_exists)
+        let error = bwrap_args_with(Path::new("/"), &everything_exists, &no_env)
             .unwrap_err()
             .to_string();
         assert!(error.contains("filesystem root"), "unexpected: {error}");
@@ -381,7 +503,7 @@ mod tests {
         let Some(home) = home_dir() else {
             return; // no $HOME on this host; nothing to assert
         };
-        let error = bwrap_args_with(&home, &everything_exists)
+        let error = bwrap_args_with(&home, &everything_exists, &no_env)
             .unwrap_err()
             .to_string();
         assert!(error.contains("home directory"), "unexpected: {error}");
@@ -391,7 +513,7 @@ mod tests {
             // filesystem_root` already covers; asserting "ancestor" there would
             // only fail (this is the shape `$HOME` takes inside the sandbox,
             // where `HOME=/workspace`).
-            let error = bwrap_args_with(ancestor, &everything_exists)
+            let error = bwrap_args_with(ancestor, &everything_exists, &no_env)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("ancestor"), "unexpected: {error}");
@@ -402,7 +524,7 @@ mod tests {
     fn guard_rejects_system_directories() {
         for path in ["/etc", "/usr/lib", "/boot"] {
             assert!(
-                bwrap_args_with(Path::new(path), &everything_exists).is_err(),
+                bwrap_args_with(Path::new(path), &everything_exists, &no_env).is_err(),
                 "{path} should be refused"
             );
         }
@@ -417,7 +539,7 @@ mod tests {
             return; // no $HOME on this host; nothing to assert
         };
         let project = home.join("Projects").join("sandbox-guard-probe");
-        let args = bwrap_args_with(&project, &everything_exists).unwrap();
+        let args = bwrap_args_with(&project, &everything_exists, &no_env).unwrap();
         let at = index_of(&args, "--bind");
         assert_eq!(args[at + 1], project.display().to_string());
     }

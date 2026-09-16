@@ -2,7 +2,7 @@
 
 > 语言：[中文](./27_chapter_sandbox_zh.md) · [English](./27_chapter_sandbox.md)
 
-本章说明 Tact 可选的 **OS 级 shell 沙箱**：`config.toml` 里一个布尔开关，把 `bash` 工具的 `sh -c` 进程包进平台的沙箱实现（Linux 用 `bubblewrap`），使得被批准命令引入的第三方代码——`cargo` 构建脚本、`npm` 生命周期脚本、测试二进制、`make` 配方——读不到宿主 home，也连不上网络。
+本章说明 Tact 可选的 **OS 级 shell 沙箱**：`config.toml` 里一个布尔开关，把 `bash` 工具的 `sh -c` 进程包进平台的沙箱实现（Linux 用 `bubblewrap`），使得被批准命令引入的第三方代码——`cargo` 构建脚本、`npm` 生命周期脚本、测试二进制、`make` 配方——读不到宿主 home，也写不到工作区之外。**网络**是刻意保持共享的：沙箱约束的是文件系统，不是连通性。
 
 实现在 `crates/tact/src/sandbox/`（`mod.rs` 负责解析，`bwrap.rs` 是 Linux 后端）；唯一的调用点是 `crates/tact/src/tool/bash.rs`。权限模型完全不动：沙箱回答的是*命令能触达什么*，而不是*它能不能运行*（见[权限模型](./10_chapter_permission_zh.md)）。
 
@@ -72,12 +72,13 @@ flowchart TD
 
 ## 3. 策略
 
-flag 列表由**纯函数** `bwrap_args_with(work_dir, exists)` 生成，因此下面每条规则都能在宿主没有 bubblewrap 的情况下单测（`bwrap_args` 只是接真实文件系统存在性判断的外壳）。
+flag 列表由**纯函数** `bwrap_args_with(work_dir, exists, env)` 生成，因此下面每条规则都能在宿主没有 bubblewrap 的情况下单测（`bwrap_args` 只是接真实文件系统与真实环境的外壳）。
 
 | 元素 | flag | 说明 |
 |---|---|---|
 | 生命周期 | `--die-with-parent` | bwrap 随 Tact 一起退出 |
-| 网络 | `--unshare-net` | 没有 DNS、没有代理监听者、也到不了宿主 loopback |
+| 网络 | `--share-net` | 共享**宿主**网络命名空间：宿主能到的，命令也能到——包括监听在宿主 loopback 上的代理。`--share-net` 是 bwrap 默认行为的显式写法 |
+| 域名解析 | `--ro-bind /run/systemd/resolve` | 只共享命名空间还不够：`/etc/resolv.conf` 通常是指向 `/run/systemd/resolve` 的符号链接，而 `/run` 本来不挂载，缺了这条绑定每次解析都会报 "Temporary failure in name resolution"。使用普通 `resolv.conf` 的宿主会静默跳过 |
 | 进程命名空间 | `--unshare-pid` | 沙箱内看到自己的 `/proc`（实测约 5 个 pid，而不是宿主约 475 个；Tact 自身的宿主 pid 在沙箱内不存在，由 `pid_namespace_hides_the_host_process_table` 断言），因此也无法给同 uid 的宿主进程发信号 |
 | 工作区 | `--bind <work_dir> /workspace` | **唯一**读写挂载的宿主目录，且**不**以其宿主路径出现 |
 | 系统路径 | `--ro-bind /usr /bin /lib /etc` | 不存在时跳过并 `tracing::warn!` |
@@ -91,7 +92,7 @@ flag 列表由**纯函数** `bwrap_args_with(work_dir, exists)` 生成，因此�
 
 ### 环境变量白名单
 
-`--clearenv` 不只是卫生习惯：宿主环境会泄漏 `HOME`（一个**没有**被挂载的目录）与 `http_proxy` / `https_proxy` / `all_proxy`（沙箱内并不存在的监听者），把真实失败伪装成误导性的失败——被拦下的 `curl` 会报告**代理**错误。
+`--clearenv` 不只是卫生习惯：宿主环境会泄漏 `HOME`（一个**没有**被挂载的目录）以及 shell 恰好导出的任何凭据。因此白名单是逐变量显式列出的——唯一的例外是代理变量：沙箱共享宿主网络命名空间，而在那些只能靠代理出网的宿主上，丢掉它们会把一条本来能跑的命令变成连接错误。
 
 | 变量 | 取值 | 原因 |
 |---|---|---|
@@ -99,6 +100,7 @@ flag 列表由**纯函数** `bwrap_args_with(work_dir, exists)` 生成，因此�
 | `HOME` | `/workspace` | `~` 落在工作区内，永远不指向宿主 home |
 | `TERM` | `dumb` | 没有终端 |
 | `LANG`、`LC_ALL` | 有则透传 | 保持输出编码稳定 |
+| `http_proxy`、`https_proxy`、`all_proxy`、`no_proxy`（含大写写法） | 有则透传 | 宿主的代理在沙箱内**确实**可达；两种拼写都带上，因为它们在"谁优先"上并不一致 |
 | `RUSTUP_HOME`、`CARGO_HOME`、`GIT_CONFIG_GLOBAL`、`NPM_CONFIG_CACHE` | 被挂载 home 的宿主路径 | 因为 `HOME=/workspace`，`~` 再也找不到工具链——这四个是承重的 |
 
 ### 工作区守卫
@@ -136,7 +138,7 @@ sequenceDiagram
     alt 沙箱已解析成功
         T->>S: command("sh", ["-c", cmd], work_dir)
         S->>B: spawn bwrap <policy> -- sh -c cmd
-        B->>C: pid namespace + /workspace + 无网络
+        B->>C: pid namespace + /workspace + 宿主网络
     else 无沙箱
         T->>T: notice_unsandboxed（每会话一次）
         T->>C: 直接在 work_dir 里 spawn sh -c cmd
@@ -186,7 +188,7 @@ sequenceDiagram
 |---|---|
 | 解析（`sandbox/mod.rs`） | `the_switch_being_off_is_not_a_degradation`、`an_enabled_switch_resolves_to_a_handle_or_a_reasoned_degradation`、`degradation_notice_fires_only_once`、`degradation_reason_names_the_cause_and_the_effect` |
 | flag 构造（`sandbox/bwrap.rs`，无需 bwrap） | `emits_the_documented_flag_order`、`never_passes_new_session`、`missing_lib64_is_a_hard_error`、`absent_optional_system_path_is_skipped`、`clears_the_environment_and_sets_an_allowlist`、`guard_rejects_the_filesystem_root`、`guard_rejects_the_home_directory_and_its_ancestors`、`guard_rejects_system_directories`、`guard_accepts_a_project_directory_under_the_home_directory` |
-| 真实沙箱（`tool/bash.rs`，`#[cfg(all(test, target_os = "linux"))]`，bwrap 不可用时跳过） | `workspace_is_mounted_at_workspace_and_the_host_home_is_not`、`system_files_are_readable_and_proxies_are_absent`、`network_is_blocked`、`pid_namespace_hides_the_host_process_table`、`toolchain_homes_are_mounted_read_only`、`timeout_returns_promptly_and_leaves_no_survivors`、`cancellation_leaves_no_survivors` |
+| 真实沙箱（`tool/bash.rs`，`#[cfg(all(test, target_os = "linux"))]`，bwrap 不可用时跳过） | `workspace_is_mounted_at_workspace_and_the_host_home_is_not`、`system_files_are_readable_and_proxies_follow_the_host`、`shares_the_host_network_namespace`、`pid_namespace_hides_the_host_process_table`、`toolchain_homes_are_mounted_read_only`、`timeout_returns_promptly_and_leaves_no_survivors`、`cancellation_leaves_no_survivors` |
 
 集成测试里固化了两个坑：
 

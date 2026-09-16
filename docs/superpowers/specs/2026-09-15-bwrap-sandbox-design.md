@@ -22,9 +22,9 @@ Three further measurements constrain the policy:
   `bwrap: execvp sh: No such file or directory`, because the dynamic loader is
   missing — an error message that names the wrong thing.
 - The sandbox's own loopback works (bwrap brings `lo` up), so commands that bind
-  `127.0.0.1` run; host-side services on `127.0.0.1` are unreachable. The host
-  environment leaks in (`HOME=/home/rg`, `http_proxy=…:7890`), so a blocked
-  `curl` fails with a *proxy* error instead of "network unreachable".
+  `127.0.0.1` run. *(Measured with `--unshare-net`, later reversed: the sandbox
+  now shares the host network namespace — see §8 — so host-side services on
+  `127.0.0.1` **are** reachable.)*
 - Without `--unshare-pid`, the mounted `/proc` shows the host process table and
   the sandbox can signal same-uid host processes (~475 host pids visible;
   `kill -0 <host pid>` succeeds). With `--unshare-pid` the same mount shows 5
@@ -503,6 +503,48 @@ Temporary files created by the command are therefore sandbox-local and disappear
 
 ### 8. Network policy
 
+**Revision 2026-09-16 — this section now documents the shipped behaviour, which
+reverses the original decision. The original "network disabled" text is kept
+below it, because the measurements in it are still what any future policy has to
+reason about.**
+
+The sandbox **shares the host network namespace**:
+
+```text
+--share-net
+```
+
+`--share-net` is the explicit spelling of bubblewrap's default; the flag is
+written out so the policy reads as a decision rather than an omission.
+
+Measured behaviour **[measured, 2026-09-16]**:
+
+- Sharing the namespace alone is **not enough for name resolution**: the host's
+  `/etc/resolv.conf` is normally a symlink into `/run/systemd/resolve`, and
+  `/run` is not in the mount list, so the symlink dangles and every lookup fails
+  with "Temporary failure in name resolution". The policy therefore also mounts
+  `--ro-bind /run/systemd/resolve /run/systemd/resolve` (skipped quietly on
+  hosts with a plain `resolv.conf`). Binding `/etc/resolv.conf` directly is not
+  an option: `bwrap: Can't mount on symlink destination /etc/resolv.conf`.
+- The host's connectivity is the sandbox's connectivity, including hosts that
+  the host itself cannot reach directly. On this development box the direct
+  route is partial — `example.com` answers, `api.binance.com` /
+  `api.coinbase.com` / `1.1.1.1:443` all time out — while everything works
+  through the host proxy on `127.0.0.1:7890`. Because the namespace is shared,
+  that listener **is** reachable from inside.
+- Consequently the proxy variables are forwarded verbatim (see §17): dropping
+  them turns a working command into a connection error on a proxy-only host.
+
+Tests must not depend on external network reachability; the regression test
+connects to a listener the test itself started on the host's loopback, which is
+reachable exactly when the namespace is shared and needed no external network.
+
+Network access remains **not configurable**: the sandbox bounds the filesystem,
+not connectivity, and there is no allowlist in this version.
+
+<details>
+<summary>Original decision (superseded 2026-09-16)</summary>
+
 The first version disables network access:
 
 ```text
@@ -535,6 +577,8 @@ Measured behaviour of `--unshare-net` **[measured]**:
   proxy variables being present or absent (§Tests 7).
 
 Network access is intentionally not configurable in this version.
+
+</details>
 
 A future design may introduce an explicit network policy:
 
@@ -640,7 +684,7 @@ Conceptually, an invocation should look like:
 ```text
 bwrap
     --die-with-parent
-    --unshare-net
+    --share-net                  # the host's namespace, §8
     --unshare-pid                # adopted, §9.1 / §Resolved questions
 
     --bind <work_dir> /workspace
@@ -914,10 +958,9 @@ The sandbox therefore does not replace or weaken the existing permission model.
 ### 17. Environment policy
 
 bubblewrap inherits the parent environment unless told otherwise. Measured, the
-first draft leaks `HOME=/home/rg` — a directory that is *not* mounted — and
-`http_proxy=https_proxy=127.0.0.1:7890`, a listener that does not exist inside
-the sandbox. Commands then fail with messages that describe neither the sandbox
-nor the real cause (`Failed to connect to 127.0.0.1:7890 over proxy`).
+first draft leaks `HOME=/home/rg` — a directory that is *not* mounted — along
+with whatever credentials the invoking shell exported. Commands then fail with
+messages that describe neither the sandbox nor the real cause.
 
 The invocation therefore sets the environment explicitly (`--clearenv` plus
 `--setenv`):
@@ -930,9 +973,13 @@ The invocation therefore sets the environment explicitly (`--clearenv` plus
 | `TERM` | `dumb` or unset | there is no terminal in the sandbox |
 | `RUSTUP_HOME` / `CARGO_HOME` / `GIT_CONFIG_GLOBAL` / `NPM_CONFIG_CACHE` | the host paths of the §17.1 homes | `HOME=/workspace` means `~` no longer resolves there, so these are set explicitly |
 
-`http_proxy` / `https_proxy` / `all_proxy` / `no_proxy` are dropped: under
-`--unshare-net` they can only produce a misleading error. The bwrap flags are
-`--clearenv` plus one `--setenv` per row above.
+`http_proxy` / `https_proxy` / `all_proxy` / `no_proxy` — in both the lowercase
+and uppercase spellings — are **forwarded verbatim** when set. This reverses the
+original draft, which dropped them: with the host network namespace shared (§8)
+the proxy is genuinely reachable from inside, and on a host where the proxy is
+the only route out, dropping the variables turns a working command into a
+connection error. Everything else still has to be named to get in. The bwrap
+flags are `--clearenv` plus one `--setenv` per forwarded variable.
 
 ### 17.1 Toolchain homes
 
@@ -1005,11 +1052,12 @@ needed, and the first is not optional:
    say only "Shell command to run in the current workspace." Extend them — once,
    in a backend-independent way — with: the workspace is mounted at `/workspace`
    and is the working directory, the host workspace path is not visible, the
-   network is disabled, and the host home directory is not mounted. Describe
+   host network is shared, and the host home directory is not mounted. Describe
    *behaviour*, never the flag list. Because the sandbox is opt-in and can
    degrade (§3.2), the description is computed once at startup from the
-   **resolved** state — a `"none"` session must not advertise network-isolation
-   or `/workspace`.
+   **resolved** state — a `"none"` session must not advertise `/workspace`
+   *(revised 2026-09-16: the description no longer claims a disabled network,
+   see §8)*.
 2. **Keep failures actionable.** A command that references a host path outside
    the sandbox fails today with a bare shell error. Preprocessing the common case
    (an absolute path under `ctx.work_dir`) into a hint in the error output is
@@ -1132,28 +1180,31 @@ Expected: succeeds when `/etc` is available.
 
 This verifies that basic system libraries/configuration remain usable.
 
-### 7. Network isolation
+### 7. Network namespace is shared
 
-Probe with something that cannot be confused with a proxy failure — a direct
-socket attempt, not `curl`:
+The probe must not depend on external reachability, so it targets a listener the
+test itself opened on the **host's** loopback:
 
 ```text
-python3 -c 'import socket; socket.create_connection(("1.1.1.1", 443), 3)'
+python3 -c 'import socket; socket.create_connection(("127.0.0.1", <test port>), 3)'
 ```
 
-Expected: the connection fails **[measured]**: the sandbox has its own working
-loopback but no route out.
+Expected: the connection **succeeds** **[measured]**: the sandbox is in the
+host's network namespace, so the host's loopback (and a proxy listening on it) is
+reachable. Under the superseded `--unshare-net` policy the same probe fails,
+which is exactly what makes it the regression guard.
 
-Two things the test must assert as well, because both were measured to bite:
+Two further assertions:
 
-- the sandbox's own loopback still works (`bind` + `connect` on `127.0.0.1`), so
-  a test suite that starts a local server is not broken by §8;
-- no proxy variable is visible inside the sandbox, which is what makes the
-  failure above read as "no network" instead of
-  `Failed to connect to 127.0.0.1:7890 over proxy`.
+- name resolution is configured, not just routable: the tester may assert that
+  `/etc/resolv.conf` resolves inside the sandbox (it is a symlink into
+  `/run/systemd/resolve`, mounted per §8) — still with no external lookup, so the
+  test stays hermetic;
+- proxy variables are forwarded exactly as the host has them (present when the
+  host sets them, absent otherwise), which is what §17 promises.
 
 Skip gracefully when the probe interpreter is unavailable; never skip the
-"network is actually blocked" assertion when it is.
+loopback assertion when it is.
 
 ### 8. Temporary filesystem
 
@@ -1485,14 +1536,14 @@ Mitigation:
 ### 10. Host environment leakage
 
 bubblewrap inherits the environment by default. Measured leaks:
-`HOME=/home/rg` (unmounted) and `http_proxy`/`https_proxy` (a listener that does
-not exist inside), producing misleading errors. The same channel can hand
+`HOME=/home/rg`, a directory that is not mounted. The same channel can hand
 whatever tact itself holds — provider API keys, tokens — to build scripts and
 `postinstall` hooks, which is exactly the class of code this sandbox exists to
 contain.
 
-Mitigation: `--clearenv` + the explicit allowlist in §17; assert the absence of
-proxy variables in §Tests 7.
+Mitigation: `--clearenv` + the explicit allowlist in §17 (the proxy variables
+are the one deliberate exception, and they carry no credentials of Tact's own).
+Assert the forwarded set in §Tests 7.
 
 ### 11. The workspace guard can silently void the isolation
 
@@ -1531,7 +1582,9 @@ pins it; a future change that drops the flag must fail that test.
 
 * **Should `--unshare-pid` be used?** Yes. Teardown is stronger (namespace death reaps members) and `/proc` no longer leaks the host process table (§9.1, Risk 12).
 
-* **Should the host environment be inherited?** No. `--clearenv` plus an explicit allowlist; proxy variables are dropped (§17).
+* **Should the host environment be inherited?** No. `--clearenv` plus an explicit allowlist; the proxy variables are the single exception and are forwarded verbatim (§17, revised 2026-09-16 because the namespace is shared again).
+
+* **Should network access be disabled?** It was, and it is not any more: the sandbox shares the host network namespace and mounts `/run/systemd/resolve` for name resolution (§8, revised 2026-09-16). The sandbox bounds the filesystem, not connectivity.
 
 * **Should `/tmp` use the host filesystem?** No. Use sandbox-local tmpfs.
 
