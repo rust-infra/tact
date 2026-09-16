@@ -340,7 +340,7 @@ async fn handle_user_command_with_account(
             match agent
                 .tool_context
                 .background_manager
-                .check(task_id.as_deref())
+                .check(task_id.as_deref(), agent.runtime.session_id.as_deref())
                 .await
             {
                 Ok(output) => {

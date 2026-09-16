@@ -61,6 +61,19 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 /// latency imperceptible while costing a few small SQLite reads per second.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
+/// Whether a record belongs to `session_id`.
+///
+/// An absent or empty id matches every record: a context without a session has
+/// nothing to filter by (unit tests, and the moment before `ensure_session`),
+/// which keeps the unfiltered behaviour available without making it the default
+/// for a real session.
+pub(crate) fn record_in_session(record: &BackgroundTaskRecord, session_id: Option<&str>) -> bool {
+    match session_id {
+        Some(id) if !id.is_empty() => record.session_id == id,
+        _ => true,
+    }
+}
+
 /// Why [`BackgroundManager::wait`] returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitOutcome {
@@ -315,13 +328,16 @@ impl BackgroundManager {
                 .get(task_id)
                 .await?
                 .is_some_and(|record| is_running(&record)),
-            None => self.records.list().await?.iter().any(|record| {
-                is_running(record) && (session_id.is_empty() || record.session_id == session_id)
-            }),
+            None => self
+                .records
+                .list()
+                .await?
+                .iter()
+                .any(|record| is_running(record) && record_in_session(record, Some(session_id))),
         })
     }
 
-    pub async fn check(&self, task_id: Option<&str>) -> Result<String> {
+    pub async fn check(&self, task_id: Option<&str>, session_id: Option<&str>) -> Result<String> {
         if let Some(task_id) = task_id {
             let record = self
                 .records
@@ -332,6 +348,7 @@ impl BackgroundManager {
         }
 
         let mut records = self.records.list().await?;
+        records.retain(|record| record_in_session(record, session_id));
         if records.is_empty() {
             return Ok("No background tasks.".to_string());
         }
@@ -385,8 +402,8 @@ impl SharedBackgroundManager {
             .await
     }
 
-    pub async fn check(&self, task_id: Option<&str>) -> Result<String> {
-        self.inner.check(task_id).await
+    pub async fn check(&self, task_id: Option<&str>, session_id: Option<&str>) -> Result<String> {
+        self.inner.check(task_id, session_id).await
     }
 
     pub async fn wait(
@@ -714,6 +731,62 @@ mod tests {
             .unwrap()
     }
 
+    /// Inserts a finished record owned by `session_id`.
+    async fn insert_record(manager: &SharedBackgroundManager, id: &str, session_id: &str) {
+        manager
+            .inner
+            .records
+            .upsert(&BackgroundTaskRecord {
+                id: id.to_string(),
+                status: BackgroundTaskStatus::Completed,
+                command: format!("echo {id}"),
+                session_id: session_id.to_string(),
+                started_at: Utc::now(),
+                finished_at: Some(Utc::now()),
+                output: String::new(),
+                output_path: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_lists_only_the_requested_session() {
+        let (manager, _tmp) = temp_manager("check_session_scope");
+        insert_record(&manager, "aaaa0001", "sess-a").await;
+        insert_record(&manager, "bbbb0002", "sess-b").await;
+        insert_record(&manager, "cccc0003", "").await;
+
+        // No session id: every record, which is what a caller without a session
+        // (tests, the moment before `ensure_session`) can ask for.
+        let all = manager.check(None, None).await.unwrap();
+        for id in ["aaaa0001", "bbbb0002", "cccc0003"] {
+            assert!(all.contains(id), "unfiltered listing dropped {id}: {all}");
+        }
+        let empty = manager.check(None, Some("")).await.unwrap();
+        assert!(empty.contains("cccc0003"), "an empty id must not filter");
+
+        // A session sees its own work and nothing else — not another session's,
+        // and not a record that belongs to no session at all.
+        let mine = manager.check(None, Some("sess-a")).await.unwrap();
+        assert!(mine.contains("aaaa0001"), "listing: {mine}");
+        assert!(!mine.contains("bbbb0002"), "listing: {mine}");
+        assert!(!mine.contains("cccc0003"), "listing: {mine}");
+
+        assert_eq!(
+            manager.check(None, Some("sess-z")).await.unwrap(),
+            "No background tasks."
+        );
+
+        // A record named by id is answered from any session: the caller asked
+        // for it explicitly.
+        let by_id = manager
+            .check(Some("bbbb0002"), Some("sess-a"))
+            .await
+            .unwrap();
+        assert!(by_id.contains("bbbb0002"), "by id: {by_id}");
+    }
+
     #[tokio::test]
     async fn wait_returns_as_soon_as_a_running_task_finishes() {
         let (manager, tmp) = temp_manager("wait_finishes");
@@ -885,7 +958,7 @@ mod tests {
             .unwrap();
 
         let manager = SharedBackgroundManager::new(BackgroundManager::new(&db).await.unwrap());
-        let output = manager.check(Some("deadbeef")).await.unwrap();
+        let output = manager.check(Some("deadbeef"), None).await.unwrap();
 
         assert!(output.contains("error"));
         assert!(output.contains("Process interrupted (agent restarted)"));
@@ -943,7 +1016,7 @@ mod tests {
         let mut listing = String::new();
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            listing = manager.check(None).await.unwrap();
+            listing = manager.check(None, None).await.unwrap();
             if listing.contains("Completed") {
                 break;
             }
@@ -1014,7 +1087,7 @@ mod tests {
         let mut listing = String::new();
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            listing = manager.check(None).await.unwrap();
+            listing = manager.check(None, None).await.unwrap();
             if listing.contains("Completed") {
                 break;
             }
@@ -1078,7 +1151,7 @@ mod tests {
         let mut output = String::new();
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            output = manager.check(None).await.unwrap();
+            output = manager.check(None, None).await.unwrap();
             if output.contains("Completed") {
                 break;
             }

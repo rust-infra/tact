@@ -1,5 +1,8 @@
 use crate::{
-    background::{BackgroundProgressSink, BackgroundTaskRecord, BackgroundTaskStatus, WaitOutcome},
+    background::{
+        BackgroundProgressSink, BackgroundTaskRecord, BackgroundTaskStatus, WaitOutcome,
+        record_in_session,
+    },
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
         PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
@@ -141,7 +144,9 @@ pub const CHECK_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
 /// Returns an error if the provided task ID does not exist or the background
 /// manager encounters an internal error.
 pub async fn check_background(ctx: ToolContext, input: CheckBackgroundInput) -> Result<String> {
-    ctx.background_manager.check(input.task_id.as_deref()).await
+    ctx.background_manager
+        .check(input.task_id.as_deref(), ctx.session_id.as_deref())
+        .await
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -267,7 +272,7 @@ async fn session_report(
         .records()
         .await?
         .into_iter()
-        .filter(|record| session_id.is_empty() || record.session_id == session_id)
+        .filter(|record| record_in_session(record, Some(&session_id)))
         .collect();
     records.sort_by_key(|record| record.started_at);
 
@@ -372,6 +377,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(output, "No background tasks.");
+    }
+
+    #[tokio::test]
+    async fn check_background_lists_only_this_session() {
+        let mut context = test_context("check_background_lists_only_this_session");
+        context.session_id = Some("sess-mine".to_string());
+
+        run_tool(
+            &context,
+            BackgroundRunTool,
+            "background_run",
+            serde_json::json!({ "command": "sleep 0.2 && echo my-own-task" }),
+        )
+        .await
+        .unwrap();
+        // A task started by a different session in the same store.
+        context
+            .background_manager
+            .start(
+                "sleep 30".to_string(),
+                &context.work_dir,
+                "sess-other".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let listing = run_tool(
+            &context,
+            CheckBackgroundTool,
+            "check_background",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+
+        assert!(listing.contains("my-own-task"), "listing: {listing}");
+        assert!(!listing.contains("sleep 30"), "listing: {listing}");
     }
 
     #[tokio::test]
