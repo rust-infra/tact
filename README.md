@@ -394,7 +394,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `edit_file` | Replace exact text in a file (first match, or all with `replace_all`) |
 | `bash` | Run a shell command |
 | `background_run` | Run a command in the background (`wait_ms` blocks until it finishes and returns the output) |
-| `check_background` | Check background task status |
+| `check_background` | Check background task status (this session's tasks) |
 | `wait_background` | Wait for a background task to finish, returning as soon as it does |
 | `sleep` | Wait for N milliseconds (not for waiting on background tasks) |
 | `spawn_subagent` | Spawn a sub-agent with fresh context |

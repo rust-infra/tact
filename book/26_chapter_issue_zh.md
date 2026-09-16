@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-16 — 后台任务的检索按会话收窄
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/background.rs`（`check`、`record_in_session`）；`crates/tact/src/tool/background_run.rs`；`crates/tact-ui/src/driver.rs`（`QueryBackground`）；[Ch 13](./13_chapter_background_zh.md) §1 |
+
+**症状 / 动机：** 任务 store 在 `<workdir>/.tact/tact.db`，同一项目的每个会话共用它——而 `check_background`（不带 `task_id`）与 TUI 的 `/background` 会列出其中**每一条**记录，包括别的会话启动的任务。agent 自己的列表里混进了它从未启动过的活，人看的列表也一样。
+
+**决策：** 把列表按调用方会话收窄，复用等待逻辑里已有的判定。显式给出 `task_id` 仍然不限会话（调用方点名要它），而缺失/空的 session id 仍旧表示"全部"——没有会话的上下文没有可过滤的依据。本身不带 session id 的记录不属于任何会话，因此在过滤后的列表中不可见。
+
+**行为变化：** 不带 `task_id` 的 `check_background`、不带 id 的 `wait_background`、以及 `/background` 都只报告当前会话的任务；`check_background <id>` / `/background <id>` 不变。子 agent 根本无法启动后台任务（其受限 toolset 没有 `background_run`）；若将来有了，记录会挂在子会话 id 下，届时把范围扩展到子会话即可。
+
+**指针：** `crates/tact/src/background.rs`（`check(task_id, session_id)`、`record_in_session`、`has_running`）；`crates/tact/src/tool/background_run.rs`（传 `ctx.session_id`）；`crates/tact-ui/src/driver.rs`（传 agent runtime 的 session id）；测试 `background::tests::check_lists_only_the_requested_session`、`tool::background_run::tests::check_background_lists_only_this_session`。
+
+---
+
 ## 1. 2026-09-16 — 等后台任务不必再猜一个 sleep 时长
 
 | Field | Value |

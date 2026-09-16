@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-16 — Background listings are scoped to the session
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/background.rs` (`check`, `record_in_session`); `crates/tact/src/tool/background_run.rs`; `crates/tact-ui/src/driver.rs` (`QueryBackground`); [Ch 13](./13_chapter_background.md) §1 |
+
+**Symptom / motivation:** The task store lives at `<workdir>/.tact/tact.db`, so every session in a project shares it — and `check_background` (no `task_id`) and the TUI's `/background` listed *every* record in it, including tasks started by other sessions. The agent's own listing mixed in work it had never started, and the human view did the same.
+
+**Decision:** Scope the listing to the calling session, using the same predicate the wait already used. A named `task_id` is still answered from any session (the caller asked for that task explicitly), and an absent/empty session id still means "everything" — a context without a session has nothing to filter by. Records carrying no session id belong to no session and are therefore hidden from a filtered listing.
+
+**Behavior after:** `check_background` without a `task_id`, `wait_background` without one, and `/background` all report only the current session's tasks. `check_background <id>` / `/background <id>` are unchanged. Sub-agents cannot start background tasks at all (their restricted toolset has no `background_run`); if that changes, the record would carry the child session id, so widening the scope to a session's child sessions is the follow-up to make then.
+
+**Pointers:** `crates/tact/src/background.rs` (`check(task_id, session_id)`, `record_in_session`, `has_running`); `crates/tact/src/tool/background_run.rs` (passes `ctx.session_id`); `crates/tact-ui/src/driver.rs` (passes the agent runtime session id); tests `background::tests::check_lists_only_the_requested_session` and `tool::background_run::tests::check_background_lists_only_this_session`.
+
+---
+
 ## 1. 2026-09-16 — Waiting for a background task no longer means guessing a sleep
 
 | Field | Value |

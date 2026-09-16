@@ -16,11 +16,13 @@
 | `check_background` | `task_id: Option<String>` | 单任务 pretty JSON，或每行一个任务的列表 |
 | `wait_background` | `task_id: Option<String>`、`timeout_ms: Option<u64>` | 已完成任务（状态、耗时、输出尾部、日志路径），或"仍在运行"的原因 |
 
-三个工具仅在主 `toolset()` 中（子 agent 的 shell 工作是同步 `bash`）。`check_background` 无 `task_id` 时列出所有已知任务（按开始时间排序）；未知 id 返回错误（`Unknown background task <id>`）。
+三个工具仅在主 `toolset()` 中（子 agent 的 shell 工作是同步 `bash`）。`check_background` 无 `task_id` 时列出**本会话**的任务（按开始时间排序）——即便同一项目下所有会话共用同一个 store，一个会话也不会报告另一个会话的活；未知 id 返回错误（`Unknown background task <id>`）。显式给出 `task_id` 时不限会话：那是调用方点名要的。
+
+会话作用域同样适用于 TUI 的 `/background` 列表，也是 `wait_background` / `wait` 在不给 id 时使用的范围。子 agent 根本无法启动后台任务（受限 toolset 里没有 `background_run`）；若将来有了，记录会挂在**子**会话 id 下，父会话的列表不会显示它——届时把范围扩展到子会话即可。
 
 `wait_background` 是**等待**原语：任务一到终态就返回，模型不必再猜时长。不给 `task_id` 时等待本会话的所有任务；`timeout_ms` 默认 5 分钟（与 `sleep` 同一上限）。与 `sleep`（future 完全不看取消标志）不同，等待会在下一次轮询（≤ 150 ms）观察到取消，因此在途等待是可打断的。
 
-TUI 用户无需让模型调用工具即可查看后台任务：**`/background`** slash 命令列出所有任务，**`/background <id>`** 显示单个任务（pretty JSON）。该命令向命令 driver 发送 `UserCommand::QueryBackground(Option<String>)`，driver 调用同一个 `SharedBackgroundManager::check`，并把结果以 Markdown（`AgentUpdate::MdInfo`）渲染到日志（[Ch 23](./23_chapter_tui_zh.md) §3）。
+TUI 用户无需让模型调用工具即可查看后台任务：**`/background`** slash 命令列出所有任务，**`/background <id>`** 显示单个任务（pretty JSON）。该命令向命令 driver 发送 `UserCommand::QueryBackground(Option<String>)`，driver 调用同一个 `SharedBackgroundManager::check`（与工具一样按会话收窄），并把结果以 Markdown（`AgentUpdate::MdInfo`）渲染到日志（[Ch 23](./23_chapter_tui_zh.md) §3）。
 
 **实时输出（类 bash）。** 任务运行期间，其 stdout/stderr 会实时流入 `background_run` 工具卡片（约 50ms 一批节流，实时预览保留最近 ~4 KB），与同步 `bash` 卡片完全一致。即使调用已返回，卡片仍保持运行态，进程退出时以 ✓/✗、耗时与最终输出收尾（见 §3 与 §6）。收尾后与其它已完成的命令一样折叠：只剩 title + meta 两行，输出移到双击弹窗里（见 [Ch 23](./23_chapter_tui_zh.md) §6.16）。
 
