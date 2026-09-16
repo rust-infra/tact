@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-16 — 等后台任务不必再猜一个 sleep 时长
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/background.rs`（`wait`、`start`、`record`）；`crates/tact/src/tool/background_run.rs`（`wait_background`、`background_run(wait_ms:)`）；`crates/tact/src/tool/registry.rs`；[Ch 13](./13_chapter_background_zh.md) §1/§6；[Ch 11](./11_chapter_task_zh.md)；`docs/agent_guidelines.md` |
+
+**症状 / 动机：** `background_run` 立即返回，而**模型**侧没有完成推送——`AgentUpdate::BackgroundTaskFinished` 只进 TUI 卡片。于是实际模式变成 `background_run` → `sleep` → `check_background`：时长全靠猜，猜长了是纯空等，猜短了又多花一整轮 LLM 往返；更糟的是单个 `sleep 300000` 完全无法打断——in-flight 工具不会被取消（取消只在 wave 边界生效），而 `sleep` 的 future 根本不读 `cancel_flag`。本仓库 `tact.db` 实测：18 次 `sleep` 调用时长落在 30–300 秒，`check_background` 77 次。
+
+**决策：** 把"等它"做成精确的一等原语，而不是一个要猜的时长。`BackgroundManager::wait(task_id, session_id, timeout, cancel)` 阻塞到该任务（或本会话所有任务）进入终态；判定在**第一次 sleep 之前**先做一次，所以早已完成的任务立刻返回；实现是对现有 store 的 150 ms 读循环（完成状态由分离的任务写入，目前没有可订阅的事件源），并在下一次轮询观察取消标志。两个工具架在它上面：`wait_background { task_id?, timeout_ms? }` 与 `background_run { command, wait_ms? }`，后者在窗口内跑完时直接把输出返回。这**不是**事件驱动的方案（完成即唤醒回合，subagent 走的那条路）——那需要协议与 driver 改动，仍然开放。
+
+**行为变化：** 单独调用 `background_run` 行为不变。带 `wait_ms` 时，及时结束的命令返回的是任务结果（状态、耗时、输出尾部、日志路径）而不是一个 id；否则返回启动行并附"仍在运行"的说明。`wait_background` 不带 `task_id` 时等待本会话的全部任务；`timeout_ms` / `wait_ms` 默认 5 分钟并以此为上限，与 `sleep` 一致。内联输出被限制为最后 4,000 字符并给出完整日志路径，避免大日志淹没 context。`sleep` 的描述现在写明它不用于等待后台任务，`check_background` 也指向 `wait_background`。
+
+**指针：** `crates/tact/src/background.rs`（`WaitOutcome`、`WAIT_POLL_INTERVAL`、`wait`/`has_running`、从 `run` 中拆出的 `start`、`record`/`records`）；`crates/tact/src/tool/background_run.rs`（`WaitBackgroundTool`、`report_waited`、`session_report`、`output_tail`）；测试 `background::tests::wait_*` 与 `tool::background_run::tests::wait_background_*`；`crates/agent_tui_kit/src/widgets/tool_widget.rs`（回退视觉类型 `Sleep` + 显示名）。
+
+---
+
 ## 1. 2026-09-15 — 只收到 reasoning 的 Responses 流会自报身份，不再读起来像空流
 
 | Field | Value |

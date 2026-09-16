@@ -209,7 +209,7 @@ is removed and carriage return replaces the current logical line.
 |---|---|---|
 | `Command`, `FileRead`, `FileEdit`, `FileWrite` | always (when there is detail) | They drew a card, so collapsing **saves** rows; the hint explains where the content went, whatever its size. `background_run` / `worktree_run` (`Command`) and `apply_patch` (`FileEdit`) follow for free. |
 | `Subagent` | never | It is the entry point of the transcript popup and the line it retains is the child's result summary. |
-| `Task`, `Sleep`, `Generic` | when the result has **more than one line** | These never drew a card, so their result was *unreachable* rather than collapsed — no card, no popup, no click target (`detail_full` stayed `None`). Collapsing costs no extra row and makes a multi-line readout (`task_list`, `read_inbox`, `worktree_status`, `load_skill`, `check_background`, and every MCP/plugin tool, which arrives as `Generic`) one double-click away. |
+| `Task`, `Sleep`, `Generic` | when the result has **more than one line** | These never drew a card, so their result was *unreachable* rather than collapsed — no card, no popup, no click target (`detail_full` stayed `None`). Collapsing costs no extra row and makes a multi-line readout (`task_list`, `read_inbox`, `worktree_status`, `load_skill`, `check_background`, `wait_background` with its output tail, and every MCP/plugin tool, which arrives as `Generic`) one double-click away. |
 
 Two exclusions keep the hint meaningful rather than universal:
 

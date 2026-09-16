@@ -30,3 +30,14 @@ ensure consistent and efficient tool usage in this project.
 - Never rely on the sandbox for correctness: it is opt-in, best-effort, and
   degrades to unsandboxed execution (with a warning) whenever no sandbox can
   start (a platform without an implementation, `bwrap` missing).
+
+### Waiting on background tasks
+
+- To get a background task's result, call `wait_background` (optionally with its
+  id) — it returns the moment the task finishes. For a command you are starting
+  now, pass `wait_ms` to `background_run` and get the output in the same call.
+- Do **not** `sleep` to wait for a background task: the duration is a guess, and
+  a `sleep` cannot be interrupted by the user's cancel; the next `wait_background`
+  poll notices it within ~150 ms.
+- Only fall back to `check_background` polling when the turn has other work to do
+  while the task runs.

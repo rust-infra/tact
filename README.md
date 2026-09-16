@@ -268,7 +268,7 @@ Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](
 | Category | Tools |
 |----------|-------|
 | **File System** | `read_file`, `write_file`, `edit_file` |
-| **Shell** | `bash`, `background_run`, `check_background`, `sleep` |
+| **Shell** | `bash`, `background_run`, `check_background`, `wait_background`, `sleep` |
 | **Task Management** | `task_create`, `task_get`, `task_list`, `task_update` |
 | **Team & Sub-agents** | `spawn_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
 | **Memory & Knowledge** | `save_memory`, `load_skill`, `compact` |
@@ -393,9 +393,10 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `write_file` | Write or overwrite a file |
 | `edit_file` | Replace exact text in a file (first match, or all with `replace_all`) |
 | `bash` | Run a shell command |
-| `background_run` | Run a command in the background |
+| `background_run` | Run a command in the background (`wait_ms` blocks until it finishes and returns the output) |
 | `check_background` | Check background task status |
-| `sleep` | Wait for N milliseconds |
+| `wait_background` | Wait for a background task to finish, returning as soon as it does |
+| `sleep` | Wait for N milliseconds (not for waiting on background tasks) |
 | `spawn_subagent` | Spawn a sub-agent with fresh context |
 | `task_create` | Create a persistent task |
 | `task_get` | Get task details by ID |

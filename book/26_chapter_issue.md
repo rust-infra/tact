@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-16 — Waiting for a background task no longer means guessing a sleep
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/background.rs` (`wait`, `start`, `record`); `crates/tact/src/tool/background_run.rs` (`wait_background`, `background_run(wait_ms:)`); `crates/tact/src/tool/registry.rs`; [Ch 13](./13_chapter_background.md) §1/§6; [Ch 11](./11_chapter_task.md); `docs/agent_guidelines.md` |
+
+**Symptom / motivation:** `background_run` returned immediately and the *model* had no completion push — `AgentUpdate::BackgroundTaskFinished` goes to the TUI card only. So the working pattern was `background_run` → `sleep` → `check_background`: the model had to guess a duration, which either overshot (dead time) or undershot (another full LLM round trip), and a single `sleep 300000` could not be interrupted at all — in-flight tools are never cancelled (cancel is honoured at wave boundaries) and the `sleep` future does not even read `cancel_flag`. Measured in this repo's `tact.db`: 18 `sleep` calls at 30–300 s, 77 `check_background` calls.
+
+**Decision:** Make "wait for it" a first-class, precise primitive instead of a duration to guess. `BackgroundManager::wait(task_id, session_id, timeout, cancel)` blocks until the task (or every task of the session) reaches a terminal status, with the condition checked *before* the first sleep so an already-finished task returns instantly; it is a 150 ms read loop over the existing store (completion is written by the detached task, so there is nothing to subscribe to yet) and it observes the cancel flag at the next poll. Two tools sit on it: `wait_background { task_id?, timeout_ms? }` and `background_run { command, wait_ms? }`, the latter returning the output inline when the command finishes within the window. This is not the event-driven fix (a wake-up turn on completion, the way subagents do it) — that needs protocol and driver work and stays open.
+
+**Behavior after:** `background_run` alone is unchanged. With `wait_ms`, a command that finishes in time comes back as the finished task (status, elapsed, output tail, log path) instead of just an id; otherwise the start line is returned with a "still running" note. `wait_background` without a `task_id` waits for every task of the current session; `timeout_ms`/`wait_ms` default to 5 minutes and are capped there, matching `sleep`. The inlined output is bounded to its last 4,000 chars with the full log path reported, so a large log cannot flood the context. `sleep`'s description now says it is not for waiting on background tasks, and `check_background` points at `wait_background`.
+
+**Pointers:** `crates/tact/src/background.rs` (`WaitOutcome`, `WAIT_POLL_INTERVAL`, `wait`/`has_running`, `start` split out of `run`, `record`/`records`); `crates/tact/src/tool/background_run.rs` (`WaitBackgroundTool`, `report_waited`, `session_report`, `output_tail`); tests `background::tests::wait_*` and `tool::background_run::tests::wait_background_*`; `crates/agent_tui_kit/src/widgets/tool_widget.rs` (fallback visual kind `Sleep` + display name).
+
+---
+
 ## 1. 2026-09-15 — A reasoning-only Responses stream names itself instead of reading as an empty stream
 
 | Field | Value |

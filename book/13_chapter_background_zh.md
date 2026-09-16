@@ -2,7 +2,7 @@
 
 > 语言：[中文](./13_chapter_background_zh.md) · [English](./13_chapter_background.md)
 
-本章说明 Tact 的 **异步 shell 执行**：`background_run` 工具在 `tokio::spawn` 任务上启动命令并立即返回；`check_background` 稍后轮询状态。每个任务持久化到磁盘，结果不受轮询顺序影响 —— 但进程重启后不保留（见 §5）。实现位于 `crates/tact/src/background.rs`，工具包装在 `crates/tact/src/tool/background_run.rs`。
+本章说明 Tact 的 **异步 shell 执行**：`background_run` 工具在 `tokio::spawn` 任务上启动命令并立即返回；`wait_background` 阻塞到它结束，`check_background` 则不等待、只查状态。每个任务持久化到磁盘，结果不受轮询顺序影响 —— 但进程重启后不保留（见 §5）。实现位于 `crates/tact/src/background.rs`，工具包装在 `crates/tact/src/tool/background_run.rs`。
 
 后台任务是同步 `bash` 工具的「即发即忘」对应物：相同 shell、相同校验，但 agent 的一轮不会因完成而阻塞。
 
@@ -12,10 +12,13 @@
 
 | Tool | Input | Output |
 |------|-------|--------|
-| `background_run` | `command: String` | `"Background task <id> started: <command>"` |
+| `background_run` | `command: String`、`wait_ms: Option<u64>` | `"Background task <id> started: <command>"`；设了 `wait_ms` 且命令及时结束时，直接返回任务结果与输出尾部 |
 | `check_background` | `task_id: Option<String>` | 单任务 pretty JSON，或每行一个任务的列表 |
+| `wait_background` | `task_id: Option<String>`、`timeout_ms: Option<u64>` | 已完成任务（状态、耗时、输出尾部、日志路径），或"仍在运行"的原因 |
 
-两工具仅在主 `toolset()` 中。`check_background` 无 `task_id` 时列出所有已知任务（按开始时间排序）；未知 id 返回错误（`Unknown background task <id>`）。
+三个工具仅在主 `toolset()` 中（子 agent 的 shell 工作是同步 `bash`）。`check_background` 无 `task_id` 时列出所有已知任务（按开始时间排序）；未知 id 返回错误（`Unknown background task <id>`）。
+
+`wait_background` 是**等待**原语：任务一到终态就返回，模型不必再猜时长。不给 `task_id` 时等待本会话的所有任务；`timeout_ms` 默认 5 分钟（与 `sleep` 同一上限）。与 `sleep`（future 完全不看取消标志）不同，等待会在下一次轮询（≤ 150 ms）观察到取消，因此在途等待是可打断的。
 
 TUI 用户无需让模型调用工具即可查看后台任务：**`/background`** slash 命令列出所有任务，**`/background <id>`** 显示单个任务（pretty JSON）。该命令向命令 driver 发送 `UserCommand::QueryBackground(Option<String>)`，driver 调用同一个 `SharedBackgroundManager::check`，并把结果以 Markdown（`AgentUpdate::MdInfo`）渲染到日志（[Ch 23](./23_chapter_tui_zh.md) §3）。
 
@@ -126,7 +129,7 @@ output: "Process interrupted (agent restarted)"
 
 `background_run` 立即返回，因此对调度器（[任务与工具调度](./11_chapter_task_zh.md)）是廉价调用 —— 但作为 shell 邻近工具，其权限分类来自 [权限模型](./10_chapter_permission_zh.md)，工具名为 `background_run` 而非 `bash`。
 
-**TUI 获得实时进度 + 完成事件。** spawn 的任务在运行期间向该调用的工具卡片推送 `AgentUpdate::ToolProgress`，退出时再推送 `AgentUpdate::BackgroundTaskFinished`（keep-live 卡片契约见 [Ch 25](./25_chapter_protocol_zh.md)）。但 **模型/agent 仍无完成 push**：它必须轮询 `check_background` 才能在 context 中看到结果。模型常自行发现 `background_run` → 继续其他工作 → 结束前 `check_background` 的模式。[sleep 工具](./07_chapter_tool_zh.md) 部分存在是为使该轮询循环可行。
+**TUI 获得实时进度 + 完成事件。** spawn 的任务在运行期间向该调用的工具卡片推送 `AgentUpdate::ToolProgress`，退出时再推送 `AgentUpdate::BackgroundTaskFinished`（keep-live 卡片契约见 [Ch 25](./25_chapter_protocol_zh.md)）。但 **模型/agent 仍无完成 push**，所以要主动问：`wait_background` 会阻塞到任务结束，并在同一次调用里返回结果；`background_run(wait_ms:)` 对刚启动的命令做同样的事。只有当这一回合确实还有别的活要干时，才该退回轮询 `check_background`（或用 `sleep` 烧时间）。
 
 与同步 `bash` 输出不同，后台输出 **不** 经 `persist_large_output`（[上下文压缩](./05_chapter_compact_zh.md)）—— 记录硬 cap 50k 字符，轮询时完整 JSON 进入 context。**全量**流改为落盘：轮询到的 JSON 带 `output_path`，agent 可用 `bash tail <path>` / `grep error <path>` 深挖。`check_background` 的列表形式（无 `task_id`）每行追加 `(log: <path>)`，无需逐个调用即可发现路径。
 
@@ -153,7 +156,7 @@ output: "Process interrupted (agent restarted)"
 | 缺口 | 详情 |
 |------|------|
 | 固定 120s 超时 | 不可配置；长构建或测试套件恒为 `Error: Timeout` |
-| 模型无完成 push | TUI 卡片会收到 `BackgroundTaskFinished`，但 **模型** 仍无完成 push，须轮询 `check_background` |
+| 模型无完成 push | TUI 卡片会收到 `BackgroundTaskFinished`，但 **模型** 不会被动收到任何东西：它必须主动问（`wait_background`、`background_run(wait_ms:)`）或轮询 `check_background` |
 | 无取消工具 | 运行中任务无法被模型 kill；仅超时或进程退出结束 |
 | 输出交错丢失 | stdout 与 stderr 完成后拼接，非按时间合并 |
 | 退出码丢弃 | 合并输出文本之外的失败原因不可用 |
