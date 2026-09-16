@@ -32,6 +32,42 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-16 — A background task has no time limit, and cancelling kills the whole tree
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/background.rs` (removed `COMMAND_TIMEOUT`, added `configure_process_group` / `terminate_tree`, `start`/`run` take the session's cancel flag); `crates/tact/src/tool/background_run.rs` (`MAX_RUN_WAIT_MS`, prompts); [Ch 13](./13_chapter_background.md) §1/§3/§8; `docs/agent_guidelines.md` |
+
+**Symptom / motivation:** `background_run` advertised itself as the home for slow commands — builds, test suites, installs — but every task was `SIGKILL`ed after **120 seconds** and its record rewritten as `Error: Timeout (120s)`. Measured in one session: `cargo test --workspace` (~110 s) was killed twice, and both times the model read the `Error` as a failure of the tests. The kill also lied about what it did: it signalled the `sh -c` leader only, so a `sleep` grandchild kept running (measured: still alive 35 s after the "timeout") while the record said the task had ended. Separately, `background_run(wait_ms: 300000)` could hold a whole turn for up to five minutes — a *starting* call blocking on a *slow* command.
+
+**Decision:** A background task has **no time limit**: it ends when the command exits, or when the session's cancel flag is set. That makes cancellation the only early-termination path, so it had to become a real kill: the task now spawns into its own process group (`configure_process_group`, the same trick as the `bash` tool) and cancellation sends `SIGKILL` to the negated pid, taking `cargo`/`npm` grandchildren with it. The flag is polled on the progress tick that already exists (≈50 ms), so this added no timer. `background_run(wait_ms:)` is now explicitly a short-task shortcut capped at **10 s**; `wait_background` keeps its 5-minute cap because blocking is its entire purpose. A wait that expires reports "still running" and leaves the task strictly alone.
+
+**Behavior after:** A command started with `background_run` runs as long as it needs — a 30-minute build is fine. Cancelling a turn (Esc) terminates every running task belonging to that session, and their status becomes `Error` with `Cancelled by the user`; nothing survives in the process tree. `background_run` with a large `wait_ms` returns after 10 s with the task id and a "still running" line instead of blocking the turn. `wait_background` is unchanged: it returns the moment the task ends, or says it is still running.
+
+**Pointers:** `crates/tact/src/background.rs` (`run_background_process` loop, `terminate_tree`, `configure_process_group`); `crates/tact/src/tool/background_run.rs` (`MAX_RUN_WAIT_MS`, `capped_run_wait_ms`); tests `background::tests::cancelling_terminates_the_task_and_its_children`, `tool::background_run::tests::the_run_wait_is_capped_to_a_short_task`; [Ch 13](./13_chapter_background.md) §1/§3/§8.
+
+---
+
+## 1. 2026-09-16 — The bash sandbox shares the host network again
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/sandbox/bwrap.rs` (`--share-net`, `RESOLVER_PATHS`, `PROXY_ENV_VARS`, `bwrap_args_with(work_dir, exists, env)`); `crates/tact/src/tool/bash.rs` (`SANDBOXED_BASH_DESCRIPTION`); spec `docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md` §8/§17/§Tests 7; [Ch 27](./27_chapter_sandbox.md) §3 |
+
+**Symptom / motivation:** With `[tools] sandbox = true` the shell was network-dead: no DNS, no default route, and the host's proxy on `127.0.0.1:7890` was not even reachable — the connection failed in 0 ms, which reads as "the proxy is broken" rather than "there is no network". `curl` / `git fetch` / `npm install` / `cargo fetch` could not work. The documented workaround (`background_run`, an unsandboxed host shell) is unavailable to subagents — their restricted toolset has no `background_run` — so a subagent could not fetch anything at all, measured as three research lanes reporting `curl` exit 6/7. The owner asked for the sandbox to have network, and chose to also forward the proxy variables.
+
+**Decision:** Share the host network namespace (`--share-net`, the explicit spelling of bwrap's default) and, because that alone is not sufficient, mount the resolver directory read-only. The `--clearenv` allowlist gains exactly one exception: `http_proxy` / `https_proxy` / `all_proxy` / `no_proxy` in both spellings are forwarded verbatim when the host sets them, since the proxy on the host's loopback *is* reachable from inside. The capability stays **not configurable**: no knobs, same as the rest of the policy. The network was deliberately disabled in v1 and that decision is now reversed — the sandbox bounds the filesystem, not connectivity.
+
+**Behavior after:** Inside the sandbox, name resolution works and outbound traffic behaves exactly as the host's — including hosts the host itself cannot reach directly, which is the situation on this development box (`example.com` answers; `api.binance.com`, `api.coinbase.com` and `1.1.1.1:443` time out; everything works through the proxy). The filesystem boundary is unchanged: the workspace is still the only read-write host directory, the host home directory is still unmounted, and unlisted environment variables still cannot get in. `--unshare-pid`, `--die-with-parent`, the workspace guard and the banned `--new-session` are untouched, and the `bash` description no longer claims a disabled network.
+
+**Two traps, both measured:** sharing the namespace is *not* enough for DNS — the host's `/etc/resolv.conf` is a symlink into `/run/systemd/resolve`, `/run` is not in the mount list, so the symlink dangles and every lookup fails with "Temporary failure in name resolution"; and binding `/etc/resolv.conf` itself is refused by bwrap (`Can't mount on symlink destination /etc/resolv.conf`), so the directory must be mounted instead. The regression test therefore pointedly does not use the network: it connects to a listener the test itself opened on the host's loopback, which succeeds exactly when the namespace is shared.
+
+**Pointers:** `crates/tact/src/sandbox/bwrap.rs` (`RESOLVER_PATHS`, `PROXY_ENV_VARS`, the flag list, the injected env lookup); tests `sandbox::bwrap::tests::shares_the_host_network_and_binds_the_resolver`, `sandbox::bwrap::tests::carries_proxy_variables_and_nothing_else`, `tool::bash::sandbox_tests::shares_the_host_network_namespace`, `tool::bash::sandbox_tests::system_files_are_readable_and_proxies_follow_the_host`; [Ch 27](./27_chapter_sandbox.md) §3.
+
+---
+
 ## 1. 2026-09-16 — The background tool prompts are resynced, and a status read is bounded too
 
 | Field | Value |

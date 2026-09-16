@@ -18,13 +18,26 @@ use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
 
-/// Default and maximum blocking time for the wait-shaped calls: five minutes,
-/// matching the `sleep` tool's cap so neither can outlast a user's patience.
+/// Default and maximum blocking time for [`wait_background`], the call whose
+/// whole purpose is to block: five minutes, matching the `sleep` tool's cap so
+/// neither can outlast a user's patience.
 const DEFAULT_WAIT_MS: u64 = 300_000;
 const MAX_WAIT_MS: u64 = 300_000;
 
+/// Cap for `background_run(wait_ms:)`.
+///
+/// That call is the *starting* primitive, so its wait is a shortcut for short
+/// commands only (`echo`, `git status`, a single test): long enough to absorb
+/// them, far too short to hold a turn hostage. Anything slower is meant to be
+/// polled with [`wait_background`], which returns the moment the task ends.
+const MAX_RUN_WAIT_MS: u64 = 10_000;
+
 fn capped_wait_ms(ms: u64) -> u64 {
     ms.min(MAX_WAIT_MS)
+}
+
+fn capped_run_wait_ms(ms: u64) -> u64 {
+    ms.min(MAX_RUN_WAIT_MS)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -35,9 +48,11 @@ pub struct BackgroundRunInput {
     )]
     pub command: String,
     #[schemars(
-        description = "Optional: block up to this many milliseconds for the command to finish and \
-                       return its output instead of just the task id (max 300000). Omit (or 0) to \
-                       return immediately."
+        description = "Optional: for commands that finish almost immediately, block up to this \
+                       many milliseconds and return the output instead of just the task id (max \
+                       10000). Omit (or 0) — the normal case — to return the id immediately. For \
+                       anything slower use wait_background, which returns the moment the task \
+                       finishes."
     )]
     #[serde(default)]
     pub wait_ms: Option<u64>,
@@ -47,11 +62,13 @@ pub struct BackgroundRunInput {
 pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
     name: "background_run",
     description: "Run a shell command in the background and return its id immediately — for slow \
-                  commands (builds, test suites, installs) while you have other work to do. Pass \
-                  wait_ms to block until it finishes and get its output in this same call, or use \
-                  bash when you need the result before your next step. It runs as an ordinary host \
-                  shell: the opt-in bash sandbox does not cover it, so use host paths, not \
-                  /workspace.",
+                  commands (builds, test suites, installs) while you have other work to do. There \
+                  is no time limit: the task runs until it finishes or the user cancels. Pass \
+                  wait_ms (max 10000) only for a command expected to finish at once; otherwise \
+                  leave it out and poll with wait_background, which returns as soon as the task \
+                  ends. Use bash when you need the result before your next step. It runs as an \
+                  ordinary host shell: the opt-in bash sandbox does not cover it, so use host \
+                  paths, not /workspace.",
     permission: PermissionPolicy::ShellCommand {
         command_field: "command",
     },
@@ -86,11 +103,12 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
             &ctx.work_dir,
             ctx.session_id.clone().unwrap_or_default(),
             Some(progress),
+            ctx.cancel_flag.clone(),
         )
         .await?;
     let started = format!("Background task {id} started: {command}");
 
-    let Some(wait_ms) = input.wait_ms.map(capped_wait_ms).filter(|ms| *ms > 0) else {
+    let Some(wait_ms) = input.wait_ms.map(capped_run_wait_ms).filter(|ms| *ms > 0) else {
         return Ok(started);
     };
 
@@ -354,6 +372,14 @@ fn elapsed(record: &BackgroundTaskRecord) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    /// A cancellation flag that is never set: the task runs to completion.
+    fn no_cancel() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
     use super::*;
     use crate::tool::test_support::{run_tool, test_context};
 
@@ -394,6 +420,7 @@ mod tests {
                 &context.work_dir,
                 "sess-other".to_string(),
                 None,
+                no_cancel(),
             )
             .await
             .unwrap();
@@ -431,7 +458,13 @@ mod tests {
     async fn start_task(context: &ToolContext, command: &str) -> String {
         context
             .background_manager
-            .start(command.to_string(), &context.work_dir, String::new(), None)
+            .start(
+                command.to_string(),
+                &context.work_dir,
+                String::new(),
+                None,
+                no_cancel(),
+            )
             .await
             .unwrap()
     }
@@ -567,5 +600,19 @@ mod tests {
         assert_eq!(capped_wait_ms(0), 0);
         assert_eq!(capped_wait_ms(1_000), 1_000);
         assert_eq!(capped_wait_ms(999_999), MAX_WAIT_MS);
+    }
+
+    #[test]
+    fn the_run_wait_is_capped_to_a_short_task() {
+        // `background_run` starts work; it must not hold a turn for minutes just
+        // because the model asked it to wait. Long waits belong to
+        // `wait_background`, whose cap stays at the sleep-level MAX_WAIT_MS.
+        assert_eq!(capped_run_wait_ms(0), 0);
+        assert_eq!(capped_run_wait_ms(1_000), 1_000);
+        assert_eq!(capped_run_wait_ms(MAX_RUN_WAIT_MS + 1), MAX_RUN_WAIT_MS);
+        // The two caps are deliberately different numbers, so the constant
+        // above cannot be silently reused for the waiting call.
+        assert_eq!(capped_run_wait_ms(MAX_WAIT_MS), MAX_RUN_WAIT_MS);
+        assert_ne!(MAX_RUN_WAIT_MS, MAX_WAIT_MS);
     }
 }

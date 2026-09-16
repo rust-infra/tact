@@ -11,13 +11,15 @@ Background tasks are the "fire-and-forget" counterpart to the synchronous `bash`
 
 | Tool | Input | Output |
 |------|-------|--------|
-| `background_run` | `command: String`, `wait_ms: Option<u64>` | `"Background task <id> started: <command>"`, or — when `wait_ms` is set and the command finishes in time — the finished task with the tail of its output |
+| `background_run` | `command: String`, `wait_ms: Option<u64>` (max 10,000) | `"Background task <id> started: <command>"`; with `wait_ms` set and the command finishing inside it, the finished task with the tail of its output |
 | `check_background` | `task_id: Option<String>` | One task as pretty JSON (its `output` bounded to the same tail the wait uses), or a one-line-per-task listing |
 | `wait_background` | `task_id: Option<String>`, `timeout_ms: Option<u64>` | The finished task (status, elapsed, output tail, log path), or why the wait ended while it was still running |
 
 All three are in the main `toolset()` only (a sub-agent's shell work is synchronous `bash`). `check_background` with no `task_id` lists **this session's** tasks sorted by start time — one session never reports another's work, even though every session in the project shares the same store — and an unknown id returns an error (`Unknown background task <id>`). Naming a `task_id` explicitly is answered from any session: the caller asked for that task by name.
 
 Session scoping also covers the TUI's `/background` listing, and it is what `wait_background` / `wait` use when no id is given. A sub-agent cannot start a background task at all (its restricted toolset has no `background_run`); if that ever changes, the record would carry the *child* session id, so a parent's listing would not show it — widening the scope to child sessions is the follow-up to make then.
+
+`background_run` is the *starting* primitive: it returns the id immediately and the work proceeds in the background with **no time limit** — a task ends when it finishes, or when the user cancels. Its `wait_ms` is a short-task shortcut only (capped at 10 s), so a slow command never holds a turn; a wait that expires reports "still running" and leaves the task alone.
 
 `wait_background` is the *waiting* primitive: it returns the moment the task reaches a terminal status, so the model never has to guess a duration. Without a `task_id` it waits for every task of the current session; `timeout_ms` defaults to 5 minutes (the same cap as `sleep`). Unlike `sleep` — whose future ignores the cancel flag — the wait observes cancellation at the next poll (≤ 150 ms), so an in-flight wait is interruptible.
 
@@ -78,7 +80,7 @@ sequenceDiagram
     loop stdout/stderr streaming
         Task->>TUI: ToolProgress (throttled ~50ms)
     end
-    Task->>Task: await exit (timeout 120s, kill_on_drop)
+    Task->>Task: await exit (no time limit, kill_on_drop)
     Task->>TUI: BackgroundTaskFinished (✓/✗ + final output)
     Task->>DB: upsert record (completed/error + output)
 
@@ -93,7 +95,8 @@ Details worth knowing:
 |--------|----------|
 | Shell | `sh -c <command>`, cwd = `ToolContext.work_dir` |
 | Validation | `crate::shell::validate_shell_command` — same hard blocklist as `bash` (`sudo`, `rm -rf /`, …) |
-| Timeout | Fixed 120 seconds; on expiry status becomes `Error` with `"Error: Timeout (120s)"` |
+| Timeout | **None.** A task runs until the command exits or the session is cancelled — builds and test suites may take as long as they need |
+| Cancellation | The session's cancel flag (Esc / cancel) terminates every running task of that session: the flag is polled on the progress tick (≈50 ms) and `SIGKILL` goes to the task's **process group**, so `cargo`/`npm` grandchildren die with the shell instead of surviving as orphans. Status becomes `Error` with `Cancelled by the user` |
 | Live streaming | stdout/stderr are read incrementally and pushed as `AgentUpdate::ToolProgress` (≈50 ms batches, last ~4 KB kept in the live preview); no output is buffered until completion |
 | Output cap | First 50,000 chars of stdout+stderr are persisted in the record; the **full** output is appended to `<workdir>/.tact/background/<id>.log` (see `output_path`) |
 | Exit code | Non-zero exit → `Error`; the code itself is not recorded |
@@ -156,9 +159,8 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 
 | Gap | Detail |
 |-----|--------|
-| Fixed 120s timeout | Not configurable; long builds or test suites always die as `Error: Timeout` |
+| Cancellation is the only early end | There is no per-task kill tool: ending a running task means cancelling the turn (which stops *all* of that session's tasks). A model-driven `kill_background` would be the follow-up |
 | No model completion push | The TUI card gets `BackgroundTaskFinished`, but the **model** gets nothing unsolicited: it must ask (`wait_background`, `background_run(wait_ms:)`) or poll `check_background` |
-| No cancellation tool | A running task cannot be killed by the model; only timeout or process exit ends it |
 | Output interleaving lost | stdout and stderr are concatenated after completion, not merged by time |
 | Exit code discarded | Failure reason beyond the combined output text is unavailable |
 | Log file is best-effort | If `<workdir>/.tact/background/<id>.log` cannot be created, only the capped DB record remains |

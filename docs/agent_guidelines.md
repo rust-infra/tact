@@ -23,8 +23,9 @@ ensure consistent and efficient tool usage in this project.
   absolute paths from `read_file` / `grep` results can be used as-is.
 - When the session has the opt-in sandbox enabled (`[tools] sandbox = true`,
   Linux only), the `bash` tool description says so. Then the shell sees the workspace at
-  `/workspace` (the host path is *not* mounted), the network is disabled, and the
-  host home directory is unavailable. Rewrite host paths under the workspace to
+  `/workspace` (the host path is *not* mounted) and the
+  host home directory is unavailable; the host network (including a proxy on
+  the host's loopback) is shared, so outbound commands work as usual. Rewrite host paths under the workspace to
   `/workspace/...` before using them in a command — in-process tools keep
   reporting host absolute paths.
 - Never rely on the sandbox for correctness: it is opt-in, best-effort, and
@@ -34,8 +35,12 @@ ensure consistent and efficient tool usage in this project.
 ### Waiting on background tasks
 
 - To get a background task's result, call `wait_background` (optionally with its
-  id) — it returns the moment the task finishes. For a command you are starting
-  now, pass `wait_ms` to `background_run` and get the output in the same call.
+  id) — it returns the moment the task finishes. There is no time limit on the
+  task itself: a build or test suite runs until it ends or the user cancels.
+- For a command you are starting now *and* expect to finish at once, pass
+  `wait_ms` to `background_run` (max 10000) and get the output in the same call.
+  Do not use a big `wait_ms` to cover slow work — the cap makes that pointless,
+  so leave it out and wait afterwards.
 - Do **not** `sleep` to wait for a background task: the duration is a guess, and
   a `sleep` cannot be interrupted by the user's cancel; the next `wait_background`
   poll notices it within ~150 ms.

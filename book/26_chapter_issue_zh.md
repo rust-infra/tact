@@ -32,6 +32,42 @@
 ---
 
 
+## 1. 2026-09-16 — 后台任务不再有时间上限，取消则终止整棵进程树
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/background.rs`（删除 `COMMAND_TIMEOUT`，新增 `configure_process_group` / `terminate_tree`，`start`/`run` 接收会话取消标志）；`crates/tact/src/tool/background_run.rs`（`MAX_RUN_WAIT_MS`、提示词）；[第 13 章](./13_chapter_background_zh.md) §1/§3/§8；`docs/agent_guidelines.md` |
+
+**症状 / 动机：** `background_run` 自称是慢命令（构建、测试套件、安装）的去处，但每个任务在 **120 秒**后被 `SIGKILL`，记录被改写成 `Error: Timeout (120s)`。同一次会话实测：`cargo test --workspace`（约 110 秒）被杀了两次，而两次模型都把这个 `Error` 读成"测试失败"。这个 kill 还谎报了它做了什么：它只对 `sh -c` 领头进程发信号，于是 `sleep` 孙进程继续跑（实测：在"超时" 35 秒后仍活着），而记录却说任务已结束。另外，`background_run(wait_ms: 300000)` 能把一整个回合卡住最多五分钟——一个**启动**原语却在**慢**命令上阻塞。
+
+**决策：** 后台任务**没有时间上限**：它要么在命令退出时结束，要么在会话取消标志被置位时结束。这使得取消成为唯一的提前终止途径，因此它必须变成真正的 kill：任务现在 spawn 进自己的进程组（`configure_process_group`，与 `bash` 工具同一手法），取消时向取负的 pid 发 `SIGKILL`，把 `cargo`/`npm` 等孙进程一起带走。标志复用已有的进度 tick（约 50 ms）检查，没有引入新的定时器。`background_run(wait_ms:)` 明确降级为**短任务**捷径，上限 **10 秒**；`wait_background` 保留 5 分钟上限，因为阻塞就是它的全部职责。等待到期只回报"仍在运行"，绝不碰任务本身。
+
+**改后行为：** 用 `background_run` 启动的命令想跑多久就跑多久——30 分钟的构建也没问题。取消一个回合（Esc）会终止该会话所有运行中的任务，状态变为 `Error`、内容为 `Cancelled by the user`；进程树里不会留下任何东西。`background_run` 即使传了很大的 `wait_ms`，也会在 10 秒后带着任务 id 和"仍在运行"一行返回，而不是卡住回合。`wait_background` 行为不变：任务一结束就返回，否则如实说仍在运行。
+
+**指向：** `crates/tact/src/background.rs`（`run_background_process` 循环、`terminate_tree`、`configure_process_group`）；`crates/tact/src/tool/background_run.rs`（`MAX_RUN_WAIT_MS`、`capped_run_wait_ms`）；测试 `background::tests::cancelling_terminates_the_task_and_its_children`、`tool::background_run::tests::the_run_wait_is_capped_to_a_short_task`；[第 13 章](./13_chapter_background_zh.md) §1/§3/§8。
+
+---
+
+## 1. 2026-09-16 — bash 沙箱重新共享宿主网络
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/sandbox/bwrap.rs`（`--share-net`、`RESOLVER_PATHS`、`PROXY_ENV_VARS`、`bwrap_args_with(work_dir, exists, env)`）；`crates/tact/src/tool/bash.rs`（`SANDBOXED_BASH_DESCRIPTION`）；spec `docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md` §8/§17/§Tests 7；[第 27 章](./27_chapter_sandbox_zh.md) §3 |
+
+**症状 / 动机：** 打开 `[tools] sandbox = true` 后 shell 是个"网络死人"：没有 DNS、没有默认路由，宿主的代理 `127.0.0.1:7890` 甚至都不可达——连接 0 ms 就被拒，看起来像"代理坏了"而不是"没有网络"。`curl` / `git fetch` / `npm install` / `cargo fetch` 全都跑不通。文档里给的绕行方案（`background_run`，未沙箱化的宿主 shell）对 subagent 不成立——它们的受限工具集里没有 `background_run`——所以 subagent 什么都抓不到，本次实测三个 research lane 全部报 `curl` exit 6/7。用户要求把网络还给沙箱，并选择同时透传代理变量。
+
+**决策：** 共享宿主网络命名空间（`--share-net`，bwrap 默认行为的显式写法）；并且，因为只共享命名空间还不够，额外把解析器目录只读挂载进来。`--clearenv` 白名单只开一个例外：宿主设置了 `http_proxy` / `https_proxy` / `all_proxy` / `no_proxy`（两种大小写拼写）时原样透传，因为宿主 loopback 上的代理在沙箱内**确实**可达。这个能力依旧**不可配置**：不加开关，与策略其余部分保持一致。v1 当初刻意禁网，此决定现被推翻——沙箱约束的是文件系统，不是连通性。
+
+**改后行为：** 沙箱内域名解析可用，出网行为与宿主完全一致——包括宿主自身直连不了的目标，这正是本开发机的现状（`example.com` 通；`api.binance.com`、`api.coinbase.com`、`1.1.1.1:443` 全部超时；走代理则一切正常）。文件系统边界不变：工作区仍是唯一可写的宿主目录，宿主 home 仍未挂载，白名单之外的变量仍进不来。`--unshare-pid`、`--die-with-parent`、工作区守卫与被禁止的 `--new-session` 都未改动，`bash` 的工具描述也不再声称网络被禁用。
+
+**两个坑，均为实测：** 只共享命名空间**不足以**解析 DNS——宿主的 `/etc/resolv.conf` 是指向 `/run/systemd/resolve` 的符号链接，而 `/run` 不在挂载列表里，于是链接悬空，每次解析都报 "Temporary failure in name resolution"；而直接绑定 `/etc/resolv.conf` 会被 bwrap 拒绝（`Can't mount on symlink destination /etc/resolv.conf`），因此必须挂目录。回归测试因此刻意不碰外网：它连接由测试自己在宿主 loopback 上开的监听端口，只有命名空间共享时才连得通。
+
+**指向：** `crates/tact/src/sandbox/bwrap.rs`（`RESOLVER_PATHS`、`PROXY_ENV_VARS`、flag 列表、可注入的环境查询）；测试 `sandbox::bwrap::tests::shares_the_host_network_and_binds_the_resolver`、`sandbox::bwrap::tests::carries_proxy_variables_and_nothing_else`、`tool::bash::sandbox_tests::shares_the_host_network_namespace`、`tool::bash::sandbox_tests::system_files_are_readable_and_proxies_follow_the_host`；[第 27 章](./27_chapter_sandbox_zh.md) §3。
+
+---
+
 ## 1. 2026-09-16 — 后台三条工具提示词与实现重新对齐，状态读取也改为有界尾部
 
 | Field | Value |

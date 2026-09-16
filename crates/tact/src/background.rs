@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream};
 use tokio::{
     io::AsyncWriteExt,
-    process::Command,
+    process::{Child, Command},
     sync::mpsc,
     time::{MissedTickBehavior, interval},
 };
@@ -52,7 +52,6 @@ use crate::{
 };
 
 const MAX_OUTPUT_CHARS: usize = 50_000;
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How much of a task's captured output is inlined when the model reads a
 /// result (`check_background <id>`, `wait_background`, `background_run(wait_ms)`).
@@ -202,6 +201,11 @@ impl BackgroundManager {
     /// user-facing "started" line — for callers that keep working with the task
     /// (e.g. `background_run` with `wait_ms`).
     ///
+    /// `cancel` is the session's cancellation flag: while a task runs, setting
+    /// it terminates that task's whole process group. It is the *only* way a
+    /// running task ends early — there is deliberately no command timeout, so a
+    /// build or test suite may take as long as it needs.
+    ///
     /// # Errors
     ///
     /// Fails when the command is rejected by validation or the record cannot be
@@ -212,6 +216,7 @@ impl BackgroundManager {
         work_dir: &Path,
         session_id: String,
         progress: Option<BackgroundProgressSink>,
+        cancel: Arc<AtomicBool>,
     ) -> Result<String> {
         crate::shell::validate_shell_command(&command)?;
 
@@ -237,9 +242,14 @@ impl BackgroundManager {
         let work_dir = work_dir.to_path_buf();
         let task_id = id.clone();
         tokio::spawn(async move {
-            let (status, output) =
-                run_background_process(&command_for_task, &work_dir, &progress, Some(&log_path))
-                    .await;
+            let (status, output) = run_background_process(
+                &command_for_task,
+                &work_dir,
+                &progress,
+                Some(&log_path),
+                cancel,
+            )
+            .await;
             let mut record = record;
             record.finished_at = Some(Utc::now());
             record.status = status;
@@ -269,9 +279,10 @@ impl BackgroundManager {
         work_dir: &Path,
         session_id: String,
         progress: Option<BackgroundProgressSink>,
+        cancel: Arc<AtomicBool>,
     ) -> Result<String> {
         let id = self
-            .start(command.clone(), work_dir, session_id, progress)
+            .start(command.clone(), work_dir, session_id, progress, cancel)
             .await?;
         Ok(format!("Background task {id} started: {command}"))
     }
@@ -419,9 +430,10 @@ impl SharedBackgroundManager {
         work_dir: &Path,
         session_id: String,
         progress: Option<BackgroundProgressSink>,
+        cancel: Arc<AtomicBool>,
     ) -> Result<String> {
         self.inner
-            .run(command, work_dir, session_id, progress)
+            .run(command, work_dir, session_id, progress, cancel)
             .await
     }
 
@@ -431,9 +443,10 @@ impl SharedBackgroundManager {
         work_dir: &Path,
         session_id: String,
         progress: Option<BackgroundProgressSink>,
+        cancel: Arc<AtomicBool>,
     ) -> Result<String> {
         self.inner
-            .start(command, work_dir, session_id, progress)
+            .start(command, work_dir, session_id, progress, cancel)
             .await
     }
 
@@ -571,6 +584,37 @@ async fn log_write(file: &mut Option<tokio::fs::File>, text: &str) {
     *file = None;
 }
 
+/// Put the shell in its own process group so [`terminate_tree`] can signal the
+/// whole tree it spawns. Same trick as `tool::bash`: without a fresh group the
+/// negation in the kill would target *this* process group.
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+/// Kill the task and everything it spawned.
+///
+/// `child.kill()` alone reaches only the `sh -c` leader: a `cargo`/`npm`
+/// grandchild survives as an orphan and keeps consuming the machine. Because
+/// the leader owns its process group, the negated pid signals every member.
+/// Mirrors `tool::bash::terminate_child`.
+async fn terminate_tree(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id()
+        && let Ok(pid) = i32::try_from(pid)
+    {
+        // SAFETY: the spawned shell is a process-group leader whose id is its
+        // positive pid; negating it asks kill(2) to signal that group.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill().await;
+}
+
 /// Run `sh -c command` in the background, streaming stdout/stderr as live
 /// `ToolProgress` updates when a sink is present, appending the **full**
 /// output to `log_path` when given, and returning the final
@@ -581,20 +625,25 @@ async fn run_background_process(
     work_dir: &Path,
     progress: &Option<BackgroundProgressSink>,
     log_path: Option<&Path>,
+    cancel: Arc<AtomicBool>,
 ) -> (BackgroundTaskStatus, String) {
     let mut log_file = match log_path {
         Some(path) => open_log_file(path).await,
         None => None,
     };
-    let mut child = match Command::new("sh")
+    let mut process = Command::new("sh");
+    process
         .arg("-c")
         .arg(command)
         .current_dir(work_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    {
+        .kill_on_drop(true);
+    // Its own process group, so cancellation can signal the whole tree. The
+    // order is the `bash` tool's (see `tool::bash`): without a fresh group a
+    // group kill would take out this agent too.
+    configure_process_group(&mut process);
+    let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {
             return (
@@ -625,8 +674,6 @@ async fn run_background_process(
     let mut progress_tick = interval(PROGRESS_INTERVAL);
     progress_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     progress_tick.tick().await;
-    let timeout_sleep = tokio::time::sleep(COMMAND_TIMEOUT);
-    tokio::pin!(timeout_sleep);
     let mut exit_status: Option<std::process::ExitStatus> = None;
     let mut closed_pipes = 0_usize;
     let mut failure_reason: Option<String> = None;
@@ -673,14 +720,17 @@ async fn run_background_process(
                 }
             }
             _ = progress_tick.tick() => {
+                // Cancellation is the only way a running task ends early: the
+                // session's flag is the one kill switch, and it is checked on
+                // the tick we already have (no extra timer).
+                if cancel.load(Ordering::Relaxed) && failure_reason.is_none() {
+                    failure_reason = Some("Cancelled by the user".to_string());
+                    terminate_tree(&mut child).await;
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    closed_pipes = 2;
+                }
                 flush_progress(progress, &mut pending);
-            }
-            _ = &mut timeout_sleep, if failure_reason.is_none() => {
-                failure_reason = Some(format!("Timeout ({COMMAND_TIMEOUT:?})"));
-                let _ = child.kill().await;
-                stdout_task.abort();
-                stderr_task.abort();
-                closed_pipes = 2;
             }
         }
     }
@@ -729,6 +779,53 @@ mod tests {
     use super::*;
     use crate::store::background_store::SqliteBackgroundStore;
 
+    /// A cancellation flag that is never set: the task runs to completion.
+    fn no_cancel() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
+    /// Live `sleep` processes whose command line mentions `needle`, as
+    /// `"<pid> <command line>"`.
+    ///
+    /// The process *name* is part of the match on purpose: a harness's own
+    /// command line can contain the marker string (a test runner that shells a
+    /// script mentioning it, `bwrap … sh -c <script>`), and that is not a
+    /// survivor. The `sleep` is what the kill has to reach.
+    fn matching_sleeps(needle: &str) -> Vec<String> {
+        let mut found: Vec<String> = std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| {
+                std::fs::read_to_string(entry.path().join("comm"))
+                    .is_ok_and(|comm| comm.trim() == "sleep")
+            })
+            .filter_map(|entry| {
+                let cmdline = std::fs::read(entry.path().join("cmdline")).ok()?;
+                let text = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+                text.contains(needle)
+                    .then(|| format!("{} {}", entry.file_name().to_string_lossy(), text.trim()))
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// Wait (bounded) for those processes to disappear.
+    ///
+    /// `SIGKILL` is asynchronous, so a process can still be listed momentarily
+    /// after the kill; the assertion is about survivors, not about reap speed.
+    async fn wait_for_no_matching_sleeps(needle: &str) -> Vec<String> {
+        for _ in 0..150 {
+            let found = matching_sleeps(needle);
+            if found.is_empty() {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        matching_sleeps(needle)
+    }
+
     fn temp_manager(_name: &str) -> (SharedBackgroundManager, TempDir) {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("tact.db");
@@ -761,7 +858,13 @@ mod tests {
         session_id: &str,
     ) -> String {
         manager
-            .start(command.to_string(), work_dir, session_id.to_string(), None)
+            .start(
+                command.to_string(),
+                work_dir,
+                session_id.to_string(),
+                None,
+                no_cancel(),
+            )
             .await
             .unwrap()
     }
@@ -974,6 +1077,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_terminates_the_task_and_its_children() {
+        // Cancellation is the *only* way a running task ends early — there is no
+        // command timeout — so it has to reach the whole tree: the `sleep` below
+        // is a child of the shell, and a kill aimed at the shell alone would
+        // leave it running (measured before `terminate_tree`).
+        let (manager, tmp) = temp_manager("cancel_terminates");
+        let cancel = Arc::new(AtomicBool::new(false));
+        // A marker unique to this test: parallel tests match their own.
+        let id = manager
+            .start(
+                "sleep 371 & wait".to_string(),
+                tmp.path(),
+                "sess-1".to_string(),
+                None,
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+
+        // Do not race the spawn: cancel only once the child is actually there.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matching_sleeps("sleep 371").is_empty() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !matching_sleeps("sleep 371").is_empty(),
+            "the task never started"
+        );
+
+        cancel.store(true, Ordering::Relaxed);
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.wait(
+                Some(&id),
+                "sess-1",
+                Duration::from_secs(10),
+                &AtomicBool::new(false),
+            ),
+        )
+        .await
+        .expect("cancelling must end the task")
+        .unwrap();
+        assert_eq!(outcome, WaitOutcome::Finished);
+
+        let record = manager.record(&id).await.unwrap().unwrap();
+        assert_eq!(record.status, BackgroundTaskStatus::Error);
+        assert!(
+            record.output.contains("Cancelled by the user"),
+            "output: {}",
+            record.output
+        );
+
+        let survivors = wait_for_no_matching_sleeps("sleep 371").await;
+        assert!(
+            survivors.is_empty(),
+            "processes outlived the cancellation: {survivors:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn wait_rejects_an_unknown_task_id() {
         let (manager, _tmp) = temp_manager("wait_unknown");
         let error = manager
@@ -1059,6 +1223,7 @@ mod tests {
                 tmp.path(),
                 "sess-1".to_string(),
                 Some(progress),
+                no_cancel(),
             )
             .await
             .unwrap();
@@ -1119,6 +1284,7 @@ mod tests {
                 tmp.path(),
                 String::new(),
                 Some(progress),
+                no_cancel(),
             )
             .await
             .unwrap();
@@ -1161,6 +1327,7 @@ mod tests {
                 tmp.path(),
                 String::new(),
                 None,
+                no_cancel(),
             )
             .await
             .unwrap();
@@ -1189,6 +1356,7 @@ mod tests {
                 tmp.path(),
                 String::new(),
                 None,
+                no_cancel(),
             )
             .await
             .unwrap();
@@ -1226,6 +1394,7 @@ mod tests {
                 tmp.path(),
                 "sess-42".to_string(),
                 None,
+                no_cancel(),
             )
             .await
             .unwrap();
