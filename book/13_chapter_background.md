@@ -12,7 +12,7 @@ Background tasks are the "fire-and-forget" counterpart to the synchronous `bash`
 | Tool | Input | Output |
 |------|-------|--------|
 | `background_run` | `command: String`, `wait_ms: Option<u64>` | `"Background task <id> started: <command>"`, or — when `wait_ms` is set and the command finishes in time — the finished task with the tail of its output |
-| `check_background` | `task_id: Option<String>` | One task as pretty JSON, or a one-line-per-task listing |
+| `check_background` | `task_id: Option<String>` | One task as pretty JSON (its `output` bounded to the same tail the wait uses), or a one-line-per-task listing |
 | `wait_background` | `task_id: Option<String>`, `timeout_ms: Option<u64>` | The finished task (status, elapsed, output tail, log path), or why the wait ended while it was still running |
 
 All three are in the main `toolset()` only (a sub-agent's shell work is synchronous `bash`). `check_background` with no `task_id` lists **this session's** tasks sorted by start time — one session never reports another's work, even though every session in the project shares the same store — and an unknown id returns an error (`Unknown background task <id>`). Naming a `task_id` explicitly is answered from any session: the caller asked for that task by name.
@@ -132,7 +132,7 @@ This is covered by the `marks_stale_running_tasks_on_startup` unit test. The con
 
 **The TUI gets live progress + a completion event.** The spawned task pushes `AgentUpdate::ToolProgress` into the invocation's tool card while it runs, then `AgentUpdate::BackgroundTaskFinished` when it exits (see [Ch 25](./25_chapter_protocol.md) for the keep-live card contract). The **model/agent** still has no completion push, so it has to ask: `wait_background` blocks until the task finishes and returns the result in the same call, and `background_run(wait_ms:)` does the same for the command it just started. Polling `check_background` (or burning time with `sleep`) is only the fallback when the turn has other work to do meanwhile.
 
-Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — the record is hard-capped at 50k chars, and the full JSON lands in context when polled. The **full** stream is written to disk instead: polled JSON carries `output_path`, and the agent can `bash tail <path>` / `grep error <path>` for deep inspection. The listing form of `check_background` (no `task_id`) appends `(log: <path>)` to each line so the path is discoverable without a per-task call.
+Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — the record is hard-capped at 50k chars, and that is still far too much for context. So every model-facing read reports a **bounded tail** instead: `wait_background`, `background_run(wait_ms:)` and `check_background <id>` all cut `output` to its last 4,000 chars (`background::output_tail`, one implementation for the three paths) and include the log path. The **full** stream is on disk: the record carries `output_path`, and the agent can `bash tail <path>` / `grep error <path>` for deep inspection. The listing form of `check_background` (no `task_id`) appends `(log: <path>)` to each line so the path is discoverable without a per-task call.
 
 ---
 

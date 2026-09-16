@@ -13,7 +13,7 @@
 | Tool | Input | Output |
 |------|-------|--------|
 | `background_run` | `command: String`、`wait_ms: Option<u64>` | `"Background task <id> started: <command>"`；设了 `wait_ms` 且命令及时结束时，直接返回任务结果与输出尾部 |
-| `check_background` | `task_id: Option<String>` | 单任务 pretty JSON，或每行一个任务的列表 |
+| `check_background` | `task_id: Option<String>` | 单任务 pretty JSON（其 `output` 与等待路径一样只保留尾部），或每行一个任务的列表 |
 | `wait_background` | `task_id: Option<String>`、`timeout_ms: Option<u64>` | 已完成任务（状态、耗时、输出尾部、日志路径），或"仍在运行"的原因 |
 
 三个工具仅在主 `toolset()` 中（子 agent 的 shell 工作是同步 `bash`）。`check_background` 无 `task_id` 时列出**本会话**的任务（按开始时间排序）——即便同一项目下所有会话共用同一个 store，一个会话也不会报告另一个会话的活；未知 id 返回错误（`Unknown background task <id>`）。显式给出 `task_id` 时不限会话：那是调用方点名要的。
@@ -133,7 +133,7 @@ output: "Process interrupted (agent restarted)"
 
 **TUI 获得实时进度 + 完成事件。** spawn 的任务在运行期间向该调用的工具卡片推送 `AgentUpdate::ToolProgress`，退出时再推送 `AgentUpdate::BackgroundTaskFinished`（keep-live 卡片契约见 [Ch 25](./25_chapter_protocol_zh.md)）。但 **模型/agent 仍无完成 push**，所以要主动问：`wait_background` 会阻塞到任务结束，并在同一次调用里返回结果；`background_run(wait_ms:)` 对刚启动的命令做同样的事。只有当这一回合确实还有别的活要干时，才该退回轮询 `check_background`（或用 `sleep` 烧时间）。
 
-与同步 `bash` 输出不同，后台输出 **不** 经 `persist_large_output`（[上下文压缩](./05_chapter_compact_zh.md)）—— 记录硬 cap 50k 字符，轮询时完整 JSON 进入 context。**全量**流改为落盘：轮询到的 JSON 带 `output_path`，agent 可用 `bash tail <path>` / `grep error <path>` 深挖。`check_background` 的列表形式（无 `task_id`）每行追加 `(log: <path>)`，无需逐个调用即可发现路径。
+与同步 `bash` 输出不同，后台输出 **不** 经 `persist_large_output`（[上下文压缩](./05_chapter_compact_zh.md)）—— 记录硬 cap 50k 字符，而这仍远超应当进入 context 的体量。因此所有面向模型的读法都只报告**有界尾部**：`wait_background`、`background_run(wait_ms:)` 与 `check_background <id>` 共用同一份 `background::output_tail`，把 `output` 截到最后 4,000 字符并附上日志路径。**全量**流在磁盘上：记录带 `output_path`，agent 可用 `bash tail <path>` / `grep error <path>` 深挖。`check_background` 的列表形式（无 `task_id`）每行追加 `(log: <path>)`，无需逐个调用即可发现路径。
 
 ---
 

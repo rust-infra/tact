@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-16 — 后台三条工具提示词与实现重新对齐，状态读取也改为有界尾部
+
+| Field | Value |
+|-------|-------|
+| **Type** | docs |
+| **Related** | `crates/tact/src/tool/background_run.rs`（三条元数据描述 + 输入字段）；`crates/tact/src/tool/sleep.rs`；`crates/tact/src/background.rs`（`check`、`OUTPUT_TAIL_CHARS`、`output_tail`）；[Ch 13](./13_chapter_background_zh.md) §1/§6 |
+
+**症状 / 动机：** 等待工具与会话作用域落地后，工具描述已与代码不符：`check_background` 仍描述成不加范围的状态查询（列表现在只列本会话，`No background tasks.` 也因此含义不明）；`wait_background` 从未写明默认 5 分钟、以及不给 id 即等本会话全部任务；`background_run` 既没说何时该优先于 `bash`，也没提一条会坑到模型的事实——它是普通宿主 shell，`bash` 描述的沙箱 `/workspace` 路径空间对它不适用。另外 `check_background <id>` 会把整条记录倒出来，其中 `output` 可达 50,000 字符（约 1.2 万 token）直接进 context，而等待路径只内联最后 4,000 字符。
+
+**决策：** 让三条描述与实际行为重新对齐，并把"有界尾部"收敛成面向模型读取的唯一实现：`OUTPUT_TAIL_CHARS` / `output_tail` 移入 `background.rs`，`check_background <id>` 与 `wait_background`、`background_run(wait_ms:)` 走同一份。列表为空时若调用方有会话，文案改为 "No background tasks in this session."。
+
+**行为变化：** 提示词写明了作用域、等待默认值、不给 id 的会话级等待，以及宿主 shell / 宿主路径这一注意点。单任务状态读取返回同样的有界尾部加 `output_path`，全量流仍在磁盘上。工具的权限、调度与结果状态均未改动。
+
+**指针：** `crates/tact/src/background.rs`（`check`、`output_tail`、`OUTPUT_TAIL_CHARS`）；`crates/tact/src/tool/background_run.rs`（`BACKGROUND_RUN_METADATA`、`CHECK_BACKGROUND_METADATA`、`WAIT_BACKGROUND_METADATA`、`report_waited`）；测试 `background::tests::check_bounds_the_output_of_a_single_task`、`output_tail_keeps_the_end_and_marks_truncation`；[Ch 13](./13_chapter_background_zh.md) §1/§6。
+
+---
+
 ## 1. 2026-09-16 — 后台任务的检索按会话收窄
 
 | Field | Value |

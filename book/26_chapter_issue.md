@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-16 — The background tool prompts are resynced, and a status read is bounded too
+
+| Field | Value |
+|-------|-------|
+| **Type** | docs |
+| **Related** | `crates/tact/src/tool/background_run.rs` (all three metadata descriptions + input fields); `crates/tact/src/tool/sleep.rs`; `crates/tact/src/background.rs` (`check`, `OUTPUT_TAIL_CHARS`, `output_tail`); [Ch 13](./13_chapter_background.md) §1/§6 |
+
+**Symptom / motivation:** After the wait tools and the session scoping landed, the tool descriptions no longer matched the code: `check_background` still described an unscoped status check (the listing is now this session's, and `No background tasks.` became ambiguous), `wait_background` never stated its 5-minute default or that omitting the id waits for the whole session, and `background_run` said nothing about when to prefer it over `bash` or about a fact that bites the model — it runs an ordinary host shell, so the sandbox's `/workspace` path space that `bash` advertises does not apply. Separately, `check_background <id>` dumped the whole record, which can carry 50,000 chars of captured output (~12k tokens) straight into context, while the wait path inlined only the last 4,000.
+
+**Decision:** Resync the three descriptions with the behavior that shipped, and make the bounded tail the single implementation for every model-facing read: `OUTPUT_TAIL_CHARS` / `output_tail` moved into `background.rs` and are applied by `check_background <id>` exactly as by `wait_background` and `background_run(wait_ms:)`. The empty listing now says "No background tasks in this session." when the caller has a session.
+
+**Behavior after:** The prompts state the scope, the wait default, the id-less session wait and the host-shell/path caveat. A status read of one task returns the same bounded tail plus `output_path`; the full stream stays on disk. Nothing about the tools' permissions, scheduling or result statuses changed.
+
+**Pointers:** `crates/tact/src/background.rs` (`check`, `output_tail`, `OUTPUT_TAIL_CHARS`); `crates/tact/src/tool/background_run.rs` (`BACKGROUND_RUN_METADATA`, `CHECK_BACKGROUND_METADATA`, `WAIT_BACKGROUND_METADATA`, `report_waited`); tests `background::tests::check_bounds_the_output_of_a_single_task` and `output_tail_keeps_the_end_and_marks_truncation`; [Ch 13](./13_chapter_background.md) §1/§6.
+
+---
+
 ## 1. 2026-09-16 — Background listings are scoped to the session
 
 | Field | Value |
