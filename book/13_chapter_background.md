@@ -161,7 +161,7 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 | Records accumulate | `background_tasks` table is never pruned |
 | DB record still caps at 50k | Polled JSON `output` is truncated; the full text lives only in the log file |
 | ID collisions possible | 32-bit hex counter seeded by wall clock; no uniqueness check against disk |
-| Not sandboxed | `background_run` spawns its own `sh -c` on the host; the opt-in `bash` sandbox ([Ch 7](./07_chapter_tool.md) §7.1) does not cover it |
+| Not sandboxed | `background_run` spawns its own `sh -c` on the host; the opt-in `bash` sandbox ([Ch 7](./07_chapter_tool.md) §7.1, [Ch 27](./27_chapter_sandbox.md)) does not cover it |
 
 ---
 

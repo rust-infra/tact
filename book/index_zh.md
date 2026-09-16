@@ -16,8 +16,6 @@
 示例：`05_chapter_compact.md` ↔ `05_chapter_compact_zh.md`。
 
 - 章内顶部有语言切换链接。
-- CHM / HTML 构建自动收录所有 `*_zh.md`；目录见 `scripts/build-chm.sh`。
-- 视频流水线：`./book/scripts/generate.sh <slug>_zh --all`（如 `compact_zh`）。
 
 ---
 
@@ -52,6 +50,7 @@
 | 24 | [测试策略](./24_chapter_testing_zh.md) | Mock LLM、tact-ui driver、TUI TestBackend、CI |
 | 25 | [Agent–TUI 协议](./25_chapter_protocol_zh.md) | `tact_protocol` 消息类型、计划步骤生命周期、任务级状态迁移 |
 | 26 | [工程问题与优化日志](./26_chapter_issue_zh.md) | 已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针） |
+| 27 | [Bash 沙箱](./27_chapter_sandbox_zh.md) | `bash` 的可选 OS 级沙箱：布尔开关、按平台选后端、bubblewrap 策略、降级与非覆盖范围 |
 
 英文目录与架构总览见 [index.md](./index.md)。
 
@@ -118,5 +117,4 @@ graph TB
 - 英文全书入口：[index.md](./index.md)
 - 思维导图：[mindmap.html](./mindmap.html)
 - 压缩调参：[docs/compaction.md](../docs/compaction.md)
-- CHM / 视频流水线：[scripts/README.md](./scripts/README.md)
 - 项目架构：[ARCHITECTURE.md](../ARCHITECTURE.md)

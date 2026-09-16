@@ -1,6 +1,6 @@
 # Tact Book Mind Map
 
-**Right-hand tree layout** (root on the left → topic column → descriptions on the right). Works better than a radial mind map for all 26 chapters.
+**Right-hand tree layout** (root on the left → topic column → descriptions on the right). Works better than a radial mind map for all 27 chapters.
 
 ## Interactive version (recommended)
 
@@ -26,13 +26,13 @@ Mermaid cannot draw `{` braces; this `flowchart LR` approximates the same struct
 
 ```mermaid
 flowchart LR
-    ROOT["Tact Book<br/>26 chapters"]
+    ROOT["Tact Book<br/>27 chapters"]
 
     ROOT --> B1 & B2 & B3 & B4 & B5 & B6 & B7 & B8
 
     B1["① Runtime order<br/>Ch 1–11"] --> D1["Store → Skill → Memory → Prompt<br/>→ Compact → Recovery → Tool<br/>→ MCP → Hook → Permission → Scheduling"]
 
-    B2["② Tool families<br/>Ch 12–15"] --> D2["Subagents · Background · Team · Worktree"]
+    B2["② Tool families<br/>Ch 12–15, 27"] --> D2["Subagents · Background · Team · Worktree<br/>· Bash sandbox"]
 
     B3["③ Off-path<br/>Ch 17"] --> D3["Notify"]
 
@@ -79,7 +79,7 @@ flowchart LR
 | # | Chapters | Group |
 |---|----------|-------|
 | 1–11 | [Store](./01_chapter_store.md) … [Scheduling](./11_chapter_task.md) | ① Runtime order |
-| 12–15 | [Subagent](./12_chapter_subagent.md) … [Worktree](./15_chapter_worktree.md) | ② Tool families |
+| 12–15, 27 | [Subagent](./12_chapter_subagent.md) … [Worktree](./15_chapter_worktree.md) · [Sandbox](./27_chapter_sandbox.md) | ② Tool families |
 | 17 | [Notify](./17_chapter_notify.md) | ③ Off-path |
 | 18 | [Agent Loop](./18_chapter_agent_loop.md) | ④ Capstone |
 | 19–20 | [Tasks](./19_chapter_persistent_tasks.md) · [Hallucination](./20_chapter_hallucination.md) | ⑤ Deep topics |

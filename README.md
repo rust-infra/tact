@@ -381,7 +381,7 @@ The agent loop:
 8. Writes results back to the conversation history; a successful `compact` tool then rewrites context
 9. Continues until the model stops requesting tools (or recovery exhausts)
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop).
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop, bash sandbox).
 
 ---
 

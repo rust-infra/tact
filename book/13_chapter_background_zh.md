@@ -162,7 +162,7 @@ output: "Process interrupted (agent restarted)"
 | 记录累积 | `background_tasks` 表从不修剪 |
 | DB 记录仍 cap 50k | 轮询 JSON 的 `output` 是截断的；完整文本只在日志文件中 |
 | ID 可能碰撞 | 32 位 hex 计数器由 wall clock 播种；无对磁盘的唯一性检查 |
-| 不受沙箱约束 | `background_run` 自己在宿主上起 `sh -c`；可选的 `bash` 沙箱（[Ch 7](./07_chapter_tool_zh.md) §7.1）不覆盖它 |
+| 不受沙箱约束 | `background_run` 自己在宿主上起 `sh -c`；可选的 `bash` 沙箱（[Ch 7](./07_chapter_tool_zh.md) §7.1、[Ch 27](./27_chapter_sandbox_zh.md)）不覆盖它 |
 
 ---
 
