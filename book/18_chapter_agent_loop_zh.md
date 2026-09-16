@@ -100,7 +100,7 @@ Stats（`SessionStats`）累积 prompt/response/thinking 大小和 LLM 调用时
 | **`Refusal`** | 发出 Info 更新并 **`return Err`**，让 TUI 显示明确拒答而非虚假 `TaskComplete`。改写请求或换模型；尚无自动多模型回退（[Anthropic 文档](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)） |
 | **`Unknown`** | 发出带原始 provider 字符串的 Info，然后以 `Ok` 结束 |
 
-`StopReason` 由 `tact_llm` 拥有（[`stop_reason.rs`](../crates/tact_llm/src/stop_reason.rs)），不是 Anthropic SDK。适配器将 provider 原生字符串（`end_turn`、`finish_reason=length` 等）映射到此 enum；`model_context_window_exceeded` 映射到 `MaxTokens`。
+`StopReason` 由 `tact_llm` 拥有（[`types.rs`](../crates/tact_llm/src/types.rs)），不是 Anthropic SDK。适配器通过 `StopReason::from_anthropic` / `StopReason::from_openai` 将 provider 原生字符串（`end_turn`、`finish_reason=length`、Responses 的 `max_output_tokens` 等）映射到此 enum；`model_context_window_exceeded` 映射到 `MaxTokens`。
 
 **取消：** 每次迭代顶部以及工具执行前检查 `cancel_flag`。同一个
 `Arc<AtomicBool>` 也传入 `ToolContext`，因此执行中的 `bash` 会观察到取消，在

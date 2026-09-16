@@ -99,7 +99,7 @@ After a successful stream, the assistant message is appended to `runtime.context
 | **`Refusal`** | Emit an Info update and **`return Err`** so the TUI shows a clear refusal instead of a false `TaskComplete`. Rephrase the request or switch models; no automatic multi-model fallback yet ([Anthropic docs](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)) |
 | **`Unknown`** | Emit Info with the raw provider string, then finish with `Ok` |
 
-`StopReason` is owned by `tact_llm` ([`stop_reason.rs`](../crates/tact_llm/src/stop_reason.rs)), not the Anthropic SDK. Adapters map provider-native strings (`end_turn`, `finish_reason=length`, …) into this enum; `model_context_window_exceeded` maps to `MaxTokens`.
+`StopReason` is owned by `tact_llm` ([`types.rs`](../crates/tact_llm/src/types.rs)), not the Anthropic SDK. Adapters map provider-native strings (`end_turn`, `finish_reason=length`, Responses `max_output_tokens`, …) into this enum via `StopReason::from_anthropic` / `StopReason::from_openai`; `model_context_window_exceeded` maps to `MaxTokens`.
 
 **Cancellation:** `cancel_flag` is checked at the top of each iteration and
 again before tool execution. The same `Arc<AtomicBool>` is carried into
