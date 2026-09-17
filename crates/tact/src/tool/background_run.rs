@@ -161,7 +161,9 @@ pub const CHECK_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
         compact_result_to_meta: false,
     },
     output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
+    // Both tools take an optional `task_id`; a serialized `{"task_id":…}` would
+    // land in the title as a dump, so surface the id alone.
+    argument_summary: ArgumentSummaryPolicy::Id { field: "task_id" },
 };
 
 #[tool]
@@ -212,7 +214,9 @@ pub const WAIT_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
         compact_result_to_meta: false,
     },
     output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
+    // Both tools take an optional `task_id`; a serialized `{"task_id":…}` would
+    // land in the title as a dump, so surface the id alone.
+    argument_summary: ArgumentSummaryPolicy::Id { field: "task_id" },
 };
 
 #[tool]

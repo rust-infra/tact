@@ -800,12 +800,20 @@ impl ToolWidget {
                 }
             }
             tact_protocol::ToolVisualKind::Sleep => {
+                // The kind is shared: `sleep` passes its duration as the
+                // summary, `wait_background` the id of the task it is waiting
+                // on. So the label has to come from the tool's own presentation
+                // (💤 Sleep / ⏳ Wait Background) — a label hardcoded here
+                // silently overrode `display_name`, which is how a wait rendered
+                // as "Sleep". A serialized input is skipped the same way the
+                // detail card skips it ([`is_written_argument`]).
+                let label = display_name_from_presentation(&self.presentation, &self.tool_name);
                 if let Ok(ms) = self.arg_summary.parse::<u64>() {
-                    format!("⏳ Sleep · {}", sleep_duration(ms))
-                } else if self.arg_summary.is_empty() {
-                    "⏳ Sleep".to_string()
+                    format!("{label} · {}", sleep_duration(ms))
+                } else if self.arg_summary.is_empty() || !is_written_argument(&self.arg_summary) {
+                    label
                 } else {
-                    format!("⏳ Sleep · {}", self.arg_summary)
+                    format!("{label} · {}", self.arg_summary)
                 }
             }
             tact_protocol::ToolVisualKind::Task => {
@@ -2058,7 +2066,7 @@ mod tests {
             .with_arg_summary("5000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(5_000_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 5s");
+        assert_eq!(widget.title_text(), "💤 Sleep · 5s");
     }
 
     #[test]
@@ -2068,7 +2076,7 @@ mod tests {
             .with_arg_summary("0")
             .with_phase(ToolPhase::Success)
             .with_duration_us(1);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 0ms");
+        assert_eq!(widget.title_text(), "💤 Sleep · 0ms");
     }
 
     #[test]
@@ -2078,7 +2086,7 @@ mod tests {
             .with_arg_summary("125000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(125_000_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 2m 5s");
+        assert_eq!(widget.title_text(), "💤 Sleep · 2m 5s");
     }
 
     #[test]
@@ -2088,7 +2096,7 @@ mod tests {
             .with_arg_summary("60000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(60_000_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 1m");
+        assert_eq!(widget.title_text(), "💤 Sleep · 1m");
     }
 
     #[test]
@@ -2098,6 +2106,68 @@ mod tests {
             .with_arg_summary("1500")
             .with_phase(ToolPhase::Success)
             .with_duration_us(1_500_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 1.5s");
+        assert_eq!(widget.title_text(), "💤 Sleep · 1.5s");
+    }
+
+    /// The two tools that share the Sleep visual, with the presentations their
+    /// metadata actually ships (`sleep` → `💤 Sleep`, `wait_background` →
+    /// `⏳ Wait Background`).
+    fn sleep_kind_presentation(tool: &str, display_name: &str) -> ToolPresentationInfo {
+        let mut presentation = ToolPresentationInfo::generic(tool);
+        presentation.visual_kind = tact_protocol::ToolVisualKind::Sleep;
+        presentation.display_name = display_name.to_string();
+        presentation
+    }
+
+    #[test]
+    fn wait_background_title_reads_its_own_label() {
+        // Regression: this arm used to hardcode "⏳ Sleep", so a wait rendered as
+        // a sleep and the tool's `display_name` was unreachable. The summary now
+        // carries the bare `task_id` (metadata `Id` policy); a serialized input
+        // object must still never be printed, since it is a dump rather than a
+        // parameter a human reads.
+        for (summary, expected) in [
+            ("", "⏳ Wait Background"),
+            ("abc123", "⏳ Wait Background · abc123"),
+            (r#"{"task_id":"abc123"}"#, "⏳ Wait Background"),
+        ] {
+            let widget = ToolWidget::new()
+                .with_tool("wait_background")
+                .with_presentation(sleep_kind_presentation(
+                    "wait_background",
+                    "⏳ Wait Background",
+                ))
+                .with_arg_summary(summary)
+                .with_phase(ToolPhase::Success);
+            assert_eq!(widget.title_text(), expected, "summary: {summary}");
+        }
+    }
+
+    #[test]
+    fn check_background_title_shows_the_task_id() {
+        // The Generic arm joins label and summary with two spaces; the summary is
+        // the bare id, so the listing form reads "⚙️ Background Check".
+        for (summary, expected) in [
+            ("", "⚙️ Background Check"),
+            ("abc123", "⚙️ Background Check  abc123"),
+        ] {
+            let widget = ToolWidget::new()
+                .with_tool("check_background")
+                .with_arg_summary(summary)
+                .with_phase(ToolPhase::Success);
+            assert_eq!(widget.title_text(), expected, "summary: {summary}");
+        }
+    }
+
+    #[test]
+    fn sleep_title_keeps_the_duration_with_a_presentation() {
+        // The duration mini-language stays: only the label became dynamic.
+        let widget = ToolWidget::new()
+            .with_tool("sleep")
+            .with_presentation(sleep_kind_presentation("sleep", "💤 Sleep"))
+            .with_arg_summary("90000")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(90_000_000);
+        assert_eq!(widget.title_text(), "💤 Sleep · 1m 30s");
     }
 }

@@ -273,6 +273,13 @@ pub enum ArgumentSummaryPolicy {
     Command { field: &'static str },
     Question { field: &'static str },
     SubagentPrompt { field: &'static str },
+    // The one id a human reads — a background task id, a subagent child id.
+    // An absent field yields "", so a call that omits the optional id renders as
+    // the bare label (⏳ Wait Background) rather than an empty parameter. Prefer
+    // this over `Json` whenever the tool has a single meaningful argument: a
+    // serialized input object is a dump, and the renderer keeps dumps out of the
+    // title.
+    Id { field: &'static str },
     PatchPreview { patch_field: &'static str },
     ReadOffsetLimit { path_field: &'static str },
 }

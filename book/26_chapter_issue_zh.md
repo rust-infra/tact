@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-17 — 卡片标题的标签来自工具自己的 presentation，不再由绘制它的分支硬编码
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`title_text` 的 `Sleep` 分支、`display_name_from_presentation`、`is_written_argument`）、`crates/tact/src/tool/metadata.rs`（`ArgumentSummaryPolicy::Id`）、`crates/tact/src/tool/background_run.rs`（`CHECK_BACKGROUND_METADATA`、`WAIT_BACKGROUND_METADATA`）、`crates/tact/src/agent/tool_dispatch.rs`（`tool_arg_full`）；[第 13 章](./13_chapter_background_zh.md) §1；[第 23 章](./23_chapter_tui_zh.md) §6.16 |
+
+**现象 / 动机：** `wait_background` 复用了 `ToolVisualKind::Sleep`，而那个分支把标签写死成 `⏳ Sleep · {}`，`{}` 里是序列化后的输入。一行里两个 bug。标签完全无视工具自己的 `display_name`（`⏳ Wait Background` 成了构造上就不可能被读到的死字段），同一个硬编码还意味着 `sleep` **从来没有**画出过它元数据里声明的 `💤 Sleep`。参数同样错位：两个后台工具都用 `ArgumentSummaryPolicy::Json`，于是标题里带的是 `{"task_id":"abc123"}` 这种 dump——可选的 id 没传时就是一个光秃秃的 `{}`——而这里本该是给人读的 id。
+
+**决策：** visual kind 只决定标题的**形状**，绝不决定**名字**。`Sleep` 分支的标签改为取 `display_name_from_presentation(&self.presentation, &self.tool_name)`（为空或等于工具名时回退 `tool_display_name`），这样一个共享 kind 可以服务多个工具——`Command` 与 `Task` 本来就是这个规则。时长 mini-language 保留；序列化参数不进标题，判据与弹窗一致（`is_written_argument`，即 `argument_line` / `popup_detail` 用的那个守卫）。参数本身在源头修：新增 `ArgumentSummaryPolicy::Id { field }`，只暴露一个字段，且当调用省略了这个可选 id 时返回 `""`——刻意不回退到 JSON dump，因此没传 id 的调用画出来就是光标签。`check_background` 与 `wait_background` 由 `Json` 改为 `Id { field: "task_id" }`，唯一消费点是 `tool_dispatch::tool_arg_full`。
+
+**改后行为：** `⏳ Wait Background`、`⏳ Wait Background · abc123`、`💤 Sleep · 1m 30s`；`check_background` 读作 `⚙️ Background Check  abc123`（`Generic` 分支两空格拼接的形态不变）。其余元数据为 `Json` 的工具——`team_*`、`worktree_*`、`save_memory`、`load_skill`、`compact`，以及所有走 `tool_arg_full` 的 `_ => Json` 回退的 MCP / 插件工具——标题里仍然会打出 dump：那是逐工具的决定，还没动，不能一次全局改掉（`_` 分支正是 MCP 工具依赖的）。之后若需要，`subagent_check` / `subagent_wait` 是下一批 `Id { field: "child_id" }` 的候选。顺手记一个 rustfmt 坑：新变体上用的是 `//` 行注释而不是 `///`——在枚举变体上加文档注释会把整个 enum 展开成每变体多行。
+
+**指针：** `crates/agent_tui_kit/src/widgets/tool_widget.rs` 的 `title_text` / `display_name_from_presentation` / `is_written_argument`；测试 `wait_background_title_reads_its_own_label`、`check_background_title_shows_the_task_id`、`sleep_title_keeps_the_duration_with_a_presentation`（5 条既有的 `sleep` 标题断言由 `⏳` 改为 `💤`）；`crates/tact/src/agent/tool_dispatch.rs` 的 `id_policy_reads_the_field_and_tolerates_absence`、`background_tools_title_shows_the_id_not_the_input_dump`。
+
+---
+
 ## 1. 2026-09-16 — 每个工具的弹窗都以它发起的那次调用开头
 
 | 字段 | 值 |

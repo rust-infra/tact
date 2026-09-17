@@ -213,6 +213,7 @@ fn tool_arg_full(policy: ArgumentSummaryPolicy, input: &serde_json::Value) -> St
         ArgumentSummaryPolicy::Command { field } => str_field(input, field).to_string(),
         ArgumentSummaryPolicy::Question { field } => str_field(input, field).to_string(),
         ArgumentSummaryPolicy::SubagentPrompt { field } => str_field(input, field).to_string(),
+        ArgumentSummaryPolicy::Id { field } => str_field(input, field).to_string(),
         ArgumentSummaryPolicy::PatchPreview { .. } => patch_title(input),
         ArgumentSummaryPolicy::ReadOffsetLimit { path_field } => {
             str_field(input, path_field).to_string()
@@ -1067,6 +1068,31 @@ mod tests {
     }
 
     #[test]
+    fn id_policy_reads_the_field_and_tolerates_absence() {
+        // `wait_background` / `check_background`: the id is the whole readable
+        // parameter, and both arguments are optional, so an omitted id must come
+        // back as `""` (the renderer then draws the bare label) rather than as
+        // the serialized `{}` dump.
+        let policy = ArgumentSummaryPolicy::Id { field: "task_id" };
+        assert_eq!(
+            tool_arg_full(policy, &serde_json::json!({"task_id": "abc123"})),
+            "abc123"
+        );
+        assert_eq!(
+            tool_arg_full(
+                policy,
+                &serde_json::json!({"task_id": "abc123", "timeout_ms": 300_000})
+            ),
+            "abc123"
+        );
+        assert_eq!(tool_arg_full(policy, &serde_json::json!({})), "");
+        assert_eq!(
+            tool_arg_full(policy, &serde_json::json!({"timeout_ms": 300_000})),
+            ""
+        );
+    }
+
+    #[test]
     fn patch_preview_summary() {
         let full = tool_arg_full(
             ArgumentSummaryPolicy::PatchPreview {
@@ -1121,6 +1147,26 @@ mod tests {
         );
         assert_eq!(summary, full, "a short task title needs no truncation");
         assert!(!full.is_empty());
+    }
+
+    #[test]
+    fn background_tools_title_shows_the_id_not_the_input_dump() {
+        // Both take an optional `task_id`, so their parameter must be that id —
+        // never the serialized input, which the header row would print verbatim.
+        let router = crate::tool::toolset();
+        for tool in ["check_background", "wait_background"] {
+            let metadata = router.resolve(tool).unwrap().metadata();
+            let resolved = ResolvedTool::Native { metadata };
+            let named = arg_pair(
+                &resolved,
+                &serde_json::json!({"task_id": "abc123"}),
+                None,
+                None,
+            );
+            assert_eq!(named.1, "abc123", "{tool}");
+            let listing = arg_pair(&resolved, &serde_json::json!({}), None, None);
+            assert_eq!(listing.1, "", "{tool} must keep its bare label");
+        }
     }
 
     #[test]

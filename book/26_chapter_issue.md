@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-17 — A card's label comes from the tool's presentation, never from the arm that draws it
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`title_text` `Sleep` arm, `display_name_from_presentation`, `is_written_argument`), `crates/tact/src/tool/metadata.rs` (`ArgumentSummaryPolicy::Id`), `crates/tact/src/tool/background_run.rs` (`CHECK_BACKGROUND_METADATA`, `WAIT_BACKGROUND_METADATA`), `crates/tact/src/agent/tool_dispatch.rs` (`tool_arg_full`); [Ch 13](./13_chapter_background.md) §1; [Ch 23](./23_chapter_tui.md) §6.16 |
+
+**Symptom / motivation:** `wait_background` reuses `ToolVisualKind::Sleep`, and that arm hardcoded its own label: `⏳ Sleep · {}` with the serialized input in the `{}`. Two bugs in one line. The label ignored the tool's `display_name` entirely (`⏳ Wait Background` was a dead field, unreachable by construction), and the same hardcoding also meant `sleep` had *never* drawn the `💤 Sleep` its metadata declares. The parameter was equally wrong: both background tools used `ArgumentSummaryPolicy::Json`, so the title carried a `{"task_id":"abc123"}` dump — or a bare `{}` when the optional id was omitted — where a human-readable id belongs.
+
+**Decision:** The visual kind owns the *shape* of a title, never the *name*. The `Sleep` arm now takes its label from `display_name_from_presentation(&self.presentation, &self.tool_name)` (empty or equal to the tool name falls back to `tool_display_name`), so a shared kind can serve several tools — the same rule `Command` and `Task` already followed. The duration mini-language stays, and a serialized argument is skipped from the title exactly as the popup skips it (`is_written_argument`, the guard `argument_line`/`popup_detail` use). The parameter itself is fixed at the source: a new `ArgumentSummaryPolicy::Id { field }` surfaces one field and yields `""` when the call omitted the optional id — deliberately not falling back to the JSON dump, so an id-less call renders as the bare label. `check_background` and `wait_background` moved from `Json` to `Id { field: "task_id" }`, the one consumer being `tool_dispatch::tool_arg_full`.
+
+**Behavior after:** `⏳ Wait Background`, `⏳ Wait Background · abc123`, `💤 Sleep · 1m 30s`; `check_background` reads `⚙️ Background Check  abc123` (the `Generic` arm's two-space join is unchanged). Every other tool whose metadata says `Json` — `team_*`, `worktree_*`, `save_memory`, `load_skill`, `compact`, and every MCP/plugin tool, which reaches `tool_arg_full`'s `_ => Json` fallback — still prints its dump in the title; that is a per-tool decision left open, not a shared rule to fix in one sweep (the `_` arm is what MCP tools depend on). `subagent_check`/`subagent_wait` are the next `Id { field: "child_id" }` candidates when someone wants them. One rustfmt trap worth keeping: the new variant carries `//` line comments, not `///` — a doc comment on an enum variant expands the whole enum to one variant per line.
+
+**Pointers:** `title_text` / `display_name_from_presentation` / `is_written_argument` in `crates/agent_tui_kit/src/widgets/tool_widget.rs`; tests `wait_background_title_reads_its_own_label`, `check_background_title_shows_the_task_id`, `sleep_title_keeps_the_duration_with_a_presentation` (five pre-existing `sleep` title assertions move `⏳` → `💤`); `id_policy_reads_the_field_and_tolerates_absence`, `background_tools_title_shows_the_id_not_the_input_dump` in `crates/tact/src/agent/tool_dispatch.rs`.
+
+---
+
 ## 1. 2026-09-16 — Every tool popup opens with the call it made
 
 | Field | Value |
