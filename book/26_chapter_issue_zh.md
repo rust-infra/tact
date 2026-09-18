@@ -32,6 +32,27 @@
 ---
 
 
+## 1. 2026-09-18 — 取消能打到"leader 已退出的进程树"，且记录保留输出流的结尾
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/background.rs`（`terminate_tree`、`run_background_process` 的 spawn、`OutputAccumulator`、`output_tail`）；`crates/tact/src/tool/subagent.rs`（子进程的 toolset）；[Ch 13](./13_chapter_background_zh.md) §1；[Ch 07](./07_chapter_tool_zh.md) §7.1；[Ch 27](./27_chapter_sandbox_zh.md) §3 |
+
+**症状 / 动机：** 合并前 review 的三项发现，都是实测而非推断。
+
+1. *取消打不到"没有 leader 的树"*。`terminate_tree` 在**杀的时刻**读 `child.id()`，但 tokio 的 `Child::id()` 在子进程被 poll 到完成后返回 `None`——而 `sh -c 'server &'` 恰好就是这个状态：shell 退出并被收割，后台化的孙进程仍持有 stdout/stderr 管道，于是运行循环停在 `closed_pipes < 2` 而 `exit_status = Some(...)`。此时取消不会发出任何信号，却把记录写成 `Error: Cancelled by the user`，孤儿继续运行——正是当年移除 120 秒超时要消灭的那个"记录谎报自己做了什么"的失败（2026-09-16 条目）。本机实测：leader 已消失，孤儿的 `ppid` 为 1、`pgid` 仍是已死 leader 的 pid，而 `kill(-pgid)` **确实能打到它**——进程组是可信号的，只是 id 取晚了。既有测试用的是 `'sleep 371 & wait'`，其中的 `wait` 让 leader 存活，因此从未进入该状态。
+2. *记录里的输出既不是开头也不是结尾*。`OutputAccumulator` 保留**前** `MAX_OUTPUT_CHARS`（50k）并丢弃其后全部内容，于是 `output_tail`——其命名与文档都声称是"输出的尾部"，也是所有面向模型的读取（`check_background`、`wait_background`、`background_run(wait_ms)`）所报告的内容——返回的是更长输出流中约第 46k–50k 个字符，却打印着"truncated to the last 4000 chars"。构建 / 测试日志真正有用的结尾从未进入上下文。既有测试只注入 12k 字符（未达上限），因此从未触发截断。
+3. *子 agent 的 `bash` 在沙箱里跑，描述却说是非沙箱*。子 agent 继承父进程的 `ToolContext`（因此 `ctx.sandbox` 是 `Some`，它的 shell 确实运行在 bubblewrap 下），但只有 `tact-ui` 的两个入口应用了 `SANDBOXED_BASH_DESCRIPTION`；`spawn_subagent` 构造 router 时没有应用。在 worktree 场景下更糟：子 agent 的 system prompt 给出一个宿主路径，而它自己的 `/workspace` shell 看不到该路径。
+
+**决策：**（1）进程组 id 在 **spawn 时**捕获、绝不在 kill 时才取，并传入 `terminate_tree`——与 `tool::bash` 早已采用的顺序一致。只要进程组还有成员，它就比 leader 活得更久，因此捕获的 id 仍能命中幸存者。（2）让 `OutputAccumulator` 保留**末** `MAX_OUTPUT_CHARS`，并以 8,192 字符的 slack 触发裁剪，使话痨命令很少付出那次 `memmove` 代价，从而让 `output_tail` 名副其实。（3）当 `ctx.sandbox.is_some()` 时，在 `spawn_subagent` 中应用沙箱版 bash 描述。
+
+**改后行为：** 取消 `background_run` 任务会杀掉整棵树，即使它的 shell leader 已经退出，因此记录里的 `Error: Cancelled by the user` 是真的。输出超过 50k 字符的任务记录其**最后** 50k，`check_background` / `wait_background` 显示日志真正的结尾；完整输出流仍在 `<workdir>/.tact/background/<id>.log`，而它现在是更早那部分唯一留存的地方。处于 `tools.sandbox = true` 的子 agent 会看到沙箱版 `bash` 描述，因此被告知的是 `/workspace` 而不是宿主路径。同一轮修正的文档：Ch 07 §7.1 与 Ch 10 §1 曾称沙箱"禁用网络"/"连不上网络"，自 `--share-net`（2026-09-16 条目）起都不成立；`config.example.toml` 曾称 `cargo fetch` / `npm install` 仍可用（工具链目录是只读的）以及沙箱读不到凭据（只读挂载的 `~/.cargo` **是可读的**），其 subagent `reasoning_effort` 注释还描述了一个并不存在的第三层回退。刻意未修、仍然开放的两项：`sleep` 的时长在生产路径不可达（`ArgumentSummaryPolicy::Json` 永远不会产出裸数字，因此标题无法格式化成 `💤 Sleep · 1m 30s`），以及弹窗正文按宽度截断而非折行。
+
+**指针：** `crates/tact/src/background.rs` 的 `terminate_tree` 与 `process_group_id` 捕获；`OutputAccumulator` + `output_tail`；`crates/tact/src/tool/subagent.rs`（`subagent_tools`）；测试 `cancelling_reaches_a_tree_whose_leader_already_exited`（已验证：对"kill 时刻取值"的写法会失败，幸存者为 `['sleep 372']`）、`the_output_buffer_keeps_the_newest_characters`、以及 `run_writes_full_output_to_log_file_and_truncates_db_record`（断言改为 `ends_with`）。
+
+---
+
 ## 1. 2026-09-17 — 卡片标题的标签来自工具自己的 presentation，不再由绘制它的分支硬编码
 
 | 字段 | 值 |

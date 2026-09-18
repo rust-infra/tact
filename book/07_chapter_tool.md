@@ -213,8 +213,9 @@ failing the tool.
 When active it mounts the workspace read-write at `/workspace` (**not** at its
 host path), binds `/usr`, `/bin`, `/lib`, `/lib64`, `/etc` and a fixed
 read-only toolchain allowlist (`~/.rustup`, `~/.cargo`, `~/.config/git`,
-`~/.npm`) read-only, gives the command its own pid namespace and procfs, and
-disables the network. This splits the path space: shell commands see
+`~/.npm`) read-only, gives the command its own pid namespace and procfs. The
+host network namespace is **shared** (a proxy on the host's loopback included):
+the sandbox bounds the filesystem, not connectivity. This splits the path space: shell commands see
 `/workspace/...` while every in-process tool still reports host absolute paths,
 so the `bash` tool description is rewritten at startup with whichever semantics
 are actually in force.

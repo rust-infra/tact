@@ -217,7 +217,7 @@ mode = "default"
 # max_tokens = 8000
 # thinking_budget = 0
 # Optional reasoning effort override (otherwise falls back to the referenced
-# provider entry's value, then the main agent's resolved value).
+# provider entry's value).
 # openai / deepseek / kimi k3 semantics: none|minimal|low|medium|high|xhigh|max
 # reasoning_effort = "high"
 #
@@ -295,9 +295,10 @@ api_key = ""
 # On Linux it runs each command under bubblewrap with the workspace mounted at
 # /workspace and the host home directory unmounted — so third-party code an
 # approved command pulls in (cargo build scripts, npm lifecycle scripts, test
-# binaries) cannot read credentials or write outside the workspace. The host
-# network is shared (a proxy on the host's loopback included), so `cargo fetch`
-# / `npm install` / `curl` keep working.
+# binaries) cannot write outside the workspace, and cannot read the host home
+# beyond the read-only toolchain allowlist. The host network is shared (a proxy
+# on the host's loopback included), but those toolchain homes are read-only, so
+# `cargo fetch` / `npm install` still fail while `curl` works.
 # Install `bubblewrap` first. Platforms with no implementation yet (anything but
 # Linux) accept the switch but cannot honour it, so enabling it there has no
 # effect; Tact always warns and runs unsandboxed instead of failing the tool.

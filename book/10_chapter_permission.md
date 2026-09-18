@@ -37,8 +37,8 @@ Sandbox     = execution boundary (what can the running command access?)
 The optional `bash` sandbox ([Tool System §7.1](./07_chapter_tool.md), full chapter: [Bash Sandbox](./27_chapter_sandbox.md)) sits in
 the second layer and changes nothing in this chapter: enabling
 `[tools] sandbox = true` adds no prompt and removes no check. A command can be
-`Permission = allow` and still be unable to read the host home or reach the
-network.
+`Permission = allow` and still be unable to read the host home — the sandbox
+bounds the filesystem, not the network (it shares the host's).
 
 ---
 

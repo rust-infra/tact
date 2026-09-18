@@ -34,7 +34,8 @@ Sandbox    = 执行边界   （运行中的命令能访问什么？）
 
 可选的 `bash` 沙箱（[工具系统 §7.1](./07_chapter_tool_zh.md)，完整章节见 [Bash 沙箱](./27_chapter_sandbox_zh.md)）属于第二层，本章内容
 不因此改变：开启 `[tools] sandbox = true` 不会新增任何提示，也不会去掉任何检查。
-一条命令可以 `Permission = allow`，同时读不到宿主 home、也连不上网络。
+一条命令可以 `Permission = allow`，同时读不到宿主 home——沙箱约束的是文件系统，
+不是网络（网络与宿主共享）。
 
 ---
 

@@ -17,7 +17,7 @@
 //!   to guess a sleep duration and poll.
 //!
 //! Output is stored hybrid: the DB record keeps the metadata plus the
-//! first [`MAX_OUTPUT_CHARS`] chars (bounded, cheap to poll), while the
+//! last [`MAX_OUTPUT_CHARS`] chars (bounded, cheap to poll), while the
 //! **full** stdout+stderr stream is appended to
 //! `<workdir>/.tact/background/<id>.log` as it arrives. The `output_path`
 //! field lets the agent (or a human) `tail` / `grep` the full log with the
@@ -56,9 +56,11 @@ const MAX_OUTPUT_CHARS: usize = 50_000;
 /// How much of a task's captured output is inlined when the model reads a
 /// result (`check_background <id>`, `wait_background`, `background_run(wait_ms)`).
 ///
-/// The record itself keeps up to [`MAX_OUTPUT_CHARS`], and the **full** stream is
-/// in the task's log file — both far too much to put in context per poll, so
-/// every model-facing read reports this tail plus the log path instead.
+/// The record itself keeps the **last** [`MAX_OUTPUT_CHARS`] of the stream, and
+/// the **full** stream is in the task's log file — both far too much to put in
+/// context per poll, so every model-facing read reports the end of the record
+/// plus the log path. Once output exceeded the cap, that path is the only place
+/// the earlier part survives.
 pub(crate) const OUTPUT_TAIL_CHARS: usize = 4_000;
 
 /// The tail of a task's captured output, bounded for the model's context.
@@ -377,10 +379,10 @@ impl BackgroundManager {
                 .get(task_id)
                 .await?
                 .with_context(|| format!("Unknown background task {task_id}"))?;
-            // The record keeps up to `MAX_OUTPUT_CHARS` and the full stream is in
-            // the log file, so a raw record dump would drop ~12k tokens of build
-            // log into context per poll. Report the same bounded tail the wait
-            // path uses; `output_path` still points at everything.
+            // The record keeps the last `MAX_OUTPUT_CHARS` and the full stream is
+            // in the log file, so a raw record dump would drop ~12k tokens of
+            // build log into context per poll. Report the same bounded tail the
+            // wait path uses; `output_path` still points at everything.
             let bounded = BackgroundTaskRecord {
                 output: output_tail(&record.output),
                 ..record
@@ -516,33 +518,53 @@ impl BackgroundProgressSink {
     }
 }
 
-/// Capped buffer of decoded output text (keeps the *first* characters, matching
-/// the pre-streaming record semantics).
+/// Capped buffer of decoded output text (keeps the **last** characters).
+///
+/// The buffer is read back through [`output_tail`], and a task's interesting
+/// output — the failure, the summary — sits at the *end* of a long stream.
+/// Keeping a prefix instead would make `output_tail` report the middle of the
+/// stream while claiming to be its tail.
 #[derive(Default)]
 struct OutputAccumulator {
     text: String,
     chars: usize,
-    truncated: bool,
 }
+
+/// How far past [`MAX_OUTPUT_CHARS`] the buffer may grow before it is trimmed.
+///
+/// Trimming is a `memmove`, so a chatty command (`yes`) must not pay for it on
+/// every chunk; the overshoot accumulates and is cut in one pass.
+const OUTPUT_TRIM_SLACK: usize = 8_192;
 
 impl OutputAccumulator {
     fn push(&mut self, text: &str) {
-        if self.truncated || text.is_empty() {
+        if text.is_empty() {
             return;
         }
-        let add = text.chars().count();
-        if self.chars + add <= MAX_OUTPUT_CHARS {
-            self.text.push_str(text);
-            self.chars += add;
-        } else {
-            let remaining = MAX_OUTPUT_CHARS.saturating_sub(self.chars);
-            self.text.extend(text.chars().take(remaining));
-            self.chars = MAX_OUTPUT_CHARS;
-            self.truncated = true;
+        self.text.push_str(text);
+        self.chars += text.chars().count();
+        if self.chars > MAX_OUTPUT_CHARS + OUTPUT_TRIM_SLACK {
+            self.keep_last(MAX_OUTPUT_CHARS);
         }
     }
 
-    fn into_string(self) -> String {
+    /// Drop the oldest characters, keeping the most recent `keep`.
+    fn keep_last(&mut self, keep: usize) {
+        let excess = self.chars.saturating_sub(keep);
+        let byte_cut = self
+            .text
+            .char_indices()
+            .nth(excess)
+            .map(|(index, _)| index)
+            .unwrap_or(self.text.len());
+        self.text.drain(..byte_cut);
+        self.chars = keep;
+    }
+
+    fn into_string(mut self) -> String {
+        if self.chars > MAX_OUTPUT_CHARS {
+            self.keep_last(MAX_OUTPUT_CHARS);
+        }
         self.text
     }
 }
@@ -601,9 +623,16 @@ fn configure_process_group(_command: &mut Command) {}
 /// grandchild survives as an orphan and keeps consuming the machine. Because
 /// the leader owns its process group, the negated pid signals every member.
 /// Mirrors `tool::bash::terminate_child`.
-async fn terminate_tree(child: &mut Child) {
+///
+/// `process_group_id` is captured **at spawn time**, never read from
+/// `child.id()` here. Once the leader has been polled to completion
+/// `Child::id()` returns `None` — and "the leader exited while a backgrounded
+/// grandchild kept the pipes open" is precisely the state cancellation has to
+/// reach (`sh -c 'server &'`): the group outlives its leader for as long as it
+/// has a member, so the captured id still signals the survivors.
+async fn terminate_tree(child: &mut Child, process_group_id: Option<u32>) {
     #[cfg(unix)]
-    if let Some(pid) = child.id()
+    if let Some(pid) = process_group_id
         && let Ok(pid) = i32::try_from(pid)
     {
         // SAFETY: the spawned shell is a process-group leader whose id is its
@@ -612,6 +641,8 @@ async fn terminate_tree(child: &mut Child) {
             libc::kill(-pid, libc::SIGKILL);
         }
     }
+    #[cfg(not(unix))]
+    let _ = process_group_id;
     let _ = child.kill().await;
 }
 
@@ -652,6 +683,11 @@ async fn run_background_process(
             );
         }
     };
+    // Captured now, while the leader is certainly alive: `Child::id()` returns
+    // `None` once the child has been polled to completion, and a leader that
+    // exits while a backgrounded grandchild holds the pipes is exactly the case
+    // cancellation must still be able to signal. Same order as `tool::bash`.
+    let process_group_id = child.id();
     let Some(stdout) = child.stdout.take() else {
         return (
             BackgroundTaskStatus::Error,
@@ -725,7 +761,7 @@ async fn run_background_process(
                 // the tick we already have (no extra timer).
                 if cancel.load(Ordering::Relaxed) && failure_reason.is_none() {
                     failure_reason = Some("Cancelled by the user".to_string());
-                    terminate_tree(&mut child).await;
+                    terminate_tree(&mut child, process_group_id).await;
                     stdout_task.abort();
                     stderr_task.abort();
                     closed_pipes = 2;
@@ -897,6 +933,28 @@ mod tests {
         assert!(tail.contains("truncated"));
         assert!(tail.ends_with("TAIL"));
         assert!(tail.chars().count() < long.chars().count());
+    }
+
+    #[test]
+    fn the_output_buffer_keeps_the_newest_characters() {
+        // The record is read back through `output_tail`, so it has to hold the
+        // *end* of the stream: a prefix buffer would make every model-facing
+        // read report the middle of a long log while calling it the tail.
+        let mut record = OutputAccumulator::default();
+        record.push(&"o".repeat(MAX_OUTPUT_CHARS)); // the oldest output
+        record.push(&"n".repeat(2_000)); // the newest
+
+        let text = record.into_string();
+        assert_eq!(text.chars().count(), MAX_OUTPUT_CHARS);
+        assert!(
+            text.ends_with(&"n".repeat(2_000)),
+            "the newest output was dropped"
+        );
+        assert_eq!(
+            text.chars().filter(|c| *c == 'o').count(),
+            MAX_OUTPUT_CHARS - 2_000,
+            "the oldest output was not the part trimmed"
+        );
     }
 
     #[tokio::test]
@@ -1138,6 +1196,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_reaches_a_tree_whose_leader_already_exited() {
+        // The leader exits immediately (`&` with no `wait`), but the
+        // backgrounded grandchild inherits the pipes, so the task stays
+        // `Running` with the leader already reaped — the exact state in which
+        // `Child::id()` returns `None`. Reading the pgid at kill time would
+        // silently signal nothing and leave the grandchild alive; it is
+        // captured at spawn instead. Without that, the record would claim
+        // "Cancelled by the user" while the orphan kept running.
+        let (manager, tmp) = temp_manager("cancel_leader_exited");
+        // A previous failed run leaves this marker's orphan behind — the cancel
+        // this test asserts on is exactly what would have removed it. Clear it
+        // first, so a rerun measures this run's task and not the last one's.
+        for line in matching_sleeps("sleep 372") {
+            if let Some(pid) = line.split_whitespace().next() {
+                let _ = std::process::Command::new("kill")
+                    .args(["-KILL", pid])
+                    .status();
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        // A marker unique to this test: parallel tests match their own.
+        let id = manager
+            .start(
+                "sleep 372 &".to_string(),
+                tmp.path(),
+                "sess-1".to_string(),
+                None,
+                cancel.clone(),
+            )
+            .await
+            .unwrap();
+
+        // Do not race the spawn: wait until the grandchild is really there.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matching_sleeps("sleep 372").is_empty() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !matching_sleeps("sleep 372").is_empty(),
+            "the task never started"
+        );
+
+        // The shell is gone, yet the task is still running: only the pipes the
+        // grandchild holds keep it alive. Asserting this pins the scenario —
+        // without it the test would pass on the leader-alive path too.
+        assert_eq!(
+            manager.record(&id).await.unwrap().unwrap().status,
+            BackgroundTaskStatus::Running,
+            "the leader had not exited, so the leader-reaped path was not exercised"
+        );
+
+        cancel.store(true, Ordering::Relaxed);
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            manager.wait(
+                Some(&id),
+                "sess-1",
+                Duration::from_secs(10),
+                &AtomicBool::new(false),
+            ),
+        )
+        .await
+        .expect("cancelling must end the task")
+        .unwrap();
+        assert_eq!(outcome, WaitOutcome::Finished);
+
+        let record = manager.record(&id).await.unwrap().unwrap();
+        assert_eq!(record.status, BackgroundTaskStatus::Error);
+
+        let survivors = wait_for_no_matching_sleeps("sleep 372").await;
+        assert!(
+            survivors.is_empty(),
+            "the orphaned grandchild outlived the cancellation: {survivors:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn wait_rejects_an_unknown_task_id() {
         let (manager, _tmp) = temp_manager("wait_unknown");
         let error = manager
@@ -1349,7 +1485,7 @@ mod tests {
     async fn run_writes_full_output_to_log_file_and_truncates_db_record() {
         let (manager, tmp) = temp_manager("run_writes_log_file");
         // ~66k chars: more than MAX_OUTPUT_CHARS, so the DB record keeps the
-        // first 50k while the log file must hold everything.
+        // last 50k while the log file must hold everything.
         manager
             .run(
                 "awk 'BEGIN { for (i = 0; i < 6000; i++) print \"0123456789\" }'".to_string(),
@@ -1381,7 +1517,7 @@ mod tests {
         assert!(log_path.ends_with(".log"), "log path: {log_path}");
         let full = tokio::fs::read_to_string(&log_path).await.unwrap();
         assert_eq!(full.chars().count(), 6000 * 11); // "0123456789\n" per line
-        assert!(full.starts_with(&record.output));
+        assert!(full.ends_with(&record.output));
     }
 
     #[tokio::test]

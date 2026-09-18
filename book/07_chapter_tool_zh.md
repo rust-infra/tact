@@ -208,7 +208,8 @@ Hook → Permission → bash 工具 → Sandbox（可选）→ bwrap → sh -c �
 启用时：工作区以读写方式挂载到 `/workspace`（**不**暴露宿主路径），`/usr`、
 `/bin`、`/lib`、`/lib64`、`/etc` 与固定的工具链白名单（`~/.rustup`、
 `~/.cargo`、`~/.config/git`、`~/.npm`）以只读挂载，命令拥有独立的 pid namespace
-与 procfs，网络被禁用。这造成路径空间分裂：shell 命令看到 `/workspace/...`，
+与 procfs。网络命名空间与宿主**共享**（宿主 loopback 上的代理也可达）：沙箱约束的是
+文件系统，不是连通性。这造成路径空间分裂：shell 命令看到 `/workspace/...`，
 而所有进程内工具仍报告宿主绝对路径；因此 `bash` 的工具描述会在启动时按**实际生效**
 的语义重写。
 

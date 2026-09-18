@@ -32,6 +32,27 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-18 — A cancel reaches a tree whose leader already exited, and the record keeps the end of the stream
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/background.rs` (`terminate_tree`, the spawn in `run_background_process`, `OutputAccumulator`, `output_tail`); `crates/tact/src/tool/subagent.rs` (the child's toolset); [Ch 13](./13_chapter_background.md) §1; [Ch 07](./07_chapter_tool.md) §7.1; [Ch 27](./27_chapter_sandbox.md) §3 |
+
+**Symptom / motivation:** Three findings from the review that preceded the merge, all measured rather than inferred.
+
+1. *The cancel missed a leaderless tree.* `terminate_tree` read `child.id()` **at kill time**, but tokio's `Child::id()` returns `None` once the child has been polled to completion — and `sh -c 'server &'` produces exactly that state: the shell exits and is reaped while the backgrounded grandchild keeps the stdout/stderr pipes open, so the run loop stays on `closed_pipes < 2` with `exit_status = Some(...)`. Cancelling there signalled nothing, recorded `Error: Cancelled by the user`, and left the orphan running — the same "the record lies about what it did" failure that the removal of the 120-second timeout was meant to end (2026-09-16 entry). Measured locally: the leader was gone, the orphan's `ppid` was 1 and its `pgid` was still the dead leader's pid, and `kill(-pgid)` *did* reach it — so the group was signalable; only the id lookup was late. The existing test used `'sleep 371 & wait'`, whose `wait` keeps the leader alive and therefore never entered the state.
+2. *The recorded output was neither the head nor the tail.* `OutputAccumulator` kept the **first** `MAX_OUTPUT_CHARS` (50k) and dropped everything after, so `output_tail` — named and documented as "the tail of its output", and what every model-facing read (`check_background`, `wait_background`, `background_run(wait_ms)`) reports — returned characters ~46k–50k of a longer stream while printing "truncated to the last 4000 chars". A build or test log's useful end was never in context. The existing test injected 12k chars, under the cap, so it never truncated.
+3. *A subagent's `bash` was sandboxed but described as unsandboxed.* The child inherits the parent's `ToolContext` (so `ctx.sandbox` is `Some` and its shell really does run under bubblewrap), but only `tact-ui`'s two entry points applied `SANDBOXED_BASH_DESCRIPTION`; `spawn_subagent` built its router without it. Under a worktree this is worse: the child's system prompt names a host path that its own `/workspace` shell cannot see.
+
+**Decision:** (1) Capture the process-group id **at spawn**, never at kill time, and pass it into `terminate_tree` — the order `tool::bash` already used. A process group outlives its leader as long as it has a member, so the captured id still signals the survivors. (2) Make `OutputAccumulator` keep the **last** `MAX_OUTPUT_CHARS`, trimming with an 8,192-char slack so a chatty command pays the `memmove` rarely, so that `output_tail` is what its name says. (3) Apply the sandboxed bash description in `spawn_subagent` whenever `ctx.sandbox.is_some()`.
+
+**Behavior after:** Cancelling a `background_run` task kills the whole tree even when its shell leader has already exited, so the record's `Error: Cancelled by the user` is true. A task that printed more than 50k chars records its **last** 50k, and `check_background` / `wait_background` show the real end of the log; the full stream is still in `<workdir>/.tact/background/<id>.log`, which is now the only place the earlier part survives. A subagent under `tools.sandbox = true` sees the sandboxed `bash` description, so it is told about `/workspace` rather than a host path. Docs corrected in the same pass: Ch 07 §7.1 and Ch 10 §1 said the sandbox "disables the network" / "cannot reach the network", both untrue since `--share-net` (2026-09-16 entry); `config.example.toml` claimed `cargo fetch` / `npm install` keep working (the toolchain homes are read-only) and that the sandbox cannot read credentials (the read-only `~/.cargo` bind *is* readable), and its subagent `reasoning_effort` comment described a third fallback that does not exist. Deliberately not fixed, and still open: `sleep`'s duration is unreachable on the production path (`ArgumentSummaryPolicy::Json` never yields a bare number, so the title can never format `💤 Sleep · 1m 30s`), and a popup body is clipped rather than wrapped at the popup width.
+
+**Pointers:** `terminate_tree` and the `process_group_id` capture in `crates/tact/src/background.rs`; `OutputAccumulator` + `output_tail`; `crates/tact/src/tool/subagent.rs` (`subagent_tools`); tests `cancelling_reaches_a_tree_whose_leader_already_exited` (verified to fail against the kill-time lookup, with `['sleep 372']` surviving), `the_output_buffer_keeps_the_newest_characters`, and `run_writes_full_output_to_log_file_and_truncates_db_record` (now `ends_with`).
+
+---
+
 ## 1. 2026-09-17 — A card's label comes from the tool's presentation, never from the arm that draws it
 
 | Field | Value |
