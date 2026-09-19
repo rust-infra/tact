@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-19 — 桌面端 Diff 面板展示工作区真实差异，而不是只展示工具摘要
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/pane.rs`（`DiffPane`、`git_diff`、`diff_lines`、`diff_body`）；`crates/tact-gui/src/shell.rs`（`TactApp::diffs`、`adopt`、`apply_agent_update`）；`crates/agent_tui_kit/src/render/popups/diff_popup.rs`（同样的懒加载 git diff 策略） |
+
+**症状 / 动机：** GPUI 的 Diff 面板原先只列出变更路径和工具结果里的 detail 字符串，但 `write_file` / `edit_file` 的 detail 是完整新文件内容，`apply_patch` 只有摘要。面板因此无法展示真正的增删行，也没有可用的行号槽。
+
+**决策：** 不改协议，直接在会话工作区读取 `git diff --no-color -- <path>`，与 TUI 的懒加载 diff 弹窗保持一致。每个路径在会话存续期间或下一次记录变更之前只缓存一次结果；clean、untracked 或不在仓库中的路径回退到记录下来的 detail。
+
+**改后行为：** Diff 面板按主题色渲染新增、删除、上下文和 hunk 标记行，并使用区分新旧文件侧的行号。缓存避免每帧重复启动进程；切换会话或追加变更时使其失效，从而拾取外部修改。
+
+**指针：** `crates/tact-gui/src/pane.rs`（`DiffPane`、`git_diff`、`diff_lines`、`DiffNumbering`、`diff_body`）；`crates/tact-gui/src/shell.rs`（`TactApp::diffs`、`adopt`、`apply_agent_update`）；测试 `diff_lines_drop_the_preamble_and_start_at_the_first_hunk`、`diff_numbering_uses_the_old_side_for_removed_lines`、`git_diff_reads_the_working_tree_change_for_a_tracked_path`。
+
+---
+
 ## 1. 2026-09-18 — 取消能打到"leader 已退出的进程树"，且记录保留输出流的结尾
 
 | 字段 | 值 |

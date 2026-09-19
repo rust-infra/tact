@@ -152,6 +152,8 @@ pub struct TactApp {
     work_pane_open: bool,
     work_pane: WorkPane,
     files: FilesPane,
+    /// Lazily loaded `git diff` bodies for the Diff pane.
+    diffs: pane::DiffPane,
     /// Transcript rows and the live-row bookkeeping behind them.
     conversation: Conversation,
     /// Session state the panes, composer, and status bar read.
@@ -347,6 +349,7 @@ impl TactApp {
             work_pane_open: true,
             work_pane: WorkPane::default(),
             files: FilesPane::default(),
+            diffs: pane::DiffPane::new(),
             conversation: Conversation::default(),
             state: SessionState {
                 workdir,
@@ -606,6 +609,7 @@ impl TactApp {
         self.session = Some(handle);
         self._pump = Some(Self::spawn_pump(streams, cx));
         self.conversation = Conversation::default();
+        self.diffs.invalidate();
         self.state = SessionState {
             workdir: Some(workdir.clone()),
             branch: git_branch(&workdir),
@@ -1040,7 +1044,13 @@ impl TactApp {
                 | tact_protocol::AgentUpdate::TaskCancelled
                 | tact_protocol::AgentUpdate::Error(_)
         );
+        let before = self.state.diff.len();
         let change = self.conversation.apply(update, &mut self.state);
+        // A newly recorded file change moves the working tree on from whatever
+        // the Diff pane cached, so its bodies are re-read on the next frame.
+        if self.state.diff.len() != before {
+            self.diffs.invalidate();
+        }
         self.record_change(change, cx);
         if ends_turn {
             self.flush_queue(cx);
@@ -1210,8 +1220,13 @@ impl Render for TactApp {
         ));
 
         if work_pane_in_flow {
-            workspace_row =
-                workspace_row.child(work_pane(self.work_pane, &self.state, &self.files, cx));
+            workspace_row = workspace_row.child(work_pane(
+                self.work_pane,
+                &self.state,
+                &self.files,
+                &mut self.diffs,
+                cx,
+            ));
         }
 
         let mut workspace = div().relative().flex_1().min_h_0().child(workspace_row);
@@ -1229,6 +1244,7 @@ impl Render for TactApp {
                 self.work_pane,
                 &self.state,
                 &self.files,
+                &mut self.diffs,
                 cx,
             ));
         }
@@ -3019,6 +3035,7 @@ fn work_pane(
     selected: WorkPane,
     state: &SessionState,
     files: &FilesPane,
+    diffs: &mut pane::DiffPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     v_flex()
@@ -3028,7 +3045,7 @@ fn work_pane(
         .border_l_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().popover)
-        .child(pane::view(selected, state, files, cx))
+        .child(pane::view(selected, state, files, diffs, cx))
         .id("work-pane")
         .test_support()
 }
@@ -3038,6 +3055,7 @@ fn work_pane_drawer(
     selected: WorkPane,
     state: &SessionState,
     files: &FilesPane,
+    diffs: &mut pane::DiffPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     v_flex()
@@ -3050,7 +3068,7 @@ fn work_pane_drawer(
         .border_color(cx.theme().border)
         .bg(cx.theme().popover)
         .shadow_xl()
-        .child(pane::view(selected, state, files, cx))
+        .child(pane::view(selected, state, files, diffs, cx))
         .id("work-pane")
         .test_support()
 }

@@ -6,7 +6,7 @@
 //! except through commands the shell already exposes.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -135,6 +135,106 @@ impl FilesPane {
     }
 }
 
+/// Lazily loaded unified diffs for the Diff pane.
+///
+/// The protocol reports *that* a file changed and how many lines moved, but not
+/// the diff body itself: `write_file`/`edit_file` carry the new content and
+/// `apply_patch` a summary. The TUI solves this the same way, reading
+/// `git diff` on demand; the pane caches per path so a frame never shells out
+/// twice for the same file, and working-tree edits made outside the agent show
+/// up on the next invalidation.
+#[derive(Default)]
+pub struct DiffPane {
+    cache: HashMap<String, Option<String>>,
+}
+
+impl DiffPane {
+    /// Create the cache; entries fill on first render of each path.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drop every cached diff, so the next frame re-reads the working tree.
+    ///
+    /// Called when a new change lands or the session switches, because the
+    /// file on disk has moved on from what was cached.
+    pub fn invalidate(&mut self) {
+        self.cache.clear();
+    }
+
+    /// The unified diff for `path`, read once per invalidation.
+    ///
+    /// `None` means git had nothing to show — an untracked file, a clean path,
+    /// or no repository — and the pane falls back to the recorded detail.
+    fn diff(&mut self, workdir: Option<&Path>, path: &str) -> Option<&str> {
+        if !self.cache.contains_key(path) {
+            let loaded = workdir.and_then(|workdir| git_diff(workdir, path));
+            self.cache.insert(path.to_string(), loaded);
+        }
+        self.cache.get(path).and_then(|entry| entry.as_deref())
+    }
+}
+
+/// `git diff` for one path, run in the session's workspace.
+fn git_diff(workdir: &Path, path: &str) -> Option<String> {
+    // `--no-color` keeps the output parseable; the pane colors it itself.
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["diff", "--no-color", "--"])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// One parsed line of a unified diff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffLineKind {
+    /// Context, shown uncolored.
+    Context,
+    /// An added line.
+    Added,
+    /// A removed line.
+    Removed,
+    /// A file header or hunk marker, shown muted.
+    Meta,
+}
+
+/// Split a unified diff into renderable lines, dropping the preamble.
+///
+/// Only the `@@` bodies and the added/removed lines matter visually; the
+/// `diff --git` / `index` / `---` / `+++` preamble is what the card header
+/// already states.
+fn diff_lines(text: &str) -> Vec<(DiffLineKind, String)> {
+    let mut lines = Vec::new();
+    let mut in_hunk = false;
+    for line in text.lines() {
+        if line.starts_with("@@") {
+            in_hunk = true;
+            lines.push((DiffLineKind::Meta, line.to_string()));
+        } else if !in_hunk {
+            continue;
+        } else if let Some(rest) = line.strip_prefix('+') {
+            lines.push((DiffLineKind::Added, rest.to_string()));
+        } else if let Some(rest) = line.strip_prefix('-') {
+            lines.push((DiffLineKind::Removed, rest.to_string()));
+        } else if line.starts_with('\\') {
+            // "\ No newline at end of file" annotates the previous line; it is
+            // not a line of the file and must not advance the gutter.
+            lines.push((DiffLineKind::Meta, line.to_string()));
+        } else {
+            let rest = line.strip_prefix(' ').unwrap_or(line);
+            lines.push((DiffLineKind::Context, rest.to_string()));
+        }
+    }
+    lines
+}
+
 /// One visible row of the files tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FileRow {
@@ -200,6 +300,7 @@ pub(crate) fn view(
     selected: WorkPane,
     state: &SessionState,
     files: &FilesPane,
+    diffs: &mut DiffPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     // Each tab carries the prototype's count badge where the pane has a
@@ -230,7 +331,7 @@ pub(crate) fn view(
 
     let body = match selected {
         WorkPane::Plan => plan(state, cx).into_any_element(),
-        WorkPane::Diff => diff(state, cx).into_any_element(),
+        WorkPane::Diff => diff(state, diffs, cx).into_any_element(),
         WorkPane::Tasks => tasks(state, cx).into_any_element(),
         WorkPane::Subagents => subagents(state, cx).into_any_element(),
         WorkPane::Files => files_tree(state, files, cx).into_any_element(),
@@ -540,7 +641,7 @@ fn plan_step_row(
 }
 
 /// File changes recorded from write and edit tool results.
-fn diff(state: &SessionState, cx: &App) -> impl IntoElement {
+fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &App) -> impl IntoElement {
     let total_added: u32 = state.diff.iter().filter_map(|entry| entry.added).sum();
     let total_removed: u32 = state.diff.iter().filter_map(|entry| entry.removed).sum();
     let files = state.diff.len();
@@ -575,15 +676,21 @@ fn diff(state: &SessionState, cx: &App) -> impl IntoElement {
     }
 
     let mut body = v_flex().w_full().gap_3().child(head);
+    // The cache is keyed per path, so reading the working tree happens once
+    // per file per invalidation rather than on every frame.
+    let workdir = state.workdir.clone();
     for entry in &state.diff {
-        body = body.child(diff_card(entry, cx));
+        let unified = diffs
+            .diff(workdir.as_deref(), &entry.path)
+            .map(str::to_string);
+        body = body.child(diff_card(entry, unified.as_deref(), cx));
     }
 
     body
 }
 
 /// One changed file: a monospace header with stats, then the diff body.
-fn diff_card(entry: &DiffEntry, cx: &App) -> impl IntoElement {
+fn diff_card(entry: &DiffEntry, unified: Option<&str>, cx: &App) -> impl IntoElement {
     let stats = match (entry.added, entry.removed) {
         (Some(added), Some(removed)) => h_flex()
             .flex_shrink_0()
@@ -625,15 +732,140 @@ fn diff_card(entry: &DiffEntry, cx: &App) -> impl IntoElement {
         )
         .child(stats);
 
-    card(cx, vec![
-        header.into_any_element(),
-        div()
+    // A real unified diff when git has one, so the pane shows the change
+    // itself; the recorded tool detail is the fallback for files git cannot
+    // diff (untracked, already committed, or outside a repository).
+    let body = match unified {
+        Some(unified) if !diff_lines(unified).is_empty() => {
+            diff_body(unified, cx).into_any_element()
+        }
+        _ => div()
             .w_full()
+            .px_3()
+            .py_2()
             .font_family(cx.theme().mono_font_family.clone())
             .text_xs()
+            .text_color(cx.theme().muted_foreground)
             .child(SharedString::from(entry.detail.clone()))
             .into_any_element(),
-    ])
+    };
+
+    card(cx, vec![header.into_any_element(), body])
+}
+
+/// The prototype's `.diff` block: per-line gutter, marker, and code.
+fn diff_body(unified: &str, cx: &App) -> impl IntoElement {
+    let mut rows = v_flex()
+        .w_full()
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_xs();
+    let mut number = DiffNumbering::default();
+
+    for (kind, text) in diff_lines(unified) {
+        // Hunk markers reset both sides, so removed lines use the old-file
+        // number while added and context lines use the new-file number.
+        if kind == DiffLineKind::Meta {
+            number.reset_from(&text);
+        }
+        let (fg, bg, marker) = match kind {
+            DiffLineKind::Added => (cx.theme().success, cx.theme().success.opacity(0.10), "+"),
+            DiffLineKind::Removed => (cx.theme().danger, cx.theme().danger.opacity(0.10), "-"),
+            DiffLineKind::Meta => (cx.theme().muted_foreground, cx.theme().background, ""),
+            DiffLineKind::Context => (cx.theme().foreground, cx.theme().background, " "),
+        };
+        let gutter = number
+            .gutter(kind)
+            .map(|number| number.to_string())
+            .unwrap_or_default();
+
+        rows = rows.child(
+            h_flex()
+                .w_full()
+                .bg(bg)
+                .items_start()
+                .child(
+                    div()
+                        .w(rems(2.5))
+                        .flex_shrink_0()
+                        .pr_1()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(gutter)),
+                )
+                .child(
+                    div()
+                        .w(rems(1.))
+                        .flex_shrink_0()
+                        .text_color(fg)
+                        .child(SharedString::from(marker)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .text_color(fg)
+                        .child(SharedString::from(text)),
+                ),
+        );
+    }
+
+    rows
+}
+
+/// The old- and new-file line numbers a `@@ -a,b +c,d @@` marker starts at.
+fn hunk_starts(marker: &str) -> Option<(usize, usize)> {
+    let mut parts = marker.split_whitespace();
+    if parts.next()? != "@@" {
+        return None;
+    }
+    let old = parts.next()?;
+    let new = parts.next()?;
+    Some((side_start(old)?, side_start(new)?))
+}
+
+/// Parse the start line from one side of a hunk header (`-40,2` / `+128,9`).
+fn side_start(spec: &str) -> Option<usize> {
+    let digits = spec.strip_prefix(['-', '+'])?;
+    digits.split(',').next()?.parse().ok()
+}
+
+/// Old/new line numbers while walking one hunk.
+#[derive(Default)]
+struct DiffNumbering {
+    old: usize,
+    new: usize,
+}
+
+impl DiffNumbering {
+    /// Reset both sides at a hunk marker.
+    fn reset_from(&mut self, marker: &str) {
+        if let Some((old, new)) = hunk_starts(marker) {
+            self.old = old;
+            self.new = new;
+        }
+    }
+
+    /// The gutter number for one line; removed lines keep the old-file side.
+    fn gutter(&mut self, kind: DiffLineKind) -> Option<usize> {
+        match kind {
+            DiffLineKind::Meta => None,
+            DiffLineKind::Removed => {
+                let number = self.old;
+                self.old += 1;
+                Some(number)
+            }
+            DiffLineKind::Added => {
+                let number = self.new;
+                self.new += 1;
+                Some(number)
+            }
+            DiffLineKind::Context => {
+                let number = self.new;
+                self.old += 1;
+                self.new += 1;
+                Some(number)
+            }
+        }
+    }
 }
 
 /// Persistent tasks, rendered as the prototype's Task / Status / Owner table.
@@ -1098,6 +1330,113 @@ mod tests {
         assert_eq!(
             collapsed.iter().map(|row| row.depth).collect::<Vec<_>>(),
             [0, 0]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn diff_lines_drop_the_preamble_and_start_at_the_first_hunk() {
+        let unified = "\n".to_string()
+            + "diff --git a/src/lib.rs b/src/lib.rs\n"
+            + "index 1111111..2222222 100644\n"
+            + "--- a/src/lib.rs\n"
+            + "+++ b/src/lib.rs\n"
+            + "@@ -1,2 +1,2 @@\n"
+            + " context\n"
+            + "-old\n"
+            + "+new\n"
+            + "\\ No newline at end of file\n";
+
+        let lines = diff_lines(&unified);
+
+        assert_eq!(
+            lines,
+            vec![
+                (DiffLineKind::Meta, "@@ -1,2 +1,2 @@".to_string()),
+                (DiffLineKind::Context, "context".to_string()),
+                (DiffLineKind::Removed, "old".to_string()),
+                (DiffLineKind::Added, "new".to_string()),
+                (
+                    DiffLineKind::Meta,
+                    "\\ No newline at end of file".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// Each hunk restates the line numbers it resumes at, so the gutter has to
+    /// realign rather than counting straight through the file.
+    #[test]
+    fn each_hunk_marker_restates_the_gutter_start() {
+        assert_eq!(hunk_starts("@@ -1,2 +1,2 @@"), Some((1, 1)));
+        assert_eq!(
+            hunk_starts("@@ -40,6 +128,9 @@ fn main() {"),
+            Some((40, 128))
+        );
+        assert_eq!(hunk_starts("@@ -10 +5 @@"), Some((10, 5)));
+        assert_eq!(hunk_starts("@@ not a hunk @@"), None);
+    }
+
+    /// The pane reads the working tree once per file, not once per frame.
+    #[test]
+    fn diff_bodies_are_read_once_per_invalidation() {
+        let mut diffs = DiffPane::new();
+        let no_workdir: Option<&Path> = None;
+
+        assert_eq!(diffs.diff(no_workdir, "src/lib.rs"), None);
+        // Cached as "no diff", which is what makes the second call free.
+        assert!(diffs.cache.contains_key("src/lib.rs"));
+
+        diffs.invalidate();
+        assert!(diffs.cache.is_empty());
+    }
+
+    /// Removed lines belong to the old file, so they must not advance the
+    /// new-file gutter.
+    #[test]
+    fn diff_numbering_uses_the_old_side_for_removed_lines() {
+        let mut number = DiffNumbering::default();
+        number.reset_from("@@ -40,6 +128,9 @@ fn main() {");
+
+        assert_eq!(number.gutter(DiffLineKind::Context), Some(128));
+        assert_eq!(number.gutter(DiffLineKind::Removed), Some(41));
+        assert_eq!(number.gutter(DiffLineKind::Added), Some(129));
+        assert_eq!(number.gutter(DiffLineKind::Context), Some(130));
+    }
+
+    /// A diff body is a real `git diff`, so a scratch repository has to produce
+    /// the added line the pane will color.
+    #[test]
+    fn git_diff_reads_the_working_tree_change_for_a_tracked_path() {
+        let root = scratch_dir("gitdiff");
+        let path = root.join("src/lib.rs");
+        if std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "--quiet"])
+            .status()
+            .map(|status| !status.success())
+            .unwrap_or(true)
+        {
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "."])
+            .status();
+        std::fs::write(&path, "pub fn lib() {}\npub fn extra() {}\n").unwrap();
+
+        let unified = git_diff(&root, "src/lib.rs").expect("a modified file has a diff");
+
+        assert!(unified.contains("+pub fn extra() {}"), "{unified}");
+        assert!(
+            diff_lines(&unified)
+                .iter()
+                .any(|(kind, text)| *kind == DiffLineKind::Added && text.contains("extra")),
+            "the added line reaches the renderer"
         );
 
         let _ = std::fs::remove_dir_all(root);

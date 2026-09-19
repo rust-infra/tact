@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-19 — The desktop Diff pane shows the working tree instead of only the tool's summary
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/pane.rs` (`DiffPane`, `git_diff`, `diff_lines`, `diff_body`); `crates/tact-gui/src/shell.rs` (`TactApp::diffs`, `adopt`, `apply_agent_update`); `crates/agent_tui_kit/src/render/popups/diff_popup.rs` (same lazy-git-diff strategy) |
+
+**Symptom / motivation:** The GPUI Diff pane listed each changed path and the tool result's detail string, but `write_file` / `edit_file` details carry the new file content and `apply_patch` carries only a summary. The pane therefore could not show the actual added/removed lines or a usable line-number gutter.
+
+**Decision:** Keep the protocol unchanged and read `git diff --no-color -- <path>` from the session workspace, matching the TUI's lazy diff popup. Cache one result per path for the lifetime of a session or until a new change is recorded; a clean, untracked, or non-repository path falls back to the recorded detail.
+
+**Behavior after:** The Diff pane renders added, removed, context, and hunk-marker rows with theme colors and old/new-aware line numbers. The cache prevents repeated process spawns per frame; switching sessions or appending a change invalidates it so external edits are picked up.
+
+**Pointers:** `crates/tact-gui/src/pane.rs` (`DiffPane`, `git_diff`, `diff_lines`, `DiffNumbering`, `diff_body`); `crates/tact-gui/src/shell.rs` (`TactApp::diffs`, `adopt`, `apply_agent_update`); tests `diff_lines_drop_the_preamble_and_start_at_the_first_hunk`, `diff_numbering_uses_the_old_side_for_removed_lines`, `git_diff_reads_the_working_tree_change_for_a_tracked_path`.
+
+---
+
 ## 1. 2026-09-18 — A cancel reaches a tree whose leader already exited, and the record keeps the end of the stream
 
 | Field | Value |
