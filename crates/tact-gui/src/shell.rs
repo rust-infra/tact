@@ -247,6 +247,17 @@ impl TactApp {
         self.state.branch = git_branch(&workdir);
         self.state.workdir = Some(workdir);
         self.state.background = vec!["cargo test -p tact".to_string()];
+        self.state.account = Some(tact_protocol::AccountUpdate::Balance(
+            tact_protocol::BalanceInfo {
+                is_available: true,
+                balance_infos: vec![tact_protocol::BalanceEntry {
+                    currency: "USD".to_string(),
+                    total_balance: 18.42,
+                    granted_balance: 0.0,
+                    topped_up_balance: 18.42,
+                }],
+            },
+        ));
         self.conversation.push_user(
             "Continue with Direction A. Build a realistic 1440x900 prototype with light/dark themes, \n\
              transcript, work panes, permission state, and composer."
@@ -3137,6 +3148,12 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
         bar = bar.child(status_item(None, context, cx.theme().muted_foreground, cx));
     }
 
+    // The prototype closes the bar with the account balance; the provider only
+    // reports one for accounts that track it, so the chip is conditional.
+    if let Some(balance) = balance_label(state) {
+        bar = bar.child(status_item(None, balance, cx.theme().muted_foreground, cx));
+    }
+
     if running > 0 {
         bar = bar.child(status_item(
             None,
@@ -3154,6 +3171,23 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
     ))
     .id("status-bar")
     .test_support()
+}
+
+/// The account balance chip, when the provider reports one.
+///
+/// Providers that surface a balance send per-currency entries; the bar shows
+/// the first one, which is the currency the account actually bills in.
+fn balance_label(state: &SessionState) -> Option<String> {
+    let tact_protocol::AccountUpdate::Balance(info) = state.account.as_ref()? else {
+        return None;
+    };
+    let entry = info.balance_infos.first()?;
+    let symbol = match entry.currency.as_str() {
+        "USD" => "$",
+        "CNY" => "\u{a5}",
+        other => return Some(format!("{:.2} {other}", entry.total_balance)),
+    };
+    Some(format!("{symbol}{:.2}", entry.total_balance))
 }
 
 /// One status-bar segment: an optional glyph plus text.
@@ -3427,8 +3461,8 @@ fn previous_session_index(len: usize, current: Option<usize>) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionBucket, background_rows, next_session_index, previous_session_index,
-        session_buckets, worktree_rows,
+        SessionBucket, background_rows, balance_label, next_session_index,
+        previous_session_index, session_buckets, worktree_rows,
     };
     use crate::{RecentSession, session::SessionState};
 
@@ -3467,6 +3501,42 @@ mod tests {
         let rows = background_rows(&state);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].command, "cargo test -p tact");
+    }
+
+    /// The balance chip follows the provider's reported currency.
+    #[test]
+    fn balance_uses_the_reported_currency() {
+        let state = SessionState::default();
+        assert!(balance_label(&state).is_none(), "no account update, no chip");
+
+        let with_balance = |currency: &str, total: f64| SessionState {
+            account: Some(tact_protocol::AccountUpdate::Balance(
+                tact_protocol::BalanceInfo {
+                    is_available: true,
+                    balance_infos: vec![tact_protocol::BalanceEntry {
+                        currency: currency.to_string(),
+                        total_balance: total,
+                        granted_balance: 0.0,
+                        topped_up_balance: total,
+                    }],
+                },
+            )),
+            ..SessionState::default()
+        };
+
+        assert_eq!(
+            balance_label(&with_balance("USD", 18.42)).as_deref(),
+            Some("$18.42")
+        );
+        assert_eq!(
+            balance_label(&with_balance("CNY", 100.0)).as_deref(),
+            Some("\u{a5}100.00")
+        );
+        assert_eq!(
+            balance_label(&with_balance("EUR", 5.0)).as_deref(),
+            Some("5.00 EUR"),
+            "an unknown currency keeps its code rather than guessing a symbol"
+        );
     }
 
     fn session(id: &str, age_seconds: i64, now: i64) -> RecentSession {
