@@ -689,6 +689,58 @@ fn every_work_pane_renders_its_body_and_footer(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// Every pane renders its own content, not just an empty body.
+///
+/// The blank work pane shipped once because the only assertion was that the
+/// body container existed; a pane that silently renders nothing still passed
+/// that. Each pane now names a landmark that only appears with real content,
+/// so a regression of the same kind fails here.
+#[gpui_kit::test]
+fn every_work_pane_renders_content_not_just_a_container(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("work-pane-body-plan").is_some(),
+            "the default plan pane renders"
+        );
+
+        // Tab order is Plan, Diff, Tasks, Subagent, Files.
+        for (index, body) in [
+            (0usize, "work-pane-body-plan"),
+            (1, "work-pane-body-diff"),
+            (3, "work-pane-body-subagent"),
+            (4, "work-pane-body-files"),
+        ] {
+            window.within("work-pane-tabs").click(index, cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find(body).is_some(),
+                "pane {body} renders its body"
+            );
+        }
+
+        // The tasks pane is the one with a card whose content is more than the
+        // pane container, so it is asserted separately.
+        window.within("work-pane-tabs").click(2usize, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("work-pane-body-tasks").is_some(),
+            "the tasks pane renders its body"
+        );
+        assert!(
+            window.try_find("work-pane-task-table").is_some(),
+            "the tasks pane renders the task table, not an empty card"
+        );
+    })
+    .unwrap();
+}
+
 /// The status bar exposes the prototype's segments rather than a single string.
 #[gpui_kit::test]
 fn the_status_bar_renders_its_segmented_chips(cx: &mut TestAppContext) {

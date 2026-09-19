@@ -347,6 +347,23 @@ fn card(cx: &App, children: Vec<AnyElement>) -> impl IntoElement {
         .children(children)
 }
 
+/// A card that also carries a test/scroll anchor.
+///
+/// Views that need to be addressable by name use this rather than wrapping
+/// [`card`], so the surface keeps one definition.
+fn card_with_id(id: &'static str, cx: &App, children: Vec<AnyElement>) -> impl IntoElement {
+    v_flex()
+        .id(id)
+        .test_support()
+        .w_full()
+        .rounded(cx.theme().radius_2xl())
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().popover)
+        .overflow_hidden()
+        .children(children)
+}
+
 /// The header strip inside a card: a label and a right-aligned note.
 fn card_head(label: &str, note: impl Into<SharedString>, cx: &App) -> impl IntoElement {
     h_flex()
@@ -657,7 +674,7 @@ fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
         .w_full()
         .gap_3()
         .child(head)
-        .child(card(cx, rows));
+        .child(card_with_id("work-pane-task-table", cx, rows));
 
     if !blocked.is_empty() {
         let mut items = vec![card_head(
@@ -705,7 +722,7 @@ fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
                     .into_any_element(),
             );
         }
-        body = body.child(card(cx, items));
+        body = body.child(card_with_id("work-pane-blocked-by", cx, items));
     }
 
     body
