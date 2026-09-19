@@ -92,7 +92,7 @@ Wave 按序执行；同一 wave 内工具并发运行。
 | `read_file` | `input.path` | read |
 | `write_file`, `edit_file` | `input.path` | write |
 | `task_create`, `task_update`, `task_get`, `task_list` | `__tact_tasks__` | write（彼此串行） |
-| `sleep` | — | independent |
+| `sleep`、`wait_background`、`check_background` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
 
 路径规范化为绝对路径并 rooted 于 `work_dir`。两路径重叠当且仅当相等或一方为另一方祖先，因此对 `src/foo.rs` 的 write 与作用域为 `src/` 的 search 冲突。

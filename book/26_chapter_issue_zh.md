@@ -32,6 +32,182 @@
 ---
 
 
+## 1. 2026-09-18 — 取消能打到"leader 已退出的进程树"，且记录保留输出流的结尾
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/background.rs`（`terminate_tree`、`run_background_process` 的 spawn、`OutputAccumulator`、`output_tail`）；`crates/tact/src/tool/subagent.rs`（子进程的 toolset）；[Ch 13](./13_chapter_background_zh.md) §1；[Ch 07](./07_chapter_tool_zh.md) §7.1；[Ch 27](./27_chapter_sandbox_zh.md) §3 |
+
+**症状 / 动机：** 合并前 review 的三项发现，都是实测而非推断。
+
+1. *取消打不到"没有 leader 的树"*。`terminate_tree` 在**杀的时刻**读 `child.id()`，但 tokio 的 `Child::id()` 在子进程被 poll 到完成后返回 `None`——而 `sh -c 'server &'` 恰好就是这个状态：shell 退出并被收割，后台化的孙进程仍持有 stdout/stderr 管道，于是运行循环停在 `closed_pipes < 2` 而 `exit_status = Some(...)`。此时取消不会发出任何信号，却把记录写成 `Error: Cancelled by the user`，孤儿继续运行——正是当年移除 120 秒超时要消灭的那个"记录谎报自己做了什么"的失败（2026-09-16 条目）。本机实测：leader 已消失，孤儿的 `ppid` 为 1、`pgid` 仍是已死 leader 的 pid，而 `kill(-pgid)` **确实能打到它**——进程组是可信号的，只是 id 取晚了。既有测试用的是 `'sleep 371 & wait'`，其中的 `wait` 让 leader 存活，因此从未进入该状态。
+2. *记录里的输出既不是开头也不是结尾*。`OutputAccumulator` 保留**前** `MAX_OUTPUT_CHARS`（50k）并丢弃其后全部内容，于是 `output_tail`——其命名与文档都声称是"输出的尾部"，也是所有面向模型的读取（`check_background`、`wait_background`、`background_run(wait_ms)`）所报告的内容——返回的是更长输出流中约第 46k–50k 个字符，却打印着"truncated to the last 4000 chars"。构建 / 测试日志真正有用的结尾从未进入上下文。既有测试只注入 12k 字符（未达上限），因此从未触发截断。
+3. *子 agent 的 `bash` 在沙箱里跑，描述却说是非沙箱*。子 agent 继承父进程的 `ToolContext`（因此 `ctx.sandbox` 是 `Some`，它的 shell 确实运行在 bubblewrap 下），但只有 `tact-ui` 的两个入口应用了 `SANDBOXED_BASH_DESCRIPTION`；`spawn_subagent` 构造 router 时没有应用。在 worktree 场景下更糟：子 agent 的 system prompt 给出一个宿主路径，而它自己的 `/workspace` shell 看不到该路径。
+
+**决策：**（1）进程组 id 在 **spawn 时**捕获、绝不在 kill 时才取，并传入 `terminate_tree`——与 `tool::bash` 早已采用的顺序一致。只要进程组还有成员，它就比 leader 活得更久，因此捕获的 id 仍能命中幸存者。（2）让 `OutputAccumulator` 保留**末** `MAX_OUTPUT_CHARS`，并以 8,192 字符的 slack 触发裁剪，使话痨命令很少付出那次 `memmove` 代价，从而让 `output_tail` 名副其实。（3）当 `ctx.sandbox.is_some()` 时，在 `spawn_subagent` 中应用沙箱版 bash 描述。
+
+**改后行为：** 取消 `background_run` 任务会杀掉整棵树，即使它的 shell leader 已经退出，因此记录里的 `Error: Cancelled by the user` 是真的。输出超过 50k 字符的任务记录其**最后** 50k，`check_background` / `wait_background` 显示日志真正的结尾；完整输出流仍在 `<workdir>/.tact/background/<id>.log`，而它现在是更早那部分唯一留存的地方。处于 `tools.sandbox = true` 的子 agent 会看到沙箱版 `bash` 描述，因此被告知的是 `/workspace` 而不是宿主路径。同一轮修正的文档：Ch 07 §7.1 与 Ch 10 §1 曾称沙箱"禁用网络"/"连不上网络"，自 `--share-net`（2026-09-16 条目）起都不成立；`config.example.toml` 曾称 `cargo fetch` / `npm install` 仍可用（工具链目录是只读的）以及沙箱读不到凭据（只读挂载的 `~/.cargo` **是可读的**），其 subagent `reasoning_effort` 注释还描述了一个并不存在的第三层回退。刻意未修、仍然开放的两项：`sleep` 的时长在生产路径不可达（`ArgumentSummaryPolicy::Json` 永远不会产出裸数字，因此标题无法格式化成 `💤 Sleep · 1m 30s`），以及弹窗正文按宽度截断而非折行。
+
+**指针：** `crates/tact/src/background.rs` 的 `terminate_tree` 与 `process_group_id` 捕获；`OutputAccumulator` + `output_tail`；`crates/tact/src/tool/subagent.rs`（`subagent_tools`）；测试 `cancelling_reaches_a_tree_whose_leader_already_exited`（已验证：对"kill 时刻取值"的写法会失败，幸存者为 `['sleep 372']`）、`the_output_buffer_keeps_the_newest_characters`、以及 `run_writes_full_output_to_log_file_and_truncates_db_record`（断言改为 `ends_with`）。
+
+---
+
+## 1. 2026-09-17 — 卡片标题的标签来自工具自己的 presentation，不再由绘制它的分支硬编码
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`title_text` 的 `Sleep` 分支、`display_name_from_presentation`、`is_written_argument`）、`crates/tact/src/tool/metadata.rs`（`ArgumentSummaryPolicy::Id`）、`crates/tact/src/tool/background_run.rs`（`CHECK_BACKGROUND_METADATA`、`WAIT_BACKGROUND_METADATA`）、`crates/tact/src/agent/tool_dispatch.rs`（`tool_arg_full`）；[第 13 章](./13_chapter_background_zh.md) §1；[第 23 章](./23_chapter_tui_zh.md) §6.16 |
+
+**现象 / 动机：** `wait_background` 复用了 `ToolVisualKind::Sleep`，而那个分支把标签写死成 `⏳ Sleep · {}`，`{}` 里是序列化后的输入。一行里两个 bug。标签完全无视工具自己的 `display_name`（`⏳ Wait Background` 成了构造上就不可能被读到的死字段），同一个硬编码还意味着 `sleep` **从来没有**画出过它元数据里声明的 `💤 Sleep`。参数同样错位：两个后台工具都用 `ArgumentSummaryPolicy::Json`，于是标题里带的是 `{"task_id":"abc123"}` 这种 dump——可选的 id 没传时就是一个光秃秃的 `{}`——而这里本该是给人读的 id。
+
+**决策：** visual kind 只决定标题的**形状**，绝不决定**名字**。`Sleep` 分支的标签改为取 `display_name_from_presentation(&self.presentation, &self.tool_name)`（为空或等于工具名时回退 `tool_display_name`），这样一个共享 kind 可以服务多个工具——`Command` 与 `Task` 本来就是这个规则。时长 mini-language 保留；序列化参数不进标题，判据与弹窗一致（`is_written_argument`，即 `argument_line` / `popup_detail` 用的那个守卫）。参数本身在源头修：新增 `ArgumentSummaryPolicy::Id { field }`，只暴露一个字段，且当调用省略了这个可选 id 时返回 `""`——刻意不回退到 JSON dump，因此没传 id 的调用画出来就是光标签。`check_background` 与 `wait_background` 由 `Json` 改为 `Id { field: "task_id" }`，唯一消费点是 `tool_dispatch::tool_arg_full`。
+
+**改后行为：** `⏳ Wait Background`、`⏳ Wait Background · abc123`、`💤 Sleep · 1m 30s`；`check_background` 读作 `⚙️ Background Check  abc123`（`Generic` 分支两空格拼接的形态不变）。其余元数据为 `Json` 的工具——`team_*`、`worktree_*`、`save_memory`、`load_skill`、`compact`，以及所有走 `tool_arg_full` 的 `_ => Json` 回退的 MCP / 插件工具——标题里仍然会打出 dump：那是逐工具的决定，还没动，不能一次全局改掉（`_` 分支正是 MCP 工具依赖的）。之后若需要，`subagent_check` / `subagent_wait` 是下一批 `Id { field: "child_id" }` 的候选。顺手记一个 rustfmt 坑：新变体上用的是 `//` 行注释而不是 `///`——在枚举变体上加文档注释会把整个 enum 展开成每变体多行。
+
+**指针：** `crates/agent_tui_kit/src/widgets/tool_widget.rs` 的 `title_text` / `display_name_from_presentation` / `is_written_argument`；测试 `wait_background_title_reads_its_own_label`、`check_background_title_shows_the_task_id`、`sleep_title_keeps_the_duration_with_a_presentation`（5 条既有的 `sleep` 标题断言由 `⏳` 改为 `💤`）；`crates/tact/src/agent/tool_dispatch.rs` 的 `id_policy_reads_the_field_and_tolerates_absence`、`background_tools_title_shows_the_id_not_the_input_dump`。
+
+---
+
+## 1. 2026-09-16 — 每个工具的弹窗都以它发起的那次调用开头
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`with_command_detail`、`popup_detail`、`argument_line`、`is_written_argument`、`command_detail`）、`crates/agent_tui_kit/src/components/tool.rs`（`on_background_task_finished`）、`crates/agent_tui_kit/src/render/popups/subagent_popup.rs`（既有的 `Prompt:` 前置）；[第 13 章](./13_chapter_background_zh.md) §1；[第 23 章](./23_chapter_tui_zh.md) §6.16 |
+
+**症状 / 动机：** 弹窗是读取已折叠块内容的唯一途径，所以它既要显示结果、也要显示调用本身。已完成的 `bash` 块与**运行中**的 `background_run` 卡片都以 `$ <命令>` 开头；有三处比用户刚刚在读的那张卡片显示得更少。(1) **收尾后**的 `background_run` 卡片：`BackgroundTaskFinished` 不携带 `StepResult`，该路径只用进程输出拼 detail。(2) **失败**的命令（`bash`、`worktree_run`、`web_search`、`background_run`）：`from_step_result` 对失败刻意不加前缀，好让报错占住卡片前几行预览——而失败弹窗的标题是通用的错误卡片标题，于是失败命令的参数在弹窗里彻底消失。(3) **Task** 类工具（`task_create/get/list/update`）与 `ask_user`：弹窗正文只有结果，任务标题、以及用户正在回答的那个问题，都不在弹窗里。
+
+**决策：** 一条规则，按视觉种类分派，统一在 `ToolWidget::popup_detail` 里拼装（`detail_full` 的唯一产出点，而只有弹窗会读它）：弹窗以调用开头。`Command` → 所有阶段都以 `$ <命令>` 开头（keep-live 收尾路径由 `with_command_detail` 提供，失败时它原样存下 detail，再由 `argument_line` 补上该行，因此卡片仍然报错优先）；`FileRead`/`FileWrite`/`FileEdit` → 不再额外加，正文**就是**这次调用（文件、写入内容、差异），路径本来就在弹窗标题里；`Subagent` → 这里也不加，它自己的弹窗会用同一个 `arg_full` 前置 `Prompt:`；`Task`/`Generic`/`Sleep` → 加参数行，**除非它是工具的序列化输入对象**（`is_written_argument`）——JSON dump 是一条超长转义行，与日志参数行重复，还会把弹窗存在的理由（结果）往下挤。`detail_preview` 不变；折叠块的提示现在按 `detail_full` 计数，所以提示与弹窗仍然打印同一个数字。
+
+**改后行为：** 已完成或失败的 `background_run` 弹窗、失败的 `bash`/`worktree_run`/`web_search` 弹窗、折叠后的 `task_*` 弹窗、以及 `ask_user` 弹窗，都以那次调用开头（`$ <命令>`／任务标题／问题），而所有卡片形态不变——失败命令的卡片依旧报错优先。JSON 入参的工具（`save_memory`、`load_skill`、`wait_background`、所有 MCP/插件工具）刻意保持原样：它们的参数是 dump，不是给人读的文字。两条需要留档的审查更正：第一轮审查把 `spawn_subagent` 报成"prompt 不在弹窗里"，这是错的——双击子代理块打开的是专用的 subagent 弹窗（永远不会走 diff 弹窗），而那个弹窗从写下起就会前置 `Prompt:\n<arg_full>`，由 `live_layout_prepends_prompt_to_transcript` / `completed_layout_prepends_prompt_to_summary` 钉住。刻意留待决定、已上报的缺口：`apply_patch` 把 patch 预览当文件路径去 `git diff`（所以它的弹窗只显示执行结果，patch 全文看不到）；`read_file` 的 `offset`/`limit` 任何地方都不显示；命令类弹窗标题仍硬编码 `bash (…)`，其他类型则用原始工具名（`save_memory output`）；弹窗正文行仍是横向截断而非换行。
+
+**指向：** `crates/agent_tui_kit/src/widgets/tool_widget.rs` 的 `popup_detail` / `argument_line` / `is_written_argument` / `with_command_detail` / `command_detail`；`crates/agent_tui_kit/src/components/tool.rs` 的 `on_background_task_finished`；测试 `failed_command_card_stays_error_first_but_its_popup_opens_with_the_command`、`failed_command_detail_is_not_double_prefixed`、`failed_non_command_keeps_its_raw_detail_in_the_popup`、`task_popup_opens_with_the_task_title`、`ask_user_popup_opens_with_the_question`、`json_argument_is_not_repeated_in_the_popup`、`kinds_whose_body_is_the_call_do_not_repeat_it`、`failed_task_popup_shows_the_title_before_the_error`、`background_run_popup_opens_with_the_command_like_bash`、`failed_command_popup_opens_with_the_command`、`collapsed_task_popup_opens_with_the_task_title`、`ask_user_popup_opens_with_the_question`、`json_input_tool_popup_does_not_repeat_its_argument`。
+
+---
+
+## 1. 2026-09-16 — 后台任务不再有时间上限，取消则终止整棵进程树
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/background.rs`（删除 `COMMAND_TIMEOUT`，新增 `configure_process_group` / `terminate_tree`，`start`/`run` 接收会话取消标志）；`crates/tact/src/tool/background_run.rs`（`MAX_RUN_WAIT_MS`、提示词）；[第 13 章](./13_chapter_background_zh.md) §1/§3/§8；`docs/agent_guidelines.md` |
+
+**症状 / 动机：** `background_run` 自称是慢命令（构建、测试套件、安装）的去处，但每个任务在 **120 秒**后被 `SIGKILL`，记录被改写成 `Error: Timeout (120s)`。同一次会话实测：`cargo test --workspace`（约 110 秒）被杀了两次，而两次模型都把这个 `Error` 读成"测试失败"。这个 kill 还谎报了它做了什么：它只对 `sh -c` 领头进程发信号，于是 `sleep` 孙进程继续跑（实测：在"超时" 35 秒后仍活着），而记录却说任务已结束。另外，`background_run(wait_ms: 300000)` 能把一整个回合卡住最多五分钟——一个**启动**原语却在**慢**命令上阻塞。
+
+**决策：** 后台任务**没有时间上限**：它要么在命令退出时结束，要么在会话取消标志被置位时结束。这使得取消成为唯一的提前终止途径，因此它必须变成真正的 kill：任务现在 spawn 进自己的进程组（`configure_process_group`，与 `bash` 工具同一手法），取消时向取负的 pid 发 `SIGKILL`，把 `cargo`/`npm` 等孙进程一起带走。标志复用已有的进度 tick（约 50 ms）检查，没有引入新的定时器。`background_run(wait_ms:)` 明确降级为**短任务**捷径，上限 **10 秒**；`wait_background` 保留 5 分钟上限，因为阻塞就是它的全部职责。等待到期只回报"仍在运行"，绝不碰任务本身。
+
+**改后行为：** 用 `background_run` 启动的命令想跑多久就跑多久——30 分钟的构建也没问题。取消一个回合（Esc）会终止该会话所有运行中的任务，状态变为 `Error`、内容为 `Cancelled by the user`；进程树里不会留下任何东西。`background_run` 即使传了很大的 `wait_ms`，也会在 10 秒后带着任务 id 和"仍在运行"一行返回，而不是卡住回合。`wait_background` 行为不变：任务一结束就返回，否则如实说仍在运行。
+
+**指向：** `crates/tact/src/background.rs`（`run_background_process` 循环、`terminate_tree`、`configure_process_group`）；`crates/tact/src/tool/background_run.rs`（`MAX_RUN_WAIT_MS`、`capped_run_wait_ms`）；测试 `background::tests::cancelling_terminates_the_task_and_its_children`、`tool::background_run::tests::the_run_wait_is_capped_to_a_short_task`；[第 13 章](./13_chapter_background_zh.md) §1/§3/§8。
+
+---
+
+## 1. 2026-09-16 — bash 沙箱重新共享宿主网络
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/sandbox/bwrap.rs`（`--share-net`、`RESOLVER_PATHS`、`PROXY_ENV_VARS`、`bwrap_args_with(work_dir, exists, env)`）；`crates/tact/src/tool/bash.rs`（`SANDBOXED_BASH_DESCRIPTION`）；spec `docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md` §8/§17/§Tests 7；[第 27 章](./27_chapter_sandbox_zh.md) §3 |
+
+**症状 / 动机：** 打开 `[tools] sandbox = true` 后 shell 是个"网络死人"：没有 DNS、没有默认路由，宿主的代理 `127.0.0.1:7890` 甚至都不可达——连接 0 ms 就被拒，看起来像"代理坏了"而不是"没有网络"。`curl` / `git fetch` / `npm install` / `cargo fetch` 全都跑不通。文档里给的绕行方案（`background_run`，未沙箱化的宿主 shell）对 subagent 不成立——它们的受限工具集里没有 `background_run`——所以 subagent 什么都抓不到，本次实测三个 research lane 全部报 `curl` exit 6/7。用户要求把网络还给沙箱，并选择同时透传代理变量。
+
+**决策：** 共享宿主网络命名空间（`--share-net`，bwrap 默认行为的显式写法）；并且，因为只共享命名空间还不够，额外把解析器目录只读挂载进来。`--clearenv` 白名单只开一个例外：宿主设置了 `http_proxy` / `https_proxy` / `all_proxy` / `no_proxy`（两种大小写拼写）时原样透传，因为宿主 loopback 上的代理在沙箱内**确实**可达。这个能力依旧**不可配置**：不加开关，与策略其余部分保持一致。v1 当初刻意禁网，此决定现被推翻——沙箱约束的是文件系统，不是连通性。
+
+**改后行为：** 沙箱内域名解析可用，出网行为与宿主完全一致——包括宿主自身直连不了的目标，这正是本开发机的现状（`example.com` 通；`api.binance.com`、`api.coinbase.com`、`1.1.1.1:443` 全部超时；走代理则一切正常）。文件系统边界不变：工作区仍是唯一可写的宿主目录，宿主 home 仍未挂载，白名单之外的变量仍进不来。`--unshare-pid`、`--die-with-parent`、工作区守卫与被禁止的 `--new-session` 都未改动，`bash` 的工具描述也不再声称网络被禁用。
+
+**两个坑，均为实测：** 只共享命名空间**不足以**解析 DNS——宿主的 `/etc/resolv.conf` 是指向 `/run/systemd/resolve` 的符号链接，而 `/run` 不在挂载列表里，于是链接悬空，每次解析都报 "Temporary failure in name resolution"；而直接绑定 `/etc/resolv.conf` 会被 bwrap 拒绝（`Can't mount on symlink destination /etc/resolv.conf`），因此必须挂目录。回归测试因此刻意不碰外网：它连接由测试自己在宿主 loopback 上开的监听端口，只有命名空间共享时才连得通。
+
+**指向：** `crates/tact/src/sandbox/bwrap.rs`（`RESOLVER_PATHS`、`PROXY_ENV_VARS`、flag 列表、可注入的环境查询）；测试 `sandbox::bwrap::tests::shares_the_host_network_and_binds_the_resolver`、`sandbox::bwrap::tests::carries_proxy_variables_and_nothing_else`、`tool::bash::sandbox_tests::shares_the_host_network_namespace`、`tool::bash::sandbox_tests::system_files_are_readable_and_proxies_follow_the_host`；[第 27 章](./27_chapter_sandbox_zh.md) §3。
+
+---
+
+## 1. 2026-09-16 — 后台三条工具提示词与实现重新对齐，状态读取也改为有界尾部
+
+| Field | Value |
+|-------|-------|
+| **Type** | docs |
+| **Related** | `crates/tact/src/tool/background_run.rs`（三条元数据描述 + 输入字段）；`crates/tact/src/tool/sleep.rs`；`crates/tact/src/background.rs`（`check`、`OUTPUT_TAIL_CHARS`、`output_tail`）；[Ch 13](./13_chapter_background_zh.md) §1/§6 |
+
+**症状 / 动机：** 等待工具与会话作用域落地后，工具描述已与代码不符：`check_background` 仍描述成不加范围的状态查询（列表现在只列本会话，`No background tasks.` 也因此含义不明）；`wait_background` 从未写明默认 5 分钟、以及不给 id 即等本会话全部任务；`background_run` 既没说何时该优先于 `bash`，也没提一条会坑到模型的事实——它是普通宿主 shell，`bash` 描述的沙箱 `/workspace` 路径空间对它不适用。另外 `check_background <id>` 会把整条记录倒出来，其中 `output` 可达 50,000 字符（约 1.2 万 token）直接进 context，而等待路径只内联最后 4,000 字符。
+
+**决策：** 让三条描述与实际行为重新对齐，并把"有界尾部"收敛成面向模型读取的唯一实现：`OUTPUT_TAIL_CHARS` / `output_tail` 移入 `background.rs`，`check_background <id>` 与 `wait_background`、`background_run(wait_ms:)` 走同一份。列表为空时若调用方有会话，文案改为 "No background tasks in this session."。
+
+**行为变化：** 提示词写明了作用域、等待默认值、不给 id 的会话级等待，以及宿主 shell / 宿主路径这一注意点。单任务状态读取返回同样的有界尾部加 `output_path`，全量流仍在磁盘上。工具的权限、调度与结果状态均未改动。
+
+**指针：** `crates/tact/src/background.rs`（`check`、`output_tail`、`OUTPUT_TAIL_CHARS`）；`crates/tact/src/tool/background_run.rs`（`BACKGROUND_RUN_METADATA`、`CHECK_BACKGROUND_METADATA`、`WAIT_BACKGROUND_METADATA`、`report_waited`）；测试 `background::tests::check_bounds_the_output_of_a_single_task`、`output_tail_keeps_the_end_and_marks_truncation`；[Ch 13](./13_chapter_background_zh.md) §1/§6。
+
+---
+
+## 1. 2026-09-16 — 后台任务的检索按会话收窄
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/background.rs`（`check`、`record_in_session`）；`crates/tact/src/tool/background_run.rs`；`crates/tact-ui/src/driver.rs`（`QueryBackground`）；[Ch 13](./13_chapter_background_zh.md) §1 |
+
+**症状 / 动机：** 任务 store 在 `<workdir>/.tact/tact.db`，同一项目的每个会话共用它——而 `check_background`（不带 `task_id`）与 TUI 的 `/background` 会列出其中**每一条**记录，包括别的会话启动的任务。agent 自己的列表里混进了它从未启动过的活，人看的列表也一样。
+
+**决策：** 把列表按调用方会话收窄，复用等待逻辑里已有的判定。显式给出 `task_id` 仍然不限会话（调用方点名要它），而缺失/空的 session id 仍旧表示"全部"——没有会话的上下文没有可过滤的依据。本身不带 session id 的记录不属于任何会话，因此在过滤后的列表中不可见。
+
+**行为变化：** 不带 `task_id` 的 `check_background`、不带 id 的 `wait_background`、以及 `/background` 都只报告当前会话的任务；`check_background <id>` / `/background <id>` 不变。子 agent 根本无法启动后台任务（其受限 toolset 没有 `background_run`）；若将来有了，记录会挂在子会话 id 下，届时把范围扩展到子会话即可。
+
+**指针：** `crates/tact/src/background.rs`（`check(task_id, session_id)`、`record_in_session`、`has_running`）；`crates/tact/src/tool/background_run.rs`（传 `ctx.session_id`）；`crates/tact-ui/src/driver.rs`（传 agent runtime 的 session id）；测试 `background::tests::check_lists_only_the_requested_session`、`tool::background_run::tests::check_background_lists_only_this_session`。
+
+---
+
+## 1. 2026-09-16 — 等后台任务不必再猜一个 sleep 时长
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/background.rs`（`wait`、`start`、`record`）；`crates/tact/src/tool/background_run.rs`（`wait_background`、`background_run(wait_ms:)`）；`crates/tact/src/tool/registry.rs`；[Ch 13](./13_chapter_background_zh.md) §1/§6；[Ch 11](./11_chapter_task_zh.md)；`docs/agent_guidelines.md` |
+
+**症状 / 动机：** `background_run` 立即返回，而**模型**侧没有完成推送——`AgentUpdate::BackgroundTaskFinished` 只进 TUI 卡片。于是实际模式变成 `background_run` → `sleep` → `check_background`：时长全靠猜，猜长了是纯空等，猜短了又多花一整轮 LLM 往返；更糟的是单个 `sleep 300000` 完全无法打断——in-flight 工具不会被取消（取消只在 wave 边界生效），而 `sleep` 的 future 根本不读 `cancel_flag`。本仓库 `tact.db` 实测：18 次 `sleep` 调用时长落在 30–300 秒，`check_background` 77 次。
+
+**决策：** 把"等它"做成精确的一等原语，而不是一个要猜的时长。`BackgroundManager::wait(task_id, session_id, timeout, cancel)` 阻塞到该任务（或本会话所有任务）进入终态；判定在**第一次 sleep 之前**先做一次，所以早已完成的任务立刻返回；实现是对现有 store 的 150 ms 读循环（完成状态由分离的任务写入，目前没有可订阅的事件源），并在下一次轮询观察取消标志。两个工具架在它上面：`wait_background { task_id?, timeout_ms? }` 与 `background_run { command, wait_ms? }`，后者在窗口内跑完时直接把输出返回。这**不是**事件驱动的方案（完成即唤醒回合，subagent 走的那条路）——那需要协议与 driver 改动，仍然开放。
+
+**行为变化：** 单独调用 `background_run` 行为不变。带 `wait_ms` 时，及时结束的命令返回的是任务结果（状态、耗时、输出尾部、日志路径）而不是一个 id；否则返回启动行并附"仍在运行"的说明。`wait_background` 不带 `task_id` 时等待本会话的全部任务；`timeout_ms` / `wait_ms` 默认 5 分钟并以此为上限，与 `sleep` 一致。内联输出被限制为最后 4,000 字符并给出完整日志路径，避免大日志淹没 context。`sleep` 的描述现在写明它不用于等待后台任务，`check_background` 也指向 `wait_background`。
+
+**指针：** `crates/tact/src/background.rs`（`WaitOutcome`、`WAIT_POLL_INTERVAL`、`wait`/`has_running`、从 `run` 中拆出的 `start`、`record`/`records`）；`crates/tact/src/tool/background_run.rs`（`WaitBackgroundTool`、`report_waited`、`session_report`、`output_tail`）；测试 `background::tests::wait_*` 与 `tool::background_run::tests::wait_background_*`；`crates/agent_tui_kit/src/widgets/tool_widget.rs`（回退视觉类型 `Sleep` + 显示名）。
+
+---
+
+## 1. 2026-09-15 — 只收到 reasoning 的 Responses 流会自报身份，不再读起来像空流
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/openai/responses/stream.rs`（`ResponsesStreamState`、`finish()`）；[Ch 22](./22_chapter_llm_zh.md) §6.2 |
+
+**症状 / 动机：** 在一个兼容端点上（`protocol = "responses"` + `https://opencode.ai/zen/go/v1`，模型 `deepseek-v4.1-flash`，`reasoning_effort = "low"`），只产出 reasoning 的一轮以 `unsupported response state: OpenAI Responses stream ended without a terminal event` 结束。这条文案描述的是**空流**，排查方向也就被带偏了——实际上 reasoning delta 是到达过的（TUI 上显示为 thinking）。它们只被转发给 UI、哪里都没存，于是在 `finish()` 内部，"只收到 reasoning 的流"和"什么都没收到的流"完全无法区分。
+
+**决策：** 保持硬失败不变——既没有可见文本、也没有已完成 output item 的回合不是完整回合；而"恢复"它只会产出一条仅含 thinking block 的 assistant 消息，正是 `sanitize_assistant_messages` 专门在打补丁的形态（[Ch 22](./22_chapter_llm_zh.md) §6.1）——但让状态可观测：在流状态里统计 reasoning delta 数，把判定所依据的三个量（reasoning delta 数、已完成 output item 数、已 announce 但未完成数）都报出来，并按"是否收到过 reasoning"分流文案。该端点上的根因是网关未发送终态事件就关闭了流；把该条目改成 `protocol = "chat_completions"` 可以完全绕开。
+
+**行为变化：** "只有 reasoning 的流"与"真正的空流"现在给出不同的句子，前者会同时点明端点行为，以及为什么这是协议失败而不是空回答。除此之外没有变化：完整 `output_item.done` 序列与已流式可见文本这两条恢复路径未被触碰，判定逻辑本身也未改。
+
+**指针：** `crates/tact_llm/src/openai/responses/stream.rs`（`reasoning_deltas`、`thinking_delta`、`finish()` 的终态事件分支）；测试 `no_terminal_event_after_reasoning_only_names_the_reasoning` 与 `no_terminal_event_empty_stream_is_error`；[Ch 22](./22_chapter_llm_zh.md) §6.2。
+
+---
+
+## 1. 2026-09-15 — `bash` 可以在可选开启的 bubblewrap 沙箱中运行
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/sandbox/{mod,bwrap}.rs`；`crates/tact/src/tool/bash.rs`；`crates/tact/src/config/types.rs`（`tools.sandbox` 开关）；[Ch 7](./07_chapter_tool_zh.md) §7.1；[Ch 10](./10_chapter_permission_zh.md)；[Ch 21](./21_chapter_config_zh.md)；[Ch 27](./27_chapter_sandbox_zh.md)；[设计](../docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md)；[实施计划](../docs/superpowers/plans/2026-09-15-bwrap-sandbox.md) |
+
+**症状 / 动机：** 被批准的 `bash` 命令此前以普通宿主进程运行：可以读取用户 home（SSH 密钥、云凭证）、任何无关仓库，以及宿主网络。权限回答的是*这条命令能不能运行*，而不是*它能触达什么*；真正要紧的失败面也不是 agent 自己写的命令，而是它引入的第三方代码——`cargo` 构建脚本、`npm` 生命周期脚本、测试二进制、`make` 配方。
+
+**决策：** 不动权限模型，另加一层可选开关。`[tools] sandbox` 布尔开关（默认 `false`）把现有的 `sh -c` 进程包进平台的沙箱——Linux 选 bubblewrap，其他平台尚无实现，开关在那里是空操作（会被告知，绝不静默）。开关做成布尔值而非后端名，是因为后端不是用户的选择：把 `"bwrap"` 暴露成配置取值，等于允许写出一份在读取它的机器上根本无法生效的配置；沙箱只负责构造调用，spawn、流式输出、超时、取消与进程组清理都不变。策略是：把 `work_dir` 以读写绑定到 `/workspace`；`/usr` `/bin` `/lib` `/lib64` `/etc` 只读；再加固定的工具链白名单（`~/.rustup`、`~/.cargo`、`~/.config/git`、`~/.npm`，通过 `RUSTUP_HOME` / `CARGO_HOME` / `GIT_CONFIG_GLOBAL` / `NPM_CONFIG_CACHE` 接线）只读；挂载新的 `/proc` 与 `/dev`、tmpfs 的 `/tmp`；`--clearenv` + 显式变量白名单；`--unshare-net`、`--unshare-pid`、`--die-with-parent`。**禁止** `--new-session`：实测它会把命令分离到自己的进程组，于是现有的 `killpg` 清理只杀掉 `bwrap`，孙进程仍持有管道写端，工具调用永不返回。任何导致沙箱无法启动的情况都降级为不沙箱，并在启动时告警（fail-open，但绝不静默），而不是让工具失败。
+
+**行为变化：** 默认 `false` 下行为完全不变；在无实现的平台上设为 `true` 同样不变（但会告警）。真正启动沙箱时：`pwd` 为 `/workspace`；工作区之外的宿主路径与宿主 home 不可达；`curl`/`git fetch`/`npm install` 没有网络；挂载的 `/proc` 只显示沙箱内进程（拿不到宿主进程表，也无法给同 uid 的宿主进程发信号）。由于只读工具链白名单，`cargo`/`git`/`npm` 仍可工作。`bash` 的工具描述会在启动时按**实际解析结果**重写，写明 `/workspace` 与网络禁用，从而把路径空间分裂（进程内工具仍报宿主绝对路径）暴露给模型。文档同时写明范围：沙箱约束的是被批准命令所引入的第三方代码，**不是** agent——`background_run` 与 `worktree_run` 仍启动未沙箱的宿主 shell（[Ch 13](./13_chapter_background_zh.md)、[Ch 15](./15_chapter_worktree_zh.md)）。
+
+**指针：** `crates/tact/src/sandbox/mod.rs`（`Sandbox`、`resolve`、`SandboxDegradation`）；`crates/tact/src/sandbox/bwrap.rs`（纯函数 `bwrap_args`、工作区守卫、probe）；`crates/tact/src/tool/bash.rs`（`SANDBOXED_BASH_DESCRIPTION`、`match &ctx.sandbox` 起点、一次性降级提示）；`crates/tact-ui/src/{interactive,headless}.rs`（启动解析 + 提示 + 描述覆盖）；`config.example.toml` 的 `[tools] sandbox`。
+
+---
+
 ## 1. 2026-09-15 — 原生 MCP 配置改名 `.mcp.json`
 
 | Field | Value |

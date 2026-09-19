@@ -530,10 +530,19 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         .ensure_session_row(&child_id, &root_dir, &ref_id)
         .await?;
 
+    // The child's `ctx` is cloned from the parent's (`Agent::new` below), so its
+    // `bash` runs inside the same sandbox — the description has to say so, or
+    // the model is told to expect host paths while its shell sees `/workspace`.
+    // The parent's router applies the same override in `tact-ui`.
+    let mut subagent_tools = crate::tool::registry::subagent_toolset();
+    if ctx.sandbox.is_some() {
+        subagent_tools.set_tool_description("bash", crate::tool::SANDBOXED_BASH_DESCRIPTION);
+    }
+
     let mut subagent = Agent::new(
         client,
         ctx.clone(),
-        crate::tool::registry::subagent_toolset(),
+        subagent_tools,
         MCPToolRouter::new(),
         pm,
         AgentSystemPrompt::Static(system_prompt),

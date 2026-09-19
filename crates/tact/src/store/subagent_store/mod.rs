@@ -2,7 +2,8 @@
 //!
 //! Subagent runs live in the same `tact.db` as sessions, tasks, and background
 //! tasks, under the `subagent_runs` table. Unlike `background_run` (a command
-//! the parent polls via `check_background`), a subagent summary must flow back
+//! the parent retrieves with `wait_background`, or polls with
+//! `check_background`), a subagent summary must flow back
 //! into the parent's conversation, so the run record is the crash-recovery
 //! source of truth: orphan repair rewrites any `running` row to `failed` on
 //! startup, and a finished `summary` lets the model `resume` a child or decide

@@ -1,7 +1,7 @@
 # Background Tasks
 > Language: [English](./13_chapter_background.md) · [中文](./13_chapter_background_zh.md)
 
-This chapter explains Tact's **asynchronous shell execution**: the `background_run` tool starts a command on a `tokio::spawn` task and returns immediately; `check_background` polls status later. Every task is persisted to disk, so results survive polling order — but not process restarts (see §5). The implementation lives in `crates/tact/src/background.rs` with tool wrappers in `crates/tact/src/tool/background_run.rs`.
+This chapter explains Tact's **asynchronous shell execution**: the `background_run` tool starts a command on a `tokio::spawn` task and returns immediately; `wait_background` blocks until it finishes, and `check_background` polls status without waiting. Every task is persisted to disk, so results survive polling order — but not process restarts (see §5). The implementation lives in `crates/tact/src/background.rs` with tool wrappers in `crates/tact/src/tool/background_run.rs`.
 
 Background tasks are the "fire-and-forget" counterpart to the synchronous `bash` tool: same shell, same validation, but the agent's turn does not block on completion.
 
@@ -11,12 +11,19 @@ Background tasks are the "fire-and-forget" counterpart to the synchronous `bash`
 
 | Tool | Input | Output |
 |------|-------|--------|
-| `background_run` | `command: String` | `"Background task <id> started: <command>"` |
-| `check_background` | `task_id: Option<String>` | One task as pretty JSON, or a one-line-per-task listing |
+| `background_run` | `command: String`, `wait_ms: Option<u64>` (max 10,000) | `"Background task <id> started: <command>"`; with `wait_ms` set and the command finishing inside it, the finished task with the tail of its output |
+| `check_background` | `task_id: Option<String>` | One task as pretty JSON (its `output` bounded to the same tail the wait uses), or a one-line-per-task listing |
+| `wait_background` | `task_id: Option<String>`, `timeout_ms: Option<u64>` | The finished task (status, elapsed, output tail, log path), or why the wait ended while it was still running |
 
-Both tools are in the main `toolset()` only. `check_background` with no `task_id` lists all known tasks sorted by start time; with an unknown id it returns an error (`Unknown background task <id>`).
+All three are in the main `toolset()` only (a sub-agent's shell work is synchronous `bash`). `check_background` with no `task_id` lists **this session's** tasks sorted by start time — one session never reports another's work, even though every session in the project shares the same store — and an unknown id returns an error (`Unknown background task <id>`). Naming a `task_id` explicitly is answered from any session: the caller asked for that task by name.
 
-TUI users do not need the model to call a tool to see background jobs: the **`/background`** slash command lists all tasks, and **`/background <id>`** shows a single task (pretty JSON). It sends `UserCommand::QueryBackground(Option<String>)` to the command driver, which calls the same `SharedBackgroundManager::check` and renders the result into the log as Markdown (`AgentUpdate::MdInfo`) — see [Ch 23](./23_chapter_tui.md) §3.
+Session scoping also covers the TUI's `/background` listing, and it is what `wait_background` / `wait` use when no id is given. A sub-agent cannot start a background task at all (its restricted toolset has no `background_run`); if that ever changes, the record would carry the *child* session id, so a parent's listing would not show it — widening the scope to child sessions is the follow-up to make then.
+
+`background_run` is the *starting* primitive: it returns the id immediately and the work proceeds in the background with **no time limit** — a task ends when it finishes, or when the user cancels. Its `wait_ms` is a short-task shortcut only (capped at 10 s), so a slow command never holds a turn; a wait that expires reports "still running" and leaves the task alone.
+
+`wait_background` is the *waiting* primitive: it returns the moment the task reaches a terminal status, so the model never has to guess a duration. Without a `task_id` it waits for every task of the current session; `timeout_ms` defaults to 5 minutes (the same cap as `sleep`). Unlike `sleep` — whose future ignores the cancel flag — the wait observes cancellation at the next poll (≤ 150 ms), so an in-flight wait is interruptible.
+
+TUI users do not need the model to call a tool to see background jobs: the **`/background`** slash command lists all tasks, and **`/background <id>`** shows a single task (pretty JSON). It sends `UserCommand::QueryBackground(Option<String>)` to the command driver, which calls the same `SharedBackgroundManager::check` (scoped to the session, like the tool) and renders the result into the log as Markdown (`AgentUpdate::MdInfo`) — see [Ch 23](./23_chapter_tui.md) §3.
 
 **Live output (bash-like).** While a task runs, its stdout/stderr stream into the `background_run` tool card in real time (throttled to ~50 ms batches, last ~4 KB kept for the live preview), exactly like the synchronous `bash` card. The card stays in a running state even though the invocation already returned, and closes with ✓/✗, elapsed time, and the final output when the process exits (see §3 and §6). On completion the card collapses like any finished command — title + meta rows, with the captured output one double-click away (see [Ch 23](./23_chapter_tui.md) §6.16).
 
@@ -73,7 +80,7 @@ sequenceDiagram
     loop stdout/stderr streaming
         Task->>TUI: ToolProgress (throttled ~50ms)
     end
-    Task->>Task: await exit (timeout 120s, kill_on_drop)
+    Task->>Task: await exit (no time limit, kill_on_drop)
     Task->>TUI: BackgroundTaskFinished (✓/✗ + final output)
     Task->>DB: upsert record (completed/error + output)
 
@@ -88,7 +95,8 @@ Details worth knowing:
 |--------|----------|
 | Shell | `sh -c <command>`, cwd = `ToolContext.work_dir` |
 | Validation | `crate::shell::validate_shell_command` — same hard blocklist as `bash` (`sudo`, `rm -rf /`, …) |
-| Timeout | Fixed 120 seconds; on expiry status becomes `Error` with `"Error: Timeout (120s)"` |
+| Timeout | **None.** A task runs until the command exits or the session is cancelled — builds and test suites may take as long as they need |
+| Cancellation | The session's cancel flag (Esc / cancel) terminates every running task of that session: the flag is polled on the progress tick (≈50 ms) and `SIGKILL` goes to the task's **process group**, so `cargo`/`npm` grandchildren die with the shell instead of surviving as orphans. Status becomes `Error` with `Cancelled by the user` |
 | Live streaming | stdout/stderr are read incrementally and pushed as `AgentUpdate::ToolProgress` (≈50 ms batches, last ~4 KB kept in the live preview); no output is buffered until completion |
 | Output cap | First 50,000 chars of stdout+stderr are persisted in the record; the **full** output is appended to `<workdir>/.tact/background/<id>.log` (see `output_path`) |
 | Exit code | Non-zero exit → `Error`; the code itself is not recorded |
@@ -125,9 +133,9 @@ This is covered by the `marks_stale_running_tasks_on_startup` unit test. The con
 
 `background_run` returns immediately, so from the scheduler's perspective ([Tasks and Tool Scheduling](./11_chapter_task.md)) it is a cheap call — but note that as a shell-adjacent tool it takes its permission classification from the [Permission Model](./10_chapter_permission.md) under the name `background_run`, not `bash`.
 
-**The TUI gets live progress + a completion event.** The spawned task pushes `AgentUpdate::ToolProgress` into the invocation's tool card while it runs, then `AgentUpdate::BackgroundTaskFinished` when it exits (see [Ch 25](./25_chapter_protocol.md) for the keep-live card contract). The **model/agent** still has no completion push: it must poll `check_background` to see the result in context. A typical pattern the model discovers on its own is `background_run` → continue other work → `check_background` before finishing the turn. The [sleep tool](./07_chapter_tool.md) exists partly to make that polling loop possible.
+**The TUI gets live progress + a completion event.** The spawned task pushes `AgentUpdate::ToolProgress` into the invocation's tool card while it runs, then `AgentUpdate::BackgroundTaskFinished` when it exits (see [Ch 25](./25_chapter_protocol.md) for the keep-live card contract). The **model/agent** still has no completion push, so it has to ask: `wait_background` blocks until the task finishes and returns the result in the same call, and `background_run(wait_ms:)` does the same for the command it just started. Polling `check_background` (or burning time with `sleep`) is only the fallback when the turn has other work to do meanwhile.
 
-Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — the record is hard-capped at 50k chars, and the full JSON lands in context when polled. The **full** stream is written to disk instead: polled JSON carries `output_path`, and the agent can `bash tail <path>` / `grep error <path>` for deep inspection. The listing form of `check_background` (no `task_id`) appends `(log: <path>)` to each line so the path is discoverable without a per-task call.
+Unlike synchronous `bash` output, background output is **not** routed through `persist_large_output` ([Context Compaction](./05_chapter_compact.md)) — the record is hard-capped at 50k chars, and that is still far too much for context. So every model-facing read reports a **bounded tail** instead: `wait_background`, `background_run(wait_ms:)` and `check_background <id>` all cut `output` to its last 4,000 chars (`background::output_tail`, one implementation for the three paths) and include the log path. The **full** stream is on disk: the record carries `output_path`, and the agent can `bash tail <path>` / `grep error <path>` for deep inspection. The listing form of `check_background` (no `task_id`) appends `(log: <path>)` to each line so the path is discoverable without a per-task call.
 
 ---
 
@@ -151,9 +159,8 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 
 | Gap | Detail |
 |-----|--------|
-| Fixed 120s timeout | Not configurable; long builds or test suites always die as `Error: Timeout` |
-| No model completion push | The TUI card gets `BackgroundTaskFinished`, but the **model** still has no completion push and must poll `check_background` |
-| No cancellation tool | A running task cannot be killed by the model; only timeout or process exit ends it |
+| Cancellation is the only early end | There is no per-task kill tool: ending a running task means cancelling the turn (which stops *all* of that session's tasks). A model-driven `kill_background` would be the follow-up |
+| No model completion push | The TUI card gets `BackgroundTaskFinished`, but the **model** gets nothing unsolicited: it must ask (`wait_background`, `background_run(wait_ms:)`) or poll `check_background` |
 | Output interleaving lost | stdout and stderr are concatenated after completion, not merged by time |
 | Exit code discarded | Failure reason beyond the combined output text is unavailable |
 | Log file is best-effort | If `<workdir>/.tact/background/<id>.log` cannot be created, only the capped DB record remains |
@@ -161,6 +168,7 @@ Unlike synchronous `bash` output, background output is **not** routed through `p
 | Records accumulate | `background_tasks` table is never pruned |
 | DB record still caps at 50k | Polled JSON `output` is truncated; the full text lives only in the log file |
 | ID collisions possible | 32-bit hex counter seeded by wall clock; no uniqueness check against disk |
+| Not sandboxed | `background_run` spawns its own `sh -c` on the host; the opt-in `bash` sandbox ([Ch 7](./07_chapter_tool.md) §7.1, [Ch 27](./27_chapter_sandbox.md)) does not cover it |
 
 ---
 

@@ -32,6 +32,182 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-18 — A cancel reaches a tree whose leader already exited, and the record keeps the end of the stream
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/background.rs` (`terminate_tree`, the spawn in `run_background_process`, `OutputAccumulator`, `output_tail`); `crates/tact/src/tool/subagent.rs` (the child's toolset); [Ch 13](./13_chapter_background.md) §1; [Ch 07](./07_chapter_tool.md) §7.1; [Ch 27](./27_chapter_sandbox.md) §3 |
+
+**Symptom / motivation:** Three findings from the review that preceded the merge, all measured rather than inferred.
+
+1. *The cancel missed a leaderless tree.* `terminate_tree` read `child.id()` **at kill time**, but tokio's `Child::id()` returns `None` once the child has been polled to completion — and `sh -c 'server &'` produces exactly that state: the shell exits and is reaped while the backgrounded grandchild keeps the stdout/stderr pipes open, so the run loop stays on `closed_pipes < 2` with `exit_status = Some(...)`. Cancelling there signalled nothing, recorded `Error: Cancelled by the user`, and left the orphan running — the same "the record lies about what it did" failure that the removal of the 120-second timeout was meant to end (2026-09-16 entry). Measured locally: the leader was gone, the orphan's `ppid` was 1 and its `pgid` was still the dead leader's pid, and `kill(-pgid)` *did* reach it — so the group was signalable; only the id lookup was late. The existing test used `'sleep 371 & wait'`, whose `wait` keeps the leader alive and therefore never entered the state.
+2. *The recorded output was neither the head nor the tail.* `OutputAccumulator` kept the **first** `MAX_OUTPUT_CHARS` (50k) and dropped everything after, so `output_tail` — named and documented as "the tail of its output", and what every model-facing read (`check_background`, `wait_background`, `background_run(wait_ms)`) reports — returned characters ~46k–50k of a longer stream while printing "truncated to the last 4000 chars". A build or test log's useful end was never in context. The existing test injected 12k chars, under the cap, so it never truncated.
+3. *A subagent's `bash` was sandboxed but described as unsandboxed.* The child inherits the parent's `ToolContext` (so `ctx.sandbox` is `Some` and its shell really does run under bubblewrap), but only `tact-ui`'s two entry points applied `SANDBOXED_BASH_DESCRIPTION`; `spawn_subagent` built its router without it. Under a worktree this is worse: the child's system prompt names a host path that its own `/workspace` shell cannot see.
+
+**Decision:** (1) Capture the process-group id **at spawn**, never at kill time, and pass it into `terminate_tree` — the order `tool::bash` already used. A process group outlives its leader as long as it has a member, so the captured id still signals the survivors. (2) Make `OutputAccumulator` keep the **last** `MAX_OUTPUT_CHARS`, trimming with an 8,192-char slack so a chatty command pays the `memmove` rarely, so that `output_tail` is what its name says. (3) Apply the sandboxed bash description in `spawn_subagent` whenever `ctx.sandbox.is_some()`.
+
+**Behavior after:** Cancelling a `background_run` task kills the whole tree even when its shell leader has already exited, so the record's `Error: Cancelled by the user` is true. A task that printed more than 50k chars records its **last** 50k, and `check_background` / `wait_background` show the real end of the log; the full stream is still in `<workdir>/.tact/background/<id>.log`, which is now the only place the earlier part survives. A subagent under `tools.sandbox = true` sees the sandboxed `bash` description, so it is told about `/workspace` rather than a host path. Docs corrected in the same pass: Ch 07 §7.1 and Ch 10 §1 said the sandbox "disables the network" / "cannot reach the network", both untrue since `--share-net` (2026-09-16 entry); `config.example.toml` claimed `cargo fetch` / `npm install` keep working (the toolchain homes are read-only) and that the sandbox cannot read credentials (the read-only `~/.cargo` bind *is* readable), and its subagent `reasoning_effort` comment described a third fallback that does not exist. Deliberately not fixed, and still open: `sleep`'s duration is unreachable on the production path (`ArgumentSummaryPolicy::Json` never yields a bare number, so the title can never format `💤 Sleep · 1m 30s`), and a popup body is clipped rather than wrapped at the popup width.
+
+**Pointers:** `terminate_tree` and the `process_group_id` capture in `crates/tact/src/background.rs`; `OutputAccumulator` + `output_tail`; `crates/tact/src/tool/subagent.rs` (`subagent_tools`); tests `cancelling_reaches_a_tree_whose_leader_already_exited` (verified to fail against the kill-time lookup, with `['sleep 372']` surviving), `the_output_buffer_keeps_the_newest_characters`, and `run_writes_full_output_to_log_file_and_truncates_db_record` (now `ends_with`).
+
+---
+
+## 1. 2026-09-17 — A card's label comes from the tool's presentation, never from the arm that draws it
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`title_text` `Sleep` arm, `display_name_from_presentation`, `is_written_argument`), `crates/tact/src/tool/metadata.rs` (`ArgumentSummaryPolicy::Id`), `crates/tact/src/tool/background_run.rs` (`CHECK_BACKGROUND_METADATA`, `WAIT_BACKGROUND_METADATA`), `crates/tact/src/agent/tool_dispatch.rs` (`tool_arg_full`); [Ch 13](./13_chapter_background.md) §1; [Ch 23](./23_chapter_tui.md) §6.16 |
+
+**Symptom / motivation:** `wait_background` reuses `ToolVisualKind::Sleep`, and that arm hardcoded its own label: `⏳ Sleep · {}` with the serialized input in the `{}`. Two bugs in one line. The label ignored the tool's `display_name` entirely (`⏳ Wait Background` was a dead field, unreachable by construction), and the same hardcoding also meant `sleep` had *never* drawn the `💤 Sleep` its metadata declares. The parameter was equally wrong: both background tools used `ArgumentSummaryPolicy::Json`, so the title carried a `{"task_id":"abc123"}` dump — or a bare `{}` when the optional id was omitted — where a human-readable id belongs.
+
+**Decision:** The visual kind owns the *shape* of a title, never the *name*. The `Sleep` arm now takes its label from `display_name_from_presentation(&self.presentation, &self.tool_name)` (empty or equal to the tool name falls back to `tool_display_name`), so a shared kind can serve several tools — the same rule `Command` and `Task` already followed. The duration mini-language stays, and a serialized argument is skipped from the title exactly as the popup skips it (`is_written_argument`, the guard `argument_line`/`popup_detail` use). The parameter itself is fixed at the source: a new `ArgumentSummaryPolicy::Id { field }` surfaces one field and yields `""` when the call omitted the optional id — deliberately not falling back to the JSON dump, so an id-less call renders as the bare label. `check_background` and `wait_background` moved from `Json` to `Id { field: "task_id" }`, the one consumer being `tool_dispatch::tool_arg_full`.
+
+**Behavior after:** `⏳ Wait Background`, `⏳ Wait Background · abc123`, `💤 Sleep · 1m 30s`; `check_background` reads `⚙️ Background Check  abc123` (the `Generic` arm's two-space join is unchanged). Every other tool whose metadata says `Json` — `team_*`, `worktree_*`, `save_memory`, `load_skill`, `compact`, and every MCP/plugin tool, which reaches `tool_arg_full`'s `_ => Json` fallback — still prints its dump in the title; that is a per-tool decision left open, not a shared rule to fix in one sweep (the `_` arm is what MCP tools depend on). `subagent_check`/`subagent_wait` are the next `Id { field: "child_id" }` candidates when someone wants them. One rustfmt trap worth keeping: the new variant carries `//` line comments, not `///` — a doc comment on an enum variant expands the whole enum to one variant per line.
+
+**Pointers:** `title_text` / `display_name_from_presentation` / `is_written_argument` in `crates/agent_tui_kit/src/widgets/tool_widget.rs`; tests `wait_background_title_reads_its_own_label`, `check_background_title_shows_the_task_id`, `sleep_title_keeps_the_duration_with_a_presentation` (five pre-existing `sleep` title assertions move `⏳` → `💤`); `id_policy_reads_the_field_and_tolerates_absence`, `background_tools_title_shows_the_id_not_the_input_dump` in `crates/tact/src/agent/tool_dispatch.rs`.
+
+---
+
+## 1. 2026-09-16 — Every tool popup opens with the call it made
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`with_command_detail`, `popup_detail`, `argument_line`, `is_written_argument`, `command_detail`), `crates/agent_tui_kit/src/components/tool.rs` (`on_background_task_finished`), `crates/agent_tui_kit/src/render/popups/subagent_popup.rs` (pre-existing `Prompt:` prepend); [Ch 13](./13_chapter_background.md) §1; [Ch 23](./23_chapter_tui.md) §6.16 |
+
+**Symptom / motivation:** The popup is the only way to read a collapsed block, so it has to show the call as well as the result. A finished `bash` block and the *live* `background_run` card open with `$ <command>`; three cases showed less than the card the user had just been reading. (1) The **finalized** `background_run` card: `BackgroundTaskFinished` carries no `StepResult`, so that path built its detail from the process output alone. (2) A **failed** command (`bash`, `worktree_run`, `web_search`, `background_run`): `from_step_result` deliberately skips the prefix on failure so the error keeps the card's first preview rows — and the failed popup's title is the generic error card title, so a failed command's parameters were missing from the popup entirely. (3) A **task** tool (`task_create/get/list/update`) and `ask_user`: their popup body is only the result, so the task title and the question the user was answering were not in the popup at all.
+
+**Decision:** One rule, per kind, assembled in `ToolWidget::popup_detail` (the only producer of `detail_full`, which only the popup reads): the popup opens with the call. `Command` → `$ <command>` in every phase (`with_command_detail` supplies it for the keep-live finalize path, stores a *failed* detail raw, and `argument_line` adds the line for that failure case, so the card keeps the error first); `FileRead`/`FileWrite`/`FileEdit` → nothing extra, the body **is** the call (the file, its new content, its diff) and the path is already the popup title; `Subagent` → nothing extra here, its own popup prepends `Prompt:` from the same `arg_full`; `Task`/`Generic`/`Sleep` → the argument line **unless it is the tool's serialized input object** (`is_written_argument`), a JSON dump being one long escaped line that repeats the block's parameter row and pushes the result down. `detail_preview` is untouched, and a collapsed block's hint now counts `detail_full`, so the hint and the popup still print the same number.
+
+**Behavior after:** A finished or failed `background_run` popup, a failed `bash`/`worktree_run`/`web_search` popup, a collapsed `task_*` popup and an `ask_user` popup all open with the call above the result (`$ <command>` / the task title / the question), while every card keeps its old shape — a failed command's card still leads with the error. JSON-input tools (`save_memory`, `load_skill`, `wait_background`, every MCP/plugin tool) are deliberately unchanged: their argument is a dump, not text. Two audit corrections worth keeping: the first pass reported `spawn_subagent` as missing its prompt, which is wrong — a double-click on a subagent block opens the dedicated subagent popup (never the diff popup) and that popup has prepended `Prompt:\n<arg_full>` since it was written, pinned by `live_layout_prepends_prompt_to_transcript` / `completed_layout_prepends_prompt_to_summary`. Known gaps left deliberately, all reported and awaiting a decision: `apply_patch` treats its patch preview as a file path for `git diff` (so its popup shows the result, never the patch); `read_file`'s `offset`/`limit` appear nowhere; popup titles still hardcode `bash (…)` for command kinds and use the raw tool name (`save_memory output`) elsewhere; popup body lines are clipped rather than wrapped at the popup width.
+
+**Pointers:** `popup_detail` / `argument_line` / `is_written_argument` / `with_command_detail` / `command_detail` in `crates/agent_tui_kit/src/widgets/tool_widget.rs`; `on_background_task_finished` in `crates/agent_tui_kit/src/components/tool.rs`; tests `failed_command_card_stays_error_first_but_its_popup_opens_with_the_command`, `failed_command_detail_is_not_double_prefixed`, `failed_non_command_keeps_its_raw_detail_in_the_popup`, `task_popup_opens_with_the_task_title`, `ask_user_popup_opens_with_the_question`, `json_argument_is_not_repeated_in_the_popup`, `kinds_whose_body_is_the_call_do_not_repeat_it`, `failed_task_popup_shows_the_title_before_the_error`, `background_run_popup_opens_with_the_command_like_bash`, `failed_command_popup_opens_with_the_command`, `collapsed_task_popup_opens_with_the_task_title`, `ask_user_popup_opens_with_the_question`, `json_input_tool_popup_does_not_repeat_its_argument`.
+
+---
+
+## 1. 2026-09-16 — A background task has no time limit, and cancelling kills the whole tree
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/background.rs` (removed `COMMAND_TIMEOUT`, added `configure_process_group` / `terminate_tree`, `start`/`run` take the session's cancel flag); `crates/tact/src/tool/background_run.rs` (`MAX_RUN_WAIT_MS`, prompts); [Ch 13](./13_chapter_background.md) §1/§3/§8; `docs/agent_guidelines.md` |
+
+**Symptom / motivation:** `background_run` advertised itself as the home for slow commands — builds, test suites, installs — but every task was `SIGKILL`ed after **120 seconds** and its record rewritten as `Error: Timeout (120s)`. Measured in one session: `cargo test --workspace` (~110 s) was killed twice, and both times the model read the `Error` as a failure of the tests. The kill also lied about what it did: it signalled the `sh -c` leader only, so a `sleep` grandchild kept running (measured: still alive 35 s after the "timeout") while the record said the task had ended. Separately, `background_run(wait_ms: 300000)` could hold a whole turn for up to five minutes — a *starting* call blocking on a *slow* command.
+
+**Decision:** A background task has **no time limit**: it ends when the command exits, or when the session's cancel flag is set. That makes cancellation the only early-termination path, so it had to become a real kill: the task now spawns into its own process group (`configure_process_group`, the same trick as the `bash` tool) and cancellation sends `SIGKILL` to the negated pid, taking `cargo`/`npm` grandchildren with it. The flag is polled on the progress tick that already exists (≈50 ms), so this added no timer. `background_run(wait_ms:)` is now explicitly a short-task shortcut capped at **10 s**; `wait_background` keeps its 5-minute cap because blocking is its entire purpose. A wait that expires reports "still running" and leaves the task strictly alone.
+
+**Behavior after:** A command started with `background_run` runs as long as it needs — a 30-minute build is fine. Cancelling a turn (Esc) terminates every running task belonging to that session, and their status becomes `Error` with `Cancelled by the user`; nothing survives in the process tree. `background_run` with a large `wait_ms` returns after 10 s with the task id and a "still running" line instead of blocking the turn. `wait_background` is unchanged: it returns the moment the task ends, or says it is still running.
+
+**Pointers:** `crates/tact/src/background.rs` (`run_background_process` loop, `terminate_tree`, `configure_process_group`); `crates/tact/src/tool/background_run.rs` (`MAX_RUN_WAIT_MS`, `capped_run_wait_ms`); tests `background::tests::cancelling_terminates_the_task_and_its_children`, `tool::background_run::tests::the_run_wait_is_capped_to_a_short_task`; [Ch 13](./13_chapter_background.md) §1/§3/§8.
+
+---
+
+## 1. 2026-09-16 — The bash sandbox shares the host network again
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/sandbox/bwrap.rs` (`--share-net`, `RESOLVER_PATHS`, `PROXY_ENV_VARS`, `bwrap_args_with(work_dir, exists, env)`); `crates/tact/src/tool/bash.rs` (`SANDBOXED_BASH_DESCRIPTION`); spec `docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md` §8/§17/§Tests 7; [Ch 27](./27_chapter_sandbox.md) §3 |
+
+**Symptom / motivation:** With `[tools] sandbox = true` the shell was network-dead: no DNS, no default route, and the host's proxy on `127.0.0.1:7890` was not even reachable — the connection failed in 0 ms, which reads as "the proxy is broken" rather than "there is no network". `curl` / `git fetch` / `npm install` / `cargo fetch` could not work. The documented workaround (`background_run`, an unsandboxed host shell) is unavailable to subagents — their restricted toolset has no `background_run` — so a subagent could not fetch anything at all, measured as three research lanes reporting `curl` exit 6/7. The owner asked for the sandbox to have network, and chose to also forward the proxy variables.
+
+**Decision:** Share the host network namespace (`--share-net`, the explicit spelling of bwrap's default) and, because that alone is not sufficient, mount the resolver directory read-only. The `--clearenv` allowlist gains exactly one exception: `http_proxy` / `https_proxy` / `all_proxy` / `no_proxy` in both spellings are forwarded verbatim when the host sets them, since the proxy on the host's loopback *is* reachable from inside. The capability stays **not configurable**: no knobs, same as the rest of the policy. The network was deliberately disabled in v1 and that decision is now reversed — the sandbox bounds the filesystem, not connectivity.
+
+**Behavior after:** Inside the sandbox, name resolution works and outbound traffic behaves exactly as the host's — including hosts the host itself cannot reach directly, which is the situation on this development box (`example.com` answers; `api.binance.com`, `api.coinbase.com` and `1.1.1.1:443` time out; everything works through the proxy). The filesystem boundary is unchanged: the workspace is still the only read-write host directory, the host home directory is still unmounted, and unlisted environment variables still cannot get in. `--unshare-pid`, `--die-with-parent`, the workspace guard and the banned `--new-session` are untouched, and the `bash` description no longer claims a disabled network.
+
+**Two traps, both measured:** sharing the namespace is *not* enough for DNS — the host's `/etc/resolv.conf` is a symlink into `/run/systemd/resolve`, `/run` is not in the mount list, so the symlink dangles and every lookup fails with "Temporary failure in name resolution"; and binding `/etc/resolv.conf` itself is refused by bwrap (`Can't mount on symlink destination /etc/resolv.conf`), so the directory must be mounted instead. The regression test therefore pointedly does not use the network: it connects to a listener the test itself opened on the host's loopback, which succeeds exactly when the namespace is shared.
+
+**Pointers:** `crates/tact/src/sandbox/bwrap.rs` (`RESOLVER_PATHS`, `PROXY_ENV_VARS`, the flag list, the injected env lookup); tests `sandbox::bwrap::tests::shares_the_host_network_and_binds_the_resolver`, `sandbox::bwrap::tests::carries_proxy_variables_and_nothing_else`, `tool::bash::sandbox_tests::shares_the_host_network_namespace`, `tool::bash::sandbox_tests::system_files_are_readable_and_proxies_follow_the_host`; [Ch 27](./27_chapter_sandbox.md) §3.
+
+---
+
+## 1. 2026-09-16 — The background tool prompts are resynced, and a status read is bounded too
+
+| Field | Value |
+|-------|-------|
+| **Type** | docs |
+| **Related** | `crates/tact/src/tool/background_run.rs` (all three metadata descriptions + input fields); `crates/tact/src/tool/sleep.rs`; `crates/tact/src/background.rs` (`check`, `OUTPUT_TAIL_CHARS`, `output_tail`); [Ch 13](./13_chapter_background.md) §1/§6 |
+
+**Symptom / motivation:** After the wait tools and the session scoping landed, the tool descriptions no longer matched the code: `check_background` still described an unscoped status check (the listing is now this session's, and `No background tasks.` became ambiguous), `wait_background` never stated its 5-minute default or that omitting the id waits for the whole session, and `background_run` said nothing about when to prefer it over `bash` or about a fact that bites the model — it runs an ordinary host shell, so the sandbox's `/workspace` path space that `bash` advertises does not apply. Separately, `check_background <id>` dumped the whole record, which can carry 50,000 chars of captured output (~12k tokens) straight into context, while the wait path inlined only the last 4,000.
+
+**Decision:** Resync the three descriptions with the behavior that shipped, and make the bounded tail the single implementation for every model-facing read: `OUTPUT_TAIL_CHARS` / `output_tail` moved into `background.rs` and are applied by `check_background <id>` exactly as by `wait_background` and `background_run(wait_ms:)`. The empty listing now says "No background tasks in this session." when the caller has a session.
+
+**Behavior after:** The prompts state the scope, the wait default, the id-less session wait and the host-shell/path caveat. A status read of one task returns the same bounded tail plus `output_path`; the full stream stays on disk. Nothing about the tools' permissions, scheduling or result statuses changed.
+
+**Pointers:** `crates/tact/src/background.rs` (`check`, `output_tail`, `OUTPUT_TAIL_CHARS`); `crates/tact/src/tool/background_run.rs` (`BACKGROUND_RUN_METADATA`, `CHECK_BACKGROUND_METADATA`, `WAIT_BACKGROUND_METADATA`, `report_waited`); tests `background::tests::check_bounds_the_output_of_a_single_task` and `output_tail_keeps_the_end_and_marks_truncation`; [Ch 13](./13_chapter_background.md) §1/§6.
+
+---
+
+## 1. 2026-09-16 — Background listings are scoped to the session
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/background.rs` (`check`, `record_in_session`); `crates/tact/src/tool/background_run.rs`; `crates/tact-ui/src/driver.rs` (`QueryBackground`); [Ch 13](./13_chapter_background.md) §1 |
+
+**Symptom / motivation:** The task store lives at `<workdir>/.tact/tact.db`, so every session in a project shares it — and `check_background` (no `task_id`) and the TUI's `/background` listed *every* record in it, including tasks started by other sessions. The agent's own listing mixed in work it had never started, and the human view did the same.
+
+**Decision:** Scope the listing to the calling session, using the same predicate the wait already used. A named `task_id` is still answered from any session (the caller asked for that task explicitly), and an absent/empty session id still means "everything" — a context without a session has nothing to filter by. Records carrying no session id belong to no session and are therefore hidden from a filtered listing.
+
+**Behavior after:** `check_background` without a `task_id`, `wait_background` without one, and `/background` all report only the current session's tasks. `check_background <id>` / `/background <id>` are unchanged. Sub-agents cannot start background tasks at all (their restricted toolset has no `background_run`); if that changes, the record would carry the child session id, so widening the scope to a session's child sessions is the follow-up to make then.
+
+**Pointers:** `crates/tact/src/background.rs` (`check(task_id, session_id)`, `record_in_session`, `has_running`); `crates/tact/src/tool/background_run.rs` (passes `ctx.session_id`); `crates/tact-ui/src/driver.rs` (passes the agent runtime session id); tests `background::tests::check_lists_only_the_requested_session` and `tool::background_run::tests::check_background_lists_only_this_session`.
+
+---
+
+## 1. 2026-09-16 — Waiting for a background task no longer means guessing a sleep
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/background.rs` (`wait`, `start`, `record`); `crates/tact/src/tool/background_run.rs` (`wait_background`, `background_run(wait_ms:)`); `crates/tact/src/tool/registry.rs`; [Ch 13](./13_chapter_background.md) §1/§6; [Ch 11](./11_chapter_task.md); `docs/agent_guidelines.md` |
+
+**Symptom / motivation:** `background_run` returned immediately and the *model* had no completion push — `AgentUpdate::BackgroundTaskFinished` goes to the TUI card only. So the working pattern was `background_run` → `sleep` → `check_background`: the model had to guess a duration, which either overshot (dead time) or undershot (another full LLM round trip), and a single `sleep 300000` could not be interrupted at all — in-flight tools are never cancelled (cancel is honoured at wave boundaries) and the `sleep` future does not even read `cancel_flag`. Measured in this repo's `tact.db`: 18 `sleep` calls at 30–300 s, 77 `check_background` calls.
+
+**Decision:** Make "wait for it" a first-class, precise primitive instead of a duration to guess. `BackgroundManager::wait(task_id, session_id, timeout, cancel)` blocks until the task (or every task of the session) reaches a terminal status, with the condition checked *before* the first sleep so an already-finished task returns instantly; it is a 150 ms read loop over the existing store (completion is written by the detached task, so there is nothing to subscribe to yet) and it observes the cancel flag at the next poll. Two tools sit on it: `wait_background { task_id?, timeout_ms? }` and `background_run { command, wait_ms? }`, the latter returning the output inline when the command finishes within the window. This is not the event-driven fix (a wake-up turn on completion, the way subagents do it) — that needs protocol and driver work and stays open.
+
+**Behavior after:** `background_run` alone is unchanged. With `wait_ms`, a command that finishes in time comes back as the finished task (status, elapsed, output tail, log path) instead of just an id; otherwise the start line is returned with a "still running" note. `wait_background` without a `task_id` waits for every task of the current session; `timeout_ms`/`wait_ms` default to 5 minutes and are capped there, matching `sleep`. The inlined output is bounded to its last 4,000 chars with the full log path reported, so a large log cannot flood the context. `sleep`'s description now says it is not for waiting on background tasks, and `check_background` points at `wait_background`.
+
+**Pointers:** `crates/tact/src/background.rs` (`WaitOutcome`, `WAIT_POLL_INTERVAL`, `wait`/`has_running`, `start` split out of `run`, `record`/`records`); `crates/tact/src/tool/background_run.rs` (`WaitBackgroundTool`, `report_waited`, `session_report`, `output_tail`); tests `background::tests::wait_*` and `tool::background_run::tests::wait_background_*`; `crates/agent_tui_kit/src/widgets/tool_widget.rs` (fallback visual kind `Sleep` + display name).
+
+---
+
+## 1. 2026-09-15 — A reasoning-only Responses stream names itself instead of reading as an empty stream
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/openai/responses/stream.rs` (`ResponsesStreamState`, `finish()`); [Ch 22](./22_chapter_llm.md) §6.2 |
+
+**Symptom / motivation:** Against a compatible endpoint (`protocol = "responses"` on `https://opencode.ai/zen/go/v1`, model `deepseek-v4.1-flash`, `reasoning_effort = "low"`) a turn that produced only reasoning ended with `unsupported response state: OpenAI Responses stream ended without a terminal event`. That wording describes an *empty* stream, and that is where it sent the reader — but reasoning deltas had arrived (they are what the TUI showed as thinking). They are forwarded to the UI and stored nowhere, so a stream that carried only reasoning was indistinguishable inside `finish()` from a stream that carried nothing at all.
+
+**Decision:** Keep the hard failure — a turn with no visible text and no completed output item is not a complete turn, and "recovering" it would produce an assistant message containing only a thinking block, the exact shape `sanitize_assistant_messages` exists to patch ([Ch 22](./22_chapter_llm.md) §6.1) — but make the state observable: count reasoning deltas on the stream state, report the three inputs of the decision (reasoning deltas, completed output items, announced-but-never-completed items), and branch the wording on whether reasoning arrived. For this endpoint the underlying cause is the gateway closing the stream without its terminal event; `protocol = "chat_completions"` on that entry avoids it entirely.
+
+**Behavior after:** A reasoning-only stream and a genuinely empty stream produce different sentences, and the reasoning-only one names both the endpoint behaviour and why it is a protocol failure rather than an empty answer. Nothing else changed: the recovery paths for a complete `output_item.done` sequence or for streamed visible text are untouched, and the decision itself is unchanged.
+
+**Pointers:** `crates/tact_llm/src/openai/responses/stream.rs` (`reasoning_deltas`, `thinking_delta`, the `finish()` terminal-event branch); tests `no_terminal_event_after_reasoning_only_names_the_reasoning` and `no_terminal_event_empty_stream_is_error`; [Ch 22](./22_chapter_llm.md) §6.2.
+
+---
+
+## 1. 2026-09-15 — `bash` can run in an opt-in bubblewrap sandbox
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/sandbox/{mod,bwrap}.rs`; `crates/tact/src/tool/bash.rs`; `crates/tact/src/config/types.rs` (`tools.sandbox` switch); [Ch 7](./07_chapter_tool.md) §7.1; [Ch 10](./10_chapter_permission.md); [Ch 21](./21_chapter_config.md); [Ch 27](./27_chapter_sandbox.md); [design](../docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md); [plan](../docs/superpowers/plans/2026-09-15-bwrap-sandbox.md) |
+
+**Symptom / motivation:** An approved `bash` command ran as an ordinary host process: it could read the user's home directory (SSH keys, cloud credentials), any unrelated repository, and the host network. Permission answers *may this command run*, not *what can it reach*, and the failure mode that matters is not the agent's own command but the third-party code it pulls in — `cargo` build scripts, `npm` lifecycle scripts, test binaries, `make` recipes.
+
+**Decision:** Add a second, opt-in layer instead of changing the permission model. An `[tools] sandbox` boolean (default `false`) wraps the existing `sh -c` process in the platform's sandbox — Linux selects bubblewrap, and no other platform has an implementation yet, so the switch is inert there (reported, never silent). The switch is a boolean rather than a backend name because the backend is not a user choice: offering `"bwrap"` as a config value invited a configuration that cannot work on the host that reads it; the sandbox builds the invocation only, so spawning, streaming, timeout, cancellation and process-group teardown are untouched. The policy is a read-write bind of `work_dir` at `/workspace`, read-only `/usr` `/bin` `/lib` `/lib64` `/etc` plus a fixed toolchain allowlist (`~/.rustup`, `~/.cargo`, `~/.config/git`, `~/.npm`, wired through `RUSTUP_HOME` / `CARGO_HOME` / `GIT_CONFIG_GLOBAL` / `NPM_CONFIG_CACHE`), a fresh `/proc` and `/dev`, a tmpfs `/tmp`, `--clearenv` with an explicit variable allowlist, `--unshare-net`, `--unshare-pid` and `--die-with-parent`. `--new-session` is **forbidden**: measured, it detaches the command into its own process group, so the existing `killpg` teardown kills only `bwrap` while grandchildren hold the pipes open and the tool call never returns. Anything that prevents a sandbox from starting degrades to unsandboxed with a startup warning (fail-open, never silent) rather than failing the tool.
+
+**Behavior after:** With the default `false` nothing changes at all, and on a platform without an implementation `true` changes nothing either (with a warning). Where a sandbox does start, `pwd` is `/workspace`, host paths outside the workspace and the host home directory are unreachable, `curl`/`git fetch`/`npm install` have no network, and the mounted `/proc` shows only sandbox processes (no host process table, no signalling same-uid host processes). `cargo`/`git`/`npm` still work because of the read-only toolchain allowlist. The `bash` description is rewritten at startup from the *resolved* state to state `/workspace` + no network, so the split path space (host absolute paths in every in-process tool result) is visible to the model. Scope is stated in the docs: the sandbox bounds third-party code an approved command runs, **not** the agent — `background_run` and `worktree_run` still spawn unsandboxed host shells ([Ch 13](./13_chapter_background.md), [Ch 15](./15_chapter_worktree.md)).
+
+**Pointers:** `crates/tact/src/sandbox/mod.rs` (`Sandbox`, `resolve`, `SandboxDegradation`); `crates/tact/src/sandbox/bwrap.rs` (pure `bwrap_args`, workspace guard, probe); `crates/tact/src/tool/bash.rs` (`SANDBOXED_BASH_DESCRIPTION`, the `match &ctx.sandbox` start, the one-time degraded notice); `crates/tact-ui/src/{interactive,headless}.rs` (startup resolve + notice + description override); `config.example.toml` `[tools] sandbox`.
+
+---
+
 ## 1. 2026-09-15 — The native MCP config is renamed to `.mcp.json`
 
 | Field | Value |

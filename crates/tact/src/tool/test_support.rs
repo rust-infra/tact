@@ -97,6 +97,8 @@ pub fn test_context(name: &str) -> ToolContext {
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
         bash_nice: 0,
+        sandbox: None,
+        sandbox_degraded: None,
         session_id: None,
         session_store: None,
         permission_snapshot: None,

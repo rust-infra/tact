@@ -306,6 +306,17 @@ async fn build_agent_for_interactive(
     // Annotate `spawn_subagent` with the current subagent skill-card catalog
     // so the main agent can discover valid `skill:` names.
     tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
+    // Opt-in sandbox, resolved once: it is constant for the session lifetime, so
+    // the bash description below can state the sandbox semantics truthfully.
+    // A switch that cannot be honoured degrades to unsandboxed and is announced.
+    let (sandbox, sandbox_degraded) =
+        tact::sandbox::resolve(tact::config::settings().tools.sandbox, &work_dir);
+    if let Some(degraded) = &sandbox_degraded {
+        let _ = agent_tx.send(AgentUpdate::Info(degraded.reason.clone()));
+    }
+    if sandbox.is_some() {
+        tools.set_tool_description("bash", tact::tool::SANDBOXED_BASH_DESCRIPTION);
+    }
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
@@ -323,6 +334,8 @@ async fn build_agent_for_interactive(
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
         bash_nice: tact::config::settings().tools.bash_nice,
+        sandbox,
+        sandbox_degraded,
         session_id: None,
         session_store: None,
         permission_snapshot: None,

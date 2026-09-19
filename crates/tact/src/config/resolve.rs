@@ -497,6 +497,7 @@ struct NonLlmSettings {
     bash_timeout_secs: u64,
     bash_nice: i32,
     rtk_filter: bool,
+    sandbox: bool,
     permission_mode: Option<String>,
     mcp: McpSettings,
 }
@@ -562,6 +563,9 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
 
     let rtk_filter = toml_cfg.tools.rtk_filter.unwrap_or(false);
 
+    // Opt-in: absent means off, so a default install is unchanged.
+    let sandbox = toml_cfg.tools.sandbox.unwrap_or(false);
+
     let permission_mode = args
         .permission_mode
         .clone()
@@ -579,6 +583,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         bash_timeout_secs,
         bash_nice,
         rtk_filter,
+        sandbox,
         permission_mode,
         mcp: resolve_mcp(toml_cfg),
     })
@@ -628,6 +633,7 @@ pub(super) fn resolve_non_llm_settings(
             bash_timeout_secs: non_llm.bash_timeout_secs,
             bash_nice: non_llm.bash_nice,
             rtk_filter: non_llm.rtk_filter,
+            sandbox: non_llm.sandbox,
         },
         // A malformed `[voice]` warns and degrades to disabled here: this path
         // serves subcommands that never record audio, so it must not fail.
@@ -826,6 +832,7 @@ pub(super) fn resolve_config(
             bash_timeout_secs: non_llm.bash_timeout_secs,
             bash_nice: non_llm.bash_nice,
             rtk_filter: non_llm.rtk_filter,
+            sandbox: non_llm.sandbox,
         },
         voice,
         mcp: non_llm.mcp,
@@ -1510,6 +1517,34 @@ jpeg_quality = 0
         let cfg: TactTomlConfig = toml::from_str("[tools]\nbash_timeout_secs = 0\n").unwrap();
         let disabled = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
         assert_eq!(disabled.tools.bash_timeout_secs, 0);
+    }
+
+    #[test]
+    fn sandbox_is_an_opt_in_switch() {
+        // Absent key: the sandbox is off, so a default install is unchanged.
+        let default =
+            resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None).unwrap();
+        assert!(!default.tools.sandbox);
+
+        let cfg: TactTomlConfig = toml::from_str("[tools]\nsandbox = true\n").unwrap();
+        let opted_in = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
+        assert!(opted_in.tools.sandbox);
+
+        let cfg: TactTomlConfig = toml::from_str("[tools]\nsandbox = false\n").unwrap();
+        let opted_out = resolve_non_llm_settings(&empty_cli_args(), &cfg, None).unwrap();
+        assert!(!opted_out.tools.sandbox);
+
+        // Backend names are no longer part of the config surface; the old
+        // spelling must be a parse error rather than a silently ignored key.
+        for bad in [
+            "[tools]\nsandbox = \"bwrap\"\n",
+            "[tools]\nsandbox = \"none\"\n",
+        ] {
+            assert!(
+                toml::from_str::<TactTomlConfig>(bad).is_err(),
+                "{bad:?} should not parse: the switch is a boolean"
+            );
+        }
     }
 
     #[test]

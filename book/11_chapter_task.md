@@ -91,7 +91,7 @@ After all waves finish:
 | `read_file` | `input.path` | read |
 | `write_file`, `edit_file` | `input.path` | write |
 | `task_create`, `task_update`, `task_get`, `task_list` | `__tact_tasks__` | write (serialize with each other) |
-| `sleep` | — | independent |
+| `sleep`, `wait_background`, `check_background` | — | independent |
 | `bash`, `apply_patch`, subagent, MCP, unknown | — | barrier |
 
 Paths are normalised to absolute and rooted at `work_dir`. Two paths overlap if they are equal or one is an ancestor of the other, so a write to `src/foo.rs` conflicts with a search scoped to `src/`.

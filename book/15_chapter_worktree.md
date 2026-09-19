@@ -127,6 +127,8 @@ One behavioral wrinkle: `WorktreeManager::run` executes git and shell commands *
 
 `worktree_run` executes arbitrary shell strings and goes through the same `validate_shell_command` gate as `bash` — high-risk substrings (`sudo`, `shutdown`, destructive `rm`, device redirects) are blocked. Its permission classification is whatever the [Permission Model](./10_chapter_permission.md) assigns to the `worktree_run` tool name; the embedded command string is additionally inspected for high-risk patterns. Treat lanes as having the same blast radius as `bash`.
 
+One difference: the opt-in `bash` sandbox ([Ch 7](./07_chapter_tool.md) §7.1, [Ch 27](./27_chapter_sandbox.md)) covers only the `bash` tool. `worktree_run` and the lane-management `git` calls spawn their own host processes, so a sandboxed `bash` session still has an unsandboxed shell one tool call away.
+
 ---
 
 ## 7. Startup Reconciliation

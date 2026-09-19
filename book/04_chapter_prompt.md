@@ -320,19 +320,6 @@ Platform: macos
   docs/
   scripts/
   skills/
-book
-  output/
-  prompts/
-  scripts/
-  templates/
-book/output
-  chm/
-  mcp/
-book/output/chm
-  html/
-book/scripts
-  chm/
-  lib/
 crates
   protocol/
   tact-ui/

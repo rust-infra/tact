@@ -204,6 +204,8 @@ theme = "ink"
 [tools]
 # Bash 墙钟超时秒数（默认 1800；0 表示禁用）
 bash_timeout_secs = 1800
+# `bash` 工具的 OS 级沙箱：false（默认）| true（需显式开启）
+# sandbox = true
 ```
 
 ### 未知键会被拒绝
@@ -251,6 +253,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `skill_dirs` | 空（无额外根） | — |
 | `skill_body_auto_inject` | `false` | — |
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
+| `tools.sandbox` | `false` | `true` / `false`（Linux：bubblewrap） |
 | `ui.theme` | `"ink"` | — |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
@@ -399,6 +402,15 @@ tact-ui headless "Summarize this repo"
 插件管理在 `tact plugin` / `/plugin` 下：`list` 打印每个已安装插件的功能摘要（`skills=N commands=M hooks mcp`），`install` / `uninstall` / `update` / `reload` 管理 `~/.tact/plugins` 下的修订锁定缓存。插件**状态**（`installed.json`、`marketplaces.json`）单独放在 `~/.tact/plugins/state/`；插件根下的旧副本仍会被读取并在首次使用时迁移，因此共享同一 home 的旧版二进制仍可用。Marketplace 命令（`tact plugin marketplace add|list|update|remove`）管理 Git/catalog 源，并会发现 `~/.agents/plugins/marketplace.json` 与 最近的仓库 `.agents/plugins/marketplace.json` 下的 Codex 本地 marketplace。始终注册两个内置 Git marketplace：`claude-plugins-official` 与 OpenAI Codex 目录 `openai-curated`（`github.com/openai/plugins`）。不带 `@marketplace` 的 `plugin install <name>` 优先匹配已发现的 Codex marketplace，找不到才回退到 `claude-plugins-official`。已安装插件内容贡献 skills（`plugin:<name>`）、`commands/*.md` 斜杠命令、MCP 服务器与生命周期 hook——见 Ch 2、8、9、12。MCP 服务器声明在 `~/.tact/.mcp.json`（用户级）或 `<workdir>/.tact/.mcp.json`（项目级）；Claude Code 的 `<workdir>/.mcp.json` 也会被读取，优先级最低；已安装插件仍会提供 server。不读取 cwd 级 Codex manifest——那个文件在 `CODEX_HOME` 里。条目带 `"enabled": false` 时会被解析但绝不连接；Tact 未建模的键会被上报而不是忽略。条目可以是本地（`command`，通过 stdio 启动）或远程（`url`，Streamable HTTP），可选静态 `headers` 或 `auth: { "type": "oauth", ... }`；OAuth token 按 server 存放在 `~/.tact/mcp/oauth/` 下，用 `/mcp auth <server>`（交互式）或 `tact-ui mcp login <server>`（CLI）授权；`/mcp list` 在 TUI 内显示已配置 server 及其实时状态（仅空闲、绝不重连）。CLI 覆盖完整生命周期——`tact-ui mcp list`（每个 server 的传输方式与状态）、`get <name>`（单个 server 及其工具）、`add`/`remove`（`--user` 写入 home 文件，`--force` 覆盖）、`login`/`logout`（已存凭据）——见 Ch 8。
 
 两个入口点均通过 `crates/tact-ui/src/permission.rs` 中的 `permission_mode_from_config()` 读取 `permission_mode`。
+
+`tools.sandbox` 在 v1 仅可由 TOML 设置，**默认关闭**，且只是一个布尔开关：
+`false`（默认）时 `bash` 行为与以前完全一致，`true` 请求
+[工具系统 §7.1](./07_chapter_tool_zh.md) 与 [Bash 沙箱](./27_chapter_sandbox_zh.md) 描述的沙箱。该开关刻意**不**指定后端——
+用什么机制是平台决策，写在 `crates/tact/src/sandbox/` 里（Linux 用 bubblewrap；其他
+平台尚无实现，开关在那里是空操作）。开关只是**请求**：实际生效的沙箱在启动时解析
+一次，任何导致无法启动的原因（平台无实现、缺少 `bwrap`、内核限制 user namespace）
+都会降级为不沙箱并告警——fail-open，绝不因此让工具报错。非布尔取值是解析错误，
+而不是静默回落。没有对应 CLI 参数。
 
 `tools.bash_timeout_secs` 在 v1 仅可由 TOML 设置。Resolve 保留 `0` 的“禁用”
 语义，否则经 `ToolSettings` 将该值传到每个 `ToolContext`；没有对应 CLI flag。

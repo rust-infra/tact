@@ -1069,6 +1069,201 @@ mod tests {
     }
 
     #[test]
+    fn background_run_popup_opens_with_the_command_like_bash() {
+        // Regression: the finalized keep-live card dropped the `$ <command>`
+        // line that both bash's finished popup and the live card carry, so the
+        // command survived only in the popup *title* — one row, clipped at the
+        // popup width.
+        let mut app = make_app();
+        let command = "cargo test --workspace --all-targets -- -D warnings";
+        let mut presentation = ToolPresentationInfo::generic("background_run");
+        presentation.keep_live = true;
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "bg1".into(),
+            tool_name: "background_run".into(),
+            arg_summary: command.into(),
+            arg_full: command.into(),
+            presentation,
+        });
+        app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
+            tool_id: "bg1".into(),
+            success: true,
+            message: "Background task x completed".into(),
+            output: "Compiling ...\ndone".into(),
+        });
+
+        let output = app.tools_mut().blocks[0].output.clone();
+        let content = output.detail_full.clone().expect("background detail");
+        assert_eq!(
+            content,
+            format!("$ {command}\n\nCompiling ...\ndone"),
+            "the popup must open with the full command, like bash's"
+        );
+
+        let popup = app
+            .popup_from_tool_output(&output)
+            .expect("background popup");
+        assert_eq!(popup.inline_content.as_deref(), Some(content.as_str()));
+        // The hint's line count stays the popup's own count (prefix included).
+        assert_eq!(output.detail_total_lines, content.lines().count());
+    }
+
+    #[test]
+    fn failed_command_popup_opens_with_the_command() {
+        // Regression: a failed command's popup title is the error card title and
+        // its body was the error text alone, so the call's parameters were
+        // missing from the popup entirely (the drawn error card keeps the error
+        // first on purpose — that is what the preview shows).
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "b1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "cargo build".into(),
+            arg_full: "cargo build --release".into(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "b1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "cargo build".into(),
+                arg_full: Some("cargo build --release".into()),
+                status: StepStatus::Failed,
+                message: "command failed".into(),
+                detail: Some("error: linker failed".into()),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        let output = app.tools_mut().blocks[0].output.clone();
+        let popup = app.popup_from_tool_output(&output).expect("failed popup");
+        assert_eq!(
+            popup.inline_content.as_deref(),
+            Some("$ cargo build --release\n\nerror: linker failed")
+        );
+    }
+
+    #[test]
+    fn collapsed_task_popup_opens_with_the_task_title() {
+        // A `Task`-kind block collapses to two rows and hides its result; the
+        // popup that opens from the hint must also carry *what the call was*,
+        // and the hint's line count must count that line too.
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "t1".into(),
+            tool_name: "task_create".into(),
+            arg_summary: "# Task.1 · fix the popup".into(),
+            arg_full: "# Task.1 · fix the popup".into(),
+            presentation: ToolPresentationInfo::generic("task_create"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "t1".into(),
+            result: StepResult {
+                tool: "task_create".into(),
+                arg_summary: "# Task.1 · fix the popup".into(),
+                arg_full: Some("# Task.1 · fix the popup".into()),
+                status: StepStatus::Success,
+                message: "created task 1".into(),
+                detail: Some("created task 1\nsubject: fix the popup".into()),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("task_create"),
+            },
+        });
+
+        let output = app.tools_mut().blocks[0].output.clone();
+        assert!(output.layout.detail_collapsed);
+        let popup = app.popup_from_tool_output(&output).expect("task popup");
+        let content = popup.inline_content.expect("task popup content");
+        assert_eq!(
+            content,
+            "# Task.1 · fix the popup\n\ncreated task 1\nsubject: fix the popup"
+        );
+        assert_eq!(
+            output.detail_total_lines,
+            content.lines().count(),
+            "the hint and the popup must print the same count"
+        );
+    }
+
+    #[test]
+    fn ask_user_popup_opens_with_the_question() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "a1".into(),
+            tool_name: "ask_user".into(),
+            arg_summary: "Which database should I use?".into(),
+            arg_full: "Which database should I use?".into(),
+            presentation: ToolPresentationInfo::generic("ask_user"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "a1".into(),
+            result: StepResult {
+                tool: "ask_user".into(),
+                arg_summary: "Which database should I use?".into(),
+                arg_full: Some("Which database should I use?".into()),
+                status: StepStatus::Success,
+                message: "User selected: B".into(),
+                detail: Some("User selected: B\nthe long note".into()),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("ask_user"),
+            },
+        });
+
+        let output = app.tools_mut().blocks[0].output.clone();
+        let popup = app.popup_from_tool_output(&output).expect("ask popup");
+        assert_eq!(
+            popup.inline_content.as_deref(),
+            Some("Which database should I use?\n\nUser selected: B\nthe long note")
+        );
+    }
+
+    #[test]
+    fn json_input_tool_popup_does_not_repeat_its_argument() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "m1".into(),
+            tool_name: "save_memory".into(),
+            arg_summary: r#"{"name":"tabs"}"#.into(),
+            arg_full: r#"{"name":"tabs","content":"use tabs","type":"user"}"#.into(),
+            presentation: ToolPresentationInfo::generic("save_memory"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 0,
+            tool_id: "m1".into(),
+            result: StepResult {
+                tool: "save_memory".into(),
+                arg_summary: r#"{"name":"tabs"}"#.into(),
+                arg_full: Some(r#"{"name":"tabs","content":"use tabs"}"#.into()),
+                status: StepStatus::Success,
+                message: "Saved memory 'tabs'".into(),
+                detail: Some("Saved memory 'tabs'\npath: memory/tabs.md".into()),
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("save_memory"),
+            },
+        });
+
+        let output = app.tools_mut().blocks[0].output.clone();
+        let popup = app.popup_from_tool_output(&output).expect("memory popup");
+        assert_eq!(
+            popup.inline_content.as_deref(),
+            Some("Saved memory 'tabs'\npath: memory/tabs.md")
+        );
+    }
+
+    #[test]
     fn subagent_popups_keep_independent_scroll_per_tool_id() {
         let mut app = make_app();
         let phys_a = push_subagent_card(&mut app, "sa-1");

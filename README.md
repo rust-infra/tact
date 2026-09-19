@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
-  <img src="https://img.shields.io/badge/version-1.1.29-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-1.1.30-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey?style=flat-square" alt="Platform" />
   <a href="https://ko-fi.com/00x80">
     <img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Support on Ko-fi" />
@@ -123,8 +123,8 @@ cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the re
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
 
 ```bash
-git tag v1.1.29
-git push origin v1.1.29
+git tag v1.1.30
+git push origin v1.1.30
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.
@@ -268,7 +268,7 @@ Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](
 | Category | Tools |
 |----------|-------|
 | **File System** | `read_file`, `write_file`, `edit_file` |
-| **Shell** | `bash`, `background_run`, `check_background`, `sleep` |
+| **Shell** | `bash`, `background_run`, `check_background`, `wait_background`, `sleep` |
 | **Task Management** | `task_create`, `task_get`, `task_list`, `task_update` |
 | **Team & Sub-agents** | `spawn_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
 | **Memory & Knowledge** | `save_memory`, `load_skill`, `compact` |
@@ -381,7 +381,7 @@ The agent loop:
 8. Writes results back to the conversation history; a successful `compact` tool then rewrites context
 9. Continues until the model stops requesting tools (or recovery exhausts)
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop).
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop, bash sandbox).
 
 ---
 
@@ -393,9 +393,10 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `write_file` | Write or overwrite a file |
 | `edit_file` | Replace exact text in a file (first match, or all with `replace_all`) |
 | `bash` | Run a shell command |
-| `background_run` | Run a command in the background |
-| `check_background` | Check background task status |
-| `sleep` | Wait for N milliseconds |
+| `background_run` | Run a command in the background (`wait_ms` blocks until it finishes and returns the output) |
+| `check_background` | Check background task status (this session's tasks) |
+| `wait_background` | Wait for a background task to finish, returning as soon as it does |
+| `sleep` | Wait for N milliseconds (not for waiting on background tasks) |
 | `spawn_subagent` | Spawn a sub-agent with fresh context |
 | `task_create` | Create a persistent task |
 | `task_get` | Get task details by ID |

@@ -231,6 +231,12 @@ pub struct ToolsTomlConfig {
     /// Defaults to false — opt-in only, because piping to an external process
     /// has privacy implications.
     pub rtk_filter: Option<bool>,
+    /// OS-level sandbox for the `bash` tool. Defaults to `false` (opt-in).
+    ///
+    /// A plain on/off switch: *which* mechanism implements it is a platform
+    /// decision made in `crate::sandbox` (Linux: bubblewrap; any other platform:
+    /// not implemented, so enabling the switch there has no effect).
+    pub sandbox: Option<bool>,
 }
 
 /// `[mcp]` section of `config.toml`.
@@ -377,6 +383,12 @@ pub struct ToolSettings {
     pub bash_nice: i32,
     /// Whether to pipe bash outputs through `rtk pipe` (opt-in, default false).
     pub rtk_filter: bool,
+    /// Whether the `bash` sandbox is requested (opt-in, default `false`).
+    ///
+    /// This is the *requested* value: whether a sandbox is actually active is
+    /// decided at startup by `crate::sandbox::resolve`, which picks the
+    /// platform's implementation and may degrade to unsandboxed, reporting why.
+    pub sandbox: bool,
 }
 
 impl ToolSettings {

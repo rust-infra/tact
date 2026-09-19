@@ -76,7 +76,7 @@ fn kind_from_presentation(
             tact_protocol::ToolVisualKind::Task
         }
         "spawn_subagent" => tact_protocol::ToolVisualKind::Subagent,
-        "sleep" => tact_protocol::ToolVisualKind::Sleep,
+        "sleep" | "wait_background" => tact_protocol::ToolVisualKind::Sleep,
         _ => tact_protocol::ToolVisualKind::Generic,
     }
 }
@@ -106,6 +106,7 @@ pub fn tool_display_name(tool: &str) -> String {
         "sleep" => "💤 Sleep".to_string(),
         "background_run" => "⚙️ Background Run".to_string(),
         "check_background" => "⚙️ Background Check".to_string(),
+        "wait_background" => "⏳ Wait Background".to_string(),
         "load_skill" => "📚 Skill".to_string(),
         "save_memory" => "🧠 Memory".to_string(),
         "compact" => "📦 Compact".to_string(),
@@ -651,6 +652,32 @@ impl ToolWidget {
         self
     }
 
+    /// Detail of a command-shaped call, opened by the `$ <command>` line it ran.
+    ///
+    /// [`Self::from_step_result`] applies that prefix for a finished command, and
+    /// [`Self::with_live_output`] for a running one; a keep-live command
+    /// (`background_run`) has no `StepResult` to read it from, so its finalize
+    /// path uses this instead. Without the prefix the command survives only in
+    /// the popup's *title*, which is a single row clipped at the popup width —
+    /// while the live card the user was just watching showed it in full.
+    ///
+    /// A *failed* call is stored raw: its card has to keep the error first (the
+    /// failure detail **is** the error report), so the popup's `$ <command>`
+    /// line is added by [`Self::build`] instead.
+    pub fn with_command_detail(mut self, detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        self.detail = Some(if matches!(self.phase, ToolPhase::Failed) {
+            detail
+        } else {
+            command_detail(
+                kind_from_presentation(&self.presentation, &self.tool_name),
+                &self.arg_full,
+                &detail,
+            )
+        });
+        self
+    }
+
     pub fn with_live_output(mut self, output: &ToolOutputBuffer) -> Self {
         let preview_cap = if self.tool_name == "spawn_subagent" {
             SUBAGENT_LIVE_OUTPUT_PREVIEW_LINES
@@ -773,12 +800,20 @@ impl ToolWidget {
                 }
             }
             tact_protocol::ToolVisualKind::Sleep => {
+                // The kind is shared: `sleep` passes its duration as the
+                // summary, `wait_background` the id of the task it is waiting
+                // on. So the label has to come from the tool's own presentation
+                // (💤 Sleep / ⏳ Wait Background) — a label hardcoded here
+                // silently overrode `display_name`, which is how a wait rendered
+                // as "Sleep". A serialized input is skipped the same way the
+                // detail card skips it ([`is_written_argument`]).
+                let label = display_name_from_presentation(&self.presentation, &self.tool_name);
                 if let Ok(ms) = self.arg_summary.parse::<u64>() {
-                    format!("⏳ Sleep · {}", sleep_duration(ms))
-                } else if self.arg_summary.is_empty() {
-                    "⏳ Sleep".to_string()
+                    format!("{label} · {}", sleep_duration(ms))
+                } else if self.arg_summary.is_empty() || !is_written_argument(&self.arg_summary) {
+                    label
                 } else {
-                    format!("⏳ Sleep · {}", self.arg_summary)
+                    format!("{label} · {}", self.arg_summary)
                 }
             }
             tact_protocol::ToolVisualKind::Task => {
@@ -909,9 +944,10 @@ impl ToolWidget {
             // No card is drawn, but the popup still needs the text, its line
             // count, and a title for the kinds that have no other one to fall
             // back on (a cardless tool would otherwise be headed by its bare
-            // tool name).
-            let detail = self.display_detail().unwrap_or_default();
-            let total = detail.lines().count();
+            // tool name). The count is the popup's own line count — the meta
+            // hint prints it, so the two must not disagree; the call's argument
+            // line (when there is one) is part of it.
+            let total = self.popup_detail().unwrap_or_default().lines().count();
             (Vec::new(), total)
         } else {
             (Vec::new(), 0)
@@ -940,7 +976,7 @@ impl ToolWidget {
             detail_preview,
             detail_total_lines,
             detail_full: if has_detail_card || detail_collapsed {
-                self.display_detail().map(str::to_string)
+                self.popup_detail()
             } else {
                 None
             },
@@ -958,6 +994,63 @@ impl ToolWidget {
                 .filter(|s| !s.is_empty())
         } else {
             self.detail.as_deref().filter(|s| !s.is_empty())
+        }
+    }
+
+    /// The text the popup shows (`detail_full`), which is *not* always
+    /// [`Self::display_detail`]: the popup opens with the call itself (see
+    /// [`Self::argument_line`]) above the result it returned.
+    ///
+    /// A failed command's card must keep the error first — the failure detail is
+    /// the error report, and the card previews its head — so its
+    /// `$ <command>` line is added here, where only the popup can see it. Every
+    /// other command phase already carries the prefix in its detail (see
+    /// [`Self::with_command_detail`]).
+    ///
+    /// Consequence: the popup can hold up to two more lines than
+    /// `detail_preview`, which is what the drawn card shows; nothing on a drawn
+    /// card prints a count that would disagree (a collapsed block's hint counts
+    /// `detail_full` instead — see [`Self::build`]).
+    fn popup_detail(&self) -> Option<String> {
+        let detail = self.display_detail()?;
+        Some(match self.argument_line() {
+            Some(line) => format!("{line}\n\n{detail}"),
+            None => detail.to_string(),
+        })
+    }
+
+    /// The call's own line above the result, or `None` when the popup already
+    /// holds it.
+    ///
+    /// The popup is the only surface that shows a collapsed block's content, so
+    /// it opens with the parameters — but each kind carries them differently:
+    ///
+    /// * `Command` — `$ <command>`. Either it is already baked into the detail
+    ///   (success and live, through [`Self::with_command_detail`] /
+    ///   [`Self::from_step_result`] / [`Self::with_live_output`]), or the card is
+    ///   a failure whose error has to stay first and the line is added here.
+    /// * `FileRead` / `FileWrite` / `FileEdit` — the body **is** the call (the
+    ///   file, its new content, its diff) and the path is the popup title.
+    /// * `Subagent` — the subagent popup prepends `Prompt:` itself, from the same
+    ///   `arg_full`; this renderer's popup never opens for it.
+    /// * `Task` / `Generic` / `Sleep` — the body is only the result, so the
+    ///   argument goes above it. A serialized input object is *not* a parameter a
+    ///   human reads: it is one long escaped line that repeats the block's own
+    ///   parameter row and pushes the result down, so it stays out.
+    fn argument_line(&self) -> Option<String> {
+        let arg = self.arg_full.trim();
+        if arg.is_empty() {
+            return None;
+        }
+        match kind_from_presentation(&self.presentation, &self.tool_name) {
+            tact_protocol::ToolVisualKind::Command => {
+                matches!(self.phase, ToolPhase::Failed).then(|| format!("$ {arg}"))
+            }
+            tact_protocol::ToolVisualKind::FileRead
+            | tact_protocol::ToolVisualKind::FileWrite
+            | tact_protocol::ToolVisualKind::FileEdit
+            | tact_protocol::ToolVisualKind::Subagent => None,
+            _ => is_written_argument(arg).then(|| arg.to_string()),
         }
     }
 
@@ -1039,6 +1132,22 @@ fn command_detail(
         return detail.to_string();
     }
     format!("$ {full_arg}\n\n{detail}")
+}
+
+/// Whether an argument summary is text someone wrote, rather than the tool's
+/// serialized input.
+///
+/// Only one summary policy dumps the whole input object — `Json`, which is also
+/// the fallback for every tool that declares none (MCP/plugin tools included) —
+/// and `serde_json` renders an object as `{…}` and an array as `[…]`. Every
+/// other policy returns a single field: a command, a path, a question
+/// (`ask_user`), a prompt, a task title. The protocol carries the *rendered*
+/// summary, not the policy behind it, so the shape of the text is the only
+/// signal the renderer has; a dump is skipped because showing it would repeat
+/// the block's parameter row as one long escaped line and push the result — the
+/// reason the popup exists — further down.
+fn is_written_argument(arg: &str) -> bool {
+    !arg.starts_with('{') && !arg.starts_with('[')
 }
 
 #[cfg(test)]
@@ -1136,6 +1245,216 @@ mod tests {
             Some(
                 "$ git commit -m \"chore: cargo fmt\"\n\n[feat/sdk abc] chore: cargo fmt\n6 files changed, 23 insertions(+), 19 deletions(-)\n"
             )
+        );
+    }
+
+    #[test]
+    fn with_command_detail_prepends_the_command_for_command_kinds() {
+        let output = ToolWidget::new()
+            .with_tool("background_run")
+            .with_arg_summary("cargo build")
+            .with_arg_full("cargo build --release")
+            .with_phase(ToolPhase::Success)
+            .with_command_detail("Compiling ...\ndone")
+            .build();
+
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some("$ cargo build --release\n\nCompiling ...\ndone")
+        );
+    }
+
+    #[test]
+    fn with_command_detail_leaves_non_command_kinds_alone() {
+        let output = ToolWidget::new()
+            .with_tool("read_file")
+            .with_arg_summary("src/lib.rs")
+            .with_phase(ToolPhase::Success)
+            .with_command_detail("fn main() {}")
+            .build();
+
+        assert_eq!(output.detail_full.as_deref(), Some("fn main() {}"));
+    }
+
+    #[test]
+    fn failed_command_card_stays_error_first_but_its_popup_opens_with_the_command() {
+        // The card is what must stay readable without a click, so the error
+        // keeps the first preview rows; the popup — the surface that exists to
+        // show the whole call — opens with the same `$ <command>` line a
+        // successful command does.
+        let result = StepResult {
+            tool: "bash".to_string(),
+            arg_summary: "cargo build".to_string(),
+            arg_full: Some("cargo build --release".to_string()),
+            status: StepStatus::Failed,
+            message: "command failed".to_string(),
+            detail: Some("error: linker failed".to_string()),
+            duration_us: Some(1_000),
+            permission_label: None,
+            presentation: ToolPresentationInfo::generic("bash"),
+        };
+        let output = ToolWidget::from_step_result(&result).build();
+
+        assert!(output.layout.has_detail_card && !output.layout.detail_collapsed);
+        assert_eq!(
+            output.detail_preview[0].plain_text(),
+            "error: linker failed"
+        );
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some("$ cargo build --release\n\nerror: linker failed")
+        );
+    }
+
+    #[test]
+    fn failed_command_detail_is_not_double_prefixed() {
+        // The keep-live finalize path goes through `with_command_detail` for
+        // both outcomes; a failure must still gain exactly one prefix line.
+        let output = ToolWidget::new()
+            .with_tool("background_run")
+            .with_arg_summary("cargo build")
+            .with_arg_full("cargo build --release")
+            .with_phase(ToolPhase::Failed)
+            .with_command_detail("error: build failed")
+            .build();
+
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some("$ cargo build --release\n\nerror: build failed")
+        );
+    }
+
+    #[test]
+    fn failed_non_command_keeps_its_raw_detail_in_the_popup() {
+        let output = ToolWidget::new()
+            .with_tool("read_file")
+            .with_arg_summary("src/lib.rs")
+            .with_phase(ToolPhase::Failed)
+            .with_command_detail("permission denied")
+            .build();
+
+        assert_eq!(output.detail_full.as_deref(), Some("permission denied"));
+    }
+
+    #[test]
+    fn task_popup_opens_with_the_task_title() {
+        let widget = ToolWidget::new()
+            .with_tool("task_create")
+            .with_arg_summary("# Task.1 · fix the popup")
+            .with_arg_full("# Task.1 · fix the popup")
+            .with_phase(ToolPhase::Success)
+            .with_detail("created task 1\nsubject: fix the popup");
+
+        let output = widget.build();
+
+        assert!(output.layout.detail_collapsed, "a task result collapses");
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some("# Task.1 · fix the popup\n\ncreated task 1\nsubject: fix the popup")
+        );
+        // The collapsed hint prints this count, so it must match the popup.
+        assert_eq!(
+            output.detail_total_lines,
+            output.detail_full.as_deref().unwrap().lines().count()
+        );
+    }
+
+    #[test]
+    fn ask_user_popup_opens_with_the_question() {
+        let output = ToolWidget::new()
+            .with_tool("ask_user")
+            .with_arg_summary("Which database should I use?")
+            .with_arg_full("Which database should I use?")
+            .with_phase(ToolPhase::Success)
+            .with_detail("User selected: B\nthe long note")
+            .build();
+
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some("Which database should I use?\n\nUser selected: B\nthe long note")
+        );
+    }
+
+    #[test]
+    fn json_argument_is_not_repeated_in_the_popup() {
+        // A serialized input object is the tool's whole input dumped as one
+        // escaped line — it repeats the block's parameter row and would push the
+        // result down, so those kinds keep the popup they had.
+        for tool in ["save_memory", "load_skill", "mcp__notes__search"] {
+            let output = ToolWidget::new()
+                .with_tool(tool)
+                .with_arg_summary(r#"{"query":"popup params"}"#)
+                .with_arg_full(r#"{"query":"popup params","limit":10}"#)
+                .with_phase(ToolPhase::Success)
+                .with_detail("3 hits\nhit one")
+                .build();
+
+            assert_eq!(
+                output.detail_full.as_deref(),
+                Some("3 hits\nhit one"),
+                "{tool} must not repeat its JSON input"
+            );
+        }
+    }
+
+    #[test]
+    fn kinds_whose_body_is_the_call_do_not_repeat_it() {
+        // The read body / written content / diff *is* the call; the path is the
+        // popup title. A subagent's prompt is prepended by the subagent popup
+        // itself, from the same `arg_full`.
+        for (tool, kind, detail) in [
+            (
+                "read_file",
+                tact_protocol::ToolVisualKind::FileRead,
+                "fn main() {}",
+            ),
+            (
+                "write_file",
+                tact_protocol::ToolVisualKind::FileWrite,
+                "fn main() {}",
+            ),
+            (
+                "edit_file",
+                tact_protocol::ToolVisualKind::FileEdit,
+                "fn main() {}",
+            ),
+            (
+                "spawn_subagent",
+                tact_protocol::ToolVisualKind::Subagent,
+                "child summary",
+            ),
+        ] {
+            let mut presentation = ToolPresentationInfo::generic(tool);
+            presentation.visual_kind = kind;
+            let output = ToolWidget::new()
+                .with_tool(tool)
+                .with_arg_summary("src/lib.rs")
+                .with_arg_full("src/lib.rs")
+                .with_phase(ToolPhase::Success)
+                .with_detail(detail)
+                .build();
+
+            assert_eq!(
+                output.detail_full.as_deref(),
+                Some(detail),
+                "{tool} must not repeat its argument"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_task_popup_shows_the_title_before_the_error() {
+        let output = ToolWidget::new()
+            .with_tool("task_update")
+            .with_arg_summary("# Task.7 · ship it")
+            .with_arg_full("# Task.7 · ship it")
+            .with_phase(ToolPhase::Failed)
+            .with_detail("no such task: 7")
+            .build();
+
+        assert_eq!(
+            output.detail_full.as_deref(),
+            Some("# Task.7 · ship it\n\nno such task: 7")
         );
     }
 
@@ -1747,7 +2066,7 @@ mod tests {
             .with_arg_summary("5000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(5_000_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 5s");
+        assert_eq!(widget.title_text(), "💤 Sleep · 5s");
     }
 
     #[test]
@@ -1757,7 +2076,7 @@ mod tests {
             .with_arg_summary("0")
             .with_phase(ToolPhase::Success)
             .with_duration_us(1);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 0ms");
+        assert_eq!(widget.title_text(), "💤 Sleep · 0ms");
     }
 
     #[test]
@@ -1767,7 +2086,7 @@ mod tests {
             .with_arg_summary("125000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(125_000_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 2m 5s");
+        assert_eq!(widget.title_text(), "💤 Sleep · 2m 5s");
     }
 
     #[test]
@@ -1777,7 +2096,7 @@ mod tests {
             .with_arg_summary("60000")
             .with_phase(ToolPhase::Success)
             .with_duration_us(60_000_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 1m");
+        assert_eq!(widget.title_text(), "💤 Sleep · 1m");
     }
 
     #[test]
@@ -1787,6 +2106,68 @@ mod tests {
             .with_arg_summary("1500")
             .with_phase(ToolPhase::Success)
             .with_duration_us(1_500_000);
-        assert_eq!(widget.title_text(), "⏳ Sleep · 1.5s");
+        assert_eq!(widget.title_text(), "💤 Sleep · 1.5s");
+    }
+
+    /// The two tools that share the Sleep visual, with the presentations their
+    /// metadata actually ships (`sleep` → `💤 Sleep`, `wait_background` →
+    /// `⏳ Wait Background`).
+    fn sleep_kind_presentation(tool: &str, display_name: &str) -> ToolPresentationInfo {
+        let mut presentation = ToolPresentationInfo::generic(tool);
+        presentation.visual_kind = tact_protocol::ToolVisualKind::Sleep;
+        presentation.display_name = display_name.to_string();
+        presentation
+    }
+
+    #[test]
+    fn wait_background_title_reads_its_own_label() {
+        // Regression: this arm used to hardcode "⏳ Sleep", so a wait rendered as
+        // a sleep and the tool's `display_name` was unreachable. The summary now
+        // carries the bare `task_id` (metadata `Id` policy); a serialized input
+        // object must still never be printed, since it is a dump rather than a
+        // parameter a human reads.
+        for (summary, expected) in [
+            ("", "⏳ Wait Background"),
+            ("abc123", "⏳ Wait Background · abc123"),
+            (r#"{"task_id":"abc123"}"#, "⏳ Wait Background"),
+        ] {
+            let widget = ToolWidget::new()
+                .with_tool("wait_background")
+                .with_presentation(sleep_kind_presentation(
+                    "wait_background",
+                    "⏳ Wait Background",
+                ))
+                .with_arg_summary(summary)
+                .with_phase(ToolPhase::Success);
+            assert_eq!(widget.title_text(), expected, "summary: {summary}");
+        }
+    }
+
+    #[test]
+    fn check_background_title_shows_the_task_id() {
+        // The Generic arm joins label and summary with two spaces; the summary is
+        // the bare id, so the listing form reads "⚙️ Background Check".
+        for (summary, expected) in [
+            ("", "⚙️ Background Check"),
+            ("abc123", "⚙️ Background Check  abc123"),
+        ] {
+            let widget = ToolWidget::new()
+                .with_tool("check_background")
+                .with_arg_summary(summary)
+                .with_phase(ToolPhase::Success);
+            assert_eq!(widget.title_text(), expected, "summary: {summary}");
+        }
+    }
+
+    #[test]
+    fn sleep_title_keeps_the_duration_with_a_presentation() {
+        // The duration mini-language stays: only the label became dynamic.
+        let widget = ToolWidget::new()
+            .with_tool("sleep")
+            .with_presentation(sleep_kind_presentation("sleep", "💤 Sleep"))
+            .with_arg_summary("90000")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(90_000_000);
+        assert_eq!(widget.title_text(), "💤 Sleep · 1m 30s");
     }
 }

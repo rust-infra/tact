@@ -88,6 +88,8 @@ pub struct ToolContext {
     pub progress_reporter: ToolProgressReporter,
     pub cancel_flag: Arc<AtomicBool>,
     pub bash_timeout_secs: u64,
+    pub sandbox: Option<Arc<dyn Sandbox>>,          // resolved once at startup
+    pub sandbox_degraded: Option<Arc<SandboxDegradation>>,
 }
 ```
 
@@ -188,6 +190,44 @@ Failure message: `"Path escapes workspace"`.
 
 This is separate from `StoreRoot` path rules ([Store and Persistence](./01_chapter_store.md)) which guard `.tact/` JSON files.
 
+### 7.1 Shell execution sandbox (opt-in)
+
+The check above bounds `read_file` / `edit_file` / `grep`. It does not bound
+`bash`: once a command is approved it runs as an ordinary host process. An
+optional OS-level sandbox narrows that gap without touching the permission
+model:
+
+```text
+Hook → Permission → bash tool → Sandbox (optional) → bwrap → sh -c → command
+```
+
+It is switched on by `[tools] sandbox = true` (`false` by default — see
+[Configuration](./21_chapter_config.md)) and resolved **once at startup** by
+`crates/tact/src/sandbox/`, then carried on `ToolContext` (`sandbox`,
+`sandbox_degraded`). The switch is a boolean on purpose: *which* mechanism
+implements it is a platform decision (Linux: bubblewrap; no other platform has
+an implementation yet, so the switch is inert there). Anything that prevents a
+sandbox from starting degrades to unsandboxed with a warning rather than
+failing the tool.
+
+When active it mounts the workspace read-write at `/workspace` (**not** at its
+host path), binds `/usr`, `/bin`, `/lib`, `/lib64`, `/etc` and a fixed
+read-only toolchain allowlist (`~/.rustup`, `~/.cargo`, `~/.config/git`,
+`~/.npm`) read-only, gives the command its own pid namespace and procfs. The
+host network namespace is **shared** (a proxy on the host's loopback included):
+the sandbox bounds the filesystem, not connectivity. This splits the path space: shell commands see
+`/workspace/...` while every in-process tool still reports host absolute paths,
+so the `bash` tool description is rewritten at startup with whichever semantics
+are actually in force.
+
+Scope: the sandbox bounds **third-party code an approved command runs** — build
+scripts, `postinstall` hooks, test binaries. It is not a boundary around the
+agent: `background_run` and `worktree_run` still spawn unsandboxed shells
+([Background Tasks](./13_chapter_background.md), [Worktrees](./15_chapter_worktree.md)).
+
+Full detail — the switch, per-platform resolution, the whole flag list, degradation
+and current gaps — is in [Bash Sandbox](./27_chapter_sandbox.md).
+
 ---
 
 ## 8. Dispatch from the Agent
@@ -268,6 +308,7 @@ Permissions and hooks run in Phase 1 **before** `ToolRouter::call` — see [Perm
 | No tool versioning | Renaming a tool breaks saved allowlists and prompts |
 | MCP vs native name collision | Unchecked at registration — last writer wins in spec list |
 | `ToolRouter` not dynamic | Cannot add/remove tools mid-session |
+| Sandbox covers only `bash` | `background_run` / `worktree_run` still spawn unsandboxed host shells, and the in-process file tools keep full host access (§7.1) |
 | Test coverage varies | Core router tested; not every tool module has integration tests |
 
 ---

@@ -23,7 +23,10 @@ use crate::tool::ToolContext;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SleepInput {
     /// Duration in milliseconds (capped at 300_000 = 5 minutes).
-    #[schemars(description = "Duration to sleep in milliseconds (max 300000 = 5 minutes).")]
+    #[schemars(
+        description = "Duration to sleep in milliseconds (max 300000 = 5 minutes). Do not use \
+                       this to wait for a background task; use wait_background."
+    )]
     #[serde(alias = "ms", alias = "duration_ms")]
     pub ms: u64,
 }
@@ -34,7 +37,9 @@ fn capped_sleep_ms(ms: u64) -> u64 {
 
 pub const SLEEP_METADATA: ToolMetadata = ToolMetadata {
     name: "sleep",
-    description: "Wait for a specified duration in milliseconds.",
+    description: "Wait for a specified duration in milliseconds — for rate limiting or pacing, \
+                  never for waiting on a background task: call wait_background, which returns the \
+                  moment the task finishes instead of guessing a duration.",
     permission: PermissionPolicy::Read,
     permission_prompt: PermissionPromptPolicy::Json,
     resources: ResourcePolicy::Independent,

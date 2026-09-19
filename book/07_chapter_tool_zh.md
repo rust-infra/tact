@@ -89,6 +89,8 @@ pub struct ToolContext {
     pub progress_reporter: ToolProgressReporter,
     pub cancel_flag: Arc<AtomicBool>,
     pub bash_timeout_secs: u64,
+    pub sandbox: Option<Arc<dyn Sandbox>>,          // 启动时解析一次
+    pub sandbox_degraded: Option<Arc<SandboxDegradation>>,
 }
 ```
 
@@ -188,6 +190,36 @@ pub(crate) fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<Pat
 
 这与 `StoreRoot` 路径规则（[Store 与持久化](./01_chapter_store_zh.md)，守护 `.tact/` JSON 文件）是分开的。
 
+### 7.1 Shell 执行沙箱（可选开启）
+
+上面的检查约束的是 `read_file` / `edit_file` / `grep`，并不约束 `bash`：命令一旦被
+批准就以普通宿主进程运行。可选的 OS 级沙箱在不改动权限模型的前提下收窄这一缺口：
+
+```text
+Hook → Permission → bash 工具 → Sandbox（可选）→ bwrap → sh -c → command
+```
+
+由 `[tools] sandbox = true` 开启（默认 `false`，见[配置](./21_chapter_config_zh.md)），
+在**启动时解析一次**（`crates/tact/src/sandbox/`），并挂在 `ToolContext` 上
+（`sandbox`、`sandbox_degraded`）。开关特意做成布尔值：用什么机制实现是平台决策
+（Linux 用 bubblewrap；其他平台尚无实现，开关在那里是空操作）。任何导致沙箱无法
+启动的情况都降级为不沙箱并告警，而不是让工具失败。
+
+启用时：工作区以读写方式挂载到 `/workspace`（**不**暴露宿主路径），`/usr`、
+`/bin`、`/lib`、`/lib64`、`/etc` 与固定的工具链白名单（`~/.rustup`、
+`~/.cargo`、`~/.config/git`、`~/.npm`）以只读挂载，命令拥有独立的 pid namespace
+与 procfs。网络命名空间与宿主**共享**（宿主 loopback 上的代理也可达）：沙箱约束的是
+文件系统，不是连通性。这造成路径空间分裂：shell 命令看到 `/workspace/...`，
+而所有进程内工具仍报告宿主绝对路径；因此 `bash` 的工具描述会在启动时按**实际生效**
+的语义重写。
+
+范围：沙箱约束的是**被批准的命令所引入的第三方代码**——构建脚本、`postinstall`
+钩子、测试二进制。它不是对 agent 的边界：`background_run` 与 `worktree_run`
+仍会启动未沙箱的 shell（[后台任务](./13_chapter_background_zh.md)、
+[Worktree](./15_chapter_worktree_zh.md)）。
+
+开关、按平台解析、完整 flag 列表、降级与现存缺口见 [Bash 沙箱](./27_chapter_sandbox_zh.md)。
+
 ---
 
 ## 8. 从 Agent 分发
@@ -262,6 +294,7 @@ pipeline 来绕过应用缓冲。
 | 无工具版本 | 重命名工具会破坏已保存 allowlist 与 prompt |
 | MCP 与原生名冲突 | 注册时未检查——spec 列表里后写者胜出 |
 | `ToolRouter` 非动态 | 会话中途不能增删工具 |
+| 沙箱只覆盖 `bash` | `background_run` / `worktree_run` 仍启动未沙箱的宿主 shell，进程内文件工具也保留完整宿主访问（§7.1） |
 | 测试覆盖不均 | 核心 router 有测；并非每个工具模块都有集成测试 |
 
 ---

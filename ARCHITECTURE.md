@@ -590,6 +590,11 @@ flowchart TD
     Return --> End
 ```
 
+This guard is unrelated to the OS-level **execution** sandbox (bubblewrap) of
+[Bash Sandbox](./book/27_chapter_sandbox.md): `resolve_safe_path` bounds the
+in-process file tools' *paths*, while the execution sandbox bounds what an
+approved `bash` command can *reach* (`crates/tact/src/sandbox/`).
+
 ---
 
 ## 12. Configuration Loading Order
