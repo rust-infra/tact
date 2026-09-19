@@ -1,18 +1,21 @@
 //! Library surface for `tact-ui` (binary + integration tests).
+//!
+//! The agent session runtime (driver, account service, agent construction) now
+//! lives in the headless `tact-session` crate so the GPUI desktop client can
+//! share it without depending on ratatui. The items below stay re-exported at
+//! their historical `tact_ui::…` paths.
 
-pub mod driver;
+pub use tact_session::{driver, test_support};
+
 pub mod headless_session;
 pub mod mcp_cli;
 pub mod plugin_cli;
 pub mod session_lock;
 pub mod sessions;
-pub mod test_support;
 
-mod account;
 mod headless;
 mod interactive;
 mod permission;
-mod user_message;
 
 pub use headless::run_headless;
 pub use interactive::run_interactive;

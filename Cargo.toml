@@ -5,7 +5,9 @@ members = [
     "crates/tui",
     "crates/tact",
     "crates/tact-ui",
+    "crates/tact-session",
     "crates/tact_llm",
+    "crates/tact-gui",
     "crates/tool_refactor_macros",
 ]
 resolver = "2"

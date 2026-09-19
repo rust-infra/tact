@@ -1,9 +1,4 @@
-use tact::permission::PermissionMode;
+//! Process-wide permission mode, re-exported from the shared session crate so
+//! the TUI and the desktop client resolve the same value.
 
-pub(crate) fn permission_mode_from_config() -> PermissionMode {
-    match tact::config::settings().permission_mode.as_deref() {
-        Some("plan") => PermissionMode::Plan,
-        Some("default") => PermissionMode::Default,
-        _ => PermissionMode::Auto,
-    }
-}
+pub(crate) use tact_session::builder::permission_mode_from_config;

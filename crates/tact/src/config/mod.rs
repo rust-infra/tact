@@ -374,6 +374,23 @@ pub fn init() -> anyhow::Result<CliArgs> {
     init_config()
 }
 
+/// Load TOML config and install the resolved settings **without** parsing the
+/// host process's command line.
+///
+/// Front ends that own their argument surface (the GPUI desktop client) call
+/// this instead of [`init`]; otherwise clap would claim flags such as
+/// `--help` that belong to the host application.
+pub fn init_for_embedder() -> anyhow::Result<CliArgs> {
+    let program = std::env::args_os()
+        .next()
+        .unwrap_or_else(|| std::ffi::OsString::from("tact"));
+    let args = CliArgs::parse_from([program]);
+    let (toml_cfg, config_path) = load::load_toml_config(args.config.as_ref())?;
+    let resolved = resolve::resolve_config(&args, &toml_cfg, config_path)?;
+    install(resolved);
+    Ok(args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::builtin_model_profiles;

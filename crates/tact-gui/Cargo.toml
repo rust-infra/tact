@@ -1,0 +1,26 @@
+[package]
+name = "tact-gui"
+description = "Tact desktop client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "tact_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tact-gui"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "0.6.4"
+tact-session = { path = "../tact-session" }
+tact_protocol = { path = "../protocol" }
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+gpui-kit = { version = "0.6.4", features = ["test-support"] }

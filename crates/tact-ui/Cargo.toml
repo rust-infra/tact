@@ -16,12 +16,12 @@ path = "src/main.rs"
 tact = { path = "../tact", features = ["test-support"] }
 tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }
+tact-session = { path = "../tact-session" }
 tui = { path = "../tui", features = ["test-support"] }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 console-subscriber = { workspace = true }
-regex = { workspace = true }
 tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

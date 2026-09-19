@@ -420,7 +420,7 @@ async fn handle_user_command_with_account(
             // and duplicate remote dials just to print a table.
             match tact::mcp::describe_servers(&agent.mcp_router.server_summaries()) {
                 Ok(views) => agent.emit_update(AgentUpdate::MdInfo(
-                    crate::mcp_cli::render_live_listing(&views),
+                    crate::mcp_listing::render_live_listing(&views),
                 )),
                 Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
                     format!("MCP list failed: {error:#}"),
@@ -463,6 +463,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    // The mock client's responder signature returns `tact_llm::LlmError`,
+    // a 192-byte enum owned by `tact_llm`; the tests have to speak that
+    // type, so the lint about it belongs upstream, not here.
+    #![allow(clippy::result_large_err)]
+
     use std::sync::atomic::Ordering;
 
     use tact_llm::{ContentBlock, MockClient, StopReason};
