@@ -380,14 +380,7 @@ pub(crate) fn view(
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scrollbar()
-                .child(
-                    div()
-                        .w_full()
-                        .p_3()
-                        .id(body_id)
-                        .test_support()
-                        .child(body),
-                ),
+                .child(div().w_full().p_3().id(body_id).test_support().child(body)),
         )
         .child(work_footer(cx))
 }
@@ -541,7 +534,10 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
     );
 
     if total == 0 {
-        return v_flex().w_full().child(head).child(empty("No plan yet.", cx));
+        return v_flex()
+            .w_full()
+            .child(head)
+            .child(empty("No plan yet.", cx));
     }
 
     let mut work = vec![
@@ -572,7 +568,6 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
 
     v_flex().w_full().child(head).child(card(cx, work))
 }
-
 
 /// Width of the plan progress fill, in rems, for a 100%-wide track.
 ///
@@ -925,19 +920,26 @@ fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
         rows.push(task_row(task, cx).into_any_element());
     }
 
-    let mut body = v_flex()
-        .w_full()
-        .gap_3()
-        .child(head)
-        .child(card_with_id("work-pane-task-table", cx, rows));
+    let mut body =
+        v_flex()
+            .w_full()
+            .gap_3()
+            .child(head)
+            .child(card_with_id("work-pane-task-table", cx, rows));
 
     if !blocked.is_empty() {
-        let mut items = vec![card_head(
-            "Blocked by",
-            format!("{} item{}", blocked.len(), if blocked.len() == 1 { "" } else { "s" }),
-            cx,
-        )
-        .into_any_element()];
+        let mut items = vec![
+            card_head(
+                "Blocked by",
+                format!(
+                    "{} item{}",
+                    blocked.len(),
+                    if blocked.len() == 1 { "" } else { "s" }
+                ),
+                cx,
+            )
+            .into_any_element(),
+        ];
         for task in blocked {
             items.push(
                 h_flex()
@@ -1006,7 +1008,11 @@ fn task_row(task: &tact_protocol::TaskSnapshot, cx: &App) -> impl IntoElement {
 
     let blocked = task.status == Status::Pending && !task.blocked_by.is_empty();
     let (label, fg, bg) = if blocked {
-        ("Blocked", cx.theme().danger, cx.theme().danger.opacity(0.12))
+        (
+            "Blocked",
+            cx.theme().danger,
+            cx.theme().danger.opacity(0.12),
+        )
     } else {
         match task.status {
             Status::Completed => ("Done", cx.theme().success, cx.theme().success.opacity(0.12)),
@@ -1080,9 +1086,7 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
             .child(empty("No subagent runs yet.", cx));
     }
 
-    let mut rows = vec![
-        card_head("Runs", format!("{count} total"), cx).into_any_element(),
-    ];
+    let mut rows = vec![card_head("Runs", format!("{count} total"), cx).into_any_element()];
     for run in &state.subagents {
         let (label, fg, bg) = match run.status {
             SubagentStatusSnapshot::Running => (
@@ -1095,11 +1099,9 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
                 cx.theme().success,
                 cx.theme().success.opacity(0.12),
             ),
-            SubagentStatusSnapshot::Failed => (
-                "Failed",
-                cx.theme().danger,
-                cx.theme().danger.opacity(0.12),
-            ),
+            SubagentStatusSnapshot::Failed => {
+                ("Failed", cx.theme().danger, cx.theme().danger.opacity(0.12))
+            }
             SubagentStatusSnapshot::Cancelled => (
                 "Cancelled",
                 cx.theme().muted_foreground,
@@ -1245,7 +1247,10 @@ fn files_tree(
         );
     }
 
-    v_flex().w_full().child(head).child(card(cx, vec![tree.into_any_element()]))
+    v_flex()
+        .w_full()
+        .child(head)
+        .child(card(cx, vec![tree.into_any_element()]))
 }
 
 /// Indent step for one tree depth.
@@ -1488,7 +1493,11 @@ mod tests {
             .arg(&root)
             .args(["add", "."])
             .status();
-        std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\npub fn extra() {}\n").unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn lib() {}\npub fn extra() {}\n",
+        )
+        .unwrap();
 
         let workdir = root.join("src/nested");
         let unified = git_diff(&workdir, "src/lib.rs").expect("a repository-root path resolves");

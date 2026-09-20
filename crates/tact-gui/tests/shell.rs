@@ -564,9 +564,7 @@ fn the_sidebar_lists_worktrees_and_background_work(cx: &mut TestAppContext) {
         // The preview roots itself in this repository, so git reports at least
         // the worktree the process is running in.
         assert!(
-            window
-                .try_find("worktree-row-feat/gpu")
-                .is_some(),
+            window.try_find("worktree-row-feat/gpu").is_some(),
             "the sidebar lists the workspace's worktrees"
         );
         assert!(
@@ -579,9 +577,7 @@ fn the_sidebar_lists_worktrees_and_background_work(cx: &mut TestAppContext) {
         // Worktrees sit above background work, so the sidebar scrolls rather
         // than dropping a group when the session list is long.
         let worktree = window.find("worktree-row-feat/gpu").bounds();
-        let background = window
-            .find("background-row-cargo test -p tact")
-            .bounds();
+        let background = window.find("background-row-cargo test -p tact").bounds();
         assert!(
             worktree.origin.y < background.origin.y,
             "worktrees lead the background group"

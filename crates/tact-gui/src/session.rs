@@ -627,7 +627,7 @@ impl Conversation {
         Change::Resized(index)
     }
 
-/// Create a tool row for `tool_id` if this is the first mention of it.
+    /// Create a tool row for `tool_id` if this is the first mention of it.
     fn ensure_tool(
         &mut self,
         tool_id: &str,
@@ -952,18 +952,14 @@ mod tests {
         let change = conversation.apply(
             AgentUpdate::ToolProgress {
                 tool_id: "tool_1".into(),
-                chunks: vec![ToolOutputChunk::stdout(
-                    "   Finished test [unoptimized]\n",
-                )],
+                chunks: vec![ToolOutputChunk::stdout("   Finished test [unoptimized]\n")],
             },
             &mut state,
         );
 
         assert_eq!(change, Change::Resized(0));
         match &conversation.rows()[0] {
-            TranscriptRow::Tool {
-                output, detail, ..
-            } => {
+            TranscriptRow::Tool { output, detail, .. } => {
                 // Every chunk is kept for the card's output block, in arrival
                 // order and across streams.
                 assert_eq!(

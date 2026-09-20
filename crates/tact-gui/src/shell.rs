@@ -1577,7 +1577,11 @@ fn preview_tasks() -> Vec<tact_protocol::TaskSnapshot> {
     use tact_protocol::TaskStatusSnapshot;
 
     let rows = [
-        (1, "Lock the design direction", TaskStatusSnapshot::Completed),
+        (
+            1,
+            "Lock the design direction",
+            TaskStatusSnapshot::Completed,
+        ),
         (
             2,
             "Normalize Anthropic tokens",
@@ -1670,7 +1674,10 @@ fn sidebar(
         }
 
         list = list.child(
-            v_flex().gap_1().child(group_label(&bucket.label, bucket.count, cx)).child(rows),
+            v_flex()
+                .gap_1()
+                .child(group_label(&bucket.label, bucket.count, cx))
+                .child(rows),
         );
     }
 
@@ -1694,9 +1701,7 @@ fn sidebar(
         if !worktrees.is_empty() {
             let mut rows = v_flex().gap_1();
             for worktree in &worktrees {
-                rows = rows.child(worktree_row(
-                    worktree, radius, hover_bg, muted, primary, cx,
-                ));
+                rows = rows.child(worktree_row(worktree, radius, hover_bg, muted, primary, cx));
             }
             list = list.child(
                 v_flex()
@@ -1710,9 +1715,7 @@ fn sidebar(
         if !background.is_empty() {
             let mut rows = v_flex().gap_1();
             for task in &background {
-                rows = rows.child(background_row(
-                    task, radius, hover_bg, muted, primary, cx,
-                ));
+                rows = rows.child(background_row(task, radius, hover_bg, muted, primary, cx));
             }
             list = list.child(
                 v_flex()
@@ -1789,13 +1792,7 @@ fn sidebar_top(search: &Entity<InputState>, cx: &mut Context<TactApp>) -> impl I
                 .rounded(radius)
                 .text_color(cx.theme().muted_foreground)
                 .child(IconName::Search)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .child(Input::new(search)),
-                ),
+                .child(div().flex_1().min_w_0().text_sm().child(Input::new(search))),
         )
         .id("sidebar-top")
         .test_support()
@@ -1832,11 +1829,7 @@ fn session_row(
     let badge = if is_current {
         Some(("Running", primary, primary.opacity(0.14)))
     } else if session.message_count > 0 {
-        Some((
-            "Review",
-            muted,
-            muted.opacity(0.10),
-        ))
+        Some(("Review", muted, muted.opacity(0.10)))
     } else {
         None
     };
@@ -2109,9 +2102,7 @@ fn sidebar_meta_row(
                     div()
                         .truncate()
                         .text_sm()
-                        .when(highlighted, move |title_div| {
-                            title_div.text_color(primary)
-                        })
+                        .when(highlighted, move |title_div| title_div.text_color(primary))
                         .child(title),
                 )
                 .child(
@@ -2157,9 +2148,7 @@ struct SessionBucket {
 fn session_buckets(recent: &[RecentSession], query: &str, now: i64) -> Vec<SessionBucket> {
     let matched: Vec<&RecentSession> = recent
         .iter()
-        .filter(|session| {
-            query.is_empty() || session.id.to_lowercase().contains(query)
-        })
+        .filter(|session| query.is_empty() || session.id.to_lowercase().contains(query))
         .collect();
 
     if matched.is_empty() {
@@ -2420,21 +2409,22 @@ fn transcript_toolbar(
         cx,
     ));
 
-    row.child(div().flex_1()).child(
-        Button::new("transcript-detail-cycle")
-            .label(detail.label())
-            .icon(IconName::Eye)
-            .tooltip("Cycle transcript detail (Ctrl+O)")
-            .accessibility_label(SharedString::from(format!(
-                "Transcript detail: {}",
-                detail.label()
-            )))
-            .ghost()
-            .compact()
-            .on_click(cx.listener(|this, _, _, cx| this.cycle_detail(cx))),
-    )
-    .id("transcript-toolbar")
-    .test_support()
+    row.child(div().flex_1())
+        .child(
+            Button::new("transcript-detail-cycle")
+                .label(detail.label())
+                .icon(IconName::Eye)
+                .tooltip("Cycle transcript detail (Ctrl+O)")
+                .accessibility_label(SharedString::from(format!(
+                    "Transcript detail: {}",
+                    detail.label()
+                )))
+                .ghost()
+                .compact()
+                .on_click(cx.listener(|this, _, _, cx| this.cycle_detail(cx))),
+        )
+        .id("transcript-toolbar")
+        .test_support()
 }
 
 fn status_pill(
@@ -3219,7 +3209,11 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
             .gap_1()
             .flex_shrink_0()
             .text_color(cx.theme().muted_foreground)
-            .child(div().text_color(cx.theme().accent_foreground).child("\u{25cf}"))
+            .child(
+                div()
+                    .text_color(cx.theme().accent_foreground)
+                    .child("\u{25cf}"),
+            )
             .child(SharedString::from(permission)),
     );
 
@@ -3562,8 +3556,8 @@ fn previous_session_index(len: usize, current: Option<usize>) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionBucket, background_rows, balance_label, next_session_index,
-        previous_session_index, session_buckets, worktree_rows,
+        SessionBucket, background_rows, balance_label, next_session_index, previous_session_index,
+        session_buckets, worktree_rows,
     };
     use crate::{RecentSession, session::SessionState};
 
@@ -3587,7 +3581,8 @@ mod tests {
             "the session's own worktree is marked current"
         );
         assert!(
-            rows.iter().all(|row| !row.name.is_empty() && !row.detail.is_empty()),
+            rows.iter()
+                .all(|row| !row.name.is_empty() && !row.detail.is_empty()),
             "every row carries a branch and a directory"
         );
     }
@@ -3608,7 +3603,10 @@ mod tests {
     #[test]
     fn balance_uses_the_reported_currency() {
         let state = SessionState::default();
-        assert!(balance_label(&state).is_none(), "no account update, no chip");
+        assert!(
+            balance_label(&state).is_none(),
+            "no account update, no chip"
+        );
 
         let with_balance = |currency: &str, total: f64| SessionState {
             account: Some(tact_protocol::AccountUpdate::Balance(
