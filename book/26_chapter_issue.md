@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-20 — The desktop Diff pane resolves a recorded path against the repository
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/pane.rs` (`git_diff`); [Ch 26](./26_chapter_issue.md) §1 (2026-09-19, the pane that reads the working tree) |
+
+**Symptom / motivation:** The Diff pane handed the recorded path straight to `git diff --no-color -- <path>` while running git inside the session workspace. When a tool call wrote its path from the repository root but the session workspace sat in a subdirectory, the pathspec matched nothing: `git diff` still exited zero with empty output, so the pane silently fell back to the tool's detail string. A wrong path and an unchanged file were indistinguishable.
+
+**Decision:** Normalize the path before asking git. An absolute path is passed through untouched (git may legitimately be asked about a path that is not on disk); a relative path that exists under the workspace is joined to it; anything else is anchored at the repository top through the `:(top)<path>` magic pathspec.
+
+**Behavior after:** A path written from the repository root and the same path written relative to the workspace reach the same file, so the pane shows the real diff instead of the detail fallback.
+
+**Pointers:** `crates/tact-gui/src/pane.rs` (`git_diff`); test `git_diff_resolves_a_repository_root_path_from_a_subdirectory`.
+
+---
+
 ## 1. 2026-09-19 — The desktop Diff pane shows the working tree instead of only the tool's summary
 
 | Field | Value |

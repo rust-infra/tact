@@ -176,13 +176,32 @@ impl DiffPane {
 }
 
 /// `git diff` for one path, run in the session's workspace.
+///
+/// The recorded path arrives in whichever form the tool call used: usually
+/// relative to the session workspace, but sometimes written from the
+/// repository root while the workspace sits in a subdirectory. A relative
+/// path that exists under the workspace is resolved to an absolute one;
+/// anything else is anchored at the repository top, so both forms reach the
+/// same file. An absolute path is passed through untouched, because a path
+/// git is asked about need not exist on disk.
 fn git_diff(workdir: &Path, path: &str) -> Option<String> {
+    let recorded = Path::new(path);
+    let pathspec = if recorded.is_absolute() {
+        recorded.to_path_buf()
+    } else {
+        let resolved = workdir.join(recorded);
+        if resolved.exists() {
+            resolved
+        } else {
+            PathBuf::from(format!(":(top){path}"))
+        }
+    };
     // `--no-color` keeps the output parseable; the pane colors it itself.
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(workdir)
         .args(["diff", "--no-color", "--"])
-        .arg(path)
+        .arg(pathspec)
         .output()
         .ok()?;
     if !output.status.success() {
@@ -1439,6 +1458,38 @@ mod tests {
             "the added line reaches the renderer"
         );
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The pane records the path the tool call was given, which is sometimes
+    /// written from the repository root while the session workspace sits in a
+    /// subdirectory. The pathspec then has to anchor at the repository rather
+    /// than at the workspace, or the pane silently falls back to the detail.
+    #[test]
+    fn git_diff_resolves_a_repository_root_path_from_a_subdirectory() {
+        let root = scratch_dir("gitdiffsub");
+        if std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "--quiet"])
+            .status()
+            .map(|status| !status.success())
+            .unwrap_or(true)
+        {
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "."])
+            .status();
+        std::fs::write(root.join("src/lib.rs"), "pub fn lib() {}\npub fn extra() {}\n").unwrap();
+
+        let workdir = root.join("src/nested");
+        let unified = git_diff(&workdir, "src/lib.rs").expect("a repository-root path resolves");
+
+        assert!(unified.contains("+pub fn extra() {}"), "{unified}");
         let _ = std::fs::remove_dir_all(root);
     }
 }

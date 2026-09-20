@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-20 — 桌面端 Diff 面板按仓库解析记录下来的路径
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/pane.rs`（`git_diff`）；[Ch 26](./26_chapter_issue_zh.md) §1（2026-09-19，读工作区的那次改动） |
+
+**症状 / 动机：** Diff 面板把记录下来的路径原样交给 `git diff --no-color -- <path>`，而 git 是在会话工作区里跑的。当工具调用按仓库根写路径、而会话工作区位于子目录时，pathspec 命中不了任何东西：`git diff` 依然以 0 退出且输出为空，面板便静默回退到工具 detail 字符串。此时"路径写错"和"文件没变"完全无法区分。
+
+**决策：** 交给 git 之前先归一化路径。绝对路径原样透传（git 完全可能被问及一个磁盘上不存在的路径）；相对路径若在工作区下存在就拼到工作区上；其余情况用 `:(top)<path>` 魔数 pathspec 锚定到仓库根。
+
+**改后行为：** 按仓库根写的路径和按工作区写的同一路径落到同一个文件，面板展示真实 diff 而不是回退到 detail。
+
+**指针：** `crates/tact-gui/src/pane.rs`（`git_diff`）；测试 `git_diff_resolves_a_repository_root_path_from_a_subdirectory`。
+
+---
+
 ## 1. 2026-09-19 — 桌面端 Diff 面板展示工作区真实差异，而不是只展示工具摘要
 
 | 字段 | 值 |
