@@ -14,7 +14,6 @@ impl From<String> for MessageError {
         Self::ApiError(error)
     }
 }
-
 /// Unified error type for LLM operations.
 #[derive(Debug, Error)]
 pub enum LlmError {
@@ -22,11 +21,18 @@ pub enum LlmError {
     #[error("anthropic error: {0}")]
     Anthropic(#[from] MessageError),
     /// OpenAI chat completions error.
+    ///
+    /// Boxed because the raw variant is too large to pass through every
+    /// `Result<_, LlmError>` in this crate by value: with the GUI crates in
+    /// the same build feature unification enables `serde_json/preserve_order`,
+    /// which grows this variant past 128 bytes and trips
+    /// `clippy::result_large_err` on 46 signatures.
     #[error("openai error: {0}")]
-    OpenAi(#[from] async_openai::error::OpenAIError),
-    /// OpenAI Responses API error.
+    OpenAi(Box<async_openai::error::OpenAIError>),
+    /// OpenAI Responses API error. Boxed for the same reason as
+    /// [`LlmError::OpenAi`].
     #[error("openai responses error: {0}")]
-    OpenAiResponses(#[from] async_openai_responses::error::OpenAIError),
+    OpenAiResponses(Box<async_openai_responses::error::OpenAIError>),
     /// JSON serialization/deserialization failure.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -51,4 +57,15 @@ pub enum LlmError {
     /// Placeholder for test mocks.
     #[error("{0}")]
     Mock(String),
+}
+impl From<async_openai::error::OpenAIError> for LlmError {
+    fn from(error: async_openai::error::OpenAIError) -> Self {
+        Self::OpenAi(Box::new(error))
+    }
+}
+
+impl From<async_openai_responses::error::OpenAIError> for LlmError {
+    fn from(error: async_openai_responses::error::OpenAIError) -> Self {
+        Self::OpenAiResponses(Box::new(error))
+    }
 }
