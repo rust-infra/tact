@@ -759,3 +759,67 @@ fn the_status_bar_renders_its_segmented_chips(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// The prototype caps a user message at 72% of the transcript measure and
+/// hangs it on the right edge, so the bubble must not stretch to the column.
+#[gpui_kit::test]
+fn the_user_bubble_is_capped_and_right_aligned(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        let row = window.find("transcript-row-0").bounds();
+        let bubble = window.find("user-bubble-0").bounds();
+        let capped = row.size.width * 0.72;
+        assert!(
+            (bubble.size.width - capped).abs() < px(1.),
+            "the bubble holds the 72% cap: {bubble:?} against {row:?}"
+        );
+        assert!(
+            (bubble.origin.x + bubble.size.width - (row.origin.x + row.size.width)).abs() < px(1.),
+            "the bubble hangs on the row's right edge: {bubble:?} against {row:?}"
+        );
+    })
+    .unwrap();
+}
+
+/// A tool card keeps its output collapsed until the summary row is clicked,
+/// so reading a command's output never requires the whole transcript to be in
+/// `TranscriptDetail::Verbose`.
+#[gpui_kit::test]
+fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // Preview row 3 is the first tool card, seeded collapsed.
+        assert!(
+            window.try_find("tool-output-3").is_none(),
+            "a collapsed tool card hides its output block"
+        );
+
+        window.click("tool-summary-3", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("tool-output-3").is_some(),
+            "clicking the summary opens the output block"
+        );
+
+        window.click("tool-summary-3", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("tool-output-3").is_none(),
+            "clicking the summary again closes it"
+        );
+    })
+    .unwrap();
+}

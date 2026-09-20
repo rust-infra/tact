@@ -365,8 +365,12 @@ pub(crate) fn view(
         .h_full()
         .min_h_0()
         .child(
-            div()
+            // The prototype's `.workTop` is a 38px row with 8px side padding.
+            h_flex()
                 .flex_shrink_0()
+                .h(rems(2.375))
+                .items_center()
+                .px_2()
                 .id("work-pane-tabs-host")
                 .test_support()
                 .child(tabs),

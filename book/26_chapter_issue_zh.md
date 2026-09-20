@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-20 — 桌面端壳层与 transcript 改用原型自己的数值
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/shell.rs`（`TRANSCRIPT_MEASURE`、`session_intro`、`transcript_toolbar`、`status_pill`、`status_bar`、`transcript`）；`crates/tact-gui/src/transcript.rs`（`render_row`、`RowToggle`）；`crates/tact-gui/src/session.rs`（`Conversation::push_row`、`toggle_expanded`、`apply_tool_progress`、`retain_output_tail`）；`crates/tact-gui/src/pane.rs`（`view`，`.workTop` 标签行）；`docs/design/tact-desktop-prototype.html` |
+
+**症状 / 动机：** 桌面端沿用了原型的形状，但间距和尺寸是照感觉调的，于是每块都差几个像素：transcript 文本栏是 760px 而原型是 720px；会话头部没有发丝线也没有 detail 控件；用户消息铺满整栏而不是靠右悬挂；工具与推理活动渲染成扁平行而不是卡片；滚动器自带的 12px 行内缩加 32px 行距让每张卡片恒定比所在栏窄 24px。此外工具的输出流被直接丢弃——卡片只能显示一行摘要，想在 GUI 里看命令打印了什么必须回到 TUI。
+
+**决策：** 数值一律从原型的 CSS 里取，而不是目测微调；原型需要而模型里没有的数据就改行模型。`.thread` 对应 `TRANSCRIPT_MEASURE = 45rem`；`.head` 变成 `justify_between` 的头部——19px 标题、`session-intro-detail-cycle` 芯片、一条发丝线；`.msg.user .body` 改成手搭而不是组件（72% 上限、10/12 内边距、三个 12px 圆角加一个 4px 尾角）；工具行与推理行变成 10px 圆角的卡片并带色调图标芯片；`MessageScroller` 自带的内缩与行距通过 `with_row_style` 覆盖，让 `.thread` 的 18px 节奏成为唯一生效的间距。工具输出现在留在行上：`apply_tool_progress` 把 `ToolOutputChunk` 累加进 `TranscriptRow::Tool::output`，按字符边界只保留尾部 8 KiB；卡片通过点击摘要行展开它，`TranscriptDetail::Verbose` 则展开所有卡片。
+
+**改后行为：** transcript 文本栏、会话头部、工具栏、状态胶囊、状态栏与工作面板标签行都带上原型的数值；刻意保留的偏差仍然刻意（默认暗色主题、不引入 Lora 正文、不伪造 `checks passing`、多出的第五个标签、只有在真实用量存在时才出现的 `42% context` 芯片、账户余额放状态栏）。点击工具卡片的摘要行可以开合输出，Verbose 会打开全部；每行 8 KiB 的尾部上限约束了话痨命令的代价，且不会在字符中间截断。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`TRANSCRIPT_MEASURE`、`session_intro`、`transcript_toolbar`、`status_pill`、`status_bar`、`toggle_row`、`transcript`）；`crates/tact-gui/src/transcript.rs`（`render_row`、`RowToggle`）；`crates/tact-gui/src/session.rs`（`push_row`、`toggle_expanded`、`apply_tool_progress`、`TOOL_OUTPUT_LIMIT`、`retain_output_tail`）；测试 `the_user_bubble_is_capped_and_right_aligned`、`clicking_a_tool_summary_reveals_its_output`、`tool_progress_accumulates_into_the_row_output`、`tool_output_keeps_its_tail_without_splitting_a_character`；原型 `docs/design/tact-desktop-prototype.html`。
+
+---
+
 ## 1. 2026-09-20 — 桌面端 Diff 面板按仓库解析记录下来的路径
 
 | 字段 | 值 |

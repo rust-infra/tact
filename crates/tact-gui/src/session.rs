@@ -237,6 +237,15 @@ impl Conversation {
     /// Sealing live rows is the *turn end*'s job ([`Self::end_turn`] on
     /// `TaskComplete`), not the submit's: a prompt queued mid-turn must not
     /// close the assistant row that is still streaming.
+    /// Append a fully-formed row.
+    ///
+    /// The design preview and layout tests own the row shape directly rather
+    /// than feeding it through an agent event stream.
+    pub(crate) fn push_row(&mut self, row: TranscriptRow) -> usize {
+        self.rows.push(row);
+        self.rows.len() - 1
+    }
+
     pub(crate) fn push_user(&mut self, text: String) -> usize {
         self.rows.push(TranscriptRow::User { text });
         self.rows.len()
@@ -608,13 +617,17 @@ impl Conversation {
             Some(index) => index,
             None => return Change::None,
         };
-        if let Some(TranscriptRow::Tool { detail, .. }) = self.rows.get_mut(index) {
+        if let Some(TranscriptRow::Tool { detail, output, .. }) = self.rows.get_mut(index) {
             *detail = latest;
+            for chunk in chunks {
+                output.push_str(&chunk.text);
+            }
+            retain_output_tail(output);
         }
         Change::Resized(index)
     }
 
-    /// Create a tool row for `tool_id` if this is the first mention of it.
+/// Create a tool row for `tool_id` if this is the first mention of it.
     fn ensure_tool(
         &mut self,
         tool_id: &str,
@@ -629,8 +642,10 @@ impl Conversation {
         self.rows.push(TranscriptRow::Tool {
             display_name: name.to_string(),
             detail: first_line(detail),
+            output: String::new(),
             duration: String::new(),
             status,
+            expanded: false,
         });
         self.open_tools.insert(tool_id.to_string(), index);
         Change::Appended(1)
@@ -654,6 +669,7 @@ impl Conversation {
             detail: current,
             duration: current_duration,
             status: current_status,
+            ..
         }) = self.rows.get_mut(index)
         {
             *display_name = name;
@@ -670,6 +686,20 @@ impl Conversation {
         match self.rows.get(index) {
             Some(TranscriptRow::Tool { display_name, .. }) => Some(display_name.clone()),
             _ => None,
+        }
+    }
+
+    /// Flip the expanded state of one collapsible row.
+    ///
+    /// Returns whether the row exists and is collapsible, so the caller knows
+    /// whether it has to remeasure.
+    pub(crate) fn toggle_expanded(&mut self, index: usize) -> bool {
+        match self.rows.get_mut(index) {
+            Some(TranscriptRow::Tool { expanded, .. }) => {
+                *expanded = !*expanded;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -702,6 +732,27 @@ impl Conversation {
 }
 
 /// Prefer the producer's display name, falling back to the raw tool name.
+/// Bytes of tool output kept per row.
+const TOOL_OUTPUT_LIMIT: usize = 8 * 1024;
+
+/// Keep only the tail of a tool card's output.
+///
+/// The card shows a 150px window, but a long-running command can stream
+/// megabytes; a row that remembered all of it would cost memory out of all
+/// proportion to anything the card can display.
+fn retain_output_tail(output: &mut String) {
+    if output.len() <= TOOL_OUTPUT_LIMIT {
+        return;
+    }
+    let excess = output.len() - TOOL_OUTPUT_LIMIT;
+    let start = output
+        .char_indices()
+        .map(|(index, _)| index)
+        .find(|index| *index >= excess)
+        .unwrap_or(output.len());
+    *output = output[start..].to_string();
+}
+
 fn display_name(display: &str, tool: &str) -> String {
     if display.is_empty() {
         tool.to_string()
@@ -861,6 +912,7 @@ mod tests {
                 detail,
                 duration,
                 status,
+                ..
             } => {
                 assert_eq!(display_name, "Read");
                 assert_eq!(detail, "src/main.rs");
@@ -869,6 +921,90 @@ mod tests {
             }
             other => panic!("expected a tool row, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_progress_accumulates_into_the_row_output() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+
+        conversation.apply(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                tool_name: "bash".into(),
+                arg_summary: "cargo test".into(),
+                arg_full: String::new(),
+                presentation: presentation("Bash"),
+            },
+            &mut state,
+        );
+        conversation.apply(
+            AgentUpdate::ToolProgress {
+                tool_id: "tool_1".into(),
+                chunks: vec![
+                    ToolOutputChunk::stdout("Compiling tact-gui\n"),
+                    ToolOutputChunk::stderr("warning: unused import\n"),
+                ],
+            },
+            &mut state,
+        );
+        let change = conversation.apply(
+            AgentUpdate::ToolProgress {
+                tool_id: "tool_1".into(),
+                chunks: vec![ToolOutputChunk::stdout(
+                    "   Finished test [unoptimized]\n",
+                )],
+            },
+            &mut state,
+        );
+
+        assert_eq!(change, Change::Resized(0));
+        match &conversation.rows()[0] {
+            TranscriptRow::Tool {
+                output, detail, ..
+            } => {
+                // Every chunk is kept for the card's output block, in arrival
+                // order and across streams.
+                assert_eq!(
+                    output,
+                    "Compiling tact-gui\nwarning: unused import\n   Finished test [unoptimized]\n"
+                );
+                // The summary line tracks the newest non-empty line, trimmed.
+                assert_eq!(detail, "Finished test [unoptimized]");
+            }
+            other => panic!("expected a tool row, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_output_keeps_its_tail_without_splitting_a_character() {
+        // Three-byte characters: the byte cut lands inside one, so the kept
+        // tail has to start at the next character boundary.
+        let long = "行".repeat(3_000);
+        let mut output = long.clone();
+        retain_output_tail(&mut output);
+
+        assert!(
+            output.len() <= TOOL_OUTPUT_LIMIT,
+            "{} bytes exceeds the {} limit",
+            output.len(),
+            TOOL_OUTPUT_LIMIT
+        );
+        assert!(long.ends_with(&output), "only the head is dropped");
+        assert!(
+            output.chars().all(|character| character == '行'),
+            "a split character would not survive as itself"
+        );
+        assert!(
+            output.len() > TOOL_OUTPUT_LIMIT - 4,
+            "the cut advances at most one character past the limit, kept {} bytes",
+            output.len()
+        );
+
+        let mut short = "abc".to_string();
+        retain_output_tail(&mut short);
+        assert_eq!(short, "abc", "output under the limit is untouched");
     }
 
     #[test]

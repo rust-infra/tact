@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
@@ -27,7 +28,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
     IntoElement, ParentElement as _, Rems, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, px, rems,
+    StyleRefinement, Styled as _, Subscription, Window, div, px, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -54,8 +55,9 @@ const SIDEBAR_OVERLAY_UNDER: Rems = rems(60.);
 const WORK_PANE_WIDTH: Rems = rems(26.25);
 /// Fixed status bar height (26 px at the default rem).
 const STATUS_BAR_HEIGHT: Rems = rems(1.625);
-/// Cap on the transcript's text measure (760 px at the default rem).
-const TRANSCRIPT_MEASURE: Rems = rems(47.5);
+/// Cap on the transcript's text measure (720 px at the default rem), which is
+/// the prototype's `.thread { width: min(720px, 100% - 48px) }`.
+const TRANSCRIPT_MEASURE: Rems = rems(45.);
 /// Width from which the work pane sits in the layout (1280 px at the default
 /// rem). Below it the drawer form applies (Phase 6).
 const WORK_PANE_IN_FLOW_FROM: Rems = rems(80.);
@@ -276,7 +278,35 @@ impl TactApp {
              dependencies."
                 .to_string(),
         );
-        self.record_change(Change::Appended(2), cx);
+        // The prototype's transcript carries a reasoning card and inline tool
+        // activity after the first answer, so the preview seeds the same shapes.
+        self.conversation
+            .push_row(transcript::TranscriptRow::Thinking {
+                text: "The first impression should be calm and text-led. The sidebar stays \
+                       persistent but subordinate; the work pane needs a restrained header."
+                    .to_string(),
+            });
+        self.conversation
+            .push_row(transcript::TranscriptRow::Tool {
+                display_name: "Read".to_string(),
+                detail: "crates/protocol/src/agent.rs".to_string(),
+                output: "pub enum AgentUpdate {\n    StepAdded(PlanStep),\n    StepStarted { .. },\n    StepFinished { .. },\n    StepFailed { .. },\n    TaskComplete(String),\n}"
+                    .to_string(),
+                duration: "1.2s".to_string(),
+                status: transcript::ToolStatus::Succeeded,
+                expanded: false,
+            });
+        self.conversation
+            .push_row(transcript::TranscriptRow::Tool {
+                display_name: "Edited".to_string(),
+                detail: "crates/tact-gui/src/theme.rs".to_string(),
+                output: "+ TactTokens::light()\n+ TactTokens::dark()\n+ ThemeRegistry::watch_dir(\"themes\")"
+                    .to_string(),
+                duration: "0.8s".to_string(),
+                status: transcript::ToolStatus::Succeeded,
+                expanded: false,
+            });
+        self.record_change(Change::Appended(5), cx);
         cx.notify();
     }
 
@@ -1069,6 +1099,14 @@ impl TactApp {
     }
 
     /// Apply a scroller change emitted by the conversation.
+    /// Open or close one collapsible transcript row.
+    fn toggle_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.conversation.toggle_expanded(index) {
+            self.record_change(Change::Resized(index), cx);
+        }
+        cx.notify();
+    }
+
     fn record_change(&mut self, change: Change, cx: &mut Context<Self>) {
         match change {
             Change::None => {}
@@ -2284,11 +2322,25 @@ fn transcript(
     let rows = rows.to_vec();
     let empty = rows.is_empty();
     let items = rows.clone();
+    // A row's click handler only receives a plain `App`, so the callback
+    // travels back into this view's entity to reach `toggle_row`.
+    let toggle: transcript::RowToggle = {
+        let app = cx.entity().downgrade();
+        Rc::new(move |index, cx: &mut App| {
+            if let Some(app) = app.upgrade() {
+                app.update(cx, |app, cx| app.toggle_row(index, cx));
+            }
+        })
+    };
     let scroller = MessageScroller::new("transcript-list", state, move |index, _, cx| {
-        transcript::render_row(&items[index], index, detail, cx)
+        transcript::render_row(&items[index], index, detail, &toggle, cx)
     })
     .flex_1()
     .min_h_0()
+    // The prototype's `.thread` is a 720px column with an 18px gap between
+    // rows, so the scroller's built-in 12px row inset and 32px row gap are
+    // overridden rather than left to stack on top of each row's own spacing.
+    .with_row_style(StyleRefinement::default().px(px(0.)).pb(rems(1.125)))
     .with_bottom_fade(cx.theme().background);
 
     let scroller = div()
@@ -2304,7 +2356,7 @@ fn transcript(
         .mx_auto()
         .flex_1()
         .min_h_0()
-        .child(session_intro(&heading, session, empty, cx));
+        .child(session_intro(&heading, session, empty, detail, cx));
 
     body = if empty {
         body.child(empty_transcript(cx))
@@ -2337,12 +2389,12 @@ fn transcript_toolbar(
 ) -> impl IntoElement {
     let mut row = h_flex()
         .w_full()
+        .h(rems(2.375))
         .items_center()
-        .gap_2()
+        .gap(rems(0.4375))
         .border_b_1()
         .border_color(cx.theme().border)
-        .px_6()
-        .py_2();
+        .px(rems(0.875));
 
     if let Some(branch) = session.branch.as_deref() {
         row = row.child(status_pill(IconName::GitBranch, branch, false, cx));
@@ -2407,14 +2459,15 @@ fn status_pill(
 
     h_flex()
         .items_center()
+        .h(rems(1.5))
         .gap_1()
-        .rounded(cx.theme().radius_2xl())
+        .rounded(rems(0.375))
         .border_1()
         .border_color(border)
         .bg(bg)
-        .px_2()
-        .py_0p5()
-        .text_xs()
+        .px(rems(0.4375))
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_size(rems(0.65625))
         .text_color(fg)
         .child(icon)
         .child(label.into())
@@ -2424,7 +2477,8 @@ fn session_intro(
     heading: &SharedString,
     session: &SessionState,
     empty: bool,
-    cx: &App,
+    detail: transcript::TranscriptDetail,
+    cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     let subtitle = if empty {
         format!(
@@ -2438,19 +2492,47 @@ fn session_intro(
         )
     };
 
-    v_flex()
+    // The prototype's `.head`: heading and subtitle on the left, a detail
+    // cycle chip on the right, over a hairline.
+    h_flex()
         .w_full()
-        .gap_2()
-        .px_6()
-        .pt_6()
-        .pb_5()
-        .child(div().text_2xl().font_semibold().child(heading.clone()))
+        .items_end()
+        .justify_between()
+        .gap_5()
+        .pt_5()
+        .pb_3()
+        .border_b_1()
+        .border_color(cx.theme().border)
         .child(
-            div()
-                .max_w(rems(42.))
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from(subtitle)),
+            v_flex()
+                .min_w_0()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(rems(1.1875))
+                        .font_semibold()
+                        .child(heading.clone()),
+                )
+                .child(
+                    div()
+                        .max_w(rems(42.))
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(subtitle)),
+                ),
+        )
+        .child(
+            Button::new("session-intro-detail-cycle")
+                .label(detail.label())
+                .icon(IconName::RefreshCw)
+                .tooltip("Cycle transcript detail (Ctrl+O)")
+                .accessibility_label(SharedString::from(format!(
+                    "Transcript detail: {}",
+                    detail.label()
+                )))
+                .outline()
+                .compact()
+                .on_click(cx.listener(|this, _, _, cx| this.cycle_detail(cx))),
         )
 }
 
@@ -3113,7 +3195,7 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
         .border_color(cx.theme().border)
         .bg(cx.theme().tab_bar)
         .px_3()
-        .text_xs()
+        .text_size(rems(0.65625))
         .text_color(cx.theme().muted_foreground)
         .child(status_item(
             Some(IconName::Box),
@@ -3131,7 +3213,15 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
         ));
     }
 
-    bar = bar.child(status_item(None, permission.to_string(), cx.theme().primary, cx));
+    bar = bar.child(
+        h_flex()
+            .items_center()
+            .gap_1()
+            .flex_shrink_0()
+            .text_color(cx.theme().muted_foreground)
+            .child(div().text_color(cx.theme().accent_foreground).child("\u{25cf}"))
+            .child(SharedString::from(permission)),
+    );
 
     if added > 0 || removed > 0 {
         bar = bar.child(
@@ -3181,14 +3271,7 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
         ));
     }
 
-    bar.child(status_item(
-        None,
-        cx.theme().theme_name().to_string(),
-        cx.theme().muted_foreground,
-        cx,
-    ))
-    .id("status-bar")
-    .test_support()
+    bar.id("status-bar").test_support()
 }
 
 /// The account balance chip, when the provider reports one.

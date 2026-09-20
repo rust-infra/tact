@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-20 — The desktop shell chrome and transcript match the prototype's own measurements
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/shell.rs` (`TRANSCRIPT_MEASURE`, `session_intro`, `transcript_toolbar`, `status_pill`, `status_bar`, `transcript`); `crates/tact-gui/src/transcript.rs` (`render_row`, `RowToggle`); `crates/tact-gui/src/session.rs` (`Conversation::push_row`, `toggle_expanded`, `apply_tool_progress`, `retain_output_tail`); `crates/tact-gui/src/pane.rs` (`view`, the `.workTop` tab row); `docs/design/tact-desktop-prototype.html` |
+
+**Symptom / motivation:** The desktop shell carried the prototype's shapes but had been spaced and sized by eye, so every block sat a few pixels off: the transcript column was 760px against the prototype's 720px, the session header had no hairline or detail control, a user message stretched the full column instead of hanging on the right edge, tool and reasoning activity rendered as flat rows rather than cards, and the 12px row inset plus 32px row gap built into the scroller made every card a constant 24px narrower than the column it lived in. A tool's streamed output was also discarded outright: the card could only show a one-line summary, so reading what a command printed meant leaving the GUI for the TUI.
+
+**Decision:** Read the numbers out of the prototype's CSS instead of adjusting by eye, and change the row model where the prototype needs data it did not have. `.thread` becomes `TRANSCRIPT_MEASURE = 45rem`; `.head` becomes a `justify_between` header with a 19px heading, a `session-intro-detail-cycle` chip, and a hairline; `.msg.user .body` is hand-built (72% cap, 10/12 padding, three 12px corners and a 4px tail) rather than a component; tool rows and reasoning become 10px-radius cards with tinted icon chips; `MessageScroller`'s built-in inset and gap are overridden through `with_row_style` so `.thread`'s 18px rhythm is the only spacing in play. Tool output is now kept on the row — `apply_tool_progress` accumulates `ToolOutputChunk`s into `TranscriptRow::Tool::output`, capped to the trailing 8 KiB on a character boundary — and the card exposes it through a click on its summary, with `TranscriptDetail::Verbose` expanding every card.
+
+**Behavior after:** The transcript column, session header, toolbar, status pills, status bar, and work-pane tab row carry the prototype's measurements, and the deliberate deviations stay deliberate (dark default theme, no Lora body serif, no fabricated `checks passing`, the extra fifth tab, the `42% context` chip only when real usage exists, account balance in the status bar). Clicking a tool card's summary row opens and closes its output; Verbose opens all of them. A 8 KiB tail per tool row bounds what a chatty command can cost, and the previous output is never shown mid-character.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`TRANSCRIPT_MEASURE`, `session_intro`, `transcript_toolbar`, `status_pill`, `status_bar`, `toggle_row`, `transcript`); `crates/tact-gui/src/transcript.rs` (`render_row`, `RowToggle`); `crates/tact-gui/src/session.rs` (`push_row`, `toggle_expanded`, `apply_tool_progress`, `TOOL_OUTPUT_LIMIT`, `retain_output_tail`); tests `the_user_bubble_is_capped_and_right_aligned`, `clicking_a_tool_summary_reveals_its_output`, `tool_progress_accumulates_into_the_row_output`, `tool_output_keeps_its_tail_without_splitting_a_character`; prototype `docs/design/tact-desktop-prototype.html`.
+
+---
+
 ## 1. 2026-09-20 — The desktop Diff pane resolves a recorded path against the repository
 
 | Field | Value |
