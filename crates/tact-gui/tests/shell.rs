@@ -1290,10 +1290,11 @@ fn the_session_intro_detail_chip_matches_the_prototype_cycle_box(cx: &mut TestAp
 /// above; this one catches the control that stopped rendering, moved off
 /// screen, or vanished behind a transient layer.
 ///
-/// The one family left out is the session starters (`session-new`, session
-/// rows, worktree rows): a test click would spawn an agent runtime and write a
-/// session record into the user's store, so those are covered by the live
-/// client run instead.
+/// Three controls stay out of it: the sidebar avatar (it has no handler at
+/// all), `composer-attachment-*` (a press opens a native file dialog), and the
+/// request-option rows (a press would resolve the seeded request). The session
+/// rows are walkable only because the preview is an offline shell: there a row
+/// click moves the sidebar's selection instead of starting an agent runtime.
 /// The element ids the sidebar gives this repository's worktree rows.
 ///
 /// A row is identified by the branch its worktree holds, falling back to the
@@ -1301,13 +1302,9 @@ fn the_session_intro_detail_chip_matches_the_prototype_cycle_box(cx: &mut TestAp
 /// uses, applied to `git worktree list` so the walk covers every row instead of
 /// the one this checkout happens to be sitting on.
 fn worktree_row_ids() -> Vec<String> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("the crate sits two levels below the repository root");
     let output = std::process::Command::new("git")
         .arg("-C")
-        .arg(root)
+        .arg(repo_root())
         .args(["worktree", "list", "--porcelain"])
         .output()
         .expect("git worktree list runs");
@@ -1333,6 +1330,80 @@ fn worktree_row_ids() -> Vec<String> {
             Some(format!("worktree-row-{}", branch.unwrap_or(directory)))
         })
         .collect()
+}
+
+/// The repository this test binary was built from.
+fn repo_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("the crate sits two levels below the repository root")
+        .to_path_buf()
+}
+
+/// A second worktree of this repository, alive for as long as the guard is.
+///
+/// The walk's worktree section only proves something when the repository has
+/// more than one worktree: with a single entry every click is the idempotent
+/// case, because the row that gets pressed is the row the window already had
+/// open. CI checks the repository out once, so the walk makes a second worktree
+/// of its own and removes it on the way out -- including when an assertion
+/// fails, since the cleanup lives in `Drop`.
+///
+/// `git worktree add` writes into `.git`, which some sandboxes mount read-only.
+/// There the fixture reports that it could not be created and the walk falls
+/// back to the idempotent half rather than failing for an environment reason.
+struct WorktreeFixture {
+    path: std::path::PathBuf,
+    added: bool,
+}
+
+impl WorktreeFixture {
+    fn create() -> Self {
+        let path = std::env::temp_dir().join(format!("tact-worktree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let added = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root())
+            .args(["worktree", "add", "--detach", "--force"])
+            .arg(&path)
+            .arg("HEAD")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if !added {
+            eprintln!(
+                "note: `git worktree add` failed in this environment (read-only .git?), so the \
+                 walk covers the idempotent worktree click only"
+            );
+        }
+        Self { path, added }
+    }
+
+    /// Whether a second worktree is on disk, i.e. whether a click can switch.
+    fn is_added(&self) -> bool {
+        self.added
+    }
+}
+
+impl Drop for WorktreeFixture {
+    fn drop(&mut self) {
+        if !self.added {
+            return;
+        }
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root())
+            .args(["worktree", "remove", "--force"])
+            .arg(&self.path)
+            .output();
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root())
+            .args(["worktree", "prune"])
+            .output();
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 #[gpui_kit::test]
@@ -1454,16 +1525,24 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         );
 
         // Worktrees: the group lists the repository's own worktrees, current
-        // first, and every row re-roots the window at it. Each click has to
-        // leave the row it pressed as the current one; a checkout with a single
-        // worktree only reaches the idempotent case. The walk finishes back on
-        // the worktree it started in, so the panes below still read what the
-        // window opened on.
+        // first, and every row re-roots the window at it. The fixture gives the
+        // repository a second worktree so at least one press is a real switch
+        // and not just the row the window already had open. The walk finishes
+        // back on the worktree it started in, so the panes below still read what
+        // the window opened on.
+        let fixture = WorktreeFixture::create();
         let worktrees = worktree_row_ids();
         assert!(
             !worktrees.is_empty(),
             "the crate lives in a git worktree, so the group lists one"
         );
+        if fixture.is_added() {
+            assert_eq!(
+                worktrees.len(),
+                2,
+                "the fixture worktree and this checkout are both listed"
+            );
+        }
         let start = worktrees
             .iter()
             .find(|id| {
@@ -1482,6 +1561,17 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
                 Some(true),
                 "{row} is the worktree the window is scoped to after its click"
             );
+            // Which row is current is the whole state a switch produces, so the
+            // press only means something if the other row gave it up. With one
+            // worktree there is no other row and this loop is skipped.
+            for other in worktrees.iter().filter(|other| *other != id) {
+                let other: SharedString = other.clone().into();
+                assert_eq!(
+                    window.find(other.clone()).selected(),
+                    Some(false),
+                    "{other} stops being the current worktree once {row} is pressed"
+                );
+            }
         }
         let home: SharedString = start.into();
         click!(home.clone());
