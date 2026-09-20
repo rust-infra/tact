@@ -20,6 +20,32 @@ pub struct RecentSession {
     /// Persisted message count, so an untouched session reads as empty rather
     /// than as missing.
     pub message_count: i64,
+    /// One-line title for a session list, from the session's opening message.
+    ///
+    /// The store has no title column, so a row would otherwise have to print
+    /// the raw id; the user's own first words are the honest stand-in.
+    /// `None` for a session that has no user message yet.
+    pub title: Option<String>,
+}
+
+/// Longest title a session list shows before eliding.
+const TITLE_LIMIT: usize = 60;
+
+/// Collapse a session's opening message into a one-line title.
+///
+/// Messages are typed as prose, so a title has to survive newlines and runs of
+/// indentation without becoming a second paragraph: whitespace collapses to
+/// single spaces and the result is cut at [`TITLE_LIMIT`] characters.
+pub fn session_title(text: &str) -> Option<String> {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut title: String = collapsed.chars().take(TITLE_LIMIT).collect();
+    if collapsed.chars().count() > TITLE_LIMIT {
+        title.push('…');
+    }
+    Some(title)
 }
 
 /// Recent sessions for `workdir`, newest first.
@@ -43,6 +69,7 @@ pub fn recent(workdir: &Path) -> anyhow::Result<Vec<RecentSession>> {
                 id: session.id,
                 updated_at_unix: session.updated_at.timestamp(),
                 message_count: session.message_count,
+                title: session.first_user_text.as_deref().and_then(session_title),
             })
             .collect())
     })
@@ -117,5 +144,23 @@ mod tests {
     fn short_id_trims_the_uuid() {
         assert_eq!(short_id("11111111-aaaa-bbbb"), "11111111");
         assert_eq!(short_id("plain"), "plain");
+    }
+
+    #[test]
+    fn session_titles_collapse_whitespace_and_elide() {
+        assert_eq!(
+            session_title("  Build\n\tthe  desktop shell  "),
+            Some("Build the desktop shell".to_string())
+        );
+        assert_eq!(
+            session_title("   \n  "),
+            None,
+            "blank messages have no title"
+        );
+
+        let long = "a".repeat(TITLE_LIMIT + 5);
+        let title = session_title(&long).expect("a long message still titles");
+        assert_eq!(title.chars().count(), TITLE_LIMIT + 1, "cut plus ellipsis");
+        assert!(title.ends_with('…'), "elision is visible: {title}");
     }
 }

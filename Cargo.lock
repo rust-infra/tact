@@ -9053,6 +9053,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "gpui-kit",
+ "serde_json",
  "tact-session",
  "tact_protocol",
  "tokio",

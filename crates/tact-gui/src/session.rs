@@ -158,6 +158,19 @@ pub(crate) struct Request {
     pub(crate) selected: Vec<usize>,
 }
 
+/// A request the user has answered, kept so the card can report the outcome.
+///
+/// The prototype leaves the approval card in place after it is answered
+/// (`.approval.done`) and swaps its actions for the decision, so the question
+/// and the answer stay readable instead of disappearing together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequestAnswer {
+    /// The card that was answered.
+    pub(crate) request: Request,
+    /// The decision, already phrased for display.
+    pub(crate) result: String,
+}
+
 /// Non-transcript session state: what the work panes, composer, and status bar
 /// read. Kept separate from [`Conversation`] so pane rendering never walks the
 /// transcript.
@@ -185,6 +198,8 @@ pub(crate) struct SessionState {
     pub(crate) running: bool,
     /// A blocking choice the agent is waiting on.
     pub(crate) request: Option<Request>,
+    /// The most recently answered request, shown until the next one arrives.
+    pub(crate) last_request: Option<RequestAnswer>,
     /// Latest balance / quota update, when the provider supports one.
     pub(crate) account: Option<tact_protocol::AccountUpdate>,
     /// Workspace the session is scoped to; the Files pane roots itself here.
@@ -214,6 +229,9 @@ pub(crate) struct Conversation {
     open_tools: HashMap<String, usize>,
     open_thinking: Option<usize>,
     open_assistant: Option<usize>,
+    /// When the live reasoning block started, so `Finished` can stamp it with
+    /// the elapsed seconds the summary shows.
+    thinking_started_at: Option<std::time::Instant>,
 }
 
 impl Conversation {
@@ -565,6 +583,7 @@ impl Conversation {
                 options,
                 ..
             } => {
+                state.last_request = None;
                 state.request = Some(Request {
                     id: request_id,
                     prompt,
@@ -579,6 +598,7 @@ impl Conversation {
                 prompt,
                 options,
             } => {
+                state.last_request = None;
                 state.request = Some(Request {
                     id: request_id,
                     prompt,
@@ -624,7 +644,10 @@ impl Conversation {
                 let index = self.rows.len();
                 self.rows.push(TranscriptRow::Thinking {
                     text: String::new(),
+                    duration_seconds: None,
+                    expanded: true,
                 });
+                self.thinking_started_at = Some(std::time::Instant::now());
                 self.open_thinking = Some(index);
                 Change::Appended(1)
             }
@@ -635,17 +658,35 @@ impl Conversation {
                         let index = self.rows.len();
                         self.rows.push(TranscriptRow::Thinking {
                             text: String::new(),
+                            duration_seconds: None,
+                            expanded: true,
                         });
+                        self.thinking_started_at = Some(std::time::Instant::now());
                         self.open_thinking = Some(index);
                         index
                     }
                 };
-                if let Some(TranscriptRow::Thinking { text: body }) = self.rows.get_mut(index) {
+                if let Some(TranscriptRow::Thinking { text: body, .. }) = self.rows.get_mut(index) {
                     body.push_str(&text);
                 }
                 Change::Resized(index)
             }
             ThinkingChunk::Finished => {
+                // Stamp the sealed row with what it cost. `Instant` gives
+                // sub-second resolution; a block that finished inside the
+                // first second still reads as "Thought for 1s" rather than
+                // claiming zero.
+                let elapsed = self
+                    .thinking_started_at
+                    .take()
+                    .map(|started| started.elapsed().as_secs().max(1));
+                if let Some(index) = self.open_thinking
+                    && let Some(TranscriptRow::Thinking {
+                        duration_seconds, ..
+                    }) = self.rows.get_mut(index)
+                {
+                    *duration_seconds = elapsed;
+                }
                 self.open_thinking = None;
                 Change::None
             }
@@ -764,6 +805,13 @@ impl Conversation {
                 *expanded = !*expanded;
                 true
             }
+            // The prototype's reasoning card is a `<details>` too: clicking
+            // its summary collapses the body without changing the transcript
+            // detail level.
+            Some(TranscriptRow::Thinking { expanded, .. }) => {
+                *expanded = !*expanded;
+                true
+            }
             _ => false,
         }
     }
@@ -809,7 +857,7 @@ impl Conversation {
                 TranscriptRow::Assistant { markdown, .. } => {
                     blocks.push(markdown.trim().to_string());
                 }
-                TranscriptRow::Thinking { text } => blocks.push(quoted(text)),
+                TranscriptRow::Thinking { text, .. } => blocks.push(quoted(text)),
                 TranscriptRow::Tool {
                     display_name,
                     detail,
@@ -1237,7 +1285,59 @@ mod tests {
         assert_eq!(conversation.len(), 2);
         assert!(matches!(
             &conversation.rows()[0],
-            TranscriptRow::Thinking { text } if text == "checking"
+            TranscriptRow::Thinking { text, .. } if text == "checking"
+        ));
+    }
+
+    #[test]
+    fn a_finished_thought_is_stamped_with_its_elapsed_seconds() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+
+        conversation.apply(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+            &mut state,
+        );
+        conversation.apply(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("weighing".into())),
+            &mut state,
+        );
+        // While the block is live there is nothing to report yet, so the
+        // summary reads "Thinking" rather than a bogus duration.
+        assert!(matches!(
+            &conversation.rows()[0],
+            TranscriptRow::Thinking {
+                duration_seconds: None,
+                expanded: true,
+                ..
+            }
+        ));
+
+        conversation.apply(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
+            &mut state,
+        );
+        // A block that finished within the first second still reads as one
+        // second, matching the prototype's whole-second "Thought for 8s".
+        assert!(matches!(
+            &conversation.rows()[0],
+            TranscriptRow::Thinking {
+                duration_seconds: Some(1),
+                expanded: true,
+                ..
+            }
+        ));
+
+        assert!(
+            conversation.toggle_expanded(0),
+            "the summary collapses the reasoning body"
+        );
+        assert!(matches!(
+            &conversation.rows()[0],
+            TranscriptRow::Thinking {
+                expanded: false,
+                ..
+            }
         ));
     }
 
@@ -1276,6 +1376,8 @@ mod tests {
         });
         conversation.push_row(TranscriptRow::Thinking {
             text: "The prototype has two buttons.".to_string(),
+            duration_seconds: Some(8),
+            expanded: true,
         });
         conversation.push_row(TranscriptRow::Tool {
             display_name: "Read".to_string(),

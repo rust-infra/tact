@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::SharedString;
-use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
-use gpui_kit::{App, Window};
+use gpui_kit::component::{Edges, Theme, ThemeMode, ThemeRegistry};
+use gpui_kit::{Anchor, App, Window, px};
 
 /// Light theme name declared in `themes/tact-anthropic.json`.
 pub const LIGHT_THEME_NAME: &str = "Tact Anthropic Light";
@@ -58,6 +58,15 @@ pub fn activate(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) -> a
     let theme = Theme::global_mut(cx);
     theme.light_theme = light;
     theme.dark_theme = dark;
+    // The prototype's `.toast` is pinned 20px from the bottom-right corner;
+    // the component default is the top-right, under the title bar.
+    theme.notification.placement = Anchor::BottomRight;
+    theme.notification.margins = Edges {
+        top: px(20.),
+        right: px(20.),
+        bottom: px(20.),
+        left: px(20.),
+    };
     Theme::change(mode, window, cx);
     Ok(())
 }
@@ -125,5 +134,116 @@ pub fn toggle(window: &mut Window, cx: &mut App) {
 
     if let Err(err) = activate(mode, Some(window), cx) {
         tracing::warn!("Cannot switch the Tact theme: {err:#}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    use super::{DARK_THEME_NAME, LIGHT_THEME_NAME, theme_dir};
+
+    /// The reviewed design source. `themes/tact-anthropic.json` is a copy of it
+    /// so a running window cannot drift from the reference that was signed off.
+    const DESIGN_THEME: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/design/tact-desktop-theme.json"
+    );
+
+    /// The HTML prototype the theme's colours are lifted from.
+    const DESIGN_PROTOTYPE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/design/tact-desktop-prototype.html"
+    );
+
+    /// The prototype's CSS custom properties for one `:root` block.
+    fn prototype_vars(html: &str, selector: &str) -> BTreeMap<String, String> {
+        let start = html
+            .find(selector)
+            .unwrap_or_else(|| panic!("{selector} is missing from the prototype"));
+        let open = start + html[start..].find('{').expect("open brace");
+        let close = open + html[open..].find('}').expect("close brace");
+        html[open + 1..close]
+            .split(';')
+            .filter_map(|declaration| declaration.split_once(':'))
+            .map(|(name, value)| (name.trim().to_string(), value.trim().to_lowercase()))
+            .filter(|(name, _)| name.starts_with("--"))
+            .collect()
+    }
+
+    /// One named theme's `colors` table, lower-cased for hex comparison.
+    fn theme_colors(name: &str) -> BTreeMap<String, String> {
+        let raw = fs::read_to_string(theme_dir().join("tact-anthropic.json"))
+            .expect("the shipped theme file");
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("theme JSON");
+        let theme = json["themes"]
+            .as_array()
+            .expect("themes array")
+            .iter()
+            .find(|theme| theme["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is missing from the theme file"));
+        theme["colors"]
+            .as_object()
+            .expect("colors table")
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    value.as_str().expect("colour string").to_lowercase(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_shipped_theme_copy_matches_the_design_source() {
+        let shipped = fs::read_to_string(theme_dir().join("tact-anthropic.json"))
+            .expect("the shipped theme file");
+        let design = fs::read_to_string(DESIGN_THEME).expect("the design theme file");
+        assert_eq!(
+            shipped, design,
+            "themes/tact-anthropic.json must stay a byte-for-byte copy of \
+             docs/design/tact-desktop-theme.json"
+        );
+    }
+
+    /// The prototype names its colours by role; the theme names them by widget.
+    /// Pinning the translation here keeps every surface on the prototype's
+    /// palette instead of on a lookalike picked by eye.
+    #[test]
+    fn the_theme_roles_carry_the_prototype_variables() {
+        let html = fs::read_to_string(DESIGN_PROTOTYPE).expect("the prototype");
+        let light = prototype_vars(&html, ":root{");
+        let dark = prototype_vars(&html, ":root[data-theme=dark]{");
+
+        let roles = [
+            // The colour behind the window.
+            ("background", "--page"),
+            // The chrome columns: sidebar, title bar, status bar, work pane.
+            ("sidebar.background", "--canvas"),
+            // The main column: transcript, composer, and every card.
+            ("popover.background", "--surface"),
+            // The inset wells: search fields, chips, diff file headers.
+            ("muted.background", "--surface2"),
+            // Hover and selection fills.
+            ("accent.background", "--hover"),
+        ];
+
+        for (name, vars) in [(LIGHT_THEME_NAME, &light), (DARK_THEME_NAME, &dark)] {
+            let colors = theme_colors(name);
+            for (token, var) in roles {
+                let token_value = colors
+                    .get(token)
+                    .unwrap_or_else(|| panic!("{name} is missing the {token} token"));
+                let var_value = vars
+                    .get(var)
+                    .unwrap_or_else(|| panic!("the prototype is missing {var}"));
+                assert_eq!(
+                    token_value, var_value,
+                    "{name}: {token} must carry the prototype's {var}"
+                );
+            }
+        }
     }
 }

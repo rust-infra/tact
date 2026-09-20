@@ -93,6 +93,51 @@ fn work_pane_toggle_shows_and_hides_the_pane(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_title_bar_trails_with_the_prototypes_controls(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::new(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        let palette = window.find("open-command-palette").bounds();
+        let left = window.find("title-bar-left").bounds();
+        let center = window.find("title-bar-center").bounds();
+        let right = window.find("title-bar-right").bounds();
+        let work_pane = window.find("work-pane").bounds();
+        let theme = window.find("toggle-theme").bounds();
+        let work = window.find("toggle-work-pane").bounds();
+        let settings = window.find("open-settings").bounds();
+
+        assert!(
+            center.origin.x >= left.right(),
+            "the tabs stay in the center column: {center:?} against {left:?}"
+        );
+        assert!(
+            right.origin.x >= work_pane.origin.x,
+            "the title controls stay in the work-pane column: {right:?} against {work_pane:?}"
+        );
+        assert!(
+            palette.origin.x >= right.origin.x,
+            "the command field stays inside the work-pane column: {palette:?} against {right:?}"
+        );
+        assert!(
+            palette.origin.x < theme.origin.x,
+            "the palette field leads `.tr`"
+        );
+        assert!(
+            theme.origin.x < work.origin.x && work.origin.x < settings.origin.x,
+            "`.tr` trails with theme, the work pane toggle, then settings"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn work_pane_becomes_a_drawer_at_the_minimum_window(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
 
@@ -274,6 +319,10 @@ fn theme_toggle_button_switches_to_dark(cx: &mut TestAppContext) {
 
 fn width(snapshot: gpui_kit::Bounds<gpui_kit::Pixels>) -> f32 {
     f32::from(snapshot.size.width)
+}
+
+fn height(snapshot: gpui_kit::Bounds<gpui_kit::Pixels>) -> f32 {
+    f32::from(snapshot.size.height)
 }
 
 #[gpui_kit::test]
@@ -481,11 +530,13 @@ fn sidebar_lists_recent_sessions_beside_the_new_session_affordance(cx: &mut Test
             id: "11111111-aaaa-bbbb".to_string(),
             updated_at_unix: 1_700_000_000,
             message_count: 4,
+            title: Some("Desktop client design".to_string()),
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
             updated_at_unix: 1_700_000_100,
             message_count: 0,
+            title: None,
         },
     ];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
@@ -572,6 +623,26 @@ fn the_sidebar_lists_worktrees_and_background_work(cx: &mut TestAppContext) {
                 .try_find("background-row-cargo test -p tact")
                 .is_some(),
             "the sidebar lists running background work"
+        );
+        let avatar = window.find("sidebar-avatar").bounds();
+        assert_eq!(height(avatar), 24., "`.avatar` is 24 px tall");
+        assert_eq!(width(avatar), 24., "`.avatar` is 24 px wide");
+        let first_session = window
+            .find("session-row-7fbab10-2c41-4c9a-9f10-2222aaaa1111")
+            .bounds();
+        assert!(
+            height(first_session) >= 44.,
+            "`.row` keeps its 44 px minimum: {first_session:?}"
+        );
+        assert_eq!(
+            height(window.find("session-new").bounds()),
+            34.,
+            "`.new` is 34 px tall"
+        );
+        assert_eq!(
+            height(window.find("session-search").bounds()),
+            30.,
+            "`.search` is 30 px tall"
         );
 
         // Worktrees sit above background work, so the sidebar scrolls rather
@@ -798,12 +869,16 @@ fn the_user_bubble_is_capped_and_right_aligned(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
+    let mut app = None;
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
         let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
         Root::new(shell, window, cx)
     });
+    let app = app.expect("the preview shell is created with its window");
 
     cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| app.scroll_transcript_to(3, cx));
         window.render_frame(cx);
         // Preview row 3 is the first tool card, seeded collapsed.
         assert!(
@@ -823,6 +898,143 @@ fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
         assert!(
             window.try_find("tool-output-3").is_none(),
             "clicking the summary again closes it"
+        );
+    })
+    .unwrap();
+}
+
+/// The prototype's permission card lists the refusal before the grants; the
+/// agent core hands the choices over in a different order, so the card's own
+/// order is what this pins down.
+#[gpui_kit::test]
+fn the_permission_card_leads_with_deny(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
+        window.render_frame(cx);
+
+        // The preview seeds the driver's own trio: 0 = Allow once, 1 = Deny,
+        // 2 = Always allow this tool.
+        let deny = window.find("request-option-1").bounds();
+        let allow_once = window.find("request-option-0").bounds();
+        let allow_always = window.find("request-option-2").bounds();
+        assert!(
+            deny.origin.x < allow_once.origin.x,
+            "the refusal leads: {deny:?} against {allow_once:?}"
+        );
+        assert!(
+            allow_once.origin.x < allow_always.origin.x,
+            "the lasting grant stays last: {allow_once:?} against {allow_always:?}"
+        );
+        assert!(
+            deny.origin.y == allow_once.origin.y,
+            "the options share one row: {deny:?} against {allow_once:?}"
+        );
+        for (id, bounds) in [
+            ("request-option-1", deny),
+            ("request-option-0", allow_once),
+            ("request-option-2", allow_always),
+        ] {
+            assert_eq!(height(bounds), 28., "`.btn` is 28 px tall ({id})");
+        }
+    })
+    .unwrap();
+}
+
+/// The plan progress fill measures as a percentage of its track; the
+/// prototype's `.progress i { width:58% }` is not a fixed rem width.
+#[gpui_kit::test]
+fn the_plan_progress_fill_uses_the_track_width(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        let track = window.find("work-pane-plan-progress").bounds();
+        let fill = window.find("work-pane-plan-progress-fill").bounds();
+        let expected = width(track) * 0.4;
+        assert!(
+            (width(fill) - expected).abs() < 1.,
+            "the 40% plan fill spans its track: {fill:?} against {track:?}"
+        );
+    })
+    .unwrap();
+}
+
+/// The work pane's `.workTop` and `.workFoot` own the prototype's 28px
+/// controls, not gpui-component's 32px button default.
+#[gpui_kit::test]
+fn the_work_pane_chrome_uses_the_prototype_boxes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        let close = window.find("work-pane-close").bounds();
+        assert_eq!(height(close), 28., "`.icon` is 28 px tall");
+        assert_eq!(width(close), 28., "`.icon` is 28 px wide");
+
+        let open_editor = window.find("work-pane-open-editor").bounds();
+        assert_eq!(height(open_editor), 28., "`.btn` is 28 px tall");
+    })
+    .unwrap();
+}
+
+/// The prototype binds `#openDiff` to the write row's `.diffBtn`: clicking the
+/// counts shows the Diff pane and leaves the tool card's own output closed.
+#[gpui_kit::test]
+fn clicking_a_write_rows_diff_badge_opens_the_diff_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| app.scroll_transcript_to(5, cx));
+        window.render_frame(cx);
+        // Preview row 4 is the edit card; row 3 is its read sibling.
+        assert!(
+            window.try_find("work-pane-body-plan").is_some(),
+            "the preview opens on the plan pane"
+        );
+        assert!(
+            window.try_find("tool-diff-3").is_none(),
+            "a read has no change to open"
+        );
+        assert!(
+            window.try_find("tool-output-5").is_none(),
+            "the edit card starts collapsed"
+        );
+
+        window.click("tool-diff-5", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("work-pane-body-diff").is_some(),
+            "the badge switches the work pane to Diff"
+        );
+        assert!(
+            window.try_find("tool-output-5").is_none(),
+            "the badge does not also expand the tool card"
         );
     })
     .unwrap();
@@ -887,6 +1099,165 @@ fn the_transcript_toolbar_carries_the_prototype_copy_button(cx: &mut TestAppCont
         assert!(
             copy.right() <= toolbar.right() + px(0.5),
             "the copy button stays inside the toolbar: {copy:?} against {toolbar:?}"
+        );
+
+        // `.mainTop` sits in `.main { grid-template-rows: 38px ... }` and the
+        // two `.toolbtn` chips are 26 px tall. gpui-component's own buttons are
+        // 24 px or 32 px, so this is the regression guard for drawing our own.
+        assert_eq!(
+            height(toolbar),
+            38.,
+            "the toolbar band is `.main`'s 38 px row"
+        );
+        assert_eq!(height(detail), 26., "`.toolbtn` is 26 px tall");
+        assert_eq!(height(copy), 26., "`.toolbtn` is 26 px tall");
+        assert_eq!(
+            height(detail),
+            height(copy),
+            "both toolbar chips share `.toolbtn`'s box"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_title_bar_controls_use_the_prototype_boxes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        // `.icon { width: 28px; height: 28px; }` — the sidebar toggle in `.tl`
+        // and theme / work pane / settings in `.tr`.
+        for id in [
+            "toggle-sidebar",
+            "toggle-theme",
+            "toggle-work-pane",
+            "open-settings",
+        ] {
+            let box_ = window.find(id).bounds();
+            assert_eq!(height(box_), 28., "`.icon` is 28 px tall ({id})");
+            assert_eq!(width(box_), 28., "`.icon` is 28 px wide ({id})");
+        }
+
+        // `.cmd { height: 28px; min-width: 154px; }` — the palette field.
+        let command = window.find("open-command-palette").bounds();
+        assert_eq!(height(command), 28., "`.cmd` is 28 px tall");
+        assert!(
+            width(command) >= 154.,
+            "`.cmd` keeps its 154 px minimum: {command:?}"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_composer_controls_use_the_prototype_boxes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        // `.mini { height: 25px; padding: 0 7px; font-size: 10.5px; }`.
+        for id in [
+            "composer-add",
+            "composer-mention",
+            "composer-model",
+            "composer-effort",
+            "composer-permission",
+        ] {
+            let chip = window.find(id).bounds();
+            assert_eq!(height(chip), 25., "`.mini` is 25 px tall ({id})");
+        }
+
+        // `.send { width: 28px; height: 28px; }`.
+        let send = window.find("composer-primary").bounds();
+        assert_eq!(height(send), 28., "`.send` is 28 px tall");
+        assert_eq!(width(send), 28., "`.send` is 28 px wide");
+
+        // `.prompt { min-height: 48px; }` keeps the message field from
+        // collapsing below the prototype's two-line input box.
+        let prompt = window.find("prompt-composer-input").bounds();
+        assert!(
+            height(prompt) >= 48.,
+            "the prompt field keeps `.prompt`'s 48 px minimum: {prompt:?}"
+        );
+    })
+    .unwrap();
+}
+
+/// The prototype puts the session header and the inline approval in the same
+/// transcript scroller. The preview starts at the top, so the approval is not
+/// built yet; scrolling to the tail swaps which virtual item is visible.
+#[gpui_kit::test]
+fn the_transcript_header_and_approval_share_the_virtual_list(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("session-intro-detail-cycle").is_some(),
+            "the preview starts at the transcript header"
+        );
+        assert!(
+            window.try_find("request-option-1").is_none(),
+            "the approval is virtualized below the initial viewport"
+        );
+
+        app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
+        window.render_frame(cx);
+        assert!(
+            window.try_find("session-intro-detail-cycle").is_none(),
+            "scrolling to the tail releases the header row"
+        );
+        assert!(
+            window.try_find("request-option-1").is_some(),
+            "the approval is built at the transcript tail"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_session_intro_detail_chip_matches_the_prototype_cycle_box(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| app.scroll_transcript_to_top(cx));
+        window.render_frame(cx);
+
+        let cycle = window.find("session-intro-detail-cycle").bounds();
+        let toolbar = window.find("transcript-detail-cycle").bounds();
+
+        // `.cycle { height: 26px }` in the prototype, the same box as the
+        // toolbar's `.toolbtn`.
+        assert_eq!(height(cycle), 26., "`.cycle` is 26 px tall");
+        assert_eq!(
+            height(cycle),
+            height(toolbar),
+            "the intro chip and the toolbar chip share the prototype's 26 px box"
         );
     })
     .unwrap();

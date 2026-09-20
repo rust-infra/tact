@@ -29,36 +29,42 @@ actions!([
 
 /// Register the global keyboard contract.
 ///
-/// Both macOS and non-macOS bindings are registered unconditionally: GPUI only
-/// delivers the modifier the platform actually produces, so the alternate
-/// binding is harmless and keeps the source list self-documenting.
+/// The command chords use GPUI's `secondary` modifier so one binding follows
+/// the platform — Command on macOS, Control elsewhere — and the palette's
+/// rendered hint matches the key the user actually presses.
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("cmd-k", OpenCommandPalette, Some(CONTEXT)),
-        KeyBinding::new("ctrl-k", OpenCommandPalette, Some(CONTEXT)),
-        KeyBinding::new("cmd-n", NewSession, Some(CONTEXT)),
-        KeyBinding::new("ctrl-n", NewSession, Some(CONTEXT)),
+        // `secondary` is GPUI's portable spelling for the platform's command
+        // modifier: Command on macOS, Control elsewhere. Registering one
+        // binding per action also keeps the palette's `Kbd` hint correct —
+        // with both `cmd-` and `ctrl-` bound, the hint could show a chord the
+        // running platform never produces.
+        KeyBinding::new("secondary-k", OpenCommandPalette, Some(CONTEXT)),
+        KeyBinding::new("secondary-n", NewSession, Some(CONTEXT)),
         KeyBinding::new("escape", StopTask, Some(CONTEXT)),
-        KeyBinding::new("cmd-\\", ToggleWorkPane, Some(CONTEXT)),
-        KeyBinding::new("ctrl-\\", ToggleWorkPane, Some(CONTEXT)),
-        KeyBinding::new("cmd-l", FocusComposer, Some(CONTEXT)),
-        KeyBinding::new("ctrl-l", FocusComposer, Some(CONTEXT)),
+        KeyBinding::new("secondary-\\", ToggleWorkPane, Some(CONTEXT)),
+        KeyBinding::new("secondary-l", FocusComposer, Some(CONTEXT)),
         KeyBinding::new("ctrl-o", CycleTranscriptDetail, Some(CONTEXT)),
-        KeyBinding::new("cmd-b", ToggleSidebar, Some(CONTEXT)),
-        KeyBinding::new("ctrl-b", ToggleSidebar, Some(CONTEXT)),
-        KeyBinding::new("cmd-shift-d", OpenDiff, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-d", OpenDiff, Some(CONTEXT)),
-        KeyBinding::new("cmd-shift-t", OpenTasks, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-t", OpenTasks, Some(CONTEXT)),
-        KeyBinding::new("cmd-,", OpenSettings, Some(CONTEXT)),
-        KeyBinding::new("ctrl-,", OpenSettings, Some(CONTEXT)),
+        KeyBinding::new("secondary-b", ToggleSidebar, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-d", OpenDiff, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-t", OpenTasks, Some(CONTEXT)),
+        KeyBinding::new("secondary-,", OpenSettings, Some(CONTEXT)),
         KeyBinding::new("ctrl-tab", CycleSessions, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-tab", CycleSessionsBackward, Some(CONTEXT)),
-        KeyBinding::new("cmd-shift-backspace", RemoveAttachment, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-backspace", RemoveAttachment, Some(CONTEXT)),
-        KeyBinding::new("cmd-shift-l", ToggleTheme, Some(CONTEXT)),
-        KeyBinding::new("ctrl-shift-l", ToggleTheme, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-backspace", RemoveAttachment, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-l", ToggleTheme, Some(CONTEXT)),
     ]);
+}
+
+/// The prototype spells shortcuts with macOS glyphs (`⌘N`). Everywhere else
+/// the same binding is written with the modifier the platform actually uses,
+/// so a glance at the UI does not promise a chord the user cannot press.
+pub(crate) fn hint(mac: &'static str, other: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        mac
+    } else {
+        other
+    }
 }
 
 /// Groups shown in the command palette.

@@ -25,3 +25,4 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 gpui-kit = { version = "0.6.4", features = ["test-support"] }
+serde_json = { workspace = true }

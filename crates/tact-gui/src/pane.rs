@@ -20,7 +20,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, rems,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div, relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -28,7 +28,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::{SubagentStatusSnapshot, TaskStatusSnapshot};
 
 use crate::session::{SessionState, age_label, now_unix};
-use crate::shell::TactApp;
+use crate::shell::{TactApp, prototype_button, prototype_icon_button};
 
 /// Which surface the work pane shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -352,11 +352,8 @@ pub(crate) fn view(
                 .test_support()
                 .child(tabs)
                 .child(
-                    Button::new("work-pane-close")
+                    prototype_icon_button("work-pane-close", IconName::X, cx)
                         .flex_shrink_0()
-                        .icon(IconName::X)
-                        .ghost()
-                        .compact()
                         .tooltip("Close work pane (Ctrl+\\)")
                         .accessibility_label("Close work pane")
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -384,11 +381,15 @@ pub(crate) fn view(
 fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>) -> AnyElement {
     let ink = cx.theme().foreground;
     let ink3 = cx.theme().muted_foreground;
-    let surface = cx.theme().background;
+    let surface = cx.theme().popover;
     let line = cx.theme().border;
-    let hover = cx.theme().muted;
+    // `.wtab:hover` uses the prototype's `--hover`, which the theme exposes as
+    // `accent`; `muted` is the inset well color the cards use.
+    let hover = cx.theme().accent;
+    // `.count` is the inset well (`--surface2`); only the hovered tab uses `--hover`.
+    let well = cx.theme().muted;
     let tint = cx.theme().primary.opacity(0.12);
-    let accent = cx.theme().primary;
+    let accent = cx.theme().accent_foreground;
 
     let mut chips: Vec<AnyElement> = Vec::with_capacity(WorkPane::ALL.len());
     for (index, pane) in WorkPane::ALL.iter().copied().enumerate() {
@@ -435,7 +436,7 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
                             .rounded(rems(0.3125))
                             .text_size(rems(0.5625))
                             .font_family(cx.theme().mono_font_family.clone())
-                            .bg(if active { tint } else { hover })
+                            .bg(if active { tint } else { well })
                             .text_color(if active { accent } else { ink3 })
                             .child(SharedString::from(count.to_string())),
                     )
@@ -462,17 +463,15 @@ fn work_footer(cx: &App) -> impl IntoElement {
         .w_full()
         .flex_shrink_0()
         .items_center()
-        .gap_1()
+        .gap(rems(0.375))
         .border_t_1()
         .border_color(cx.theme().border)
-        .px_3()
-        .py_2()
+        .px(rems(0.625))
+        .py(rems(0.5))
         .child(
-            Button::new("work-pane-open-editor")
+            prototype_button("work-pane-open-editor", false, cx)
                 .label("Open in editor")
                 .icon(IconName::SquareTerminal)
-                .ghost()
-                .compact()
                 .tooltip("Open the workspace in your editor")
                 .accessibility_label("Open the workspace in your editor"),
         )
@@ -501,21 +500,21 @@ fn panel_head(
         .w_full()
         .items_start()
         .gap_3()
-        .mb_3()
+        .mb(rems(0.625))
         .child(
             v_flex()
                 .min_w_0()
                 .flex_1()
                 .child(
                     div()
-                        .text_sm()
+                        .text_size(rems(0.8125))
                         .font_semibold()
                         .child(SharedString::from(title.to_string())),
                 )
                 .child(
                     div()
-                        .mt_1()
-                        .text_xs()
+                        .mt(rems(0.1875))
+                        .text_size(rems(0.6875))
                         .text_color(cx.theme().muted_foreground)
                         .child(subtitle.into()),
                 ),
@@ -559,11 +558,11 @@ fn card_head(label: &str, note: impl Into<SharedString>, cx: &App) -> impl IntoE
         .gap_2()
         .border_b_1()
         .border_color(cx.theme().border)
-        .px_3()
-        .py_2()
+        .px(rems(0.6875))
+        .py(rems(0.625))
         .child(
             div()
-                .text_xs()
+                .text_size(rems(0.71875))
                 .font_semibold()
                 .child(SharedString::from(label.to_string())),
         )
@@ -571,7 +570,7 @@ fn card_head(label: &str, note: impl Into<SharedString>, cx: &App) -> impl IntoE
         .child(
             div()
                 .font_family(cx.theme().mono_font_family.clone())
-                .text_xs()
+                .text_size(rems(0.625))
                 .text_color(cx.theme().muted_foreground)
                 .child(note.into()),
         )
@@ -593,10 +592,7 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
         "Implementation plan",
         "Steps arrive as the agent plans, then report back as they run.",
         Some(
-            Button::new("work-pane-plan-refresh")
-                .icon(IconName::RefreshCw)
-                .ghost()
-                .compact()
+            prototype_icon_button("work-pane-plan-refresh", IconName::RefreshCw, cx)
                 .tooltip("Refresh plan")
                 .accessibility_label("Refresh plan")
                 .into_any_element(),
@@ -615,20 +611,24 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
         card_head("Current work", format!("{percent}% complete"), cx).into_any_element(),
         v_flex()
             .w_full()
-            .px_3()
-            .pb_3()
+            .px(rems(0.625))
+            .pb(rems(0.6875))
             .child(
                 div()
+                    .id("work-pane-plan-progress")
+                    .test_support()
                     .h(rems(0.25))
                     .w_full()
                     .rounded_full()
                     .bg(cx.theme().border)
                     .child(
                         div()
+                            .id("work-pane-plan-progress-fill")
+                            .test_support()
                             .h_full()
                             .rounded_full()
                             .bg(cx.theme().primary)
-                            .w(rems(plan_bar_width(percent))),
+                            .w(relative(plan_bar_width(percent))),
                     ),
             )
             .into_any_element(),
@@ -638,7 +638,74 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
         work.push(plan_step_row(index, current, step, done_at, cx).into_any_element());
     }
 
-    v_flex().w_full().child(head).child(card(cx, work))
+    let mut body = v_flex()
+        .w_full()
+        .gap(rems(0.625))
+        .child(head)
+        .child(card(cx, work));
+
+    // `.card + .card`: the prototype follows the plan with one suggestion the
+    // protocol already knows about. Tact's protocol has no suggestion update,
+    // so the row is the first pending, unblocked task — the same list the Tasks
+    // pane reads — and the card is omitted rather than invented when there is
+    // none.
+    if let Some(next) = state
+        .tasks
+        .iter()
+        .find(|task| task.status == TaskStatusSnapshot::Pending && task.blocked_by.is_empty())
+    {
+        body = body.child(card(
+            cx,
+            vec![
+                card_head("Suggested next", "from protocol", cx).into_any_element(),
+                suggested_next_row(next, cx).into_any_element(),
+            ],
+        ));
+    }
+
+    body
+}
+
+/// One `.step` row for the plan pane's suggestion, which has no step clock.
+fn suggested_next_row(task: &tact_protocol::TaskSnapshot, cx: &App) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .min_h(rems(2.625))
+        .items_center()
+        .gap_2()
+        .px(rems(0.625))
+        .py(rems(0.4375))
+        .child(
+            div()
+                .size(rems(1.125))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(cx.theme().muted)
+                .text_color(cx.theme().muted_foreground)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(IconName::Plus),
+        )
+        .child(
+            v_flex()
+                .min_w_0()
+                .flex_1()
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(rems(0.71875))
+                        .font_semibold()
+                        .child(SharedString::from(task.subject.clone())),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(rems(0.65625))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(task.owner.clone())),
+                ),
+        )
 }
 
 /// The prototype's step clock: how long ago the step finished.
@@ -652,7 +719,7 @@ fn step_age(done_at: Option<i64>) -> String {
     }
 }
 
-/// Width of the plan progress fill, in rems, for a 100%-wide track.
+/// Fraction of the plan progress track to fill.
 ///
 /// A zero-width child would collapse the rounded cap, so an executed-but-tiny
 /// plan keeps a hairline of fill instead.
@@ -688,7 +755,7 @@ fn plan_step_row(
         (
             IconName::Circle,
             cx.theme().muted_foreground,
-            cx.theme().background,
+            cx.theme().muted,
             // The prototype distinguishes the step queued behind the current
             // one from the ones after it.
             if current.is_some_and(|current| index == current + 1) {
@@ -701,13 +768,14 @@ fn plan_step_row(
 
     h_flex()
         .w_full()
+        .min_h(rems(2.625))
         .items_center()
         .gap_2()
         .border_b_1()
         .border_color(cx.theme().border)
-        .when(is_current, |row| row.bg(cx.theme().primary.opacity(0.06)))
-        .px_3()
-        .py_2()
+        .when(is_current, |row| row.bg(cx.theme().primary.opacity(0.12)))
+        .px(rems(0.625))
+        .py(rems(0.4375))
         .child(
             div()
                 .size(rems(1.125))
@@ -727,13 +795,14 @@ fn plan_step_row(
                 .child(
                     div()
                         .truncate()
-                        .text_sm()
+                        .text_size(rems(0.71875))
+                        .font_semibold()
                         .child(SharedString::from(step.description.clone())),
                 )
                 .child(
                     div()
                         .truncate()
-                        .text_xs()
+                        .text_size(rems(0.65625))
                         .text_color(cx.theme().muted_foreground)
                         .child(SharedString::from(step.tool.clone())),
                 ),
@@ -742,7 +811,7 @@ fn plan_step_row(
             div()
                 .flex_shrink_0()
                 .font_family(cx.theme().mono_font_family.clone())
-                .text_xs()
+                .text_size(rems(0.59375))
                 .text_color(cx.theme().muted_foreground)
                 .child(SharedString::from(trailing)),
         )
@@ -767,10 +836,8 @@ fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &App) -> impl IntoElemen
         "Uncommitted changes",
         subtitle,
         Some(
-            Button::new("work-pane-diff-comment")
+            prototype_button("work-pane-diff-comment", false, cx)
                 .label("Comment")
-                .ghost()
-                .compact()
                 .into_any_element(),
         ),
         cx,
@@ -783,7 +850,7 @@ fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &App) -> impl IntoElemen
             .child(empty("No file changes yet.", cx));
     }
 
-    let mut body = v_flex().w_full().gap_3().child(head);
+    let mut body = v_flex().w_full().gap(rems(0.625)).child(head);
     // The cache is keyed per path, so reading the working tree happens once
     // per file per invalidation rather than on every frame.
     let workdir = state.workdir.clone();
@@ -802,9 +869,9 @@ fn diff_card(entry: &DiffEntry, unified: Option<&str>, cx: &App) -> impl IntoEle
     let stats = match (entry.added, entry.removed) {
         (Some(added), Some(removed)) => h_flex()
             .flex_shrink_0()
-            .gap_1()
+            .gap(rems(0.3125))
             .font_family(cx.theme().mono_font_family.clone())
-            .text_xs()
+            .text_size(rems(0.59375))
             .child(
                 div()
                     .text_color(cx.theme().success)
@@ -825,9 +892,9 @@ fn diff_card(entry: &DiffEntry, unified: Option<&str>, cx: &App) -> impl IntoEle
         .gap_2()
         .border_b_1()
         .border_color(cx.theme().border)
-        .bg(cx.theme().background)
-        .px_3()
-        .py_2()
+        .bg(cx.theme().muted)
+        .px(rems(0.625))
+        .py(rems(0.5))
         .child(IconName::FileCode)
         .child(
             div()
@@ -835,7 +902,7 @@ fn diff_card(entry: &DiffEntry, unified: Option<&str>, cx: &App) -> impl IntoEle
                 .flex_1()
                 .truncate()
                 .font_family(cx.theme().mono_font_family.clone())
-                .text_xs()
+                .text_size(rems(0.65625))
                 .child(SharedString::from(entry.path.clone())),
         )
         .child(stats);
@@ -866,7 +933,8 @@ fn diff_body(unified: &str, cx: &App) -> impl IntoElement {
     let mut rows = v_flex()
         .w_full()
         .font_family(cx.theme().mono_font_family.clone())
-        .text_xs();
+        .text_size(rems(0.640625))
+        .line_height(relative(1.6));
     let mut number = DiffNumbering::default();
 
     for (kind, text) in diff_lines(unified) {
@@ -878,8 +946,8 @@ fn diff_body(unified: &str, cx: &App) -> impl IntoElement {
         let (fg, bg, marker) = match kind {
             DiffLineKind::Added => (cx.theme().success, cx.theme().success.opacity(0.10), "+"),
             DiffLineKind::Removed => (cx.theme().danger, cx.theme().danger.opacity(0.10), "-"),
-            DiffLineKind::Meta => (cx.theme().muted_foreground, cx.theme().background, ""),
-            DiffLineKind::Context => (cx.theme().foreground, cx.theme().background, " "),
+            DiffLineKind::Meta => (cx.theme().muted_foreground, cx.theme().popover, ""),
+            DiffLineKind::Context => (cx.theme().foreground, cx.theme().popover, " "),
         };
         let gutter = number
             .gutter(kind)
@@ -889,20 +957,26 @@ fn diff_body(unified: &str, cx: &App) -> impl IntoElement {
         rows = rows.child(
             h_flex()
                 .w_full()
+                .min_h(rems(1.1875))
                 .bg(bg)
                 .items_start()
+                .px(rems(0.5))
                 .child(
                     div()
-                        .w(rems(2.5))
+                        .w(rems(2.125))
                         .flex_shrink_0()
-                        .pr_1()
+                        .border_r_1()
+                        .border_color(cx.theme().border)
+                        .pr(rems(0.4375))
                         .text_color(cx.theme().muted_foreground)
+                        .text_align(gpui_kit::TextAlign::Right)
                         .child(SharedString::from(gutter)),
                 )
                 .child(
                     div()
-                        .w(rems(1.))
+                        .w(rems(0.875))
                         .flex_shrink_0()
+                        .pl(rems(0.1875))
                         .text_color(fg)
                         .child(SharedString::from(marker)),
                 )
@@ -910,6 +984,7 @@ fn diff_body(unified: &str, cx: &App) -> impl IntoElement {
                     div()
                         .min_w_0()
                         .flex_1()
+                        .pl(rems(0.4375))
                         .text_color(fg)
                         .child(SharedString::from(text)),
                 ),
@@ -976,6 +1051,32 @@ impl DiffNumbering {
     }
 }
 
+/// When the task list last reported progress.
+///
+/// The protocol records a creation, start, and completion stamp per task; the
+/// newest of those is the list's age. A snapshot that carries none of them has
+/// nothing to report, so the caller leaves the subtitle bare.
+fn tasks_updated_at(tasks: &[tact_protocol::TaskSnapshot]) -> Option<i64> {
+    tasks
+        .iter()
+        .flat_map(|task| [task.completed_at, task.started_at, task.created_at])
+        .flatten()
+        .max()
+}
+
+/// The prototype's `.panelHead p` clock.
+///
+/// Its tasks subtitle writes sub-minute ages in seconds ("4 tasks · updated
+/// 12s ago"), so this keeps second precision where the session list's coarse
+/// `age_label` deliberately rounds to "just now".
+fn updated_age(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s ago")
+    } else {
+        age_label(seconds)
+    }
+}
+
 /// Persistent tasks, rendered as the prototype's Task / Status / Owner table.
 fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
     let count = state.tasks.len();
@@ -985,14 +1086,20 @@ fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
         .filter(|task| task.status == TaskStatusSnapshot::Pending && !task.blocked_by.is_empty())
         .collect();
 
+    // `.panelHead p` in the prototype carries the list's age. The protocol
+    // stamps creation, start, and completion, so the newest stamp any task
+    // carries is real evidence; a snapshot with none stays bare rather than
+    // inventing an age.
+    let updated = tasks_updated_at(&state.tasks)
+        .map(|stamp| format!(" · updated {}", updated_age((now_unix() - stamp).max(0))))
+        .unwrap_or_default();
+
     let head = panel_head(
         "Tasks",
-        format!("{count} task{}", if count == 1 { "" } else { "s" }),
+        format!("{count} task{}{updated}", if count == 1 { "" } else { "s" }),
         Some(
-            Button::new("work-pane-tasks-new")
+            prototype_button("work-pane-tasks-new", false, cx)
                 .label("New task")
-                .ghost()
-                .compact()
                 .into_any_element(),
         ),
         cx,
@@ -1010,12 +1117,11 @@ fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
         rows.push(task_row(task, cx).into_any_element());
     }
 
-    let mut body =
-        v_flex()
-            .w_full()
-            .gap_3()
-            .child(head)
-            .child(card_with_id("work-pane-task-table", cx, rows));
+    let mut body = v_flex()
+        .w_full()
+        .gap(rems(0.625))
+        .child(head)
+        .child(card_with_id("work-pane-task-table", cx, rows));
 
     if !blocked.is_empty() {
         let mut items = vec![
@@ -1083,9 +1189,9 @@ fn task_header_row(cx: &App) -> impl IntoElement {
         .gap_2()
         .border_b_1()
         .border_color(cx.theme().border)
-        .px_3()
-        .py_2()
-        .text_xs()
+        .px(rems(0.5))
+        .py(rems(0.4375))
+        .text_size(rems(0.59375))
         .text_color(cx.theme().muted_foreground)
         .child(div().flex_1().child(SharedString::from("Task")))
         .child(div().w(rems(5.)).child(SharedString::from("Status")))
@@ -1111,11 +1217,7 @@ fn task_row(task: &tact_protocol::TaskSnapshot, cx: &App) -> impl IntoElement {
                 cx.theme().primary,
                 cx.theme().primary.opacity(0.12),
             ),
-            Status::Pending => (
-                "Pending",
-                cx.theme().muted_foreground,
-                cx.theme().background,
-            ),
+            Status::Pending => ("Pending", cx.theme().muted_foreground, cx.theme().muted),
         }
     };
 
@@ -1125,25 +1227,26 @@ fn task_row(task: &tact_protocol::TaskSnapshot, cx: &App) -> impl IntoElement {
         .gap_2()
         .border_b_1()
         .border_color(cx.theme().border)
-        .px_3()
-        .py_2()
+        .px(rems(0.5))
+        .py(rems(0.5))
         .child(
             div()
                 .min_w_0()
                 .flex_1()
                 .truncate()
-                .text_sm()
+                .text_size(rems(0.6875))
+                .font_semibold()
                 .child(SharedString::from(task.subject.clone())),
         )
         .child(
             div().w(rems(5.)).flex_shrink_0().child(
                 h_flex()
+                    .h(rems(1.1875))
                     .items_center()
-                    .rounded(cx.theme().radius)
+                    .rounded(rems(0.3125))
                     .bg(bg)
-                    .px_1()
-                    .py_0p5()
-                    .text_xs()
+                    .px(rems(0.375))
+                    .text_size(rems(0.59375))
                     .text_color(fg)
                     .child(SharedString::from(label)),
             ),
@@ -1153,7 +1256,7 @@ fn task_row(task: &tact_protocol::TaskSnapshot, cx: &App) -> impl IntoElement {
                 .w(rems(3.))
                 .flex_shrink_0()
                 .truncate()
-                .text_xs()
+                .text_size(rems(0.6875))
                 .text_color(cx.theme().muted_foreground)
                 .child(SharedString::from(task.owner.clone())),
         )
@@ -1192,11 +1295,9 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
             SubagentStatusSnapshot::Failed => {
                 ("Failed", cx.theme().danger, cx.theme().danger.opacity(0.12))
             }
-            SubagentStatusSnapshot::Cancelled => (
-                "Cancelled",
-                cx.theme().muted_foreground,
-                cx.theme().background,
-            ),
+            SubagentStatusSnapshot::Cancelled => {
+                ("Cancelled", cx.theme().muted_foreground, cx.theme().muted)
+            }
         };
         rows.push(
             h_flex()
@@ -1205,8 +1306,8 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
                 .gap_2()
                 .border_b_1()
                 .border_color(cx.theme().border)
-                .px_3()
-                .py_2()
+                .px(rems(0.625))
+                .py(rems(0.5))
                 .child(
                     v_flex()
                         .min_w_0()
@@ -1214,13 +1315,14 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
                         .child(
                             div()
                                 .truncate()
-                                .text_sm()
+                                .text_size(rems(0.71875))
+                                .font_semibold()
                                 .child(SharedString::from(run.child_id.clone())),
                         )
                         .child(
                             div()
                                 .truncate()
-                                .text_xs()
+                                .text_size(rems(0.65625))
                                 .text_color(cx.theme().muted_foreground)
                                 .child(SharedString::from(run.summary_first.clone())),
                         ),
@@ -1228,11 +1330,11 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
                 .child(
                     div()
                         .flex_shrink_0()
-                        .rounded(cx.theme().radius)
+                        .h(rems(1.1875))
+                        .rounded(rems(0.3125))
                         .bg(bg)
-                        .px_1()
-                        .py_0p5()
-                        .text_xs()
+                        .px(rems(0.375))
+                        .text_size(rems(0.59375))
                         .text_color(fg)
                         .child(SharedString::from(label)),
                 )
@@ -1264,10 +1366,8 @@ fn files_tree(
             rows.iter().filter(|row| row.is_dir && row.expanded).count()
         ),
         Some(
-            Button::new("work-pane-files-add")
+            prototype_button("work-pane-files-add", false, cx)
                 .label("Add file")
-                .ghost()
-                .compact()
                 .into_any_element(),
         ),
         cx,
@@ -1281,7 +1381,7 @@ fn files_tree(
     }
 
     let hover_bg = cx.theme().primary.opacity(0.08);
-    let mut tree = v_flex().w_full().p_1();
+    let mut tree = v_flex().w_full().px(rems(0.4375)).py(rems(0.5));
     for row in rows {
         let indent = rems_for_depth(row.depth);
         let path = row.path.clone();
@@ -1319,19 +1419,19 @@ fn files_tree(
                 .id(row_id)
                 .w_full()
                 .min_w_0()
+                .h(rems(1.75))
                 .items_center()
-                .gap_1()
-                .rounded(cx.theme().radius)
+                .gap(rems(0.375))
+                .rounded(rems(0.375))
                 .pl(indent)
-                .pr_2()
-                .py_0p5()
+                .pr(rems(0.4375))
                 .when(is_expanded, move |row| row.bg(hover_bg))
                 .child(marker)
                 .child(
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_sm()
+                        .text_size(rems(0.6875))
                         .child(SharedString::from(row.name)),
                 ),
         );
@@ -1345,7 +1445,8 @@ fn files_tree(
 
 /// Indent step for one tree depth.
 fn rems_for_depth(depth: usize) -> gpui_kit::Rems {
-    gpui_kit::rems(depth as f32 * 0.75)
+    // `.row2 { padding: 0 7px }` plus the prototype's 12px depth step.
+    gpui_kit::rems(depth as f32 * 0.75 + 0.4375)
 }
 
 /// Muted placeholder used by every empty pane.
@@ -1402,6 +1503,48 @@ mod tests {
             plan_bar_width(0) > 0.0,
             "an unstarted plan keeps a hairline rather than an invisible cap"
         );
+    }
+
+    #[test]
+    fn the_task_list_reports_its_newest_stamp() {
+        let tasks = vec![
+            tact_protocol::TaskSnapshot {
+                created_at: Some(100),
+                ..Default::default()
+            },
+            tact_protocol::TaskSnapshot {
+                created_at: Some(90),
+                started_at: Some(140),
+                ..Default::default()
+            },
+            tact_protocol::TaskSnapshot {
+                created_at: Some(80),
+                completed_at: Some(120),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            tasks_updated_at(&tasks),
+            Some(140),
+            "the newest stamp wins regardless of which task carries it"
+        );
+        assert_eq!(
+            tasks_updated_at(&[tact_protocol::TaskSnapshot::default()]),
+            None,
+            "a snapshot with no stamps reports no age instead of an invented one"
+        );
+    }
+
+    #[test]
+    fn the_tasks_subtitle_keeps_second_precision() {
+        // `.panelHead p` in the prototype reads "4 tasks · updated 12s ago",
+        // so anything under a minute stays in seconds instead of collapsing
+        // to the session list's "just now".
+        assert_eq!(updated_age(0), "0s ago");
+        assert_eq!(updated_age(12), "12s ago");
+        assert_eq!(updated_age(59), "59s ago");
+        assert_eq!(updated_age(60), "1m ago");
+        assert_eq!(updated_age(7_200), "2h ago");
     }
 
     fn scratch_dir(name: &str) -> PathBuf {

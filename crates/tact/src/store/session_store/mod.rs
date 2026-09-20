@@ -24,6 +24,31 @@ pub struct SessionSummary {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub message_count: i64,
+    /// First text the session's user sent, so a front end can title the row
+    /// instead of printing the raw id. `None` until the session has a user
+    /// message, and for user messages that carry only images or tool results.
+    pub first_user_text: Option<String>,
+}
+
+/// The first text a message carries, ignoring non-text blocks.
+///
+/// The session list wants a title, and a session's first message is often
+/// blocks rather than plain text; this picks the first block that reads as
+/// prose so the title is the user's own words.
+pub(crate) fn first_text(content: &MessageContent) -> Option<String> {
+    match content {
+        MessageContent::Text { content } => {
+            let trimmed = content.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        MessageContent::Blocks { content } => content.iter().find_map(|block| match block {
+            tact_llm::ContentBlock::Text { text } => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            _ => None,
+        }),
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -9,19 +9,17 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
-    ActiveTheme as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    text::{TextView, TextViewStyle},
+    ActiveTheme as _, h_flex,
+    text::{MarkdownNode, MarkdownParseContext, TextView, markdown_ast},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::ToolVisualKind;
 
 use gpui_kit::{
-    AnyElement, App, ClipboardItem, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, div, relative,
-    rems,
+    AnyElement, App, ClipboardItem, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    relative, rems,
 };
 
 /// Opens or closes one collapsible transcript row.
@@ -29,6 +27,13 @@ use gpui_kit::{
 /// A row's click handler runs against a plain [`App`], so the callback carries
 /// the row index back to the shell entity, which owns the row model.
 pub(crate) type RowToggle = Rc<dyn Fn(usize, &mut App)>;
+
+/// Shows the Diff work pane, for the write row's `.diffBtn`.
+///
+/// The prototype binds `#openDiff` to the badge rather than the whole summary,
+/// so clicking the counts jumps to the diff while clicking the row still opens
+/// the tool output.
+pub(crate) type OpenDiff = Rc<dyn Fn(&mut App)>;
 
 /// How much supporting detail the transcript shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -98,6 +103,14 @@ pub(crate) enum TranscriptRow {
     },
     Thinking {
         text: String,
+        /// How long the model spent on this block, once its stream finished.
+        /// `None` while it is still arriving, and for rows restored without
+        /// timing information — the summary then reads "Thinking" rather than
+        /// inventing a duration.
+        duration_seconds: Option<u64>,
+        /// Whether the reasoning body is open. The prototype's `.thinking` is
+        /// a `<details>` the reader can collapse from its summary row.
+        expanded: bool,
     },
     Tool {
         display_name: String,
@@ -132,20 +145,22 @@ pub(crate) enum TranscriptRow {
 fn tool_meta(
     duration: &str,
     output: &str,
+    status: ToolStatus,
     visual_kind: ToolVisualKind,
     diff_stats: Option<(u32, u32)>,
 ) -> String {
+    if status == ToolStatus::Running {
+        return if duration.is_empty() {
+            "live".to_string()
+        } else {
+            format!("{duration} · live")
+        };
+    }
     let lines = match visual_kind {
         ToolVisualKind::FileWrite | ToolVisualKind::FileEdit => 0,
         _ => output.lines().count(),
     };
-    // The prototype's `.diffBtn`: `+142 −0`, using U+2212 like the design.
-    let badge = match (visual_kind, diff_stats) {
-        (ToolVisualKind::FileWrite | ToolVisualKind::FileEdit, Some((added, removed))) => {
-            Some(format!("+{added} \u{2212}{removed}"))
-        }
-        _ => None,
-    };
+    let badge = diff_badge(visual_kind, diff_stats);
     match (duration.is_empty(), lines, badge) {
         (_, _, Some(badge)) if duration.is_empty() => badge,
         (_, _, Some(badge)) => format!("{duration} · {badge}"),
@@ -158,22 +173,119 @@ fn tool_meta(
     }
 }
 
-/// The prototype's `.code` card: a bordered, tinted block around a fence.
+/// The prototype's `.diffBtn`: `+142 −0`, using U+2212 like the design.
 ///
-/// `.codeHead` is a header row, which this renderer does not offer; the card
-/// reserves that band as top padding and puts the copy action in it, so the
-/// code itself still starts below the corner button.
-fn code_block_style(cx: &App) -> TextViewStyle {
-    TextViewStyle::default().code_block(
-        StyleRefinement::default()
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded(rems(0.625))
-            .bg(cx.theme().muted)
-            .pt(rems(2.))
-            .px(rems(0.75))
-            .pb(rems(0.6875)),
+/// Only a write or edit reports a change; a read's line count is not a diff.
+fn diff_badge(visual_kind: ToolVisualKind, diff_stats: Option<(u32, u32)>) -> Option<String> {
+    match (visual_kind, diff_stats) {
+        (ToolVisualKind::FileWrite | ToolVisualKind::FileEdit, Some((added, removed))) => {
+            Some(format!("+{added} \u{2212}{removed}"))
+        }
+        _ => None,
+    }
+}
+
+/// Custom Markdown block name for the prototype's `.code` card.
+const CODE_BLOCK: &str = "tact-code";
+
+/// What a fenced block carries from parsing into rendering.
+#[derive(Clone)]
+struct CodeBlockData {
+    /// The fence's info string, such as `toml`; empty for a bare fence.
+    language: String,
+    /// The fence's body.
+    code: String,
+}
+
+/// Turn every fenced code block into a `.code` card node.
+///
+/// The stock renderer owns only a corner slot for block actions, so the
+/// prototype's `.codeHead` band — the language on the left, `Copy` on the right
+/// — has nowhere to live inside it. A custom block owns the whole card instead.
+fn parse_code_block(
+    node: &markdown_ast::Node,
+    _context: &MarkdownParseContext<'_>,
+) -> Option<MarkdownNode> {
+    let markdown_ast::Node::Code(code) = node else {
+        return None;
+    };
+    Some(
+        MarkdownNode::new(
+            CODE_BLOCK,
+            CodeBlockData {
+                language: code.lang.clone().unwrap_or_default(),
+                code: code.value.clone(),
+            },
+        )
+        .text(code.value.clone()),
     )
+}
+
+/// The prototype's `.code`: a bordered card with a `.codeHead` band over the
+/// fence body.
+///
+/// Copy fires on press rather than click: a custom block carries no element id
+/// of its own, and `on_click` needs one that is unique among a message's blocks.
+fn render_code_block(node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> AnyElement {
+    let data = node.data::<CodeBlockData>();
+    let language = data
+        .map(|data| data.language.trim())
+        .filter(|language| !language.is_empty())
+        .unwrap_or("code");
+    let code = data.map(|data| data.code.clone()).unwrap_or_default();
+    let clipboard = code.clone();
+    let band_ink = cx.theme().muted_foreground;
+    let hover_ink = cx.theme().foreground;
+
+    v_flex()
+        .w_full()
+        .rounded(rems(0.625))
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().muted)
+        .overflow_hidden()
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .px(rems(0.625))
+                .py(rems(0.4375))
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_size(rems(0.65625))
+                .text_color(band_ink)
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(language.to_string())),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .cursor_pointer()
+                        .hover(move |style| style.text_color(hover_ink))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(clipboard.clone()));
+                        })
+                        .child(SharedString::from("Copy")),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .px(rems(0.75))
+                .py(rems(0.6875))
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_size(rems(0.71875))
+                .line_height(relative(1.6))
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(code)),
+        )
+        .into_any_element()
 }
 
 /// The prototype's `.msgMeta`: the author, the clock, and an optional suffix.
@@ -250,6 +362,7 @@ pub(crate) fn render_row(
     index: usize,
     detail: TranscriptDetail,
     toggle: &RowToggle,
+    open_diff: &OpenDiff,
     cx: &App,
 ) -> AnyElement {
     let row_id = SharedString::from(format!("transcript-row-{index}"));
@@ -293,6 +406,8 @@ pub(crate) fn render_row(
                         div()
                             .min_w_0()
                             .w_full()
+                            .text_size(rems(0.8125))
+                            .line_height(relative(1.45))
                             .child(SharedString::from(text.clone())),
                     )
                     .test_support(),
@@ -309,9 +424,9 @@ pub(crate) fn render_row(
             .w_full()
             .min_w_0()
             .items_start()
-            // The prototype's `.msg` gap between gutter and body.
+            // The prototype's `.msg` gap between gutter and body. Vertical
+            // rhythm belongs to the scroller's 18px row gap, not this row.
             .gap(rems(0.75))
-            .py_2()
             .child(
                 // `.gutter`: a 24px rounded square holding the agent's initial,
                 // nudged 1px so it sits level with the first line of text.
@@ -351,72 +466,89 @@ pub(crate) fn render_row(
                             SharedString::from(markdown.clone()),
                         )
                         .selectable(true)
-                        .style(code_block_style(cx))
-                        .code_block_actions(|code_block, _, _cx| {
-                            // `.codeHead`'s Copy. The fence is the only text a
-                            // code block owns, so it is what the button copies.
-                            let code = code_block.code().to_string();
-                            Button::new("code-copy")
-                                .icon(IconName::Copy)
-                                .ghost()
-                                .compact()
-                                .tooltip("Copy code")
-                                .accessibility_label("Copy code")
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(code.clone()))
-                                })
-                        })
+                        .text_size(rems(0.8125))
+                        .line_height(relative(1.45))
+                        .markdown_block_parser(parse_code_block)
+                        .markdown_block_renderer(CODE_BLOCK, render_code_block)
                         .stream_fade(*streaming),
                     )
                     .test_support(),
             )
             .test_support()
             .into_any_element(),
-        TranscriptRow::Thinking { text } => v_flex()
-            .id(row_id)
-            .w_full()
-            .rounded(rems(0.625))
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().muted)
-            .overflow_hidden()
-            .child(
-                // The prototype's `.thinking` summary: chevron, label, and the
-                // active detail level pinned to the right in mono.
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap(rems(0.5))
-                    .px(rems(0.6875))
-                    .py(rems(0.5625))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(div().size(rems(0.875)).child(IconName::ChevronDown))
-                    .child(
+        TranscriptRow::Thinking {
+            text,
+            duration_seconds,
+            expanded,
+        } => {
+            // The prototype's `.thinking` summary is `Thought for 8s` on the
+            // left and the open state (`Normal · hidden` / `Expanded ·
+            // detailed`) pinned right in mono. A row without a recorded
+            // duration keeps the plain label rather than claiming "0s".
+            let label = match duration_seconds {
+                Some(seconds) => format!("Thought for {seconds}s"),
+                None => "Thinking".to_string(),
+            };
+            let state = if *expanded {
+                "Expanded · detailed"
+            } else {
+                "Normal · hidden"
+            };
+            let chevron = if *expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            };
+            let toggle = toggle.clone();
+            v_flex()
+                .id(row_id)
+                .w_full()
+                .rounded(rems(0.625))
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().muted)
+                .overflow_hidden()
+                .child(
+                    h_flex()
+                        .id(SharedString::from(format!("thinking-summary-{index}")))
+                        .w_full()
+                        .items_center()
+                        .gap(rems(0.5))
+                        .px(rems(0.6875))
+                        .py(rems(0.5625))
+                        .text_color(cx.theme().muted_foreground)
+                        .on_click(move |_, _, cx| toggle(index, cx))
+                        .child(div().size(rems(0.875)).child(chevron))
+                        .child(
+                            div()
+                                .text_size(rems(0.71875))
+                                .font_semibold()
+                                .child(SharedString::from(label)),
+                        )
+                        .child(
+                            div()
+                                .ml_auto()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_size(rems(0.65625))
+                                .child(SharedString::from(state)),
+                        ),
+                )
+                .when(*expanded, |card| {
+                    card.child(
+                        // `.content` indents to the chevron's text column.
                         div()
-                            .text_size(rems(0.71875))
-                            .font_semibold()
-                            .child(SharedString::from("Thinking")),
+                            .pl(rems(2.1875))
+                            .pr(rems(0.8125))
+                            .pb(rems(0.75))
+                            .text_size(rems(0.84375))
+                            .line_height(relative(1.62))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(text.clone())),
                     )
-                    .child(
-                        div()
-                            .ml_auto()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_size(rems(0.65625))
-                            .child(SharedString::from(detail.label())),
-                    ),
-            )
-            .child(
-                // `.content` is indented to sit under the chevron's text column.
-                div()
-                    .pl(rems(2.1875))
-                    .pr(rems(0.8125))
-                    .pb(rems(0.75))
-                    .text_size(rems(0.84375))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(text.clone())),
-            )
-            .test_support()
-            .into_any_element(),
+                })
+                .test_support()
+                .into_any_element()
+        }
         TranscriptRow::Tool {
             display_name,
             detail,
@@ -466,6 +598,9 @@ pub(crate) fn render_row(
                 .border_1()
                 .border_color(cx.theme().border)
                 .bg(cx.theme().popover)
+                .when(open, |this| {
+                    this.bg(cx.theme().muted).border_color(cx.theme().input)
+                })
                 .overflow_hidden()
                 .child(
                     h_flex()
@@ -508,6 +643,42 @@ pub(crate) fn render_row(
                                 .text_color(cx.theme().muted_foreground)
                                 .child(SharedString::from(detail.clone())),
                         )
+                        .when_some(*diff_stats, |summary, (added, removed)| {
+                            // `.diffBtn`: the counts sit in their own bordered
+                            // chip, green for additions and red for removals,
+                            // and open the Diff pane instead of the tool body.
+                            let open_diff = open_diff.clone();
+                            summary.child(
+                                h_flex()
+                                    .id(SharedString::from(format!("tool-diff-{index}")))
+                                    .test_support()
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .gap(rems(0.25))
+                                    .h(rems(1.375))
+                                    .px(rems(0.375))
+                                    .rounded(rems(0.375))
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().popover)
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(rems(0.625))
+                                    .on_click(move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        open_diff(cx);
+                                    })
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().success)
+                                            .child(SharedString::from(format!("+{added}"))),
+                                    )
+                                    .child(
+                                        div().text_color(cx.theme().danger).child(
+                                            SharedString::from(format!("\u{2212}{removed}")),
+                                        ),
+                                    ),
+                            )
+                        })
                         .child(
                             div()
                                 .flex_shrink_0()
@@ -517,8 +688,9 @@ pub(crate) fn render_row(
                                 .child(SharedString::from(tool_meta(
                                     duration,
                                     output,
+                                    *status,
                                     *visual_kind,
-                                    *diff_stats,
+                                    None,
                                 ))),
                         )
                         .child(
@@ -548,6 +720,7 @@ pub(crate) fn render_row(
                             .py(rems(0.5625))
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_size(rems(0.65625))
+                            .line_height(relative(1.6))
                             .text_color(cx.theme().muted_foreground)
                             .child(SharedString::from(output.clone()))
                             .test_support(),
@@ -603,16 +776,44 @@ mod tests {
     fn tool_meta_reports_duration_and_line_count() {
         let output = "one\ntwo\nthree\n";
         assert_eq!(
-            tool_meta("1.2s", output, ToolVisualKind::FileRead, None),
+            tool_meta(
+                "1.2s",
+                output,
+                ToolStatus::Succeeded,
+                ToolVisualKind::FileRead,
+                None
+            ),
             "1.2s · 3 lines"
         );
         assert_eq!(
-            tool_meta("1.2s", output, ToolVisualKind::Command, None),
+            tool_meta(
+                "1.2s",
+                output,
+                ToolStatus::Succeeded,
+                ToolVisualKind::Command,
+                None
+            ),
             "1.2s · 3 lines"
         );
         assert_eq!(
-            tool_meta("1.2s", "only line", ToolVisualKind::FileRead, None),
+            tool_meta(
+                "1.2s",
+                "only line",
+                ToolStatus::Succeeded,
+                ToolVisualKind::FileRead,
+                None
+            ),
             "1.2s · 1 line"
+        );
+        assert_eq!(
+            tool_meta(
+                "18.4s",
+                "checking",
+                ToolStatus::Running,
+                ToolVisualKind::Command,
+                None
+            ),
+            "18.4s · live"
         );
     }
 
@@ -620,16 +821,40 @@ mod tests {
     fn tool_meta_omits_the_count_for_writes_and_empty_output() {
         // A write shows the prototype's diff badge in that column instead.
         assert_eq!(
-            tool_meta("0.8s", "+ a\n+ b\n", ToolVisualKind::FileWrite, None),
+            tool_meta(
+                "0.8s",
+                "+ a\n+ b\n",
+                ToolStatus::Succeeded,
+                ToolVisualKind::FileWrite,
+                None
+            ),
             "0.8s"
         );
         assert_eq!(
-            tool_meta("0.8s", "+ a\n", ToolVisualKind::FileEdit, None),
+            tool_meta(
+                "0.8s",
+                "+ a\n",
+                ToolStatus::Succeeded,
+                ToolVisualKind::FileEdit,
+                None
+            ),
             "0.8s"
         );
         // Nothing has arrived yet: the duration stands alone.
-        assert_eq!(tool_meta("1.2s", "", ToolVisualKind::Command, None), "1.2s");
-        assert_eq!(tool_meta("", "", ToolVisualKind::Command, None), "");
+        assert_eq!(
+            tool_meta(
+                "1.2s",
+                "",
+                ToolStatus::Succeeded,
+                ToolVisualKind::Command,
+                None
+            ),
+            "1.2s"
+        );
+        assert_eq!(
+            tool_meta("", "", ToolStatus::Succeeded, ToolVisualKind::Command, None),
+            ""
+        );
     }
 
     #[test]
@@ -637,18 +862,52 @@ mod tests {
         // The prototype's `.diffBtn` sits where the line count sits, so a
         // write reports the change rather than how much text arrived.
         assert_eq!(
-            tool_meta("0.8s", "", ToolVisualKind::FileWrite, Some((142, 0)),),
+            tool_meta(
+                "0.8s",
+                "",
+                ToolStatus::Succeeded,
+                ToolVisualKind::FileWrite,
+                Some((142, 0)),
+            ),
             "0.8s · +142 \u{2212}0"
         );
         assert_eq!(
-            tool_meta("", "", ToolVisualKind::FileEdit, Some((3, 1))),
+            tool_meta(
+                "",
+                "",
+                ToolStatus::Succeeded,
+                ToolVisualKind::FileEdit,
+                Some((3, 1))
+            ),
             "+3 \u{2212}1"
         );
         // A write with no recorded change keeps the plain duration.
         assert_eq!(
-            tool_meta("0.8s", "", ToolVisualKind::FileWrite, None),
+            tool_meta(
+                "0.8s",
+                "",
+                ToolStatus::Succeeded,
+                ToolVisualKind::FileWrite,
+                None
+            ),
             "0.8s"
         );
+    }
+
+    #[test]
+    fn the_diff_badge_belongs_to_writes_that_reported_a_change() {
+        assert_eq!(
+            diff_badge(ToolVisualKind::FileWrite, Some((142, 0))).as_deref(),
+            Some("+142 \u{2212}0")
+        );
+        assert_eq!(
+            diff_badge(ToolVisualKind::FileEdit, Some((3, 1))).as_deref(),
+            Some("+3 \u{2212}1")
+        );
+        // A read has no change to open, and a write without a counted diff
+        // has nothing to badge either.
+        assert_eq!(diff_badge(ToolVisualKind::FileRead, Some((1, 1))), None);
+        assert_eq!(diff_badge(ToolVisualKind::FileWrite, None), None);
     }
 
     #[test]

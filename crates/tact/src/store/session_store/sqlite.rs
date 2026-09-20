@@ -202,6 +202,20 @@ impl SqliteSessionStore {
     }
 }
 
+/// The first user message's text, read from the summary row's subquery.
+///
+/// A row whose stored content predates the current shape, or that was written
+/// by a newer schema, yields `None` rather than failing the whole list.
+fn first_user_text(row: &sqlx::sqlite::SqliteRow) -> Result<Option<String>> {
+    let Some(raw) = row.try_get::<Option<String>, _>("first_user_content")? else {
+        return Ok(None);
+    };
+    let Ok(content) = serde_json::from_str::<MessageContent>(&raw) else {
+        return Ok(None);
+    };
+    Ok(super::first_text(&content))
+}
+
 fn role_to_str(role: Role) -> &'static str {
     match role {
         Role::User => "user",
@@ -557,7 +571,13 @@ impl super::SessionStore for SqliteSessionStore {
                     s.root_dir,
                     s.created_at,
                     s.updated_at,
-                    COUNT(m.id) as message_count
+                    COUNT(m.id) as message_count,
+                    (
+                        SELECT content FROM messages fm
+                        WHERE fm.session_id = s.id AND fm.role = 'user'
+                        ORDER BY fm.ordinal ASC, fm.id ASC
+                        LIMIT 1
+                    ) as first_user_content
                 FROM sessions s
                 LEFT JOIN messages m ON m.session_id = s.id
                 WHERE s.root_dir = ?
@@ -578,7 +598,13 @@ impl super::SessionStore for SqliteSessionStore {
                     s.root_dir,
                     s.created_at,
                     s.updated_at,
-                    COUNT(m.id) as message_count
+                    COUNT(m.id) as message_count,
+                    (
+                        SELECT content FROM messages fm
+                        WHERE fm.session_id = s.id AND fm.role = 'user'
+                        ORDER BY fm.ordinal ASC, fm.id ASC
+                        LIMIT 1
+                    ) as first_user_content
                 FROM sessions s
                 LEFT JOIN messages m ON m.session_id = s.id
                 WHERE s.ref_id = ''
@@ -607,6 +633,7 @@ impl super::SessionStore for SqliteSessionStore {
                     "failed to parse session updated_at",
                 )?,
                 message_count: row.try_get("message_count")?,
+                first_user_text: first_user_text(&row)?,
             });
         }
 
@@ -1154,6 +1181,11 @@ mod tests {
         let sessions = store.list_sessions(None).await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].message_count, 2);
+        assert_eq!(
+            sessions[0].first_user_text.as_deref(),
+            Some("hello"),
+            "the list carries the opening words a front end titles the row with"
+        );
 
         let daily = store.count_messages_daily().await.unwrap();
         assert_eq!(daily.iter().map(|d| d.count).sum::<i64>(), 2);
@@ -1161,6 +1193,88 @@ mod tests {
         store.delete_session("session-1").await.unwrap();
         let after = store.load_session("session-1").await.unwrap();
         assert!(after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_list_titles_from_the_first_user_message() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+
+        // A session whose user turns arrive as content blocks still titles
+        // from the first text block, and later turns never displace it.
+        store
+            .create_session("titled", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+        store
+            .append_message(
+                "titled",
+                Role::Assistant,
+                &MessageContent::Text {
+                    content: "an assistant message is not a title".to_string(),
+                },
+                1,
+            )
+            .await
+            .unwrap();
+        store
+            .append_message(
+                "titled",
+                Role::User,
+                &MessageContent::Blocks {
+                    content: vec![tact_llm::ContentBlock::Text {
+                        text: "  Design the sidebar  ".to_string(),
+                    }],
+                },
+                2,
+            )
+            .await
+            .unwrap();
+        store
+            .append_message(
+                "titled",
+                Role::User,
+                &MessageContent::Text {
+                    content: "a later turn".to_string(),
+                },
+                3,
+            )
+            .await
+            .unwrap();
+
+        // A session that has only ever been answered has nothing to show.
+        store
+            .create_session("untitled", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+        store
+            .append_message(
+                "untitled",
+                Role::Assistant,
+                &MessageContent::Text {
+                    content: "no user turn yet".to_string(),
+                },
+                1,
+            )
+            .await
+            .unwrap();
+
+        let sessions = store.list_sessions(None).await.unwrap();
+        let titled = sessions
+            .iter()
+            .find(|session| session.id == "titled")
+            .expect("the titled session is listed");
+        assert_eq!(
+            titled.first_user_text.as_deref(),
+            Some("Design the sidebar"),
+            "the first user text is trimmed and kept ahead of later turns"
+        );
+        let untitled = sessions
+            .iter()
+            .find(|session| session.id == "untitled")
+            .expect("the untitled session is listed");
+        assert_eq!(untitled.first_user_text, None);
     }
 
     #[tokio::test]
