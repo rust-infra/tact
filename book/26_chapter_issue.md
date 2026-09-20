@@ -32,6 +32,49 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-20 — Every entry point in the desktop shell answers a click, and the worktree row moves the window's workspace
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`offline`, `switch_worktree`, `resume_session`, `new_session`, `sidebar_meta_row`, `worktree_rows`, `WorktreeRow::path`, `files_listed`); `crates/tact-gui/tests/shell.rs` (`every_entry_point_answers_a_click`, `the_shipped_toast_placement_keeps_the_work_pane_tabs_clickable`, `rapid_switching_between_surfaces_stays_responsive`); `docs/design/tact-desktop-prototype.html` (`.row`, `.toast`) |
+
+**Symptom / motivation:** The shell had never been clicked end to end, and the suite could not see any of what that hides.
+
+1. *A worktree row was a dead control.* The prototype renders each row of the worktree group as `<button class="row">`, and `worktree_row` reproduced the whole shape — hover background, radius, status dot, badge — but attached no click handler. Pressing a row highlighted it and did nothing, in the one group where the window's workspace is chosen.
+2. *A session row in an offline shell started a real agent.* `TactApp::new`, `with_sessions`, and `preview` list sessions they own no runtime for, but the row handler went straight through `resume_session` → `session::resume` → `SessionRuntime::start`: a tokio runtime, a sqlite write, a skill-registry scan, and an agent thread, per click. Clicking the eight preview rows started eight runtimes.
+3. *The walk could not be trusted until it ran the theme users get.* Tests only called `gpui_kit::init`, which leaves gpui-component's stock theme in place; its toast anchor is the top-right, which puts an occluding card straight over the work pane's tab strip, so a theme switch left the Diff tab unclickable for as long as the toast lived. The shipped theme (`theme::activate`) already pins `.toast` to the prototype's bottom-right corner — the tests simply were not running it.
+
+**Decision:** Ship one integration walk, `every_entry_point_answers_a_click`, that presses every rendered control and then asks what happened: title-bar toggles, session search, the transcript toolbar (detail cycle, copy), every seeded disclosure row and diff badge scrolled into view by hand (the transcript scroller is virtual), all eight sidebar session rows, the new-session action, every worktree row, all five work-pane tabs plus the control each tab owns, every composer chip and every entry inside every popover it opens, the primary action, and each dialog — palette, then settings with a real scroll to reach its last row. The title-bar theme switch is walked last on purpose: its toast outlives the walk and would swallow the next press.
+
+Both findings are fixed at their source, not in the test. `TactApp::offline` marks the three shells that own no runtime, and their session controls answer locally: `resume_session` moves `preview_current` (the row the sidebar paints as open) and `new_session` pushes a system row saying so. `connect` leaves the flag `false` even when startup failed, so a click can still retry. `WorktreeRow` carries its own `path`, and `switch_worktree` re-roots the window at it — branch line, `state.workdir`, the sidebar's session list, and both workspace-cached panes — while the attached agent session keeps its own root: the window re-scopes what it shows without restarting the session, so the next new session starts in the worktree the user picked.
+
+Row state the prototype expresses only as paint (`.row.active`) has to survive into the accessibility tree for a walk to assert on it, so `session_row` and `worktree_row` carry `.aria_selected`, and the shared `sidebar_meta_row` takes `selected: Option<bool>` plus `on_click: Option<SidebarRowClick>` — a row that does nothing no longer gets a handler, which is exactly what made the dead control visible. Tests that render the shell now call `activate_shipped_theme` first; `the_shipped_toast_placement_keeps_the_work_pane_tabs_clickable` pins both halves of the toast contract (the bottom-right stack exists, the top-right one is empty, and the Diff tab still answers a click with a toast on screen).
+
+**Behavior after:** Every control the shell draws does something when pressed, and the walk asserts what. Each of the eight session rows becomes the open row, exactly one at a time, while the offline new-session action answers without stealing that row; each worktree row becomes the one the window is scoped to, and the walk returns to the row it started on so the panes below still read the checkout the window opened on; every work-pane tab switches the visible body. Clicking a session row in the preview no longer starts an agent — no tokio runtime, no sqlite write, no agent thread. A worktree row now moves the window's workspace. `rapid_switching_between_surfaces_stays_responsive` soaks 440 interactions (five tabs × 40 rounds, plus the pane toggles, a theme switch, and `Ctrl+O`) under a 60-second watchdog, so a regression that makes a click do unbounded work fails there instead of on a user's desk. Deliberately left out of the walk: `sidebar-avatar` (no handler), `composer-attachment-*` (opens a native file dialog), and the request-option rows (a click would resolve the seeded request).
+
+**Pointers:** `crates/tact-gui/tests/shell.rs` (`every_entry_point_answers_a_click`, `the_shipped_toast_placement_keeps_the_work_pane_tabs_clickable`, `rapid_switching_between_surfaces_stays_responsive`, `activate_shipped_theme`, `worktree_row_ids`); `crates/tact-gui/src/shell.rs` (`offline`, `switch_worktree`, `resume_session`, `new_session`, `WorktreeRow`, `worktree_rows`, `sidebar_meta_row`); prototype `.row` / `.toast` in `docs/design/tact-desktop-prototype.html`.
+
+---
+
+## 1. 2026-09-20 — A click in the desktop shell costs a frame, not three
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `Cargo.toml` (`[profile.dev]`, `[profile.dev.package."*"]`); `crates/tact-gui/src/pane.rs` (`FilesPane::cache`, `revision`, `invalidate`, `FILE_TREE_SKIPPED_DIRS`); `crates/tact-gui/src/composer.rs` (`collect_files`); `crates/tact-gui/src/shell.rs` (`files_listed`) |
+
+**Symptom / motivation:** Nothing about the shell's inputs was expensive; three things about how it was built and rebuilt were. A click that re-rendered the shell cost 31–33 ms in a 1536x842 window — a whole frame budget before any product logic ran — and nearly all of it sat inside gpui, taffy, and the text-shaping crates, because a dev profile leaves every dependency unoptimized. The Files pane re-walked the workspace on every frame (`read_dir` plus one `stat` per entry, descending into `target/` when it was expanded), turning one expand click into a frame-long stall with `node_modules/` and `target/` as the usual culprits. The mention completion walk in `collect_files` had the same shape, but runs on every keystroke that carries an `@`: 19.6 ms per walk against this workspace root, essentially all of it `target/`.
+
+**Decision:** Optimize the crates that dominate, then stop asking for artifact trees, then stop repeating a walk. `[profile.dev] opt-level = 1` with `[profile.dev.package."*"] opt-level = 2` keeps workspace builds and stepping usable while compiling dependencies optimized; `2` rather than `3` because the extra inlining is not worth the compile minutes here. `FILE_TREE_SKIPPED_DIRS = ["target", "node_modules"]` lives in `pane.rs` and **both** the pane's `collect` and the composer's `collect_files` consult it — they are gitignored build output thousands of entries deep, and neither surface exists to browse an artifact cache, so the two must not drift. The walk nobody should repeat is memoized: `FilesPane` keeps the flattened rows next to the `expanded` set, and only an explicit `invalidate()` — a toggle, a pane re-entry, a worktree switch — may re-read the disk. `TactApp::files_listed` records whether the Files pane drew on the previous frame so re-entering the tab drops the cache; without it, a listing taken before the agent wrote a file would survive for the rest of the process.
+
+**Behavior after:** A full re-render of the shell measures ~11–12 ms instead of 31–33, with `Ctrl+B` at ~11 ms, `Ctrl+O` at ~12 ms, and a no-op key at ~4 ms; a 40-round switch soak (440 interactions) stays inside the watchdog rather than stalling. The Files pane walks once per expand / re-entry instead of once per frame, and never descends into `target/` or `node_modules/`; a mention keystroke's walk against this repository drops from 19.6 ms to 0.67 ms. `files_rows_are_cached_until_the_pane_is_invalidated` pins the caching contract (a file written after the walk stays invisible until invalidation), and `files_rows_skip_build_output_directories` / `file_suggestions_skip_build_output_directories` pin the skip. Accepted cost: a `target/` or `node_modules/` directory is unreachable from both surfaces even when it is tracked by git.
+
+**Pointers:** profile section in `Cargo.toml`; `FilesPane::rows`, `revision`, `cache`, `invalidate`, `FILE_TREE_SKIPPED_DIRS`, and `files_tree` in `crates/tact-gui/src/pane.rs`; `collect_files` in `crates/tact-gui/src/composer.rs`; `files_listed` in `crates/tact-gui/src/shell.rs`; tests `files_rows_are_cached_until_the_pane_is_invalidated`, `files_rows_skip_build_output_directories`, `file_suggestions_skip_build_output_directories`.
+
+---
+
+
 ## 1. 2026-09-20 — The work pane's tab row, transcript metadata, and copy affordances follow the prototype
 
 | Field | Value |

@@ -2,7 +2,7 @@
 
 use gpui_kit::component::{ActiveTheme as _, Root, ThemeMode, ThemeRegistry};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AppContext as _, Entity, TestAppContext, px, size};
+use gpui_kit::{App, AppContext as _, Entity, SharedString, TestAppContext, Window, px, size};
 
 use tact_gui::{RecentSession, TactApp, theme};
 
@@ -315,6 +315,24 @@ fn theme_toggle_button_switches_to_dark(cx: &mut TestAppContext) {
         );
     })
     .unwrap();
+}
+
+/// Load the shipped theme and activate it, the way `main.rs` does at startup.
+///
+/// The shell takes more than colors from the theme: the toast anchor, the mono
+/// family, and the default mode all live there. A test that only calls
+/// `gpui_kit::init` renders against gpui-component's defaults instead, which is
+/// a different shell than the one users run.
+fn activate_shipped_theme(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        let content = std::fs::read_to_string(theme::theme_dir().join("tact-anthropic.json"))
+            .expect("the shipped theme file must be readable");
+        ThemeRegistry::global_mut(cx)
+            .load_themes_from_str(&content)
+            .expect("the shipped theme file must parse");
+        theme::activate(ThemeMode::Dark, None, cx).expect("dark theme must activate");
+    });
 }
 
 fn width(snapshot: gpui_kit::Bounds<gpui_kit::Pixels>) -> f32 {
@@ -1258,6 +1276,468 @@ fn the_session_intro_detail_chip_matches_the_prototype_cycle_box(cx: &mut TestAp
             height(cycle),
             height(toolbar),
             "the intro chip and the toolbar chip share the prototype's 26 px box"
+        );
+    })
+    .unwrap();
+}
+
+/// Walks every clickable entry point the shell renders.
+///
+/// `window.click` panics when a control is missing from the frame or invisible,
+/// so the walk is the reachability assertion: every control is there in the
+/// state that shows it, answers a pointer press, and leaves a renderable shell
+/// behind. What a click *means* is pinned per control by the focused tests
+/// above; this one catches the control that stopped rendering, moved off
+/// screen, or vanished behind a transient layer.
+///
+/// The one family left out is the session starters (`session-new`, session
+/// rows, worktree rows): a test click would spawn an agent runtime and write a
+/// session record into the user's store, so those are covered by the live
+/// client run instead.
+/// The element ids the sidebar gives this repository's worktree rows.
+///
+/// A row is identified by the branch its worktree holds, falling back to the
+/// directory name when the head is detached -- the same rule the row builder
+/// uses, applied to `git worktree list` so the walk covers every row instead of
+/// the one this checkout happens to be sitting on.
+fn worktree_row_ids() -> Vec<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("the crate sits two levels below the repository root");
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .expect("git worktree list runs");
+    assert!(output.status.success(), "git worktree list succeeds");
+
+    String::from_utf8_lossy(&output.stdout)
+        .split("\n\n")
+        .filter_map(|block| {
+            let mut path = None;
+            let mut branch = None;
+            for line in block.lines() {
+                if let Some(rest) = line.strip_prefix("worktree ") {
+                    path = Some(rest.trim().to_string());
+                } else if let Some(rest) = line.strip_prefix("branch ") {
+                    branch = Some(rest.trim().trim_start_matches("refs/heads/").to_string());
+                }
+            }
+            let directory = std::path::Path::new(&path?)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or("worktree")
+                .to_string();
+            Some(format!("worktree-row-{}", branch.unwrap_or(directory)))
+        })
+        .collect()
+}
+
+#[gpui_kit::test]
+fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        macro_rules! click {
+            ($id:expr) => {{
+                assert!(window.try_find($id).is_some(), "{} is not rendered", $id);
+                window.click($id, cx);
+                window.render_frame(cx);
+            }};
+        }
+
+        // Title bar: both pane toggles and the theme cycle.
+        click!("toggle-sidebar");
+        click!("toggle-sidebar");
+        click!("toggle-work-pane");
+        click!("toggle-work-pane");
+
+        // Sidebar search, then the transcript toolbar.
+        click!("session-search");
+        click!("transcript-detail-cycle");
+        click!("transcript-detail-cycle");
+        click!("transcript-copy");
+        click!("transcript-detail-cycle");
+
+        // Transcript rows: the intro chip, then each disclosure row and each
+        // write row's diff badge. The scroller is virtual, so a row is scrolled
+        // into view before it is clicked, and only the rows the preview seeds
+        // are walked.
+        app.update(cx, |app, cx| app.scroll_transcript_to_top(cx));
+        window.render_frame(cx);
+        click!("session-intro-detail-cycle");
+
+        let mut disclosures = 0;
+        let mut diff_badges = 0;
+        for row in 0..12usize {
+            app.update(cx, |app, cx| app.scroll_transcript_to(row, cx));
+            window.render_frame(cx);
+            for family in ["tool-summary", "thinking-summary"] {
+                let disclosure: SharedString = format!("{family}-{row}").into();
+                if window.try_find(disclosure.clone()).is_some() {
+                    click!(disclosure.clone());
+                    click!(disclosure.clone());
+                    disclosures += 1;
+                }
+            }
+            let badge: SharedString = format!("tool-diff-{row}").into();
+            if window.try_find(badge.clone()).is_some() {
+                click!(badge.clone());
+                diff_badges += 1;
+                // The badge switches the pane to Diff; put it back so the next
+                // section starts from the pane users see on open.
+                window.within("work-pane-tabs").click(0usize, cx);
+                window.render_frame(cx);
+            }
+        }
+        assert!(
+            disclosures > 0,
+            "the preview transcript seeds disclosure rows to click"
+        );
+        assert!(
+            diff_badges > 0,
+            "the preview transcript seeds a write row with a diff badge"
+        );
+
+        // Sidebar sessions: every seeded row, then the new-session action. The
+        // offline shell owns no runtime, so a row click moves the row the
+        // sidebar has open instead of starting an agent -- and an agent that
+        // did start would take the highlight with it, which is what the
+        // selection assertions below catch.
+        let preview_rows = [
+            "7fbab10-2c41-4c9a-9f10-2222aaaa1111",
+            "3b78ba4-1d02-4a33-8b71-3333bbbb2222",
+            "d464f22d-5e11-4c2f-9a08-4444cccc3333",
+            "daf05fa-71b4-4d0e-8e55-5555dddd4444",
+            "6278b7fa-3c92-4f18-9b27-6666eeee5555",
+            "306ea551-8a13-4b62-8f04-7777ffff6666",
+            "036e6015-a4d7-4e29-8c31-8888aaaa7777",
+            "3f016556-2b8c-4f70-9d12-9999bbbb8888",
+        ];
+        for id in preview_rows {
+            let row: SharedString = format!("session-row-{id}").into();
+            click!(row.clone());
+            assert_eq!(
+                window.find(row.clone()).selected(),
+                Some(true),
+                "{row} is the session the sidebar has open after its click"
+            );
+            let open = preview_rows
+                .iter()
+                .filter(|other| {
+                    window
+                        .try_find(SharedString::from(format!("session-row-{other}")))
+                        .and_then(|row| row.selected())
+                        == Some(true)
+                })
+                .count();
+            assert_eq!(open, 1, "exactly one session row is open at a time");
+        }
+        click!("session-new");
+        assert_eq!(
+            window
+                .find("session-row-3f016556-2b8c-4f70-9d12-9999bbbb8888")
+                .selected(),
+            Some(true),
+            "the offline new-session action answers without taking the open row"
+        );
+
+        // Worktrees: the group lists the repository's own worktrees, current
+        // first, and every row re-roots the window at it. Each click has to
+        // leave the row it pressed as the current one; a checkout with a single
+        // worktree only reaches the idempotent case. The walk finishes back on
+        // the worktree it started in, so the panes below still read what the
+        // window opened on.
+        let worktrees = worktree_row_ids();
+        assert!(
+            !worktrees.is_empty(),
+            "the crate lives in a git worktree, so the group lists one"
+        );
+        let start = worktrees
+            .iter()
+            .find(|id| {
+                window
+                    .try_find(SharedString::from((*id).clone()))
+                    .and_then(|row| row.selected())
+                    == Some(true)
+            })
+            .cloned()
+            .expect("the window opens on one of the repository's worktrees");
+        for id in &worktrees {
+            let row: SharedString = id.clone().into();
+            click!(row.clone());
+            assert_eq!(
+                window.find(row.clone()).selected(),
+                Some(true),
+                "{row} is the worktree the window is scoped to after its click"
+            );
+        }
+        let home: SharedString = start.into();
+        click!(home.clone());
+        assert_eq!(
+            window.find(home.clone()).selected(),
+            Some(true),
+            "the walk leaves the window on the worktree it started in"
+        );
+
+        // Work pane: every tab, then the control each tab owns.
+        for index in 0..5usize {
+            window.within("work-pane-tabs").click(index, cx);
+            window.render_frame(cx);
+        }
+        window.within("work-pane-tabs").click(0usize, cx);
+        window.render_frame(cx);
+        click!("work-pane-plan-refresh");
+        window.within("work-pane-tabs").click(1usize, cx);
+        window.render_frame(cx);
+        click!("work-pane-open-editor");
+        click!("work-pane-diff-comment");
+        window.within("work-pane-tabs").click(2usize, cx);
+        window.render_frame(cx);
+        click!("work-pane-tasks-new");
+        window.within("work-pane-tabs").click(4usize, cx);
+        window.render_frame(cx);
+        click!("work-pane-files-add");
+        click!("work-pane-close");
+        click!("toggle-work-pane");
+
+        // Composer: the mention chip and its completion first, while the draft
+        // is empty, then every popover chip and every entry inside it.
+        //
+        // A gpui-component popover dismisses on a press *outside* it, and stays
+        // open through the presses its own buttons take. So each panel is
+        // dismissed before the next trigger is pressed: leaving one open would
+        // make the next trigger's press a dismissal, and its entries would never
+        // render. The work pane's first tab is far enough away to be that press.
+        let dismiss_popover = |window: &mut Window, cx: &mut App, panel: &'static str| {
+            window.within("work-pane-tabs").click(0usize, cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find(panel).is_none(),
+                "{panel} closes on a press outside it"
+            );
+        };
+        click!("composer-mention");
+        assert!(
+            window.try_find("composer-suggestions").is_some(),
+            "the mention chip opens the completion list"
+        );
+        click!("composer-suggestion-0");
+
+        for (chip, panel, items) in [
+            (
+                "composer-add",
+                "composer-add-panel",
+                &[
+                    "composer-add-file",
+                    "composer-add-skill",
+                    "composer-add-connector",
+                    "composer-add-plugin",
+                ][..],
+            ),
+            (
+                "composer-model",
+                "composer-model-panel",
+                &[
+                    "composer-model-claude-sonnet-4-5",
+                    "composer-model-gpt-5",
+                    "composer-budget-0",
+                    "composer-budget-16384",
+                ][..],
+            ),
+            (
+                "composer-effort",
+                "composer-effort-panel",
+                &[
+                    "composer-effort-auto",
+                    "composer-effort-low",
+                    "composer-effort-high",
+                    "composer-effort-max",
+                ][..],
+            ),
+            (
+                "composer-permission",
+                "composer-permission-panel",
+                &["composer-permission-auto", "composer-permission-plan"][..],
+            ),
+        ] {
+            for item in items {
+                click!(chip);
+                click!(*item);
+            }
+            dismiss_popover(window, cx, panel);
+        }
+
+        // The context ring is a real-data control: a session that has reported
+        // no token usage has no ring to click, so the preview has none and the
+        // walk checks the ring only when a session put one on screen.
+        if window.try_find("composer-usage").is_some() {
+            click!("composer-usage");
+            assert!(
+                window.try_find("composer-usage-panel").is_some(),
+                "the context ring opens its own panel"
+            );
+            dismiss_popover(window, cx, "composer-usage-panel");
+        } else {
+            assert!(
+                window.try_find("composer-usage-panel").is_none(),
+                "no usage, no ring"
+            );
+        }
+
+        // The preview opens on a live turn, so this control is the turn's Stop
+        // button; with no attached session there is nothing to cancel and the
+        // click is here for reachability.
+        click!("composer-primary");
+
+        // Dialogs last: each one covers the shell, so it is opened, walked, and
+        // dismissed before the next.
+        click!("open-command-palette");
+        assert!(
+            window.try_find("command").is_some(),
+            "the palette renders over the shell"
+        );
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("command").is_none(),
+            "escape dismisses the palette"
+        );
+
+        click!("open-settings");
+        click!("settings-theme-light");
+        click!("settings-theme-dark");
+        click!("settings-show-thinking");
+        // The Reading group runs past the panel's fold, so reaching its last
+        // row is a scroll, exactly as it is for a user.
+        window.scroll(
+            "settings-show-thinking",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-200.))),
+            cx,
+        );
+        window.render_frame(cx);
+        click!("settings-follow-tail");
+
+        // The title bar's theme cycle is walked last on purpose: the switch
+        // raises a toast that lives for a while, and the shipped anchor puts
+        // it over the composer's chips, so pressing it earlier would make the
+        // chip presses below a dismissal. The settings dialog above already
+        // exercised the same theme switch; this is the title-bar entry itself.
+        click!("toggle-theme");
+        click!("toggle-theme");
+
+        assert!(
+            window.try_find("transcript").is_some(),
+            "the shell survives the full walk"
+        );
+    })
+    .unwrap();
+}
+
+/// Switches surfaces back to back, the way a reader skimming the app does.
+///
+/// The bound is a watchdog, not a benchmark: a regression that makes a click do
+/// unbounded work shows up as this test taking minutes instead of seconds.
+/// The prototype pins `.toast` 20px from the bottom-right corner, clear of the
+/// work pane.
+///
+/// gpui-component anchors toasts to the top-right instead, which puts an
+/// occluding card straight over the work pane's tab strip: a theme switch left
+/// the Diff tab unclickable for as long as the toast lived. The shipped theme
+/// moves the anchor back to the prototype's corner, so this pins both halves —
+/// which stack exists, and that the tabs still answer a click under it.
+#[gpui_kit::test]
+fn the_shipped_toast_placement_keeps_the_work_pane_tabs_clickable(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        // Two theme switches raise the toast the title bar's button raises.
+        window.click("toggle-theme", cx);
+        window.render_frame(cx);
+        window.click("toggle-theme", cx);
+        window.render_frame(cx);
+        // A stack only occupies its anchor once the cards have been measured in
+        // prepaint, which is what made this reachable in the first place.
+        for _ in 0..40 {
+            window.render_frame(cx);
+        }
+
+        assert!(
+            window.try_find(("notification-list", 5usize)).is_some(),
+            "the shipped theme anchors toasts to the bottom-right stack"
+        );
+        assert!(
+            window.try_find(("notification-list", 2usize)).is_none(),
+            "no toast may live in the top-right stack over the tab strip"
+        );
+
+        window.within("work-pane-tabs").click(1usize, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("work-pane-body-diff").is_some(),
+            "the Diff tab answers a click while a toast is on screen"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn rapid_switching_between_surfaces_stays_responsive(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let started = std::time::Instant::now();
+
+        for _ in 0..40 {
+            for index in 0..5usize {
+                window.within("work-pane-tabs").click(index, cx);
+                window.render_frame(cx);
+            }
+            window.click("toggle-sidebar", cx);
+            window.render_frame(cx);
+            window.click("toggle-sidebar", cx);
+            window.render_frame(cx);
+            window.click("toggle-work-pane", cx);
+            window.render_frame(cx);
+            window.click("toggle-work-pane", cx);
+            window.render_frame(cx);
+            window.click("toggle-theme", cx);
+            window.render_frame(cx);
+            window.press("ctrl-o", cx);
+            window.render_frame(cx);
+        }
+
+        let elapsed = started.elapsed();
+        eprintln!("soak: 40 rounds, {} renders, {elapsed:?}", 40 * 11 + 1);
+        assert!(
+            elapsed < std::time::Duration::from_secs(60),
+            "440 interactions took {elapsed:?}, which is a hang rather than a repaint"
+        );
+        assert!(
+            window.try_find("transcript").is_some() && window.try_find("status-bar").is_some(),
+            "the shell still renders after the soak"
         );
     })
     .unwrap();

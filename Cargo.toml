@@ -83,3 +83,16 @@ uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2.5"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 ratatui-markdown = { git = "https://github.com/celestia-island/ratatui-markdown", rev = "3a8bcbe", default-features = false, features = ["mermaid"] }
+
+# The desktop client spends nearly all of a frame inside gpui, taffy, and the
+# text-shaping crates. Unoptimized, a single click that re-rendered the shell
+# cost ~33 ms on a 1536x842 window -- a whole frame budget before any product
+# logic runs. Dependencies therefore compile optimized while the workspace
+# crates stay at a level that keeps incremental builds and stepping usable.
+[profile.dev]
+opt-level = 1
+
+# `2` rather than `3`: these crates dominate both the runtime and the rebuild
+# time, and the extra inlining at `3` is not worth the compile minutes here.
+[profile.dev.package."*"]
+opt-level = 2

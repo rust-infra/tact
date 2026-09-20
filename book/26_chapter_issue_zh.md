@@ -32,6 +32,49 @@
 ---
 
 
+## 1. 2026-09-20 — 桌面端每个入口都能点，worktree 行会切换窗口的工作区
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`offline`、`switch_worktree`、`resume_session`、`new_session`、`sidebar_meta_row`、`worktree_rows`、`WorktreeRow::path`、`files_listed`）；`crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`、`the_shipped_toast_placement_keeps_the_work_pane_tabs_clickable`、`rapid_switching_between_surfaces_stays_responsive`）；`docs/design/tact-desktop-prototype.html`（`.row`、`.toast`） |
+
+**症状 / 动机：** 壳层从未被从头点到尾，而测试套件看不见这件事掩盖了什么。
+
+1. *worktree 行是一个死控件。* 原型把 worktree 组的每一行都渲染成 `<button class="row">`，`worktree_row` 也复刻了整套外形——hover 底色、圆角、状态点、徽标——却没有挂任何点击处理。按下这一行只会高亮，什么也不会发生，而这恰恰是侧栏里唯一选择窗口工作区的地方。
+2. *离线壳层里的会话行会真的启动一个 agent。* `TactApp::new`、`with_sessions`、`preview` 列出的是它们并不持有运行时的会话，但行的处理函数直接走了 `resume_session` → `session::resume` → `SessionRuntime::start`：tokio 运行时、一次 sqlite 写入、一次 skill registry 扫描、一个 agent 线程，每点一次一整遍。把八个预览行点完就起了八个运行时。
+3. *在巡检跑在用户实际拿到的主题上之前，它的结论不可信。* 测试此前只调 `gpui_kit::init`，于是留在 gpui-component 的出厂主题上；该主题把 toast 锚在右上角，正好把一张不透明卡片压在 work 面板的标签行上方，于是一次主题切换会让 Diff 标签在 toast 存活期间完全点不到。已发布主题（`theme::activate`）早就把 `.toast` 钉在原型的下右角——只是测试没在跑它。
+
+**决策：** 交付一条集成巡检 `every_entry_point_answers_a_click`，把每个渲染出来的控件都按一遍，再问按完发生了什么：标题栏开关、会话搜索、transcript 工具栏（detail 循环、复制）、由代码手工滚入视口的每一条可展开行与每个 diff 徽标（transcript 滚动器是虚拟的）、侧栏全部八个会话行、新建会话动作、每一个 worktree 行、work 面板全部五个标签以及每个标签自己的控件、每个 composer 芯片以及它打开的每个弹层里的每一项、主按钮，以及每个对话框——先是命令面板，再是设置（真的滚动一次才够到它的最后一行）。标题栏的主题开关刻意放在最后：它弹出的 toast 活得比巡检更久，压在后面会吞掉下一次按压。
+
+两处发现都在源头修掉，而不是改测试。`TactApp::offline` 标出三个不持有运行时的壳层，它们的会话控件改为就地应答：`resume_session` 只移动 `preview_current`（即侧栏画成打开状态的那一行），`new_session` 推一条系统行说明本壳层没有 agent。`connect` 即使启动失败也把这个标志留在 `false`，因此再点一次仍可重试。`WorktreeRow` 自带 `path`，`switch_worktree` 据此把窗口重新扎根到该目录——分支行、`state.workdir`、侧栏的会话列表，以及两个按工作区缓存的窗格；而已挂载的 agent 会话保留自己的根：窗口只是换掉它显示的范围，不重启会话，于是下一次新建会话会落在用户选中的 worktree 里。
+
+原型只用画笔表达的行状态（`.row.active`）必须活到无障碍树里，巡检才能对它断言，因此 `session_row` 与 `worktree_row` 带上 `.aria_selected`，共用的 `sidebar_meta_row` 增加 `selected: Option<bool>` 与 `on_click: Option<SidebarRowClick>`——什么都不做的行不再拿到处理函数，而这正是让"死控件"现形的机制。渲染壳层的测试现在都先调 `activate_shipped_theme`；`the_shipped_toast_placement_keeps_the_work_pane_tabs_clickable` 把 toast 契约的两半都钉住（下右栈存在、右上栈为空，且 toast 在屏时 Diff 标签仍能应答点击）。
+
+**改后行为：** 壳层画出的每个控件按下都有反应，而且巡检会断言是什么反应。八个会话行各自成为打开行，且任意时刻只有一个打开，同时离线的"新建会话"动作会应答但不抢走这一行；每个 worktree 行都会成为窗口扎根的那一行，巡检最后回到出发的那一行，于是后面的窗格读到的仍是窗口打开时的那个检出；每个 work 面板标签都会切换可见主体。在预览里点会话行不再启动 agent——没有 tokio 运行时、没有 sqlite 写入、没有 agent 线程。worktree 行现在会切换窗口的工作区。`rapid_switching_between_surfaces_stays_responsive` 在 60 秒看门狗下泡 440 次交互（五个标签 × 40 轮，加上窗格开关、一次主题切换与 `Ctrl+O`），于是"一次点击做无界工作"的回归在这里失败，而不是在用户桌面上失败。刻意排除在巡检之外：`sidebar-avatar`（没有处理函数）、`composer-attachment-*`（会打开原生文件对话框）、以及 request-option 那些行（点下去会结掉种入的请求）。
+
+**指针：** `crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`、`the_shipped_toast_placement_keeps_the_work_pane_tabs_clickable`、`rapid_switching_between_surfaces_stays_responsive`、`activate_shipped_theme`、`worktree_row_ids`）；`crates/tact-gui/src/shell.rs`（`offline`、`switch_worktree`、`resume_session`、`new_session`、`WorktreeRow`、`worktree_rows`、`sidebar_meta_row`）；原型 `.row` / `.toast`，见 `docs/design/tact-desktop-prototype.html`。
+
+---
+
+## 1. 2026-09-20 — 桌面端一次点击的代价是一帧，而不是三帧
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `Cargo.toml`（`[profile.dev]`、`[profile.dev.package."*"]`）；`crates/tact-gui/src/pane.rs`（`FilesPane::cache`、`revision`、`invalidate`、`FILE_TREE_SKIPPED_DIRS`）；`crates/tact-gui/src/composer.rs`（`collect_files`）；`crates/tact-gui/src/shell.rs`（`files_listed`） |
+
+**症状 / 动机：** 壳层的输入本身都不贵，贵的是它被构建与被重建的方式。在 1536x842 的窗口里，一次会重渲染壳层的点击要花 31–33 ms——在任何产品逻辑跑起来之前就吃掉一整个帧预算——而这些时间几乎全在 gpui、taffy 与文本整形这些 crate 里，因为 dev profile 让每个依赖都不优化。Files 面板每帧重走一次工作区（`read_dir` 加每条目一次 `stat`，展开时还会走进 `target/`），一次展开点击就变成一次长达一帧的卡顿，`node_modules/` 与 `target/` 是常见的元凶。`collect_files` 里的 mention 补全遍历形状相同，但它跑在每个带 `@` 的按键上：在本仓库根走一趟 19.6 ms，基本全花在 `target/` 上。
+
+**决策：** 优化占大头的那些 crate，然后不再索要产物目录，最后不再重复同一次遍历。`[profile.dev] opt-level = 1` 配合 `[profile.dev.package."*"] opt-level = 2`，在把依赖编成优化的同时让工作区自身的构建与单步调试仍然可用；取 `2` 而不是 `3`，因为在这里多出来的内联并不值那些编译分钟。`FILE_TREE_SKIPPED_DIRS = ["target", "node_modules"]` 放在 `pane.rs`，面板的 `collect` 与 composer 的 `collect_files` **都**要查它——它们是 gitignore 掉的构建产物、动辄几千层，而这两个界面都不是用来浏览产物缓存的，所以两者不能走偏。没人该重复的遍历被记住：`FilesPane` 把摊平后的行与 `expanded` 集合放在一起缓存，只有显式 `invalidate()`——一次开关、一次面板重新进入、一次 worktree 切换——才允许重读磁盘。`TactApp::files_listed` 记录上一帧 Files 面板是否画过，从而在重新进入该标签时丢掉缓存；没有它，一份在 agent 写文件之前取的清单会活到进程结束。
+
+**改后行为：** 壳层完整重渲染实测从 31–33 ms 降到约 11–12 ms，其中 `Ctrl+B` 约 11 ms、`Ctrl+O` 约 12 ms、空按键约 4 ms；40 轮切换泡测（440 次交互）留在看门狗之内而不是卡住。Files 面板改成每次展开 / 重新进入走一次，而不是每帧一次，并且从不走进 `target/` 与 `node_modules/`；在本仓库里，一次 mention 按键的遍历从 19.6 ms 降到 0.67 ms。`files_rows_are_cached_until_the_pane_is_invalidated` 钉住缓存契约（遍历之后写入的文件在 invalidate 之前不可见），`files_rows_skip_build_output_directories` / `file_suggestions_skip_build_output_directories` 钉住跳过规则。接受的代价：即使 `target/` 或 `node_modules/` 被 git 跟踪，这两个界面也够不到它。
+
+**指针：** `Cargo.toml` 的 profile 段；`crates/tact-gui/src/pane.rs` 的 `FilesPane::rows`、`revision`、`cache`、`invalidate`、`FILE_TREE_SKIPPED_DIRS` 与 `files_tree`；`crates/tact-gui/src/composer.rs` 的 `collect_files`；`crates/tact-gui/src/shell.rs` 的 `files_listed`；测试 `files_rows_are_cached_until_the_pane_is_invalidated`、`files_rows_skip_build_output_directories`、`file_suggestions_skip_build_output_directories`。
+
+---
+
+
 ## 1. 2026-09-20 — 工作面板标签行、transcript 元信息与复制入口对齐原型
 
 | 字段 | 值 |

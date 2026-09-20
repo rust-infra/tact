@@ -95,13 +95,28 @@ impl WorkPane {
     }
 }
 
-/// Files pane state: which directories the user opened.
+/// Files pane state: which directories the user opened, plus the flattened
+/// listing those choices produced.
 ///
-/// Kept as a path set rather than a node tree so re-reading the directory (the
-/// workspace changes underneath the app) cannot invalidate node identities.
+/// The expansion set is kept as a path set rather than a node tree so re-reading
+/// the directory (the workspace changes underneath the app) cannot invalidate
+/// node identities. The walk itself is cached across frames because it is
+/// `read_dir` plus one `stat` per entry on the UI thread: rebuilding it every
+/// render turns expanding one large directory (`target/`, `node_modules/`) into
+/// a frame-long stall.
 #[derive(Default)]
 pub struct FilesPane {
     expanded: HashSet<PathBuf>,
+    /// Advances whenever the cached walk stops describing `expanded`.
+    revision: u64,
+    cache: Option<FilesCache>,
+}
+
+/// One memoized [`collect`] walk.
+struct FilesCache {
+    root: PathBuf,
+    revision: u64,
+    rows: Vec<FileRow>,
 }
 
 impl FilesPane {
@@ -116,16 +131,38 @@ impl FilesPane {
         if !self.expanded.remove(&path) {
             self.expanded.insert(path);
         }
+        self.invalidate();
+    }
+
+    /// Drop the cached walk so the next [`FilesPane::rows`] re-reads disk.
+    ///
+    /// Expansion clicks invalidate implicitly; this covers the other reason a
+    /// listing goes stale — the agent writing files while the pane is closed.
+    pub(crate) fn invalidate(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Flattened rows for the workspace rooted at `root`.
     ///
     /// Depth is capped so a deep or cyclic-looking tree cannot stall the frame;
-    /// the pane is a navigation aid, not a file manager.
-    pub(crate) fn rows(&self, root: &Path) -> Vec<FileRow> {
-        let mut rows = Vec::new();
-        collect(root, 0, self, &mut rows);
-        rows
+    /// the pane is a navigation aid, not a file manager. The result is cached
+    /// until `root` or the revision changes, and callers therefore get a slice
+    /// borrowed from the pane rather than a freshly allocated `Vec` per frame.
+    pub(crate) fn rows(&mut self, root: &Path) -> &[FileRow] {
+        let cached = matches!(
+            &self.cache,
+            Some(cache) if cache.root == root && cache.revision == self.revision
+        );
+        if !cached {
+            let mut rows = Vec::new();
+            collect(root, 0, self, &mut rows);
+            self.cache = Some(FilesCache {
+                root: root.to_path_buf(),
+                revision: self.revision,
+                rows,
+            });
+        }
+        &self.cache.as_ref().expect("walk just cached").rows
     }
 
     /// Handler for a click on a directory row.
@@ -271,6 +308,13 @@ pub(crate) struct FileRow {
 /// Maximum depth the files pane walks.
 const MAX_FILE_DEPTH: usize = 4;
 
+/// Directory names the files pane never descends into.
+///
+/// These are build output and vendored dependencies: they are gitignored, they
+/// are thousands of entries deep, and the pane exists to answer "which file is
+/// the agent touching", not to browse an artifact cache.
+pub(crate) const FILE_TREE_SKIPPED_DIRS: [&str; 2] = ["target", "node_modules"];
+
 /// Collect `path`'s children into `rows`, recursing into expanded directories.
 fn collect(path: &Path, depth: usize, files: &FilesPane, rows: &mut Vec<FileRow>) {
     if depth > MAX_FILE_DEPTH {
@@ -295,6 +339,9 @@ fn collect(path: &Path, depth: usize, files: &FilesPane, rows: &mut Vec<FileRow>
             continue;
         }
         let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        if is_dir && FILE_TREE_SKIPPED_DIRS.contains(&name.as_str()) {
+            continue;
+        }
         let expanded = is_dir && files.is_expanded(&child);
         rows.push(FileRow {
             path: child.clone(),
@@ -317,7 +364,7 @@ fn collect(path: &Path, depth: usize, files: &FilesPane, rows: &mut Vec<FileRow>
 pub(crate) fn view(
     selected: WorkPane,
     state: &SessionState,
-    files: &FilesPane,
+    files: &mut FilesPane,
     diffs: &mut DiffPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -1348,7 +1395,7 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
 /// Workspace tree with expandable directories.
 fn files_tree(
     state: &SessionState,
-    files: &FilesPane,
+    files: &mut FilesPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     let changed = state.diff.len();
@@ -1382,6 +1429,8 @@ fn files_tree(
 
     let hover_bg = cx.theme().primary.opacity(0.08);
     let mut tree = v_flex().w_full().px(rems(0.4375)).py(rems(0.5));
+    // `rows` is the pane's cached slice, so each row is borrowed rather than
+    // owned; only the label has to be copied out per frame.
     for row in rows {
         let indent = rems_for_depth(row.depth);
         let path = row.path.clone();
@@ -1432,7 +1481,7 @@ fn files_tree(
                         .min_w_0()
                         .truncate()
                         .text_size(rems(0.6875))
-                        .child(SharedString::from(row.name)),
+                        .child(SharedString::from(row.name.clone())),
                 ),
         );
     }
@@ -1561,7 +1610,7 @@ mod tests {
     #[test]
     fn files_rows_sort_directories_first_and_hide_dotfiles() {
         let root = scratch_dir("sort");
-        let files = FilesPane::default();
+        let mut files = FilesPane::default();
 
         let rows = files.rows(&root);
         let names: Vec<_> = rows.iter().map(|row| row.name.as_str()).collect();
@@ -1569,6 +1618,42 @@ mod tests {
         assert_eq!(names, ["src", "README.md"]);
         assert!(rows[0].is_dir);
         assert!(!rows[0].expanded);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn files_rows_are_cached_until_the_pane_is_invalidated() {
+        // The walk is `read_dir` plus a `stat` per entry, so it must not run
+        // once per frame; only an explicit invalidation may notice new files.
+        let root = scratch_dir("cache");
+        let mut files = FilesPane::default();
+        assert_eq!(files.rows(&root).len(), 2);
+
+        std::fs::write(root.join("CHANGELOG.md"), "new\n").unwrap();
+        assert_eq!(files.rows(&root).len(), 2, "cached walk re-read the disk");
+
+        files.invalidate();
+        assert_eq!(files.rows(&root).len(), 3, "invalidate did not re-walk");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn files_rows_skip_build_output_directories() {
+        // `target/` and `node_modules/` are gitignored artifact trees with
+        // thousands of entries; expanding one must not enqueue a row each.
+        let root = scratch_dir("skips");
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        let mut files = FilesPane::default();
+        files.on_toggle(root.join("target"));
+        files.on_toggle(root.join("node_modules"));
+
+        let rows = files.rows(&root);
+        let names: Vec<_> = rows.iter().map(|row| row.name.as_str()).collect();
+
+        assert_eq!(names, ["src", "README.md"]);
 
         let _ = std::fs::remove_dir_all(root);
     }

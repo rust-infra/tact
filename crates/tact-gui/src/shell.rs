@@ -172,6 +172,9 @@ pub struct TactApp {
     work_pane_open: bool,
     work_pane: WorkPane,
     files: FilesPane,
+    /// Whether the Files pane drew on the previous frame, so its cached
+    /// workspace walk can be dropped when the pane comes back into view.
+    files_listed: bool,
     /// Lazily loaded `git diff` bodies for the Diff pane.
     diffs: pane::DiffPane,
     /// Transcript rows and the live-row bookkeeping behind them.
@@ -196,11 +199,18 @@ pub struct TactApp {
     session: Option<SessionHandle>,
     /// Recent sessions for the workspace, newest first.
     recent: Vec<RecentSession>,
-    /// The row the design preview marks as open.
+    /// The row the sidebar marks as open when no session is attached.
     ///
-    /// The preview runs without an agent, so it has no attached session to
-    /// highlight; the newest listed row plays that part instead.
+    /// The offline shell has no session to highlight, so the row a click
+    /// picked plays that part; the design preview starts on the newest one.
     preview_current: Option<String>,
+    /// Whether this shell runs without an agent runtime.
+    ///
+    /// [`Self::new`], [`Self::with_sessions`], and [`Self::preview`] are
+    /// offline: they render the whole surface but own no session, so their
+    /// session controls must not start one. [`Self::connect`] leaves this
+    /// false even when startup failed, so a click can retry.
+    offline: bool,
     /// Keeps the event pump alive for as long as the window is open.
     _pump: Option<session::Pump>,
     /// Command palette interaction state, retained while its dialog is open.
@@ -220,7 +230,9 @@ impl TactApp {
     /// Tests and the offline preview use this; [`Self::connect`] wires the real
     /// session.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::build(window, cx, None, Vec::new())
+        let mut app = Self::build(window, cx, None, Vec::new());
+        app.offline = true;
+        app
     }
 
     /// An offline shell whose sidebar lists `sessions`.
@@ -232,7 +244,9 @@ impl TactApp {
         cx: &mut Context<Self>,
         sessions: Vec<RecentSession>,
     ) -> Self {
-        Self::build(window, cx, None, sessions)
+        let mut app = Self::build(window, cx, None, sessions);
+        app.offline = true;
+        app
     }
 
     /// A shell seeded with prototype-shaped demo content for design review.
@@ -243,6 +257,7 @@ impl TactApp {
     /// of the values differs.
     pub fn preview(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut app = Self::build(window, cx, None, preview_sessions());
+        app.offline = true;
         app.seed_preview(&mut *cx);
         app
     }
@@ -466,6 +481,7 @@ impl TactApp {
             work_pane_open: true,
             work_pane: WorkPane::default(),
             files: FilesPane::default(),
+            files_listed: false,
             diffs: pane::DiffPane::new(),
             conversation: Conversation::default(),
             state: SessionState {
@@ -483,6 +499,7 @@ impl TactApp {
             session,
             recent,
             preview_current: None,
+            offline: false,
             _pump: pump,
             palette: None,
             root_focus,
@@ -652,6 +669,16 @@ impl TactApp {
 
     /// Start a fresh agent session in the current workspace.
     fn new_session(&mut self, cx: &mut Context<Self>) {
+        // The offline shell owns no runtime, so this control says so instead of
+        // reaching for a session it cannot start.
+        if self.offline {
+            self.push_system_row(
+                "This shell runs without an agent, so there is no session to start.".into(),
+                cx,
+            );
+            return;
+        }
+
         let Some(workdir) = self.workspace_dir() else {
             self.push_system_row("Cannot determine the workspace directory.".into(), cx);
             return;
@@ -663,6 +690,28 @@ impl TactApp {
         }
     }
 
+    /// Re-root the window's workspace at another git worktree.
+    ///
+    /// The worktree group is where the window's workspace is chosen, so a click
+    /// moves the branch line, the Files pane, and the sessions the sidebar
+    /// lists to that directory. An attached agent session keeps its own root:
+    /// the window re-scopes what it shows without restarting the session, which
+    /// also means the next new session starts in the worktree the user picked.
+    fn switch_worktree(&mut self, worktree: PathBuf, cx: &mut Context<Self>) {
+        if self.state.workdir.as_deref() == Some(worktree.as_path()) {
+            return;
+        }
+        self.state.branch = git_branch(&worktree);
+        self.state.workdir = Some(worktree.clone());
+        // The list the window shows belongs to the workspace it just left.
+        self.recent = session::recent(&worktree);
+        self.preview_current = self.recent.first().map(|session| session.id.clone());
+        // Both panes are read from the workspace, and both cache what they read.
+        self.files.invalidate();
+        self.diffs.invalidate();
+        cx.notify();
+    }
+
     /// Reopen a session from the sidebar.
     ///
     /// Resume is id reuse: the agent reloads that session's stored turns while
@@ -670,6 +719,16 @@ impl TactApp {
     /// even though the transcript starts on a fresh page.
     fn resume_session(&mut self, session_id: String, cx: &mut Context<Self>) {
         if self.session.as_ref().map(SessionHandle::session_id) == Some(session_id.as_str()) {
+            return;
+        }
+        // An offline shell has no runtime to resume into and its rows are demo
+        // data, so a click moves the row the sidebar marks as open — the
+        // prototype's `.row.active` — rather than starting an agent.
+        if self.offline {
+            if self.recent.iter().any(|row| row.id == session_id) {
+                self.preview_current = Some(session_id);
+                cx.notify();
+            }
             return;
         }
         let Some(workdir) = self.workspace_dir() else {
@@ -1465,6 +1524,14 @@ impl Render for TactApp {
         }
         let width = window.bounds().size.width;
         let rem_size = window.rem_size();
+        // The Files pane caches its `read_dir` walk, so it has to be told when
+        // it re-enters the screen; otherwise a listing taken before the agent
+        // wrote a file would survive for the rest of the process.
+        let files_visible = self.work_pane_open && matches!(self.work_pane, WorkPane::Files);
+        if files_visible && !self.files_listed {
+            self.files.invalidate();
+        }
+        self.files_listed = files_visible;
         let sidebar_is_overlay = width < SIDEBAR_OVERLAY_UNDER.to_pixels(rem_size);
         let work_pane_in_flow =
             self.work_pane_open && width >= WORK_PANE_IN_FLOW_FROM.to_pixels(rem_size);
@@ -1522,7 +1589,7 @@ impl Render for TactApp {
             workspace_row = workspace_row.child(work_pane(
                 self.work_pane,
                 &self.state,
-                &self.files,
+                &mut self.files,
                 &mut self.diffs,
                 cx,
             ));
@@ -1542,7 +1609,7 @@ impl Render for TactApp {
             workspace = workspace.child(work_pane_drawer(
                 self.work_pane,
                 &self.state,
-                &self.files,
+                &mut self.files,
                 &mut self.diffs,
                 cx,
             ));
@@ -2109,7 +2176,10 @@ fn sidebar(
     if query.is_empty() {
         let worktrees = worktree_rows(state);
         if !worktrees.is_empty() {
-            let mut rows = v_flex().gap(rems(0.0625));
+            let mut rows = v_flex()
+                .gap(rems(0.0625))
+                .id("worktree-rows")
+                .test_support();
             for worktree in &worktrees {
                 rows = rows.child(worktree_row(worktree, radius, hover_bg, muted, primary, cx));
             }
@@ -2309,6 +2379,9 @@ fn session_row(
     h_flex()
         .id(SharedString::from(format!("session-row-{}", session.id)))
         .test_support()
+        // The row the shell has open, in the accessibility tree and in tests.
+        // The prototype only paints `.row.active`, which no test can assert on.
+        .aria_selected(is_current)
         .items_start()
         .min_h(rems(2.75))
         .gap(rems(0.4375))
@@ -2453,6 +2526,8 @@ struct WorktreeRow {
     name: String,
     /// The worktree's own directory name, used as the description line.
     detail: String,
+    /// The worktree's own directory, which a click re-roots the window at.
+    path: PathBuf,
     /// Whether this is the worktree the current session is rooted in.
     is_current: bool,
 }
@@ -2513,6 +2588,7 @@ fn worktree_rows(state: &SessionState) -> Vec<WorktreeRow> {
         rows.push(WorktreeRow {
             name,
             detail,
+            path: path.to_path_buf(),
             is_current,
         });
     }
@@ -2555,6 +2631,7 @@ fn worktree_row(
     let badge = worktree
         .is_current
         .then_some(("1 active", primary, primary.opacity(0.14)));
+    let path = worktree.path.clone();
     sidebar_meta_row(
         SharedString::from(format!("worktree-row-{}", worktree.name)),
         SharedString::from(worktree.name.clone()),
@@ -2562,6 +2639,12 @@ fn worktree_row(
         badge,
         worktree.is_current,
         worktree.is_current,
+        Some(worktree.is_current),
+        Some(Rc::new(
+            move |this: &mut TactApp, cx: &mut Context<TactApp>| {
+                this.switch_worktree(path.clone(), cx);
+            },
+        )),
         radius,
         hover_bg,
         muted,
@@ -2586,6 +2669,8 @@ fn background_row(
         Some(("Running", primary, primary.opacity(0.14))),
         true,
         false,
+        None,
+        None,
         radius,
         hover_bg,
         muted,
@@ -2594,12 +2679,19 @@ fn background_row(
     )
 }
 
+/// A sidebar row's click handler, or `None` for rows that are not controls.
+type SidebarRowClick = Rc<dyn Fn(&mut TactApp, &mut Context<TactApp>)>;
+
 /// The shared shape behind the worktree and background rows.
 ///
 /// Sessions, worktrees, and background work all read as the prototype's
 /// `.row`: a status dot, a title, a metadata line, and an optional badge. They
 /// differ only in what those slots carry and whether the row is interactive,
 /// so the geometry lives here once.
+///
+/// `selected` marks the row the window is currently scoped to. It is a row's
+/// state, not its style, so it survives into the accessibility tree — the
+/// prototype only paints `.row.active`, which nothing can assert on.
 #[allow(clippy::too_many_arguments)]
 fn sidebar_meta_row(
     id: SharedString,
@@ -2608,11 +2700,13 @@ fn sidebar_meta_row(
     badge: Option<(&'static str, gpui_kit::gpui::Hsla, gpui_kit::gpui::Hsla)>,
     active_dot: bool,
     highlighted: bool,
+    selected: Option<bool>,
+    on_click: Option<SidebarRowClick>,
     radius: gpui_kit::gpui::Pixels,
     hover_bg: gpui_kit::gpui::Hsla,
     muted: gpui_kit::gpui::Hsla,
     primary: gpui_kit::gpui::Hsla,
-    _cx: &mut Context<TactApp>,
+    cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     let (dot, dot_bg) = if active_dot {
         (primary, primary.opacity(0.16))
@@ -2623,6 +2717,12 @@ fn sidebar_meta_row(
     h_flex()
         .id(id)
         .test_support()
+        .when_some(selected, |row, selected| row.aria_selected(selected))
+        // Only the rows that do something carry a handler: a row that
+        // highlights on hover and answers nothing is a dead control.
+        .when_some(on_click, |row, on_click| {
+            row.on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+        })
         .items_start()
         .gap_2()
         .px_2()
@@ -4285,7 +4385,7 @@ fn git_branch(workdir: &std::path::Path) -> Option<String> {
 fn work_pane(
     selected: WorkPane,
     state: &SessionState,
-    files: &FilesPane,
+    files: &mut FilesPane,
     diffs: &mut pane::DiffPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -4305,7 +4405,7 @@ fn work_pane(
 fn work_pane_drawer(
     selected: WorkPane,
     state: &SessionState,
-    files: &FilesPane,
+    files: &mut FilesPane,
     diffs: &mut pane::DiffPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -4763,6 +4863,16 @@ mod tests {
             rows.iter()
                 .all(|row| !row.name.is_empty() && !row.detail.is_empty()),
             "every row carries a branch and a directory"
+        );
+        // A click re-roots the window at the row's own directory, so the path
+        // has to travel with the row the sidebar renders.
+        assert!(
+            rows.iter().all(|row| row.path.is_dir()),
+            "every row carries a directory that exists"
+        );
+        assert!(
+            rows.iter().any(|row| row.path.is_absolute()),
+            "the worktree list reports absolute paths"
         );
     }
 
