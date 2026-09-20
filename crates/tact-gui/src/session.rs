@@ -17,7 +17,7 @@ use tact_session::{RecentSession, SessionOptions, SessionRuntime};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::pane::DiffEntry;
-use crate::transcript::{ToolStatus, TranscriptRow};
+use crate::transcript::{ToolStatus, TranscriptRow, diff_line_counts};
 
 /// Commands and identity for one running session.
 pub(crate) struct SessionHandle {
@@ -165,6 +165,12 @@ pub(crate) struct Request {
 pub(crate) struct SessionState {
     /// Plan steps in arrival order.
     pub(crate) plan: Vec<PlanStep>,
+    /// When each plan step was first seen to finish, keyed by step index.
+    ///
+    /// Keyed by index rather than kept beside the step so a plan replaced
+    /// wholesale (the design preview) simply has no stamps, instead of leaving
+    /// a parallel vector to fall out of step with the list.
+    pub(crate) plan_done_at: HashMap<usize, i64>,
     /// Latest persistent task snapshot.
     pub(crate) tasks: Vec<TaskSnapshot>,
     /// Latest subagent run snapshot.
@@ -247,7 +253,10 @@ impl Conversation {
     }
 
     pub(crate) fn push_user(&mut self, text: String) -> usize {
-        self.rows.push(TranscriptRow::User { text });
+        self.rows.push(TranscriptRow::User {
+            text,
+            sent_at: now_unix(),
+        });
         self.rows.len()
     }
 
@@ -260,6 +269,8 @@ impl Conversation {
         self.rows.push(TranscriptRow::Assistant {
             markdown,
             streaming: false,
+            sent_at: now_unix(),
+            model: None,
         });
         self.rows.len()
     }
@@ -273,7 +284,10 @@ impl Conversation {
     /// Fold one protocol update into the transcript and session state.
     pub(crate) fn apply(&mut self, update: AgentUpdate, state: &mut SessionState) -> Change {
         match update {
-            AgentUpdate::StreamChunk(text) => self.append_stream(text),
+            AgentUpdate::StreamChunk(text) => {
+                let model = state.model.as_ref().map(|params| params.model.clone());
+                self.append_stream(text, model)
+            }
             AgentUpdate::ThinkingChunk(chunk) => self.apply_thinking(chunk),
             AgentUpdate::StepAdded(step) => {
                 state.plan.push(step.clone());
@@ -283,11 +297,15 @@ impl Conversation {
                 if step.tool_id.is_empty() {
                     Change::None
                 } else {
+                    // A planned step carries no presentation yet; the kind
+                    // arrives with `StepStarted`.
                     self.ensure_tool(
                         &step.tool_id,
                         &step.tool,
                         &step.description,
                         ToolStatus::Running,
+                        None,
+                        None,
                     )
                 }
             }
@@ -310,7 +328,15 @@ impl Conversation {
                     state.background.push(arg_summary.clone());
                     state.background.dedup();
                 }
-                self.set_tool(&tool_id, name, detail, ToolStatus::Running, String::new())
+                self.set_tool(
+                    &tool_id,
+                    name,
+                    detail,
+                    ToolStatus::Running,
+                    String::new(),
+                    Some(presentation.visual_kind),
+                    None,
+                )
             }
             AgentUpdate::StepFinished {
                 tool_id, result, ..
@@ -323,6 +349,7 @@ impl Conversation {
                 let duration = format_duration(result.duration_us);
                 // File writes and edits are the only steps whose *result* is a
                 // change worth re-reading later, so they feed the Diff pane.
+                let mut diff_stats = None;
                 if matches!(
                     result.presentation.visual_kind,
                     ToolVisualKind::FileWrite | ToolVisualKind::FileEdit
@@ -331,20 +358,30 @@ impl Conversation {
                     .as_ref()
                     .filter(|text| !text.trim().is_empty())
                 {
-                    state.diff.push(DiffEntry::new(
+                    diff_stats = diff_line_counts(changed);
+                    let entry = DiffEntry::new(
                         result
                             .arg_full
                             .clone()
                             .unwrap_or_else(|| result.arg_summary.clone()),
                         changed.clone(),
-                    ));
+                    );
+                    state.diff.push(match diff_stats {
+                        Some((added, removed)) => entry.with_stats(added, removed),
+                        None => entry,
+                    });
                 }
+                // The plan pane only ever pushed steps; without this it would
+                // claim every step is still pending after the tool ran.
+                mark_plan_step(state, &tool_id, detail.clone());
                 self.set_tool(
                     &tool_id,
                     display_name(&result.presentation.display_name, &result.tool),
                     detail,
                     status,
                     duration,
+                    Some(result.presentation.visual_kind),
+                    diff_stats,
                 )
             }
             AgentUpdate::StepFailed {
@@ -358,12 +395,15 @@ impl Conversation {
                 } else {
                     format!("{} — {}", first_line(&arg_summary), first_line(&error))
                 };
+                mark_plan_step(state, &tool_id, detail.clone());
                 self.set_tool(
                     &tool_id,
                     self.tool_name(&tool_id).unwrap_or_else(|| "Tool".into()),
                     detail,
                     ToolStatus::Failed,
                     String::new(),
+                    None,
+                    None,
                 )
             }
             AgentUpdate::ToolProgress { tool_id, chunks } => {
@@ -388,6 +428,8 @@ impl Conversation {
                         detail,
                         self.tool_status(&tool_id).unwrap_or(ToolStatus::Running),
                         self.tool_duration(&tool_id).unwrap_or_default(),
+                        None,
+                        None,
                     )
                 } else {
                     Change::None
@@ -422,6 +464,8 @@ impl Conversation {
                     detail,
                     status,
                     self.tool_duration(&tool_id).unwrap_or_default(),
+                    None,
+                    None,
                 )
             }
             AgentUpdate::SubagentFinished {
@@ -442,6 +486,8 @@ impl Conversation {
                     first_line(&summary),
                     status,
                     self.tool_duration(&tool_id).unwrap_or_default(),
+                    None,
+                    None,
                 )
             }
             AgentUpdate::TasksChanged { tasks, .. } => {
@@ -508,6 +554,8 @@ impl Conversation {
                 self.rows.push(TranscriptRow::Assistant {
                     markdown,
                     streaming: false,
+                    sent_at: now_unix(),
+                    model: None,
                 });
                 Change::Appended(self.rows.len() - index)
             }
@@ -544,7 +592,7 @@ impl Conversation {
     }
 
     /// Append streamed assistant text, opening a row when needed.
-    fn append_stream(&mut self, text: String) -> Change {
+    fn append_stream(&mut self, text: String, model: Option<String>) -> Change {
         let index = match self.open_assistant {
             Some(index)
                 if matches!(self.rows.get(index), Some(TranscriptRow::Assistant { .. })) =>
@@ -556,6 +604,8 @@ impl Conversation {
                 self.rows.push(TranscriptRow::Assistant {
                     markdown: String::new(),
                     streaming: true,
+                    sent_at: now_unix(),
+                    model,
                 });
                 self.open_assistant = Some(index);
                 index
@@ -634,6 +684,8 @@ impl Conversation {
         name: &str,
         detail: &str,
         status: ToolStatus,
+        kind: Option<ToolVisualKind>,
+        diff_stats: Option<(u32, u32)>,
     ) -> Change {
         if self.open_tools.contains_key(tool_id) {
             return Change::None;
@@ -646,12 +698,15 @@ impl Conversation {
             duration: String::new(),
             status,
             expanded: false,
+            visual_kind: kind.unwrap_or_default(),
+            diff_stats,
         });
         self.open_tools.insert(tool_id.to_string(), index);
         Change::Appended(1)
     }
 
     /// Update an existing tool row, creating it when the id is new.
+    #[allow(clippy::too_many_arguments)]
     fn set_tool(
         &mut self,
         tool_id: &str,
@@ -659,16 +714,20 @@ impl Conversation {
         detail: String,
         status: ToolStatus,
         duration: String,
+        kind: Option<ToolVisualKind>,
+        diff_stats: Option<(u32, u32)>,
     ) -> Change {
         let index = match self.open_tools.get(tool_id).copied() {
             Some(index) => index,
-            None => return self.ensure_tool(tool_id, &name, &detail, status),
+            None => return self.ensure_tool(tool_id, &name, &detail, status, kind, diff_stats),
         };
         if let Some(TranscriptRow::Tool {
             display_name,
             detail: current,
             duration: current_duration,
             status: current_status,
+            visual_kind: current_kind,
+            diff_stats: current_stats,
             ..
         }) = self.rows.get_mut(index)
         {
@@ -676,6 +735,12 @@ impl Conversation {
             *current = detail;
             *current_status = status;
             *current_duration = duration;
+            if let Some(kind) = kind {
+                *current_kind = kind;
+            }
+            if diff_stats.is_some() {
+                *current_stats = diff_stats;
+            }
         }
         Change::Resized(index)
     }
@@ -729,9 +794,113 @@ impl Conversation {
             _ => None,
         }
     }
+
+    /// The transcript as Markdown, for the toolbar's copy button.
+    ///
+    /// Every row the scroller shows is represented: prose and Markdown pass
+    /// through unchanged, while the cards that only exist as UI (thinking, tool
+    /// summaries) become block quotes and list items so a pasted transcript
+    /// still reads as a conversation rather than a wall of text.
+    pub(crate) fn to_markdown(&self) -> String {
+        let mut blocks: Vec<String> = Vec::with_capacity(self.rows.len());
+        for row in &self.rows {
+            match row {
+                TranscriptRow::User { text, .. } => blocks.push(text.trim().to_string()),
+                TranscriptRow::Assistant { markdown, .. } => {
+                    blocks.push(markdown.trim().to_string());
+                }
+                TranscriptRow::Thinking { text } => blocks.push(quoted(text)),
+                TranscriptRow::Tool {
+                    display_name,
+                    detail,
+                    output,
+                    duration,
+                    status,
+                    ..
+                } => blocks.push(tool_markdown(
+                    display_name,
+                    detail,
+                    output,
+                    duration,
+                    *status,
+                )),
+                TranscriptRow::System { text } | TranscriptRow::Error { text } => {
+                    blocks.push(quoted(text));
+                }
+            }
+        }
+        blocks.retain(|block| !block.is_empty());
+        blocks.join("\n\n")
+    }
 }
 
-/// Prefer the producer's display name, falling back to the raw tool name.
+/// Quote `text` as a Markdown block quote, one `>` per line.
+fn quoted(text: &str) -> String {
+    text.trim()
+        .lines()
+        .map(|line| {
+            if line.is_empty() {
+                ">".to_string()
+            } else {
+                format!("> {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One tool card as a Markdown list item plus its output in a fence.
+fn tool_markdown(
+    display_name: &str,
+    detail: &str,
+    output: &str,
+    duration: &str,
+    status: ToolStatus,
+) -> String {
+    let state = match status {
+        ToolStatus::Running => "running",
+        ToolStatus::Succeeded => "succeeded",
+        ToolStatus::Failed => "failed",
+    };
+    let meta = if duration.is_empty() {
+        state.to_string()
+    } else {
+        format!("{state} · {duration}")
+    };
+    let mut item = if detail.trim().is_empty() {
+        format!("- **{display_name}** ({meta})")
+    } else {
+        format!("- **{display_name}** `{}` ({meta})", detail.trim())
+    };
+    let output = output.trim();
+    if !output.is_empty() {
+        item.push_str("\n\n```\n");
+        item.push_str(output);
+        item.push_str("\n```");
+    }
+    item
+}
+
+/// Record that the tool behind a plan step finished.
+///
+/// The GUI only ever appended plan steps, so the pane claimed every step was
+/// still pending after its tool had already run. The step keeps the first
+/// result it is given, and the pane times the step from the stamp.
+fn mark_plan_step(state: &mut SessionState, tool_id: &str, output: String) {
+    let Some((index, step)) = state
+        .plan
+        .iter_mut()
+        .enumerate()
+        .find(|(_, step)| !step.tool_id.is_empty() && step.tool_id == tool_id)
+    else {
+        return;
+    };
+    if step.output.is_none() {
+        step.output = Some(output);
+        state.plan_done_at.entry(index).or_insert_with(now_unix);
+    }
+}
+
 /// Bytes of tool output kept per row.
 const TOOL_OUTPUT_LIMIT: usize = 8 * 1024;
 
@@ -753,6 +922,7 @@ fn retain_output_tail(output: &mut String) {
     *output = output[start..].to_string();
 }
 
+/// Prefer the producer's display name, falling back to the raw tool name.
 fn display_name(display: &str, tool: &str) -> String {
     if display.is_empty() {
         tool.to_string()
@@ -823,13 +993,20 @@ mod tests {
 
         assert_eq!(conversation.len(), 1);
         assert_eq!(change, Change::Resized(0));
-        assert_eq!(
-            conversation.rows(),
-            &[TranscriptRow::Assistant {
-                markdown: "Hello world".into(),
-                streaming: true,
-            }]
-        );
+        // `sent_at` is the wall clock the row opened, so the shape assertion
+        // covers the fields this test is about.
+        let [
+            TranscriptRow::Assistant {
+                markdown,
+                streaming,
+                ..
+            },
+        ] = conversation.rows()
+        else {
+            panic!("one assistant row: {:?}", conversation.rows());
+        };
+        assert_eq!(markdown, "Hello world");
+        assert!(streaming, "the row is still streaming");
     }
 
     #[test]
@@ -845,12 +1022,12 @@ mod tests {
 
         assert!(matches!(
             &conversation.rows()[0],
-            TranscriptRow::Assistant { streaming: false, markdown } if markdown == "one"
+            TranscriptRow::Assistant { streaming: false, markdown, .. } if markdown == "one"
         ));
         let last = conversation.rows().last().expect("second answer");
         assert!(matches!(
             last,
-            TranscriptRow::Assistant { streaming: true, markdown } if markdown == "two"
+            TranscriptRow::Assistant { streaming: true, markdown, .. } if markdown == "two"
         ));
     }
 
@@ -866,7 +1043,7 @@ mod tests {
         assert_eq!(conversation.len(), 2);
         assert!(matches!(
             &conversation.rows()[0],
-            TranscriptRow::Assistant { streaming: true, markdown } if markdown == "onemore"
+            TranscriptRow::Assistant { streaming: true, markdown, .. } if markdown == "onemore"
         ));
     }
 
@@ -1085,6 +1262,42 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_transcript_serializes_to_markdown() {
+        let mut conversation = Conversation::default();
+        conversation.push_user("Ship the toolbar".to_string());
+        conversation.push_row(TranscriptRow::Assistant {
+            markdown: "Done — see `shell.rs`.".to_string(),
+            streaming: false,
+            sent_at: 0,
+            model: None,
+        });
+        conversation.push_row(TranscriptRow::Thinking {
+            text: "The prototype has two buttons.".to_string(),
+        });
+        conversation.push_row(TranscriptRow::Tool {
+            display_name: "Read".to_string(),
+            detail: "crates/tact-gui/src/shell.rs".to_string(),
+            output: "line one\nline two".to_string(),
+            duration: "1.2s".to_string(),
+            status: ToolStatus::Succeeded,
+            expanded: false,
+            visual_kind: ToolVisualKind::FileRead,
+            diff_stats: None,
+        });
+
+        assert_eq!(
+            conversation.to_markdown(),
+            concat!(
+                "Ship the toolbar\n\n",
+                "Done — see `shell.rs`.\n\n",
+                "> The prototype has two buttons.\n\n",
+                "- **Read** `crates/tact-gui/src/shell.rs` (succeeded · 1.2s)\n\n",
+                "```\nline one\nline two\n```",
+            )
+        );
     }
 
     #[test]

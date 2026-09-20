@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-20 — 工作面板标签行、transcript 元信息与复制入口对齐原型
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/transcript.rs`（`msg_meta`、`clock_label`、`diff_line_counts`、`code_block_style`）；`crates/tact-gui/src/pane.rs`（`work_tabs`、`step_age`）；`crates/tact-gui/src/shell.rs`（`copy_transcript`、`close_work_pane`、`scroll_transcript_to`、`seed_preview`）；`crates/tact-gui/src/session.rs`（`Conversation::to_markdown`、`now_unix`、`mark_plan_step`）；`docs/design/tact-desktop-prototype.html` |
+
+**症状 / 动机：** 有五个原型元素在壳层里没有对应物。`.msgMeta`——每条消息上方的作者、时间与模型行——完全缺失，连续两轮对话无从区分。工具卡片只打印状态、不呈现自己造成的改动，而原型会给一次写入打上 `+142 −0` 徽标。围栏代码块只是一个空框；原型的 `.code` 带一条含复制动作的 `.codeHead` 横带。工作面板没有关闭按钮，而加上关闭按钮后 `.wtabs` 标签溢出到按钮下方——最后一个标签（Files）根本点不到，并且标签行仍在穿组件默认的 32px 标签，而不是 `.wtab` 的 28px 芯片加它的 `.count` 徽标。Plan 面板的问题比外观更严重：`StepFinished`/`StepFailed` 丢掉了步骤的输出，于是每一步永远显示"待执行"，尾列也从不显示原型的相对时间（`2m ago` / `now` / `next` / `later`）。此外没有办法把 transcript 作为文本带走，尽管原型的 `.mainTop` 带一个复制图标。
+
+**决策：** 每个元素都按原型自己的数值来搭，而不是沿用组件默认值。`.msgMeta` 变成 `msg_meta`（11px 半粗作者、10.5px 弱化时间与模型、7px 间距、7px 下边距），数据来自 push 时记下的 `sent_at`，由 `clock_label` 渲染成本地 `HH:MM`；助手行的模型取自运行中的 `ModelParams`。工具行挂上 `diff_stats`，由 `diff_line_counts` 计算（跳过 `+++`/`---` 文件头，且宁可返回 `None` 也不谎报 0），`tool_meta` 对写入与编辑渲染成 `+新增 −删除`。代码块获得 `code_block_style` 与 `code_block_actions`——一个真正可用的复制按钮，把围栏里的文本写进剪贴板。工作面板标签行按 `.wtabs` 手搭：`flex_1`/`min_w_0`/`overflow_hidden` 的弹性子项与 `flex_shrink_0` 的关闭按钮并列，28px 芯片、2px 间距、16px `.count` 徽标在所在标签激活时换成强调色底——裁剪标签行是对的，让标签盖住关闭按钮是错的。Plan 的汇报在源头修好：`mark_plan_step` 记录 `StepFinished`/`StepFailed` 的输出，并以步骤下标为键记下 `plan_done_at` 时间戳，于是尾列能给已完成的步骤算相对时间，又不必维护一个会与列表脱节的并行向量。`Conversation::to_markdown` 与 `TactApp::copy_transcript` 支撑工具栏上的复制按钮。
+
+**改后行为：** 每条 transcript 消息都以作者、本地时间、（助手行）模型开头；用户气泡在多了这一行之后仍保持 72% 上限与右对齐。写入/编辑卡片只要工具输出里带 hunk，就显示 `+n −m` 徽标。围栏代码块是一张带可用复制动作的卡片。工作面板有一条 28px 的 `.wtab` 标签行，以及独占一列的关闭按钮；每个标签都可点击，面板可用 ✕ 或 Ctrl+\ 关闭并用同一快捷键打开。Plan 步骤在完成后显示相对时间，而不是永远"待执行"；transcript 工具栏可把整段对话复制为 Markdown。两处缺口是刻意保留的：`.codeHead` 的文件名横带需要自定义 markdown block renderer；侧栏会话行仍没有 diffstat 芯片与状态词，因为其背后的 store 查询尚不存在。
+
+**指针：** `crates/tact-gui/src/transcript.rs`（`msg_meta`、`clock_label`、`diff_line_counts`、`tool_meta`、`code_block_style`、`render_row`）；`crates/tact-gui/src/pane.rs`（`work_tabs`、`view`、plan 行）；`crates/tact-gui/src/shell.rs`（`copy_transcript`、`close_work_pane`、`scroll_transcript_to`、`seed_preview`）；`crates/tact-gui/src/session.rs`（`to_markdown`、`now_unix`、`mark_plan_step`）；测试 `the_transcript_serializes_to_markdown`、`the_transcript_toolbar_carries_the_prototype_copy_button`、`work_pane_tabs_switch_the_visible_body`、`every_work_pane_renders_content_not_just_a_container`、`the_user_bubble_is_capped_and_right_aligned`；原型 `docs/design/tact-desktop-prototype.html`。
+
+---
+
 ## 1. 2026-09-20 — 桌面端壳层与 transcript 改用原型自己的数值
 
 | 字段 | 值 |

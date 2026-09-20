@@ -2,7 +2,7 @@
 
 use gpui_kit::component::{ActiveTheme as _, Root, ThemeMode, ThemeRegistry};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AppContext as _, TestAppContext, px, size};
+use gpui_kit::{AppContext as _, Entity, TestAppContext, px, size};
 
 use tact_gui::{RecentSession, TactApp, theme};
 
@@ -761,12 +761,20 @@ fn the_status_bar_renders_its_segmented_chips(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_user_bubble_is_capped_and_right_aligned(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
+    let mut app: Option<Entity<TactApp>> = None;
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
         let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
         Root::new(shell, window, cx)
     });
+    let app = app.expect("the shell entity is captured");
 
     cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // The transcript follows the tail and the preview's conversation is
+        // taller than the viewport, so the first row has to be scrolled in
+        // before its geometry exists to measure.
+        app.update(cx, |app, cx| app.scroll_transcript_to(0, cx));
         window.render_frame(cx);
 
         let row = window.find("transcript-row-0").bounds();
@@ -815,6 +823,70 @@ fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
         assert!(
             window.try_find("tool-output-3").is_none(),
             "clicking the summary again closes it"
+        );
+    })
+    .unwrap();
+}
+
+/// The prototype hangs an assistant answer off a 24px gutter badge, one `.msg`
+/// gap (12px) away from the body, rather than starting flush with the column.
+#[gpui_kit::test]
+fn the_assistant_message_carries_a_gutter_badge(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        let row = window.find("transcript-row-1").bounds();
+        let gutter = window.find("assistant-gutter-1").bounds();
+        let body = window.find("assistant-body-1").bounds();
+
+        assert!(
+            (gutter.size.width - px(24.)).abs() < px(0.5),
+            "the gutter is the prototype's 24px square: {gutter:?}"
+        );
+        assert!(
+            (gutter.size.width - gutter.size.height).abs() < px(0.5),
+            "the gutter is square: {gutter:?}"
+        );
+        assert!(
+            (gutter.origin.x - row.origin.x).abs() < px(0.5),
+            "the gutter leads the row: {gutter:?} against {row:?}"
+        );
+        assert!(
+            (body.origin.x - (gutter.origin.x + gutter.size.width) - px(12.)).abs() < px(0.5),
+            "the body sits one `.msg` gap after the gutter: {body:?} against {gutter:?}"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_transcript_toolbar_carries_the_prototype_copy_button(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        let toolbar = window.find("transcript-toolbar").bounds();
+        let detail = window.find("transcript-detail-cycle").bounds();
+        let copy = window.find("transcript-copy").bounds();
+
+        assert!(
+            copy.origin.x > detail.origin.x,
+            "the copy button follows the detail cycle: {copy:?} against {detail:?}"
+        );
+        assert!(
+            copy.right() <= toolbar.right() + px(0.5),
+            "the copy button stays inside the toolbar: {copy:?} against {toolbar:?}"
         );
     })
     .unwrap();

@@ -16,19 +16,18 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     scroll::ScrollableElement as _,
-    tab::{Tab, TabBar},
     v_flex,
 };
 use gpui_kit::{
     AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, Styled as _, div, rems,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div, rems,
 };
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::{SubagentStatusSnapshot, TaskStatusSnapshot};
 
-use crate::session::SessionState;
+use crate::session::{SessionState, age_label, now_unix};
 use crate::shell::TactApp;
 
 /// Which surface the work pane shows.
@@ -322,32 +321,6 @@ pub(crate) fn view(
     diffs: &mut DiffPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
-    // Each tab carries the prototype's count badge where the pane has a
-    // meaningful cardinality; Files is a tree, so it stays unlabelled.
-    let count_bg = cx.theme().background;
-    let count_fg = cx.theme().muted_foreground;
-    let tabs = TabBar::new("work-pane-tabs")
-        .selected_index(selected.index())
-        .children(WorkPane::ALL.map(|pane| {
-            let tab = Tab::new().label(pane.label());
-            match pane.count(state) {
-                Some(count) => tab.suffix(
-                    div()
-                        .rounded(cx.theme().radius)
-                        .bg(count_bg)
-                        .px_1()
-                        .text_xs()
-                        .text_color(count_fg)
-                        .child(SharedString::from(count.to_string())),
-                ),
-                None => tab,
-            }
-        }))
-        .on_click(cx.listener(|this, index, _, cx| {
-            this.set_work_pane(WorkPane::from_index(*index));
-            cx.notify();
-        }));
-
     let body = match selected {
         WorkPane::Plan => plan(state, cx).into_any_element(),
         WorkPane::Diff => diff(state, diffs, cx).into_any_element(),
@@ -359,21 +332,38 @@ pub(crate) fn view(
         "work-pane-body-{}",
         selected.label().to_ascii_lowercase()
     ));
+    let footer = work_footer(cx).into_any_element();
+    let tabs = work_tabs(selected, state, cx);
 
     v_flex()
         .w_full()
         .h_full()
         .min_h_0()
         .child(
-            // The prototype's `.workTop` is a 38px row with 8px side padding.
+            // The prototype's `.workTop` is a 38px row with 8px side padding
+            // and a trailing close button.
             h_flex()
                 .flex_shrink_0()
                 .h(rems(2.375))
                 .items_center()
+                .gap(rems(0.125))
                 .px_2()
                 .id("work-pane-tabs-host")
                 .test_support()
-                .child(tabs),
+                .child(tabs)
+                .child(
+                    Button::new("work-pane-close")
+                        .flex_shrink_0()
+                        .icon(IconName::X)
+                        .ghost()
+                        .compact()
+                        .tooltip("Close work pane (Ctrl+\\)")
+                        .accessibility_label("Close work pane")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.close_work_pane();
+                            cx.notify();
+                        })),
+                ),
         )
         .child(
             v_flex()
@@ -382,7 +372,88 @@ pub(crate) fn view(
                 .overflow_y_scrollbar()
                 .child(div().w_full().p_3().id(body_id).test_support().child(body)),
         )
-        .child(work_footer(cx))
+        .child(footer)
+}
+
+/// The prototype's `.wtabs`: 28px chips with an optional count badge.
+///
+/// `.wtabs{min-width:0;flex:1;display:flex;gap:2px;overflow:hidden}` is a flex
+/// sibling of the close button, so the strip shrinks and clips inside its own
+/// column instead of pushing the close button off the row (or letting the last
+/// chip hide underneath it).
+fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>) -> AnyElement {
+    let ink = cx.theme().foreground;
+    let ink3 = cx.theme().muted_foreground;
+    let surface = cx.theme().background;
+    let line = cx.theme().border;
+    let hover = cx.theme().muted;
+    let tint = cx.theme().primary.opacity(0.12);
+    let accent = cx.theme().primary;
+
+    let mut chips: Vec<AnyElement> = Vec::with_capacity(WorkPane::ALL.len());
+    for (index, pane) in WorkPane::ALL.iter().copied().enumerate() {
+        let active = pane == selected;
+        let count = pane.count(state);
+        chips.push(
+            h_flex()
+                .id(index)
+                .flex_shrink_0()
+                .h(rems(1.75))
+                .items_center()
+                .gap(rems(0.3125))
+                .px_2()
+                .rounded(rems(0.375))
+                .text_size(rems(0.6875))
+                .whitespace_nowrap()
+                .cursor_pointer()
+                .when(active, |this| {
+                    this.bg(surface)
+                        .text_color(ink)
+                        .border_1()
+                        .border_color(line)
+                })
+                .when(!active, |this| {
+                    this.text_color(ink3)
+                        .hover(move |style| style.bg(hover).text_color(ink))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_work_pane(pane);
+                    cx.notify();
+                }))
+                .child(SharedString::from(pane.label()))
+                .when_some(count, |this, count| {
+                    this.child(
+                        // `.count{min-width:16px;height:16px;padding:0 4px;
+                        // border-radius:5px;background:var(--surface2)}`, and
+                        // the active tab recolours it with the accent tint.
+                        h_flex()
+                            .min_w(rems(1.))
+                            .h(rems(1.))
+                            .items_center()
+                            .justify_center()
+                            .px_1()
+                            .rounded(rems(0.3125))
+                            .text_size(rems(0.5625))
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .bg(if active { tint } else { hover })
+                            .text_color(if active { accent } else { ink3 })
+                            .child(SharedString::from(count.to_string())),
+                    )
+                })
+                .test_support()
+                .into_any_element(),
+        );
+    }
+
+    h_flex()
+        .id("work-pane-tabs")
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .gap(rems(0.125))
+        .test_support()
+        .children(chips)
+        .into_any_element()
 }
 
 /// The pane's fixed footer action row.
@@ -563,10 +634,22 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
             .into_any_element(),
     ];
     for (index, step) in state.plan.iter().enumerate() {
-        work.push(plan_step_row(index, current, step, cx).into_any_element());
+        let done_at = state.plan_done_at.get(&index).copied();
+        work.push(plan_step_row(index, current, step, done_at, cx).into_any_element());
     }
 
     v_flex().w_full().child(head).child(card(cx, work))
+}
+
+/// The prototype's step clock: how long ago the step finished.
+///
+/// A step that was already finished when this window opened has no stamp, so
+/// it reports its state instead of inventing a time.
+fn step_age(done_at: Option<i64>) -> String {
+    match done_at {
+        Some(stamp) => age_label((now_unix() - stamp).max(0)),
+        None => "done".to_string(),
+    }
 }
 
 /// Width of the plan progress fill, in rems, for a 100%-wide track.
@@ -582,6 +665,7 @@ fn plan_step_row(
     index: usize,
     current: Option<usize>,
     step: &tact_protocol::PlanStep,
+    done_at: Option<i64>,
     cx: &App,
 ) -> impl IntoElement {
     let executed = step.output.is_some();
@@ -591,7 +675,7 @@ fn plan_step_row(
             IconName::Check,
             cx.theme().success,
             cx.theme().success.opacity(0.12),
-            "done".to_string(),
+            step_age(done_at),
         )
     } else if is_current {
         (
@@ -605,7 +689,13 @@ fn plan_step_row(
             IconName::Circle,
             cx.theme().muted_foreground,
             cx.theme().background,
-            "next".to_string(),
+            // The prototype distinguishes the step queued behind the current
+            // one from the ones after it.
+            if current.is_some_and(|current| index == current + 1) {
+                "next".to_string()
+            } else {
+                "later".to_string()
+            },
         )
     };
 

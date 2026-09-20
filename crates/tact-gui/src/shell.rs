@@ -26,9 +26,10 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, ParentElement as _, Rems, Render, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Subscription, Window, div, px, rems,
+    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, Rems, Render, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Window, div, px,
+    rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -274,6 +275,11 @@ impl TactApp {
              - Anthropic warm neutrals with orange for the primary action.\n\
              - Compact inline tool activity; details open only when asked.\n\
              - Model, effort, permission, and context usage stay near the composer.\n\n\
+             ```toml\n\
+             theme = \"tact-anthropic\"\n\
+             shell = \"sidebar-transcript-workpane\"\n\
+             transcript_measure = 720\n\
+             ```\n\n\
              The GUI consumes `AgentUpdate` and `UserCommand`; headless crates remain free of GPU \
              dependencies."
                 .to_string(),
@@ -295,6 +301,8 @@ impl TactApp {
                 duration: "1.2s".to_string(),
                 status: transcript::ToolStatus::Succeeded,
                 expanded: false,
+                visual_kind: tact_protocol::ToolVisualKind::FileRead,
+                diff_stats: None,
             });
         self.conversation
             .push_row(transcript::TranscriptRow::Tool {
@@ -305,6 +313,12 @@ impl TactApp {
                 duration: "0.8s".to_string(),
                 status: transcript::ToolStatus::Succeeded,
                 expanded: false,
+                visual_kind: tact_protocol::ToolVisualKind::FileWrite,
+                // The preview's edit result is exactly the three added lines it
+                // prints, so the card badges the change the Diff pane holds.
+                diff_stats: transcript::diff_line_counts(
+                    "+ TactTokens::light()\n+ TactTokens::dark()\n+ ThemeRegistry::watch_dir(\"themes\")",
+                ),
             });
         self.record_change(Change::Appended(5), cx);
         cx.notify();
@@ -662,6 +676,18 @@ impl TactApp {
         cx.notify();
     }
 
+    /// Copy the transcript to the system clipboard as Markdown.
+    ///
+    /// The prototype's `.mainTop` puts a copy icon beside the detail cycle;
+    /// this is the behaviour behind it.
+    fn copy_transcript(&mut self, cx: &mut Context<Self>) {
+        let markdown = self.conversation.to_markdown();
+        if markdown.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(markdown));
+    }
+
     /// Focus the message composer.
     fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer
@@ -979,6 +1005,11 @@ impl TactApp {
         self.work_pane = pane;
     }
 
+    /// Close the work pane, as the `.workTop` close button does.
+    pub(crate) fn close_work_pane(&mut self) {
+        self.work_pane_open = false;
+    }
+
     /// Expand or collapse a directory in the Files pane.
     pub(crate) fn toggle_directory(&mut self, path: std::path::PathBuf) {
         self.files.on_toggle(path);
@@ -990,6 +1021,18 @@ impl TactApp {
     /// populate the transcript without standing up a provider.
     pub fn push_notice(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.push_system_row(text.into(), cx);
+    }
+
+    /// Bring one transcript row into view.
+    ///
+    /// The transcript is a virtual list, so rows outside the viewport are not
+    /// built at all. Anything that needs a specific row (a search jump, or a
+    /// test asserting that row's geometry) scrolls it in through here.
+    pub fn scroll_transcript_to(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.follow_tail = false;
+        self.transcript_state
+            .update(cx, |state, cx| state.scroll_to_item(index, cx));
+        cx.notify();
     }
 
     /// Submit the composer draft, queueing it behind an in-flight turn.
@@ -2422,6 +2465,16 @@ fn transcript_toolbar(
                 .ghost()
                 .compact()
                 .on_click(cx.listener(|this, _, _, cx| this.cycle_detail(cx))),
+        )
+        .child(
+            // `.mainTop`'s second icon button: copy the transcript.
+            Button::new("transcript-copy")
+                .icon(IconName::Copy)
+                .tooltip("Copy transcript")
+                .accessibility_label(SharedString::from("Copy transcript"))
+                .ghost()
+                .compact()
+                .on_click(cx.listener(|this, _, _, cx| this.copy_transcript(cx))),
         )
         .id("transcript-toolbar")
         .test_support()

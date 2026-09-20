@@ -9051,6 +9051,7 @@ name = "tact-gui"
 version = "1.1.30"
 dependencies = [
  "anyhow",
+ "chrono",
  "gpui-kit",
  "tact-session",
  "tact_protocol",
