@@ -6,6 +6,7 @@
 
 use std::{rc::Rc, time::Duration};
 
+use gpui_ai::stream::{ProgressState, StreamedContent};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::motion::{MotionReveal, Presence, Transition, transition};
@@ -430,6 +431,28 @@ fn card_reveal_policy() -> Transition {
     Transition::new(CARD_REVEAL).ease(cubic_bezier(0.23, 1.0, 0.32, 1.0))
 }
 
+/// Build the streamed Markdown source with gpui-ai's lifecycle semantics.
+///
+/// The desktop transcript must keep Tact's custom Mermaid block renderer, so it
+/// cannot mount `gpui_ai::StreamingText` wholesale; it does adopt the same
+/// `StreamedContent` state and streaming cursor that component uses.
+fn streamed_markdown(markdown: &str, streaming: bool) -> (StreamedContent, bool) {
+    let content = if streaming {
+        StreamedContent::running(markdown.to_string())
+    } else {
+        StreamedContent::done(markdown.to_string())
+    };
+    (content, streaming)
+}
+
+fn decorated_streamed_markdown(content: &StreamedContent) -> SharedString {
+    let mut source = content.text().to_string();
+    if content.state() == &ProgressState::Running {
+        source.push('▌');
+    }
+    SharedString::from(source)
+}
+
 fn chevron_target(open: bool) -> f32 {
     if open {
         std::f32::consts::FRAC_PI_2
@@ -533,68 +556,72 @@ pub(crate) fn render_row(
             streaming,
             sent_at,
             model,
-        } => h_flex()
-            .id(row_id)
-            .w_full()
-            .min_w_0()
-            .items_start()
-            .when_some(message_enter, |this, sample| {
-                this.opacity(sample.progress)
-                    .top(px(5.0 * (1.0 - sample.progress)))
-            })
-            // The prototype's `.msg` gap between gutter and body. Vertical
-            // rhythm belongs to the scroller's 18px row gap, not this row.
-            .gap(rems(0.75))
-            .child(
-                // `.gutter`: a 24px rounded square holding the agent's initial,
-                // nudged 1px so it sits level with the first line of text.
-                div()
-                    .id(SharedString::from(format!("assistant-gutter-{index}")))
-                    .flex_shrink_0()
-                    .size(rems(1.5))
-                    .mt(rems(0.0625))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(rems(0.4375))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().muted)
-                    .text_color(cx.theme().accent_foreground)
-                    .text_size(rems(0.625))
-                    .font_semibold()
-                    .child(SharedString::from("T"))
-                    .test_support(),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!("assistant-body-{index}")))
-                    .min_w_0()
-                    .flex_1()
-                    .child(msg_meta(
-                        cx,
-                        SharedString::from(format!("assistant-meta-{index}")),
-                        "Tact",
-                        clock_label(*sent_at),
-                        model.as_deref(),
-                    ))
-                    .child(
-                        TextView::markdown(
-                            SharedString::from(format!("assistant-{index}")),
-                            SharedString::from(markdown.clone()),
+        } => {
+            let (streamed, streaming) = streamed_markdown(markdown, *streaming);
+            let markdown = decorated_streamed_markdown(&streamed);
+            h_flex()
+                .id(row_id)
+                .w_full()
+                .min_w_0()
+                .items_start()
+                .when_some(message_enter, |this, sample| {
+                    this.opacity(sample.progress)
+                        .top(px(5.0 * (1.0 - sample.progress)))
+                })
+                // The prototype's `.msg` gap between gutter and body. Vertical
+                // rhythm belongs to the scroller's 18px row gap, not this row.
+                .gap(rems(0.75))
+                .child(
+                    // `.gutter`: a 24px rounded square holding the agent's initial,
+                    // nudged 1px so it sits level with the first line of text.
+                    div()
+                        .id(SharedString::from(format!("assistant-gutter-{index}")))
+                        .flex_shrink_0()
+                        .size(rems(1.5))
+                        .mt(rems(0.0625))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(rems(0.4375))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted)
+                        .text_color(cx.theme().accent_foreground)
+                        .text_size(rems(0.625))
+                        .font_semibold()
+                        .child(SharedString::from("T"))
+                        .test_support(),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("assistant-body-{index}")))
+                        .min_w_0()
+                        .flex_1()
+                        .child(msg_meta(
+                            cx,
+                            SharedString::from(format!("assistant-meta-{index}")),
+                            "Tact",
+                            clock_label(*sent_at),
+                            model.as_deref(),
+                        ))
+                        .child(
+                            TextView::markdown(
+                                SharedString::from(format!("assistant-{index}")),
+                                markdown,
+                            )
+                            .selectable(true)
+                            .font_family(SharedString::from(crate::theme::PROSE_FONT_FAMILY))
+                            .text_size(rems(0.8125))
+                            .line_height(relative(1.45))
+                            .markdown_block_parser(parse_code_block)
+                            .markdown_block_renderer(CODE_BLOCK, render_code_block)
+                            .stream_fade(streaming),
                         )
-                        .selectable(true)
-                        .font_family(SharedString::from(crate::theme::PROSE_FONT_FAMILY))
-                        .text_size(rems(0.8125))
-                        .line_height(relative(1.45))
-                        .markdown_block_parser(parse_code_block)
-                        .markdown_block_renderer(CODE_BLOCK, render_code_block)
-                        .stream_fade(*streaming),
-                    )
-                    .test_support(),
-            )
-            .test_support()
-            .into_any_element(),
+                        .test_support(),
+                )
+                .test_support()
+                .into_any_element()
+        }
         TranscriptRow::Thinking {
             text,
             duration_seconds,
@@ -1216,6 +1243,17 @@ mod tests {
     fn gpui_ai_streaming_text_is_api_compatible() {
         let content = gpui_ai::stream::StreamedContent::done("# Hello");
         let _view = gpui_ai::streaming_text::StreamingText::new("gpui-ai-spike", &content);
+    }
+
+    #[test]
+    fn gpui_ai_stream_decoration_adds_only_the_live_cursor() {
+        let (running, is_streaming) = streamed_markdown("hello", true);
+        assert!(is_streaming);
+        assert_eq!(decorated_streamed_markdown(&running).as_ref(), "hello▌");
+
+        let (done, is_streaming) = streamed_markdown("hello", false);
+        assert!(!is_streaming);
+        assert_eq!(decorated_streamed_markdown(&done).as_ref(), "hello");
     }
 
     #[test]

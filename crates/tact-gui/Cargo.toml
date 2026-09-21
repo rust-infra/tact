@@ -61,10 +61,8 @@ chrono = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time", "net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+gpui-ai = "0.8.0"
 
 [dev-dependencies]
 gpui-kit = { version = "0.6.4", features = ["test-support"] }
 tempfile = { workspace = true }
-# Spike on `feat/gpui-ai-streaming`: evaluate whether gpui-ai's streaming
-# Markdown surface can replace the transcript renderer without losing Mermaid.
-gpui-ai = "0.8.0"
