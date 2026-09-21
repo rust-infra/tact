@@ -9116,7 +9116,7 @@ dependencies = [
 
 [[package]]
 name = "tact"
-version = "1.1.31-rc.1"
+version = "1.1.31-rc.2"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -9167,7 +9167,7 @@ dependencies = [
 
 [[package]]
 name = "tact-gui"
-version = "1.1.31-rc.1"
+version = "1.1.31-rc.2"
 dependencies = [
  "anyhow",
  "cargo-packager-updater",
@@ -9190,7 +9190,7 @@ dependencies = [
 
 [[package]]
 name = "tact-session"
-version = "1.1.31-rc.1"
+version = "1.1.31-rc.2"
 dependencies = [
  "anyhow",
  "regex",
@@ -9204,7 +9204,7 @@ dependencies = [
 
 [[package]]
 name = "tact-ui"
-version = "1.1.31-rc.1"
+version = "1.1.31-rc.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -9226,7 +9226,7 @@ dependencies = [
 
 [[package]]
 name = "tact_llm"
-version = "1.1.31-rc.1"
+version = "1.1.31-rc.2"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -9800,7 +9800,7 @@ dependencies = [
 
 [[package]]
 name = "tool_refactor_macros"
-version = "1.1.31-rc.1"
+version = "1.1.31-rc.2"
 dependencies = [
  "proc-macro2",
  "quote",

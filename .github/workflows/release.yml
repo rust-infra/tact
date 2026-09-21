@@ -134,13 +134,28 @@ jobs:
               gsub(/"/, "", $3); print $3; exit
             }
           ' Cargo.toml)"
+          target="${{ matrix.target }}"
           mkdir -p installers
-          # Signature files are only written when a key was supplied.
           if [[ -d dist/desktop ]]; then
-            find dist/desktop -maxdepth 1 -type f \( \
-              -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \
-              -o -name '*.app.tar.gz' -o -name '*.exe' -o -name '*.msi' \
-              -o -name '*.sig' \) -exec cp {} installers/ \;
+            # cargo-packager qualifies these with the architecture itself.
+            for artifact in dist/desktop/*.deb dist/desktop/*.AppImage \
+                            dist/desktop/*.dmg dist/desktop/*.exe dist/desktop/*.msi; do
+              [[ -e "$artifact" ]] || continue
+              cp "$artifact" installers/
+              # Signature files are only written when a key was supplied.
+              [[ -f "$artifact.sig" ]] && cp "$artifact.sig" installers/
+            done
+            # The macOS bundle is the exception: both macOS runners write
+            # `Tact.app.tar.gz`, so merging the artifacts would let one
+            # architecture overwrite the other and `latest.json` could hand a
+            # machine the wrong build. Qualify it before it leaves the job.
+            for artifact in dist/desktop/*.app.tar.gz; do
+              [[ -e "$artifact" ]] || continue
+              base="$(basename "$artifact" .app.tar.gz)"
+              cp "$artifact" "installers/${base}_${target}.app.tar.gz"
+              [[ -f "$artifact.sig" ]] && \
+                cp "$artifact.sig" "installers/${base}_${target}.app.tar.gz.sig"
+            done
           fi
           # One description per platform, folded into latest.json later. A
           # build with no signature writes nothing here, and the release ships
@@ -229,7 +244,11 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd dist
-          sha256sum ${BINARY_NAME}-v* > SHA256SUMS
+          # Every published artifact, including the installers and their
+          # signatures; the manifest and this file are excluded because they
+          # describe the others rather than ship alongside them.
+          ls -1 | grep -vE '^(SHA256SUMS|latest\.json|platform-.*\.json)$' \
+            | sort | xargs -r sha256sum > SHA256SUMS
           cat SHA256SUMS
 
       - name: Assemble the update manifest

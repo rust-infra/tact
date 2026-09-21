@@ -35,9 +35,45 @@ if [[ -z "$FORMATS" ]]; then
 fi
 [[ -n "$FORMATS" ]] || die "cannot infer installers for $(uname -s); pass a format list, e.g. deb"
 
-log "Packaging crates/tact-gui as ${FORMATS}"
+# A key generated with an empty password still needs *a* password argument:
+# with none, the packager falls back to prompting on the controlling terminal,
+# which fails with `ENXIO` in CI (no tty) after the package itself was already
+# written. Setting the variable to the empty string is what says "this key has
+# no password" rather than "ask me for one".
+if [[ -n "${CARGO_PACKAGER_SIGN_PRIVATE_KEY:-}" ]] \
+  && [[ -z "${CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD+x}" ]]; then
+  export CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD=""
+fi
+
 cd "${ROOT}/crates/tact-gui"
-cargo packager --release --formats "${FORMATS}"
+
+# One invocation per format, on purpose. `cargo packager` stops at the first
+# format it cannot produce, so asking for `deb,appimage` in one call means a
+# failing AppImage also costs you the .deb — and on Windows a failing WiX .msi
+# would cost you the NSIS installer that works. Splitting the call keeps every
+# format independent: the artifacts that can be built are built, and the exit
+# status still reports the failure so CI can warn about the gap.
+IFS=',' read -r -a requested <<<"${FORMATS}"
+built=()
+failed=()
+for format in "${requested[@]}"; do
+  format="${format// /}"
+  [[ -n "$format" ]] || continue
+  log "Packaging ${format}"
+  if cargo packager --release --formats "${format}"; then
+    built+=("${format}")
+  else
+    failed+=("${format}")
+  fi
+done
 
 log "Artifacts in ${ROOT}/dist/desktop:"
 ls -1 "${ROOT}/dist/desktop" 2>/dev/null || true
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  printf 'warning: these formats failed: %s (built: %s)\n' \
+    "${failed[*]}" "${built[*]:-none}" >&2
+  exit 1
+fi
+
+log "Packaged: ${built[*]}"
