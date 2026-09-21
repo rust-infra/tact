@@ -8,7 +8,7 @@ use std::{rc::Rc, time::Duration};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::cubic_bezier;
-use gpui_kit::base::motion::{Presence, Transition, transition};
+use gpui_kit::base::motion::{MotionReveal, Presence, Transition, transition};
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, h_flex,
@@ -402,12 +402,21 @@ const CHEVRON_ROTATION: Duration = Duration::from_millis(160);
 /// message bodies lift into place on insertion.
 const MESSAGE_RISE: Duration = Duration::from_millis(320);
 
+/// Collapsible card bodies grow and shrink through the same short ease as the
+/// prototype's chevrons. The measured reveal keeps the whole row moving
+/// together instead of swapping the body in at its final height.
+const CARD_REVEAL: Duration = Duration::from_millis(180);
+
 fn chevron_rotation_policy() -> Transition {
     Transition::new(CHEVRON_ROTATION).ease(cubic_bezier(0.23, 1.0, 0.32, 1.0))
 }
 
 fn message_rise_policy() -> Transition {
     Transition::new(MESSAGE_RISE).ease(cubic_bezier(0.23, 1.0, 0.32, 1.0))
+}
+
+fn card_reveal_policy() -> Transition {
+    Transition::new(CARD_REVEAL).ease(cubic_bezier(0.23, 1.0, 0.32, 1.0))
 }
 
 fn chevron_target(open: bool) -> f32 {
@@ -600,6 +609,13 @@ pub(crate) fn render_row(
                 window,
                 cx,
             );
+            let reveal = transition(
+                (index, "thinking-reveal"),
+                if *expanded { 1.0 } else { 0.0 },
+                card_reveal_policy(),
+                window,
+                cx,
+            );
             let toggle = toggle.clone();
             // `.thinking button:hover` uses the prototype's `--hover`, which the
             // theme exposes as `accent`.
@@ -638,24 +654,30 @@ pub(crate) fn render_row(
                                 .font_family(cx.theme().mono_font_family.clone())
                                 .text_size(rems(0.65625))
                                 .child(SharedString::from(state)),
-                        ),
+                        )
+                        .test_support(),
                 )
-                .when(*expanded, |card| {
-                    card.child(
+                .when(*expanded || reveal > 0.0, |card| {
+                    card.child(MotionReveal::new(
+                        ("thinking-reveal-body", index),
+                        reveal,
                         // `.content` indents to the chevron's text column.
                         div()
+                            .id(SharedString::from(format!("thinking-body-{index}")))
                             .pl(rems(2.1875))
                             .pr(rems(0.8125))
                             .pb(rems(0.75))
+                            .top(px(2.0 * (1.0 - reveal)))
+                            .opacity(reveal)
                             .font_family(SharedString::from(crate::theme::PROSE_FONT_FAMILY))
                             .text_size(rems(0.84375))
                             .line_height(relative(1.62))
                             .text_color(cx.theme().muted_foreground)
                             // Reasoning is written as Markdown by every
-                            // provider that emits it, so it goes through the
-                            // same renderer as the answer rather than being
-                            // shown as one run of literal asterisks and
-                            // backticks.
+                            // provider that emits it, so it goes through
+                            // the same renderer as the answer rather than
+                            // being shown as one run of literal asterisks
+                            // and backticks.
                             .child(
                                 TextView::markdown(
                                     SharedString::from(format!("thinking-{index}")),
@@ -667,8 +689,10 @@ pub(crate) fn render_row(
                                 .line_height(relative(1.62))
                                 .markdown_block_parser(parse_code_block)
                                 .markdown_block_renderer(CODE_BLOCK, render_code_block),
-                            ),
-                    )
+                            )
+                            .test_support()
+                            .into_any_element(),
+                    ))
                 })
                 .test_support()
                 .into_any_element()
@@ -711,6 +735,13 @@ pub(crate) fn render_row(
                 (index, "tool-chevron"),
                 chevron_target(open),
                 chevron_rotation_policy(),
+                window,
+                cx,
+            );
+            let reveal = transition(
+                (index, "tool-reveal"),
+                if open { 1.0 } else { 0.0 },
+                card_reveal_policy(),
                 window,
                 cx,
             );
@@ -854,48 +885,58 @@ pub(crate) fn render_row(
                         )
                         .test_support(),
                 )
-                .when(open && !output.trim().is_empty(), |card| {
-                    card.child(
-                        // The prototype's `.out`: a scrollable mono window
-                        // indented past the icon column. `overflow:auto` is
-                        // load-bearing -- the 150 px cap without it clips the
-                        // tail of a long command with no way to reach it.
-                        //
-                        // The scroll wrapper has to be the last step in the
-                        // chain, and it re-ids the element it wraps, so the
-                        // test anchor rides on an inner node instead.
-                        v_flex()
-                            .ml(rems(2.4375))
-                            .mr(rems(0.75))
-                            .mb(rems(0.75))
-                            .max_h(rems(9.375))
-                            .rounded(rems(0.4375))
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().popover)
-                            // The right inset is wider than the left one to
-                            // clear the overlay scrollbar, which is painted on
-                            // top of the last columns rather than beside them.
-                            .pl(rems(0.625))
-                            .pr(rems(1.125))
-                            .py(rems(0.5625))
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_size(rems(0.65625))
-                            .line_height(relative(1.6))
-                            .text_color(cx.theme().muted_foreground)
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("tool-output-{index}")))
-                                    .test_support()
-                                    .child(SharedString::from(output.clone())),
-                            )
-                            .overflow_y_scrollbar()
-                            // One call site draws several scrollables, which
-                            // would otherwise share the caller's location as
-                            // their scroll-position key.
-                            .id(SharedString::from(format!("tool-output-scroll-{index}"))),
-                    )
-                })
+                .when(
+                    (open || reveal > 0.0) && !output.trim().is_empty(),
+                    |card| {
+                        card.child(MotionReveal::new(
+                            ("tool-reveal-body", index),
+                            reveal,
+                            // The prototype's `.out`: a scrollable mono window
+                            // indented past the icon column. `overflow:auto` is
+                            // load-bearing -- the 150 px cap without it clips
+                            // the tail of a long command with no way to reach
+                            // it.
+                            //
+                            // The scroll wrapper has to be the last step in
+                            // the chain, and it re-ids the element it wraps, so
+                            // the test anchor rides on an inner node instead.
+                            v_flex()
+                                .ml(rems(2.4375))
+                                .mr(rems(0.75))
+                                .mb(rems(0.75))
+                                .max_h(rems(9.375))
+                                .rounded(rems(0.4375))
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .bg(cx.theme().popover)
+                                .top(px(2.0 * (1.0 - reveal)))
+                                .opacity(reveal)
+                                // The right inset is wider than the left one to
+                                // clear the overlay scrollbar, which is painted
+                                // on top of the last columns rather than beside
+                                // them.
+                                .pl(rems(0.625))
+                                .pr(rems(1.125))
+                                .py(rems(0.5625))
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_size(rems(0.65625))
+                                .line_height(relative(1.6))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("tool-output-{index}")))
+                                        .test_support()
+                                        .child(SharedString::from(output.clone())),
+                                )
+                                .overflow_y_scrollbar()
+                                // One call site draws several scrollables,
+                                // which would otherwise share the caller's
+                                // location as their scroll-position key.
+                                .id(SharedString::from(format!("tool-output-scroll-{index}")))
+                                .into_any_element(),
+                        ))
+                    },
+                )
                 .test_support()
                 .into_any_element()
         }

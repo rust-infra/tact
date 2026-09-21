@@ -1654,6 +1654,31 @@ fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
         Root::new(shell, window, cx)
     });
     let app = app.expect("the preview shell is created with its window");
+    let row_height = |cx: &mut TestAppContext, index: usize| -> f32 {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            height(
+                window
+                    .find(SharedString::from(format!("transcript-row-{index}")))
+                    .bounds(),
+            )
+        })
+        .unwrap()
+    };
+    let has = |cx: &mut TestAppContext, id: &'static str| -> bool {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    let click = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(id, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
 
     cx.update_window(handle.into(), |_, window, cx| {
         app.update(cx, |app, cx| app.scroll_transcript_to(3, cx));
@@ -1663,22 +1688,135 @@ fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
             window.try_find("tool-output-3").is_none(),
             "a collapsed tool card hides its output block"
         );
+    })
+    .unwrap();
 
-        window.click("tool-summary-3", cx);
+    let collapsed_row = row_height(cx, 3);
+    click(cx, "tool-summary-3");
+    assert!(
+        has(cx, "tool-output-3"),
+        "clicking the summary opens the output block"
+    );
+    cx.background_executor
+        .advance_clock(Duration::from_millis(90));
+    cx.run_until_parked();
+    let opening_row = row_height(cx, 3);
+    assert!(
+        opening_row > collapsed_row,
+        "the card grows through the reveal instead of snapping open: {collapsed_row} -> {opening_row}"
+    );
+
+    cx.background_executor
+        .advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    let expanded_row = row_height(cx, 3);
+    assert!(
+        expanded_row >= opening_row && expanded_row > collapsed_row,
+        "the reveal settles at the measured content height: {collapsed_row} -> {opening_row} -> {expanded_row}"
+    );
+
+    click(cx, "tool-summary-3");
+    assert!(
+        has(cx, "tool-output-3"),
+        "the closing card keeps its measured body mounted while it shrinks"
+    );
+
+    cx.background_executor
+        .advance_clock(Duration::from_millis(90));
+    cx.run_until_parked();
+    let closing_row = row_height(cx, 3);
+    assert!(
+        closing_row < expanded_row && closing_row > collapsed_row,
+        "the card shrinks through the reveal instead of snapping closed: {expanded_row} -> {closing_row} -> {collapsed_row}"
+    );
+
+    cx.background_executor
+        .advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(
+        !has(cx, "tool-output-3"),
+        "clicking the summary again closes it once the reveal finishes"
+    );
+}
+
+/// Thinking cards use the same measured reveal as tool output: collapsing one
+/// keeps the body mounted through the shrink, and reopening grows it back
+/// instead of swapping between two final heights.
+#[gpui_kit::test]
+fn clicking_a_thinking_summary_reveals_it_softly(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+    let row_height = |cx: &mut TestAppContext, index: usize| -> f32 {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            height(
+                window
+                    .find(SharedString::from(format!("transcript-row-{index}")))
+                    .bounds(),
+            )
+        })
+        .unwrap()
+    };
+    let has = |cx: &mut TestAppContext, id: &'static str| -> bool {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    let click = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(id, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| app.scroll_transcript_to(3, cx));
         window.render_frame(cx);
         assert!(
-            window.try_find("tool-output-3").is_some(),
-            "clicking the summary opens the output block"
-        );
-
-        window.click("tool-summary-3", cx);
-        window.render_frame(cx);
-        assert!(
-            window.try_find("tool-output-3").is_none(),
-            "clicking the summary again closes it"
+            window.try_find("thinking-body-2").is_some(),
+            "the preview's thinking card starts expanded"
         );
     })
     .unwrap();
+
+    let expanded_row = row_height(cx, 2);
+    click(cx, "thinking-summary-2");
+    assert!(
+        has(cx, "thinking-body-2"),
+        "the closing thinking card keeps its body mounted while it shrinks"
+    );
+
+    cx.background_executor
+        .advance_clock(Duration::from_millis(90));
+    cx.run_until_parked();
+    let closing_row = row_height(cx, 2);
+    assert!(
+        closing_row < expanded_row,
+        "the thinking card shrinks through the reveal: {expanded_row} -> {closing_row}"
+    );
+
+    cx.background_executor
+        .advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(
+        !has(cx, "thinking-body-2"),
+        "the thinking body unmounts once the reveal finishes"
+    );
+
+    click(cx, "thinking-summary-2");
+    assert!(
+        has(cx, "thinking-body-2"),
+        "reopening the thinking card mounts its measured body"
+    );
 }
 
 /// A tool card shows a 150px window onto its output; a command that streams

@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — Thinking 与工具卡片按测量高度柔和展开
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/transcript.rs`（`CARD_REVEAL`、`card_reveal_policy`、`MotionReveal`、`TranscriptRow::Thinking`、`TranscriptRow::Tool`）；`crates/tact-gui/tests/shell.rs`（`clicking_a_thinking_summary_reveals_it_softly`、`clicking_a_tool_summary_reveals_its_output`） |
+
+**现象 / 动机：** 展开或收起 Thinking 卡与工具卡时，内容会在一帧内从收起高度跳到最终高度。内容本身没错，但行会突兀地跳动，长转录因此显得很机械。
+
+**决策：** 把正文放进 `MotionReveal`，由 180 ms、原型 `cubic-bezier(.23, 1, .32, 1)` 缓动的 transition 驱动。Reveal 先测量一次子元素，再按 `测量高度 × progress` 裁剪；正文同时淡入并上移 2 px。数值 transition 会立即采用第一次目标值，所以启动时就已展开的卡片（历史恢复、预览）不会在挂载时播放动画。收起过程中正文保持挂载，直到 progress 归零才卸载；开启 reduced motion 的用户首帧即看到最终状态。
+
+**改后行为：** 点击 Thinking 或工具摘要时，卡片会按与 chevron 相同的短缓动展开/收起。周围行随测量后的内容一起移动，而不是在它旁边瞬间跳动。
+
+**指针：** `crates/tact-gui/src/transcript.rs`（`CARD_REVEAL`、`card_reveal_policy`、`MotionReveal`）；`crates/tact-gui/tests/shell.rs`（`clicking_a_thinking_summary_reveals_it_softly`、`clicking_a_tool_summary_reveals_its_output`）
+
 ## 1. 2026-09-21 — 工具行更矮，滚动条不再压住文字
 
 | 字段 | 值 |

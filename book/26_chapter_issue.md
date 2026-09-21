@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Thinking and tool cards expand with a measured reveal
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/transcript.rs` (`CARD_REVEAL`, `card_reveal_policy`, `MotionReveal`, `TranscriptRow::Thinking`, `TranscriptRow::Tool`); `crates/tact-gui/tests/shell.rs` (`clicking_a_thinking_summary_reveals_it_softly`, `clicking_a_tool_summary_reveals_its_output`) |
+
+**Symptom / motivation:** Expanding or collapsing a thinking card or a tool card swapped between two final heights on one frame. The content was correct, but the row jumped abruptly and made a long transcript feel mechanical.
+
+**Decision:** Put the body inside `MotionReveal`, driven by a 180 ms transition with the prototype's `cubic-bezier(.23, 1, .32, 1)` easing. The reveal measures the child once, then clips it to `measured height × progress`; the body also fades and lifts 2 px into place. A value transition adopts its first target immediately, so cards that start open (stored history and the preview) do not animate on mount. The body stays mounted while collapsing and unmounts only after progress reaches zero; reduced-motion users get the final state on the first frame.
+
+**Behavior after:** Pressing a thinking or tool summary grows or shrinks the card through the same short ease as its chevron. The surrounding rows move with the measured content instead of snapping around it.
+
+**Pointers:** `crates/tact-gui/src/transcript.rs` (`CARD_REVEAL`, `card_reveal_policy`, `MotionReveal`); `crates/tact-gui/tests/shell.rs` (`clicking_a_thinking_summary_reveals_it_softly`, `clicking_a_tool_summary_reveals_its_output`)
+
 ## 1. 2026-09-21 — Tool rows are shorter and scrollbars stop covering text
 
 | Field | Value |
