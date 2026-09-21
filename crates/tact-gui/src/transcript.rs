@@ -726,6 +726,16 @@ pub(crate) fn render_row(
                 .id(row_id)
                 .w_full()
                 .min_w_0()
+                // Tool calls arrive in runs, and the scroller's 18 px row gap
+                // applies between every pair of rows: a run of five calls read
+                // as five separate boxes with a blank line between each. The
+                // negative top margin pulls a card up into that gap, so a run
+                // stacks into what reads as one block while a lone call keeps
+                // its spacing. Doing this properly means rendering a *run* of
+                // tool rows inside one container, which needs the row renderer
+                // to see its neighbours; this gets the look without changing
+                // that signature.
+                .mt(rems(-0.6875))
                 .rounded(rems(0.625))
                 .border_1()
                 .border_color(cx.theme().border)
