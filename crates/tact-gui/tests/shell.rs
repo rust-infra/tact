@@ -3555,6 +3555,38 @@ fn the_terminal_consumes_keys_instead_of_firing_window_shortcuts(cx: &mut TestAp
     .unwrap();
 }
 
+/// The update entry answers in an offline shell without touching the network.
+///
+/// A real check downloads a manifest and, when a newer release exists, a signed
+/// installer. The offline shell owns neither a network nor a release, so the
+/// contract it has to keep is narrower: the entry exists, and pressing it says
+/// what it would have done instead of hanging or silently doing nothing.
+#[gpui_kit::test]
+fn the_check_for_updates_entry_answers_offline(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let before = app.update(cx, |app, _| app.transcript_len());
+        app.update(cx, |app, cx| app.check_for_updates(cx));
+        window.render_frame(cx);
+        assert_eq!(
+            app.update(cx, |app, _| app.transcript_len()),
+            before + 1,
+            "the offline shell answers with exactly one notice"
+        );
+    })
+    .unwrap();
+}
+
 /// The Browser pane normalizes an address and remembers what it opened.
 ///
 /// The pane does not embed a web view, so the preview path is the one the test
@@ -4851,7 +4883,7 @@ fn the_command_palette_search_filters_rows(cx: &mut TestAppContext) {
             "Toggle work pane survives the query"
         );
         assert!(
-            window.try_find("index-path(3,4,0)").is_some(),
+            window.try_find("index-path(3,5,0)").is_some(),
             "Toggle theme survives the query"
         );
         assert!(
@@ -5122,14 +5154,14 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     })
     .unwrap();
 
-    // (3,4) Toggle theme, read off the theme the app is actually running.
+    // (3,5) Toggle theme, read off the theme the app is actually running.
     let before = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             cx.theme().theme_name().clone()
         })
         .unwrap();
-    run_palette_row(cx, handle, 3, 4);
+    run_palette_row(cx, handle, 3, 5);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert_ne!(
@@ -5371,8 +5403,8 @@ fn zooming_changes_the_rem_size_and_reports_it(cx: &mut TestAppContext) {
     })
     .unwrap();
 
-    // (3,1) Zoom in. The palette row is the user path the walk can drive.
-    run_palette_row(cx, handle, 3, 1);
+    // (3,2) Zoom in. The palette row is the user path the walk can drive.
+    run_palette_row(cx, handle, 3, 2);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let chip = window.find("status-zoom");
@@ -5384,8 +5416,8 @@ fn zooming_changes_the_rem_size_and_reports_it(cx: &mut TestAppContext) {
     })
     .unwrap();
 
-    // (3,3) Reset zoom returns the prototype's base size, and the chip with it.
-    run_palette_row(cx, handle, 3, 3);
+    // (3,4) Reset zoom returns the prototype's base size, and the chip with it.
+    run_palette_row(cx, handle, 3, 4);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(

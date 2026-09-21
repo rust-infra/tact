@@ -33,6 +33,7 @@ actions!([
     ZoomOut,
     ZoomReset,
     CycleWorkPaneSide,
+    CheckForUpdates,
 ]);
 
 /// Register the global keyboard contract.
@@ -165,6 +166,8 @@ pub(crate) fn groups() -> Vec<CommandGroup> {
                 "model",
                 "reasoning",
             ]),
+            command("Check for updates", IconName::RotateCw, CheckForUpdates)
+                .keywords(["update", "upgrade", "release", "version"]),
             command("Zoom in", IconName::Plus, ZoomIn).keywords([
                 "larger",
                 "text",

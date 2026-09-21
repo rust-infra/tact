@@ -13,9 +13,40 @@ path = "src/lib.rs"
 name = "tact-gui"
 path = "src/main.rs"
 
+[package.metadata.packager]
+# `cargo packager` turns this crate into the platform installers: a .deb and an
+# AppImage on Linux, a .dmg on macOS, and an NSIS .exe / WiX .msi on Windows.
+# Run it from this directory; the paths below are relative to it.
+product-name = "Tact"
+identifier = "dev.tact.desktop"
+description = "Local-first desktop workspace for long-running agent work"
+category = "DeveloperTool"
+homepage = "https://github.com/rust-infra/tact"
+before-packaging-command = "cargo build --release --locked -p tact-gui"
+out-dir = "../../dist/desktop"
+binaries-dir = "../../target/release"
+binaries = [{ path = "tact-gui", main = true }]
+# The packager builds the .icns from these on macOS and reads the .ico for
+# Windows; `icon.png` is what the Linux packages install into the icon theme.
+icons = [
+  "assets/icons/32x32.png",
+  "assets/icons/64x64.png",
+  "assets/icons/128x128.png",
+  "assets/icons/128x128@2x.png",
+  "assets/icons/256x256.png",
+  "assets/icons/512x512.png",
+  "assets/icons/icon.png",
+  "assets/icons/icon.ico",
+]
+
 [dependencies]
 gpui-kit = "0.6.4"
 libc = { workspace = true }
+# The in-app updater pair: the updater verifies and installs what the packager
+# signed, so the two move together.
+cargo-packager-updater = "0.2"
+semver = "1"
+url = "2"
 portable-pty = "0.9"
 vt100 = "0.16"
 tact-session = { path = "../tact-session" }

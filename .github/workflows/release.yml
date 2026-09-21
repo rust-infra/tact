@@ -63,6 +63,78 @@ jobs:
         run: cargo build --release -p "${CRATE_PACKAGE}" -p "${GUI_CRATE_PACKAGE}" --target "${{ matrix.target }}"
         shell: bash
 
+      - name: Install cargo-packager
+        shell: bash
+        run: cargo install cargo-packager --locked
+
+      - name: Build platform installers
+        id: installers
+        # The manual installers are the new part of this pipeline, and each
+        # platform's tooling (linuxdeploy, WiX, NSIS) is downloaded at build
+        # time. A platform that cannot produce one still ships the tarball the
+        # installer script has always used, so this step degrades instead of
+        # failing the release; the warning below makes the gap visible.
+        continue-on-error: true
+        shell: bash
+        # Signing is opt-in: the packager reads CARGO_PACKAGER_SIGN_PRIVATE_KEY
+        # from the environment, and the release job only publishes an update
+        # manifest when the artifacts carry signatures.
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY }}
+          TACT_UPDATE_PUBKEY: ${{ vars.TACT_UPDATE_PUBKEY }}
+        run: |
+          set -euo pipefail
+          case "${RUNNER_OS}" in
+            Linux) formats="deb,appimage" ;;
+            macOS) formats="dmg,app" ;;
+            Windows) formats="nsis,wix" ;;
+            *) echo "unsupported runner ${RUNNER_OS}" >&2; exit 1 ;;
+          esac
+          bash ./scripts/package.sh "${formats}"
+
+      - name: Warn when a platform produced no installers
+        if: steps.installers.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::cargo-packager failed for ${{ matrix.target }}; \
+            this release ships the tarball only"
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk '
+            /^\[workspace\.package\]/ { in_pkg=1; next }
+            /^\[/ { in_pkg=0 }
+            in_pkg && /^version = "/ {
+              gsub(/"/, "", $3); print $3; exit
+            }
+          ' Cargo.toml)"
+          mkdir -p installers
+          # Signature files are only written when a key was supplied.
+          if [[ -d dist/desktop ]]; then
+            find dist/desktop -maxdepth 1 -type f \( \
+              -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' \
+              -o -name '*.app.tar.gz' -o -name '*.exe' -o -name '*.msi' \
+              -o -name '*.sig' \) -exec cp {} installers/ \;
+          fi
+          # One description per platform, folded into latest.json later. A
+          # build with no signature writes nothing here, and the release ships
+          # without an update manifest rather than with one the app must reject.
+          python3 .github/scripts/collect_installers.py \
+            --dir installers \
+            --target "${{ matrix.target }}" \
+            --version "${version}" \
+            --out "installers/platform-${{ matrix.target }}.json"
+          ls -l installers
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.target }}
+          path: installers/*
+          if-no-files-found: warn
+
       - name: Package release asset
         shell: bash
         run: |
@@ -136,7 +208,35 @@ jobs:
           sha256sum ${BINARY_NAME}-v* > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Assemble the update manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `latest.json` is what the in-app updater reads. It is published only
+          # when the release is signed: an unsigned manifest would let the app
+          # announce an update it must then refuse to install.
+          python3 .github/scripts/make_update_manifest.py \
+            --dist dist \
+            --version "${GITHUB_REF_NAME#v}" \
+            --out dist/latest.json \
+            --repo "${GITHUB_REPOSITORY}"
+          echo "entries=$(python3 -c "import json;print(len(json.load(open('dist/latest.json'))['platforms']))")" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Note a missing manifest
+        if: steps.manifest.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::no signed installers, so no latest.json was published; \
+            the desktop client will report that it cannot verify an update"
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
+          # A tag like v1.1.31-rc.1 is a pre-release, and must not become
+          # GitHub's "latest" release: the updater's default endpoint points at
+          # /releases/latest/download, which has to keep serving a stable build.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}

@@ -1,4 +1,6 @@
 /target/
+# Packaged installers (`cargo packager` output), not source.
+/dist/
 /videos/
 # Local runtime state (state_store / stream_store), not source.
 /data/

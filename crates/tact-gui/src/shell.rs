@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::motion::{Presence, Transition};
-use gpui_kit::base::{Selectable, StyledExt as _, TestSupportExt as _};
+use gpui_kit::base::{Disableable as _, Selectable, StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
@@ -225,6 +225,7 @@ enum PaletteCommand {
     LayoutReview,
     LayoutZen,
     MoveWorkPane,
+    CheckForUpdates,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -933,6 +934,45 @@ impl TactApp {
         cx.notify();
     }
 
+    /// Open the releases page in the system browser.
+    fn open_releases_page(&mut self, cx: &mut Context<Self>) {
+        let url = "https://github.com/rust-infra/tact/releases";
+        if self.offline {
+            self.push_system_row(format!("The offline preview does not open {url}."), cx);
+            return;
+        }
+        match session::open_url(url) {
+            Ok(()) => self.push_system_row(format!("Opened {url} in the system browser."), cx),
+            Err(error) => self.push_system_row(format!("Could not open {url}: {error:#}"), cx),
+        }
+    }
+
+    /// Check the release manifest and install a newer version if there is one.
+    ///
+    /// The check, the download, and the signature verification are all
+    /// blocking, so they run on the background executor; the transcript reports
+    /// what came back. The offline shell never reaches the network.
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if self.offline {
+            self.push_system_row(
+                "The offline preview does not check for updates.".to_string(),
+                cx,
+            );
+            return;
+        }
+        self.push_system_row("Checking for updates…".to_string(), cx);
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async { crate::updater::check_and_install() })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.push_system_row(crate::updater::describe(&outcome), cx);
+            });
+        })
+        .detach();
+    }
+
     /// Move the work pane to its next edge.
     pub(crate) fn cycle_work_pane_side(&mut self, cx: &mut Context<Self>) {
         self.work_pane_side = self.work_pane_side.next();
@@ -1152,6 +1192,7 @@ impl TactApp {
             PaletteCommand::LayoutReview => self.apply_layout_preset(LayoutPreset::Review, cx),
             PaletteCommand::LayoutZen => self.apply_layout_preset(LayoutPreset::Zen, cx),
             PaletteCommand::MoveWorkPane => self.cycle_work_pane_side(cx),
+            PaletteCommand::CheckForUpdates => self.check_for_updates(cx),
             PaletteCommand::ZoomIn => self.zoom_in(window, cx),
             PaletteCommand::ZoomOut => self.zoom_out(window, cx),
             PaletteCommand::ZoomReset => self.zoom_reset(window, cx),
@@ -2331,6 +2372,15 @@ impl TactApp {
         self.run_palette_command(PaletteCommand::LayoutReview, window, cx);
     }
 
+    fn on_check_for_updates(
+        &mut self,
+        _: &commands::CheckForUpdates,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_command(PaletteCommand::CheckForUpdates, window, cx);
+    }
+
     fn on_move_work_pane(
         &mut self,
         _: &commands::CycleWorkPaneSide,
@@ -3482,6 +3532,7 @@ impl Render for TactApp {
             .on_action(cx.listener(Self::on_layout_focus))
             .on_action(cx.listener(Self::on_layout_review))
             .on_action(cx.listener(Self::on_layout_zen))
+            .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_move_work_pane))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
@@ -7501,6 +7552,58 @@ fn settings_panel(
         )
     });
 
+    // The updates row is the visible half of the updater: the palette has the
+    // same command, but a user looking for "check for updates" opens settings.
+    let updates_owner = owner.clone();
+    let releases_owner = owner.clone();
+    let updates = SettingItem::render(move |_, _window, cx| {
+        let version = env!("CARGO_PKG_VERSION");
+        let configured = crate::updater::pubkey().is_some();
+        let owner = updates_owner.clone();
+        setting_copy(
+            "Updates",
+            if configured {
+                "Check the releases for a newer version and install it automatically."
+            } else {
+                "This from-source build carries no release signing key, so it cannot verify an update."
+            },
+            cx,
+        )
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(format!("v{version}"))),
+                )
+                .child(
+                    Button::new("settings-check-updates")
+                        .label("Check for updates")
+                        .ghost()
+                        .compact()
+                        .disabled(!configured)
+                        .on_click(move |_, _, cx| {
+                            let _ = owner
+                                .update(cx, |app, cx| app.check_for_updates(cx));
+                        }),
+                )
+                .child(
+                    prototype_icon_button("settings-updates-open", IconName::Github, cx)
+                        .tooltip("Open the releases page")
+                        .accessibility_label("Open the Tact releases page")
+                        .on_click({
+                            let owner = releases_owner.clone();
+                            move |_, _, cx| {
+                                let _ = owner.update(cx, |app, cx| app.open_releases_page(cx));
+                            }
+                        }),
+                ),
+        )
+    });
+
     let info_owner = owner;
     let session_info = SettingItem::render(move |_, _window, cx| {
         let (model, workdir, usage, turns) = info_owner
@@ -7571,6 +7674,15 @@ fn settings_panel(
                         .description("Controls apply to the current window immediately.")
                         .item(thinking_row)
                         .item(follow_row),
+                ),
+            SettingPage::new("Application")
+                .default_open(true)
+                .description("Version and updates for the app itself.")
+                .group(
+                    SettingGroup::new()
+                        .title("Tact")
+                        .description("Updates are verified against the release signing key.")
+                        .item(updates),
                 ),
             SettingPage::new("Session")
                 .default_open(true)

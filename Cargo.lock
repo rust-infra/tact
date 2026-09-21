@@ -1138,6 +1138,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-packager-updater"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eec09acab5c2227aba2e592d431708305bdeb6d507703f6cd8983fb57b6c5ef7"
+dependencies = [
+ "base64",
+ "cargo-packager-utils",
+ "ctor 0.2.9",
+ "dirs 5.0.1",
+ "dunce",
+ "flate2",
+ "http",
+ "log",
+ "minisign-verify",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "semver",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror 1.0.69",
+ "time",
+ "url",
+]
+
+[[package]]
+name = "cargo-packager-utils"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b43458dd2ee3cdab3f5b105acd80791383b730380c929018701313d7d299d4e8"
+dependencies = [
+ "ctor 0.2.9",
+]
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1963,6 +1999,16 @@ checksum = "eb2a7d3066da2de787b7f032c736763eb7ae5d355f81a68bab2675a96008b0bf"
 dependencies = [
  "lab",
  "phf 0.11.3",
+]
+
+[[package]]
+name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3305,7 +3351,7 @@ dependencies = [
  "bitflags 2.13.1",
  "chrono",
  "core-video",
- "ctor",
+ "ctor 1.0.13",
  "derive_more",
  "embed-resource",
  "etagere",
@@ -3494,7 +3540,7 @@ dependencies = [
  "core-foundation-sys",
  "core-graphics 0.24.0",
  "core-text",
- "ctor",
+ "ctor 1.0.13",
  "dispatch2",
  "foreign-types",
  "futures",
@@ -5198,6 +5244,12 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "miniz_oxide"
@@ -7408,6 +7460,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http",
@@ -9063,7 +9116,7 @@ dependencies = [
 
 [[package]]
 name = "tact"
-version = "1.1.30"
+version = "1.1.31-rc.1"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -9114,13 +9167,15 @@ dependencies = [
 
 [[package]]
 name = "tact-gui"
-version = "1.1.30"
+version = "1.1.31-rc.1"
 dependencies = [
  "anyhow",
+ "cargo-packager-updater",
  "chrono",
  "gpui-kit",
  "libc",
  "portable-pty",
+ "semver",
  "serde",
  "serde_json",
  "tact-session",
@@ -9129,12 +9184,13 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "vt100",
 ]
 
 [[package]]
 name = "tact-session"
-version = "1.1.30"
+version = "1.1.31-rc.1"
 dependencies = [
  "anyhow",
  "regex",
@@ -9148,7 +9204,7 @@ dependencies = [
 
 [[package]]
 name = "tact-ui"
-version = "1.1.30"
+version = "1.1.31-rc.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -9170,7 +9226,7 @@ dependencies = [
 
 [[package]]
 name = "tact_llm"
-version = "1.1.30"
+version = "1.1.31-rc.1"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -9744,7 +9800,7 @@ dependencies = [
 
 [[package]]
 name = "tool_refactor_macros"
-version = "1.1.30"
+version = "1.1.31-rc.1"
 dependencies = [
  "proc-macro2",
  "quote",

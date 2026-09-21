@@ -13,6 +13,7 @@ pub mod shell;
 mod terminal;
 pub mod theme;
 mod transcript;
+mod updater;
 
 pub use shell::{TactApp, Workspace};
 pub use tact_session::RecentSession;
