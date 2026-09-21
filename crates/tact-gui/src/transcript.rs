@@ -459,9 +459,10 @@ pub(crate) fn render_row(
     // click on one card only toggles that card.
     let verbose = detail == TranscriptDetail::Verbose;
 
-    if !detail.shows_thinking() && matches!(row, TranscriptRow::Thinking { .. }) {
-        return div().id(row_id).w_full().into_any_element();
-    }
+    // Normal mode shows the thinking card too, collapsed: hiding it entirely
+    // made a turn look like it reasoned about nothing, and the summary line
+    // ("Thought for 8s") is exactly the reassurance a reader wants by default.
+    // The card's own `expanded` flag decides whether the body is open.
 
     match row {
         TranscriptRow::User { text, sent_at } => div()
