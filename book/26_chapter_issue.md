@@ -38,7 +38,7 @@ Newest entries first. Each entry should include:
 
 **Symptom / motivation:** Assistant and reasoning Markdown can contain ````mermaid` fences, but the GUI rendered them as ordinary code blocks. A flowchart, state diagram, or sequence diagram therefore appeared as raw Mermaid source while the TUI already had a renderer for the same syntax.
 
-**Decision:** Detect the `mermaid` fence language in the existing code-card renderer and route it through `ratatui-markdown`'s Unicode Mermaid renderer at a 100-column layout. The card keeps the original source for `Copy`; valid diagrams replace the body with box-drawing output, while parse failures fall back to the source so no content is lost.
+**Decision:** Detect the `mermaid` fence language in the existing code-card renderer and route it through `mermaid-text`'s Unicode Mermaid renderer at a 100-column layout. The card keeps the original source for `Copy`; valid diagrams replace the body with box-drawing output, while parse failures fall back to the source so no content is lost.
 
 **Behavior after:** Mermaid fences in assistant output, reasoning, and other Markdown surfaces render as monospace diagrams in the desktop client. Invalid Mermaid still appears as a normal code block.
 

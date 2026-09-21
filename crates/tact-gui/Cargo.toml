@@ -50,7 +50,7 @@ semver = "1"
 url = "2"
 portable-pty = "0.9"
 vt100 = "0.16"
-ratatui-markdown = { workspace = true }
+mermaid-text = "0.57.0"
 tact-session = { path = "../tact-session" }
 tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }

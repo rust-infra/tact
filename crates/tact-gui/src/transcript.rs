@@ -17,7 +17,6 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
-use ratatui_markdown::{mermaid::render_mermaid, theme::ThemeConfig};
 use tact_protocol::ToolVisualKind;
 
 use crate::session::Request;
@@ -219,24 +218,13 @@ struct CodeBlockData {
 
 /// Render a Mermaid fence to a monospace diagram.
 ///
-/// The GUI has no web view or SVG surface, so it reuses the same
-/// `ratatui-markdown` renderer as the TUI: the diagram becomes Unicode box
-/// drawing that the existing code card can display and scroll. Invalid Mermaid
-/// returns `None`, and the renderer falls back to the original source.
+/// The GUI has no web view or SVG surface, so it uses `mermaid-text` to turn
+/// the diagram into Unicode box drawing that the existing code card can display
+/// and scroll. The renderer supports the HTML `<br/>` labels and edge labels
+/// that real assistant output commonly uses. Invalid Mermaid returns `None`,
+/// and the renderer falls back to the original source.
 fn mermaid_plain_text(source: &str, width: usize) -> Option<String> {
-    let lines = render_mermaid(source, width.max(1), None, &ThemeConfig::default())?;
-    Some(
-        lines
-            .into_iter()
-            .map(|line| {
-                line.spans
-                    .into_iter()
-                    .map(|span| span.content.into_owned())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+    mermaid_text::render_with_width(source, Some(width.max(1))).ok()
 }
 
 /// Turn every fenced code block into a `.code` card node.
@@ -1195,6 +1183,32 @@ mod tests {
         assert!(
             mermaid_plain_text("not a valid mermaid diagram", 60).is_none(),
             "invalid Mermaid falls back to the source card"
+        );
+        let sequence = mermaid_plain_text(
+            "sequenceDiagram\n  participant A as 我\n  participant B as 妈妈\n  A->>B: 包饺子",
+            80,
+        )
+        .expect("sequence diagrams use Tact's alias-aware renderer");
+        assert!(
+            sequence.contains('我') && sequence.contains('妈'),
+            "sequence aliases missing: {sequence}"
+        );
+        assert!(
+            !sequence.contains("participant A as"),
+            "participant alias syntax leaked into the sequence diagram: {sequence}"
+        );
+        let flowchart = mermaid_plain_text(
+            "flowchart TD\n  START([拿起一张饺子皮]) --> S1[放一勺馅]\n  Q1 -->|捏不上 / 合不拢| A1[馅放太多<br/>皮被撑开]\n  DONE([✅ 放进案板排队])",
+            80,
+        )
+        .expect("flowcharts with HTML line breaks and emoji render");
+        assert!(
+            flowchart.contains('放') && flowchart.contains('馅'),
+            "node label missing: {flowchart}"
+        );
+        assert!(
+            !flowchart.contains("flowchart TD"),
+            "the Mermaid declaration leaked into the flowchart: {flowchart}"
         );
     }
 

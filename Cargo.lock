@@ -358,6 +358,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ascii-dag"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd898d2dcffeeb51015c511a2849a8637c894b833afc946936d48b1e5c8aa6ec"
+
+[[package]]
 name = "ash"
 version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5222,6 +5228,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mermaid-text"
+version = "0.57.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830067de2eb67eff2201ad257af77099a32de25126dd06b0848f677589e13862"
+dependencies = [
+ "ascii-dag",
+ "chrono",
+ "unicode-width",
+]
+
+[[package]]
 name = "metal"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9188,8 +9205,8 @@ dependencies = [
  "fontdb 0.24.0",
  "gpui-kit",
  "libc",
+ "mermaid-text",
  "portable-pty",
- "ratatui-markdown",
  "semver",
  "serde",
  "serde_json",
