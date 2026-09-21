@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — A Files row is the whole row, and a folder is selectable
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/pane.rs` (`files_tree`, `file_preview_card`, `FilePreview::load`, `FilesPane::select`); `crates/tact-gui/tests/shell.rs` (`the_files_pane_row_toggles_and_selects_a_directory`, `the_files_pane_actions_work_on_a_selected_directory`) |
+
+**Symptom / motivation:** Only a directory row's 16 px chevron answered a press. The row itself drew a hover background and a selected background but had no handler, so pressing a folder's name did nothing at all — the largest target on the row was dead. Two consequences followed from the same root cause: a folder could not be selected, so the pane's `Reveal` and `Mention` buttons reported "select a file" for something the user had plainly selected, and a folder that became the selection would have been read as a file, because `File::open` succeeds on a directory on Linux and the read then fails with `EISDIR`.
+
+**Decision:** Make the row the target. A press anywhere on a directory row selects it and toggles its expansion; a press anywhere on a file row selects it and opens its preview. The chevron stays for a precise, keyboard-reachable handle, and now stops propagation — the stock button does **not** stop a press it has a handler for, so without that the chevron's toggle and the row's toggle cancelled out and the folder appeared frozen. Selecting a directory also makes it a first-class subject for the pane's actions, so `FilePreview` grew a directory branch: a folder previews as `Directory · N entries` rather than as a read error. Rows became tab stops, which meant they also had to answer `Enter` and `Space`; a focusable row that does nothing once focused is worse than one that is not focusable.
+
+**Behavior after:** Pressing a folder row (or its chevron) expands or collapses it and selects it; pressing a file row previews it. `Reveal`, `Mention`, and the footer's `Open in editor` act on a selected folder: Reveal opens it in the file manager, Mention inserts `@docs ` (the folder's workspace-relative path) into the composer, and Open in editor hands it to the default application. A selected folder shows `Directory · N entries` in the preview card instead of a read failure. `Enter` and `Space` on a focused row do exactly what a press does.
+
+**Pointers:** `crates/tact-gui/src/pane.rs` (`FilesPane::select`, `on_toggle`, `FilePreview::load`); `crates/tact-gui/tests/shell.rs` (`the_files_pane_row_toggles_and_selects_a_directory`, `the_files_pane_actions_work_on_a_selected_directory`, `the_files_pane_expands_a_directory_through_its_toggle`)
+
 ## 1. 2026-09-21 — The work pane runs a real terminal in a PTY
 
 | Field | Value |

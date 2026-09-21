@@ -25,8 +25,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Context, FocusHandle, Focusable as _,
-    FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, px, radians, relative, rems,
+    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
+    radians, relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -191,12 +192,32 @@ pub(crate) struct FilePreview {
     pub(crate) truncated: bool,
     pub(crate) binary: bool,
     pub(crate) error: Option<String>,
+    /// Number of entries, when the selection is a directory rather than a file.
+    ///
+    /// `File::open` succeeds on a directory on Linux and the read then fails,
+    /// so a selected folder used to render as a read error. A directory is not
+    /// an unreadable file; it is a different kind of thing, and the preview
+    /// says which.
+    pub(crate) directory: Option<usize>,
 }
 
 impl FilePreview {
     /// Read at most [`FILE_PREVIEW_MAX_BYTES`] so a large generated file does
     /// not turn one tree click into an unbounded allocation.
     fn load(path: &Path) -> Self {
+        if path.is_dir() {
+            let entries = std::fs::read_dir(path)
+                .map(|entries| entries.flatten().count())
+                .unwrap_or(0);
+            return Self {
+                path: path.to_path_buf(),
+                lines: Vec::new(),
+                truncated: false,
+                binary: false,
+                error: None,
+                directory: Some(entries),
+            };
+        }
         let mut bytes = Vec::new();
         let mut file = match File::open(path) {
             Ok(file) => file,
@@ -207,6 +228,7 @@ impl FilePreview {
                     truncated: false,
                     binary: false,
                     error: Some(format!("Could not read {}: {error}", path.display())),
+                    directory: None,
                 };
             }
         };
@@ -222,6 +244,7 @@ impl FilePreview {
                 truncated: false,
                 binary: false,
                 error: Some(format!("Could not read {}: {error}", path.display())),
+                directory: None,
             };
         }
         if bytes.len() > FILE_PREVIEW_MAX_BYTES {
@@ -243,6 +266,7 @@ impl FilePreview {
             truncated,
             binary,
             error: None,
+            directory: None,
         }
     }
 }
@@ -304,16 +328,29 @@ impl FilesPane {
         &self.cache.as_ref().expect("walk just cached").rows
     }
 
-    /// Handler for a click on a directory row.
+    /// Select a row and load its preview.
+    ///
+    /// Directories are selectable too: the footer's Reveal and Mention act on
+    /// the selection, and both mean something for a folder.
+    pub(crate) fn select(&mut self, path: &Path) {
+        let path = path.to_path_buf();
+        self.preview = Some(FilePreview::load(&path));
+        self.selected = Some(path);
+    }
+
+    /// Handler for a press on a directory row or its chevron.
+    ///
+    /// Selecting first matters: `toggle` invalidates the cached walk and, with
+    /// it, reloads the preview — so the selection has to be in place before the
+    /// invalidation runs.
     pub(crate) fn on_toggle(&mut self, path: PathBuf) {
+        self.select(&path);
         self.toggle(&path);
     }
 
     /// Open a file row in the pane's preview.
     pub(crate) fn select_file(&mut self, path: &Path) {
-        let path = path.to_path_buf();
-        self.selected = Some(path.clone());
-        self.preview = Some(FilePreview::load(&path));
+        self.select(path);
     }
 
     /// The file row whose preview is open.
@@ -2316,6 +2353,10 @@ fn files_tree(
                 .compact()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle_directory(toggle_path.clone());
+                    // The stock button does not stop a press it *has* a
+                    // handler for, so without this the press would also reach
+                    // the row below and toggle the directory straight back.
+                    cx.stop_propagation();
                     cx.notify();
                 }))
                 .into_any_element()
@@ -2343,14 +2384,44 @@ fn files_tree(
                     row.bg(hover_bg).text_color(hover_ink)
                 })
                 .hover(move |row| row.bg(hover_bg).text_color(hover_ink))
-                .when(!is_dir, |row| {
-                    row.cursor_pointer().on_click(cx.listener({
-                        let path = path.clone();
-                        move |this, _, _, cx| {
+                .aria_selected(is_selected)
+                // Both kinds of row are live, and the chevron above stops its
+                // own press from reaching this handler, so a folder toggles
+                // exactly once whether the press lands on the icon or the name.
+                .cursor_pointer()
+                .tab_index(0)
+                .focus_visible({
+                    let ring = focus_visible_ring(cx);
+                    move |style| style.shadow(ring.clone())
+                })
+                .on_click(cx.listener({
+                    let path = path.clone();
+                    move |this, _, _, cx| {
+                        if is_dir {
+                            this.toggle_directory(path.clone());
+                        } else {
                             this.select_file(path.clone(), cx);
                         }
-                    }))
-                })
+                        cx.notify();
+                    }
+                }))
+                // The row is a tab stop, so it has to answer the keys a
+                // focused row is expected to answer. Without this the row was
+                // reachable by keyboard and inert once it got there.
+                .on_key_down(cx.listener({
+                    let path = path.clone();
+                    move |this, event: &KeyDownEvent, _, cx| {
+                        if !matches!(event.keystroke.key.as_str(), "enter" | "return" | "space") {
+                            return;
+                        }
+                        if is_dir {
+                            this.toggle_directory(path.clone());
+                        } else {
+                            this.select_file(path.clone(), cx);
+                        }
+                        cx.notify();
+                    }
+                }))
                 .child(marker)
                 .child(
                     div()
@@ -2394,7 +2465,9 @@ fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| preview.path.display().to_string());
-    let note = if preview.error.is_some() {
+    let note = if let Some(entries) = preview.directory {
+        format!("{entries} entr{}", if entries == 1 { "y" } else { "ies" })
+    } else if preview.error.is_some() {
         "unreadable".to_string()
     } else if preview.binary {
         "binary".to_string()
@@ -2439,7 +2512,19 @@ fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement
             .into_any_element(),
     );
 
-    if let Some(error) = preview.error.as_deref() {
+    if let Some(entries) = preview.directory {
+        children.push(
+            empty(
+                "work-pane-directory-preview",
+                &format!(
+                    "Directory with {entries} entr{}. Reveal opens it in the file manager; Mention inserts its path.",
+                    if entries == 1 { "y" } else { "ies" }
+                ),
+                cx,
+            )
+            .into_any_element(),
+        );
+    } else if let Some(error) = preview.error.as_deref() {
         children.push(empty("work-pane-file-error", error, cx).into_any_element());
     } else if preview.binary {
         children.push(

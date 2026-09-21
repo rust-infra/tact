@@ -3723,6 +3723,145 @@ fn the_stats_pane_charts_the_session_state(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// A directory row is a row, not just its chevron.
+///
+/// The row drew a hover background but only the small icon button answered a
+/// press, so clicking a folder's name did nothing at all: the row looked live
+/// and was dead. Pressing the row toggles it and selects it, which also gives
+/// the footer's Reveal and Mention something to act on for a folder.
+#[gpui_kit::test]
+fn the_files_pane_row_toggles_and_selects_a_directory(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(4usize, cx);
+        window.render_frame(cx);
+
+        let directory = repo_root().join("crates");
+        let row: SharedString = format!("file-row-{}", directory.display()).into();
+        let child: SharedString =
+            format!("file-row-{}", directory.join("tact-gui").display()).into();
+
+        assert!(
+            window.try_find(row.clone()).is_some(),
+            "the crates row renders"
+        );
+        assert!(
+            window.try_find(child.clone()).is_none(),
+            "the directory starts collapsed"
+        );
+
+        // Press the row itself, away from its chevron.
+        window.click(row.clone(), cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find(child.clone()).is_some(),
+            "pressing the row expands the directory"
+        );
+        assert_eq!(
+            window.find(row.clone()).selected(),
+            Some(true),
+            "and the row becomes the selection"
+        );
+        assert!(
+            window.try_find("work-pane-directory-preview").is_some(),
+            "the preview describes the directory rather than a file"
+        );
+        assert!(
+            window.try_find("work-pane-file-error").is_none(),
+            "selecting a directory is not a read failure"
+        );
+
+        // The row is a tab stop, so Enter has to do what a press does.
+        window.click(row.clone(), cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find(child.clone()).is_none(),
+            "pressing the row again collapses the directory"
+        );
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find(child.clone()).is_some(),
+            "Enter on the focused row expands it"
+        );
+        window.press("enter", cx);
+        window.render_frame(cx);
+        assert!(window.try_find(child).is_none(), "Enter again collapses it");
+    })
+    .unwrap();
+}
+
+/// A selected folder is a full citizen of the pane's footer actions.
+///
+/// The row press makes a directory the selection, so Reveal, Mention, and the
+/// footer's Open in editor have to mean something for it rather than reporting
+/// that no file is selected.
+#[gpui_kit::test]
+fn the_files_pane_actions_work_on_a_selected_directory(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let mut app = None;
+    // Tall enough that the preview card below the tree is on screen: the
+    // pane's body scrolls, and a press has to be visible to land.
+    let handle = cx.open_window(size(px(1440.), px(1600.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::with_workspace(window, cx, Some(repo_root())));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(4usize, cx);
+        window.render_frame(cx);
+
+        let directory = repo_root().join("docs");
+        let row: SharedString = format!("file-row-{}", directory.display()).into();
+        window.click(row, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("work-pane-directory-preview").is_some(),
+            "the row press selects the folder"
+        );
+
+        // Mention inserts the folder path.
+        window.click("work-pane-file-mention", cx);
+        window.render_frame(cx);
+        let draft = app.update(cx, |app, cx| app.composer_draft(cx));
+        assert_eq!(
+            draft, "@docs ",
+            "Mention inserts the folder's workspace-relative path"
+        );
+
+        // Reveal and the footer's Open in editor both answer instead of
+        // claiming nothing is selected.
+        let before = app.update(cx, |app, _| app.transcript_len());
+        window.click("work-pane-file-reveal", cx);
+        window.render_frame(cx);
+        let after_reveal = app.update(cx, |app, _| app.transcript_len());
+        assert_eq!(
+            after_reveal,
+            before + 1,
+            "Reveal answers with one notice for a folder"
+        );
+
+        window.click("work-pane-open-editor", cx);
+        window.render_frame(cx);
+        let after_open = app.update(cx, |app, _| app.transcript_len());
+        assert_eq!(
+            after_open,
+            after_reveal + 1,
+            "Open in editor answers with one notice for a folder"
+        );
+    })
+    .unwrap();
+}
+
 /// The Files pane's expand toggle opens and closes the row it names.
 ///
 /// The row and its toggle are separate element ids (`file-row-` and

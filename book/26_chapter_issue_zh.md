@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — Files 行整行可点，文件夹可被选中
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/pane.rs`（`files_tree`、`file_preview_card`、`FilePreview::load`、`FilesPane::select`）；`crates/tact-gui/tests/shell.rs`（`the_files_pane_row_toggles_and_selects_a_directory`、`the_files_pane_actions_work_on_a_selected_directory`） |
+
+**现象 / 动机：** 目录行只有那个 16 px 的 chevron 会响应点击。行本身画了 hover 底色和选中底色却没有 handler，所以点文件夹**名字**什么都不会发生——整行上最大的目标反而是死的。同一个根因还带来两个后果：文件夹无法被选中，因此面板的 `Reveal` 与 `Mention` 会对用户明明选中的东西回答"请先选择一个文件"；而且一旦文件夹成为选中项就会被当成文件去读——Linux 上 `File::open` 对目录是成功的，随后的 read 才以 `EISDIR` 失败。
+
+**决策：** 让整行成为目标。点目录行任意位置即选中并展开/折叠；点文件行任意位置即选中并打开预览。chevron 保留为精确、可键盘到达的手柄，并且现在会 `stop_propagation()`——stock button 对它**有** handler 的按压并不会阻止冒泡，不加这一句 chevron 的切换会和整行的切换互相抵消，文件夹看起来就像卡死了。选中文件夹也让文件夹成为面板动作的一等对象，因此 `FilePreview` 增加目录分支：文件夹预览为 `Directory · N entries`，而不是读取失败。行同时变成了 tab stop，所以也必须响应 `Enter` 与 `Space`——一个能获得焦点、聚焦后却什么都不做的行，比不能聚焦更糟。
+
+**改后行为：** 点文件夹行（或其 chevron）会展开/折叠并选中；点文件行会预览。`Reveal`、`Mention` 与 footer 的 `Open in editor` 对选中的文件夹都生效：Reveal 在文件管理器中打开它，Mention 把 `@docs `（文件夹的 workspace 相对路径）插入 composer，Open in editor 交给默认应用。选中的文件夹在预览卡里显示 `Directory · N entries`，不再显示读取失败。聚焦行上按 `Enter` 或 `Space` 与点击等效。
+
+**指针：** `crates/tact-gui/src/pane.rs`（`FilesPane::select`、`on_toggle`、`FilePreview::load`）；`crates/tact-gui/tests/shell.rs`（`the_files_pane_row_toggles_and_selects_a_directory`、`the_files_pane_actions_work_on_a_selected_directory`、`the_files_pane_expands_a_directory_through_its_toggle`）
+
 ## 1. 2026-09-21 — 工作面板内嵌真实 PTY 终端
 
 | 字段 | 值 |
