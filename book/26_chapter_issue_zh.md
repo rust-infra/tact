@@ -38,9 +38,9 @@
 
 **现象 / 动机：** 多处桌面交互仍像原型而不是工具：展开卡片会把视口拉到转录尾部；Thinking 和工具实时输出没有实用的预览上限；Task complete 重复显示助手回答而不是统计信息；已答复授权框继续留在转录里；session 操作只能从标题栏 chip 进入；项目切换也没有 composer 级别、会重新绑定 session 的入口。
 
-**决策：** 把用户主动展开卡片视为阅读，而不是新输出：重测前先关闭 tail-follow。Thinking 和运行中的工具输出显示 3 行实时预览，结束后自动收起；手动展开最多 10 行并可内部滚动。Task complete 改为显示轮次、context 百分比和紧凑 token 总数。已答复授权从转录中移除而不是补一行记录。每个 session 行自带右键菜单：重命名、复制、置顶、归档、在文件系统中显示；composer 底部新增当前项目行与 `Open project…`，切换后会恢复或新建该项目目录绑定的 session。
+**决策：** 把用户主动展开卡片视为阅读，而不是新输出：重测前先关闭 tail-follow。Thinking 和运行中的工具输出显示 3 行实时预览，结束后自动收起；手动展开最多 10 行并可内部滚动。Task complete 改为显示轮次、耗时、context 百分比和紧凑 token 总数。已答复授权从转录中移除而不是补一行记录。每个 session 行自带右键菜单：重命名、复制、置顶、归档、在文件系统中显示；composer 底部新增当前项目行与 `Open project…`，切换后会恢复或新建该项目目录绑定的 session。
 
-**改后行为：** 展开卡片不再跳到转录末尾。Thinking/工具实时内容保持紧凑并自动收起；展开详情在内部滚动而非无限变高。完成行显示 task stats，不再重复回答。授权选择后卡片消失。session 行右键即可操作；composer 的项目行提供绑定当前 session 与目录的可见入口。
+**改后行为：** 展开卡片不再跳到转录末尾。Thinking/工具实时内容保持紧凑并自动收起；展开详情在内部滚动而非无限变高。完成行显示 task stats（含耗时），不再重复回答。授权选择后卡片消失。session 行右键即可操作；composer 的项目行提供绑定当前 session 与目录的可见入口。
 
 **指针：** `crates/tact-gui/src/shell.rs`（`toggle_row`、`open_project`、`session_context_menu`、`prompt_composer`、`answer`）；`crates/tact-gui/src/session.rs`（`task_complete_text`、Thinking/tool lifecycle）；`crates/tact-gui/src/transcript.rs`（实时预览上限）；`crates/tact-gui/tests/shell.rs`（`right_clicking_a_session_row_opens_its_context_menu`、`the_model_picker_filters_a_long_list`）
 

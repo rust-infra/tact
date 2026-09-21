@@ -272,6 +272,8 @@ pub(crate) struct SessionState {
     pub(crate) usage: Option<TokenUsageInfo>,
     /// Turns taken in the current task, and the loop cap when one exists.
     pub(crate) turns: Option<(u32, Option<u32>)>,
+    /// Wall-clock start of the current task, used for the completion summary.
+    pub(crate) task_started_at: Option<std::time::Instant>,
     /// Model parameters from the last request.
     pub(crate) model: Option<ModelCallParams>,
     /// Model ids the provider advertises, newest fetch wins.
@@ -777,9 +779,13 @@ impl Conversation {
             AgentUpdate::TaskComplete(_summary) => {
                 self.end_turn();
                 state.running = false;
+                let elapsed = state
+                    .task_started_at
+                    .take()
+                    .map(|started| started.elapsed());
                 let index = self.rows.len();
                 self.rows.push(TranscriptRow::System {
-                    text: task_complete_text(state),
+                    text: task_complete_text(state, elapsed),
                 });
                 Change::Appended(self.rows.len() - index)
             }
@@ -1268,7 +1274,18 @@ fn compact_tokens(tokens: u32) -> String {
 
 /// The closing transcript row reports what the completed task cost, not the
 /// assistant's final answer again -- that answer is already the row above.
-fn task_complete_text(state: &SessionState) -> String {
+fn format_task_duration(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs().max(1);
+    if seconds >= 3_600 {
+        format!("{}h {}m", seconds / 3_600, (seconds % 3_600) / 60)
+    } else if seconds >= 60 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn task_complete_text(state: &SessionState, elapsed: Option<std::time::Duration>) -> String {
     let mut parts = Vec::new();
     if let Some((turns_taken, max_turns)) = state.turns {
         let turns = match max_turns {
@@ -1277,6 +1294,9 @@ fn task_complete_text(state: &SessionState) -> String {
             None => format!("{turns_taken} turns"),
         };
         parts.push(turns);
+    }
+    if let Some(elapsed) = elapsed {
+        parts.push(format_task_duration(elapsed));
     }
     if let Some(usage) = state.usage.as_ref() {
         let denominator = usage.prompt.saturating_add(usage.completion).max(1);
@@ -1850,6 +1870,7 @@ mod tests {
         let mut state = SessionState {
             running: true,
             turns: Some((2, None)),
+            task_started_at: Some(std::time::Instant::now()),
             usage: Some(tact_protocol::TokenUsageInfo {
                 prompt: 300,
                 completion: 100,
@@ -1877,7 +1898,7 @@ mod tests {
         assert!(matches!(
             &conversation.rows()[1],
             TranscriptRow::System { text }
-                if text == "Task complete · 2 turns · 75% context · 400 tokens"
+                if text == "Task complete · 2 turns · 1s · 75% context · 400 tokens"
         ));
     }
 

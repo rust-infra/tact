@@ -3342,6 +3342,7 @@ impl TactApp {
             self.push_system_row("The agent session has ended.".to_string(), cx);
             return;
         }
+        self.state.task_started_at = Some(std::time::Instant::now());
         self.state.running = true;
     }
 
