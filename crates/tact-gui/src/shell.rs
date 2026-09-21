@@ -322,6 +322,8 @@ pub struct TactApp {
     /// Base font size in px. Every dimension in the shell is `rem`-based, so
     /// this one number is the zoom.
     zoom_rem: f32,
+    /// The interface font the user picked, or `None` for the theme's own.
+    ui_font: Option<String>,
     /// Which edge the work pane docks to.
     work_pane_side: WorkPaneSide,
     /// Workspace directories the user has opened, newest first.
@@ -795,6 +797,7 @@ impl TactApp {
             sidebar_width: SIDEBAR_WIDTH,
             work_pane_width: WORK_PANE_WIDTH,
             zoom_rem: layout::ZOOM_DEFAULT,
+            ui_font: None,
             work_pane_side: WorkPaneSide::default(),
             recent_workspaces: Vec::new(),
             terminal: None,
@@ -824,6 +827,7 @@ impl TactApp {
             work_pane_side: self.work_pane_side,
             recent_workspaces: self.recent_workspaces.clone(),
             zoom_rem: self.zoom_rem,
+            ui_font: self.ui_font.clone(),
         };
         prefs.preset = prefs.matching_preset().unwrap_or(LayoutPreset::Split);
         prefs
@@ -849,6 +853,7 @@ impl TactApp {
         self.work_pane_side = prefs.work_pane_side;
         self.recent_workspaces = prefs.recent_workspaces;
         self.zoom_rem = prefs.zoom_rem;
+        self.ui_font = prefs.ui_font;
         window.set_rem_size(px(self.zoom_rem));
         self.layout_store = store;
     }
@@ -986,6 +991,13 @@ impl TactApp {
     /// Move the work pane to its next edge.
     pub(crate) fn cycle_work_pane_side(&mut self, cx: &mut Context<Self>) {
         self.work_pane_side = self.work_pane_side.next();
+        self.persist_layout();
+        cx.notify();
+    }
+
+    /// Choose the interface font, or `None` for the theme's own family.
+    pub(crate) fn set_ui_font(&mut self, font: Option<String>, cx: &mut Context<Self>) {
+        self.ui_font = font;
         self.persist_layout();
         cx.notify();
     }
@@ -3529,6 +3541,16 @@ impl Render for TactApp {
             .key_context(commands::CONTEXT)
             .bg(cx.theme().popover)
             .text_color(cx.theme().foreground)
+            // The chosen interface font sits on the shell root so it inherits
+            // through the tree. Surfaces that deliberately set their own family
+            // — code blocks and the terminal, which need a monospace face —
+            // keep it.
+            .font_family(
+                self.ui_font
+                    .clone()
+                    .map(SharedString::from)
+                    .unwrap_or_else(|| cx.theme().font_family.clone()),
+            )
             .on_action(cx.listener(Self::on_open_palette))
             .on_action(cx.listener(Self::on_new_session))
             .on_action(cx.listener(Self::on_stop_task))
@@ -7562,6 +7584,95 @@ fn settings_panel(
         )
     });
 
+    // The font picker lists what the machine actually has installed rather
+    // than a fixed menu: the whole point is to let the shell match the desktop
+    // it is running on.
+    let font_owner = owner.clone();
+    let font_row = SettingItem::render(move |_, _window, cx| {
+        let current = font_owner
+            .upgrade()
+            .and_then(|app| app.read(cx).ui_font.clone())
+            .unwrap_or_else(|| "Theme default".to_string());
+        let picker_owner = font_owner.clone();
+        let reset_owner = font_owner.clone();
+        setting_copy(
+            "Interface font",
+            "Pick any font installed on this computer; code and the terminal keep their monospace face.",
+            cx,
+        )
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .max_w(rems(11.))
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(current)),
+                )
+                .child(
+                    Popover::new("settings-font-picker")
+                        .anchor(gpui_kit::Anchor::TopRight)
+                        .trigger(
+                            Button::new("settings-font-trigger")
+                                .label("Choose font")
+                                .ghost()
+                                .compact(),
+                        )
+                        .content(move |_, _, _| {
+                            // Built per render: the popover's content closure
+                            // is `Fn`, so anything it shows has to be
+                            // constructible more than once. The families come
+                            // from a cache, so this is not a font scan.
+                            let mut list = v_flex()
+                                .id("settings-font-list")
+                                .test_support()
+                                .gap(rems(0.125))
+                                .max_h(rems(14.))
+                                .overflow_y_scroll();
+                            for family in crate::fonts::system_families().iter().take(400) {
+                                let owner = picker_owner.clone();
+                                let family = family.clone();
+                                list = list.child(
+                                    Button::new(SharedString::from(format!(
+                                        "settings-font-{family}"
+                                    )))
+                                    .label(SharedString::from(family.clone()))
+                                    .ghost()
+                                    .compact()
+                                    .on_click(move |_, _, cx| {
+                                        let _ = owner.update(cx, |app, cx| {
+                                            app.set_ui_font(Some(family.clone()), cx);
+                                        });
+                                    }),
+                                );
+                            }
+
+                            let owner = reset_owner.clone();
+                            v_flex()
+                                .id("settings-font-panel")
+                                .test_support()
+                                .gap_1()
+                                .min_w(rems(13.))
+                                .child(
+                                    Button::new("settings-font-default")
+                                        .label("Theme default")
+                                        .ghost()
+                                        .compact()
+                                        .on_click(move |_, _, cx| {
+                                            let _ = owner.update(cx, |app, cx| {
+                                                app.set_ui_font(None, cx);
+                                            });
+                                        }),
+                                )
+                                .child(list)
+                        }),
+                ),
+        )
+    });
+
     // The updates row is the visible half of the updater: the palette has the
     // same command, but a user looking for "check for updates" opens settings.
     let updates_owner = owner.clone();
@@ -7684,6 +7795,12 @@ fn settings_panel(
                         .description("Controls apply to the current window immediately.")
                         .item(thinking_row)
                         .item(follow_row),
+                )
+                .group(
+                    SettingGroup::new()
+                        .title("Typography")
+                        .description("The shell inherits the chosen family.")
+                        .item(font_row),
                 ),
             SettingPage::new("Application")
                 .default_open(true)
@@ -7841,6 +7958,61 @@ mod tests {
             normalize_url("localhost:3000"),
             "https://localhost:3000",
             "a bare host with a port is a host, not a scheme"
+        );
+    }
+
+    /// The interface font is part of the persisted layout, and clearing it
+    /// goes back to the theme's own family.
+    #[gpui_kit::test]
+    fn the_interface_font_round_trips_through_the_layout(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-layout.json");
+
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let store_path = path.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            let store = crate::layout::LayoutStore::at(store_path.clone());
+            shell.update(cx, |app, _| app.apply_layout(store, window));
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+
+        let shell = slot.borrow().clone().expect("the window built the shell");
+        shell.update(cx, |app, cx| {
+            assert_eq!(
+                app.layout_prefs().ui_font,
+                None,
+                "the theme family is the default"
+            );
+            app.set_ui_font(Some("Inter".to_string()), cx);
+        });
+
+        assert_eq!(
+            crate::layout::LayoutStore::at(&path)
+                .load()
+                .ui_font
+                .as_deref(),
+            Some("Inter"),
+            "the chosen family survives in the layout document"
+        );
+
+        shell.update(cx, |app, cx| app.set_ui_font(None, cx));
+        assert_eq!(
+            crate::layout::LayoutStore::at(&path).load().ui_font,
+            None,
+            "going back to the theme family is saved too"
         );
     }
 

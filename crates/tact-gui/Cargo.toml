@@ -41,6 +41,7 @@ icons = [
 
 [dependencies]
 gpui-kit = "0.6.4"
+fontdb = "0.24"
 libc = { workspace = true }
 # The in-app updater pair: the updater verifies and installs what the packager
 # signed, so the two move together.

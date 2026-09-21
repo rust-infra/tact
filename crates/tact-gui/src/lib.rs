@@ -6,6 +6,7 @@
 
 mod commands;
 mod composer;
+mod fonts;
 mod layout;
 pub mod pane;
 mod session;
