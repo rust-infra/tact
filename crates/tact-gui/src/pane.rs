@@ -464,14 +464,24 @@ fn git_diff(workdir: &Path, path: &str) -> Option<String> {
             PathBuf::from(format!(":(top){path}"))
         }
     };
-    // `--no-color` keeps the output parseable; the pane colors it itself.
-    let output = std::process::Command::new("git")
+    // `--no-color` keeps the output parseable; the pane colors it itself. Once
+    // the repository has a HEAD, compare against HEAD so a staged change stays
+    // visible after the user presses Stage. Before the first commit there is no
+    // HEAD to diff against, so fall back to the working-tree form the pane used
+    // originally.
+    let has_head = std::process::Command::new("git")
         .arg("-C")
         .arg(workdir)
-        .args(["diff", "--no-color", "--"])
-        .arg(pathspec)
-        .output()
-        .ok()?;
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(workdir).args(["diff", "--no-color"]);
+    if has_head {
+        command.arg("HEAD");
+    }
+    let output = command.arg("--").arg(pathspec).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -2779,6 +2789,63 @@ mod tests {
             "the added line reaches the renderer"
         );
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_diff_keeps_a_staged_change_visible() {
+        let root = scratch_dir("gitdiffstaged");
+        let path = root.join("src/lib.rs");
+        if std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "--quiet"])
+            .status()
+            .map(|status| !status.success())
+            .unwrap_or(true)
+        {
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "."])
+            .status();
+        let committed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args([
+                "-c",
+                "user.name=Tact Test",
+                "-c",
+                "user.email=tact@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial",
+            ])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if !committed {
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+
+        std::fs::write(&path, "pub fn lib() {}\npub fn staged() {}\n").unwrap();
+        let staged = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "--", "src/lib.rs"])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        assert!(staged);
+
+        let unified = git_diff(&root, "src/lib.rs").expect("a staged file has a diff");
+
+        assert!(unified.contains("+pub fn staged() {}"), "{unified}");
         let _ = std::fs::remove_dir_all(root);
     }
 
