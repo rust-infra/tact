@@ -192,16 +192,16 @@ The production shell now verifies the items that Phase 2 could only park:
 - The command palette, settings dialog, Normal → Thinking → Verbose transcript
   cycle, light/dark controls, and window-level keyboard contract are exercised
   by `crates/tact-gui/tests/shell.rs`.
-- The sidebar lists workspace-local sessions as short id + age + message count;
-  selecting a row or pressing `Ctrl+Tab` resumes that session through the shared
+- The sidebar lists workspace-local sessions by stored or derived title with
+  project/branch/age metadata and a status badge; the short id is the fallback.
+  Selecting a row or pressing `Ctrl+Tab` resumes that session through the shared
   `tact-session` runtime.
 - The work pane's five prototype-only actions answer a press instead of
   swallowing it. The spec's pane section names none of them, and `Open in
   editor` collides with the v1 non-goal against replacing an editor, so none of
   the five has a v1 behaviour to wire. They keep the prototype's place and
   weight -- dropping them would break the alignment the pass exists to hold --
-  and each one answers with the reason it cannot act, the shape the session
-  menu already uses for rename/duplicate/archive/reveal. The reasons are
+  and each one answers with the reason it cannot act. The reasons are
   distinct per action, and `the_pane_actions_v1_does_not_back_each_answer_a_press`
   in `crates/tact-gui/src/shell.rs` presses all five and reads back five
   distinct system rows, so the broad walk's liveness-only gap is closed for
@@ -482,22 +482,20 @@ The production shell now verifies the items that Phase 2 could only park:
   first: bundle Lora (regular + italic, plus licence metadata) and apply a
   prose family to assistant and thinking text, or amend the spec and this
   review to "platform serif, best effort" and keep the UI family.
-- The session chip is the spec's dropdown. The prototype draws it as a real
-  `<button class="session">` with a chevron (`docs/design/tact-desktop-prototype.html:37`)
-  and the spec asks for rename, duplicate, archive and reveal-in-filesystem
+- The session chip is the spec's dropdown, and its four rows now act. The
+  prototype draws it as a real `<button class="session">` with a chevron
+  (`docs/design/tact-desktop-prototype.html:37`) and the spec asks for rename,
+  duplicate, archive and reveal-in-filesystem
   (`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md:230-231`),
-  so the static label became a `Popover` (`SessionChip` trigger,
+  so the static label is a `Popover` (`SessionChip` trigger,
   `session-menu-panel`) built from the primitives the composer menus already
-  use, keeping the prototype's box exactly. The four rows report what the
-  application cannot do yet instead of faking it: the store has no title or
-  archive column, `tact_protocol::UserCommand` has no such variants, the
-  display title is derived from the first user message, and no platform-open
-  helper exists anywhere in the repository, so each row appends one
-  `push_system_row` notice. Rename, duplicate, archive and reveal need store or
-  protocol contracts before they can act; nothing may map archive onto
-  `delete_session`, which is destructive and cascades to child sessions.
-  `every_entry_point_answers_a_click` presses the chip, all four rows and the
-  dismissal.
+  use, keeping the prototype's box exactly. Rename writes the new
+  `sessions.title`; archive writes a reversible `sessions.archived_at` flag and
+  renders the prototype's `Archived` badge; duplicate copies the conversation
+  into a `(copy)` row and opens it without provider state or recorded usage;
+  reveal opens the workspace directory through the first available platform
+  launcher. The broad click walk presses the chip, all four rows and the
+  dismissal, with effect assertions for each.
 - The card step, the accent ink and the tool output come from the prototype, not
   from the nearest component token. `.card`, `.tool`, `.code`, `.thinking` and
   `.approval` are all `--r10`, so `card`, `card_with_id` and the transcript's

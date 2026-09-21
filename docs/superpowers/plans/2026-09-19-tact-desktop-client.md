@@ -1,6 +1,6 @@
 # Tact Desktop Client — Design and Delivery Plan
 
-Status: Phases 0–2 and 4–7 complete; Phase 3 awaits the Figma connector.  
+Status: Phases 0–2 and 4–8 complete; Phase 3 awaits the Figma connector.
 Date: 2026-09-19  
 Spec: `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`  
 Verification: cargo checks/tests/build/clippy passed offline; GUI smoke
@@ -183,6 +183,24 @@ rendered the session list; `Ctrl+Tab` resumed a recent session and showed the
 resume system row. The design review remains the visual checklist source of
 truth.
 
+## Phase 8 — Session actions
+
+Status: complete.
+
+- Add the reversible session metadata contract: `sessions.title` and
+  `sessions.archived_at`, with an in-place migration for existing stores.
+- Add presentation-neutral `rename`, `set_archived`, `duplicate`, and `reveal`
+  actions in `tact-session`, then wire the GUI session menu to them.
+- Keep archive non-destructive and make duplicates copy the conversation without
+  provider state or recorded token usage.
+
+Verified: `cargo test -p tact-gui --offline` passes outside the sandbox for the
+git-worktree fixture (71 library + 88 integration tests);
+`cargo test -p tact-session --offline` passes 39 tests; `cargo check -p
+tact-gui --offline --all-targets` is clean. The click walk presses rename,
+duplicate, archive/unarchive, and reveal, and asserts the visible result of
+each.
+
 ## Deferred
 
 - Embedded Browser.
@@ -215,4 +233,4 @@ workspace because they contend on the `target/` lock.
   mono-font fallback warning on this host.
 
 The parked post-v1 scope is documented in the spec: layout persistence and
-restoration, richer session metadata/search/grouping, and Phase 3 Figma.
+restoration, richer session search/grouping/branch metadata, and Phase 3 Figma.

@@ -16,10 +16,12 @@ pub mod driver;
 pub mod history;
 pub mod mcp_listing;
 pub mod runtime;
+pub mod session_actions;
 pub mod sessions;
 pub mod test_support;
 pub mod user_message;
 
 pub use history::{HistoryBlock, HistoryMessage, HistoryRole};
 pub use runtime::{SessionOptions, SessionRuntime};
+pub use session_actions::{duplicate, rename, reveal, set_archived};
 pub use sessions::RecentSession;

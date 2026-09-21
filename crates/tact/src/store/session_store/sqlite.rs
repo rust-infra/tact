@@ -40,6 +40,35 @@ impl SqliteSessionStore {
         Ok(())
     }
 
+    /// Add the session-list columns to DBs created before they existed.
+    ///
+    /// `title` is the name the user gave the session; `archived_at` is a policy
+    /// flag, not a tombstone -- archiving keeps the session and its messages, so
+    /// it must never be expressed as a delete.
+    async fn migrate_sessions_title_and_archive(pool: &SqlitePool) -> Result<()> {
+        let cols = sqlx::query("PRAGMA table_info(sessions)")
+            .fetch_all(pool)
+            .await
+            .context("failed to read sessions table info")?;
+        let names: Vec<String> = cols
+            .iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+        if !names.iter().any(|name| name == "title") {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+                .execute(pool)
+                .await
+                .context("failed to add sessions.title column")?;
+        }
+        if !names.iter().any(|name| name == "archived_at") {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN archived_at TIMESTAMP")
+                .execute(pool)
+                .await
+                .context("failed to add sessions.archived_at column")?;
+        }
+        Ok(())
+    }
+
     pub async fn new(path: &Path) -> Result<Self> {
         let pool = open_pool(path).await?;
 
@@ -52,7 +81,9 @@ impl SqliteSessionStore {
                 root_dir TEXT NOT NULL DEFAULT '',
                 locked_by INTEGER NOT NULL DEFAULT 0,
                 lock_epoch TEXT NOT NULL DEFAULT '',
-                ref_id TEXT NOT NULL DEFAULT ''
+                ref_id TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                archived_at TIMESTAMP
             );
             "#,
         )
@@ -63,6 +94,10 @@ impl SqliteSessionStore {
         Self::migrate_sessions_ref_id(&pool)
             .await
             .context("failed to migrate sessions.ref_id")?;
+
+        Self::migrate_sessions_title_and_archive(&pool)
+            .await
+            .context("failed to migrate sessions title/archive columns")?;
 
         sqlx::query(
             r#"
@@ -214,6 +249,16 @@ fn first_user_text(row: &sqlx::sqlite::SqliteRow) -> Result<Option<String>> {
         return Ok(None);
     };
     Ok(super::first_text(&content))
+}
+
+/// The title the user gave a session, or `None` when it has none.
+///
+/// The column is `NOT NULL DEFAULT ''` so the empty string is the "unset" value;
+/// a title of only whitespace is unset too.
+fn stored_title(row: &sqlx::sqlite::SqliteRow) -> Result<Option<String>> {
+    let raw: String = row.try_get("title")?;
+    let trimmed = raw.trim();
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
 }
 
 fn role_to_str(role: Role) -> &'static str {
@@ -571,6 +616,8 @@ impl super::SessionStore for SqliteSessionStore {
                     s.root_dir,
                     s.created_at,
                     s.updated_at,
+                    s.title,
+                    s.archived_at,
                     COUNT(m.id) as message_count,
                     (
                         SELECT content FROM messages fm
@@ -598,6 +645,8 @@ impl super::SessionStore for SqliteSessionStore {
                     s.root_dir,
                     s.created_at,
                     s.updated_at,
+                    s.title,
+                    s.archived_at,
                     COUNT(m.id) as message_count,
                     (
                         SELECT content FROM messages fm
@@ -634,10 +683,93 @@ impl super::SessionStore for SqliteSessionStore {
                 )?,
                 message_count: row.try_get("message_count")?,
                 first_user_text: first_user_text(&row)?,
+                title: stored_title(&row)?,
+                archived_at: parse_optional_timestamp(
+                    &row,
+                    "archived_at",
+                    "failed to parse session archived_at",
+                )?,
             });
         }
 
         Ok(sessions)
+    }
+
+    async fn rename_session(&self, session_id: &str, title: &str) -> Result<()> {
+        let title = title.trim();
+        let updated = sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
+            .bind(title)
+            .bind(session_id)
+            .execute(&*self.pool)
+            .await
+            .context("failed to rename session")?;
+        if updated.rows_affected() == 0 {
+            anyhow::bail!("cannot rename unknown session {session_id}");
+        }
+        Ok(())
+    }
+
+    async fn archive_session(&self, session_id: &str, archived: bool) -> Result<()> {
+        let stamp: Option<String> = archived.then(|| Self::now().to_rfc3339());
+        let updated = sqlx::query("UPDATE sessions SET archived_at = ? WHERE id = ?")
+            .bind(stamp)
+            .bind(session_id)
+            .execute(&*self.pool)
+            .await
+            .context("failed to archive session")?;
+        if updated.rows_affected() == 0 {
+            anyhow::bail!("cannot archive unknown session {session_id}");
+        }
+        Ok(())
+    }
+
+    async fn duplicate_session(&self, session_id: &str, new_id: &str) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin duplicate session transaction")?;
+
+        // The row keeps the source's title and root, but not its parent link or
+        // its archived flag: a copy made on purpose is a top-level session the
+        // user is about to use, not a hidden child of the same parent.
+        let now = Self::now();
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO sessions (id, created_at, updated_at, root_dir, ref_id, title, archived_at)
+            SELECT ?, ?, ?, root_dir, '', title, NULL
+            FROM sessions WHERE id = ?
+            "#,
+        )
+        .bind(new_id)
+        .bind(now)
+        .bind(now)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to copy session row")?;
+        if inserted.rows_affected() == 0 {
+            anyhow::bail!("cannot duplicate unknown session {session_id}");
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO messages (session_id, role, content, ordinal, created_at)
+            SELECT ?, role, content, ordinal, created_at
+            FROM messages WHERE session_id = ?
+            ORDER BY ordinal ASC, id ASC
+            "#,
+        )
+        .bind(new_id)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to copy session messages")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit duplicate session transaction")?;
+        Ok(())
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -1125,11 +1257,27 @@ fn parse_timestamp(row: &sqlx::sqlite::SqliteRow, col: &str, msg: &str) -> Resul
     Err(anyhow::anyhow!("{}: {}", msg, s))
 }
 
+fn parse_optional_timestamp(
+    row: &sqlx::sqlite::SqliteRow,
+    col: &str,
+    msg: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    let Some(raw) = row.try_get::<Option<String>, _>(col)? else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    parse_timestamp(row, col, msg).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use sqlx::Row;
     use tact_llm::{MessageContent, Role};
     use tempfile::TempDir;
+
+    use crate::store::sqlite::open_pool;
 
     use super::{super::SessionStore, SqliteSessionStore};
 
@@ -1193,6 +1341,63 @@ mod tests {
         store.delete_session("session-1").await.unwrap();
         let after = store.load_session("session-1").await.unwrap();
         assert!(after.is_empty());
+    }
+
+    /// A workspace whose DB predates the session-list columns has to grow them
+    /// on open: `list_sessions` selects `title` and `archived_at` on every call,
+    /// so an unmigrated row would fail the sidebar's first read.
+    #[tokio::test]
+    async fn a_store_from_before_the_title_columns_migrates_in_place() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("legacy.db");
+        let pool = open_pool(&db).await.unwrap();
+        // The pre-title shape of `sessions`, written by hand.
+        sqlx::query(
+            r#"
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                root_dir TEXT NOT NULL DEFAULT '',
+                locked_by INTEGER NOT NULL DEFAULT 0,
+                lock_epoch TEXT NOT NULL DEFAULT '',
+                ref_id TEXT NOT NULL DEFAULT ''
+            );
+            "#,
+        )
+        .execute(&*pool)
+        .await
+        .unwrap();
+        // Rows are written with RFC 3339 timestamps by hand; the column default
+        // is a space-separated SQLite stamp nothing would parse.
+        sqlx::query(
+            "INSERT INTO sessions (id, root_dir, created_at, updated_at) VALUES ('legacy-1', '/tmp/legacy', ?, ?)",
+        )
+        .bind("2026-01-01T00:00:00+00:00")
+        .bind("2026-01-01T00:00:00+00:00")
+        .execute(&*pool)
+        .await
+        .unwrap();
+        drop(pool);
+
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        let sessions = store.list_sessions(None).await.unwrap();
+        assert_eq!(sessions.len(), 1, "the old row survives the migration");
+        assert_eq!(sessions[0].title, None, "an unnamed row reads as unnamed");
+        assert_eq!(sessions[0].archived_at, None);
+
+        store
+            .rename_session("legacy-1", "Named after the fact")
+            .await
+            .unwrap();
+        store.archive_session("legacy-1", true).await.unwrap();
+
+        let sessions = store.list_sessions(None).await.unwrap();
+        assert_eq!(sessions[0].title.as_deref(), Some("Named after the fact"));
+        assert!(
+            sessions[0].archived_at.is_some(),
+            "the archive flag is readable on a migrated row"
+        );
     }
 
     #[tokio::test]

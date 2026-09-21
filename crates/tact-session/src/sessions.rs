@@ -22,10 +22,21 @@ pub struct RecentSession {
     pub message_count: i64,
     /// One-line title for a session list, from the session's opening message.
     ///
-    /// The store has no title column, so a row would otherwise have to print
-    /// the raw id; the user's own first words are the honest stand-in.
-    /// `None` for a session that has no user message yet.
+    /// A session the user has not named has no other label to print but the raw
+    /// id, so the user's own first words are the honest stand-in. `None` for a
+    /// session that has no user message yet.
     pub title: Option<String>,
+    /// The name the user gave the session, when they renamed it.
+    ///
+    /// Beats [`Self::title`] wherever a front end labels the session, and
+    /// clearing it in the store is what restores the derived label.
+    pub name: Option<String>,
+    /// Whether the session is archived.
+    ///
+    /// Archiving is a policy flag, not a delete: the row keeps its messages and
+    /// stays listable, so a front end can group it or badge it but must not drop
+    /// it -- clearing the flag has to restore the session.
+    pub archived: bool,
 }
 
 /// Longest title a session list shows before eliding.
@@ -70,6 +81,8 @@ pub fn recent(workdir: &Path) -> anyhow::Result<Vec<RecentSession>> {
                 updated_at_unix: session.updated_at.timestamp(),
                 message_count: session.message_count,
                 title: session.first_user_text.as_deref().and_then(session_title),
+                name: session.title,
+                archived: session.archived_at.is_some(),
             })
             .collect())
     })

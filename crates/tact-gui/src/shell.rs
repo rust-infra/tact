@@ -17,6 +17,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     command::{Command, CommandState},
+    dialog::DialogFooter,
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     message_scroller::{MessageScroller, MessageScrollerState},
@@ -712,6 +713,19 @@ impl TactApp {
         self.session.as_ref().map(SessionHandle::session_id)
     }
 
+    /// The session the window has open, for tests and status surfaces.
+    ///
+    /// Unlike [`Self::session_id`] this answers in an offline shell too, where
+    /// the open row is whichever one a click picked.
+    pub fn open_session(&self) -> Option<&str> {
+        self.open_session_id()
+    }
+
+    /// The sidebar's session ids in display order, for tests and status surfaces.
+    pub fn recent_row_ids(&self) -> Vec<String> {
+        self.recent.iter().map(|row| row.id.clone()).collect()
+    }
+
     /// Whether a turn is currently in flight.
     pub fn is_running(&self) -> bool {
         self.state.running
@@ -985,6 +999,263 @@ impl TactApp {
                 format!("Could not resume session {session_id}: {err:#}"),
                 cx,
             ),
+        }
+    }
+
+    /// Whether the open session is archived, for the menu's archive row.
+    fn open_session_archived(&self) -> bool {
+        self.open_row().is_some_and(|row| row.archived)
+    }
+
+    /// The sidebar row the shell has open, when it still lists one.
+    fn open_row(&self) -> Option<&RecentSession> {
+        let id = self.open_session_id()?;
+        self.recent.iter().find(|row| row.id == id)
+    }
+
+    /// Ask for a new name for the open session.
+    ///
+    /// The name lives in the store's `title` column, so the dialog is the only
+    /// way to set one; a session with no name keeps the label its opening
+    /// message gives it, and emptying the field goes back to that label.
+    fn open_rename_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session_id) = self.open_session_id().map(str::to_string) else {
+            self.push_system_row("No session is open to rename.".into(), cx);
+            return;
+        };
+        let current = match self.open_row() {
+            Some(row) => session_row_title(row),
+            None => session::short_id(&session_id).to_string(),
+        };
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(current)
+                .placeholder("Session name")
+        });
+        let owner = cx.weak_entity();
+        // The deferred focus below runs after the dialog opens, so it keeps its
+        // own handle on the field.
+        let focus_input = input.clone();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            // The dialog's content builder runs on every frame, so it takes its
+            // own handle on the field rather than borrowing this one.
+            let content_input = input.clone();
+            let commit_owner = owner.clone();
+            let commit_input = input.clone();
+            let commit_id = session_id.clone();
+            // Enter arrives here through the dialog's own key context; the
+            // footer's Rename button dispatches the same confirm, so both paths
+            // commit once.
+            let confirm = move |_: &mut Window, cx: &mut App| {
+                let name = commit_input.read(cx).value().to_string();
+                let _ = commit_owner.update(cx, |app, cx| app.rename_session(&commit_id, name, cx));
+            };
+            let enter_owner = owner.clone();
+            let enter_input = input.clone();
+            let enter_id = session_id.clone();
+            dialog
+                .title("Rename session")
+                .width(px(420.))
+                .on_ok(move |_, _window, cx| {
+                    let name = enter_input.read(cx).value().to_string();
+                    let _ =
+                        enter_owner.update(cx, |app, cx| app.rename_session(&enter_id, name, cx));
+                    true
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("session-rename-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("session-rename-ok").label("Rename").on_click(
+                            move |_, window, cx| {
+                                confirm(window, cx);
+                                window.close_dialog(cx);
+                            },
+                        )),
+                )
+                .content(move |content, _window, _cx| {
+                    // The field carries the id through a wrapper: `Input` is a
+                    // render-once element without a test-support id of its own.
+                    content.child(
+                        div()
+                            .id("session-rename-input")
+                            .test_support()
+                            .w_full()
+                            .child(Input::new(&content_input)),
+                    )
+                })
+        });
+
+        window.defer(cx, move |window, cx| {
+            focus_input.update(cx, |state, cx| state.focus(window, cx));
+        });
+    }
+
+    /// Store a new name for `session_id`, then redraw the sidebar from it.
+    ///
+    /// The offline preview owns no store, so it renames its own row instead --
+    /// the same edit the prototype's script makes to the DOM -- and a connected
+    /// shell writes the column and reloads the list.
+    fn rename_session(&mut self, session_id: &str, name: String, cx: &mut Context<Self>) {
+        let trimmed = name.trim().to_string();
+        if self.offline {
+            if let Some(row) = self.recent.iter_mut().find(|row| row.id == session_id) {
+                row.name = (!trimmed.is_empty()).then(|| trimmed.clone());
+                self.announce_rename(session_id, &trimmed, cx);
+            }
+            return;
+        }
+        let Some(workdir) = self.workspace_dir() else {
+            self.push_system_row("Cannot determine the workspace directory.".into(), cx);
+            return;
+        };
+        match session::rename(&workdir, session_id, &trimmed) {
+            Ok(()) => {
+                self.recent = session::recent(&workdir);
+                self.announce_rename(session_id, &trimmed, cx);
+            }
+            Err(err) => self.push_system_row(format!("Could not rename the session: {err:#}"), cx),
+        }
+    }
+
+    /// The transcript's record of a rename, whichever store it went to.
+    fn announce_rename(&mut self, session_id: &str, name: &str, cx: &mut Context<Self>) {
+        let short = session::short_id(session_id).to_string();
+        let text = if name.is_empty() {
+            format!("Cleared the name of session {short}; it shows its opening words again.")
+        } else {
+            format!("Renamed session {short} to \"{name}\".")
+        };
+        self.push_system_row(text, cx);
+    }
+
+    /// Copy the open session's conversation into a new one, then open the copy.
+    fn duplicate_open_session(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.open_session_id().map(str::to_string) else {
+            self.push_system_row("No session is open to duplicate.".into(), cx);
+            return;
+        };
+        let source_short = session::short_id(&session_id).to_string();
+
+        if self.offline {
+            let Some(source) = self.recent.iter().find(|row| row.id == session_id).cloned() else {
+                return;
+            };
+            let copy = RecentSession {
+                id: format!("{}-copy-{}", source.id, session::now_unix()),
+                updated_at_unix: session::now_unix(),
+                name: Some(format!("{} (copy)", session_row_title(&source))),
+                archived: false,
+                ..source
+            };
+            let copy_id = copy.id.clone();
+            self.recent.insert(0, copy);
+            self.preview_current = Some(copy_id.clone());
+            self.push_system_row(
+                format!(
+                    "Duplicated session {source_short} into {}: the copy keeps the conversation and starts from it.",
+                    session::short_id(&copy_id)
+                ),
+                cx,
+            );
+            return;
+        }
+
+        let Some(workdir) = self.workspace_dir() else {
+            self.push_system_row("Cannot determine the workspace directory.".into(), cx);
+            return;
+        };
+        match session::duplicate(&workdir, &session_id) {
+            Ok(copy_id) => {
+                self.recent = session::recent(&workdir);
+                // Open the copy: pressing Duplicate is about continuing from
+                // here, not about leaving a row behind to find later.
+                self.resume_session(copy_id.clone(), cx);
+                self.push_system_row(
+                    format!(
+                        "Duplicated session {source_short} into {}. The copy carries the conversation and no provider state, so its next turn replays it.",
+                        session::short_id(&copy_id)
+                    ),
+                    cx,
+                );
+            }
+            Err(err) => {
+                self.push_system_row(format!("Could not duplicate the session: {err:#}"), cx)
+            }
+        }
+    }
+
+    /// Archive or restore the open session.
+    ///
+    /// Archiving is a flag, never a delete: the row and its transcript stay in
+    /// the store and in the sidebar, carrying the prototype's `Archived` badge
+    /// until the flag is cleared.
+    fn set_open_session_archived(&mut self, archived: bool, cx: &mut Context<Self>) {
+        let Some(session_id) = self.open_session_id().map(str::to_string) else {
+            self.push_system_row("No session is open to archive.".into(), cx);
+            return;
+        };
+        if self.offline {
+            if let Some(row) = self.recent.iter_mut().find(|row| row.id == session_id) {
+                row.archived = archived;
+                self.announce_archive(&session_id, archived, cx);
+            }
+            return;
+        }
+        let Some(workdir) = self.workspace_dir() else {
+            self.push_system_row("Cannot determine the workspace directory.".into(), cx);
+            return;
+        };
+        match session::set_archived(&workdir, &session_id, archived) {
+            Ok(()) => {
+                self.recent = session::recent(&workdir);
+                self.announce_archive(&session_id, archived, cx);
+            }
+            Err(err) => self.push_system_row(format!("Could not archive the session: {err:#}"), cx),
+        }
+    }
+
+    /// The transcript's record of an archive, whichever store it went to.
+    fn announce_archive(&mut self, session_id: &str, archived: bool, cx: &mut Context<Self>) {
+        let short = session::short_id(session_id).to_string();
+        let text = if archived {
+            format!("Archived session {short}; it keeps its transcript and can be restored.")
+        } else {
+            format!("Restored session {short}.")
+        };
+        self.push_system_row(text, cx);
+    }
+
+    /// Hand the workspace to the desktop's file manager.
+    ///
+    /// The offline preview does not launch one -- a preview or a test run must
+    /// not open windows behind the user -- so it says what it would open rather
+    /// than pretending it did.
+    fn reveal_workspace(&mut self, cx: &mut Context<Self>) {
+        let Some(workdir) = self.workspace_dir() else {
+            self.push_system_row("Cannot determine the workspace directory.".into(), cx);
+            return;
+        };
+        if self.offline {
+            self.push_system_row(
+                format!(
+                    "The workspace is {}; the offline preview does not open a file manager.",
+                    workdir.display()
+                ),
+                cx,
+            );
+            return;
+        }
+        match session::reveal(&workdir) {
+            Ok(()) => self.push_system_row(
+                format!("Opened {} in the file manager.", workdir.display()),
+                cx,
+            ),
+            Err(err) => self.push_system_row(format!("Could not open the workspace: {err:#}"), cx),
         }
     }
 
@@ -2010,6 +2281,7 @@ impl Render for TactApp {
                     sidebar_float: !sidebar_in_flow,
                     work_pane_float: !work_pane_in_flow,
                     columns,
+                    open_archived: self.open_session_archived(),
                 },
                 cx,
             ))
@@ -2137,6 +2409,10 @@ struct TitleBarState {
     /// `.top` shares the shell's `grid-template-columns`, so the chrome's two
     /// side segments reserve whatever the columns below them actually take.
     columns: Columns,
+    /// Whether the open session is archived. The dropdown's archive row has to
+    /// read "Unarchive" for a session that is already archived, or the flag
+    /// would be a one-way door in the menu.
+    open_archived: bool,
 }
 
 fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElement {
@@ -2149,6 +2425,7 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
         sidebar_float,
         work_pane_float,
         columns,
+        open_archived,
     } = state;
     let dark = cx.theme().is_dark();
     let (theme_icon, theme_action) = if dark {
@@ -2258,20 +2535,30 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
 
     // The prototype's session chip: a list glyph, the name, then a chevron --
     // and, because the prototype makes it a real `<button>`, the trigger of the
-    // session dropdown. v1 has no backing for rename, duplicate, or archive
-    // (the store keeps no title or archive column, and the protocol carries no
-    // such command) and no platform-open helper to reveal a directory with, so
-    // each row answers with a truthful system row rather than an invented edit
-    // -- the same shape as the add-file menu's plugin notice below.
+    // session dropdown. Each row now has behaviour behind it rather than a
+    // notice: rename opens the name dialog, duplicate copies the conversation
+    // into a new session, archive flips a flag the store keeps (never a
+    // delete), and reveal hands the workspace to the desktop's file manager.
+    // A pick also closes the menu it was picked from, the way a menu item does
+    // everywhere else.
     let menu_owner = cx.weak_entity();
     let session_menu = Popover::new("session-menu")
         .anchor(gpui_kit::Anchor::TopLeft)
         .trigger(SessionChip::new(session_heading))
-        .content(move |_state, _window, _cx| {
+        .content(move |_state, _window, popover_cx| {
+            // The menu is the popover this content builds, so a row press can
+            // ask it to dismiss itself; the shell's own list is what the action
+            // then edits or reloads.
+            let menu = popover_cx.entity();
             let rename_owner = menu_owner.clone();
             let duplicate_owner = menu_owner.clone();
             let archive_owner = menu_owner.clone();
             let reveal_owner = menu_owner.clone();
+            let archive_label = if open_archived {
+                "Unarchive"
+            } else {
+                "Archive"
+            };
             v_flex()
                 .id("session-menu-panel")
                 .test_support()
@@ -2283,14 +2570,13 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
                         .label("Rename")
                         .ghost()
                         .compact()
-                        .on_click(move |_, _, cx| {
-                            let _ = rename_owner.update(cx, |app, cx| {
-                                app.push_system_row(
-                                    "Renaming a session is not available yet: the session store keeps no title."
-                                        .to_string(),
-                                    cx,
-                                )
-                            });
+                        .on_click({
+                            let menu = menu.clone();
+                            move |_, window, cx| {
+                                menu.update(cx, |state, cx| state.dismiss(window, cx));
+                                let _ = rename_owner
+                                    .update(cx, |app, cx| app.open_rename_dialog(window, cx));
+                            }
                         }),
                 )
                 .child(
@@ -2299,30 +2585,29 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
                         .label("Duplicate")
                         .ghost()
                         .compact()
-                        .on_click(move |_, _, cx| {
-                            let _ = duplicate_owner.update(cx, |app, cx| {
-                                app.push_system_row(
-                                    "Duplicating a session is not available yet: the protocol has no duplicate command."
-                                        .to_string(),
-                                    cx,
-                                )
-                            });
+                        .on_click({
+                            let menu = menu.clone();
+                            move |_, window, cx| {
+                                menu.update(cx, |state, cx| state.dismiss(window, cx));
+                                let _ = duplicate_owner
+                                    .update(cx, |app, cx| app.duplicate_open_session(cx));
+                            }
                         }),
                 )
                 .child(
                     Button::new("session-menu-archive")
                         .icon(IconName::Archive)
-                        .label("Archive")
+                        .label(archive_label)
                         .ghost()
                         .compact()
-                        .on_click(move |_, _, cx| {
-                            let _ = archive_owner.update(cx, |app, cx| {
-                                app.push_system_row(
-                                    "Archiving a session is not available yet: the store keeps no archive column, so nothing was removed."
-                                        .to_string(),
-                                    cx,
-                                )
-                            });
+                        .on_click({
+                            let menu = menu.clone();
+                            move |_, window, cx| {
+                                menu.update(cx, |state, cx| state.dismiss(window, cx));
+                                let _ = archive_owner.update(cx, |app, cx| {
+                                    app.set_open_session_archived(!open_archived, cx)
+                                });
+                            }
                         }),
                 )
                 .child(
@@ -2331,14 +2616,12 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
                         .label("Reveal in filesystem")
                         .ghost()
                         .compact()
-                        .on_click(move |_, _, cx| {
-                            let _ = reveal_owner.update(cx, |app, cx| {
-                                app.push_system_row(
-                                    "Revealing in the file manager is not available yet: the desktop build ships no platform-open helper."
-                                        .to_string(),
-                                    cx,
-                                )
-                            });
+                        .on_click({
+                            let menu = menu.clone();
+                            move |_, window, cx| {
+                                menu.update(cx, |state, cx| state.dismiss(window, cx));
+                                let _ = reveal_owner.update(cx, |app, cx| app.reveal_workspace(cx));
+                            }
                         }),
                 )
         });
@@ -2568,6 +2851,10 @@ fn preview_sessions() -> Vec<RecentSession> {
             updated_at_unix: now - age,
             message_count: *messages,
             title: Some((*title).to_string()),
+            name: None,
+            // The prototype's `Remote MCP transport` row is the one that reads
+            // as archived, so the preview shows the badge somewhere.
+            archived: *title == "Remote MCP transport",
         })
         .collect()
 }
@@ -3038,7 +3325,11 @@ fn session_row(
     // `.running .dot` / `.review .dot` / `.done .dot`: the row's state picks the
     // dot's ink and the halo behind it. A session with no turns yet reads as the
     // neutral default rather than inventing a state.
-    let (dot, halo) = if is_current {
+    let (dot, halo) = if session.archived {
+        // `.row` with no state class: an archived session is not running and has
+        // no fresh diff, so its dot goes back to the prototype's neutral pair.
+        (muted.opacity(0.5), muted.opacity(0.12))
+    } else if is_current {
         (primary, primary.opacity(0.12))
     } else if session.message_count > 0 {
         (blue, blue.opacity(0.12))
@@ -3046,7 +3337,16 @@ fn session_row(
         (muted.opacity(0.5), muted.opacity(0.12))
     };
     // `.badge.run` / `.badge.diff` / plain `.badge`.
-    let badge = if is_current {
+    let badge = if session.archived {
+        // `.badge` with no state class -- the prototype's archived row. It wins
+        // over the state badges because an archived session is not the live
+        // state of anything, even when it happens to be the open row.
+        Some(SessionBadge {
+            text: "Archived".to_string(),
+            fg: muted,
+            bg: muted.opacity(0.10),
+        })
+    } else if is_current {
         Some(SessionBadge {
             text: "Running".to_string(),
             fg: cx.theme().accent_foreground,
@@ -3068,9 +3368,18 @@ fn session_row(
         None
     };
 
+    // The row's accessible name carries what it shows: the title, the metadata
+    // line, and the state badge. A drawn row has no text of its own to fall back
+    // on, so without this the sidebar is a wall of unlabelled buttons.
+    let accessible = match badge.as_ref() {
+        Some(badge) => format!("{label} · {meta} · {}", badge.text),
+        None => format!("{label} · {meta}"),
+    };
+
     h_flex()
         .id(SharedString::from(format!("session-row-{}", session.id)))
         .test_support()
+        .aria_label(SharedString::from(accessible))
         // The row the shell has open, in the accessibility tree and in tests.
         // The prototype only paints `.row.active`, which no test can assert on.
         .aria_selected(is_current)
@@ -3140,14 +3449,16 @@ fn session_row(
         )
 }
 
-/// Sidebar row title: the session's opening words when the store could read
-/// them, otherwise the short id.
+/// Sidebar row title: the name the user gave the session, then its opening
+/// words, then the short id.
 ///
 /// The prototype labels rows with human titles ("Desktop client design"); a
-/// session whose first message is missing or unparseable falls back to the id
-/// rather than rendering an empty row.
+/// renamed session has to answer to the name the user typed, and a session whose
+/// first message is missing or unparseable falls back to the id rather than
+/// rendering an empty row.
 fn session_row_title(session: &RecentSession) -> String {
-    match session.title.as_deref() {
+    let label = session.name.as_deref().or(session.title.as_deref());
+    match label {
         Some(title) if !title.is_empty() => title.to_string(),
         _ => session::short_id(&session.id).to_string(),
     }
@@ -3196,12 +3507,20 @@ fn session_name(
     rows: &[transcript::TranscriptRow],
 ) -> Option<String> {
     if let Some(id) = open
-        && let Some(title) = recent
-            .iter()
-            .find(|session| session.id == id)
-            .and_then(|session| session.title.as_deref())
+        && let Some(session) = recent.iter().find(|session| session.id == id)
     {
-        return tact_session::sessions::session_title(title);
+        // The user's own name wins over the opening words, exactly as it does in
+        // the sidebar row this chip sits above.
+        let named = session
+            .name
+            .as_deref()
+            .and_then(tact_session::sessions::session_title);
+        if named.is_some() {
+            return named;
+        }
+        if let Some(title) = session.title.as_deref() {
+            return tact_session::sessions::session_title(title);
+        }
     }
     rows.iter().find_map(|row| match row {
         transcript::TranscriptRow::User { text, .. } => tact_session::sessions::session_title(text),
@@ -6356,6 +6675,8 @@ mod tests {
             updated_at_unix: 0,
             message_count: 2,
             title: Some("Desktop client design".to_string()),
+            name: None,
+            archived: false,
         }];
 
         // The stored title wins, so the chip and the sidebar row agree about
@@ -6416,6 +6737,8 @@ mod tests {
             updated_at_unix: now - age_seconds,
             message_count: 1,
             title: None,
+            name: None,
+            archived: false,
         }
     }
 

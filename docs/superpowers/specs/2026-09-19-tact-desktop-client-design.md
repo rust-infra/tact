@@ -35,9 +35,13 @@ delivery plan and the desktop design review.
 - The production shell, Tact light/dark themes, transcript/composer, Plan, Diff,
   Tasks, Subagent, and Files panes, command palette, settings, and window-level
   keyboard contract are implemented in `crates/tact-gui`.
-- The sidebar lists workspace-local sessions as short id + age + message count.
-  Selecting a row resumes that id through the shared `tact-session` runtime, and
-  `Ctrl+Tab` cycles sessions without a pointer.
+- The sidebar lists workspace-local sessions by stored or derived title with
+  project/branch/age metadata and a status badge. Selecting a row resumes that
+  id through the shared `tact-session` runtime, and `Ctrl+Tab` cycles sessions
+  without a pointer. Session titles and the title-bar dropdown actions are
+  implemented: rename persists in `sessions.title`, archive is a reversible
+  `archived_at` flag, duplicate copies the conversation and opens the copy, and
+  reveal opens the workspace in the platform file manager.
 - The shared session driver and agent construction were extracted from
   `tact-ui` into the headless `crates/tact-session` crate; `tact-ui` re-exports
   the historical paths, so the TUI and GUI use one implementation.
@@ -46,7 +50,8 @@ delivery plan and the desktop design review.
 - Post-v1 layout persistence is explicitly parked: the v1 shell uses the fixed
   defaults below, and restoring sidebar/work-pane widths, selected pane, and
   transcript detail will be added with a layout settings store. Session search,
-  grouping, pinning, titles, and branch metadata are also post-v1.
+  grouping, pinning, and branch metadata remain post-v1; titles and the
+  dropdown actions shipped after the initial v1 pass.
 
 ## 1. Product job
 
@@ -228,7 +233,10 @@ At every width:
 
 - Three top-level tabs: `Chat`, `Agent`, `Code`.
 - Session title with a dropdown for rename, duplicate, archive, and reveal in
-  filesystem where applicable.
+  filesystem where applicable. Rename stores `sessions.title` (blank clears it);
+  archive sets a reversible `sessions.archived_at` flag rather than deleting;
+  duplicate copies only the conversation and opens the copy; reveal opens the
+  workspace directory in the platform file manager.
 - `⌘K` / `Ctrl+K` command palette trigger.
 - Theme toggle.
 - Settings.
@@ -256,9 +264,11 @@ Session rows show title, project/branch hint, status dot, and token or diff
 summary only when useful. Do not put a row of hover-only icons on every item;
 use selection plus a context menu.
 
-The shipped v1 row is intentionally smaller: it shows `short id · age` plus a
-message count, with the current row highlighted. That is enough to resume a
-thread before the richer title/search/grouping model lands.
+The shipped v1 row uses the stored or derived title as its label, with
+`project · branch · age` metadata and a status badge; the short id is the
+fallback when neither a name nor an opening message exists. That is enough to
+resume and distinguish threads while search, grouping and pinning remain
+post-v1.
 
 ### 6.3 Transcript
 

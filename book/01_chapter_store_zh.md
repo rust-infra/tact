@@ -139,7 +139,7 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 
 | 表 | 用途 |
 |----|------|
-| `sessions` | 会话 id、`root_dir`、`ref_id`（父会话 id；`''` = 顶层）、`locked_by` + `lock_epoch`（进程锁）、时间戳 |
+| `sessions` | 会话 id、`root_dir`、`ref_id`（父会话 id；`''` = 顶层）、`title`（用户指定的名称；`''` = 回退到开场消息）、`archived_at`（`NULL` = 活跃；时间戳 = 已归档但未删除）、`locked_by` + `lock_epoch`（进程锁）、时间戳 |
 | `messages` | 序列化的 `MessageContent` JSON、序号排序 |
 | `token_usages` | 每次 LLM 调用的 token 计数、可选 `request_body` blob、可选 `tool_schedule` JSON |
 | `input_history` | TUI 召回用的用户输入字符串（每会话最多 100 条） |
@@ -169,6 +169,20 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 保真度止步于 message 表。工具的耗时、请求卡片、进度行与生产者算出的 `arg_summary` 都属于展示态、从未被持久化，所以重绘出来的卡片没有耗时、退回通用 `ToolVisualKind`、detail 行改从约定的入参键推导，且在 store 里没有对应 `ToolResult` 时保持 `Running`。`load_session` 也不返回每行的 `created_at`，因此重绘行不打印时钟。压缩会重写 message 表，所以被摘要取代的 block 对所有读取方都是消失的，不只是 GUI。
 
 若未附加 session store（未调用 `with_session`），持久化方法为 no-op——便于测试。`list_sessions` 只返回 `ref_id = ''` 的顶层会话；`delete_session` 会级联删除 `ref_id = 该 id` 的子会话及其附属表。
+
+### 会话动作
+
+两个前端共用 `crates/tact-session/src/session_actions.rs` 中四个与展示无关的动作：
+
+| 动作 | Store 契约 |
+|------|------------|
+| Rename | 写入 `sessions.title`；写入前 trim，空串或纯空白会清除名称，使该行回退到开场消息。 |
+| Archive | 写入 `sessions.archived_at`；归档可逆，绝不调用 `delete_session`，所以会话、消息和子会话都会保留。 |
+| Duplicate | 在同一个事务里复制源会话行（新 id、`ref_id = ''`）及其 `messages`。刻意不复制子会话、provider state 和 `token_usages`：副本的下一轮会从复制的消息重新开始，已记录的用量仍属于原会话。副本命名为 `<源标签> (copy)`。 |
+| Reveal | 用 `xdg-open`、`gio open`、`nautilus`、`dolphin` 中第一个可用者打开工作区目录；找不到启动器时报告错误。 |
+
+GUI 经 `crates/tact-gui/src/session.rs` 调用这些动作，然后从
+`tact_session::sessions::recent` 重绘列表。离线预览只改内存中的行，不写 store。
 
 ### 输入历史裁剪
 
@@ -207,7 +221,8 @@ sequenceDiagram
 |------|------|
 | `crates/tact/src/store/mod.rs` | `StoreRoot`、`Store<T>`、`CollectionStore<T>` |
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait、`DynSessionStore`、`open_sqlite_session_store` |
-| `crates/tact/src/store/session_store/sqlite.rs` | 全新 schema（`CREATE TABLE IF NOT EXISTS`）、`SqliteSessionStore` 实现 |
+| `crates/tact/src/store/session_store/sqlite.rs` | 全新 schema（`CREATE TABLE IF NOT EXISTS`）、原地列迁移、`SqliteSessionStore` 实现 |
+| `crates/tact-session/src/session_actions.rs` | 两个前端共用的 `rename` / `set_archived` / `duplicate` / `reveal` 动作 |
 | `crates/tact/src/store/task_store/mod.rs` | `TaskStore` trait（async：create/get/update/list/delete） |
 | `crates/tact/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — `tasks` + `task_dependencies` 表、`BEGIN IMMEDIATE` 事务、`busy_timeout` |
 | `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait（async：upsert/get/list） |
@@ -233,7 +248,7 @@ sequenceDiagram
 |------|------|
 | JSON store 无跨进程锁 | JSON 文件读-改-写无文件锁（SQLite 会话使用进程锁） |
 | `CollectionStore::list()` 顺序 | 目录迭代未排序——顺序依赖文件系统 |
-| 全新 SQLite schema | 主要为 `CREATE TABLE IF NOT EXISTS`；旧库通过 `PRAGMA` + `ALTER TABLE` 补上 `sessions.ref_id` |
+| 全新 SQLite schema | 主要为 `CREATE TABLE IF NOT EXISTS`；旧库通过 `PRAGMA` + `ALTER TABLE` 补上 `sessions.ref_id`、`title`、`archived_at` |
 | Session store 可选 | 测试与部分调用方可不附加 SQLite |
 | 每 workdir 一个 Session DB | SQLite 当前位于 `<workdir>/.tact/tact.db`；`sessions.root_dir` 记录项目路径，供未来共享 `$HOME/.tact/tact.db` |
 | 遗留 JSON 文件 | `tasks/*.json`、`background/tasks/*.json`、`team/config.json`、`team/inbox/*.json`、`worktrees/index.json` 在 SQLite 迁移后不再读取；留在磁盘上，手动清理 |

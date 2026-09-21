@@ -28,6 +28,12 @@ pub struct SessionSummary {
     /// instead of printing the raw id. `None` until the session has a user
     /// message, and for user messages that carry only images or tool results.
     pub first_user_text: Option<String>,
+    /// The name the user gave the session. Takes precedence over
+    /// `first_user_text`, which is only a derived label.
+    pub title: Option<String>,
+    /// When the session was archived, if it was. Archiving is a policy flag:
+    /// the row and its messages stay, and clearing the flag restores it.
+    pub archived_at: Option<DateTime<Utc>>,
 }
 
 /// The first text a message carries, ignoring non-text blocks.
@@ -103,6 +109,25 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<(i64, i64)>;
 
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>>;
+
+    /// Give a session a name. An empty or whitespace-only `title` clears it, so
+    /// the session falls back to its derived label.
+    async fn rename_session(&self, session_id: &str, title: &str) -> Result<()>;
+
+    /// Set or clear a session's archived flag.
+    ///
+    /// This is deliberately not a delete: `archived_at` marks policy, and the
+    /// session's row and messages must survive it so the flag can be cleared.
+    async fn archive_session(&self, session_id: &str, archived: bool) -> Result<()>;
+
+    /// Copy a session's own row and messages under `new_id`.
+    ///
+    /// Subagent children (`ref_id`) belong to the original, and recorded token
+    /// usage is the original's spend, so neither is copied. The copy carries no
+    /// provider conversation state, which costs one full replay on its first
+    /// turn and cannot drift from the messages that were copied. It is not
+    /// archived either: a copy made on purpose is one the user is about to use.
+    async fn duplicate_session(&self, session_id: &str, new_id: &str) -> Result<()>;
 
     async fn list_sessions(&self, root_dir: Option<&str>) -> Result<Vec<SessionSummary>>;
 

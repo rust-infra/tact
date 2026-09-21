@@ -32,7 +32,20 @@ Newest entries first. Each entry should include:
 ---
 
 
-## 1. 2026-09-21 — The work pane's five prototype-only actions answer a press
+## 1. 2026-09-21 — Session menu actions persist the row instead of apologising
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/store/session_store/mod.rs` (`SessionSummary`, `rename_session`, `archive_session`, `duplicate_session`); `crates/tact/src/store/session_store/sqlite.rs` (in-place `title` / `archived_at` migration); `crates/tact-session/src/session_actions.rs`; `crates/tact-session/src/sessions.rs` (`RecentSession`); `crates/tact-gui/src/session.rs`; `crates/tact-gui/src/shell.rs` (session menu handlers and dialog); `book/01_chapter_store.md` |
+
+**Symptom / motivation:** The session chip rendered the prototype's dropdown, but rename, duplicate, archive and reveal-in-filesystem each answered with a system row saying the application could not act. The store had no title or archive column, and archive could not be implemented as deletion because `delete_session` cascades through messages and child sessions.
+
+**Decision:** Make the store own the durable facts. `sessions` gains `title` (empty means fall back to the opening message) and `archived_at` (a reversible policy flag, never a tombstone), with a `PRAGMA` + `ALTER TABLE` migration for existing databases. `SessionStore` gains `rename_session`, `archive_session` and `duplicate_session`; the first two reject unknown ids instead of silently succeeding. Duplicate runs in one transaction, copies the source row and messages under a new id, and deliberately copies neither provider state nor `token_usages`: the copy replays from its messages, while the original keeps its request chain and spend. `tact-session::session_actions` exposes the four presentation-neutral actions, including a platform-launcher search for reveal. The GUI dialog and menu call those actions and redraw `recent`; the offline preview mutates its in-memory rows only.
+
+**Behavior after:** Rename stores the trimmed name and an empty value restores the derived label. Archive keeps the session listable and restores it when toggled back. Duplicate inserts a `<source label> (copy)` row, opens it, and gives it a fresh provider chain. Reveal opens the workspace directory, or reports the launcher list when none exists. The click walk now asserts the visible effect of every row rather than only that the press did not panic.
+
+**Pointers:** `crates/tact-session/src/session_actions.rs`; `crates/tact/src/store/session_store/sqlite.rs` (`migrate_sessions_title_and_archive`, `duplicate_session`); `crates/tact-gui/src/shell.rs` (`open_rename_dialog`, `duplicate_open_session`, `set_open_session_archived`, `reveal_workspace`); `crates/tact-gui/tests/shell.rs` (`every_entry_point_answers_a_click`); `book/01_chapter_store.md` (Session actions); `docs/token_usage_schema.md` (duplicate does not copy usage).
 
 | Field | Value |
 |-------|-------|

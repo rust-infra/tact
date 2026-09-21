@@ -135,6 +135,34 @@ pub(crate) fn history(workdir: &std::path::Path, session_id: &str) -> Vec<Histor
     }
 }
 
+/// Name a session in the workspace's store, or clear its name with `""`.
+pub(crate) fn rename(
+    workdir: &std::path::Path,
+    session_id: &str,
+    name: &str,
+) -> anyhow::Result<()> {
+    tact_session::session_actions::rename(workdir, session_id, name)
+}
+
+/// Set or clear a session's archive flag. This never deletes.
+pub(crate) fn set_archived(
+    workdir: &std::path::Path,
+    session_id: &str,
+    archived: bool,
+) -> anyhow::Result<()> {
+    tact_session::session_actions::set_archived(workdir, session_id, archived)
+}
+
+/// Copy a session's conversation into a new session and return its id.
+pub(crate) fn duplicate(workdir: &std::path::Path, session_id: &str) -> anyhow::Result<String> {
+    tact_session::session_actions::duplicate(workdir, session_id)
+}
+
+/// Open the workspace in the desktop's file manager.
+pub(crate) fn reveal(workdir: &std::path::Path) -> anyhow::Result<()> {
+    tact_session::session_actions::reveal(workdir)
+}
+
 /// Short label for a session id: the first UUID segment.
 pub(crate) fn short_id(session_id: &str) -> &str {
     tact_session::sessions::short_id(session_id)

@@ -276,12 +276,16 @@ fn the_work_pane_drawer_swallows_presses_behind_it(cx: &mut TestAppContext) {
             updated_at_unix: 1_700_000_000,
             message_count: 4,
             title: Some("Desktop client design".to_string()),
+            name: None,
+            archived: false,
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
             updated_at_unix: 1_700_000_100,
             message_count: 0,
             title: None,
+            name: None,
+            archived: false,
         },
     ];
     // 1100px is past `WORK_PANE_IN_FLOW_FROM` (80rem = 1280px), so the pane is
@@ -364,6 +368,8 @@ fn the_sidebar_overlay_keeps_its_presses_above_the_scrim(cx: &mut TestAppContext
         updated_at_unix: 1_700_000_200,
         message_count: 2,
         title: Some("Overlay ordering".to_string()),
+        name: None,
+        archived: false,
     }];
     // 900px: below the sidebar threshold, so the sidebar floats over the
     // transcript; still past the work pane's own threshold, so that one is
@@ -422,6 +428,8 @@ fn the_floating_sidebar_stays_above_the_work_pane_where_they_overlap(cx: &mut Te
         updated_at_unix: 1_700_000_300,
         message_count: 2,
         title: Some("Narrow overlap".to_string()),
+        name: None,
+        archived: false,
     }];
     // 640px: below the sidebar threshold, so the sidebar floats, and below the
     // work pane's own threshold, so that one is already out as a drawer.
@@ -1013,12 +1021,16 @@ fn sidebar_lists_recent_sessions_beside_the_new_session_affordance(cx: &mut Test
             updated_at_unix: 1_700_000_000,
             message_count: 4,
             title: Some("Desktop client design".to_string()),
+            name: None,
+            archived: false,
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
             updated_at_unix: 1_700_000_100,
             message_count: 0,
             title: None,
+            name: None,
+            archived: false,
         },
     ];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
@@ -2925,6 +2937,14 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
             }};
         }
 
+        // `ElementSnapshot::label` borrows the snapshot, which the next render
+        // invalidates, so a row's label is read through an owned copy.
+        macro_rules! label_of {
+            ($id:expr) => {
+                window.find($id).label().unwrap_or_default().to_string()
+            };
+        }
+
         // A gpui-component popover dismisses on a press *outside* it, and stays
         // open through the presses its own buttons take. So each panel is
         // dismissed before the next trigger is pressed: leaving one open would
@@ -2995,46 +3015,124 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         );
 
         // The session chip is the prototype's `<button>`: its press opens the
-        // session dropdown. No row has a command behind it in v1 -- the store
-        // keeps no session title or archive column, the protocol has no
-        // duplicate command, and the desktop build ships no platform-open
-        // helper -- so each one answers with exactly one truthful system row
-        // instead of an invented edit, and the outside press closes the panel.
+        // session dropdown, and every row in it now has behaviour behind it.
+        // A pick closes the menu it was picked from, so each row needs its own
+        // reopening press.
         //
         // The walk comes after the transcript's own rows because those rows
-        // assert on the scroller's geometry, and the four notices below append
-        // to the transcript the scroller is following.
+        // assert on the scroller's geometry, and the notices below append to
+        // the transcript the scroller is following.
+        let preview_row_count = app.update(cx, |app, _| app.recent_row_ids().len());
+        let open_named_session = app
+            .update(cx, |app, _| app.open_session().map(str::to_string))
+            .expect("the walk starts on a session");
+        let named_row: SharedString = format!("session-row-{open_named_session}").into();
+
         click!("session-menu");
         assert!(
             window.try_find("session-menu-panel").is_some(),
             "the session chip opens its dropdown"
         );
         let mut notices = app.update(cx, |app, _| app.transcript_len());
-        for row in [
-            "session-menu-rename",
-            "session-menu-duplicate",
-            "session-menu-archive",
-            "session-menu-reveal",
-        ] {
-            // The panel stays up through its own rows -- the same behaviour
-            // the composer's popovers below rely on -- so no row needs a
-            // reopening press; the outside press after the loop is what closes
-            // it.
-            assert!(
-                window.try_find("session-menu-panel").is_some(),
-                "the session dropdown stays open through {row}"
-            );
-            assert!(
-                window.try_find(row).is_some(),
-                "{row} is rendered in the session dropdown"
-            );
-            window.click(row, cx);
-            window.render_frame(cx);
-            let after = app.update(cx, |app, _| app.transcript_len());
-            assert_eq!(after, notices + 1, "{row} appends exactly one notice row");
-            notices = after;
-        }
-        dismiss_popover(window, cx, "session-menu-panel");
+        click!("session-menu-rename");
+        assert!(
+            window.try_find("session-menu-panel").is_none(),
+            "a pick closes the dropdown it came from"
+        );
+        assert!(
+            window.try_find("session-rename-input").is_some(),
+            "Rename asks for a name instead of answering with a notice"
+        );
+        // The field opens on the name the row already shows, so the walk
+        // replaces it rather than appending to it.
+        window.click("session-rename-input", cx);
+        window.press("ctrl-a", cx);
+        window.input("Renamed by the walk", cx);
+        window.click("session-rename-ok", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("session-rename-input").is_none(),
+            "the dialog closes once the name is committed"
+        );
+        let named = label_of!(named_row.clone());
+        assert!(
+            named.starts_with("Renamed by the walk ·"),
+            "the renamed row shows the name the user typed: {named}"
+        );
+        let after = app.update(cx, |app, _| app.transcript_len());
+        assert_eq!(after, notices + 1, "a rename lands one transcript notice");
+        notices = after;
+
+        click!("session-menu");
+        click!("session-menu-duplicate");
+        let (rows_after_duplicate, copy_id) = app.update(cx, |app, _| {
+            let copy = app.recent_row_ids();
+            (copy.len(), copy.first().cloned())
+        });
+        assert_eq!(
+            rows_after_duplicate,
+            preview_row_count + 1,
+            "Duplicate adds a session to the sidebar"
+        );
+        let copy_id = copy_id.expect("the copy is a row");
+        assert_ne!(copy_id, open_named_session, "the copy has its own id");
+        let copy_row: SharedString = format!("session-row-{copy_id}").into();
+        assert_eq!(
+            window.find(copy_row.clone()).selected(),
+            Some(true),
+            "Duplicate opens the copy it made"
+        );
+        let copied = label_of!(copy_row.clone());
+        assert!(
+            copied.starts_with("Renamed by the walk (copy) ·"),
+            "the copy is named after the row it came from: {copied}"
+        );
+        let after = app.update(cx, |app, _| app.transcript_len());
+        assert_eq!(
+            after,
+            notices + 1,
+            "a duplicate lands one transcript notice"
+        );
+        notices = after;
+
+        click!("session-menu");
+        click!("session-menu-archive");
+        let archived = label_of!(copy_row.clone());
+        assert!(
+            archived.contains("· Archived"),
+            "an archived row carries the prototype's badge: {archived}"
+        );
+        let after = app.update(cx, |app, _| app.transcript_len());
+        assert_eq!(after, notices + 1, "an archive lands one transcript notice");
+        notices = after;
+
+        // The same row now offers to undo itself: an archive that cannot be
+        // reversed would be a delete wearing another name.
+        click!("session-menu");
+        let undo_row = label_of!("session-menu-archive");
+        assert_eq!(
+            undo_row, "Unarchive",
+            "an archived session offers to undo the flag rather than re-archiving"
+        );
+        window.click("session-menu-archive", cx);
+        window.render_frame(cx);
+        let restored = label_of!(copy_row.clone());
+        assert!(
+            !restored.contains("Archived"),
+            "Unarchive clears the badge: {restored}"
+        );
+        let after = app.update(cx, |app, _| app.transcript_len());
+        assert_eq!(
+            after,
+            notices + 1,
+            "an unarchive lands one transcript notice"
+        );
+        notices = after;
+
+        click!("session-menu");
+        click!("session-menu-reveal");
+        let after = app.update(cx, |app, _| app.transcript_len());
+        assert_eq!(after, notices + 1, "Reveal answers with one notice row");
 
         // Sidebar sessions: every seeded row, then the new-session action. The
         // offline shell owns no runtime, so a row click moves the row the
@@ -3526,12 +3624,16 @@ fn the_new_session_chord_answers_like_the_sidebar_button(cx: &mut TestAppContext
             updated_at_unix: 1_700_000_000,
             message_count: 4,
             title: Some("Desktop client design".to_string()),
+            name: None,
+            archived: false,
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
             updated_at_unix: 1_700_000_100,
             message_count: 0,
             title: None,
+            name: None,
+            archived: false,
         },
     ];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
@@ -3613,6 +3715,8 @@ fn the_empty_transcript_focuses_the_composer(cx: &mut TestAppContext) {
         updated_at_unix: 1_700_000_000,
         message_count: 0,
         title: None,
+        name: None,
+        archived: false,
     }];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
         let shell = cx.new(|cx| TactApp::with_sessions(window, cx, sessions));
@@ -4081,6 +4185,8 @@ fn the_palette_new_session_row_answers_like_the_chord(cx: &mut TestAppContext) {
         updated_at_unix: 1_700_000_200,
         message_count: 0,
         title: None,
+        name: None,
+        archived: false,
     }];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
         let shell = cx.new(|cx| TactApp::with_sessions(window, cx, sessions));
@@ -4357,12 +4463,16 @@ fn the_command_palette_session_rows_answer_without_an_agent(cx: &mut TestAppCont
             updated_at_unix: 1_700_000_000,
             message_count: 0,
             title: None,
+            name: None,
+            archived: false,
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
             updated_at_unix: 1_700_000_100,
             message_count: 0,
             title: None,
+            name: None,
+            archived: false,
         },
     ];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {

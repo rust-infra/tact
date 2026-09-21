@@ -138,7 +138,7 @@ Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`
 
 | Table | Purpose |
 |-------|---------|
-| `sessions` | Session id, `root_dir`, `ref_id` (parent session id; `''` = top-level), `locked_by` + `lock_epoch` (process lock), timestamps |
+| `sessions` | Session id, `root_dir`, `ref_id` (parent session id; `''` = top-level), `title` (user-given name; `''` = fall back to the opening message), `archived_at` (`NULL` = active; timestamp = archived without deleting), `locked_by` + `lock_epoch` (process lock), timestamps |
 | `messages` | Serialized `MessageContent` JSON, ordinal ordering |
 | `token_usages` | Per-LLM-call token counts, optional `request_body` blob, optional `tool_schedule` JSON |
 | `input_history` | User input strings for TUI recall (max 100 per session) |
@@ -168,6 +168,22 @@ Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`
 Fidelity stops at the message table. Tool durations, request cards, progress lines and the producer's `arg_summary` are presentation state that was never persisted, so a redrawn card has no duration, falls back to the generic `ToolVisualKind`, derives its detail line from well-known input keys, and stays `Running` when no `ToolResult` was stored. `load_session` also does not return each row's `created_at`, so redrawn rows print no clock. Compaction rewrites the message table, so blocks a summary replaced are gone for every reader, not just for the GUI.
 
 If no session store is attached (`with_session` not called), persistence methods no-op — useful for tests. `list_sessions` returns only top-level rows (`ref_id = ''`); `delete_session` cascades to children with `ref_id = that id` and their dependent tables.
+
+### Session actions
+
+The front ends share four presentation-neutral actions in
+`crates/tact-session/src/session_actions.rs`:
+
+| Action | Store contract |
+|--------|----------------|
+| Rename | Writes `sessions.title`; trims it, and an empty or whitespace-only value clears the name so the row falls back to its opening message. |
+| Archive | Writes `sessions.archived_at`; archiving is reversible and never calls `delete_session`, so the session, its messages and its child sessions survive. |
+| Duplicate | Copies the source row (new id, `ref_id = ''`) and its `messages` in one transaction. It deliberately copies neither child sessions nor provider state nor `token_usages`: the copy's next turn replays from the copied messages, and recorded spend stays with the original. The copy is named `<source label> (copy)`. |
+| Reveal | Opens the workspace directory with the first available of `xdg-open`, `gio open`, `nautilus`, or `dolphin`; a missing launcher is reported as an error. |
+
+The GUI calls these through `crates/tact-gui/src/session.rs`, then redraws
+`tact_session::sessions::recent`. The offline preview mutates its in-memory rows
+instead of a store.
 
 ### Input history trimming
 
@@ -206,7 +222,8 @@ sequenceDiagram
 |------|------|
 | `crates/tact/src/store/mod.rs` | `StoreRoot`, `Store<T>`, `CollectionStore<T>` |
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait, `DynSessionStore`, `open_sqlite_session_store` |
-| `crates/tact/src/store/session_store/sqlite.rs` | Greenfield schema (`CREATE TABLE IF NOT EXISTS`), `SqliteSessionStore` impl |
+| `crates/tact/src/store/session_store/sqlite.rs` | Greenfield schema (`CREATE TABLE IF NOT EXISTS`), in-place column migration, `SqliteSessionStore` impl |
+| `crates/tact-session/src/session_actions.rs` | `rename` / `set_archived` / `duplicate` / `reveal` actions shared by both front ends |
 | `crates/tact/src/store/task_store/mod.rs` | `TaskStore` trait (async: create/get/update/list/delete) |
 | `crates/tact/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — `tasks` + `task_dependencies` tables, `BEGIN IMMEDIATE` transactions, `busy_timeout` |
 | `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait (async: upsert/get/list) |
@@ -232,7 +249,7 @@ sequenceDiagram
 |-----|--------|
 | No cross-process locking on JSON store | JSON files use read-modify-write without file locks (SQLite sessions use process lock) |
 | `CollectionStore::list()` order | Unsorted directory iteration — order is filesystem-dependent |
-| Greenfield SQLite schema | Mostly `CREATE TABLE IF NOT EXISTS`; `sessions.ref_id` is added via `PRAGMA` + `ALTER TABLE` for older DBs |
+| Greenfield SQLite schema | Mostly `CREATE TABLE IF NOT EXISTS`; `sessions.ref_id`, `title`, and `archived_at` are added via `PRAGMA` + `ALTER TABLE` for older DBs |
 | Session store optional | Tests and some callers may run without SQLite attached |
 | Session DB per workdir | SQLite lives at `<workdir>/.tact/tact.db` today; `sessions.root_dir` records the project path for a future shared `$HOME/.tact/tact.db` |
 | Legacy JSON files | `tasks/*.json`, `background/tasks/*.json`, `team/config.json`, `team/inbox/*.json`, `worktrees/index.json` are no longer read after the SQLite migrations; left on disk, removed manually |
