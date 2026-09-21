@@ -3283,12 +3283,11 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         window.click("session-rename-input", cx);
         window.press("ctrl-a", cx);
         window.input("Renamed by the walk", cx);
-        window.click("session-rename-ok", cx);
+        // Flush the field's own edit before the footer reads it; the click
+        // walk runs beside other integration tests, so the input event cannot
+        // be assumed to have landed by the time the next press starts.
         window.render_frame(cx);
-        // The input commits through the dialog's own event path; a second
-        // frame gives that deferred update a stable place to land before the
-        // row label is read. Without this the click walk can read the old row
-        // when it runs beside the other integration tests.
+        window.click("session-rename-ok", cx);
         window.render_frame(cx);
         assert!(
             window.try_find("session-rename-input").is_none(),

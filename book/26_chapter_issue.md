@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — The model picker refreshes when opened and scrolls a real provider list
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/shell.rs` (`fetch_model_options`, `prompt_composer`); `crates/tact-gui/src/session.rs` (`model_options_loading`) |
+
+**Symptom / motivation:** A connected shell fetched its model list once at startup. That is the wrong moment for a picker: the provider may add models later, and a real endpoint can advertise dozens of ids. The popover then grew beyond the window instead of becoming a bounded list, so most choices were offscreen.
+
+**Decision:** Fetch the provider's model list when the model popover opens, not when the window connects. The panel says `Refreshing from provider…` while the request is in flight, and a per-window epoch prevents a slow older request from overwriting a newer response. The popover is capped at 24 rem with an overlay scrollbar and a right inset, so the full list plus Thinking budget and effort controls stay inside the window.
+
+**Behavior after:** Opening Model starts a fresh provider request. The current model chip still renders immediately; the list fills in when the server responds. A long real model list scrolls within a bounded popover instead of covering the window.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`fetch_model_options`, `PromptComposer::model_popover`); `crates/tact-gui/src/session.rs` (`model_options_loading`)
+
 ## 1. 2026-09-21 — Work-pane tabs keep their names instead of every count
 
 | Field | Value |

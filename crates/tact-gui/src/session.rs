@@ -283,6 +283,11 @@ pub(crate) struct SessionState {
     /// and an empty list means "unknown", which the picker says out loud
     /// instead of inventing options.
     pub(crate) model_options: Vec<String>,
+    /// Whether the picker is currently asking the provider for model ids.
+    ///
+    /// This is separate from an empty `model_options`: "not fetched yet" and
+    /// "fetched, but the provider advertises nothing" need different copy.
+    pub(crate) model_options_loading: bool,
     /// The agent has a turn in flight.
     pub(crate) running: bool,
     /// A blocking choice the agent is waiting on. Answering it appends a

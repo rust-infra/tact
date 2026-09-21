@@ -24,6 +24,7 @@ use gpui_kit::component::{
     notification::Notification,
     popover::Popover,
     progress::ProgressCircle,
+    scroll::ScrollableElement as _,
     setting::{SettingGroup, SettingItem, SettingPage, Settings},
     switch::Switch,
     tooltip::Tooltip,
@@ -397,6 +398,9 @@ pub struct TactApp {
     /// Bumped whenever the terminal starts or stops, so the pump task for a
     /// previous shell exits instead of waking the window forever.
     terminal_epoch: u64,
+    /// Bumped for each model-list request so a slow older response cannot
+    /// overwrite a newer list.
+    model_fetch_epoch: u64,
     /// Where the post-v1 layout document is read and written.
     ///
     /// The offline constructors disable this so a test or preview never
@@ -826,11 +830,10 @@ impl TactApp {
             }
             None => (None, None),
         };
-        let live_connected = session.is_some();
         let workdir = std::env::current_dir().ok();
         let branch = workdir.as_deref().and_then(git_branch);
 
-        let app = Self {
+        Self {
             workspace: Workspace::Chat,
             sidebar_open: true,
             work_pane_open: true,
@@ -877,15 +880,10 @@ impl TactApp {
             terminal: None,
             terminal_focus,
             terminal_epoch: 0,
+            model_fetch_epoch: 0,
             layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
-        };
-        // A connected window asks the provider what it serves, once, off the UI
-        // thread. An offline shell has no provider to ask.
-        if live_connected {
-            app.fetch_model_options(cx);
         }
-        app
     }
 
     /// Ask the provider for its model ids and publish them to the picker.
@@ -896,9 +894,15 @@ impl TactApp {
     /// gets a runtime of its own on a plain thread — the same shape
     /// `tact_session` uses for its own blocking calls — and the result comes
     /// back over a channel the window can await.
-    fn fetch_model_options(&self, cx: &mut Context<Self>) {
+    fn fetch_model_options(&mut self, cx: &mut Context<Self>) {
+        if self.offline {
+            return;
+        }
+        self.model_fetch_epoch = self.model_fetch_epoch.wrapping_add(1);
+        let epoch = self.model_fetch_epoch;
+        self.state.model_options_loading = true;
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("tact-gui-models".to_string())
             .spawn(move || {
                 let models = match tokio::runtime::Builder::new_current_thread()
@@ -912,16 +916,32 @@ impl TactApp {
                     }
                 };
                 let _ = sender.send(models);
-            })
-            .ok();
-        cx.spawn(async move |this, cx| {
-            let Ok(models) = receiver.await else {
-                return;
-            };
-            let _ = this.update(cx, |app, cx| {
-                app.state.model_options = models;
-                cx.notify();
             });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "could not start a thread for the model query");
+            self.state.model_options_loading = false;
+            return;
+        }
+        cx.spawn(async move |this, cx| match receiver.await {
+            Ok(models) => {
+                let _ = this.update(cx, |app, cx| {
+                    if app.model_fetch_epoch != epoch {
+                        return;
+                    }
+                    app.state.model_options = models;
+                    app.state.model_options_loading = false;
+                    cx.notify();
+                });
+            }
+            Err(_) => {
+                let _ = this.update(cx, |app, cx| {
+                    if app.model_fetch_epoch != epoch {
+                        return;
+                    }
+                    app.state.model_options_loading = false;
+                    cx.notify();
+                });
+            }
         })
         .detach();
     }
@@ -6791,6 +6811,7 @@ fn prompt_composer(
     // Cloned for the popover's `'static` content closure, which is rebuilt on
     // every open rather than borrowing the session.
     let model_options = session.model_options.clone();
+    let model_options_loading = session.model_options_loading;
     let current_effort = session
         .model
         .as_ref()
@@ -6875,6 +6896,14 @@ fn prompt_composer(
 
     let model_popover = Popover::new("composer-model-popover")
         .anchor(gpui_kit::Anchor::TopLeft)
+        .on_open_change({
+            let refresh_owner = owner.clone();
+            move |open, _, cx| {
+                if *open {
+                    let _ = refresh_owner.update(cx, |app, cx| app.fetch_model_options(cx));
+                }
+            }
+        })
         .trigger(
             MiniTrigger::new("composer-model")
                 .leading(IconName::RefreshCw)
@@ -6885,17 +6914,33 @@ fn prompt_composer(
         )
         .content(move |_state, _window, _cx| {
             let mut panel = v_flex()
-                .id("composer-model-panel")
-                .test_support()
                 .gap_1()
                 .min_w(rems(18.))
+                // A real provider can advertise dozens of ids. Keep the full
+                // model list plus reasoning controls reachable without letting
+                // the popover grow taller than the window: cap the panel and
+                // let it scroll, with a small right inset for the overlay
+                // scrollbar.
+                .max_h(rems(24.))
+                .pr(rems(0.75))
+                .overflow_y_scrollbar()
                 .child(
                     div()
                         .text_xs()
                         .text_color(muted_foreground)
                         .child(SharedString::from("Model")),
                 );
-            if model_options.is_empty() {
+            if model_options_loading {
+                panel = panel.child(
+                    div()
+                        .id("composer-model-loading")
+                        .test_support()
+                        .text_xs()
+                        .text_color(muted_foreground)
+                        .child(SharedString::from("Refreshing from provider…")),
+                );
+            }
+            if model_options.is_empty() && !model_options_loading {
                 // Honest empty state: the provider did not report a list, so
                 // the picker shows the model in use and says why it has nothing
                 // else to offer rather than guessing at slugs.
@@ -6956,7 +7001,10 @@ fn prompt_composer(
                         }),
                 );
             }
-            panel
+            div()
+                .id("composer-model-panel")
+                .test_support()
+                .child(panel)
         });
 
     let effort_owner = owner.clone();

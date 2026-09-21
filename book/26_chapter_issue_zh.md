@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — Model 选择器在打开时刷新，并滚动真实服务端列表
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/shell.rs`（`fetch_model_options`、`prompt_composer`）；`crates/tact-gui/src/session.rs`（`model_options_loading`） |
+
+**现象 / 动机：** 已连接的窗口只在启动时拉取一次模型列表。对选择器来说时机不对：服务端之后可能新增模型，而且真实 endpoint 可能返回几十个 id。旧 popover 会随列表一起长到窗口外，大部分选项无法看到。
+
+**决策：** 在 model popover 打开时重新拉取服务端模型列表，而不是在窗口连接时只拉一次。请求进行中显示 `Refreshing from provider…`；每个窗口用 epoch 防止较慢的旧响应覆盖新响应。popover 限制为 24 rem，并带 overlay 滚动条和右侧留白，因此完整模型列表以及 Thinking budget/effort 控件都留在窗口内。
+
+**改后行为：** 打开 Model 就会发起新的服务端请求；当前模型 chip 仍立即显示，列表在服务端返回后填充。真实的长模型列表在受限 popover 内滚动，不再覆盖整个窗口。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`fetch_model_options`、`PromptComposer::model_popover`）；`crates/tact-gui/src/session.rs`（`model_options_loading`）
+
 ## 1. 2026-09-21 — 工作面板 tab 保住名称，不再为所有计数让位
 
 | 字段 | 值 |
