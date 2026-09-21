@@ -1,10 +1,12 @@
 # Tact Desktop Client — Design and Delivery Plan
 
-Status: Phases 0–2 and 4–8 complete; Phase 3 awaits the Figma connector.
+Status: Phases 0–2 and 4–8 complete. Phase 3 (Figma) is cancelled: the
+prototype and theme JSON are the source of truth.
 The post-v1 layout store (persisted arrangement, draggable columns, presets, and
 zoom), the Stats pane, session pinning, the PTY-backed Terminal pane, the
 system-browser Browser pane, and right/left/bottom work-pane docking have since
-shipped. Figma (Phase 3) is the only item still blocked.
+shipped. Phase 3 (Figma) is cancelled rather than blocked, so no planned item
+remains.
 Date: 2026-09-19  
 Spec: `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`  
 Verification: cargo checks/tests/build/clippy passed offline; GUI smoke
@@ -74,19 +76,24 @@ items are parked in the review with concrete landing phases.
 
 ## Phase 3 — Figma source of truth
 
-Status: deferred — the connector is not available in this environment. The
-prototype and theme JSON remain the source of truth.
+Status: **cancelled** by the product owner on 2026-09-21. The prototype and
+theme JSON are the source of truth, and the HTML prototype is enough for that
+job.
 
-- Translate the approved prototype into Figma when the connector is available.
-- Create component variants for buttons, fields, tabs, rows, tool activity,
-  messages, dialogs, and work-pane headers.
-- Keep Figma and the theme JSON aligned by token role, not by literal color
-  duplication.
+**Why:** the prototype is what the shell was actually measured against, it is
+diffable, and it already lives in the repository. A Figma file would be a second
+artefact to keep in sync without changing what a reviewer can check. The Figma
+connector was installed and authorized while this was still an open question;
+cancelling the phase is a product decision, not a workaround for the connector.
 
-Exit criteria:
+The tasks below are recorded for the record only, and are not planned work:
 
-- Figma components cover the v1 shell and transcript.
-- Token names match the documented semantic roles.
+- ~~Translate the approved prototype into Figma when the connector is
+  available.~~
+- ~~Create component variants for buttons, fields, tabs, rows, tool activity,
+  messages, dialogs, and work-pane headers.~~
+- ~~Keep Figma and the theme JSON aligned by token role, not by literal color
+  duplication.~~
 
 ## Phase 4 — `tact-gui` bootstrap
 
@@ -256,5 +263,8 @@ workspace because they contend on the `target/` lock.
   without an asset or theme-registry error. The log contains only the expected
   mono-font fallback warning on this host.
 
-The parked post-v1 scope is documented in the spec: layout persistence and
-restoration, richer session search/grouping/branch metadata, and Phase 3 Figma.
+The parked post-v1 scope is documented in the spec. Layout persistence,
+resizable columns, work-pane docking, the Stats pane, the PTY-backed Terminal,
+the system-browser Browser pane, and session pinning all shipped after the
+initial v1 pass. Phase 3 Figma is cancelled, and free-form Dock rearrangement
+remains the one deliberately out-of-scope item on the original list.

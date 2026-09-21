@@ -46,13 +46,19 @@ delivery plan and the desktop design review.
 - The shared session driver and agent construction were extracted from
   `tact-ui` into the headless `crates/tact-session` crate; `tact-ui` re-exports
   the historical paths, so the TUI and GUI use one implementation.
-- Phase 3 (Figma) remains deferred because the connector is unavailable. The
-  clickable prototype and theme JSON remain the reviewed source of truth.
-- Post-v1 layout persistence is explicitly parked: the v1 shell uses the fixed
-  defaults below, and restoring sidebar/work-pane widths, selected pane, and
-  transcript detail will be added with a layout settings store. Session search,
-  grouping, pinning, and branch metadata remain post-v1; titles and the
-  dropdown actions shipped after the initial v1 pass.
+- Phase 3 (Figma) is **cancelled, not deferred**. The clickable prototype and
+  `docs/design/tact-desktop-theme.json` are the reviewed source of truth, and
+  the HTML is enough for that job: it is what the shell was measured against,
+  it is diffable, and it is already in the repository. Translating it into
+  Figma would add a second artefact to keep in sync without changing what any
+  reviewer can check. Nothing in the delivery sequence depends on it.
+- Layout persistence shipped after the initial v1 pass: the sidebar and
+  work-pane widths, the work pane's docked edge, the transcript detail level,
+  and the zoom level are stored in `~/.tact/gui-layout.json` and restored on
+  launch. Session pinning, title-aware search, and the session dropdown
+  actions also shipped; grouping by project or branch did not, because a
+  workspace's session list is already scoped to one store and carries no
+  branch column to group by.
 
 ## 1. Product job
 
@@ -117,7 +123,10 @@ The following skills are installed and relevant to this work:
 - `prototype` and `web-artifacts-builder`: clickable high-fidelity prototype.
 - `canvas-design` and `imagegen`: static presentation/reference renderings.
 - `figma-use`, `figma-generate-design`, and
-  `figma-create-design-system-rules`: eventual Figma source-of-truth workflow.
+  `figma-create-design-system-rules`: **not part of this workflow.** The Figma
+  source-of-truth phase was cancelled (see the status bullets above); these
+  skills are listed only so a future reader knows why they are installed and
+  unused here.
 
 ## 3. Design principles
 
@@ -742,8 +751,8 @@ race where a late scrollbar changes layout between captures).
    realistic transcript, tool rows, diff, tasks, and composer states.
 3. Completed: review the prototype against the GPUI Kit design review checklist.
 4. Completed: produce static reference renderings for documentation and review.
-5. Deferred: translate the approved prototype into a Figma source of truth when
-   the Figma connector is available.
+5. Cancelled: translate the approved prototype into a Figma source of truth.
+   The prototype and theme JSON are the source of truth.
 6. Completed: bootstrap `crates/tact-gui` with the theme registry and shell.
 7. Completed: implement the transcript, composer, session resume, and event
    mapping.
