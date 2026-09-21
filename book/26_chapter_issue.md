@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — The configured model is the default selection and choices persist
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-session/src/builder.rs` (`configured_model_params`, `persist_active_model`); `crates/tact-gui/src/shell.rs` (`TactApp::build`, `set_model`) |
+
+**Symptom / motivation:** The desktop client only learned the active model from the first `AgentUpdate::ModelInfo`. Before any turn, the chip could fall back to `Tact` even though `~/.tact/config.toml` already named a model and reasoning effort. Selecting a model in the GUI also sent only `SetModel`, so the choice disappeared on the next launch instead of being written back to the active provider entry.
+
+**Decision:** Seed a live shell's `SessionState::model` from the resolved config before the first update (`configured_model_params`), and persist a model pick with `tact::config::persist_active_provider_model` in addition to sending `SetModel`. The config writer uses `toml_edit`, so it updates only the active provider's `model` key and preserves comments and the rest of the file.
+
+**Behavior after:** A connected window opens with the configured model and effort already selected. Choosing a different model updates the running session and rewrites the active provider's `model` in the loaded config; the next launch starts from that saved value. Opening the picker still refreshes the server list and marks the current model as selected.
+
+**Pointers:** `crates/tact-session/src/builder.rs` (`configured_model_params`, `persist_active_model`); `crates/tact-gui/src/shell.rs` (`TactApp::build`, `set_model`); `crates/tact/src/config/persist.rs`
+
 ## 1. 2026-09-21 — The model picker refreshes when opened and scrolls a real provider list
 
 | Field | Value |

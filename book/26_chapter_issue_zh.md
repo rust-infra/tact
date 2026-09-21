@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — 配置中的模型成为默认选中，选择也会持久化
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-session/src/builder.rs`（`configured_model_params`、`persist_active_model`）；`crates/tact-gui/src/shell.rs`（`TactApp::build`、`set_model`） |
+
+**现象 / 动机：** 桌面客户端只从第一条 `AgentUpdate::ModelInfo` 得知当前模型。第一轮开始前，即使 `~/.tact/config.toml` 已配置了模型和 reasoning effort，chip 仍可能退回 `Tact`。在 GUI 选择模型也只发送 `SetModel`，没有写回配置，因此下次启动选择就丢了。
+
+**决策：** live shell 在第一条 update 之前，用已解析配置预填 `SessionState::model`（`configured_model_params`）；选择模型时除了发送 `SetModel`，还通过 `tact::config::persist_active_provider_model` 持久化。配置写入使用 `toml_edit`，只更新当前 provider 的 `model` 键，保留注释和文件其余结构。
+
+**改后行为：** 已连接窗口打开时就已选中配置里的模型和 effort。选择其他模型会更新运行中的 session，并把当前 provider 的 `model` 写回加载的配置文件；下次启动从保存值开始。打开 picker 仍会刷新服务端列表并标记当前模型。
+
+**指针：** `crates/tact-session/src/builder.rs`（`configured_model_params`、`persist_active_model`）；`crates/tact-gui/src/shell.rs`（`TactApp::build`、`set_model`）；`crates/tact/src/config/persist.rs`
+
 ## 1. 2026-09-21 — Model 选择器在打开时刷新，并滚动真实服务端列表
 
 | 字段 | 值 |

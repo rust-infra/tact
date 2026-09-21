@@ -50,6 +50,33 @@ pub fn permission_mode_from_config() -> PermissionMode {
     }
 }
 
+/// Model and reasoning parameters from the loaded config.
+///
+/// The desktop client shows these before the running agent emits its first
+/// `ModelInfo`, so the configured model is the initial selection even when no
+/// turn has started yet.
+pub fn configured_model_params() -> tact_protocol::ModelCallParams {
+    let settings = tact::config::settings();
+    tact_protocol::ModelCallParams {
+        model: settings.llm.model,
+        max_tokens: settings.agent.max_tokens,
+        thinking_budget: (settings.agent.thinking_budget > 0)
+            .then_some(settings.agent.thinking_budget as u32),
+        reasoning_effort: settings
+            .agent
+            .reasoning_effort
+            .or(settings.llm.reasoning_effort)
+            .map(|effort| effort.to_string()),
+        extra_body: None,
+    }
+}
+
+/// Update the active model in memory and persist it to the loaded TOML config.
+pub fn persist_active_model(model: &str) -> anyhow::Result<()> {
+    tact::config::update_llm_model(model.to_string());
+    tact::config::persist_active_provider_model(model)
+}
+
 /// Build the session's agent: LLM client, permission manager, session
 /// managers, MCP servers, native toolset, tool context, and session-start
 /// hooks.

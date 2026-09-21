@@ -830,6 +830,9 @@ impl TactApp {
             }
             None => (None, None),
         };
+        let configured_model = session
+            .as_ref()
+            .map(|_| tact_session::builder::configured_model_params());
         let workdir = std::env::current_dir().ok();
         let branch = workdir.as_deref().and_then(git_branch);
 
@@ -846,6 +849,7 @@ impl TactApp {
             state: SessionState {
                 workdir,
                 branch,
+                model: configured_model,
                 permission_mode: "auto".to_string(),
                 ..SessionState::default()
             },
@@ -2467,6 +2471,14 @@ impl TactApp {
                 reasoning_effort: None,
                 extra_body: None,
             });
+        }
+        if !self.offline
+            && let Err(error) = tact_session::builder::persist_active_model(&model)
+        {
+            self.toast(
+                Notification::error(format!("Could not save the model to config: {error}")),
+                cx,
+            );
         }
         self.send_command(tact_protocol::UserCommand::SetModel(model), cx);
     }
