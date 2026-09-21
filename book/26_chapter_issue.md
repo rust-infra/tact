@@ -29,6 +29,53 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — The work pane runs a real terminal in a PTY
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/Cargo.toml` (`portable-pty`, `vt100`); `crates/tact-gui/src/terminal.rs`; `crates/tact-gui/src/pane.rs` (`WorkPane::Terminal`, `terminal_pane`, `terminal_run`, `terminal_color`); `crates/tact-gui/src/shell.rs` (`start_terminal`, `restart_terminal`, `terminal_key`, `terminal_input`, `spawn_terminal_pump`, `terminal_size`) |
+
+**Symptom / motivation:** The design deferred an embedded Terminal past v1 because the shell had no PTY-backed text surface, and the work pane had no way to run anything in the workspace. Every command had to go through the agent.
+
+**Decision:** Run the user's own `$SHELL` in a real PTY via `portable-pty`, parse its output with `vt100`, and draw the resulting grid. The distinction that matters: this is a **terminal**, not a command runner. A command runner would re-implement job control, pipes, prompts, and `cd`, and would get them wrong; here the shell is the child, so those behaviours are the shell's own. The reader is a dedicated blocking thread feeding a channel, because a PTY has no async handle; a GPUI task polls that channel on a 16 ms timer, and the render also drains it so a frame is self-sufficient even if a wake-up is missed. The parser and the PTY are resized together, from the grid the pane will actually draw.
+
+Nothing spawns until the user presses Start. Opening a pane must not start a process, and a pane that did would also start one in every test that walks the work-pane tabs. `TerminalPane::drop` kills the child, so closing the window does not orphan a shell.
+
+**Behavior after:** The `Term` tab shows a Start control until it is asked for a shell, then renders the live grid with the cursor block in the cell the shell put it in. Keystrokes are encoded the way a terminal expects — `Enter` as `CR`, `Ctrl-C` as one control byte, arrows as escape sequences — and the PTY is re-measured when the pane is resized or the window is zoomed. `Restart` replaces the child. When the shell exits, the pane says so with its status instead of looking dead.
+
+**Pointers:** `crates/tact-gui/src/terminal.rs` (`runs_from_screen`, `key_bytes`, `control_byte`, `a_pty_childs_output_reaches_the_grid`); `crates/tact-gui/tests/shell.rs` (`the_terminal_pane_runs_a_shell_in_a_pty`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
+## 1. 2026-09-21 — The work pane docks to the right, left, or bottom
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/layout.rs` (`WorkPaneSide`); `crates/tact-gui/src/shell.rs` (`cycle_work_pane_side`, `ResizeTarget::WorkPaneLeft`, `work_pane`, `work_pane_bottom`, `resize_handle`); `crates/tact-gui/src/pane.rs` (`work-pane-dock`, `work_footer`) |
+
+**Symptom / motivation:** The prototype fixes the work pane to the right edge, and the spec deferred free-form Dock rearrangement past v1. A wide diff or a long file tree is easier to read in a pane whose edge the user can choose, and a bottom dock is the usual shape for a terminal.
+
+**Decision:** Add three named edges rather than a splitter tree. Right and Left reorder the same flex row; Bottom nests the transcript in a column so the sidebar keeps its full height. `WorkPaneSide` is part of the persisted layout document, so the placement survives a restart, and it cycles from the pane footer's dock control or the palette's Move work pane row. The dock control lives in the footer rather than beside the tabs because eight tab chips already fill the pane's width and a control in that row clipped the last chip. The horizontal divider drags the pane's own width and follows the side: docked left, the handle sits at the pane's right edge and the width is measured from the sidebar.
+
+**Behavior after:** The pane appears on the chosen edge with a border on the correct side and the transcript filling the rest. Docked bottom it is a fixed-height band; its width is not draggable because it spans the full column. The narrow-window drawer is unchanged and still slides in from the right.
+
+**Pointers:** `crates/tact-gui/src/layout.rs` (`the_work_pane_side_round_trips_and_cycles`); `crates/tact-gui/tests/shell.rs` (`the_dock_control_moves_the_work_pane_around_the_window`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
+## 1. 2026-09-21 — The Browser pane hands addresses to the system browser
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-session/src/session_actions.rs` (`open_url`); `crates/tact-gui/src/session.rs` (`open_url`); `crates/tact-gui/src/pane.rs` (`WorkPane::Browser`, `browser_pane`); `crates/tact-gui/src/shell.rs` (`open_browser_url`, `open_browser_history`, `clear_browser_history`, `normalize_url`) |
+
+**Symptom / motivation:** The spec deferred an embedded Browser past v1. GPUI renders its own GPU surface and has no way to host a `webkit2gtk` or `wry` view inside it, so an "embedded browser" was never available — but the work pane still had no way to open a link the agent produced.
+
+**Decision:** Ship the honest version and label it as such. The `Browser` tab is an address bar: it normalizes a bare host the way an address bar does (`example.com` becomes `https://example.com`), hands the result to the desktop's default browser through the same launcher chain the other open actions use, and remembers the last ten addresses, newest first and de-duplicated. The pane's own subtitle states that Tact has no embedded web view. `open_url` refuses anything that is not `http`/`https` and is never canonicalized — `Path::exists` on a URL would reject every valid link.
+
+**Behavior after:** Typing an address and pressing Open (or `Enter` in the field) opens it in the system browser and adds it to Recent addresses; pressing a remembered address reopens it; Clear forgets them all. In the offline preview nothing is launched: the action records the address and says what it would have opened.
+
+**Pointers:** `crates/tact-gui/tests/shell.rs` (`the_browser_pane_normalizes_and_remembers_addresses`); `crates/tact-session/src/session_actions.rs` (`open_url`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
 ## 1. 2026-09-21 — The desktop shell persists its layout, exposes presets, and zooms
 
 | Field | Value |

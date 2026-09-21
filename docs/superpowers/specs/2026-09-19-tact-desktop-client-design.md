@@ -150,7 +150,7 @@ The following skills are installed and relevant to this work:
 │ 260 px        │ 680–760 px reading width  │ 320–720 px, resizable│
 │               │                           │ Plan / Diff / Tasks  │
 │ New session   │ messages, tool activity   │ Subagent / Files /   │
-│               │                           │ Stats                │
+│               │                           │ Stats / Term / Web   │
 │ search        │ thinking, diffs, plans    │                      │
 ├───────────────┴───────────────────────────┴──────────────────────┤
 │ path · branch · permission · +12 −1 · CI · tokens · balance      │
@@ -326,6 +326,8 @@ Initial tabs:
 | `Subagent` | run list + selected transcript | cancel, inspect transcript |
 | `Files` | project tree + preview | open, reveal, mention in composer |
 | `Stats` | charts over tokens, tasks, plan, and recorded changes | read-only |
+| `Terminal` | a shell running in a real PTY | start, restart, type |
+| `Browser` | address bar and recent URLs | open in system browser, clear |
 
 The Plan row actions are live, not prototype chrome. Clicking a step expands
 its input, result, and actions; a failed step shows the error state and offers
@@ -366,14 +368,32 @@ It draws only from the `SessionState` the other panes read — a stacked
 prompt/completion token bar with cache and reasoning counts, a Tasks-by-status
 bar chart, and the five largest recorded changes as paired add/remove bars — so
 it adds a reading of the session rather than a second source of truth. The tab
-strip fits six chips by shortening the `Subagent` display label to `Agents`;
-element ids come from a stable per-pane slug, so no id moved with the label.
+strip fits the pane count by shortening the `Subagent` display label to `Agents`
+and tightening the chip to 4 px of side padding and 10 px type; element ids come
+from a stable per-pane slug, so no id moved with either.
 
-Deferred tabs: `Browser`, `Terminal`, and free-form `Dock` rearrangement.
-`Browser` and `Terminal` are v1.1 work: the shell has no embedded web view and
-no PTY-backed text surface, and a pane that only pretended to be one would be
-worse than an honest absence. Free-form Dock rearrangement stays post-v1; the
-shell ships fixed columns with persisted widths and four arrangements instead.
+The `Terminal` tab runs the user's own shell in a real PTY (`portable-pty`) and
+renders the grid `vt100` parses out of its output. It is a terminal, not a
+command runner: job control, pipes, prompts, and `cd` are the shell's, because
+the shell is the child. Nothing is spawned until the user presses Start — a
+pane that launched a shell merely by being opened would also launch one in every
+test that walks the tabs, and a shell is a process with side effects. The pane
+resizes the PTY and the parser together, forwards keystrokes with their terminal
+encodings, and kills the child when it drops.
+
+The `Browser` tab is deliberately **not** an embedded web view, and says so on
+the pane. GPUI renders its own GPU surface and cannot host a `webkit2gtk` or
+`wry` view inside it, so the tab does what it can honestly do: normalize an
+address the way an address bar does, hand it to the desktop's default browser
+through the shared launcher chain, and keep the last ten. Attempting an
+"embedded browser" would have meant a screenshot at best and a lie at worst.
+
+The work pane docks to the **right, left, or bottom**. Right and left reorder
+the same flex row; bottom nests the transcript in a column so the sidebar keeps
+its full height. The placement is part of the persisted layout document and
+cycles from the pane footer's dock control or the palette's Move work pane row.
+A free-form splitter tree stays out of scope: three named edges plus persisted
+column widths cover the arrangements this shell actually needs.
 
 ### 6.6 Status bar
 
@@ -491,6 +511,8 @@ alone; verify expanded Chinese and German labels.
 | Tasks pane | task table | `DataTable` | snapshots from `TasksChanged` |
 | Subagent pane | runs and transcript | `DataTable`/`List`, `TextView` | keep-live finalization |
 | Stats pane | token / task / plan / diff charts | plain `Div` bars inside the pane's cards | fixed columns, no dock |
+| Terminal pane | shell grid | `vt100` screen rendered as styled runs | PTY child, killed on drop |
+| Browser pane | address bar + history | `Input` + list rows | opens the system browser |
 | Files pane | project tree/preview | `Tree`, `Editor`, `TextView` | file picker integration |
 | Settings | multi-section form | `Settings`, `Input`, `Select`, `Switch` | config mapping |
 | Notifications | async status | `Notification` | no-decision events |
@@ -725,8 +747,8 @@ race where a late scrollbar changes layout between captures).
 6. Completed: bootstrap `crates/tact-gui` with the theme registry and shell.
 7. Completed: implement the transcript, composer, session resume, and event
    mapping.
-8. Completed: add Plan, Diff, Tasks, Subagent, and Files panes, then the Stats
-   pane.
+8. Completed: add Plan, Diff, Tasks, Subagent, Files, Stats, Terminal, and
+   Browser panes.
 9. Completed: add settings, command palette, notifications, keyboard flows, and
    accessibility polish.
 10. Completed: persist the layout — arrangement, both column widths,
@@ -736,8 +758,11 @@ race where a late scrollbar changes layout between captures).
     sequence deferred.
 12. Post-v1: free-form Dock rearrangement. The fixed columns, persisted widths,
     and presets are the v1 shell's answer to pane layout.
-13. Deferred to v1.1: embedded `Browser` and `Terminal` panes, which need a web
-    view and a PTY-backed text surface the shell does not have.
+13. Completed: add the PTY-backed `Terminal` pane and the `Browser` pane, which
+    hands addresses to the system browser because the shell has no embedded web
+    view to host.
+14. Completed: let the work pane dock to the right, left, or bottom, persisted
+    with the rest of the layout.
 
 ## 15. Approval points
 
@@ -747,9 +772,11 @@ The defaults below were approved and are carried by the implementation:
 - Top tabs `Chat`, `Agent`, `Code`.
 - Anthropic orange as the primary accent.
 - Lora for assistant prose; Inter/platform font for UI chrome.
-- Browser and Terminal deferred to v1.1.
-- Fixed shell with one work pane. Persisted/resizable layout and the four
-  arrangement presets are shipped; free-form Dock rearrangement is post-v1.
+- Terminal pane shipped as a real PTY; Browser shipped as an address bar that
+  opens the system browser, because the shell has no embedded web view.
+- Fixed shell with one work pane, dockable to the right, left, or bottom.
+  Persisted/resizable layout and the four arrangement presets are shipped;
+  free-form Dock rearrangement is post-v1.
 
 ## References
 

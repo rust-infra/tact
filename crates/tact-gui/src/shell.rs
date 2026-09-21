@@ -268,6 +268,8 @@ pub struct TactApp {
     browser_url: Entity<InputState>,
     /// Keeps the URL field's Enter binding alive for the window's lifetime.
     _browser_subscription: Subscription,
+    /// The keystroke interceptor that gives a focused terminal its keys.
+    _terminal_subscription: Subscription,
     /// URLs the Browser pane has opened, newest first.
     browser_history: Vec<String>,
     /// The agent session, once one is attached.
@@ -681,6 +683,35 @@ impl TactApp {
                     this.open_browser_url(window, cx);
                 }
             });
+        // A focused terminal has to own its keys *before* the keymap resolves
+        // them. `on_key_down` runs after action dispatch, so `Ctrl-L` (focus
+        // the composer) and `Escape` (stop the task) both fired while a shell
+        // had focus; an interceptor runs first and `stop_propagation` here
+        // prevents the action entirely.
+        let terminal_focus = cx.focus_handle();
+        let terminal_owner = cx.weak_entity();
+        let interceptor_focus = terminal_focus.clone();
+        let terminal_subscription = cx.intercept_keystrokes(move |event, window, cx| {
+            if !interceptor_focus.is_focused(window) {
+                return;
+            }
+            let Some(bytes) = crate::terminal::key_bytes(&event.keystroke) else {
+                return;
+            };
+            let wrote = terminal_owner
+                .update(cx, |app, cx| match app.terminal.as_mut() {
+                    Some(terminal) => {
+                        terminal.write(&bytes);
+                        cx.notify();
+                        true
+                    }
+                    None => false,
+                })
+                .unwrap_or(false);
+            if wrote {
+                cx.stop_propagation();
+            }
+        });
         let composer_subscription =
             cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
                 if let InputEvent::PressEnter {
@@ -726,6 +757,7 @@ impl TactApp {
             session_search,
             browser_url,
             _browser_subscription: browser_subscription,
+            _terminal_subscription: terminal_subscription,
             browser_history: Vec::new(),
             session,
             recent,
@@ -742,7 +774,7 @@ impl TactApp {
             zoom_rem: layout::ZOOM_DEFAULT,
             work_pane_side: WorkPaneSide::default(),
             terminal: None,
-            terminal_focus: cx.focus_handle(),
+            terminal_focus,
             terminal_epoch: 0,
             layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
@@ -1689,16 +1721,6 @@ impl TactApp {
     }
 
     /// Forward one keystroke to the shell.
-    pub(crate) fn terminal_key(&mut self, keystroke: &gpui_kit::Keystroke, cx: &mut Context<Self>) {
-        let Some(bytes) = crate::terminal::key_bytes(keystroke) else {
-            return;
-        };
-        if let Some(terminal) = self.terminal.as_mut() {
-            terminal.write(&bytes);
-        }
-        cx.notify();
-    }
-
     /// Wake the window whenever the shell produces output.
     ///
     /// The PTY reader is a blocking thread feeding a channel, so the pane polls
@@ -1744,15 +1766,32 @@ impl TactApp {
         // 0.75 rem glyphs in a monospace face advance about 0.45 rem.
         let cell_width = (rem * 0.45).max(1.0);
         let line_height = rem * 0.9375;
-        let width = if self.work_pane_is_drawer(window) {
-            window.bounds().size.width.as_f32()
-        } else {
-            self.work_pane_width.0 * rem
+        let chrome = TITLE_BAR_HEIGHT.to_pixels(window.rem_size()).as_f32()
+            + STATUS_BAR_HEIGHT.to_pixels(window.rem_size()).as_f32();
+        // The pane's real box, not always a right-hand column: docked bottom it
+        // spans the transcript's width and has the dock's fixed height, and as
+        // a drawer it takes the window. Measuring a bottom dock as a 420 px
+        // column would wrap the shell at 420 px while the grid drew far wider.
+        let (width, height) = match (self.work_pane_is_drawer(window), self.work_pane_side) {
+            (true, _) => (
+                window.bounds().size.width.as_f32(),
+                window.bounds().size.height.as_f32() - chrome,
+            ),
+            (false, WorkPaneSide::Bottom) => (
+                window.bounds().size.width.as_f32()
+                    - self
+                        .sidebar_reserved(window)
+                        .to_pixels(window.rem_size())
+                        .as_f32(),
+                WORK_PANE_BOTTOM_HEIGHT
+                    .to_pixels(window.rem_size())
+                    .as_f32(),
+            ),
+            (false, _) => (
+                self.work_pane_width.0 * rem,
+                window.bounds().size.height.as_f32() - chrome,
+            ),
         };
-        let height = window.bounds().size.height.as_f32()
-            - TITLE_BAR_HEIGHT.to_pixels(window.rem_size()).as_f32()
-            - STATUS_BAR_HEIGHT.to_pixels(window.rem_size()).as_f32()
-            - rem * 2.375;
         let cols = ((width - rem * 2.0) / cell_width)
             .floor()
             .clamp(20.0, 400.0) as u16;
@@ -1760,6 +1799,19 @@ impl TactApp {
             .floor()
             .clamp(5.0, 200.0) as u16;
         (cols, rows)
+    }
+
+    /// Width the sidebar takes from the pane's row this frame, or zero.
+    ///
+    /// The sidebar is an overlay below its breakpoint, so it costs the pane
+    /// nothing there; the same question decides the left dock's divider offset.
+    fn sidebar_reserved(&self, window: &Window) -> Rems {
+        let rem = window.rem_size();
+        if self.sidebar_open && window.bounds().size.width >= SIDEBAR_OVERLAY_UNDER.to_pixels(rem) {
+            self.sidebar_width
+        } else {
+            rems(0.)
+        }
     }
 
     /// Hand the workspace to the desktop's file manager.
@@ -3087,6 +3139,14 @@ impl Render for TactApp {
         // flag decides where the slide is in its travel.
         let work_pane_drawer_form = width < WORK_PANE_IN_FLOW_FROM.to_pixels(rem_size);
         let terminal_size = self.terminal_size(window);
+        // The narrow form is a right-hand drawer whatever edge the pane is
+        // docked to when there is room for a column, so the footer reports the
+        // placement the user is actually looking at.
+        let shown_side = if work_pane_is_drawer {
+            WorkPaneSide::Right
+        } else {
+            self.work_pane_side
+        };
 
         // `.head h1` carries the session's own name; the title-bar chip echoes
         // it on Chat and takes the preset's name on Agent and Code, which is
@@ -3160,7 +3220,7 @@ impl Render for TactApp {
                         terminal: &mut self.terminal,
                         terminal_focus: &self.terminal_focus,
                         terminal_size,
-                        side: self.work_pane_side,
+                        side: shown_side,
                         browser_url: &self.browser_url,
                         browser_history: &self.browser_history,
                     },
@@ -3180,7 +3240,7 @@ impl Render for TactApp {
                         terminal: &mut self.terminal,
                         terminal_focus: &self.terminal_focus,
                         terminal_size,
-                        side: self.work_pane_side,
+                        side: shown_side,
                         browser_url: &self.browser_url,
                         browser_history: &self.browser_history,
                     },
@@ -3211,7 +3271,7 @@ impl Render for TactApp {
                             terminal: &mut self.terminal,
                             terminal_focus: &self.terminal_focus,
                             terminal_size,
-                            side: self.work_pane_side,
+                            side: shown_side,
                             browser_url: &self.browser_url,
                             browser_history: &self.browser_history,
                         },
@@ -3239,7 +3299,10 @@ impl Render for TactApp {
         if work_pane_in_flow && self.work_pane_side == WorkPaneSide::Left {
             workspace = workspace.child(resize_handle(
                 ResizeTarget::WorkPaneLeft {
-                    sidebar: columns.sidebar,
+                    // Zero when the sidebar is closed or floating: reserving a
+                    // column that is not on screen put the divider (and the
+                    // width it computed) a sidebar's width out.
+                    sidebar: self.sidebar_reserved(window),
                 },
                 columns.work_pane,
                 cx,
@@ -3286,7 +3349,7 @@ impl Render for TactApp {
                         terminal: &mut self.terminal,
                         terminal_focus: &self.terminal_focus,
                         terminal_size,
-                        side: self.work_pane_side,
+                        side: shown_side,
                         browser_url: &self.browser_url,
                         browser_history: &self.browser_history,
                     },
@@ -3392,10 +3455,31 @@ impl Render for TactApp {
 /// guess. Anything that already carries a scheme is left exactly as typed.
 fn normalize_url(raw: &str) -> String {
     let trimmed = raw.trim();
-    if trimmed.contains("://") {
+    if has_scheme(trimmed) {
         return trimmed.to_string();
     }
     format!("https://{trimmed}")
+}
+
+/// Whether `text` starts with a URL scheme (`scheme:`), not just `scheme://`.
+///
+/// `mailto:user@example.com` has a scheme and no `//`; prefixing it would turn
+/// a deliberate non-http link into a plausible-looking https URL and send the
+/// user somewhere they did not ask for. Leaving it intact lets `open_url` reject
+/// it with a real message.
+fn has_scheme(text: &str) -> bool {
+    let Some((scheme, rest)) = text.split_once(':') else {
+        return false;
+    };
+    // `localhost:3000` is a host and a port, not a scheme and a path.
+    if !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    let mut chars = scheme.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
 }
 
 /// Workspace name shown in the title bar, sidebar footer, and transcript intro.
@@ -7378,8 +7462,8 @@ fn previous_session_index(len: usize, current: Option<usize>) -> Option<usize> {
 mod tests {
     use super::{
         SessionBucket, Workspace, background_rows, balance_label, next_session_index,
-        permission_action_order, permission_mode_label, previous_session_index, session_buckets,
-        session_name, session_row_title, worktree_rows,
+        normalize_url, permission_action_order, permission_mode_label, previous_session_index,
+        session_buckets, session_name, session_row_title, worktree_rows,
     };
     use crate::pane::WorkPane;
     use crate::session::SessionHandle;
@@ -7427,6 +7511,24 @@ mod tests {
         assert!(
             dispatched.try_recv().is_err(),
             "and cancelling dispatches nothing else"
+        );
+    }
+
+    /// An address bar adds a scheme only when the user did not type one.
+    #[test]
+    fn a_typed_address_keeps_its_own_scheme() {
+        assert_eq!(normalize_url("example.com"), "https://example.com");
+        assert_eq!(normalize_url("  example.com  "), "https://example.com");
+        assert_eq!(normalize_url("https://a.b/c"), "https://a.b/c");
+        assert_eq!(
+            normalize_url("mailto:user@example.com"),
+            "mailto:user@example.com",
+            "a non-http scheme is left intact so open_url can reject it"
+        );
+        assert_eq!(
+            normalize_url("localhost:3000"),
+            "https://localhost:3000",
+            "a bare host with a port is a host, not a scheme"
         );
     }
 

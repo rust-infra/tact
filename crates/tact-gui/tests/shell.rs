@@ -3461,6 +3461,56 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// A focused terminal owns its keys.
+///
+/// `Ctrl-L` is "focus the composer" to the shell and also what readline uses to
+/// clear the screen. Before the terminal consumed its keys, the chord fired the
+/// window action *as well*, so typing at a shell could steal focus. The proof
+/// that it does not is that the composer never becomes focused: the `@` trigger
+/// only opens its completion list inside the composer.
+#[gpui_kit::test]
+fn the_terminal_consumes_keys_instead_of_firing_window_shortcuts(cx: &mut TestAppContext) {
+    if !std::path::Path::new("/bin/sh").exists() {
+        return;
+    }
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(6usize, cx);
+        window.render_frame(cx);
+        window.click("terminal-start", cx);
+        window.render_frame(cx);
+        // Focus the grid the way a user does: press it.
+        window.click("terminal-grid", cx);
+        window.render_frame(cx);
+
+        window.press("ctrl-l", cx);
+        window.render_frame(cx);
+        window.input("@", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-suggestions").is_none(),
+            "Ctrl-L reached the terminal instead of focusing the composer"
+        );
+
+        window.press("escape", cx);
+        window.render_frame(cx);
+        window.input("@", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-suggestions").is_none(),
+            "Escape reached the terminal instead of running Stop task"
+        );
+    })
+    .unwrap();
+}
+
 /// The Browser pane normalizes an address and remembers what it opened.
 ///
 /// The pane does not embed a web view, so the preview path is the one the test

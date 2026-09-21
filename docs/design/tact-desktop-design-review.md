@@ -183,6 +183,22 @@ The production shell now verifies the items that Phase 2 could only park:
   read. Adding it made the work-pane strip six chips wide, which is what settled
   the `Subagent` → `Agents` display rename: the strip clips its last chip, so the
   shorter label is a correctness fix, not a preference.
+- The work pane runs a real terminal. The `Terminal` tab spawns the user's
+  `$SHELL` in a PTY (`portable-pty`) and draws the grid `vt100` parses out of
+  its output, as styled runs rather than cells. It is a terminal, not a command
+  runner: job control, pipes, prompts, and `cd` belong to the shell because the
+  shell is the child. Start is an explicit press — opening a pane must not spawn
+  a process — and the child is killed when the pane drops.
+- The `Browser` tab is an address bar, not an embedded web view, and says so on
+  the pane. GPUI renders its own GPU surface and cannot host `webkit2gtk` or
+  `wry` inside it, so the pane normalizes the address the way an address bar
+  does, hands it to the desktop's default browser, and remembers the last ten.
+- The work pane docks to the right, left, or bottom from the footer's dock
+  control or the palette's Move work pane row, and the placement is part of the
+  persisted layout document. Free-form splitter rearrangement stays out of
+  scope. The tab strip carries eight panes now, so the prototype's chip is
+  tightened to 4 px of side padding and 10 px type — the prototype never had
+  more than five tabs, and the strip clips rather than scrolls.
 - Sessions can be pinned and unpinned from the session menu. Pinning writes
   `sessions.pinned_at` and reorders the sidebar through a stable partition, and
   the sidebar's search filter now matches titles and names as well as ids.

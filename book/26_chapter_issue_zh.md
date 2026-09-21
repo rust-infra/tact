@@ -29,6 +29,53 @@
 
 ---
 
+## 1. 2026-09-21 — 工作面板内嵌真实 PTY 终端
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/Cargo.toml`（`portable-pty`、`vt100`）；`crates/tact-gui/src/terminal.rs`；`crates/tact-gui/src/pane.rs`（`WorkPane::Terminal`、`terminal_pane`、`terminal_run`、`terminal_color`）；`crates/tact-gui/src/shell.rs`（`start_terminal`、`restart_terminal`、`terminal_key`、`terminal_input`、`spawn_terminal_pump`、`terminal_size`） |
+
+**现象 / 动机：** 设计把内嵌 Terminal 推迟到 v1 之后，因为壳层没有 PTY 文本面，工作面板也无法在 workspace 里运行任何东西。所有命令都得经过 agent。
+
+**决策：** 用 `portable-pty` 在真实 PTY 里运行用户自己的 `$SHELL`，用 `vt100` 解析输出并绘制网格。关键区分：这是**终端**，不是命令执行器。命令执行器要重新实现作业控制、管道、提示符与 `cd`，而且一定会做错；这里 shell 是子进程，这些行为就是 shell 自己的。读取放在专用阻塞线程里喂 channel，因为 PTY 没有异步句柄；一个 GPUI task 以 16 ms 周期轮询该 channel，render 时也会 drain，因此即使漏掉一次唤醒，单帧仍然自洽。parser 与 PTY 一起 resize，尺寸取自面板真正要绘制的网格。
+
+在用户按下 Start 之前不启动任何东西。打开面板不应启动进程，否则每个遍历面板的测试都会启动一个 shell。`TerminalPane::drop` 会 kill 子进程，所以关窗不会遗留 shell。
+
+**改后行为：** `Term` 面板在被要求之前显示 Start；启动后渲染实时网格，并在 shell 实际放置光标的单元格画块光标。按键按终端期望编码——`Enter` 是 `CR`、`Ctrl-C` 是单个控制字节、方向键是转义序列——面板或窗口缩放时会重新测量 PTY。`Restart` 替换子进程。shell 退出后面板报告退出状态，而不是看起来像死了。
+
+**指针：** `crates/tact-gui/src/terminal.rs`（`runs_from_screen`、`key_bytes`、`control_byte`、`a_pty_childs_output_reaches_the_grid`）；`crates/tact-gui/tests/shell.rs`（`the_terminal_pane_runs_a_shell_in_a_pty`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
+## 1. 2026-09-21 — 工作面板可停靠到右、左、下边
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/layout.rs`（`WorkPaneSide`）；`crates/tact-gui/src/shell.rs`（`cycle_work_pane_side`、`ResizeTarget::WorkPaneLeft`、`work_pane`、`work_pane_bottom`、`resize_handle`）；`crates/tact-gui/src/pane.rs`（`work-pane-dock`、`work_footer`） |
+
+**现象 / 动机：** 原型把工作面板固定在右边，规格把自由 Dock 重排推迟到 v1 之后。宽 diff 或长文件树在用户自选的边上更好读，而底部停靠是终端最常见的形态。
+
+**决策：** 提供三个具名边，而不是 splitter 树。右与左只是同一行 flex 的重排；底部把转录嵌进一个列，使侧栏保持整高。`WorkPaneSide` 属于持久化布局文档，因此停靠位置跨重启保留，可从面板 footer 的 dock 控件或命令面板的 Move work pane 行循环切换。dock 控件放在 footer 而不是 tab 旁边，因为八个 tab chip 已占满面板宽度，放在那一行会把最后一个 chip 裁掉。水平分隔条拖拽面板自身宽度并跟随所在边：停靠左侧时手柄位于面板右缘，宽度从侧栏之后起算。
+
+**改后行为：** 面板出现在所选边上，边框在正确的一侧，转录填满其余空间。停靠底部时是固定高度的横带；其宽度不可拖拽，因为它横跨整列。窄窗抽屉行为不变，仍从右侧滑入。
+
+**指针：** `crates/tact-gui/src/layout.rs`（`the_work_pane_side_round_trips_and_cycles`）；`crates/tact-gui/tests/shell.rs`（`the_dock_control_moves_the_work_pane_around_the_window`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
+## 1. 2026-09-21 — Browser 面板把地址交给系统浏览器
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-session/src/session_actions.rs`（`open_url`）；`crates/tact-gui/src/session.rs`（`open_url`）；`crates/tact-gui/src/pane.rs`（`WorkPane::Browser`、`browser_pane`）；`crates/tact-gui/src/shell.rs`（`open_browser_url`、`open_browser_history`、`clear_browser_history`、`normalize_url`） |
+
+**现象 / 动机：** 规格把内嵌 Browser 推迟到 v1 之后。GPUI 渲染自己的 GPU 表面，无法在其中承载 `webkit2gtk` 或 `wry` 视图，所以"内嵌浏览器"从来没有可用的实现路径；但工作面板也一直没有打开 agent 产出的链接的办法。
+
+**决策：** 交付诚实版本并如实标注。`Browser` tab 是一个地址栏：按地址栏的方式规范化裸主机名（`example.com` → `https://example.com`），通过与其它打开动作相同的 launcher 链交给桌面默认浏览器，并记住最近十条地址（最新在前、去重）。面板自己的副标题就写明 Tact 没有内嵌 web view。`open_url` 拒绝非 `http`/`https`，且绝不做规范化——对 URL 调 `Path::exists` 会拒绝每一个合法链接。
+
+**改后行为：** 输入地址并按 Open（或在字段里按 `Enter`）会在系统浏览器打开并加入 Recent addresses；按已记住的地址会重新打开；Clear 全部忘记。离线预览下不启动任何东西：动作记录地址并说明它本会打开什么。
+
+**指针：** `crates/tact-gui/tests/shell.rs`（`the_browser_pane_normalizes_and_remembers_addresses`）；`crates/tact-session/src/session_actions.rs`（`open_url`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
 ## 1. 2026-09-21 — 桌面壳持久化布局、暴露预设并支持缩放
 
 | 字段 | 值 |

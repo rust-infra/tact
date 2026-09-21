@@ -25,9 +25,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Context, FocusHandle, Focusable as _,
-    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
-    radians, relative, rems,
+    FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div, px, radians, relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -774,7 +773,12 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
         chips.push(
             h_flex()
                 .id(index)
-                .flex_shrink_0()
+                // Shrinkable, not fixed: the strip clips rather than scrolls,
+                // so a chip that refuses to narrow is a pane the user cannot
+                // reach once the column is at its narrowest.
+                .min_w(rems(1.75))
+                .flex_shrink(1.0)
+                .overflow_hidden()
                 .h(rems(1.75))
                 .items_center()
                 .gap(rems(0.1875))
@@ -810,7 +814,12 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
                     this.select_work_pane(pane, window);
                     cx.notify();
                 }))
-                .child(SharedString::from(pane.label()))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(pane.label())),
+                )
                 .when_some(count, |this, count| {
                     this.child(
                         // `.count{min-width:16px;height:16px;padding:0 4px;
@@ -2770,9 +2779,6 @@ fn terminal_pane(
                 let focus = focus.clone();
                 move |_, window, cx| focus.focus(window, cx)
             })
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.terminal_key(&event.keystroke, cx);
-            }))
             .w_full()
             .p_2()
             .rounded(rems(0.375))

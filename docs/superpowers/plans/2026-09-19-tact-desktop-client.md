@@ -2,8 +2,9 @@
 
 Status: Phases 0–2 and 4–8 complete; Phase 3 awaits the Figma connector.
 The post-v1 layout store (persisted arrangement, draggable columns, presets, and
-zoom), the Stats pane, and session pinning have since shipped; embedded Browser
-and Terminal remain v1.1.
+zoom), the Stats pane, session pinning, the PTY-backed Terminal pane, the
+system-browser Browser pane, and right/left/bottom work-pane docking have since
+shipped. Figma (Phase 3) is the only item still blocked.
 Date: 2026-09-19  
 Spec: `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`  
 Verification: cargo checks/tests/build/clippy passed offline; GUI smoke
@@ -216,21 +217,22 @@ each.
 
 ## Deferred
 
-- Embedded Browser.
-- Embedded Terminal.
-- Free-form Dock rearrangement.
+- Free-form Dock rearrangement (a splitter tree).
+- A web view embedded inside the Browser pane.
 - Web/mobile client.
 
-Chart-heavy dashboards are **shipped**, as the `Stats` work pane: it charts
-token usage, tasks by status, plan progress, and the largest recorded changes,
-all from the `SessionState` the other panes already read. Persisted layout and
-resizable columns are shipped too (`crates/tact-gui/src/layout.rs`); only
-free-form Dock rearrangement stays post-v1.
+Everything else on the original deferred list has shipped:
+**Terminal** as a real PTY-backed shell (`crates/tact-gui/src/terminal.rs`),
+**Browser** as an address bar that hands URLs to the desktop's default browser,
+**Stats** as the chart-heavy dashboard, **layout persistence** with draggable
+columns and four presets (`crates/tact-gui/src/layout.rs`), and **work-pane
+docking** to the right, left, or bottom.
 
-The remaining deferred items add product surface and focus complexity without
-being required to prove the core Tact desktop workflow. Browser and Terminal
-additionally need platform surfaces the shell does not have — an embedded web
-view and a PTY-backed text widget — so they cannot be faked honestly.
+Two of those are narrower than the original one-line item, and deliberately so.
+The Browser pane cannot embed a web view: GPUI renders its own GPU surface and
+has no way to host `webkit2gtk` or `wry` inside it, so the pane opens the system
+browser instead and says so on its face. Docking ships as three named edges plus
+persisted widths, not as a free-form splitter tree.
 
 
 ## Release verification
@@ -240,10 +242,8 @@ workspace because they contend on the `target/` lock.
 
 - `cargo fmt --all -- --check` — pass.
 - `cargo check --workspace --all-targets --offline` — pass.
-- `cargo test -p tact-gui --offline --lib` — 97 library tests pass.
-- `cargo test -p tact-gui --offline --test shell` — 94 integration tests pass,
-  plus one worktree-fixture walk that needs a writable `.git` and therefore runs
-  outside the sandbox.
+- `cargo test -p tact-gui --offline --lib` — 110 library tests pass.
+- `cargo test -p tact-gui --offline --test shell` — 98 integration tests pass.
 - `cargo test -p tact-session --offline` — 41 tests pass.
 - `cargo test -p tact --offline --lib store::session_store` — 25 tests pass.
 - `cargo test -p tact-ui --offline` (outside the sandbox for wiremock) — 105

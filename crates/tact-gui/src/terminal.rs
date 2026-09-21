@@ -29,6 +29,14 @@ const DEFAULT_ROWS: u16 = 24;
 /// Lines `vt100` keeps above the visible grid.
 const SCROLLBACK: usize = 4_000;
 
+/// Most output one `poll` will apply before returning.
+///
+/// A chatty child (`yes`, a recursive `find`, a large build) can keep the
+/// channel non-empty forever, and `poll` runs on the render path; without a
+/// ceiling the drain loop would hold the frame until the producer stopped.
+/// The remainder stays queued for the next poll.
+const POLL_BUDGET_BYTES: usize = 256 * 1024;
+
 /// A colour as the terminal reported it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TermColor {
@@ -77,7 +85,14 @@ impl TerminalPane {
     /// `$SHELL` is what the user actually uses; `/bin/sh` is the floor when the
     /// environment does not say.
     pub(crate) fn spawn(workdir: Option<&Path>) -> anyhow::Result<Self> {
-        let program = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        // `$SHELL` is what the user actually uses, but it is not guaranteed to
+        // be set or to point at something that still exists. An empty or stale
+        // value must not turn Start into a failure while `/bin/sh` is sitting
+        // right there.
+        let program = std::env::var("SHELL")
+            .ok()
+            .filter(|path| !path.is_empty() && Path::new(path).exists())
+            .unwrap_or_else(|| "/bin/sh".to_string());
         Self::spawn_program(&program, &[], workdir)
     }
 
@@ -155,7 +170,10 @@ impl TerminalPane {
     /// when the terminal has been idle.
     pub(crate) fn poll(&mut self) -> usize {
         let mut applied = 0;
-        while let Ok(bytes) = self.output.try_recv() {
+        while applied < POLL_BUDGET_BYTES {
+            let Ok(bytes) = self.output.try_recv() else {
+                break;
+            };
             applied += bytes.len();
             self.parser.process(&bytes);
         }
