@@ -65,3 +65,6 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 gpui-kit = { version = "0.6.4", features = ["test-support"] }
 tempfile = { workspace = true }
+# Spike on `feat/gpui-ai-streaming`: evaluate whether gpui-ai's streaming
+# Markdown surface can replace the transcript renderer without losing Mermaid.
+gpui-ai = "0.8.0"

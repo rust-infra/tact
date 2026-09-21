@@ -1213,6 +1213,12 @@ mod tests {
     }
 
     #[test]
+    fn gpui_ai_streaming_text_is_api_compatible() {
+        let content = gpui_ai::stream::StreamedContent::done("# Hello");
+        let _view = gpui_ai::streaming_text::StreamingText::new("gpui-ai-spike", &content);
+    }
+
+    #[test]
     fn the_chevron_rotates_a_quarter_turn_over_the_prototype_duration() {
         assert_eq!(chevron_target(false), 0.0);
         assert_eq!(chevron_target(true), std::f32::consts::FRAC_PI_2);

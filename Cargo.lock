@@ -3233,6 +3233,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-ai"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53757bd1f26b10631d0289f26c842baeb8f86aa4229b896d0065a9a839930ece"
+dependencies = [
+ "gpui-base",
+ "gpui-component",
+ "gpui-pre",
+ "web-time",
+]
+
+[[package]]
 name = "gpui-base"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9203,6 +9215,7 @@ dependencies = [
  "cargo-packager-updater",
  "chrono",
  "fontdb 0.24.0",
+ "gpui-ai",
  "gpui-kit",
  "libc",
  "mermaid-text",
