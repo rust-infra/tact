@@ -723,12 +723,17 @@ pub(crate) fn render_row(
                         .id(summary_id)
                         .w_full()
                         .min_w_0()
-                        .min_h(rems(2.375))
+                        // The prototype's summary row is 38 px. It is drawn
+                        // at 28 px here — a quarter shorter — because a
+                        // transcript with a dozen tool rows spends most of its
+                        // height on chrome the reader is not reading. The icon
+                        // chip stays 20 px so the row still has a clear mark.
+                        .min_h(rems(1.75))
                         .items_center()
                         .gap(rems(0.5))
                         .pl(rems(0.6875))
                         .pr(rems(0.625))
-                        .py(rems(0.3125))
+                        .py(rems(0.1875))
                         .on_click(move |_, _, cx| toggle(index, cx))
                         .child(
                             div()
@@ -841,7 +846,11 @@ pub(crate) fn render_row(
                             .border_1()
                             .border_color(cx.theme().border)
                             .bg(cx.theme().popover)
-                            .px(rems(0.625))
+                            // The right inset is wider than the left one to
+                            // clear the overlay scrollbar, which is painted on
+                            // top of the last columns rather than beside them.
+                            .pl(rems(0.625))
+                            .pr(rems(1.125))
                             .py(rems(0.5625))
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_size(rems(0.65625))

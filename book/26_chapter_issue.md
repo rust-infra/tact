@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Tool rows are shorter and scrollbars stop covering text
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/transcript.rs` (tool summary row, tool output block); `crates/tact-gui/src/pane.rs` (work pane body) |
+
+**Symptom / motivation:** Two density problems in the transcript. A tool card's summary row is the prototype's 38 px, so a turn with a dozen tool calls spends most of its height on chrome the reader is not reading. And the scrollbars are gpui-component's overlay kind: they paint *over* the last columns of the content rather than reserving a gutter for themselves, so a full-width line of tool output ran under the thumb.
+
+**Decision:** Draw the tool summary row at 28 px — a quarter shorter than the prototype — keeping the 20 px icon chip so the row still carries a clear mark; the vertical padding drops from 5 px to 3 px to match. For the scrollbars, give the scrollable content a right inset instead of moving the scrollbar: 18 px on the work-pane body and the tool-output block, against 10 px on the left. The scrollbar itself is unchanged, because the overlay look is what the theme expects; what changes is that the text stops underneath it.
+
+**Behavior after:** A transcript of tool calls is about a quarter shorter. Long tool output and work-pane prose end before the scrollbar instead of behind it.
+
+**Pointers:** `crates/tact-gui/src/transcript.rs` (`TranscriptRow::Tool`); `crates/tact-gui/src/pane.rs` (`view`)
+
 ## 1. 2026-09-21 — Switching sessions stops cancelling the running turn
 
 | Field | Value |

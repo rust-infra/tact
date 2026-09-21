@@ -764,6 +764,11 @@ pub(crate) fn view(
                 div()
                     .w_full()
                     .p_3()
+                    // Room for the overlay scrollbar, which gpui-component
+                    // paints *over* the scroller's right edge rather than
+                    // reserving a gutter for it: without this inset the last
+                    // characters of a full-width line sit under the thumb.
+                    .pr(rems(1.125))
                     .id(body_id.clone())
                     .test_support()
                     .child(body)
