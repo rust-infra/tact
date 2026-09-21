@@ -32,6 +32,21 @@
 ---
 
 
+## 1. 2026-09-21 — 工作面板那五个原型专属按钮，现在会回应一次按压
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/pane.rs`（五个 `*_UNAVAILABLE` 理由、`work_footer`、`plan`、`diff`、`tasks`、`files_tree`）；`crates/tact-gui/src/shell.rs`（`push_system_row`、`the_pane_actions_v1_does_not_back_each_answer_a_press`）；`docs/design/tact-desktop-design-review.md`（Parked items、Phase 4–7 跟进） |
+
+**Symptom / motivation:**工作面板上的 `Open in editor`、`Refresh plan`、`Comment`、`New task`、`Add file` 五个控件，按原型的位置与分量画成了按钮，却既没有 handler，也没有快捷键、没有 palette 行。按下去什么都不会发生。覆盖面很广的那次点击巡检抓不到它：`every_entry_point_answers_a_click` 的 `click!` 宏只断言 id 渲染出来了、且这次按压没有 panic，所以一个「渲染出来但什么都不做」的控件照样能通过——而这五个当时正是如此。
+
+**Decision:** 规格的面板章节没有点名这五个中的任何一个，而 `Open in editor` 又与「v1 不取代编辑器」这条 non-goal 直接冲突，因此这五个都没有 v1 行为可接。与其替它们发明一个行为、或删掉像素对齐所依赖的控件，不如让每个都回答「为什么现在不能做」——也就是会话下拉早就用于 rename/duplicate/archive/reveal 的那个形状。五条理由各不相同，能指出去处的就指出：`Refresh plan` 说这个面板本来就跟着 agent 报的每一步走，`Add file` 说这个面板列的是会话自己改过的文件。`TactApp::push_system_row` 提升为 `pub(crate)`，好让面板能往 shell 上落一行——它的关闭按钮早就是这么回调的。
+
+**Behavior after:**按这五个中的任意一个，都会追加恰好一条系统行，写明限制是什么，并在有替代行为时写明用户真正想要的那个行为。按钮保留原型的位置、尺寸与可用外观，视觉对齐没有被动过；变的是工作面板里再没有沉默的控件。五个都由 `the_pane_actions_v1_does_not_back_each_answer_a_press` 覆盖：它依次按下每一个，读回五条互不相同的行，从而补上了巡检「只证存活、不证效果」的那个缺口。
+
+**Pointers:** `crates/tact-gui/src/pane.rs`（五条理由、`work_footer`、`plan`、`diff`、`tasks`、`files_tree`）；`crates/tact-gui/src/shell.rs`（`push_system_row`、`the_pane_actions_v1_does_not_back_each_answer_a_press`）；`docs/design/tact-desktop-design-review.md`（Parked items、Phase 4–7 跟进）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`（"Non-goals for v1"）
+
 ## 1. 2026-09-21 — 已答复的授权卡留在原位置，而不是挂在转录末尾
 
 | Field | Value |

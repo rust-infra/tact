@@ -32,6 +32,21 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-21 — The work pane's five prototype-only actions answer a press
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/pane.rs` (the five `*_UNAVAILABLE` reasons, `work_footer`, `plan`, `diff`, `tasks`, `files_tree`); `crates/tact-gui/src/shell.rs` (`push_system_row`, `the_pane_actions_v1_does_not_back_each_answer_a_press`); `docs/design/tact-desktop-design-review.md` (Parked items, Phase 4–7 follow-up) |
+
+**Symptom / motivation:** The work pane's `Open in editor`, `Refresh plan`, `Comment`, `New task` and `Add file` controls were drawn as buttons in the prototype's own place and weight, and carried no handler, no chord and no palette row. A press did nothing at all. The broad click walk could not catch it: `every_entry_point_answers_a_click`'s `click!` macro asserts only that the id rendered and that the press did not panic, so a control that renders and does nothing passes it — which is exactly what these five did.
+
+**Decision:** The spec's pane section names none of the five, and `Open in editor` collides with the v1 non-goal against replacing an editor, so none of them had a v1 behaviour to wire. Rather than invent one, or delete controls the pixel alignment depends on, each answers with the reason it cannot act — the shape the session menu already uses for rename/duplicate/archive/reveal. The reasons are distinct, and the ones that can point somewhere useful do: `Refresh plan` says the pane already follows every step the agent reports, and `Add file` says the pane lists the files the session itself changed. `TactApp::push_system_row` becomes `pub(crate)` so the pane can file a row on the shell, the way its own close button already called back into it.
+
+**Behavior after:** Pressing any of the five appends exactly one system row naming the limit and, where there is one, the behaviour the user actually wants. The buttons keep their prototype position, size and enabled look, so the visual alignment is untouched; what changed is that no control in the work pane is silent any more. All five are covered by `the_pane_actions_v1_does_not_back_each_answer_a_press`, which presses each in turn and reads back five distinct rows, closing the walk's liveness-only gap for them.
+
+**Pointers:** `crates/tact-gui/src/pane.rs` (the five reasons, `work_footer`, `plan`, `diff`, `tasks`, `files_tree`); `crates/tact-gui/src/shell.rs` (`push_system_row`, `the_pane_actions_v1_does_not_back_each_answer_a_press`); `docs/design/tact-desktop-design-review.md` (Parked items, Phase 4–7 follow-up); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` ("Non-goals for v1")
+
 ## 1. 2026-09-21 — An answered approval card keeps its slot instead of the tail
 
 | Field | Value |

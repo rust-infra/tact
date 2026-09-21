@@ -143,7 +143,7 @@ records which items the production shell has since resolved.
 | Diff horizontal scrolling in static renders | `--hide-scrollbars` is needed for deterministic headless captures; live behaviour was verified interactively | Note for future render scripts |
 | `--orange` is a dead token in the prototype | Unused; `base.yellow` in the theme JSON remains the amber palette entry | Cleanup during token import |
 | Spacing scale ownership | gpui-kit does not persist a custom `SpacingTokens` scale, so the app must own that snapshot | Phase 4 shell |
-| Work pane's five ghost buttons | `Open in editor`, `Refresh plan`, `Comment`, `New task` and `Add file` are drawn as buttons (`crates/tact-gui/src/pane.rs` 547/675/926/1201/1490) but carry no handler, no palette row and no chord. The spec's pane section names none of them, and `Open in editor` collides with the v1 non-goal against replacing an editor | Needs a semantics decision: either a behaviour contract or an explicit v1 non-goal |
+| Work pane's five ghost buttons | `Open in editor`, `Refresh plan`, `Comment`, `New task` and `Add file` are drawn as buttons (`crates/tact-gui/src/pane.rs`) but carry no handler, no palette row and no chord. The spec's pane section names none of them, and `Open in editor` collides with the v1 non-goal against replacing an editor | Resolved in Phase 4–7: each answers with its own reason, and the reason *is* the v1 non-goal made visible (see the follow-up below) |
 
 ## Verification performed
 
@@ -195,6 +195,17 @@ The production shell now verifies the items that Phase 2 could only park:
 - The sidebar lists workspace-local sessions as short id + age + message count;
   selecting a row or pressing `Ctrl+Tab` resumes that session through the shared
   `tact-session` runtime.
+- The work pane's five prototype-only actions answer a press instead of
+  swallowing it. The spec's pane section names none of them, and `Open in
+  editor` collides with the v1 non-goal against replacing an editor, so none of
+  the five has a v1 behaviour to wire. They keep the prototype's place and
+  weight -- dropping them would break the alignment the pass exists to hold --
+  and each one answers with the reason it cannot act, the shape the session
+  menu already uses for rename/duplicate/archive/reveal. The reasons are
+  distinct per action, and `the_pane_actions_v1_does_not_back_each_answer_a_press`
+  in `crates/tact-gui/src/shell.rs` presses all five and reads back five
+  distinct system rows, so the broad walk's liveness-only gap is closed for
+  these five.
 - Every control the shell renders is pressed by a test, including the title
   bar's three preset tabs, which
   `the_workspace_tabs_pair_each_preset_with_its_pane` presses in turn and reads
@@ -202,18 +213,18 @@ The production shell now verifies the items that Phase 2 could only park:
   `Code` -> diff). The exceptions are controls with no handler to reach: the
   sidebar avatar and the background-work row (both plain display rows, as in
   the prototype), the status bar's read-only chips, which are asserted by value
-  rather than pressed, the native file dialog the composer's attachment path
-  opens, and the work pane's five ghost buttons, which render as buttons and
-  carry no handler at all (see the parked item above).
+  rather than pressed, and the native file dialog the composer's attachment
+  path opens.
 - The broad walk proves presence and survival, not effect, and should be read
   that way. `every_entry_point_answers_a_click`'s `click!` macro asserts only
   that the id rendered and that the press did not panic, so a control that
-  renders and does nothing still passes it -- which is precisely what the work
-  pane's five ghost buttons do today. The effect assertions inside that same
-  test cover session rows, the new-session control, worktree rows, the
-  session-menu rows, popover open/close, palette open/escape and the settings
-  switches; every other press in it is liveness only. Adding a control to the
-  walk does not, by itself, give it a contract.
+  renders and does nothing still passes it -- which is exactly what the work
+  pane's five ghost buttons did until the follow-up below gave each one a
+  handler. The effect assertions inside that same test cover session rows, the
+  new-session control, worktree rows, the session-menu rows, popover
+  open/close, palette open/escape and the settings switches; every other press
+  in it is liveness only. Adding a control to the walk does not, by itself,
+  give it a contract.
 - Tertiary ink has a role, and the controls that a component draws were the
   ones still missing it. `theme::ink3` exists because the shipped theme maps
   `muted.foreground` to `--ink2`, and the earlier pass moved ~30 call sites

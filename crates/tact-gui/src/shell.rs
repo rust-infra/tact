@@ -1705,8 +1705,9 @@ impl TactApp {
         }
     }
 
-    /// Append a local system row (startup and session-level notices).
-    fn push_system_row(&mut self, text: String, cx: &mut Context<Self>) {
+    /// Append a local system row (startup, session-level notices, and the
+    /// work pane's prototype-only actions).
+    pub(crate) fn push_system_row(&mut self, text: String, cx: &mut Context<Self>) {
         self.conversation.push_system(text);
         self.record_change(Change::Appended(1), cx);
         cx.notify();
@@ -5996,6 +5997,163 @@ mod tests {
                     "two rows beside the header, and no card left at the tail"
                 );
             });
+        })
+        .unwrap();
+    }
+
+    /// A permission request that arrives mid-turn lands wholly on screen.
+    ///
+    /// The pending card is the one item past the rows, so it is also the item a
+    /// follow-tail scroller has to reach. `sync_transcript_count` resets the
+    /// list when the extra item appears and then asks for the end; the question
+    /// this pins is whether the reset leaves the new row's *height* unknown
+    /// long enough for the offset to fall short, which would put the allow and
+    /// deny buttons under the composer.
+    #[gpui_kit::test]
+    fn an_arriving_request_lands_wholly_inside_the_transcript(cx: &mut gpui_kit::TestAppContext) {
+        use crate::session::{Change, Request};
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let mut shell = None;
+        let handle = cx
+            .open_window(size(px(1440.), px(900.)), |window, cx| {
+                let app = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+                shell = Some(app.clone());
+                Root::new(app, window, cx)
+            })
+            .into();
+        let shell = shell.expect("the shell is created with its window");
+
+        cx.update_window(handle, |_, window, cx| {
+            shell.update(cx, |app, cx| {
+                // A turn long enough that the transcript overflows its viewport.
+                for index in 0..40 {
+                    app.push_system_row(format!("step {index}"), cx);
+                }
+
+                // The live arrival path: the session sets the request, then the
+                // shell records the change it returned (`Change::None`).
+                app.state.request = Some(Request {
+                    id: 9,
+                    prompt: "Run command: cargo check -p tact-gui".to_string(),
+                    options: vec![
+                        "Allow once".to_string(),
+                        "Deny".to_string(),
+                        "Always allow this tool".to_string(),
+                    ],
+                    multi: false,
+                    selected: Vec::new(),
+                });
+                app.record_change(Change::None, cx);
+            });
+
+            window.render_frame(cx);
+            window.render_frame(cx);
+
+            let list = window.find("transcript").bounds();
+            let card = window.find("request-panel").bounds();
+            assert!(
+                card.bottom() <= list.bottom(),
+                "the whole permission card is on screen: card {card:?} inside list {list:?}"
+            );
+        })
+        .unwrap();
+    }
+
+    /// The work pane's five prototype-only actions are not dead controls.
+    ///
+    /// The broad click walk can only show that a control renders and survives a
+    /// press, which is exactly the shape these five used to hide in: they
+    /// carried no handler at all. Each now answers with the reason it cannot
+    /// act yet, and every reason is its own, so pressing the whole set leaves
+    /// five distinct rows rather than four silences and one notice.
+    #[gpui_kit::test]
+    fn the_pane_actions_v1_does_not_back_each_answer_a_press(cx: &mut gpui_kit::TestAppContext) {
+        use crate::pane::WorkPane;
+        use crate::transcript::TranscriptRow;
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{App, px, size};
+        use std::collections::HashSet;
+        use std::path::PathBuf;
+
+        cx.update(gpui_kit::init);
+
+        let mut shell = None;
+        let handle = cx
+            .open_window(size(px(1440.), px(900.)), |window, cx| {
+                // The Files pane only draws its head against a real workspace,
+                // so the shell opens on the repository the manifest lives in.
+                let workdir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(2)
+                    .map(PathBuf::from);
+                let app = cx.new(|cx| super::TactApp::with_workspace(window, cx, workdir));
+                shell = Some(app.clone());
+                Root::new(app, window, cx)
+            })
+            .into();
+        let shell = shell.expect("the shell is created with its window");
+
+        let row_text = |shell: &gpui_kit::Entity<super::TactApp>, id: &str, cx: &mut App| {
+            shell.update(cx, |app, _| match app.conversation.rows().last() {
+                Some(TranscriptRow::System { text }) => text.clone(),
+                other => panic!("{id} appends a system row, not {other:?}"),
+            })
+        };
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+
+            let mut seen: Vec<String> = Vec::new();
+            for (pane, id) in [
+                (WorkPane::Plan, "work-pane-plan-refresh"),
+                (WorkPane::Diff, "work-pane-diff-comment"),
+                (WorkPane::Tasks, "work-pane-tasks-new"),
+                (WorkPane::Files, "work-pane-files-add"),
+            ] {
+                shell.update(cx, |app, cx| {
+                    app.set_work_pane(pane);
+                    app.work_pane_open = true;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert!(
+                    window.try_find(id).is_some(),
+                    "{id} is rendered on its own pane"
+                );
+                window.click(id, cx);
+                window.render_frame(cx);
+                seen.push(row_text(&shell, id, cx));
+            }
+
+            // `Open in editor` is the footer every pane shares.
+            assert!(
+                window.try_find("work-pane-open-editor").is_some(),
+                "the footer renders its action"
+            );
+            window.click("work-pane-open-editor", cx);
+            window.render_frame(cx);
+            seen.push(row_text(&shell, "work-pane-open-editor", cx));
+
+            let unique: HashSet<&String> = seen.iter().collect();
+            assert_eq!(
+                unique.len(),
+                5,
+                "each prototype-only action answers with its own reason: {seen:?}"
+            );
+            for text in &seen {
+                assert!(
+                    text.contains("not available yet"),
+                    "the row states the limit instead of a silent press: {text}"
+                );
+            }
         })
         .unwrap();
     }

@@ -541,8 +541,25 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
         .into_any_element()
 }
 
+/// The pane's five prototype-only actions.
+///
+/// The spec's pane section names none of them, and `Open in editor` collides
+/// with the v1 non-goal against replacing an editor. They keep the prototype's
+/// place and weight rather than disappearing, but a press has to land
+/// somewhere: each answers with the reason it cannot act yet, the shape the
+/// session menu already uses for rename/duplicate/archive/reveal.
+const OPEN_IN_EDITOR_UNAVAILABLE: &str =
+    "Opening an editor is not available yet: v1 does not replace an editor.";
+const REFRESH_PLAN_UNAVAILABLE: &str = "Refreshing the plan is not available yet: the pane already follows every step the agent reports.";
+const COMMENT_DIFF_UNAVAILABLE: &str =
+    "Commenting on a diff is not available yet: the protocol carries no review comments.";
+const NEW_TASK_UNAVAILABLE: &str =
+    "Creating a task is not available yet: tasks arrive from the agent's own task tool.";
+const ADD_FILE_UNAVAILABLE: &str =
+    "Adding a file is not available yet: the pane lists the files the session itself changed.";
+
 /// The pane's fixed footer action row.
-fn work_footer(cx: &App) -> impl IntoElement {
+fn work_footer(cx: &mut Context<TactApp>) -> impl IntoElement {
     h_flex()
         .w_full()
         .flex_shrink_0()
@@ -557,7 +574,10 @@ fn work_footer(cx: &App) -> impl IntoElement {
                 .label("Open in editor")
                 .icon(IconName::Book)
                 .tooltip("Open the workspace in your editor")
-                .accessibility_label("Open the workspace in your editor"),
+                .accessibility_label("Open the workspace in your editor")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.push_system_row(OPEN_IN_EDITOR_UNAVAILABLE.to_string(), cx);
+                })),
         )
         .child(div().flex_1())
         .child(
@@ -666,7 +686,7 @@ fn card_head(label: &str, note: impl Into<SharedString>, cx: &App) -> impl IntoE
 }
 
 /// Plan steps in arrival order.
-fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
+fn plan(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
     let total = state.plan.len();
     let done = state
         .plan
@@ -684,6 +704,9 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
             prototype_icon_button("work-pane-plan-refresh", IconName::RefreshCw, cx)
                 .tooltip("Refresh plan")
                 .accessibility_label("Refresh plan")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.push_system_row(REFRESH_PLAN_UNAVAILABLE.to_string(), cx);
+                }))
                 .into_any_element(),
         ),
         cx,
@@ -914,7 +937,7 @@ fn plan_step_row(
 }
 
 /// File changes recorded from write and edit tool results.
-fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &App) -> impl IntoElement {
+fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &mut Context<TactApp>) -> impl IntoElement {
     let total_added: u32 = state.diff.iter().filter_map(|entry| entry.added).sum();
     let total_removed: u32 = state.diff.iter().filter_map(|entry| entry.removed).sum();
     let files = state.diff.len();
@@ -934,6 +957,9 @@ fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &App) -> impl IntoElemen
         Some(
             prototype_button("work-pane-diff-comment", false, cx)
                 .label("Comment")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.push_system_row(COMMENT_DIFF_UNAVAILABLE.to_string(), cx);
+                }))
                 .into_any_element(),
         ),
         cx,
@@ -1187,7 +1213,7 @@ fn updated_age(seconds: i64) -> String {
 }
 
 /// Persistent tasks, rendered as the prototype's Task / Status / Owner table.
-fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
+fn tasks(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
     let count = state.tasks.len();
     let blocked: Vec<_> = state
         .tasks
@@ -1209,6 +1235,9 @@ fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
         Some(
             prototype_button("work-pane-tasks-new", false, cx)
                 .label("New task")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.push_system_row(NEW_TASK_UNAVAILABLE.to_string(), cx);
+                }))
                 .into_any_element(),
         ),
         cx,
@@ -1498,6 +1527,9 @@ fn files_tree(
         Some(
             prototype_button("work-pane-files-add", false, cx)
                 .label("Add file")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.push_system_row(ADD_FILE_UNAVAILABLE.to_string(), cx);
+                }))
                 .into_any_element(),
         ),
         cx,
