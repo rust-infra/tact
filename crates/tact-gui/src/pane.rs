@@ -1581,7 +1581,7 @@ fn task_row(
 }
 
 /// Subagent runs with status and summary.
-fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
+fn subagents(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
     let count = state.subagents.len();
     let head = panel_head(
         "Subagent runs",
@@ -1599,7 +1599,7 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
     }
 
     let mut rows = vec![card_head("Runs", format!("{count} total"), cx).into_any_element()];
-    for run in &state.subagents {
+    for (index, run) in state.subagents.iter().enumerate() {
         let (label, fg, bg) = match run.status {
             SubagentStatusSnapshot::Running => (
                 "Running",
@@ -1620,6 +1620,44 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
                 ("Cancelled", crate::theme::ink3(cx), cx.theme().muted)
             }
         };
+        let child_id = run.child_id.clone();
+        let inspect = if state
+            .subagent_transcript
+            .as_ref()
+            .is_some_and(|transcript| transcript.child_id == run.child_id)
+        {
+            "Hide transcript"
+        } else {
+            "Inspect transcript"
+        };
+        let mut actions = h_flex().items_center().gap(rems(0.375));
+        if run.status == SubagentStatusSnapshot::Running {
+            let child_id = child_id.clone();
+            actions = actions.child(
+                prototype_button(
+                    SharedString::from(format!("subagent-cancel-{index}")),
+                    false,
+                    cx,
+                )
+                .label("Cancel")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.cancel_subagent(&child_id, cx);
+                })),
+            );
+        }
+        let child_id = child_id.clone();
+        actions = actions.child(
+            prototype_button(
+                SharedString::from(format!("subagent-inspect-{index}")),
+                false,
+                cx,
+            )
+            .label(inspect)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_subagent_transcript(&child_id, cx);
+            })),
+        );
+
         rows.push(
             h_flex()
                 .w_full()
@@ -1648,6 +1686,7 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
                                 .child(SharedString::from(run.summary_first.clone())),
                         ),
                 )
+                .child(actions.into_any_element())
                 .child(
                     div()
                         .flex_shrink_0()
@@ -1663,7 +1702,129 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
         );
     }
 
-    v_flex().w_full().child(head).child(card(cx, rows))
+    let mut body = v_flex().w_full().child(head).child(card(cx, rows));
+    if let Some(transcript) = &state.subagent_transcript {
+        body = body.child(subagent_transcript_card(transcript, cx));
+    }
+    body
+}
+
+/// The stored transcript for one inspected subagent.
+fn subagent_transcript_card(
+    transcript: &crate::session::SubagentTranscriptState,
+    cx: &App,
+) -> impl IntoElement {
+    use tact_session::{HistoryBlock, HistoryRole};
+
+    let note = if transcript.loading {
+        "loading…".to_string()
+    } else if transcript.error.is_some() {
+        "error".to_string()
+    } else {
+        format!("{} messages", transcript.messages.len())
+    };
+    let mut body = v_flex().w_full().gap(rems(0.5)).p(rems(0.625));
+
+    if let Some(error) = &transcript.error {
+        body = body.child(
+            div()
+                .text_size(rems(0.6875))
+                .text_color(cx.theme().danger)
+                .child(SharedString::from(format!(
+                    "Could not load transcript: {error}"
+                ))),
+        );
+    } else if transcript.loading {
+        body = body.child(
+            div()
+                .text_size(rems(0.6875))
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from("Loading the stored transcript…")),
+        );
+    } else if transcript.messages.is_empty() {
+        body = body.child(
+            div()
+                .text_size(rems(0.6875))
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from("No stored transcript for this run.")),
+        );
+    } else {
+        for message in &transcript.messages {
+            let role = match message.role {
+                HistoryRole::User => "You",
+                HistoryRole::Assistant => "Subagent",
+            };
+            body = body.child(
+                v_flex()
+                    .w_full()
+                    .gap(rems(0.25))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .pb(rems(0.5))
+                    .child(
+                        div()
+                            .text_size(rems(0.59375))
+                            .font_semibold()
+                            .text_color(crate::theme::ink3(cx))
+                            .child(SharedString::from(role)),
+                    ),
+            );
+            for block in &message.blocks {
+                let (label, text, mono) = match block {
+                    HistoryBlock::Text(text) => (None, text.clone(), false),
+                    HistoryBlock::Thinking(text) => (Some("Thinking"), text.clone(), false),
+                    HistoryBlock::ToolUse { name, detail, .. } => (
+                        Some("Tool"),
+                        if detail.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{name} · {detail}")
+                        },
+                        true,
+                    ),
+                    HistoryBlock::ToolResult { output, .. } => {
+                        (Some("Result"), output.clone(), true)
+                    }
+                };
+                let mut row = v_flex().w_full().gap(rems(0.125));
+                if let Some(label) = label {
+                    row = row.child(
+                        div()
+                            .text_size(rems(0.5625))
+                            .font_semibold()
+                            .text_color(crate::theme::ink3(cx))
+                            .child(SharedString::from(label)),
+                    );
+                }
+                row = row.child(
+                    div()
+                        .w_full()
+                        .when(mono, |text| {
+                            text.font_family(cx.theme().mono_font_family.clone())
+                        })
+                        .text_size(rems(0.65625))
+                        .line_height(relative(1.5))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(text)),
+                );
+                body = body.child(row);
+            }
+        }
+    }
+
+    card_with_id(
+        "work-pane-subagent-transcript",
+        cx,
+        vec![
+            card_head(
+                "Transcript",
+                format!("{} · {note}", transcript.child_id),
+                cx,
+            )
+            .into_any_element(),
+            body.into_any_element(),
+        ],
+    )
 }
 
 /// Workspace tree with expandable directories.

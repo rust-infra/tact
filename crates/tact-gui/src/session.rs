@@ -237,6 +237,8 @@ pub(crate) struct SessionState {
     pub(crate) tasks: Vec<TaskSnapshot>,
     /// Latest subagent run snapshot.
     pub(crate) subagents: Vec<SubagentRunSnapshot>,
+    /// Persisted transcript currently inspected from the Subagent pane.
+    pub(crate) subagent_transcript: Option<SubagentTranscriptState>,
     /// Most recent token usage for the usage ring.
     pub(crate) usage: Option<TokenUsageInfo>,
     /// Turns taken in the current task, and the loop cap when one exists.
@@ -265,6 +267,15 @@ pub(crate) struct SessionState {
     /// the "background command" shape the sidebar lists; the entry is removed
     /// when `BackgroundTaskFinished` or a final `StepFinished` seals the card.
     pub(crate) background: Vec<String>,
+}
+
+/// One subagent's stored transcript, loaded on demand for the work pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubagentTranscriptState {
+    pub(crate) child_id: String,
+    pub(crate) loading: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) messages: Vec<HistoryMessage>,
 }
 
 /// The transcript: rows plus the indices needed to append to live ones.

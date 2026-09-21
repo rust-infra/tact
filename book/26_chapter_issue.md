@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Subagent runs can cancel and inspect their stored transcript
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/session.rs` (`SessionState::subagent_transcript`, `SubagentTranscriptState`); `crates/tact-gui/src/shell.rs` (`cancel_subagent`, `toggle_subagent_transcript`); `crates/tact-gui/src/pane.rs` (`subagents`, `subagent_transcript_card`); `crates/tact-session/src/history.rs`; `crates/protocol/src/agent.rs` (`UserCommand::CancelSubagent`) |
+
+**Symptom / motivation:** The Subagent pane listed run status and summary, but the spec's row actions were absent. A running background child could not be cancelled from the desktop client, and its stored transcript could not be inspected without opening another surface or reasoning around the parent transcript.
+
+**Decision:** Keep cancellation on the existing protocol path: a running row sends `UserCommand::CancelSubagent { child_id }` through `SessionHandle`, so the driver flips the child's cooperative cancel flag, marks the run record, and emits the authoritative snapshot. Transcript inspection uses the same `tact_session::history::history` seam as session redraw, loaded on the background executor and stored as `SubagentTranscriptState` under the selected child. The pane renders the messages inline and the same action toggles back to Hide transcript.
+
+**Behavior after:** Every subagent row exposes Inspect transcript; running rows also expose Cancel. Inspecting a child loads its stored conversation below the run list, preserving message/block order and showing loading, error, or empty states honestly. Cancellation is sent to the driver and the pane waits for `SubagentsChanged` rather than mutating the snapshot optimistically.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`cancelling_a_subagent_sends_its_child_id_to_the_driver`, `inspecting_a_subagent_loads_its_stored_transcript`); `crates/tact-gui/src/pane.rs` (`subagents`, `subagent_transcript_card`); `crates/tact-gui/src/session.rs` (`SubagentTranscriptState`); `crates/tact-session/src/history.rs`; `docs/design/tact-desktop-design-review.md`
+
 ## 1. 2026-09-21 — Plan steps expand, fail visibly, jump to the transcript, and retry through the agent
 
 | Field | Value |

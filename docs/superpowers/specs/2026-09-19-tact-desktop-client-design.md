@@ -331,6 +331,11 @@ it. Retry is submitted as a new agent instruction containing the recorded tool
 and arguments, so the driver remains the only executor and can account for the
 retry in the session history.
 
+Subagent rows are live too. A running child exposes Cancel, which sends
+`CancelSubagent { child_id }` through the driver's cooperative cancellation
+path; Inspect transcript loads the child's stored session history on demand,
+renders it under the run list, and toggles back to Hide transcript.
+
 Deferred tabs: `Browser`, `Terminal`, `Chart`, and free-form `Dock`.
 
 ### 6.6 Status bar

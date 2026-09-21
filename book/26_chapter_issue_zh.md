@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — Subagent run 可取消并可查看已存储的转录
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/session.rs`（`SessionState::subagent_transcript`、`SubagentTranscriptState`）；`crates/tact-gui/src/shell.rs`（`cancel_subagent`、`toggle_subagent_transcript`）；`crates/tact-gui/src/pane.rs`（`subagents`、`subagent_transcript_card`）；`crates/tact-session/src/history.rs`；`crates/protocol/src/agent.rs`（`UserCommand::CancelSubagent`） |
+
+**现象 / 动机：** Subagent 面板只列出了 run 的状态和摘要，规格里为行定义的动作为空缺。桌面端无法取消正在运行的后台 child，也无法直接查看它已存储的转录，只能换到别的界面或从父转录里绕路推断。
+
+**决策：** 取消沿用既有协议路径：Running 行通过 `SessionHandle` 发送 `UserCommand::CancelSubagent { child_id }`，由 driver 翻转 child 的协作式取消标志、更新 run record，并发出权威快照。转录查看复用会话重绘所用的 `tact_session::history::history` 缝，在后台 executor 加载并存入当前 child 的 `SubagentTranscriptState`。面板内联渲染这些消息，同一动作在已打开时切换为 Hide transcript。
+
+**改后行为：** 每个 subagent 行都有 Inspect transcript；Running 行额外有 Cancel。查看 child 会在 run 列表下方加载其已存储对话，保持消息/block 顺序，并如实显示 loading、error 或空状态。取消会发给 driver，面板等待 `SubagentsChanged`，而不是乐观修改快照。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`cancelling_a_subagent_sends_its_child_id_to_the_driver`、`inspecting_a_subagent_loads_its_stored_transcript`）；`crates/tact-gui/src/pane.rs`（`subagents`、`subagent_transcript_card`）；`crates/tact-gui/src/session.rs`（`SubagentTranscriptState`）；`crates/tact-session/src/history.rs`；`docs/design/tact-desktop-design-review.md`
+
 ## 1. 2026-09-21 — Plan 步骤可展开、失败可见、跳转转录，并通过 agent 重试
 
 | 字段 | 值 |

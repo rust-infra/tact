@@ -1888,6 +1888,69 @@ impl TactApp {
         cx.notify();
     }
 
+    /// Cancel one running background subagent through the driver.
+    pub(crate) fn cancel_subagent(&mut self, child_id: &str, cx: &mut Context<Self>) {
+        self.send_command(
+            tact_protocol::UserCommand::CancelSubagent {
+                child_id: child_id.to_string(),
+            },
+            cx,
+        );
+    }
+
+    /// Load, show, or hide a subagent's persisted transcript.
+    pub(crate) fn toggle_subagent_transcript(&mut self, child_id: &str, cx: &mut Context<Self>) {
+        if self
+            .state
+            .subagent_transcript
+            .as_ref()
+            .is_some_and(|transcript| transcript.child_id == child_id)
+        {
+            self.state.subagent_transcript = None;
+            cx.notify();
+            return;
+        }
+
+        let Some(workdir) = self.state.workdir.clone() else {
+            self.push_system_row(
+                "Cannot load the subagent transcript without a workspace directory.".to_string(),
+                cx,
+            );
+            return;
+        };
+        let child_id = child_id.to_string();
+        self.state.subagent_transcript = Some(session::SubagentTranscriptState {
+            child_id: child_id.clone(),
+            loading: true,
+            error: None,
+            messages: Vec::new(),
+        });
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let history_id = child_id.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { tact_session::history::history(&workdir, &history_id) })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                let current = app.state.subagent_transcript.as_mut();
+                let Some(transcript) = current
+                    .filter(|transcript| transcript.child_id == child_id && transcript.loading)
+                else {
+                    return;
+                };
+                transcript.loading = false;
+                match result {
+                    Ok(messages) => transcript.messages = messages,
+                    Err(err) => transcript.error = Some(format!("{err:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Submit text produced by a work-pane action through the same queue as a
     /// composer draft.
     pub(crate) fn submit_pane_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
@@ -6400,37 +6463,35 @@ mod tests {
         cx.update(gpui_kit::init);
 
         let mut shell = None;
-        let handle = cx
-            .open_window(size(px(1440.), px(900.)), |window, cx| {
-                let app = cx.new(|cx| {
-                    let mut app = super::TactApp::with_workspace(window, cx, None);
-                    app.state.plan.push(tact_protocol::PlanStep::new(
-                        "Read the protocol",
-                        "read_file",
-                        "tool_1",
-                        [("path", "crates/protocol/src/agent.rs")],
-                    ));
-                    app.state.plan_expanded.insert(0);
-                    app.conversation.apply(
-                        tact_protocol::AgentUpdate::StepStarted {
-                            idx: 0,
-                            tool_id: "tool_1".into(),
-                            tool_name: "read_file".into(),
-                            arg_summary: "crates/protocol/src/agent.rs".into(),
-                            arg_full: String::new(),
-                            presentation: tact_protocol::ToolPresentationInfo::generic("Read"),
-                        },
-                        &mut app.state,
-                    );
-                    app
-                });
-                shell = Some(app.clone());
-                Root::new(app, window, cx)
-            })
-            .into();
+        let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, None);
+                app.state.plan.push(tact_protocol::PlanStep::new(
+                    "Read the protocol",
+                    "read_file",
+                    "tool_1",
+                    [("path", "crates/protocol/src/agent.rs")],
+                ));
+                app.state.plan_expanded.insert(0);
+                app.conversation.apply(
+                    tact_protocol::AgentUpdate::StepStarted {
+                        idx: 0,
+                        tool_id: "tool_1".into(),
+                        tool_name: "read_file".into(),
+                        arg_summary: "crates/protocol/src/agent.rs".into(),
+                        arg_full: String::new(),
+                        presentation: tact_protocol::ToolPresentationInfo::generic("Read"),
+                    },
+                    &mut app.state,
+                );
+                app
+            });
+            shell = Some(app.clone());
+            Root::new(app, window, cx)
+        });
 
         let shell = shell.expect("the window built a shell");
-        cx.update_window(handle, |_, window, cx| {
+        cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             window.click("plan-step-open-0", cx);
             window.render_frame(cx);
@@ -6495,6 +6556,131 @@ mod tests {
             "retry asks the agent to rerun the recorded step"
         );
         assert!(dispatched.try_recv().is_err(), "retry dispatches once");
+    }
+
+    #[gpui_kit::test]
+    fn cancelling_a_subagent_sends_its_child_id_to_the_driver(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, None);
+                app.session = Some(session);
+                app.set_work_pane(WorkPane::Subagents);
+                app.state
+                    .subagents
+                    .push(tact_protocol::SubagentRunSnapshot {
+                        child_id: "child-running".to_string(),
+                        status: tact_protocol::SubagentStatusSnapshot::Running,
+                        summary_first: "checking the adapter".to_string(),
+                        started_at: Some(1),
+                        finished_at: None,
+                    });
+                app
+            });
+            Root::new(shell, window, cx)
+        });
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("subagent-cancel-0", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        assert!(
+            matches!(
+                dispatched.try_recv(),
+                Ok(UserCommand::CancelSubagent { child_id }) if child_id == "child-running"
+            ),
+            "Cancel sends the selected child id through the driver"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn inspecting_a_subagent_loads_its_stored_transcript(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+        let workdir = connected_workdir();
+        let _cleanup = WorkspaceCleanup(workdir.clone());
+        let child_id = "child-history";
+        tact_session::test_support::seed_session_history(
+            &workdir,
+            child_id,
+            &[tact_session::HistoryMessage {
+                role: tact_session::HistoryRole::Assistant,
+                blocks: vec![tact_session::HistoryBlock::Text(
+                    "The child finished its review.".to_string(),
+                )],
+            }],
+        );
+
+        let mut shell = None;
+        let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, Some(workdir.clone()));
+                app.set_work_pane(WorkPane::Subagents);
+                app.state
+                    .subagents
+                    .push(tact_protocol::SubagentRunSnapshot {
+                        child_id: child_id.to_string(),
+                        status: tact_protocol::SubagentStatusSnapshot::Completed,
+                        summary_first: "review complete".to_string(),
+                        started_at: Some(1),
+                        finished_at: Some(2),
+                    });
+                app
+            });
+            shell = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let shell = shell.expect("the window built a shell");
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("subagent-inspect-0", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+            .unwrap();
+
+        let loaded = shell.update(cx, |app, _| {
+            app.state
+                .subagent_transcript
+                .as_ref()
+                .map(|transcript| (transcript.loading, transcript.messages.clone()))
+        });
+        let (loading, messages) = loaded.expect("the inspected transcript stays selected");
+        assert!(!loading, "the stored transcript finished loading");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].blocks,
+            vec![tact_session::HistoryBlock::Text(
+                "The child finished its review.".to_string()
+            )]
+        );
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("work-pane-subagent-transcript").is_some(),
+                "the loaded transcript renders below the run list"
+            );
+        })
+        .unwrap();
     }
 
     /// The palette-only commands reach the session as protocol commands.

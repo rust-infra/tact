@@ -214,6 +214,13 @@ The production shell now verifies the items that Phase 2 could only park:
   tests are `failed_plan_step_expands_to_retry_and_transcript_controls`,
   `opening_a_plan_step_transcript_expands_the_tool_card`, and
   `retrying_a_failed_plan_step_submits_the_recorded_tool_and_args`.
+- Subagent rows now expose their named actions. Running children carry Cancel,
+  which sends `CancelSubagent { child_id }` through `SessionHandle`; every row
+  carries Inspect transcript, which loads `tact_session::history::history` on
+  the background executor and renders the stored child transcript beneath the
+  list. `cancelling_a_subagent_sends_its_child_id_to_the_driver` and
+  `inspecting_a_subagent_loads_its_stored_transcript` pin the command and the
+  loaded state.
 - Every control the shell renders is pressed by a test, including the title
   bar's three preset tabs, which
   `the_workspace_tabs_pair_each_preset_with_its_pane` presses in turn and reads
