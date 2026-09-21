@@ -3331,17 +3331,15 @@ impl TactApp {
             cx.notify();
             return;
         }
-        if self.conversation.is_expanded(index) {
-            // A card that grows while the scroller is pinned to the tail is
-            // absorbed by the viewport and the rows above it slide up, which
-            // reads as the body opening *upwards*. Bringing the expanded row
-            // into view ends the follow-tail and leaves the reader where they
-            // were looking, so the body opens downward as it should.
-            let moved = self
-                .transcript_state
-                .update(cx, |state, cx| state.scroll_to_item(index, cx));
-            let _ = moved;
-        }
+        // Expanding does not scroll. `scroll_to_item` was tried here to break
+        // the tail-follow, so the grown card would push the rows below it down
+        // instead of being absorbed by the viewport — but that API scrolls the
+        // item to the *top* of the viewport, and a card near the end of the
+        // transcript therefore jumped the list to the bottom. The scroller
+        // exposes no "keep this row where it is" / "stop following" call, so the
+        // honest state of this is: the artifact is real and the fix belongs
+        // upstream (or in a fork) rather than in a scroll call that makes it
+        // worse.
         self.record_change(Change::Resized(index), cx);
         cx.notify();
     }
