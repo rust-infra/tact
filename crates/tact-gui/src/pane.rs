@@ -46,7 +46,8 @@ fn panel_entrance() -> Animation {
 }
 
 /// Which surface the work pane shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum WorkPane {
     /// The agent's execution plan.
     #[default]

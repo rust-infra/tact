@@ -47,7 +47,8 @@ pub(crate) type OpenDiff = Rc<dyn Fn(&mut App)>;
 pub(crate) type ApprovalCard = Rc<dyn Fn(&Request, &str, &App) -> AnyElement>;
 
 /// How much supporting detail the transcript shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum TranscriptDetail {
     /// The default: reasoning stays hidden.
     #[default]

@@ -31,10 +31,11 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, Entity, FocusHandle,
-    Focusable as _, InteractiveElement, IntoElement, MouseButton, ParentElement as _, Pixels, Rems,
-    Render, RenderOnce, SharedString, Stateful, StatefulInteractiveElement, StyleRefinement,
-    Styled as _, Subscription, Window, div, px, relative, rems,
+    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent,
+    Empty, Entity, FocusHandle, Focusable as _, InteractiveElement, IntoElement, MouseButton,
+    ParentElement as _, Pixels, Rems, Render, RenderOnce, SharedString, Stateful,
+    StatefulInteractiveElement, StyleRefinement, Styled as _, Subscription, Window, div, px,
+    relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -44,6 +45,7 @@ use tact_protocol::UiResponse;
 use crate::RecentSession;
 use crate::commands;
 use crate::composer::{self, Attachment};
+use crate::layout::{self, LayoutPrefs, LayoutPreset, LayoutStore};
 use crate::pane::{self, FilesPane, TasksPane, WorkPane};
 use crate::session::{self, Change, Conversation, Request, SessionHandle, SessionState};
 use crate::theme;
@@ -52,14 +54,16 @@ use crate::transcript;
 
 /// Fixed title bar height (44 px at the default 16 px rem).
 const TITLE_BAR_HEIGHT: Rems = rems(2.75);
-/// Sidebar width (260 px at the default rem).
-const SIDEBAR_WIDTH: Rems = rems(16.25);
+/// Sidebar width (260 px at the default rem). The draggable value lives in
+/// [`LayoutPrefs`]; this is the prototype default and the overlay's fallback.
+const SIDEBAR_WIDTH: Rems = rems(layout::SIDEBAR_WIDTH_REM);
 /// Minimum sidebar session count before the list is grouped into date buckets.
 const SIDEBAR_GROUP_MIN: usize = 4;
 /// Width below which the sidebar becomes an overlay (960 px at the default rem).
 const SIDEBAR_OVERLAY_UNDER: Rems = rems(60.);
-/// Work pane width (420 px at the default rem).
-const WORK_PANE_WIDTH: Rems = rems(26.25);
+/// Work pane width (420 px at the default rem). The draggable value lives in
+/// [`LayoutPrefs`]; this is the prototype default and the drawer's fallback.
+const WORK_PANE_WIDTH: Rems = rems(layout::WORK_PANE_WIDTH_REM);
 /// Fixed status bar height (26 px at the default rem).
 const STATUS_BAR_HEIGHT: Rems = rems(1.625);
 /// Cap on the transcript's text measure (720 px at the default rem), which is
@@ -88,8 +92,12 @@ impl Columns {
     /// starts at.
     const NARROW_UNDER: Rems = rems(82.5);
 
-    fn for_width(width: Pixels, rem_size: Pixels) -> Self {
+    fn for_width(width: Pixels, rem_size: Pixels, prefs: &LayoutPrefs) -> Self {
         if width <= Self::NARROW_UNDER.to_pixels(rem_size) {
+            // The prototype's first media query shrinks both columns to fixed
+            // widths. A user's own drag is a wide-window preference, so the
+            // narrow form stays at the prototype's numbers rather than
+            // squeezing a deliberately wide work pane into a 1100 px window.
             Self {
                 sidebar: rems(15.25),
                 work_pane: rems(23.375),
@@ -98,8 +106,8 @@ impl Columns {
             }
         } else {
             Self {
-                sidebar: SIDEBAR_WIDTH,
-                work_pane: WORK_PANE_WIDTH,
+                sidebar: rems(prefs.sidebar_width_rem),
+                work_pane: rems(prefs.work_pane_width_rem),
                 thread: TRANSCRIPT_MEASURE,
                 gutter: rems(1.5),
             }
@@ -113,12 +121,6 @@ const WORK_PANE_IN_FLOW_FROM: Rems = rems(80.);
 /// The prototype's only motion token, `--ease:cubic-bezier(.23,1,.32,1)`, and
 /// the `180ms` it gives `.work` and `.sidebar`.
 const OVERLAY_SLIDE: Duration = Duration::from_millis(180);
-/// `transform:translateX(105%)` of the drawer's own width, which is how far
-/// `@media(max-width:1120px)` parks `.work` past the right edge.
-const WORK_PANE_DRAWER_OFFSET: Rems = rems(WORK_PANE_WIDTH.0 * 1.05);
-/// The same `105%` for the floating sidebar, which the prototype parks past
-/// the left edge instead (`translateX(-105%)`).
-const SIDEBAR_OVERLAY_OFFSET: Rems = rems(SIDEBAR_WIDTH.0 * 1.05);
 /// The presence keys the two sliding overlays keep their transition under.
 const WORK_PANE_DRAWER_PRESENCE: &str = "work-pane-drawer-slide";
 const SIDEBAR_OVERLAY_PRESENCE: &str = "sidebar-overlay-slide";
@@ -139,9 +141,11 @@ fn overlay_inset(offset: Rems, progress: f32) -> Rems {
 }
 
 /// The three top-level workspace presets over one session model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Workspace {
     /// Conversation and quick questions.
+    #[default]
     Chat,
     /// Plans, tasks, background runs, and subagents.
     Agent,
@@ -210,6 +214,10 @@ enum PaletteCommand {
     McpServers,
     OpenSettings,
     ToggleTheme,
+    LayoutSplit,
+    LayoutFocus,
+    LayoutReview,
+    LayoutZen,
 }
 
 /// The application shell view.
@@ -276,6 +284,16 @@ pub struct TactApp {
     detail: transcript::TranscriptDetail,
     /// Whether the transcript follows new output by default.
     follow_tail: bool,
+    /// Sidebar column width, in rems. The prototype default until the user
+    /// drags the divider; persisted through [`Self::layout_store`].
+    sidebar_width: Rems,
+    /// Work-pane column width, in rems. See [`Self::sidebar_width`].
+    work_pane_width: Rems,
+    /// Where the post-v1 layout document is read and written.
+    ///
+    /// The offline constructors disable this so a test or preview never
+    /// rewrites the developer's real window arrangement.
+    layout_store: LayoutStore,
     _composer_subscription: Subscription,
 }
 
@@ -588,14 +606,18 @@ impl TactApp {
         // window: a broken store simply shows no history.
         let recent = workdir.as_deref().map(session::recent).unwrap_or_default();
 
-        match started {
+        let mut app = match started {
             Ok((handle, streams)) => Self::build(window, cx, Some((handle, streams)), recent),
             Err(err) => {
                 let mut app = Self::build(window, cx, None, recent);
                 app.push_system_row(format!("Could not start a session: {err:#}"), cx);
                 app
             }
-        }
+        };
+        // The real window restores the user's arrangement and starts saving
+        // into it; the offline/test constructors stay on the disabled store.
+        app.apply_layout(LayoutStore::user());
+        app
     }
 
     /// Shared constructor for both the offline and connected shells.
@@ -672,8 +694,73 @@ impl TactApp {
             root_focus,
             detail: transcript::TranscriptDetail::Normal,
             follow_tail: true,
+            sidebar_width: SIDEBAR_WIDTH,
+            work_pane_width: WORK_PANE_WIDTH,
+            layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
         }
+    }
+
+    /// Snapshot the shell's arrangement in the persisted shape.
+    ///
+    /// The preset is *derived* from the two open flags rather than remembered:
+    /// a manual toggle can land on another preset's arrangement, and the saved
+    /// document should describe what the window actually showed rather than
+    /// the last palette row the user pressed.
+    fn layout_prefs(&self) -> LayoutPrefs {
+        let mut prefs = LayoutPrefs {
+            preset: LayoutPreset::Split,
+            sidebar_open: self.sidebar_open,
+            work_pane_open: self.work_pane_open,
+            workspace: self.workspace,
+            work_pane: self.work_pane,
+            detail: self.detail,
+            sidebar_width_rem: self.sidebar_width.0,
+            work_pane_width_rem: self.work_pane_width.0,
+        };
+        prefs.preset = prefs.matching_preset().unwrap_or(LayoutPreset::Split);
+        prefs
+    }
+
+    /// Write the current arrangement through the layout store.
+    fn persist_layout(&self) {
+        self.layout_store.persist(&self.layout_prefs());
+    }
+
+    /// Restore a stored arrangement and adopt its store for later saves.
+    fn apply_layout(&mut self, store: LayoutStore) {
+        let prefs = store.load();
+        self.sidebar_open = prefs.sidebar_open;
+        self.work_pane_open = prefs.work_pane_open;
+        self.workspace = prefs.workspace;
+        self.work_pane = prefs.work_pane;
+        self.detail = prefs.detail;
+        self.sidebar_width = rems(prefs.sidebar_width_rem);
+        self.work_pane_width = rems(prefs.work_pane_width_rem);
+        self.layout_store = store;
+    }
+
+    /// Apply one of the four pane arrangements, then persist it.
+    pub(crate) fn apply_layout_preset(&mut self, preset: LayoutPreset, cx: &mut Context<Self>) {
+        let (sidebar_open, work_pane_open) = preset.arrangement();
+        self.sidebar_open = sidebar_open;
+        self.work_pane_open = work_pane_open;
+        self.persist_layout();
+        cx.notify();
+    }
+
+    /// Move the sidebar divider, clamped to the draggable range, and persist.
+    pub(crate) fn set_sidebar_width(&mut self, rems: f32, cx: &mut Context<Self>) {
+        self.sidebar_width = Rems(layout::clamp_sidebar_width(rems));
+        self.persist_layout();
+        cx.notify();
+    }
+
+    /// Move the work-pane divider, clamped to the draggable range, and persist.
+    pub(crate) fn set_work_pane_width(&mut self, rems: f32, cx: &mut Context<Self>) {
+        self.work_pane_width = Rems(layout::clamp_work_pane_width(rems));
+        self.persist_layout();
+        cx.notify();
     }
 
     /// Drain the session's event streams into the shell.
@@ -833,24 +920,32 @@ impl TactApp {
             PaletteCommand::OpenPalette => self.open_palette(window, cx),
             PaletteCommand::ToggleSidebar => {
                 self.sidebar_open = !self.sidebar_open;
+                self.persist_layout();
                 cx.notify();
             }
             PaletteCommand::ToggleWorkPane => {
                 self.work_pane_open = !self.work_pane_open;
+                self.persist_layout();
                 cx.notify();
             }
             PaletteCommand::OpenDiff => {
                 self.workspace = Workspace::Code;
                 self.work_pane = WorkPane::Diff;
                 self.work_pane_open = true;
+                self.persist_layout();
                 cx.notify();
             }
             PaletteCommand::OpenTasks => {
                 self.workspace = Workspace::Agent;
                 self.work_pane = WorkPane::Tasks;
                 self.work_pane_open = true;
+                self.persist_layout();
                 cx.notify();
             }
+            PaletteCommand::LayoutSplit => self.apply_layout_preset(LayoutPreset::Split, cx),
+            PaletteCommand::LayoutFocus => self.apply_layout_preset(LayoutPreset::Focus, cx),
+            PaletteCommand::LayoutReview => self.apply_layout_preset(LayoutPreset::Review, cx),
+            PaletteCommand::LayoutZen => self.apply_layout_preset(LayoutPreset::Zen, cx),
             PaletteCommand::NewSession => self.new_session(cx),
             PaletteCommand::FocusComposer => {
                 // A palette row runs this while its palette is still open, and
@@ -1450,6 +1545,7 @@ impl TactApp {
     /// Advance the transcript through Normal → Thinking → Verbose.
     fn cycle_detail(&mut self, cx: &mut Context<Self>) {
         self.detail = self.detail.next();
+        self.persist_layout();
         self.transcript_state
             .update(cx, |state, cx| state.remeasure(cx));
         cx.notify();
@@ -1722,6 +1818,42 @@ impl TactApp {
         self.run_palette_command(PaletteCommand::OpenTasks, window, cx);
     }
 
+    fn on_layout_split(
+        &mut self,
+        _: &commands::LayoutSplit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_command(PaletteCommand::LayoutSplit, window, cx);
+    }
+
+    fn on_layout_focus(
+        &mut self,
+        _: &commands::LayoutFocus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_command(PaletteCommand::LayoutFocus, window, cx);
+    }
+
+    fn on_layout_review(
+        &mut self,
+        _: &commands::LayoutReview,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_command(PaletteCommand::LayoutReview, window, cx);
+    }
+
+    fn on_layout_zen(
+        &mut self,
+        _: &commands::LayoutZen,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_command(PaletteCommand::LayoutZen, window, cx);
+    }
+
     fn on_open_settings(
         &mut self,
         _: &commands::OpenSettings,
@@ -1797,6 +1929,7 @@ impl TactApp {
     /// Select a work pane tab.
     pub(crate) fn set_work_pane(&mut self, pane: WorkPane) {
         self.work_pane = pane;
+        self.persist_layout();
     }
 
     /// Select a work pane the way its own tab does, opening the pane when this
@@ -1812,11 +1945,13 @@ impl TactApp {
         if window.bounds().size.width < WORK_PANE_IN_FLOW_FROM.to_pixels(window.rem_size()) {
             self.work_pane_open = true;
         }
+        self.persist_layout();
     }
 
     /// Close the work pane, as the `.workTop` close button does.
     pub(crate) fn close_work_pane(&mut self) {
         self.work_pane_open = false;
+        self.persist_layout();
     }
 
     /// Whether the work pane is rendering as the prototype's overlay drawer.
@@ -2550,7 +2685,8 @@ impl Render for TactApp {
             self.files.invalidate();
         }
         self.files_listed = files_visible;
-        let columns = Columns::for_width(width, rem_size);
+        let layout_prefs = self.layout_prefs();
+        let columns = Columns::for_width(width, rem_size, &layout_prefs);
         let sidebar_is_overlay = width < SIDEBAR_OVERLAY_UNDER.to_pixels(rem_size);
         // The sidebar is a real column only when it is both open and wide
         // enough to sit beside the transcript. The title bar reserves the
@@ -2630,6 +2766,18 @@ impl Render for TactApp {
         }
 
         let mut workspace = div().relative().flex_1().min_h_0().child(workspace_row);
+        // The dividers are painted over the columns rather than laid out
+        // between them: the prototype draws each column's own 1 px border, so
+        // a divider that also took flex width would move every existing
+        // measurement by its own size. A 4 px band centred on the boundary is
+        // the drag target; the bare border stays visible underneath.
+        if sidebar_in_flow {
+            workspace = workspace.child(resize_handle(ResizeTarget::Sidebar, columns.sidebar, cx));
+        }
+        if work_pane_in_flow {
+            workspace =
+                workspace.child(resize_handle(ResizeTarget::WorkPane, columns.work_pane, cx));
+        }
         // The three floating surfaces are painted in the prototype's own
         // stacking order -- `.scrim` at `z-index:25`, `.work` at `30`, the
         // floating `.sidebar` at `40` -- because GPUI has no z-index and paint
@@ -2660,6 +2808,7 @@ impl Render for TactApp {
                     &mut self.files,
                     &mut self.diffs,
                     &mut self.tasks_pane,
+                    self.work_pane_width,
                     slide.progress,
                     cx,
                 ));
@@ -2679,6 +2828,7 @@ impl Render for TactApp {
                     // and a session press that looked like it did nothing.
                     self.open_session_id(),
                     &self.session_search,
+                    self.sidebar_width,
                     slide.progress,
                     cx,
                 ));
@@ -2702,6 +2852,10 @@ impl Render for TactApp {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_open_diff))
             .on_action(cx.listener(Self::on_open_tasks))
+            .on_action(cx.listener(Self::on_layout_split))
+            .on_action(cx.listener(Self::on_layout_focus))
+            .on_action(cx.listener(Self::on_layout_review))
+            .on_action(cx.listener(Self::on_layout_zen))
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_cycle_sessions))
             .on_action(cx.listener(Self::on_cycle_sessions_backward))
@@ -2729,7 +2883,14 @@ impl Render for TactApp {
                 cx,
             ))
             .child(workspace)
-            .child(status_bar(self.workspace, &self.state, cx))
+            .child(status_bar(
+                self.workspace,
+                layout_prefs
+                    .matching_preset()
+                    .unwrap_or(LayoutPreset::Split),
+                &self.state,
+                cx,
+            ))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
@@ -3113,6 +3274,7 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
     .aria_label(SharedString::from(sidebar_action))
     .on_click(cx.listener(|this, _, _, cx| {
         this.sidebar_open = !this.sidebar_open;
+        this.persist_layout();
         cx.notify();
     }))
     .test_support();
@@ -3144,6 +3306,7 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
             .aria_label(SharedString::from(pane_action))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.work_pane_open = !this.work_pane_open;
+                this.persist_layout();
                 cx.notify();
             }))
             .test_support(),
@@ -4413,6 +4576,7 @@ fn sidebar_overlay(
     recent: &[RecentSession],
     current: Option<&str>,
     search: &Entity<InputState>,
+    width: Rems,
     progress: f32,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -4420,8 +4584,8 @@ fn sidebar_overlay(
         .absolute()
         .top_0()
         .bottom_0()
-        .left(overlay_inset(SIDEBAR_OVERLAY_OFFSET, progress))
-        .w(SIDEBAR_WIDTH)
+        .left(overlay_inset(rems(width.0 * 1.05), progress))
+        .w(width)
         .border_r_1()
         .border_color(cx.theme().sidebar_border)
         .bg(cx.theme().sidebar)
@@ -4430,7 +4594,7 @@ fn sidebar_overlay(
         // against its `25` -- so it keeps the presses aimed at it instead of
         // letting the scrim close the work pane behind the user's back.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(sidebar(state, recent, current, search, SIDEBAR_WIDTH, cx))
+        .child(sidebar(state, recent, current, search, width, cx))
         .id("sidebar-overlay")
         .test_support()
 }
@@ -4494,6 +4658,7 @@ fn transcript(
                 app.update(cx, |app, cx| {
                     app.set_work_pane(WorkPane::Diff);
                     app.work_pane_open = true;
+                    app.persist_layout();
                     cx.notify();
                 });
             }
@@ -6002,6 +6167,90 @@ fn git_branch(workdir: &std::path::Path) -> Option<String> {
     (!branch.is_empty() && branch != "HEAD").then(|| branch.to_string())
 }
 
+/// Which divider a drag moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResizeTarget {
+    Sidebar,
+    WorkPane,
+}
+
+/// The payload carried by a divider drag.
+///
+/// `on_drag_move` receives the dragged value back through the app, so the
+/// target has to be part of the payload rather than captured: two handles live
+/// in the same tree and GPUI keys active drags by value.
+#[derive(Clone, Copy, Debug)]
+struct ResizeDrag(ResizeTarget);
+
+impl Render for ResizeDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+/// A draggable divider between two columns.
+///
+/// The handle is deliberately thin: the prototype has no divider at all, only
+/// the columns' own border, so the resting state paints that same 1 px border
+/// while the hover and drag states widen it to the accent. The drag itself is
+/// driven from `on_drag_move`, which fires while the pointer is anywhere in the
+/// window — a listener on the 4 px handle alone would stop tracking the moment
+/// the cursor outran the divider.
+fn resize_handle(
+    target: ResizeTarget,
+    column: Rems,
+    cx: &mut Context<TactApp>,
+) -> impl IntoElement {
+    let id = match target {
+        ResizeTarget::Sidebar => "sidebar-resize-handle",
+        ResizeTarget::WorkPane => "work-pane-resize-handle",
+    };
+    // Half the band sits on each side of the column's border, so the pointer
+    // can be a couple of pixels off the boundary and still start the drag.
+    let half = 0.125;
+    let mut handle = div()
+        .id(id)
+        .test_support()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .w(rems(half * 2.0))
+        .cursor_col_resize();
+    handle = match target {
+        ResizeTarget::Sidebar => handle.left(rems(column.0 - half)),
+        ResizeTarget::WorkPane => handle.right(rems(column.0 - half)),
+    };
+    handle
+        .bg(cx.theme().border)
+        .hover(|style| style.bg(cx.theme().accent))
+        .on_drag(ResizeDrag(target), |drag, _, _, cx| {
+            cx.stop_propagation();
+            cx.new(|_| *drag)
+        })
+        .on_drag_move(
+            cx.listener(move |this, event: &DragMoveEvent<ResizeDrag>, window, cx| {
+                if event.drag(cx).0 != target {
+                    return;
+                }
+                let rem = window.rem_size().as_f32();
+                if rem <= 0.0 {
+                    return;
+                }
+                let position = event.event.position.x.as_f32();
+                let width = match target {
+                    ResizeTarget::Sidebar => position / rem,
+                    ResizeTarget::WorkPane => {
+                        (window.bounds().size.width.as_f32() - position) / rem
+                    }
+                };
+                match target {
+                    ResizeTarget::Sidebar => this.set_sidebar_width(width, cx),
+                    ResizeTarget::WorkPane => this.set_work_pane_width(width, cx),
+                }
+            }),
+        )
+}
+
 fn work_pane(
     selected: WorkPane,
     state: &SessionState,
@@ -6048,16 +6297,22 @@ fn work_pane_scrim(cx: &mut Context<TactApp>) -> impl IntoElement {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(|this, _, _, cx| {
             this.work_pane_open = false;
+            this.persist_layout();
             cx.notify();
         }))
 }
 
+// The drawer threads the same five pane inputs the in-flow `work_pane` takes,
+// plus the slide geometry. Bundling them into a struct would be rebuilt at
+// every call site for a single helper, so the width is the noise here.
+#[allow(clippy::too_many_arguments)]
 fn work_pane_drawer(
     selected: WorkPane,
     state: &SessionState,
     files: &mut FilesPane,
     diffs: &mut pane::DiffPane,
     tasks: &mut TasksPane,
+    width: Rems,
     progress: f32,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -6065,8 +6320,8 @@ fn work_pane_drawer(
         .absolute()
         .top_0()
         .bottom_0()
-        .right(overlay_inset(WORK_PANE_DRAWER_OFFSET, progress))
-        .w(WORK_PANE_WIDTH)
+        .right(overlay_inset(rems(width.0 * 1.05), progress))
+        .w(width)
         .border_l_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().sidebar)
@@ -6080,7 +6335,12 @@ fn work_pane_drawer(
         .test_support()
 }
 
-fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl IntoElement {
+fn status_bar(
+    workspace: Workspace,
+    layout: LayoutPreset,
+    state: &SessionState,
+    cx: &App,
+) -> impl IntoElement {
     let project = state
         .workdir
         .as_deref()
@@ -6189,6 +6449,17 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
             cx,
         ));
     }
+
+    // The post-v1 layout store is invisible unless the shell says which
+    // arrangement it restored; the chip is the user-visible end of that
+    // feature and the only place the preset name is rendered.
+    bar = bar.child(status_item(
+        "status-layout",
+        None,
+        layout.label().to_string(),
+        crate::theme::ink3(cx),
+        cx,
+    ));
 
     bar = bar.child(div().flex_1());
 
@@ -6338,6 +6609,7 @@ fn settings_panel(
                         } else {
                             app.detail = transcript::TranscriptDetail::Normal;
                         }
+                        app.persist_layout();
                         app.transcript_state
                             .update(cx, |state, cx| state.remeasure(cx));
                         cx.notify();
@@ -6575,6 +6847,68 @@ mod tests {
         assert!(
             dispatched.try_recv().is_err(),
             "and cancelling dispatches nothing else"
+        );
+    }
+
+    /// The layout store restores a saved arrangement and writes back drags.
+    ///
+    /// `LayoutStore` has its own round-trip tests; what this proves is the
+    /// shell half: `apply_layout` actually moves the live fields, and a resize
+    /// reaches the document instead of only the frame.
+    #[gpui_kit::test]
+    fn the_layout_store_restores_and_persists_the_column_widths(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-layout.json");
+        let seeded = crate::layout::LayoutPrefs {
+            sidebar_open: false,
+            work_pane_open: true,
+            sidebar_width_rem: 14.0,
+            work_pane_width_rem: 30.0,
+            work_pane: WorkPane::Diff,
+            ..crate::layout::LayoutPrefs::default()
+        };
+        crate::layout::LayoutStore::at(&path).save(&seeded).unwrap();
+
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let store_path = path.clone();
+        let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, _| {
+                app.apply_layout(crate::layout::LayoutStore::at(store_path.clone()));
+            });
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let _ = handle;
+
+        let shell = slot.borrow().clone().expect("the window built the shell");
+        shell.update(cx, |app, cx| {
+            assert!(!app.sidebar_open, "the stored arrangement restores");
+            assert_eq!(app.sidebar_width.0, 14.0);
+            assert_eq!(app.work_pane_width.0, 30.0);
+            assert_eq!(app.work_pane, WorkPane::Diff);
+
+            app.set_sidebar_width(18.0, cx);
+            app.set_work_pane_width(9999.0, cx);
+        });
+
+        let saved = crate::layout::LayoutStore::at(&path).load();
+        assert_eq!(saved.sidebar_width_rem, 18.0);
+        assert_eq!(
+            saved.work_pane_width_rem,
+            crate::layout::WORK_PANE_MAX_REM,
+            "a drag past the limit is clamped in the document, not just on screen"
         );
     }
 

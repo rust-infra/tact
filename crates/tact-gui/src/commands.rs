@@ -25,6 +25,10 @@ actions!([
     SessionStats,
     McpServers,
     ToggleTheme,
+    LayoutSplit,
+    LayoutFocus,
+    LayoutReview,
+    LayoutZen,
 ]);
 
 /// Register the global keyboard contract.
@@ -53,6 +57,10 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-tab", CycleSessionsBackward, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-backspace", RemoveAttachment, Some(CONTEXT)),
         KeyBinding::new("secondary-shift-l", ToggleTheme, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-1", LayoutSplit, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-2", LayoutFocus, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-3", LayoutReview, Some(CONTEXT)),
+        KeyBinding::new("secondary-alt-4", LayoutZen, Some(CONTEXT)),
     ]);
 }
 
@@ -79,6 +87,31 @@ pub(crate) fn groups() -> Vec<CommandGroup> {
                 .keywords(["plan", "diff", "tasks", "files", "drawer"]),
             command("Open diff", IconName::File, OpenDiff).keywords(["changes", "review", "patch"]),
             command("Open tasks", IconName::CircleCheck, OpenTasks).keywords(["todo", "progress"]),
+        ]),
+        CommandGroup::new().label("Layout").items([
+            command("Layout: Split", IconName::PanelLeft, LayoutSplit).keywords([
+                "sidebar",
+                "work pane",
+                "columns",
+                "preset",
+            ]),
+            command("Layout: Focus", IconName::PanelLeft, LayoutFocus).keywords([
+                "reading",
+                "sidebar",
+                "no work pane",
+                "preset",
+            ]),
+            command("Layout: Review", IconName::PanelRight, LayoutReview).keywords([
+                "work pane",
+                "no sidebar",
+                "preset",
+            ]),
+            command("Layout: Zen", IconName::Eye, LayoutZen).keywords([
+                "transcript",
+                "no sidebar",
+                "no work pane",
+                "preset",
+            ]),
         ]),
         CommandGroup::new().label("Session").items([
             command("New session", IconName::Plus, NewSession).keywords([

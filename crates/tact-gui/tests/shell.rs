@@ -4273,7 +4273,7 @@ fn the_command_palette_search_filters_rows(cx: &mut TestAppContext) {
             "Toggle work pane survives the query"
         );
         assert!(
-            window.try_find("index-path(2,1,0)").is_some(),
+            window.try_find("index-path(3,1,0)").is_some(),
             "Toggle theme survives the query"
         );
         assert!(
@@ -4326,12 +4326,9 @@ fn the_palette_new_session_row_answers_like_the_chord(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
 
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("index-path(1,0,0)", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
+    // The Session group now sits below the fold behind the Layout group, so
+    // the row has to be scrolled into view before it can be pressed.
+    run_palette_row(cx, *handle, 2, 0);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -4427,9 +4424,9 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     });
     let handle = handle.into();
 
-    // (1,1) Focus composer. Focus is proved by typing, not by asking for it:
+    // (2,1) Focus composer. Focus is proved by typing, not by asking for it:
     // the `@` trigger only opens the completion list inside the composer.
-    run_palette_row(cx, handle, 1, 1);
+    run_palette_row(cx, handle, 2, 1);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(
@@ -4452,7 +4449,7 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     })
     .unwrap();
 
-    // (1,3) Cycle transcript detail, read off the toolbar's own chip.
+    // (2,3) Cycle transcript detail, read off the toolbar's own chip.
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(
@@ -4464,7 +4461,7 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
         );
     })
     .unwrap();
-    run_palette_row(cx, handle, 1, 3);
+    run_palette_row(cx, handle, 2, 3);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(
@@ -4477,9 +4474,9 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     })
     .unwrap();
 
-    // (1,2) Stop task. The preview owns no running turn, so the row has nothing
+    // (2,2) Stop task. The preview owns no running turn, so the row has nothing
     // to cancel; what is checkable is that it runs and leaves no row behind.
-    run_palette_row(cx, handle, 1, 2);
+    run_palette_row(cx, handle, 2, 2);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(
@@ -4493,7 +4490,7 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     })
     .unwrap();
 
-    // (1,4) and (1,5) move the open session row, one step out and one back.
+    // (2,4) and (2,5) move the open session row, one step out and one back.
     let first = "session-row-7fbab10-2c41-4c9a-9f10-2222aaaa1111";
     let second = "session-row-3b78ba4-1d02-4a33-8b71-3333bbbb2222";
     cx.update_window(handle, |_, window, cx| {
@@ -4505,7 +4502,7 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
         );
     })
     .unwrap();
-    run_palette_row(cx, handle, 1, 4);
+    run_palette_row(cx, handle, 2, 4);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(
@@ -4515,7 +4512,7 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
         );
     })
     .unwrap();
-    run_palette_row(cx, handle, 1, 5);
+    run_palette_row(cx, handle, 2, 5);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(
@@ -4526,8 +4523,8 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     })
     .unwrap();
 
-    // (2,0) Open settings.
-    run_palette_row(cx, handle, 2, 0);
+    // (3,0) Open settings.
+    run_palette_row(cx, handle, 3, 0);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -4546,14 +4543,14 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     })
     .unwrap();
 
-    // (2,1) Toggle theme, read off the theme the app is actually running.
+    // (3,1) Toggle theme, read off the theme the app is actually running.
     let before = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             cx.theme().theme_name().clone()
         })
         .unwrap();
-    run_palette_row(cx, handle, 2, 1);
+    run_palette_row(cx, handle, 3, 1);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert_ne!(
@@ -4563,6 +4560,72 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
         );
     })
     .unwrap();
+}
+
+/// The Layout group's four rows move the shell between arrangements.
+///
+/// The rows are the first thing that touches the post-v1 layout store, so the
+/// contract is stated as observable shell state rather than as a saved file:
+/// each row must leave the columns open or closed as its name says, and the
+/// status bar must report the arrangement the window actually has.
+#[gpui_kit::test]
+fn the_layout_palette_rows_rearrange_the_shell(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+    let handle = handle.into();
+
+    let assert_arrangement = |cx: &mut TestAppContext,
+                              handle: gpui_kit::AnyWindowHandle,
+                              preset: &str,
+                              sidebar: bool,
+                              work_pane: bool| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let chip = window.find("status-layout");
+            let label = chip.label().unwrap_or_default();
+            assert!(
+                label.contains(preset),
+                "the status bar reports {preset}, not {label:?}"
+            );
+            assert_eq!(
+                window.try_find("sidebar").is_some(),
+                sidebar,
+                "{preset} leaves the sidebar column {}",
+                if sidebar { "open" } else { "closed" }
+            );
+            assert_eq!(
+                window.try_find("work-pane").is_some(),
+                work_pane,
+                "{preset} leaves the work pane {}",
+                if work_pane { "open" } else { "closed" }
+            );
+        })
+        .unwrap();
+    };
+
+    // Split (1,0): the prototype's default, both columns.
+    run_palette_row(cx, handle, 1, 0);
+    assert_arrangement(cx, handle, "Split", true, true);
+
+    // Focus (1,1): reading view, sidebar only.
+    run_palette_row(cx, handle, 1, 1);
+    assert_arrangement(cx, handle, "Focus", true, false);
+
+    // Review (1,2): work pane only.
+    run_palette_row(cx, handle, 1, 2);
+    assert_arrangement(cx, handle, "Review", false, true);
+
+    // Zen (1,3): transcript alone.
+    run_palette_row(cx, handle, 1, 3);
+    assert_arrangement(cx, handle, "Zen", false, false);
+
+    // And back, so the walk leaves the shell in the arrangement it opened in.
+    run_palette_row(cx, handle, 1, 0);
+    assert_arrangement(cx, handle, "Split", true, true);
 }
 
 /// The palette's session commands answer even when no agent is attached.
@@ -4612,24 +4675,24 @@ fn the_command_palette_session_rows_answer_without_an_agent(cx: &mut TestAppCont
     // dispatched twice would push the next row's transcript row into existence
     // early and fail the assertion that follows it.
     for (row, expected) in [(6usize, 0usize), (7, 1), (8, 2)] {
-        run_palette_row(cx, handle, 1, row);
+        run_palette_row(cx, handle, 2, row);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             assert!(
                 window.try_find("transcript-empty").is_none(),
-                "the row at index 1,{row} answers instead of doing nothing"
+                "the row at index 2,{row} answers instead of doing nothing"
             );
             assert!(
                 window
                     .try_find(format!("transcript-row-{expected}"))
                     .is_some(),
-                "the row at index 1,{row} appends its notice"
+                "the row at index 2,{row} appends its notice"
             );
             assert!(
                 window
                     .try_find(format!("transcript-row-{}", expected + 1))
                     .is_none(),
-                "the row at index 1,{row} appends one notice, not one per dispatch path"
+                "the row at index 2,{row} appends one notice, not one per dispatch path"
             );
         })
         .unwrap();
