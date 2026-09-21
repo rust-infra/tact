@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-22 — The model picker updates while open and searches the full list
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`model_filter`, `fetch_model_options`, `prompt_composer`) |
+
+**Symptom / motivation:** The model popover's content closure captured a clone of `model_options` from the frame that opened it. The first click therefore showed the pre-fetch empty state and could stay empty after the HTTP response arrived. Once a real provider returned dozens of ids, the user could not see later families such as DeepSeek without scrolling a long, unlabeled list, and there was no direct way to find them.
+
+**Decision:** Read the picker's model list, loading flag, current model, and budget from the live `TactApp` inside the popover content instead of using a one-frame snapshot. Add a `model_filter` `InputState` to the shell, reset and focus it whenever the popover opens, and filter model ids case-insensitively as the user types. The current model is sorted first; the rest preserve the provider's order. The panel remains capped at 24 rem with a scrollbar.
+
+**Behavior after:** The first Model click immediately shows `Refreshing from provider…`; the list fills in while the popover stays open. Typing `deepseek` shows the DeepSeek family even when it is far below the fold. Clearing the search restores the full list, and the current model remains visible and selected.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`model_filter`, `fetch_model_options`, `prompt_composer`); `crates/tact-gui/tests/shell.rs` (`the_model_picker_filters_a_long_list`)
+
 ## 1. 2026-09-22 — Reopening the desktop app resumes the latest chat
 
 | Field | Value |

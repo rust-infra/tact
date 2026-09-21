@@ -334,8 +334,12 @@ pub struct TactApp {
     /// Browser pane URL field. The pane hands its value to the system browser;
     /// the shell has no embedded web view.
     browser_url: Entity<InputState>,
+    /// Search field inside the model picker.
+    model_filter: Entity<InputState>,
     /// Keeps the URL field's Enter binding alive for the window's lifetime.
     _browser_subscription: Subscription,
+    /// Repaint the model picker as the search query changes.
+    _model_filter_subscription: Subscription,
     /// The keystroke interceptor that gives a focused terminal its keys.
     _terminal_subscription: Subscription,
     /// URLs the Browser pane has opened, newest first.
@@ -791,6 +795,7 @@ impl TactApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions"));
         let browser_url =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://example.com"));
+        let model_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
         let root_focus = cx.focus_handle();
         window.defer(cx, {
             let root_focus = root_focus.clone();
@@ -802,6 +807,10 @@ impl TactApp {
                 if let InputEvent::PressEnter { .. } = event {
                     this.open_browser_url(window, cx);
                 }
+            });
+        let model_filter_subscription =
+            cx.subscribe_in(&model_filter, window, |_, _, _: &InputEvent, _, cx| {
+                cx.notify()
             });
         // A focused terminal has to own its keys *before* the keymap resolves
         // them. `on_key_down` runs after action dispatch, so `Ctrl-L` (focus
@@ -880,7 +889,9 @@ impl TactApp {
             composer,
             session_search,
             browser_url,
+            model_filter,
             _browser_subscription: browser_subscription,
+            _model_filter_subscription: model_filter_subscription,
             _terminal_subscription: terminal_subscription,
             browser_history: Vec::new(),
             session,
@@ -3651,12 +3662,16 @@ impl Render for TactApp {
 
         // Boxed so the borrow of `cx` ends here: both work-pane placements and
         // the bottom nest need `cx` again in the same expression.
+        let composer_inputs = ComposerInputs {
+            composer: &self.composer,
+            model_filter: &self.model_filter,
+            session: &self.state,
+            attachments: &self.attachments,
+        };
         let transcript_column = transcript(
             self.conversation.rows(),
             self.transcript_state.clone(),
-            self.composer.clone(),
-            &self.state,
-            &self.attachments,
+            composer_inputs,
             transcript_frame,
             cx,
         )
@@ -5872,15 +5887,26 @@ struct TranscriptFrame {
 /// `&mut App` after the owning view has finished its render pass.
 type ShellClick = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
+struct ComposerInputs<'a> {
+    composer: &'a Entity<TextareaState>,
+    model_filter: &'a Entity<InputState>,
+    session: &'a SessionState,
+    attachments: &'a [Attachment],
+}
+
 fn transcript(
     rows: &[transcript::TranscriptRow],
     state: Entity<MessageScrollerState>,
-    composer: Entity<TextareaState>,
-    session: &SessionState,
-    attachments: &[Attachment],
+    composer: ComposerInputs<'_>,
     frame: TranscriptFrame,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
+    let ComposerInputs {
+        composer,
+        model_filter,
+        session,
+        attachments,
+    } = composer;
     let TranscriptFrame { header, columns } = frame;
     let TranscriptHeader {
         heading,
@@ -6016,7 +6042,13 @@ fn transcript(
         .flex_1()
         .min_h_0()
         .child(scroller)
-        .child(prompt_composer(&composer, session, attachments, cx));
+        .child(prompt_composer(
+            composer,
+            model_filter,
+            session,
+            attachments,
+            cx,
+        ));
 
     v_flex()
         .flex_1()
@@ -6819,6 +6851,7 @@ fn send_button(
 
 fn prompt_composer(
     composer: &Entity<TextareaState>,
+    model_filter: &Entity<InputState>,
     session: &SessionState,
     attachments: &[Attachment],
     cx: &mut Context<TactApp>,
@@ -6844,6 +6877,7 @@ fn prompt_composer(
     // every open rather than borrowing the session.
     let model_options = session.model_options.clone();
     let model_options_loading = session.model_options_loading;
+    let model_filter_for_content = model_filter.clone();
     let current_effort = session
         .model
         .as_ref()
@@ -6930,8 +6964,13 @@ fn prompt_composer(
         .anchor(gpui_kit::Anchor::TopLeft)
         .on_open_change({
             let refresh_owner = owner.clone();
-            move |open, _, cx| {
+            let model_filter = model_filter.clone();
+            move |open, window, cx| {
                 if *open {
+                    model_filter.update(cx, |state, cx| {
+                        state.set_value("", window, cx);
+                        state.focus(window, cx);
+                    });
                     let _ = refresh_owner.update(cx, |app, cx| app.fetch_model_options(cx));
                 }
             }
@@ -6944,23 +6983,53 @@ fn prompt_composer(
                 .strong()
                 .tooltip("Model and reasoning controls"),
         )
-        .content(move |_state, _window, _cx| {
+        .content(move |_state, _window, cx| {
+            let (model_options, model_options_loading, current_model, current_budget) =
+                model_owner
+                    .upgrade()
+                    .map(|app| {
+                        let app = app.read(cx);
+                        (
+                            app.state.model_options.clone(),
+                            app.state.model_options_loading,
+                            app.state
+                                .model
+                                .as_ref()
+                                .map(|model| model.model.clone())
+                                .unwrap_or_else(|| "Tact".to_string()),
+                            app.state.model.as_ref().and_then(|model| model.thinking_budget),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            model_options.clone(),
+                            model_options_loading,
+                            current_model.clone(),
+                            current_budget,
+                        )
+                    });
+            let query = model_filter_for_content
+                .read(cx)
+                .value()
+                .trim()
+                .to_lowercase();
             let mut panel = v_flex()
+                .id("composer-model-panel")
+                .test_support()
                 .gap_1()
                 .min_w(rems(18.))
-                // A real provider can advertise dozens of ids. Keep the full
-                // model list plus reasoning controls reachable without letting
-                // the popover grow taller than the window: cap the panel and
-                // let it scroll, with a small right inset for the overlay
-                // scrollbar.
-                .max_h(rems(24.))
-                .pr(rems(0.75))
-                .overflow_y_scrollbar()
                 .child(
                     div()
                         .text_xs()
                         .text_color(muted_foreground)
                         .child(SharedString::from("Model")),
+                )
+                .child(
+                    div()
+                        .id("composer-model-search")
+                        .test_support()
+                        .w_full()
+                        .child(Input::new(&model_filter_for_content)),
                 );
             if model_options_loading {
                 panel = panel.child(
@@ -6972,6 +7041,13 @@ fn prompt_composer(
                         .child(SharedString::from("Refreshing from provider…")),
                 );
             }
+            let mut visible_models: Vec<String> = model_options
+                .iter()
+                .filter(|model| query.is_empty() || model.to_lowercase().contains(&query))
+                .cloned()
+                .collect();
+            visible_models.sort_by_key(|model| usize::from(model != &current_model));
+
             if model_options.is_empty() && !model_options_loading {
                 // Honest empty state: the provider did not report a list, so
                 // the picker shows the model in use and says why it has nothing
@@ -6988,23 +7064,44 @@ fn prompt_composer(
                         )),
                 );
             }
-            for model in model_options.iter() {
-                let owner = model_owner.clone();
-                let model = model.to_string();
-                let selected = model == current_model;
-                panel = panel.child(
-                    Button::new(SharedString::from(format!(
-                        "composer-model-{}",
-                        model.replace(['/', ':', ' '], "-")
-                    )))
-                    .label(model.clone())
-                    .ghost()
-                    .compact()
-                    .toggled(selected)
-                    .on_click(move |_, _, cx| {
-                        let _ = owner.update(cx, |app, cx| app.set_model(model.clone(), cx));
-                    }),
-                );
+            if !model_options.is_empty() {
+                let mut list = v_flex()
+                    .gap_1()
+                    // Cap only the model list. Search and reasoning controls
+                    // stay fixed, while a real provider's dozens of ids scroll
+                    // inside this section instead of growing the popover past
+                    // the window.
+                    .max_h(rems(16.))
+                    .pr(rems(0.75))
+                    .overflow_y_scrollbar();
+                if visible_models.is_empty() && !model_options_loading {
+                    list = list.child(
+                        div()
+                            .id("composer-model-no-match")
+                            .test_support()
+                            .text_xs()
+                            .text_color(muted_foreground)
+                            .child(SharedString::from("No models match this search.")),
+                    );
+                }
+                for model in visible_models {
+                    let owner = model_owner.clone();
+                    let selected = model == current_model;
+                    list = list.child(
+                        Button::new(SharedString::from(format!(
+                            "composer-model-{}",
+                            model.replace(['/', ':', ' '], "-")
+                        )))
+                        .label(model.clone())
+                        .ghost()
+                        .compact()
+                        .toggled(selected)
+                        .on_click(move |_, _, cx| {
+                            let _ = owner.update(cx, |app, cx| app.set_model(model.clone(), cx));
+                        }),
+                    );
+                }
+                panel = panel.child(list);
             }
             panel = panel.child(
                 div()
@@ -7033,10 +7130,7 @@ fn prompt_composer(
                         }),
                 );
             }
-            div()
-                .id("composer-model-panel")
-                .test_support()
-                .child(panel)
+            panel
         });
 
     let effort_owner = owner.clone();

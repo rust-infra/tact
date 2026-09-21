@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-22 — Model picker 在打开期间实时更新，并可搜索完整列表
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`model_filter`、`fetch_model_options`、`prompt_composer`） |
+
+**现象 / 动机：** model popover 的 content closure 捕获了打开那帧的 `model_options` 快照。因此第一次点击只会看到拉取前的空状态，即使 HTTP 响应已经回来，面板也可能保持为空。真实服务端返回几十个 id 后，用户还要在很长且没有搜索的列表里滚动，才能找到 DeepSeek 这类靠后的模型。
+
+**决策：** popover content 不再使用单帧快照，而是从 live `TactApp` 读取模型列表、loading 状态、当前模型和 budget。shell 新增 `model_filter` `InputState`；每次打开 popover 时清空并聚焦，输入时按 model id 大小写不敏感过滤。当前模型排在最前，其余保持服务端顺序；面板仍限制为 24 rem 并带滚动条。
+
+**改后行为：** 第一次点击 Model 就立即显示 `Refreshing from provider…`；服务端返回后列表会在已打开的面板内填充。输入 `deepseek` 即可显示位于列表后部的 DeepSeek 系列；清空搜索恢复完整列表，当前模型保持可见并选中。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`model_filter`、`fetch_model_options`、`prompt_composer`）；`crates/tact-gui/tests/shell.rs`（`the_model_picker_filters_a_long_list`）
+
 ## 1. 2026-09-22 — 重新打开桌面应用时恢复最近一次聊天
 
 | 字段 | 值 |

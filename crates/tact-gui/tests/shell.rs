@@ -2661,6 +2661,52 @@ fn the_composer_option_rows_keep_the_choice_they_set(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// A real provider can advertise a long model list. The picker keeps the list
+/// live while it is open and filters it by model id, so models that are below
+/// the fold can still be reached without scrolling the whole panel.
+#[gpui_kit::test]
+fn the_model_picker_filters_a_long_list(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-model", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-model-search").is_some(),
+            "the model picker exposes its own search field"
+        );
+        assert!(
+            window.try_find("composer-model-gpt-5").is_some(),
+            "the unfiltered list starts with server order"
+        );
+
+        window.input("deepseek", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-model-deepseek-chat").is_some(),
+            "typing a provider family keeps its models visible"
+        );
+        assert!(
+            window.try_find("composer-model-gpt-5").is_none(),
+            "typing a provider family filters unrelated models"
+        );
+
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-model-gpt-5").is_some(),
+            "clearing the search restores the full list"
+        );
+    })
+    .unwrap();
+}
+
 /// The composer's Add menu rows do what their labels say.
 ///
 /// The native file picker is a platform prompt and is covered by the broad
@@ -3596,6 +3642,23 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         ] {
             for item in items {
                 click!(chip);
+                if item.starts_with("composer-budget-") {
+                    for _ in 0..12 {
+                        window.render_frame(cx);
+                        let visible = match window.try_find(*item) {
+                            Some(target) => target.visible(),
+                            None => false,
+                        };
+                        if visible {
+                            break;
+                        }
+                        window.scroll(
+                            "composer-model-panel",
+                            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-120.))),
+                            cx,
+                        );
+                    }
+                }
                 click!(*item);
             }
             dismiss_popover(window, cx, panel);
