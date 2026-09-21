@@ -2893,6 +2893,18 @@ fn repo_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// Scroll the sidebar back to the top of its list.
+fn scroll_sidebar_to_top(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
+    for _ in 0..20 {
+        window.scroll(
+            "sidebar-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(240.))),
+            cx,
+        );
+        window.render_frame(cx);
+    }
+}
+
 /// Scroll the sidebar until `id` sits inside its viewport, then leave it there.
 ///
 /// The list holds sessions, projects, worktrees, and background rows. A row
@@ -3231,6 +3243,11 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         let after = app.update(cx, |app, _| app.transcript_len());
         assert_eq!(after, notices + 1, "Reveal answers with one notice row");
 
+        // Archived sessions are hidden by default, and the walk visits every
+        // seeded row, so it asks for them first.
+        window.click("session-show-archived", cx);
+        window.render_frame(cx);
+
         // Projects: the Open folder entry, then the project row the window is
         // already in. The offline shell opens no modal picker, so both presses
         // land as notices or no-ops rather than as a dialog.
@@ -3260,6 +3277,9 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         ];
         for id in preview_rows {
             let row: SharedString = format!("session-row-{id}").into();
+            // The sidebar scrolls, and this group is taller than the box; each
+            // row is brought into view before it is pressed.
+            reveal_in_sidebar(window, &row, cx);
             click!(row.clone());
             assert_eq!(
                 window.find(row.clone()).selected(),
@@ -5524,6 +5544,11 @@ fn the_sidebar_search_filters_the_session_list(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
 
+        // Archived sessions are out of the way by default; this walk is about
+        // the filter, so it asks for the full list first.
+        window.click("session-show-archived", cx);
+        window.render_frame(cx);
+
         let kept = "d464f22d-5e11-4c2f-9a08-4444cccc3333";
         let dropped = [
             "7fbab10-2c41-4c9a-9f10-2222aaaa1111",
@@ -5687,6 +5712,11 @@ fn clicking_between_sessions_and_worktrees_keeps_one_open_row(cx: &mut TestAppCo
             "036e6015-a4d7-4e29-8c31-8888aaaa7777",
             "3f016556-2b8c-4f70-9d12-9999bbbb8888",
         ];
+        // Archived sessions are hidden by default; this walk moves between
+        // every seeded row, so it asks for them first.
+        window.click("session-show-archived", cx);
+        window.render_frame(cx);
+
         let worktrees = worktree_row_ids();
         assert!(
             !worktrees.is_empty(),

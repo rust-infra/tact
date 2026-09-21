@@ -359,6 +359,8 @@ pub struct TactApp {
     _pump: Option<session::Pump>,
     /// Sessions with a turn in flight whose window is showing something else.
     parked: Vec<ParkedSession>,
+    /// Whether the sidebar lists archived sessions.
+    show_archived: bool,
     /// Command palette interaction state, retained while its dialog is open,
     /// plus whether that dialog is still on the window's stack. A palette row
     /// dispatches its action while the palette is open, and the palette's own
@@ -849,6 +851,7 @@ impl TactApp {
             offline: false,
             _pump: pump,
             parked: Vec::new(),
+            show_archived: false,
             palette: None,
             palette_live: false,
             root_focus,
@@ -888,6 +891,7 @@ impl TactApp {
             recent_workspaces: self.recent_workspaces.clone(),
             zoom_rem: self.zoom_rem,
             ui_font: self.ui_font.clone(),
+            show_archived: self.show_archived,
         };
         prefs.preset = prefs.matching_preset().unwrap_or(LayoutPreset::Split);
         prefs
@@ -914,6 +918,7 @@ impl TactApp {
         self.recent_workspaces = prefs.recent_workspaces;
         self.zoom_rem = prefs.zoom_rem;
         self.ui_font = prefs.ui_font;
+        self.show_archived = prefs.show_archived;
         window.set_rem_size(px(self.zoom_rem));
         self.layout_store = store;
     }
@@ -1051,6 +1056,13 @@ impl TactApp {
     /// Move the work pane to its next edge.
     pub(crate) fn cycle_work_pane_side(&mut self, cx: &mut Context<Self>) {
         self.work_pane_side = self.work_pane_side.next();
+        self.persist_layout();
+        cx.notify();
+    }
+
+    /// Show or hide archived sessions in the sidebar.
+    pub(crate) fn toggle_show_archived(&mut self, cx: &mut Context<Self>) {
+        self.show_archived = !self.show_archived;
         self.persist_layout();
         cx.notify();
     }
@@ -3512,6 +3524,7 @@ impl Render for TactApp {
                     current: self.open_session_id(),
                     search: &self.session_search,
                     workspaces: &self.recent_workspaces,
+                    show_archived: self.show_archived,
                 },
                 columns.sidebar,
                 cx,
@@ -3703,6 +3716,7 @@ impl Render for TactApp {
                         current,
                         search: &self.session_search,
                         workspaces: &self.recent_workspaces,
+                        show_archived: self.show_archived,
                     },
                     self.sidebar_width,
                     slide.progress,
@@ -4554,6 +4568,9 @@ struct SidebarInputs<'a> {
     current: Option<&'a str>,
     search: &'a Entity<InputState>,
     workspaces: &'a [PathBuf],
+    /// Whether archived sessions are listed. An archived session is out of the
+    /// way by default, which is the whole point of archiving it.
+    show_archived: bool,
 }
 
 fn sidebar(inputs: SidebarInputs<'_>, width: Rems, cx: &mut Context<TactApp>) -> impl IntoElement {
@@ -4563,6 +4580,7 @@ fn sidebar(inputs: SidebarInputs<'_>, width: Rems, cx: &mut Context<TactApp>) ->
         current,
         search,
         workspaces,
+        show_archived,
     } = inputs;
     let session_line = session_activity_line(state);
     // Bound once: hover and highlight closures must not borrow the context.
@@ -4594,8 +4612,19 @@ fn sidebar(inputs: SidebarInputs<'_>, width: Rems, cx: &mut Context<TactApp>) ->
 
     // `.sideScroll` pads 4px and `.group:first-child` adds another 2px above
     // the first label; the horizontal and bottom insets already match.
+    let archived_count = recent.iter().filter(|session| session.archived).count();
+    // The open row stays listed whatever the filter says: archiving the
+    // session you are looking at must not make the window lose its place.
+    let listed: Vec<RecentSession> = recent
+        .iter()
+        .filter(|session| {
+            show_archived || !session.archived || current == Some(session.id.as_str())
+        })
+        .cloned()
+        .collect();
+
     let mut list = v_flex().gap(rems(0.75)).px_2().pt(rems(0.375)).pb_3();
-    for bucket in session_buckets(recent, &query, now) {
+    for bucket in session_buckets(&listed, &query, now) {
         let mut rows = v_flex().gap(rems(0.0625));
         for session in bucket.sessions {
             let is_current = current == Some(session.id.as_str());
@@ -4626,6 +4655,30 @@ fn sidebar(inputs: SidebarInputs<'_>, width: Rems, cx: &mut Context<TactApp>) ->
                 .child(group_label(&bucket.label, bucket.count, cx))
                 .child(rows),
         );
+    }
+
+    if query.is_empty() && archived_count > 0 {
+        let label = if show_archived {
+            "Hide archived"
+        } else {
+            "Show archived"
+        };
+        list = list.child(sidebar_meta_row(
+            SharedString::from("session-show-archived"),
+            SharedString::from(format!("{label} ({archived_count})")),
+            SharedString::from("Archived sessions keep their transcript"),
+            None,
+            false,
+            false,
+            Some(show_archived),
+            Some(Rc::new(
+                move |this: &mut TactApp, cx: &mut Context<TactApp>| this.toggle_show_archived(cx),
+            )),
+            radius,
+            hover_bg,
+            primary,
+            cx,
+        ));
     }
 
     if query.is_empty() && recent.is_empty() {

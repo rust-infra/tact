@@ -34,6 +34,7 @@ actions!([
     ZoomReset,
     CycleWorkPaneSide,
     CheckForUpdates,
+    ToggleArchivedSessions,
 ]);
 
 /// Register the global keyboard contract.
@@ -95,6 +96,12 @@ pub(crate) fn groups() -> Vec<CommandGroup> {
                 .keywords(["plan", "diff", "tasks", "files", "drawer"]),
             command("Open diff", IconName::File, OpenDiff).keywords(["changes", "review", "patch"]),
             command("Open tasks", IconName::CircleCheck, OpenTasks).keywords(["todo", "progress"]),
+            command(
+                "Toggle archived sessions",
+                IconName::Inbox,
+                ToggleArchivedSessions,
+            )
+            .keywords(["archive", "hidden", "sidebar", "sessions"]),
         ]),
         CommandGroup::new().label("Layout").items([
             command("Layout: Split", IconName::PanelLeft, LayoutSplit).keywords([

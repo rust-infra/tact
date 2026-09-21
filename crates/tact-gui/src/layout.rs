@@ -155,6 +155,8 @@ pub(crate) struct LayoutPrefs {
     /// Base font size in px: the whole shell is `rem`-based, so this is the
     /// zoom control.
     pub zoom_rem: f32,
+    /// Whether the sidebar lists archived sessions.
+    pub show_archived: bool,
     /// The interface font, chosen from the machine's installed families.
     ///
     /// `None` keeps the theme's own family. Stored by name rather than by path
@@ -179,6 +181,7 @@ impl Default for LayoutPrefs {
             recent_workspaces: Vec::new(),
             zoom_rem: ZOOM_DEFAULT,
             ui_font: None,
+            show_archived: false,
         }
     }
 }
