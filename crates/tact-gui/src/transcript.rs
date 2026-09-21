@@ -17,6 +17,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
+use ratatui_markdown::{mermaid::render_mermaid, theme::ThemeConfig};
 use tact_protocol::ToolVisualKind;
 
 use crate::session::Request;
@@ -216,6 +217,28 @@ struct CodeBlockData {
     code: String,
 }
 
+/// Render a Mermaid fence to a monospace diagram.
+///
+/// The GUI has no web view or SVG surface, so it reuses the same
+/// `ratatui-markdown` renderer as the TUI: the diagram becomes Unicode box
+/// drawing that the existing code card can display and scroll. Invalid Mermaid
+/// returns `None`, and the renderer falls back to the original source.
+fn mermaid_plain_text(source: &str, width: usize) -> Option<String> {
+    let lines = render_mermaid(source, width.max(1), None, &ThemeConfig::default())?;
+    Some(
+        lines
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 /// Turn every fenced code block into a `.code` card node.
 ///
 /// The stock renderer owns only a corner slot for block actions, so the
@@ -254,6 +277,10 @@ fn render_code_block(node: &MarkdownNode, _window: &mut Window, cx: &mut App) ->
         .filter(|language| !language.is_empty())
         .unwrap_or("code");
     let code = data.map(|data| data.code.clone()).unwrap_or_default();
+    let mermaid = (language.eq_ignore_ascii_case("mermaid"))
+        .then(|| mermaid_plain_text(&code, 100))
+        .flatten();
+    let body = mermaid.as_deref().unwrap_or(code.as_str());
     let anchor = node
         .source_range()
         .map(|range| range.start)
@@ -312,7 +339,7 @@ fn render_code_block(node: &MarkdownNode, _window: &mut Window, cx: &mut App) ->
                 .text_size(rems(0.71875))
                 .line_height(relative(1.6))
                 .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from(code)),
+                .child(SharedString::from(body.to_string())),
         )
         .into_any_element()
 }
@@ -1154,6 +1181,21 @@ mod tests {
         // A read's file contents are not a diff, so there is nothing to badge.
         assert_eq!(diff_line_counts("fn main() {}\n"), None);
         assert_eq!(diff_line_counts(""), None);
+    }
+
+    #[test]
+    fn mermaid_fences_render_as_unboxed_diagram_text() {
+        let diagram = mermaid_plain_text("flowchart TD\n  A[Start] --> B[End]", 60)
+            .expect("valid Mermaid renders");
+        assert!(diagram.contains("Start"), "node label missing: {diagram}");
+        assert!(
+            !diagram.contains("flowchart TD"),
+            "the Mermaid declaration leaked into the rendered diagram: {diagram}"
+        );
+        assert!(
+            mermaid_plain_text("not a valid mermaid diagram", 60).is_none(),
+            "invalid Mermaid falls back to the source card"
+        );
     }
 
     #[test]

@@ -9189,6 +9189,7 @@ dependencies = [
  "gpui-kit",
  "libc",
  "portable-pty",
+ "ratatui-markdown",
  "semver",
  "serde",
  "serde_json",

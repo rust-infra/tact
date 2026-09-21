@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-22 — 桌面转录支持 Mermaid 图表渲染
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/Cargo.toml`；`crates/tact-gui/src/transcript.rs`（`mermaid_plain_text`、`render_code_block`） |
+
+**现象 / 动机：** 助手和 reasoning Markdown 中可能包含 ````mermaid` fence，但桌面 GUI 会把它当普通代码块显示，因此 flowchart、state diagram、sequence diagram 都会直接露出 Mermaid 源码；TUI 已经有同一语法的渲染器。
+
+**决策：** 在现有 code-card renderer 中识别 `mermaid` 语言，并用 `ratatui-markdown` 的 Unicode Mermaid renderer 以 100 列宽度渲染。卡片仍保留原始 source 供 `Copy` 使用；有效图表用 box-drawing 输出替换正文，解析失败则回退到源码，避免丢失内容。
+
+**改后行为：** 助手输出、reasoning 以及其他 Markdown 区域的 Mermaid fence 会在桌面客户端渲染为等宽图表。无效 Mermaid 仍按普通代码块显示。
+
+**指针：** `crates/tact-gui/src/transcript.rs`（`mermaid_plain_text`、`render_code_block`）；`crates/tact-gui/Cargo.toml`
+
 ## 1. 2026-09-22 — 桌面交互修正：实时预览、菜单、项目与完成态
 
 | 字段 | 值 |
