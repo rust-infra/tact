@@ -43,7 +43,7 @@
 
 **决策：** 让 store 持有这些持久事实。`sessions` 增加 `title`（空串表示回退到开场消息）和 `archived_at`（可逆的策略标记，不是 tombstone），旧库通过 `PRAGMA` + `ALTER TABLE` 原地补列。`SessionStore` 增加 `rename_session`、`archive_session` 与 `duplicate_session`；前两者对未知 id 报错，而不是静默成功。Duplicate 在一个事务里把源行与 messages 复制到新 id 下，刻意不复制 provider state 与 `token_usages`：副本从消息重新开始，原会话继续持有自己的请求链与用量。`tact-session::session_actions` 暴露四个与展示无关的动作，其中 reveal 会按顺序寻找平台启动器。GUI 对话框和菜单调用这些动作并重绘 `recent`；离线预览只改内存行。
 
-**改后行为：** 重命名保存 trim 后的名称，清空输入则恢复派生标签。归档后会话仍在列表中，切回即可恢复。复制会插入 `<源标签> (copy)` 行并打开它，同时从空 provider 链开始。Reveal 打开工作区目录；一个启动器都没有时报告尝试过的列表。点击巡检现在断言每一行的可见效果，而不只是「点击没崩」。
+**改后行为：** 重命名保存 trim 后的名称，清空输入则恢复派生标签。归档后会话仍在列表中，切回即可恢复。复制会插入 `<源标签> (copy)` 行并打开它，同时从空 provider 链开始。Reveal 会用第一个可用的启动器（`xdg-open`、GIO、常见 Linux 文件管理器、macOS `open` 或 Windows `explorer`）打开工作区目录；一个启动器都没有时报告尝试过的列表；启动宽限期内非零退出的启动器也会被报告，而不是被当成成功。点击巡检现在断言每一行的可见效果，而不只是「点击没崩」。
 
 **指针：** `crates/tact-session/src/session_actions.rs`；`crates/tact/src/store/session_store/sqlite.rs`（`migrate_sessions_title_and_archive`、`duplicate_session`）；`crates/tact-gui/src/shell.rs`（`open_rename_dialog`、`duplicate_open_session`、`set_open_session_archived`、`reveal_workspace`）；`crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`）；`book/01_chapter_store_zh.md`（会话动作）；`docs/token_usage_schema.md`（复制不带走用量）。
 

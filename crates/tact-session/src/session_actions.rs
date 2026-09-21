@@ -16,7 +16,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{process::Command, thread, time::Duration};
 
 use tact::consts::TactPath;
 
@@ -24,12 +24,13 @@ use crate::sessions::{session_title, short_id};
 
 /// Programs that can open a directory, in the order the desktop client tries
 /// them. `gio` needs its subcommand spelled out; the others take the path alone.
-const LAUNCHERS: [(&str, &[&str]); 5] = [
+const LAUNCHERS: [(&str, &[&str]); 6] = [
     ("xdg-open", &[]),
     ("gio", &["open"]),
     ("nautilus", &[]),
     ("dolphin", &[]),
     ("open", &[]),
+    ("explorer", &[]),
 ];
 
 /// Name a session, or clear the name when `title` is empty.
@@ -93,12 +94,29 @@ pub fn reveal(workdir: &Path) -> anyhow::Result<()> {
         .args(&args)
         .spawn()
         .map_err(|error| anyhow::anyhow!("failed to launch {}: {error}", launcher.display()))?;
-    // `xdg-open` and `gio` exit quickly; reaping the child in the background
-    // keeps repeated reveals from accumulating zombies in the desktop process.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    // Most launchers exit quickly, and a launcher that is present but cannot
+    // open the desktop (for example `xdg-open` with no default handler) would
+    // otherwise be reported as success. Give it a short grace period, then keep
+    // reaping in the background so repeated reveals do not accumulate zombies.
+    thread::sleep(Duration::from_millis(150));
+    match child.try_wait() {
+        Ok(Some(status)) if !status.success() => anyhow::bail!(
+            "{} exited with {} while opening {}",
+            launcher.display(),
+            status,
+            dir.display()
+        ),
+        Ok(_) => {
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        }
+        Err(error) => anyhow::bail!(
+            "failed to check {} after launching it: {error}",
+            launcher.display()
+        ),
+    }
 }
 
 /// The launcher to run, and the arguments that open `dir`.
@@ -427,7 +445,7 @@ mod tests {
             .expect_err("no launcher is a reported failure")
             .to_string();
         assert!(
-            error.contains("xdg-open") && error.contains("dolphin"),
+            error.contains("xdg-open") && error.contains("dolphin") && error.contains("explorer"),
             "the error names what was tried: {error}"
         );
 
