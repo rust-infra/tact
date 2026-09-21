@@ -1,4 +1,9 @@
 /target/
+# Update signing keys: the private half must never be committed (`cargo
+# packager signer generate` writes these).
+*.key
+*.key.pub
+*.signing-private-key
 # Packaged installers (`cargo packager` output), not source.
 /dist/
 /videos/
