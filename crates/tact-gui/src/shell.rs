@@ -61,14 +61,24 @@ const SIDEBAR_WIDTH: Rems = rems(layout::SIDEBAR_WIDTH_REM);
 const SIDEBAR_GROUP_MIN: usize = 4;
 /// Width below which the sidebar becomes an overlay (960 px at the default rem).
 const SIDEBAR_OVERLAY_UNDER: Rems = rems(60.);
-/// Work pane width (420 px at the default rem). The draggable value lives in
+/// Work pane width (384 px at the default rem). The draggable value lives in
 /// [`LayoutPrefs`]; this is the prototype default and the drawer's fallback.
+///
+/// The prototype draws a 420 px pane. The shell starts narrower so the
+/// conversation — the thing the window is for — keeps more of the width; the
+/// divider still drags out to the prototype's number, and past it.
 const WORK_PANE_WIDTH: Rems = rems(layout::WORK_PANE_WIDTH_REM);
 /// Fixed status bar height (26 px at the default rem).
 const STATUS_BAR_HEIGHT: Rems = rems(1.625);
-/// Cap on the transcript's text measure (720 px at the default rem), which is
-/// the prototype's `.thread { width: min(720px, 100% - 48px) }`.
-const TRANSCRIPT_MEASURE: Rems = rems(45.);
+/// Cap on the transcript's text measure (896 px at the default rem).
+///
+/// The prototype caps `.thread` at `min(720px, 100% - 48px)`. That reads well
+/// at the 1440 px board it was drawn on, but on a wider window it leaves the
+/// conversation as a narrow ribbon with a gutter of dead space on either side,
+/// which is the opposite of what the window is for. 896 px keeps a prose line
+/// inside a comfortable measure while letting the transcript use the width it
+/// is given.
+const TRANSCRIPT_MEASURE: Rems = rems(56.);
 
 /// The prototype's three column widths, which shrink together at 1320 px:
 /// `@media(max-width:1320px){:root{--sidebar:244px;--work:374px}

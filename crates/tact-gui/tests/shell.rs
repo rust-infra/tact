@@ -166,7 +166,7 @@ fn work_pane_becomes_a_drawer_at_the_minimum_window(cx: &mut TestAppContext) {
         let work_pane = window.find("work-pane").bounds();
         assert_eq!(
             width(work_pane),
-            420.,
+            384.,
             "the work pane keeps its comfortable width as a drawer"
         );
         assert_eq!(
@@ -210,10 +210,10 @@ fn the_work_pane_drawer_slides_in_and_out_over_the_prototype_duration(cx: &mut T
         .unwrap()
     };
 
-    // `translateX(105%)` of the drawer's own 420px parks it at 960 + 441, so
-    // its left edge starts 21px past the right edge of a 960px window.
+    // `translateX(105%)` of the drawer's own 384px parks it at 960 + 403.2,
+    // so its left edge starts past the right edge of a 960px window.
     let parked = drawer_x(cx);
-    assert_eq!(parked, 981., "the drawer starts parked offscreen");
+    assert_eq!(parked, 979., "the drawer starts parked offscreen");
 
     // 90ms into the 180ms: strictly inside the travel, at neither end.
     cx.background_executor
@@ -225,12 +225,12 @@ fn the_work_pane_drawer_slides_in_and_out_over_the_prototype_duration(cx: &mut T
         "the drawer is mid-slide 90ms in: {halfway} between {parked} and 540"
     );
 
-    // Past the duration: settled in its column, at 960 - 420.
+    // Past the duration: settled in its column, at 960 - 384.
     cx.background_executor
         .advance_clock(Duration::from_millis(200));
     cx.run_until_parked();
     let settled = drawer_x(cx);
-    assert_eq!(settled, 540., "the drawer settles in its column");
+    assert_eq!(settled, 576., "the drawer settles in its column");
 
     // Closing flips the flag rather than the mount, so the panel survives its
     // own exit and only leaves once the transition is done.
@@ -424,7 +424,7 @@ fn the_sidebar_overlay_keeps_its_presses_above_the_scrim(cx: &mut TestAppContext
 ///
 /// The prototype stacks `.scrim{z-index:25}`, `.work{z-index:30}` and the
 /// floating `.sidebar{z-index:40}`. A window narrower than the two floating
-/// widths put together (260 px + 420 px) makes the sidebar and the drawer share
+/// widths put together (260 px + 384 px) makes the sidebar and the drawer share
 /// a strip, and only that order says which surface owns a press inside it.
 /// GPUI has no `z-index`, so the order is paint order: a drawer painted after
 /// the sidebar takes the whole strip even though the sidebar outranks it.
@@ -443,9 +443,12 @@ fn the_floating_sidebar_stays_above_the_work_pane_where_they_overlap(cx: &mut Te
         archived: false,
         pinned: false,
     }];
-    // 640px: below the sidebar threshold, so the sidebar floats, and below the
-    // work pane's own threshold, so that one is already out as a drawer.
-    let handle = cx.open_window(size(px(640.), px(640.)), |window, cx| {
+    // Below the sidebar threshold, so the sidebar floats, and below the work
+    // pane's own threshold, so that one is already out as a drawer. Narrow
+    // enough that the two floating widths overlap: the drawer is right-anchored
+    // and the floating sidebar is 260 px, so a 560 px window is the tightest
+    // case the stacking order has to answer for.
+    let handle = cx.open_window(size(px(560.), px(640.)), |window, cx| {
         let shell = cx.new(|cx| TactApp::with_sessions(window, cx, sessions));
         Root::new(shell, window, cx)
     });
@@ -485,7 +488,9 @@ fn the_floating_sidebar_stays_above_the_work_pane_where_they_overlap(cx: &mut Te
 /// `@media(max-width:1320px){:root{--sidebar:244px;--work:374px}
 /// .thread{width:min(680px,calc(100% - 36px))}}`. It reaches only the columns:
 /// the same query's narrow block resets the work pane to `min(420px,88vw)`
-/// when it becomes the drawer, so a drawer keeps 420 px.
+/// when it becomes the drawer. The shell's own drawer default is 384 px, the
+/// width the pane opens at; only the narrow *column* uses the prototype's
+/// 374 px.
 #[gpui_kit::test]
 fn the_narrow_breakpoint_shrinks_the_three_columns(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
@@ -541,10 +546,10 @@ fn wide_window_lays_out_three_columns(cx: &mut TestAppContext) {
         let work_pane = window.find("work-pane").bounds();
 
         assert_eq!(width(sidebar), 260., "sidebar keeps its 260 px column");
-        assert_eq!(width(work_pane), 420., "work pane keeps its 420 px column");
+        assert_eq!(width(work_pane), 384., "the work pane keeps its own column");
         assert_eq!(
             width(transcript),
-            1440. - 260. - 420.,
+            1440. - 260. - 384.,
             "the transcript takes the whole surplus"
         );
         assert!(

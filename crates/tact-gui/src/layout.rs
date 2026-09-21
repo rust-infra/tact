@@ -23,8 +23,12 @@ use crate::transcript::TranscriptDetail;
 
 /// Prototype sidebar width, in rems (260 px at the default 16 px rem).
 pub(crate) const SIDEBAR_WIDTH_REM: f32 = 16.25;
-/// Prototype work-pane width, in rems (420 px at the default 16 px rem).
-pub(crate) const WORK_PANE_WIDTH_REM: f32 = 26.25;
+/// Work-pane width, in rems (384 px at the default 16 px rem).
+///
+/// The prototype draws 420 px; the shell opens narrower so the conversation
+/// keeps more of the window. The divider drags back out to, and past, the
+/// prototype's number.
+pub(crate) const WORK_PANE_WIDTH_REM: f32 = 24.0;
 
 /// Narrowest sidebar the user can drag the column to. Below the prototype's
 /// 244 px narrow width, but still wide enough for a session title.

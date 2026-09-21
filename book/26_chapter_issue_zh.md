@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — 对话区占更大的窗口比例
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/shell.rs`（`WORK_PANE_WIDTH`、`TRANSCRIPT_MEASURE`）；`crates/tact-gui/src/layout.rs`（`WORK_PANE_WIDTH_REM`） |
+
+**现象 / 动机：** 原型把工作面板画成 420 px，并把转录限制在 `min(720px, 100% - 48px)`。这在原型所依据的 1440 px 画板上是对的，但在更宽的窗口里，两根固定宽度的列会让对话变成一条 720 px 的细带子，两侧各留一大片死白——转录是这个窗口存在的理由，却成了里面最窄的东西。
+
+**决策：** 两端各让一点。工作面板默认宽度从 420 px 降到 384 px，转录的测量上限从 720 px 提到 896 px。两者都不是硬限制：工作面板本身可拖拽（在其 clamp 范围内），转录仍保留原型的 48 px 边距。原型保持自己的数值——这是壳层的默认值，写在这里是因为原型是 source of truth，而这次偏离是刻意的。
+
+**改后行为：** 在 1440 px 设计宽度下对话列增宽 36 px，且文字填满该列而不是提前停住；在宽窗口下文字上限从 720 px 变为 896 px，两侧留白按比例缩放。既有的布局契约仍然成立：`wide_window_lays_out_three_columns` 的三列算术、抽屉滑入、窄屏断点。
+
+**指针：** `crates/tact-gui/tests/shell.rs`（`wide_window_lays_out_three_columns`、`the_work_pane_drawer_slides_in_and_out_over_the_prototype_duration`）；`docs/design/tact-desktop-design-review.md`
+
 ## 1. 2026-09-21 — Projects 按目录切换 workspace
 
 | 字段 | 值 |

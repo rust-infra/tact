@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — The conversation gets more of the window
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/shell.rs` (`WORK_PANE_WIDTH`, `TRANSCRIPT_MEASURE`); `crates/tact-gui/src/layout.rs` (`WORK_PANE_WIDTH_REM`) |
+
+**Symptom / motivation:** The prototype draws a 420 px work pane and caps the transcript at `min(720px, 100% - 48px)`. That is right at the 1440 px board the prototype was drawn on, but on a wider window the two fixed-width columns left the conversation as a 720 px ribbon with a large dead gutter on either side — the transcript is the thing the window exists for, and it was the narrowest thing in it.
+
+**Decision:** Take the width from both ends. The work pane's default drops from 420 px to 384 px, and the transcript's measure cap rises from 720 px to 896 px. Neither is a hard limit: the work pane is the draggable one (inside its clamp), and the transcript still keeps the prototype's 48 px gutter. The prototype keeps its own numbers — this is a shell default, recorded here because the prototype is the source of truth and the deviation is deliberate.
+
+**Behavior after:** At the 1440 px design width the conversation column grows by 36 px and its text fills the column rather than stopping short of it; on a wide window the text grows to 896 px instead of 720 px, so the gutters stay proportional. Every existing layout contract still holds: the three-column arithmetic in `wide_window_lays_out_three_columns`, the drawer's slide, and the narrow breakpoint.
+
+**Pointers:** `crates/tact-gui/tests/shell.rs` (`wide_window_lays_out_three_columns`, `the_work_pane_drawer_slides_in_and_out_over_the_prototype_duration`); `docs/design/tact-desktop-design-review.md`
+
 ## 1. 2026-09-21 — Projects switch the workspace by directory
 
 | Field | Value |

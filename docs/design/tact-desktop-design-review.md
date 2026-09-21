@@ -183,6 +183,13 @@ The production shell now verifies the items that Phase 2 could only park:
   read. Adding it made the work-pane strip six chips wide, which is what settled
   the `Subagent` → `Agents` display rename: the strip clips its last chip, so the
   shorter label is a correctness fix, not a preference.
+- The conversation is wider than the prototype's board. Two deliberate
+  deviations, both from the product owner: the work pane opens at 384 px instead
+  of the prototype's 420 px, and `.thread`'s measure cap moved from 720 px to
+  896 px. The prototype's 720 px reads well at the 1440 px board it was drawn
+  on, but on a wider window it left the conversation as a narrow ribbon with a
+  gutter of dead space on either side — the opposite of what the window is for.
+  The dividers still drag back to the prototype's numbers and past them.
 - The sidebar's `Projects` group switches workspace by directory. A workspace
   *is* a directory — the session store lives in `<workspace>/.tact/tact.db` — so
   `Open folder…` asks the platform for a folder and both it and the remembered
