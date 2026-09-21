@@ -53,11 +53,31 @@ jobs:
           echo "CC_x86_64_apple_darwin=clang -arch x86_64" >> "${GITHUB_ENV}"
           echo "AR_x86_64_apple_darwin=ar" >> "${GITHUB_ENV}"
 
-      - name: Install Linux audio development libraries
+      - name: Install Linux build dependencies
         if: runner.os == 'Linux'
+        # The desktop client links the same system libraries a GTK app does:
+        # fontconfig and freetype for text, xkbcommon and wayland/x11 for the
+        # window, ALSA for audio. The TUI adds sqlite, openssl, and clang for
+        # its bindgen-based dependencies.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev
+          sudo apt-get install -y \
+            libasound2-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            pkg-config \
+            clang \
+            libclang-dev
 
       - name: Build release binaries
         run: cargo build --release -p "${CRATE_PACKAGE}" -p "${GUI_CRATE_PACKAGE}" --target "${{ matrix.target }}"
