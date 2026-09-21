@@ -336,6 +336,13 @@ Subagent rows are live too. A running child exposes Cancel, which sends
 path; Inspect transcript loads the child's stored session history on demand,
 renders it under the run list, and toggles back to Hide transcript.
 
+Tasks pane controls are live as well. Filter cycles All/Open/Done locally,
+Sort cycles status/owner/newest, and task ids keep row identity stable across
+either view change. Clicking a status badge advances the task lifecycle and
+sends `TaskUpdate` through the driver so durable timestamps and dependency
+cleanup stay owned by the task manager; clicking an owner cell with a session id
+resumes that session through the same path as the sidebar.
+
 Deferred tabs: `Browser`, `Terminal`, `Chart`, and free-form `Dock`.
 
 ### 6.6 Status bar

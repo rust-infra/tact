@@ -214,6 +214,16 @@ The production shell now verifies the items that Phase 2 could only park:
   tests are `failed_plan_step_expands_to_retry_and_transcript_controls`,
   `opening_a_plan_step_transcript_expands_the_tool_card`, and
   `retrying_a_failed_plan_step_submits_the_recorded_tool_and_args`.
+- Tasks rows now expose their named actions without adding columns the prototype
+  does not draw. Filter and Sort are local `TasksPane` display preferences; the
+  status badge advances Pending → InProgress → Completed → Pending and sends
+  `TaskUpdate` through the driver so the task store remains authoritative; an
+  owner cell with a session id resumes that session through the sidebar's
+  `resume_session` path. `task_filter_and_sort_keep_the_expected_rows` and
+  `task_filter_and_sort_buttons_change_their_labels` cover filtering and
+  sorting; `updating_a_task_sends_the_status_transition` and
+  `opening_a_task_session_selects_its_session_row` cover the protocol and
+  resume paths.
 - Subagent rows now expose their named actions. Running children carry Cancel,
   which sends `CancelSubagent { child_id }` through `SessionHandle`; every row
   carries Inspect transcript, which loads `tact_session::history::history` on

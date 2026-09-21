@@ -81,6 +81,9 @@ impl TryFrom<UserCommand> for Command {
             // Cancellation is handled by the driver (it owns the manager's
             // cancel handles), not a host command for the kit.
             UserCommand::CancelSubagent { .. } => Err(()),
+            // Task mutation belongs to the driver because it owns the durable
+            // task manager and emits the refreshed snapshot.
+            UserCommand::TaskUpdate { .. } => Err(()),
             // OAuth authorization for a remote MCP server is a Tact driver
             // flow (loopback callback + router reload), not a kit command.
             UserCommand::McpAuth { .. } => Err(()),

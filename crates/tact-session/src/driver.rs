@@ -2,7 +2,12 @@
 
 use std::{path::Path, sync::atomic::Ordering};
 
-use tact::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
+use tact::{
+    Agent, extract_text,
+    hook::HookControl,
+    task::{TaskStatus, TaskUpdate, emit_tasks_changed},
+    utils::RwLockExt,
+};
 use tact_llm::{Message, Role};
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
 use tokio::{
@@ -49,6 +54,7 @@ pub async fn run_command_loop_with_account(
     // Shared subagent manager: lets CancelSubagent flip a running child's
     // cooperative cancel flag without owning the parent Agent.
     let subagent_manager = agent.tool_context.subagent_manager.clone();
+    let task_manager = agent.tool_context.task_manager.clone();
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
@@ -105,6 +111,44 @@ pub async fn run_command_loop_with_account(
                     let _ = tx.send(AgentUpdate::Info(format!(
                         "No running subagent {child_id} to cancel"
                     )));
+                }
+            }
+            UserCommand::TaskUpdate {
+                task_id,
+                status,
+                owner,
+            } => {
+                let status = status.map(|status| match status {
+                    tact_protocol::TaskStatusSnapshot::Pending => TaskStatus::Pending,
+                    tact_protocol::TaskStatusSnapshot::InProgress => TaskStatus::InProgress,
+                    tact_protocol::TaskStatusSnapshot::Completed => TaskStatus::Completed,
+                });
+                match task_manager
+                    .update(
+                        task_id,
+                        TaskUpdate {
+                            status,
+                            owner,
+                            ..TaskUpdate::default()
+                        },
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        let tasks = task_manager.list().await.unwrap_or_default();
+                        emit_tasks_changed(
+                            &ui_tx,
+                            tasks,
+                            tact_protocol::TasksChangeReason::Updated,
+                        );
+                    }
+                    Err(err) => {
+                        if let Some(tx) = &ui_tx {
+                            let _ = tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                                "Could not update task {task_id}: {err:#}"
+                            ))));
+                        }
+                    }
                 }
             }
             UserCommand::QueryStats => {

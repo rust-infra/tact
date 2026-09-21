@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Tasks pane filters, updates status, and opens the owning session
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/protocol/src/agent.rs` (`UserCommand::TaskUpdate`); `crates/tact-session/src/driver.rs`; `crates/tact-gui/src/pane.rs` (`TasksPane`, `tasks`, `task_row`); `crates/tact-gui/src/shell.rs` (`cycle_task_filter`, `cycle_task_sort`, `update_task_status`, `open_task_session`) |
+
+**Symptom / motivation:** The Tasks pane rendered the prototype's task table, but the spec's row actions were still absent. A user could not narrow a long task list, reorder it, advance a task's status, or jump from a task back to the session that owns it. `New task` was the only visible control and it still answered with the v1 unavailable notice.
+
+**Decision:** Keep filtering and sorting as local `TasksPane` preferences: they change only what the pane displays and do not mutate session state. Status changes go through the protocol as `UserCommand::TaskUpdate`, because the driver owns the durable task manager and the store owns lifecycle timestamps and dependency cleanup. Clicking a task's status badge advances Pending → InProgress → Completed → Pending. Clicking the owner cell for a task with a session id reuses `resume_session`, so opening a task's session follows the same store/history path as the sidebar.
+
+**Behavior after:** The Tasks header exposes Filter and Sort cycles; the rows are stable by task id. The status badge is actionable and dispatches exactly one update; the pane waits for the refreshed `TasksChanged` snapshot rather than mutating optimistically. Tasks whose owner session id is empty render as plain owner text, while owned tasks expose an Open-session hit target.
+
+**Pointers:** `crates/tact-gui/src/pane.rs` (`task_filter_and_sort_keep_the_expected_rows`); `crates/tact-gui/src/shell.rs` (`task_filter_and_sort_buttons_change_their_labels`, `updating_a_task_sends_the_status_transition`, `opening_a_task_session_selects_its_session_row`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
 ## 1. 2026-09-21 — Subagent runs can cancel and inspect their stored transcript
 
 | Field | Value |

@@ -463,6 +463,12 @@ pub enum UserCommand {
     /// or the TUI tool-card cancel button). The driver flips the child's
     /// cooperative cancel flag and marks its run record Cancelled.
     CancelSubagent { child_id: String },
+    /// Apply a status or owner update to one persistent task.
+    TaskUpdate {
+        task_id: u64,
+        status: Option<TaskStatusSnapshot>,
+        owner: Option<String>,
+    },
     /// Run the interactive OAuth authorization flow for a remote MCP server
     /// (triggered by `/mcp auth <server>`). On success the driver reloads the
     /// MCP router so the server becomes usable without restarting.

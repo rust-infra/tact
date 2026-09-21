@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — Tasks 面板支持筛选、更新状态并打开所属会话
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/protocol/src/agent.rs`（`UserCommand::TaskUpdate`）；`crates/tact-session/src/driver.rs`；`crates/tact-gui/src/pane.rs`（`TasksPane`、`tasks`、`task_row`）；`crates/tact-gui/src/shell.rs`（`cycle_task_filter`、`cycle_task_sort`、`update_task_status`、`open_task_session`） |
+
+**现象 / 动机：** Tasks 面板虽然渲染了原型里的任务表，但规格中的行级动作仍然缺失。用户无法收窄长任务列表、重排列表、推进任务状态，也无法从任务跳回它所属的会话。唯一可见的控件 `New task` 仍只会回答 v1 暂不可用。
+
+**决策：** 筛选和排序保留为 `TasksPane` 的本地显示偏好：它们只改变面板显示内容，不改会话状态。状态变化通过协议发送 `UserCommand::TaskUpdate`，因为 driver 拥有持久任务管理器，生命周期时间戳与依赖清理由 store 负责。点击任务状态徽标会按 Pending → InProgress → Completed → Pending 循环推进。点击有 session id 的任务 owner 单元格会复用 `resume_session`，因此打开任务所属会话与侧边栏走同一条 store / history 路径。
+
+**改后行为：** Tasks 头部暴露 Filter 与 Sort 循环按钮；行 id 由 task id 稳定生成。状态徽标可点击，并恰好派发一次更新；面板等待刷新后的 `TasksChanged` 快照，而不是乐观改写本地状态。没有 owner session id 的任务仍只显示普通 owner 文本；有归属的任务暴露 Open-session 点击区域。
+
+**指针：** `crates/tact-gui/src/pane.rs`（`task_filter_and_sort_keep_the_expected_rows`）；`crates/tact-gui/src/shell.rs`（`task_filter_and_sort_buttons_change_their_labels`、`updating_a_task_sends_the_status_transition`、`opening_a_task_session_selects_its_session_row`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
 ## 1. 2026-09-21 — Subagent run 可取消并可查看已存储的转录
 
 | 字段 | 值 |

@@ -184,6 +184,122 @@ impl FilesPane {
     }
 }
 
+/// Local display preferences for the Tasks pane.
+#[derive(Default)]
+pub struct TasksPane {
+    filter: TaskFilter,
+    sort: TaskSort,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum TaskFilter {
+    #[default]
+    All,
+    Open,
+    Done,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum TaskSort {
+    #[default]
+    Status,
+    Owner,
+    Newest,
+}
+
+impl TasksPane {
+    pub(crate) fn cycle_filter(&mut self) {
+        self.filter = match self.filter {
+            TaskFilter::All => TaskFilter::Open,
+            TaskFilter::Open => TaskFilter::Done,
+            TaskFilter::Done => TaskFilter::All,
+        };
+    }
+
+    pub(crate) fn cycle_sort(&mut self) {
+        self.sort = match self.sort {
+            TaskSort::Status => TaskSort::Owner,
+            TaskSort::Owner => TaskSort::Newest,
+            TaskSort::Newest => TaskSort::Status,
+        };
+    }
+
+    fn filter_label(&self) -> &'static str {
+        match self.filter {
+            TaskFilter::All => "All",
+            TaskFilter::Open => "Open",
+            TaskFilter::Done => "Done",
+        }
+    }
+
+    fn sort_label(&self) -> &'static str {
+        match self.sort {
+            TaskSort::Status => "By status",
+            TaskSort::Owner => "By owner",
+            TaskSort::Newest => "Newest",
+        }
+    }
+
+    fn visible<'a>(
+        &self,
+        tasks: &'a [tact_protocol::TaskSnapshot],
+    ) -> Vec<&'a tact_protocol::TaskSnapshot> {
+        let mut visible: Vec<_> = tasks
+            .iter()
+            .filter(|task| match self.filter {
+                TaskFilter::All => true,
+                TaskFilter::Open => task.status != TaskStatusSnapshot::Completed,
+                TaskFilter::Done => task.status == TaskStatusSnapshot::Completed,
+            })
+            .collect();
+        visible.sort_by(|left, right| match self.sort {
+            TaskSort::Status => task_status_rank(left.status)
+                .cmp(&task_status_rank(right.status))
+                .then_with(|| left.id.cmp(&right.id)),
+            TaskSort::Owner => left
+                .owner
+                .to_lowercase()
+                .cmp(&right.owner.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id)),
+            TaskSort::Newest => task_latest_stamp(right)
+                .cmp(&task_latest_stamp(left))
+                .then_with(|| right.id.cmp(&left.id)),
+        });
+        visible
+    }
+}
+
+fn task_status_rank(status: TaskStatusSnapshot) -> u8 {
+    match status {
+        TaskStatusSnapshot::Pending => 0,
+        TaskStatusSnapshot::InProgress => 1,
+        TaskStatusSnapshot::Completed => 2,
+    }
+}
+
+fn next_task_status(status: TaskStatusSnapshot) -> TaskStatusSnapshot {
+    match status {
+        TaskStatusSnapshot::Pending => TaskStatusSnapshot::InProgress,
+        TaskStatusSnapshot::InProgress => TaskStatusSnapshot::Completed,
+        TaskStatusSnapshot::Completed => TaskStatusSnapshot::Pending,
+    }
+}
+
+fn task_status_action(status: TaskStatusSnapshot) -> &'static str {
+    match status {
+        TaskStatusSnapshot::Pending => "Start",
+        TaskStatusSnapshot::InProgress => "Complete",
+        TaskStatusSnapshot::Completed => "Reopen",
+    }
+}
+
+fn task_latest_stamp(task: &tact_protocol::TaskSnapshot) -> Option<i64> {
+    [task.completed_at, task.started_at, task.created_at]
+        .into_iter()
+        .flatten()
+        .max()
+}
+
 /// Lazily loaded unified diffs for the Diff pane.
 ///
 /// The protocol reports *that* a file changed and how many lines moved, but not
@@ -379,12 +495,13 @@ pub(crate) fn view(
     state: &SessionState,
     files: &mut FilesPane,
     diffs: &mut DiffPane,
+    tasks_pane: &mut TasksPane,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     let body = match selected {
         WorkPane::Plan => plan(state, cx).into_any_element(),
         WorkPane::Diff => diff(state, diffs, cx).into_any_element(),
-        WorkPane::Tasks => tasks(state, cx).into_any_element(),
+        WorkPane::Tasks => tasks(state, tasks_pane, cx).into_any_element(),
         WorkPane::Subagents => subagents(state, cx).into_any_element(),
         WorkPane::Files => files_tree(state, files, cx).into_any_element(),
     };
@@ -1377,11 +1494,16 @@ fn updated_age(seconds: i64) -> String {
 }
 
 /// Persistent tasks, rendered as the prototype's Task / Status / Owner table.
-fn tasks(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
-    let count = state.tasks.len();
-    let blocked: Vec<_> = state
-        .tasks
+fn tasks(
+    state: &SessionState,
+    tasks_pane: &mut TasksPane,
+    cx: &mut Context<TactApp>,
+) -> impl IntoElement {
+    let visible = tasks_pane.visible(&state.tasks);
+    let count = visible.len();
+    let blocked: Vec<_> = visible
         .iter()
+        .copied()
         .filter(|task| task.status == TaskStatusSnapshot::Pending && !task.blocked_by.is_empty())
         .collect();
 
@@ -1397,15 +1519,35 @@ fn tasks(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
         "Tasks",
         format!("{count} task{}{updated}", if count == 1 { "" } else { "s" }),
         Some(
-            prototype_button("work-pane-tasks-new", false, cx)
-                .label("New task")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.push_system_row(NEW_TASK_UNAVAILABLE.to_string(), cx);
-                }))
+            h_flex()
+                .items_center()
+                .gap(rems(0.375))
+                .child(
+                    prototype_button("work-pane-tasks-filter", false, cx)
+                        .label(format!("Filter: {}", tasks_pane.filter_label()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cycle_task_filter(cx);
+                        })),
+                )
+                .child(
+                    prototype_button("work-pane-tasks-sort", false, cx)
+                        .label(format!("Sort: {}", tasks_pane.sort_label()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cycle_task_sort(cx);
+                        })),
+                )
+                .child(
+                    prototype_button("work-pane-tasks-new", false, cx)
+                        .label("New task")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.push_system_row(NEW_TASK_UNAVAILABLE.to_string(), cx);
+                        })),
+                )
                 .into_any_element(),
         ),
         cx,
-    );
+    )
+    .into_any_element();
 
     if state.tasks.is_empty() {
         return v_flex().w_full().child(head).child(empty(
@@ -1415,10 +1557,18 @@ fn tasks(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
         ));
     }
 
-    let tasks_len = state.tasks.len();
+    if visible.is_empty() {
+        return v_flex().w_full().child(head).child(empty(
+            "work-pane-empty-task-filter",
+            "No tasks match this filter.",
+            cx,
+        ));
+    }
+
+    let tasks_len = visible.len();
     let mut rows = vec![task_header_row(cx).into_any_element()];
-    for (index, task) in state.tasks.iter().enumerate() {
-        rows.push(task_row(index, task, index + 1 == tasks_len, cx).into_any_element());
+    for (index, task) in visible.into_iter().enumerate() {
+        rows.push(task_row(task, index + 1 == tasks_len, cx).into_any_element());
     }
 
     let mut body = v_flex()
@@ -1506,10 +1656,9 @@ fn task_header_row(cx: &App) -> impl IntoElement {
 
 /// One task row with a status badge.
 fn task_row(
-    index: usize,
     task: &tact_protocol::TaskSnapshot,
     is_last: bool,
-    cx: &App,
+    cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     use tact_protocol::TaskStatusSnapshot as Status;
 
@@ -1538,8 +1687,14 @@ fn task_row(
         }
     };
 
+    let task_id = task.id;
+    let next_status = next_task_status(task.status);
+    let status_action = task_status_action(task.status);
+    let session_id = task.session_id.clone();
+    let has_session = !session_id.is_empty();
+
     h_flex()
-        .id(SharedString::from(format!("task-row-{index}")))
+        .id(SharedString::from(format!("task-row-{task_id}")))
         .w_full()
         .items_center()
         .gap_2()
@@ -1559,6 +1714,8 @@ fn task_row(
         .child(
             div().w(rems(5.)).flex_shrink_0().child(
                 h_flex()
+                    .id(SharedString::from(format!("task-update-{task_id}")))
+                    .test_support()
                     .h(rems(1.1875))
                     .items_center()
                     .rounded(rems(0.3125))
@@ -1566,18 +1723,42 @@ fn task_row(
                     .px(rems(0.375))
                     .text_size(rems(0.59375))
                     .text_color(fg)
-                    .child(SharedString::from(label)),
+                    .child(SharedString::from(label))
+                    .aria_label(SharedString::from(format!(
+                        "{status_action} task {task_id}"
+                    )))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.update_task_status(task_id, next_status, cx);
+                    })),
             ),
         )
-        .child(
+        .child(if has_session {
+            div()
+                .id(SharedString::from(format!("task-open-session-{task_id}")))
+                .test_support()
+                .w(rems(3.))
+                .flex_shrink_0()
+                .truncate()
+                .text_size(rems(0.6875))
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(task.owner.clone()))
+                .aria_label(SharedString::from(format!(
+                    "Open session for task {task_id}"
+                )))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_task_session(session_id.clone(), cx);
+                }))
+                .into_any_element()
+        } else {
             div()
                 .w(rems(3.))
                 .flex_shrink_0()
                 .truncate()
                 .text_size(rems(0.6875))
                 .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from(task.owner.clone())),
-        )
+                .child(SharedString::from(task.owner.clone()))
+                .into_any_element()
+        })
 }
 
 /// Subagent runs with status and summary.
@@ -2016,6 +2197,55 @@ mod tests {
             plan_bar_width(0) > 0.0,
             "an unstarted plan keeps a hairline rather than an invisible cap"
         );
+    }
+
+    #[test]
+    fn task_filter_and_sort_keep_the_expected_rows() {
+        let tasks = vec![
+            tact_protocol::TaskSnapshot {
+                id: 1,
+                subject: "pending".into(),
+                status: TaskStatusSnapshot::Pending,
+                owner: "zoe".into(),
+                created_at: Some(40),
+                ..Default::default()
+            },
+            tact_protocol::TaskSnapshot {
+                id: 2,
+                subject: "active".into(),
+                status: TaskStatusSnapshot::InProgress,
+                owner: "amy".into(),
+                created_at: Some(30),
+                ..Default::default()
+            },
+            tact_protocol::TaskSnapshot {
+                id: 3,
+                subject: "done".into(),
+                status: TaskStatusSnapshot::Completed,
+                owner: "bob".into(),
+                created_at: Some(50),
+                ..Default::default()
+            },
+        ];
+
+        let mut pane = TasksPane::default();
+        let ids = |pane: &TasksPane| {
+            pane.visible(&tasks)
+                .into_iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(ids(&pane), vec![1, 2, 3], "status order is the default");
+        pane.cycle_filter();
+        assert_eq!(ids(&pane), vec![1, 2], "Open hides completed tasks");
+        pane.cycle_filter();
+        assert_eq!(ids(&pane), vec![3], "Done keeps only completed tasks");
+        pane.cycle_filter();
+        pane.cycle_sort();
+        assert_eq!(ids(&pane), vec![2, 3, 1], "owner order is case-normalized");
+        pane.cycle_sort();
+        assert_eq!(ids(&pane), vec![3, 1, 2], "newest uses the latest stamp");
     }
 
     #[test]

@@ -44,7 +44,7 @@ use tact_protocol::UiResponse;
 use crate::RecentSession;
 use crate::commands;
 use crate::composer::{self, Attachment};
-use crate::pane::{self, FilesPane, WorkPane};
+use crate::pane::{self, FilesPane, TasksPane, WorkPane};
 use crate::session::{self, Change, Conversation, Request, SessionHandle, SessionState};
 use crate::theme;
 use crate::theme::accent_tint;
@@ -219,6 +219,8 @@ pub struct TactApp {
     work_pane_open: bool,
     work_pane: WorkPane,
     files: FilesPane,
+    /// Local task filtering and ordering for the Tasks pane.
+    tasks_pane: TasksPane,
     /// Whether the Files pane drew on the previous frame, so its cached
     /// workspace walk can be dropped when the pane comes back into view.
     files_listed: bool,
@@ -644,6 +646,7 @@ impl TactApp {
             work_pane_open: true,
             work_pane: WorkPane::default(),
             files: FilesPane::default(),
+            tasks_pane: TasksPane::default(),
             files_listed: false,
             diffs: pane::DiffPane::new(),
             conversation: Conversation::default(),
@@ -1888,6 +1891,43 @@ impl TactApp {
         cx.notify();
     }
 
+    /// Advance the Tasks-pane filter and redraw.
+    pub(crate) fn cycle_task_filter(&mut self, cx: &mut Context<Self>) {
+        self.tasks_pane.cycle_filter();
+        cx.notify();
+    }
+
+    /// Advance the Tasks-pane sort order and redraw.
+    pub(crate) fn cycle_task_sort(&mut self, cx: &mut Context<Self>) {
+        self.tasks_pane.cycle_sort();
+        cx.notify();
+    }
+
+    /// Open the session that owns a task, reusing the sidebar resume path.
+    pub(crate) fn open_task_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+        self.resume_session(session_id, cx);
+    }
+
+    /// Advance one task through the persistent status lifecycle.
+    ///
+    /// The store owns timestamps and dependency cleanup, so the shell sends a
+    /// protocol update instead of mutating its snapshot directly.
+    pub(crate) fn update_task_status(
+        &mut self,
+        task_id: u64,
+        status: tact_protocol::TaskStatusSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        self.send_command(
+            tact_protocol::UserCommand::TaskUpdate {
+                task_id,
+                status: Some(status),
+                owner: None,
+            },
+            cx,
+        );
+    }
+
     /// Cancel one running background subagent through the driver.
     pub(crate) fn cancel_subagent(&mut self, child_id: &str, cx: &mut Context<Self>) {
         self.send_command(
@@ -2411,6 +2451,7 @@ impl Render for TactApp {
                 &self.state,
                 &mut self.files,
                 &mut self.diffs,
+                &mut self.tasks_pane,
                 columns.work_pane,
                 cx,
             ));
@@ -2446,6 +2487,7 @@ impl Render for TactApp {
                     &self.state,
                     &mut self.files,
                     &mut self.diffs,
+                    &mut self.tasks_pane,
                     slide.progress,
                     cx,
                 ));
@@ -5793,6 +5835,7 @@ fn work_pane(
     state: &SessionState,
     files: &mut FilesPane,
     diffs: &mut pane::DiffPane,
+    tasks: &mut TasksPane,
     width: Rems,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -5803,7 +5846,7 @@ fn work_pane(
         .border_l_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().sidebar)
-        .child(pane::view(selected, state, files, diffs, cx))
+        .child(pane::view(selected, state, files, diffs, tasks, cx))
         .id("work-pane")
         .test_support()
 }
@@ -5842,6 +5885,7 @@ fn work_pane_drawer(
     state: &SessionState,
     files: &mut FilesPane,
     diffs: &mut pane::DiffPane,
+    tasks: &mut TasksPane,
     progress: f32,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -5859,7 +5903,7 @@ fn work_pane_drawer(
         // claims the press on its way out: a click on the pane's own tabs must
         // switch the pane, not read as a click on the scrim behind it.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(pane::view(selected, state, files, diffs, cx))
+        .child(pane::view(selected, state, files, diffs, tasks, cx))
         .id("work-pane")
         .test_support()
 }
@@ -6602,6 +6646,158 @@ mod tests {
                 Ok(UserCommand::CancelSubagent { child_id }) if child_id == "child-running"
             ),
             "Cancel sends the selected child id through the driver"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn task_filter_and_sort_buttons_change_their_labels(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let shell = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, None);
+                app.set_work_pane(WorkPane::Tasks);
+                app
+            });
+            Root::new(shell, window, cx)
+        });
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("work-pane-tasks-filter").label(),
+                Some("Filter: All")
+            );
+            assert_eq!(
+                window.find("work-pane-tasks-sort").label(),
+                Some("Sort: By status")
+            );
+
+            window.click("work-pane-tasks-filter", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("work-pane-tasks-filter").label(),
+                Some("Filter: Open"),
+                "the filter button advances its local display state"
+            );
+
+            window.click("work-pane-tasks-sort", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("work-pane-tasks-sort").label(),
+                Some("Sort: By owner"),
+                "the sort button advances its local display state"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn updating_a_task_sends_the_status_transition(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+        use tact_protocol::{TaskSnapshot, TaskStatusSnapshot, UserCommand};
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, None);
+                app.session = Some(session);
+                app.set_work_pane(WorkPane::Tasks);
+                app.state.tasks.push(TaskSnapshot {
+                    id: 42,
+                    subject: "Ship the diff".into(),
+                    status: TaskStatusSnapshot::Pending,
+                    owner: "agent".into(),
+                    ..Default::default()
+                });
+                app
+            });
+            Root::new(shell, window, cx)
+        });
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("task-update-42", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        assert!(
+            matches!(
+                dispatched.try_recv(),
+                Ok(UserCommand::TaskUpdate {
+                    task_id: 42,
+                    status: Some(TaskStatusSnapshot::InProgress),
+                    owner: None,
+                })
+            ),
+            "the status badge sends the next lifecycle state"
+        );
+        assert!(dispatched.try_recv().is_err(), "the update dispatches once");
+    }
+
+    #[gpui_kit::test]
+    fn opening_a_task_session_selects_its_session_row(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+        use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
+
+        cx.update(gpui_kit::init);
+        let mut shell = None;
+        let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = super::TactApp::with_sessions(
+                    window,
+                    cx,
+                    vec![RecentSession {
+                        id: "task-session".into(),
+                        updated_at_unix: 1,
+                        message_count: 1,
+                        title: Some("Task session".into()),
+                        name: None,
+                        archived: false,
+                    }],
+                );
+                app.set_work_pane(WorkPane::Tasks);
+                app.state.tasks.push(TaskSnapshot {
+                    id: 7,
+                    subject: "Open the owner".into(),
+                    status: TaskStatusSnapshot::Pending,
+                    session_id: "task-session".into(),
+                    owner: "agent".into(),
+                    ..Default::default()
+                });
+                app
+            });
+            shell = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let shell = shell.expect("the window built a shell");
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("task-open-session-7", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        assert_eq!(
+            shell.update(cx, |app, _| app.preview_current.clone()),
+            Some("task-session".to_string()),
+            "Open session reuses the sidebar resume path"
         );
     }
 
