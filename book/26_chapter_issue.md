@@ -29,6 +29,53 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — The desktop shell persists its layout, exposes presets, and zooms
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/layout.rs`; `crates/tact-gui/src/shell.rs` (`layout_prefs`, `apply_layout`, `set_sidebar_width`, `set_work_pane_width`, `resize_handle`, `zoom_in`, `status_bar`); `crates/tact-gui/src/commands.rs` (`LayoutSplit`/`Focus`/`Review`/`Zen`, `ZoomIn`/`ZoomOut`/`ZoomReset`) |
+
+**Symptom / motivation:** The spec parked layout persistence and resizable columns past v1 because the shell's arrangement died with the window. Every launch returned to the prototype's fixed 260 / 420 px columns, the sidebar and work pane reopened regardless of how the user left them, and the transcript detail level reset. The design review also parked larger-text behaviour with a note that the shell is `rem`-based but nothing proved it.
+
+**Decision:** Add one small JSON store at `~/.tact/gui-layout.json` (`$TACT_GUI_LAYOUT_PATH` overrides it) holding the arrangement, both column widths, the transcript detail level, and the base font size. Save it on every mutation — toggles, preset rows, pane selection, detail cycle, divider drag, zoom — instead of on window close, because a window that is killed never gets a close event. Read it with `#[serde(default)]` and clamp every width on load, so a truncated or hand-edited document cannot collapse a column or refuse to start the app. Offline and test shells build on a disabled store, so no test or preview writes the developer's real layout.
+
+The two dividers are 4 px bands painted *over* the column boundary rather than laid out between the columns: the prototype's columns already carry their own border, and a divider that consumed flex width would move every existing measurement. Presets (`Split`, `Focus`, `Review`, `Zen`) are a coarse shorthand over the two open flags and deliberately do not reset the dragged widths — those are the user's own tuning. Zoom is one number: the shell is `rem`-based end to end, so `Window::set_rem_size` scales columns, text, and breakpoints together, and the status bar only shows a zoom chip once the level is off 100%.
+
+**Behavior after:** The window reopens with the arrangement, widths, transcript detail, and zoom it had. `Ctrl`+`Alt`+`1..4` and the palette's four Layout rows switch arrangements; the status bar names the current one. Dragging either divider resizes the column within a clamped range and the new width survives a restart. `Ctrl`+`=` / `Ctrl`+`-` / `Ctrl`+`0` (palette: Zoom in / Zoom out / Reset zoom) move the base font size between 12 and 24 px; the status chip reports the percentage while it is not 100%. Session pinning and column widths are the only per-user state the shell writes.
+
+**Pointers:** `crates/tact-gui/src/layout.rs` (`LayoutPrefs`, `LayoutStore`, `a_round_trip_preserves_the_arrangement`, `widths_are_clamped_on_load`, `zoom_is_clamped_and_round_trips`); `crates/tact-gui/src/shell.rs` (`the_layout_store_restores_and_persists_the_column_widths`); `crates/tact-gui/tests/shell.rs` (`the_layout_palette_rows_rearrange_the_shell`, `zooming_changes_the_rem_size_and_reports_it`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §14
+
+## 1. 2026-09-21 — A Stats pane charts the session's own numbers
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/pane.rs` (`WorkPane::Stats`, `stats`, `stat_tile`, `chart_card`, `legend_swatch`); `crates/tact-gui/tests/shell.rs` (`the_stats_pane_charts_the_session_state`) |
+
+**Symptom / motivation:** The plan deferred "chart-heavy dashboards" past v1, and the shell had no surface that read the session's numbers as a whole. Token usage lived only in the composer's ring and a status-bar chip, task progress only in the Tasks table, and recorded changes only as a list — answering "how much context have I spent, and where is the change concentrated" required reading three surfaces.
+
+**Decision:** Add a sixth work pane, `Stats`, that draws only from `SessionState` — the same snapshot the other panes read. Three charts: a stacked prompt/completion bar with cache and reasoning counts, a Tasks-by-status bar chart off the task snapshot, and the five largest recorded changes as paired add/remove bars. No new store query and no cached copy: the pane is a reading of state the shell already owns, so it cannot drift from the panes beside it. The tab strip already clipped its last chip at six labels, so `Subagent` was renamed to `Agents` — the display label shortened without moving any element id, which are now derived from a stable `WorkPane::slug`.
+
+**Behavior after:** The Stats tab shows four tiles (tokens, tasks, plan, diff), the token split, the task status chart, and the change-by-file chart. A session with no activity shows a named empty state instead of an empty pane. Switching away and back re-renders from the live snapshot rather than from a stale copy.
+
+**Pointers:** `crates/tact-gui/src/pane.rs` (`stats`); `crates/tact-gui/tests/shell.rs` (`the_stats_pane_charts_the_session_state`, `every_work_pane_renders_content_not_just_a_container`); `docs/superpowers/plans/2026-09-19-tact-desktop-client.md` (Deferred)
+
+## 1. 2026-09-21 — Sessions can be pinned, and the sidebar search reads visible labels
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/store/session_store/{mod,sqlite}.rs` (`pinned_at`, `pin_session`); `crates/tact-session/src/sessions.rs` (`RecentSession::pinned`, `recent`); `crates/tact-session/src/session_actions.rs` (`set_pinned`); `crates/tact-gui/src/shell.rs` (`set_open_session_pinned`, `session-menu-pin`, `session_buckets`) |
+
+**Symptom / motivation:** Two gaps in the session list. First, the sidebar could only order by recency, so a session the user returned to constantly sank as soon as they touched anything else. Second, the search field matched only `session.id`, which the sidebar never prints: typing a session's visible title returned nothing.
+
+**Decision:** Pinning gets its own nullable column, `sessions.pinned_at`, following the archive flag's shape exactly — a marker, not a state. The store keeps ordering by `updated_at`, and `tact_session::sessions::recent` applies a stable partition that lifts pinned rows to the front, so unpinning restores the ordinary order and no SQL has to learn about the presentation policy. Duplicating a session does not copy the pin, the same way it does not copy the archive flag. The search filter now matches every label the row prints — id, derived title, and user-given name — because a filter that only knows ids searches for text the sidebar never shows.
+
+**Behavior after:** The session menu offers Pin/Unpin for the open session; a pinned row leads the list and says `pinned` in its metadata line; the action is reversible and lands one transcript notice. The sidebar search matches titles and names as well as ids. Grouping by project and branch was deliberately *not* added: the list is already scoped to one workspace store, and sessions carry no branch column, so neither grouping would partition anything.
+
+**Pointers:** `crates/tact/src/store/session_store/sqlite.rs` (`test_pin_session_sets_and_clears_the_flag`, `a_store_from_before_the_title_columns_migrates_in_place`); `crates/tact-session/src/sessions.rs` (`recent_sorts_pinned_sessions_first`); `crates/tact-gui/tests/shell.rs` (`pinning_a_session_moves_it_to_the_head_of_the_list`, `the_sidebar_search_filters_the_session_list`); `book/01_chapter_store.md`
+
 ## 1. 2026-09-21 — Diff and Files panes complete their primary actions
 
 | Field | Value |

@@ -1,6 +1,9 @@
 # Tact Desktop Client — Design and Delivery Plan
 
 Status: Phases 0–2 and 4–8 complete; Phase 3 awaits the Figma connector.
+The post-v1 layout store (persisted arrangement, draggable columns, presets, and
+zoom), the Stats pane, and session pinning have since shipped; embedded Browser
+and Terminal remain v1.1.
 Date: 2026-09-19  
 Spec: `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`  
 Verification: cargo checks/tests/build/clippy passed offline; GUI smoke
@@ -144,8 +147,10 @@ Status: complete.
   conversation.
 - Implement Subagent runs and transcript inspection.
 - Implement Files as a tree and preview surface.
-- Add narrow-window sheet behavior. Pane-layout persistence is parked with the
-  post-v1 layout store so the v1 shell does not claim unverified restoration.
+- Add narrow-window sheet behavior. Pane-layout persistence ships through
+  `crates/tact-gui/src/layout.rs`: the arrangement, both column widths, the
+  transcript detail level, and the base font size survive a restart, the two
+  dividers are draggable, and four presets switch arrangements.
 
 Exit criteria:
 
@@ -214,11 +219,18 @@ each.
 - Embedded Browser.
 - Embedded Terminal.
 - Free-form Dock rearrangement.
-- Chart-heavy dashboards.
 - Web/mobile client.
 
-These are deferred because they add product surface and focus complexity without
-being required to prove the core Tact desktop workflow.
+Chart-heavy dashboards are **shipped**, as the `Stats` work pane: it charts
+token usage, tasks by status, plan progress, and the largest recorded changes,
+all from the `SessionState` the other panes already read. Persisted layout and
+resizable columns are shipped too (`crates/tact-gui/src/layout.rs`); only
+free-form Dock rearrangement stays post-v1.
+
+The remaining deferred items add product surface and focus complexity without
+being required to prove the core Tact desktop workflow. Browser and Terminal
+additionally need platform surfaces the shell does not have — an embedded web
+view and a PTY-backed text widget — so they cannot be faked honestly.
 
 
 ## Release verification
@@ -228,8 +240,12 @@ workspace because they contend on the `target/` lock.
 
 - `cargo fmt --all -- --check` — pass.
 - `cargo check --workspace --all-targets --offline` — pass.
-- `cargo test -p tact-gui --offline` — 73 library + 89 integration tests pass (the shell suite needs to run outside the sandbox on hosts where `.git` is read-only).
-- `cargo test -p tact-session --offline` — 39 tests pass.
+- `cargo test -p tact-gui --offline --lib` — 97 library tests pass.
+- `cargo test -p tact-gui --offline --test shell` — 94 integration tests pass,
+  plus one worktree-fixture walk that needs a writable `.git` and therefore runs
+  outside the sandbox.
+- `cargo test -p tact-session --offline` — 41 tests pass.
+- `cargo test -p tact --offline --lib store::session_store` — 25 tests pass.
 - `cargo test -p tact-ui --offline` (outside the sandbox for wiremock) — 105
   tests pass across the unit and integration suites.
 - `cargo build --workspace --offline` — pass.

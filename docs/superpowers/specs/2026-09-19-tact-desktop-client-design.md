@@ -33,7 +33,8 @@ delivery plan and the desktop design review.
 ### Implementation status (2026-09-19)
 
 - The production shell, Tact light/dark themes, transcript/composer, Plan, Diff,
-  Tasks, Subagent, and Files panes, command palette, settings, and window-level
+  Tasks, Subagent, Files, and Stats panes, command palette, settings, and
+  window-level
   keyboard contract are implemented in `crates/tact-gui`.
 - The sidebar lists workspace-local sessions by stored or derived title with
   project/branch/age metadata and a status badge. Selecting a row resumes that
@@ -148,7 +149,8 @@ The following skills are installed and relevant to this work:
 │ Sessions      │ Transcript                │ Work pane            │
 │ 260 px        │ 680–760 px reading width  │ 320–720 px, resizable│
 │               │                           │ Plan / Diff / Tasks  │
-│ New session   │ messages, tool activity   │ Subagent / Files     │
+│ New session   │ messages, tool activity   │ Subagent / Files /   │
+│               │                           │ Stats                │
 │ search        │ thinking, diffs, plans    │                      │
 ├───────────────┴───────────────────────────┴──────────────────────┤
 │ path · branch · permission · +12 −1 · CI · tokens · balance      │
@@ -323,6 +325,7 @@ Initial tabs:
 | `Tasks` | task table from `TasksChanged` | filter, sort, update, open session |
 | `Subagent` | run list + selected transcript | cancel, inspect transcript |
 | `Files` | project tree + preview | open, reveal, mention in composer |
+| `Stats` | charts over tokens, tasks, plan, and recorded changes | read-only |
 
 The Plan row actions are live, not prototype chrome. Clicking a step expands
 its input, result, and actions; a failed step shows the error state and offers
@@ -358,7 +361,19 @@ manager, `Mention` inserts `@relative/path` into the composer, and the footer's
 file` remains intentionally unavailable in v1: file creation belongs to the
 agent's own tools, not a second editor embedded in the work pane.
 
-Deferred tabs: `Browser`, `Terminal`, `Chart`, and free-form `Dock`.
+The `Stats` tab is the chart-heavy dashboard this section originally deferred.
+It draws only from the `SessionState` the other panes read — a stacked
+prompt/completion token bar with cache and reasoning counts, a Tasks-by-status
+bar chart, and the five largest recorded changes as paired add/remove bars — so
+it adds a reading of the session rather than a second source of truth. The tab
+strip fits six chips by shortening the `Subagent` display label to `Agents`;
+element ids come from a stable per-pane slug, so no id moved with the label.
+
+Deferred tabs: `Browser`, `Terminal`, and free-form `Dock` rearrangement.
+`Browser` and `Terminal` are v1.1 work: the shell has no embedded web view and
+no PTY-backed text surface, and a pane that only pretended to be one would be
+worse than an honest absence. Free-form Dock rearrangement stays post-v1; the
+shell ships fixed columns with persisted widths and four arrangements instead.
 
 ### 6.6 Status bar
 
@@ -475,6 +490,7 @@ alone; verify expanded Chinese and German labels.
 | Diff pane | file list + diff | `Editor`, `List`, `Resizable` | semantic diff view |
 | Tasks pane | task table | `DataTable` | snapshots from `TasksChanged` |
 | Subagent pane | runs and transcript | `DataTable`/`List`, `TextView` | keep-live finalization |
+| Stats pane | token / task / plan / diff charts | plain `Div` bars inside the pane's cards | fixed columns, no dock |
 | Files pane | project tree/preview | `Tree`, `Editor`, `TextView` | file picker integration |
 | Settings | multi-section form | `Settings`, `Input`, `Select`, `Switch` | config mapping |
 | Notifications | async status | `Notification` | no-decision events |
@@ -709,11 +725,19 @@ race where a late scrollbar changes layout between captures).
 6. Completed: bootstrap `crates/tact-gui` with the theme registry and shell.
 7. Completed: implement the transcript, composer, session resume, and event
    mapping.
-8. Completed: add Plan, Diff, Tasks, Subagent, and Files panes.
+8. Completed: add Plan, Diff, Tasks, Subagent, and Files panes, then the Stats
+   pane.
 9. Completed: add settings, command palette, notifications, keyboard flows, and
    accessibility polish.
-10. Post-v1: add Dock/layout presets and persisted layout state after the v1
-    shell is stable.
+10. Completed: persist the layout — arrangement, both column widths,
+    transcript detail, and zoom — and expose the arrangement as four presets
+    with draggable dividers.
+11. Completed: add the Stats work pane, the chart-heavy dashboard the earlier
+    sequence deferred.
+12. Post-v1: free-form Dock rearrangement. The fixed columns, persisted widths,
+    and presets are the v1 shell's answer to pane layout.
+13. Deferred to v1.1: embedded `Browser` and `Terminal` panes, which need a web
+    view and a PTY-backed text surface the shell does not have.
 
 ## 15. Approval points
 
@@ -724,8 +748,8 @@ The defaults below were approved and are carried by the implementation:
 - Anthropic orange as the primary accent.
 - Lora for assistant prose; Inter/platform font for UI chrome.
 - Browser and Terminal deferred to v1.1.
-- Fixed shell with one work pane; Dock and persisted/resizable layout are
-  post-v1.
+- Fixed shell with one work pane. Persisted/resizable layout and the four
+  arrangement presets are shipped; free-form Dock rearrangement is post-v1.
 
 ## References
 

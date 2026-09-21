@@ -138,7 +138,7 @@ Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`
 
 | Table | Purpose |
 |-------|---------|
-| `sessions` | Session id, `root_dir`, `ref_id` (parent session id; `''` = top-level), `title` (user-given name; `''` = fall back to the opening message), `archived_at` (`NULL` = active; timestamp = archived without deleting), `locked_by` + `lock_epoch` (process lock), timestamps |
+| `sessions` | Session id, `root_dir`, `ref_id` (parent session id; `''` = top-level), `title` (user-given name; `''` = fall back to the opening message), `archived_at` (`NULL` = active; timestamp = archived without deleting), `pinned_at` (`NULL` = ordinary order; timestamp = sorts ahead of unpinned rows), `locked_by` + `lock_epoch` (process lock), timestamps |
 | `messages` | Serialized `MessageContent` JSON, ordinal ordering |
 | `token_usages` | Per-LLM-call token counts, optional `request_body` blob, optional `tool_schedule` JSON |
 | `input_history` | User input strings for TUI recall (max 100 per session) |
@@ -178,6 +178,7 @@ The front ends share four presentation-neutral actions in
 |--------|----------------|
 | Rename | Writes `sessions.title`; trims it, and an empty or whitespace-only value clears the name so the row falls back to its opening message. |
 | Archive | Writes `sessions.archived_at`; archiving is reversible and never calls `delete_session`, so the session, its messages and its child sessions survive. |
+| Pin | Writes `sessions.pinned_at`; pinning only changes list order. The store still orders by `updated_at`, and `tact_session::sessions::recent` makes a stable partition that puts pinned rows first, so unpinning restores the ordinary order. |
 | Duplicate | Copies the source row (new id, `ref_id = ''`) and its `messages` in one transaction. It deliberately copies neither child sessions nor provider state nor `token_usages`: the copy's next turn replays from the copied messages, and recorded spend stays with the original. The copy is named `<source label> (copy)`. |
 | Reveal | Opens the workspace directory with the first available of `xdg-open`, `gio open`, `nautilus`, or `dolphin`; a missing launcher is reported as an error. |
 
@@ -249,7 +250,7 @@ sequenceDiagram
 |-----|--------|
 | No cross-process locking on JSON store | JSON files use read-modify-write without file locks (SQLite sessions use process lock) |
 | `CollectionStore::list()` order | Unsorted directory iteration — order is filesystem-dependent |
-| Greenfield SQLite schema | Mostly `CREATE TABLE IF NOT EXISTS`; `sessions.ref_id`, `title`, and `archived_at` are added via `PRAGMA` + `ALTER TABLE` for older DBs |
+| Greenfield SQLite schema | Mostly `CREATE TABLE IF NOT EXISTS`; `sessions.ref_id`, `title`, `archived_at`, and `pinned_at` are added via `PRAGMA` + `ALTER TABLE` for older DBs |
 | Session store optional | Tests and some callers may run without SQLite attached |
 | Session DB per workdir | SQLite lives at `<workdir>/.tact/tact.db` today; `sessions.root_dir` records the project path for a future shared `$HOME/.tact/tact.db` |
 | Legacy JSON files | `tasks/*.json`, `background/tasks/*.json`, `team/config.json`, `team/inbox/*.json`, `worktrees/index.json` are no longer read after the SQLite migrations; left on disk, removed manually |

@@ -139,7 +139,7 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 
 | 表 | 用途 |
 |----|------|
-| `sessions` | 会话 id、`root_dir`、`ref_id`（父会话 id；`''` = 顶层）、`title`（用户指定的名称；`''` = 回退到开场消息）、`archived_at`（`NULL` = 活跃；时间戳 = 已归档但未删除）、`locked_by` + `lock_epoch`（进程锁）、时间戳 |
+| `sessions` | 会话 id、`root_dir`、`ref_id`（父会话 id；`''` = 顶层）、`title`（用户指定的名称；`''` = 回退到开场消息）、`archived_at`（`NULL` = 活跃；时间戳 = 已归档但未删除）、`pinned_at`（`NULL` = 常规顺序；时间戳 = 排在未置顶行之前）、`locked_by` + `lock_epoch`（进程锁）、时间戳 |
 | `messages` | 序列化的 `MessageContent` JSON、序号排序 |
 | `token_usages` | 每次 LLM 调用的 token 计数、可选 `request_body` blob、可选 `tool_schedule` JSON |
 | `input_history` | TUI 召回用的用户输入字符串（每会话最多 100 条） |
@@ -178,6 +178,7 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 |------|------------|
 | Rename | 写入 `sessions.title`；写入前 trim，空串或纯空白会清除名称，使该行回退到开场消息。 |
 | Archive | 写入 `sessions.archived_at`；归档可逆，绝不调用 `delete_session`，所以会话、消息和子会话都会保留。 |
+| Pin | 写入 `sessions.pinned_at`；置顶只改变列表顺序。store 仍按 `updated_at` 排序，由 `tact_session::sessions::recent` 做稳定分区把置顶行提到最前，因此取消置顶即恢复常规顺序。 |
 | Duplicate | 在同一个事务里复制源会话行（新 id、`ref_id = ''`）及其 `messages`。刻意不复制子会话、provider state 和 `token_usages`：副本的下一轮会从复制的消息重新开始，已记录的用量仍属于原会话。副本命名为 `<源标签> (copy)`。 |
 | Reveal | 用 `xdg-open`、`gio open`、`nautilus`、`dolphin` 中第一个可用者打开工作区目录；找不到启动器时报告错误。 |
 
@@ -248,7 +249,7 @@ sequenceDiagram
 |------|------|
 | JSON store 无跨进程锁 | JSON 文件读-改-写无文件锁（SQLite 会话使用进程锁） |
 | `CollectionStore::list()` 顺序 | 目录迭代未排序——顺序依赖文件系统 |
-| 全新 SQLite schema | 主要为 `CREATE TABLE IF NOT EXISTS`；旧库通过 `PRAGMA` + `ALTER TABLE` 补上 `sessions.ref_id`、`title`、`archived_at` |
+| 全新 SQLite schema | 主要为 `CREATE TABLE IF NOT EXISTS`；旧库通过 `PRAGMA` + `ALTER TABLE` 补上 `sessions.ref_id`、`title`、`archived_at`、`pinned_at` |
 | Session store 可选 | 测试与部分调用方可不附加 SQLite |
 | 每 workdir 一个 Session DB | SQLite 当前位于 `<workdir>/.tact/tact.db`；`sessions.root_dir` 记录项目路径，供未来共享 `$HOME/.tact/tact.db` |
 | 遗留 JSON 文件 | `tasks/*.json`、`background/tasks/*.json`、`team/config.json`、`team/inbox/*.json`、`worktrees/index.json` 在 SQLite 迁移后不再读取；留在磁盘上，手动清理 |

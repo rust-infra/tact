@@ -29,6 +29,53 @@
 
 ---
 
+## 1. 2026-09-21 — 桌面壳持久化布局、暴露预设并支持缩放
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/layout.rs`；`crates/tact-gui/src/shell.rs`（`layout_prefs`、`apply_layout`、`set_sidebar_width`、`set_work_pane_width`、`resize_handle`、`zoom_in`、`status_bar`）；`crates/tact-gui/src/commands.rs`（`LayoutSplit`/`Focus`/`Review`/`Zen`、`ZoomIn`/`ZoomOut`/`ZoomReset`） |
+
+**现象 / 动机：** 规格把布局持久化与可拖拽列推迟到 v1 之后，因此窗口关掉后布局就消失：每次启动都回到原型的固定 260 / 420 px 列，侧栏和工作区无论用户上次怎么关都会重新打开，转录细节等级也会重置。设计评审同样把"更大字号"挂起，备注说壳层是 `rem` 基准但没有证据。
+
+**决策：** 新增一个小 JSON store，位于 `~/.tact/gui-layout.json`（`TACT_GUI_LAYOUT_PATH` 可覆盖），保存排列、两列宽度、转录细节等级与基准字号。每次变更即保存——切换、预设行、面板选择、细节循环、拖拽分隔条、缩放——而不是在窗口关闭时保存，因为被强杀的窗口永远等不到关闭事件。读取时用 `#[serde(default)]` 并对每个宽度做 clamp，截断或手改过的文档既不会压塌某一列，也不会让应用拒绝启动。离线与测试壳层使用 disabled store，因此任何测试或预览都不会写入开发者真实布局。
+
+两条分隔条是**画在列边界之上**的 4 px 条带，而不是占据 flex 宽度：原型的两列本身已带边框，占宽的分隔条会挪动所有既有尺寸。预设（`Split`、`Focus`、`Review`、`Zen`）只是两个 open 标志的粗粒度缩写，刻意不重置用户拖出的宽度。缩放就是一个数：壳层从头到尾都是 `rem` 基准，因此 `Window::set_rem_size` 会同时缩放列宽、文字与断点；状态栏只在非 100% 时显示缩放 chip。
+
+**改后行为：** 窗口按上次的排列、宽度、转录细节与缩放重新打开。`Ctrl`+`Alt`+`1..4` 与命令面板四行 Layout 切换排列，状态栏显示当前排列名。拖动任一分隔条会在 clamp 范围内调整列宽，新宽度跨重启保留。`Ctrl`+`=` / `Ctrl`+`-` / `Ctrl`+`0`（面板：Zoom in / Zoom out / Reset zoom）在 12–24 px 之间移动基准字号，非 100% 时状态 chip 报告百分比。会话置顶与列宽是壳层唯一写入的每用户状态。
+
+**指针：** `crates/tact-gui/src/layout.rs`（`LayoutPrefs`、`LayoutStore`、`a_round_trip_preserves_the_arrangement`、`widths_are_clamped_on_load`、`zoom_is_clamped_and_round_trips`）；`crates/tact-gui/src/shell.rs`（`the_layout_store_restores_and_persists_the_column_widths`）；`crates/tact-gui/tests/shell.rs`（`the_layout_palette_rows_rearrange_the_shell`、`zooming_changes_the_rem_size_and_reports_it`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §14
+
+## 1. 2026-09-21 — Stats 面板把会话自身的数字画出来
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/pane.rs`（`WorkPane::Stats`、`stats`、`stat_tile`、`chart_card`、`legend_swatch`）；`crates/tact-gui/tests/shell.rs`（`the_stats_pane_charts_the_session_state`） |
+
+**现象 / 动机：** 计划把"图表密集的仪表盘"推迟到 v1 之后，壳层也没有一个整体读取会话数字的界面。token 用量只出现在 composer 的圆环和状态栏 chip 上，任务进度只在 Tasks 表里，记录的文件变更只是一串列表——想回答"上下文花了多少、改动集中在哪"要读三个界面。
+
+**决策：** 新增第六个工作面板 `Stats`，只从 `SessionState` 取数——也就是其他面板共用的同一份快照。三张图：prompt / completion 堆叠条并列出 cache 与 reasoning 计数；基于任务快照的按状态柱状图；以及改动量最大的五个文件，用增/删成对横条表示。不新增 store 查询，也不缓存副本：这个面板只是对壳层已持有状态的一种读法，因此不可能与旁边的面板产生偏差。六个标签时 tab 条会裁掉最后一个 chip，所以 `Subagent` 改名为 `Agents`——只缩短显示标签，元素 id 不动（现在由稳定的 `WorkPane::slug` 生成）。
+
+**改后行为：** Stats tab 显示四个 tile（tokens、tasks、plan、diff）、token 拆分、任务状态图与按文件变更图。没有活动的会话显示具名空状态，而不是空面板。切走再切回会从实时快照重绘，而不是从陈旧副本。
+
+**指针：** `crates/tact-gui/src/pane.rs`（`stats`）；`crates/tact-gui/tests/shell.rs`（`the_stats_pane_charts_the_session_state`、`every_work_pane_renders_content_not_just_a_container`）；`docs/superpowers/plans/2026-09-19-tact-desktop-client.md`（Deferred）
+
+## 1. 2026-09-21 — 会话可置顶，侧栏搜索改为匹配可见标签
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact/src/store/session_store/{mod,sqlite}.rs`（`pinned_at`、`pin_session`）；`crates/tact-session/src/sessions.rs`（`RecentSession::pinned`、`recent`）；`crates/tact-session/src/session_actions.rs`（`set_pinned`）；`crates/tact-gui/src/shell.rs`（`set_open_session_pinned`、`session-menu-pin`、`session_buckets`） |
+
+**现象 / 动机：** 会话列表有两个缺口。其一只按时间排序，用户反复回到的会话一旦碰过别的就会被压下去。其二搜索框只匹配 `session.id`，而侧栏从不显示 id：输入可见标题得不到任何结果。
+
+**决策：** 置顶使用独立的可空列 `sessions.pinned_at`，形状与归档标志完全一致——只是标记，不是状态。store 仍按 `updated_at` 排序，由 `tact_session::sessions::recent` 做稳定分区把置顶行提到最前，因此取消置顶即恢复常规顺序，SQL 不需要知道这条展示策略。复制会话不复制置顶，正如它不复制归档标志。搜索过滤改为匹配行上打印的每个标签——id、派生标题、用户命名——因为只认 id 的过滤器是在搜索侧栏从不显示的文字。
+
+**改后行为：** 会话菜单为当前会话提供 Pin/Unpin；置顶行排在最前，并在元信息行里显示 `pinned`；该动作可逆，且只落一条转录通知。侧栏搜索同时匹配标题与名称。刻意**没有**添加按项目、按分支分组：列表本就限定在单个 workspace store，且会话没有分支列，两种分组都不会真正分区。
+
+**指针：** `crates/tact/src/store/session_store/sqlite.rs`（`test_pin_session_sets_and_clears_the_flag`、`a_store_from_before_the_title_columns_migrates_in_place`）；`crates/tact-session/src/sessions.rs`（`recent_sorts_pinned_sessions_first`）；`crates/tact-gui/tests/shell.rs`（`pinning_a_session_moves_it_to_the_head_of_the_list`、`the_sidebar_search_filters_the_session_list`）；`book/01_chapter_store.md`
+
 ## 1. 2026-09-21 — Diff 与 Files 面板补齐主要动作
 
 | 字段 | 值 |

@@ -41,13 +41,13 @@ the prototype, records what was fixed, and parks what cannot be settled before
 | Every action reachable and operable by keyboard | Pass | Top tabs, work-pane tabs, theme toggle, sidebar toggle, detail cycle, and composer are native `button`/`input` elements. ⌘K, ⌘B, ⌘\, Ctrl+O, and Escape are bound. |
 | Focus order follows visual and task order | Pass | DOM order matches reading order: title bar, sidebar, transcript, composer, work pane. |
 | Focus visible and restored after overlays | Pass after fixes | Added a `:focus-visible` ring (2 px accent, 2 px offset). Opening the palette stores the trigger and closing restores focus to it. Tab now cycles inside the palette. |
-| Controls have names; icon-only controls have tooltips | Partial — parked | The palette and work-pane close button carry `aria-label`s. The prototype's title-bar icons do not yet have tooltips; the spec already requires them, and they are tracked as a Phase 4 item. |
+| Controls have names; icon-only controls have tooltips | Pass in the shell | The palette and work-pane close button carry `aria-label`s. The shell's title-bar icons carry both a tooltip and an accessible name (`tooltip_label(..).aria_label(..)` in `crates/tact-gui/src/shell.rs`), which the Phase 4–7 follow-up covers. |
 | Text and meaningful boundaries have sufficient contrast | Pass after fix | 40 of 40 measured text/background pairs now meet 4.5:1. See the contrast table. |
 | Status is not communicated by color alone | Pass | Session state pairs a dot with text (`Running`, `Review`, `Archived`, `Clean`). Diff rows carry `+`/`−` markers, not only tint. Task states are labelled (`In progress`, `Done`, `Blocked`). |
 | Disabled and read-only states distinguishable | Partial — planned | Send is disabled when the composer is empty and while running. Disabled styling exists but was not exercised across every control; the component layer must own it. |
 | Labels, errors, descriptions near their controls | Pass | Permission choices sit inside the approval card; the permission selector sits in the composer. |
-| Usable with longer translations and larger text | Partial — parked | Layout is `rem`-free and px-based in the prototype. The gpui-kit `zoom`/base-font system is the right place to prove this, so it is parked to Phase 4. |
-| Pointer targets comfortably sized in a dense layout | Partial — parked | Session rows are ≥44 px. Icon-only title-bar buttons are 28×28. Either raise them to 32 px or keep the 28 px visual with a larger hit area; decide in Phase 5. |
+| Usable with longer translations and larger text | Pass in the shell | The HTML prototype is px-based, but the production shell is `rem`-based end to end and now exposes zoom: `Ctrl`+`=` / `Ctrl`+`-` / `Ctrl`+`0` and the palette's Zoom rows move the base font size between 12 and 24 px through `Window::set_rem_size`. Columns, text, and breakpoints scale together, and the status bar reports any level off 100%. |
+| Pointer targets comfortably sized in a dense layout | Decided | Session rows are ≥44 px. Icon-only title-bar buttons keep the prototype's 28×28 drawing; with the 6 px control gap each one owns a non-overlapping ~34 px band, and the header is a 44 px row, so the visual box stays as designed rather than growing the chrome. |
 
 ## Contrast evidence
 
@@ -135,9 +135,9 @@ records which items the production shell has since resolved.
 
 | Item | Why parked | Where it lands |
 |---|---|---|
-| Icon-only targets at 28 px | Needs a decision between visual size and hit area | Phase 5 composer/toolbar work |
-| Tooltips on title-bar icons | Spec already requires them; not needed to validate layout | Phase 4 shell |
-| Zoom and larger-text behaviour | Must be proven with gpui-kit's base-font and `rem` system, not in HTML | Phase 4 shell |
+| Icon-only targets at 28 px | Decided: keep the 28 px drawing. With the 6 px control gap the effective target is ~34 px, and raising the box changed the title-bar layout the prototype fixes | Resolved in the Phase 4–7 follow-up: the shell keeps the prototype's box |
+| Tooltips on title-bar icons | Spec already requires them; not needed to validate layout | Resolved: `tooltip_label(..).aria_label(..)` on every title-bar icon |
+| Zoom and larger-text behaviour | Must be proven with gpui-kit's base-font and `rem` system, not in HTML | Resolved: rem-based shell plus Zoom in / Zoom out / Reset zoom and a `status-zoom` chip |
 | Disabled/read-only coverage | Belongs to the component layer | Phase 5–7 |
 | Virtualized transcript and lists | Static prototype cannot exercise it | Phase 5 transcript |
 | Diff horizontal scrolling in static renders | `--hide-scrollbars` is needed for deterministic headless captures; live behaviour was verified interactively | Note for future render scripts |
@@ -171,6 +171,21 @@ records which items the production shell has since resolved.
 The production shell now verifies the items that Phase 2 could only park:
 
 - Title-bar icon controls have tooltips and accessible names.
+- The shell's arrangement is persisted rather than re-derived each launch:
+  `crates/tact-gui/src/layout.rs` stores the open flags, both column widths, the
+  transcript detail level, and the base font size at `~/.tact/gui-layout.json`.
+  Four presets (Split / Focus / Review / Zen) switch arrangements, each divider
+  is a draggable 4 px band painted over the column boundary, and Zoom in / Zoom
+  out / Reset zoom move the shell's `rem` base between 12 and 24 px. The status
+  bar names the current arrangement and reports any zoom level off 100%.
+- The `Stats` work pane charts token usage, tasks by status, plan progress, and
+  the largest recorded changes, all from the same `SessionState` the other panes
+  read. Adding it made the work-pane strip six chips wide, which is what settled
+  the `Subagent` → `Agents` display rename: the strip clips its last chip, so the
+  shorter label is a correctness fix, not a preference.
+- Sessions can be pinned and unpinned from the session menu. Pinning writes
+  `sessions.pinned_at` and reorders the sidebar through a stable partition, and
+  the sidebar's search filter now matches titles and names as well as ids.
 - The shell uses rem-based dimensions and theme tokens; the 960×640 minimum
   window and the <1280 px work-pane drawer / <960 px sidebar overlay are covered
   by headless UI tests.
