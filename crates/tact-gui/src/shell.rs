@@ -3304,9 +3304,22 @@ impl TactApp {
     /// Apply a scroller change emitted by the conversation.
     /// Open or close one collapsible transcript row.
     fn toggle_row(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.conversation.toggle_expanded(index) {
-            self.record_change(Change::Resized(index), cx);
+        if !self.conversation.toggle_expanded(index) {
+            cx.notify();
+            return;
         }
+        if self.conversation.is_expanded(index) {
+            // A card that grows while the scroller is pinned to the tail is
+            // absorbed by the viewport and the rows above it slide up, which
+            // reads as the body opening *upwards*. Bringing the expanded row
+            // into view ends the follow-tail and leaves the reader where they
+            // were looking, so the body opens downward as it should.
+            let moved = self
+                .transcript_state
+                .update(cx, |state, cx| state.scroll_to_item(index, cx));
+            let _ = moved;
+        }
+        self.record_change(Change::Resized(index), cx);
         cx.notify();
     }
 

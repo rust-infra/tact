@@ -1044,6 +1044,18 @@ impl Conversation {
     ///
     /// Returns whether the row exists and is collapsible, so the caller knows
     /// whether it has to remeasure.
+    /// Whether the row at `index` is a card whose body is open.
+    ///
+    /// Only tool and reasoning rows have a body, so every other kind answers
+    /// `false` rather than panicking on an index the caller meant as a row.
+    pub(crate) fn is_expanded(&self, index: usize) -> bool {
+        match self.rows.get(index) {
+            Some(TranscriptRow::Tool { expanded, .. })
+            | Some(TranscriptRow::Thinking { expanded, .. }) => *expanded,
+            _ => false,
+        }
+    }
+
     pub(crate) fn toggle_expanded(&mut self, index: usize) -> bool {
         match self.rows.get_mut(index) {
             Some(TranscriptRow::Tool { expanded, .. }) => {
