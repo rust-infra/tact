@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-22 — Reopening the desktop app resumes the latest chat
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`TactApp::connect`, `startup_resume_id`) |
+
+**Symptom / motivation:** Every desktop launch called `SessionRuntime::start(SessionOptions::new(workdir))`, which always allocates a fresh UUID. The sidebar therefore grew a new session on every start even though the store already held the user's prior chats.
+
+**Decision:** Read the workspace's recent sessions before starting the runtime. If there is a non-archived session, resume the one with the newest `updated_at_unix`; otherwise start a new session. This deliberately chooses by activity time rather than list order, because the sidebar sorts pinned rows first for navigation, not because a pinned row was the last chat used. Archived sessions are not candidates for the default startup target.
+
+**Behavior after:** Launching Tact in a workspace reopens the most recently used non-archived session and its stored transcript. A new session is created only when the workspace has no eligible history or the user presses New session.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`TactApp::connect`, `startup_resume_id`); `crates/tact-session/src/runtime.rs` (`SessionOptions::resume`)
+
 ## 1. 2026-09-21 — The configured model is the default selection and choices persist
 
 | Field | Value |

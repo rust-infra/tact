@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-22 — 重新打开桌面应用时恢复最近一次聊天
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`TactApp::connect`、`startup_resume_id`） |
+
+**现象 / 动机：** 桌面应用每次启动都调用 `SessionRuntime::start(SessionOptions::new(workdir))`，这会无条件分配一个新的 UUID。即使 store 已有历史会话，侧栏也会在每次启动时多出一个新 session。
+
+**决策：** 启动 runtime 前先读取 workspace 的 recent sessions。如果存在未归档 session，就恢复 `updated_at_unix` 最新的那个；否则才新建 session。这里刻意按活动时间而不是列表顺序选择，因为侧栏的 pinned-first 排序是导航策略，不代表 pinned 行就是最后使用的聊天。归档 session 不作为默认启动目标。
+
+**改后行为：** 在某个 workspace 启动 Tact 会恢复最近使用的未归档 session 及其已存转录。只有 workspace 没有可用历史，或用户主动按 New session 时，才创建新 session。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`TactApp::connect`、`startup_resume_id`）；`crates/tact-session/src/runtime.rs`（`SessionOptions::resume`）
+
 ## 1. 2026-09-21 — 配置中的模型成为默认选中，选择也会持久化
 
 | 字段 | 值 |

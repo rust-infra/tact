@@ -409,6 +409,19 @@ pub struct TactApp {
     _composer_subscription: Subscription,
 }
 
+/// Session id the desktop shell should reopen on launch.
+///
+/// The store orders pinned rows first, which is a sidebar policy rather than
+/// "last opened"; startup wants the newest non-archived activity so reopening
+/// the app continues the chat the user actually used most recently.
+fn startup_resume_id(recent: &[RecentSession]) -> Option<String> {
+    recent
+        .iter()
+        .filter(|session| !session.archived)
+        .max_by_key(|session| session.updated_at_unix)
+        .map(|session| session.id.clone())
+}
+
 impl TactApp {
     /// An offline shell: renders the whole surface but talks to no agent.
     ///
@@ -727,12 +740,19 @@ impl TactApp {
     /// directory, with a startup failure surfaced in the transcript.
     pub fn connect(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let workdir = std::env::current_dir().ok();
-        let started = tact_session::builder::init_config()
-            .and_then(|_| std::env::current_dir().map_err(anyhow::Error::from))
-            .and_then(session::start);
         // The list is read from the workspace's own store and never blocks the
         // window: a broken store simply shows no history.
         let recent = workdir.as_deref().map(session::recent).unwrap_or_default();
+        let startup_resume = startup_resume_id(&recent);
+        let started = tact_session::builder::init_config().and_then(|_| {
+            let workdir = workdir.clone().ok_or_else(|| {
+                anyhow::anyhow!("cannot determine the current workspace directory")
+            })?;
+            match startup_resume {
+                Some(session_id) => session::resume(workdir, session_id),
+                None => session::start(workdir),
+            }
+        });
 
         let mut app = match started {
             Ok((handle, streams)) => Self::build(window, cx, Some((handle, streams)), recent),
@@ -8268,7 +8288,7 @@ mod tests {
     use super::{
         SessionBucket, Workspace, background_rows, balance_label, next_session_index,
         normalize_url, permission_action_order, permission_mode_label, previous_session_index,
-        session_buckets, session_name, session_row_title, worktree_rows,
+        session_buckets, session_name, session_row_title, startup_resume_id, worktree_rows,
     };
     use crate::pane::WorkPane;
     use crate::session::SessionHandle;
@@ -9578,6 +9598,27 @@ mod tests {
             archived: false,
             pinned: false,
         }
+    }
+
+    #[test]
+    fn startup_resume_prefers_newest_unarchived_session() {
+        let now = 1_700_000_000;
+        let mut pinned_old = session("pinned-old", 60, now);
+        pinned_old.pinned = true;
+        let mut archived_newest = session("archived-newest", 1, now);
+        archived_newest.archived = true;
+        let open = session("open", 10, now);
+
+        assert_eq!(
+            startup_resume_id(&[pinned_old, archived_newest.clone(), open]).as_deref(),
+            Some("open"),
+            "startup follows newest activity, not the sidebar's pinned-first order"
+        );
+        assert_eq!(
+            startup_resume_id(&[archived_newest]),
+            None,
+            "an archived session is not the default startup target"
+        );
     }
 
     fn labels(buckets: &[SessionBucket]) -> Vec<&str> {
