@@ -1023,10 +1023,14 @@ impl TactApp {
             self.push_system_row("No session is open to rename.".into(), cx);
             return;
         };
-        let current = match self.open_row() {
-            Some(row) => session_row_title(row),
-            None => session::short_id(&session_id).to_string(),
-        };
+        // Prefill only a name the user actually stored. The row label may be a
+        // derived opening-message title and is already elided at the display
+        // limit; copying that into the field would turn the derived label into a
+        // stored, truncated name on a bare confirm.
+        let current = self
+            .open_row()
+            .and_then(|row| row.name.clone())
+            .unwrap_or_default();
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(current)
@@ -1113,13 +1117,39 @@ impl TactApp {
             self.push_system_row("Cannot determine the workspace directory.".into(), cx);
             return;
         };
-        match session::rename(&workdir, session_id, &trimmed) {
-            Ok(()) => {
-                self.recent = session::recent(&workdir);
-                self.announce_rename(session_id, &trimmed, cx);
-            }
-            Err(err) => self.push_system_row(format!("Could not rename the session: {err:#}"), cx),
-        }
+        // The store opens its own runtime and can run a migration, so keep it
+        // off the foreground executor. The completed list comes back with the
+        // result and is installed in one foreground update.
+        let action_workdir = workdir.clone();
+        let action_id = session_id.to_string();
+        let action_name = trimmed.clone();
+        let done_id = session_id.to_string();
+        let done_name = trimmed.clone();
+        cx.spawn(async move |this, cx| {
+            let (result, recent) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = session::rename(&action_workdir, &action_id, &action_name);
+                    let recent = result
+                        .as_ref()
+                        .ok()
+                        .map(|_| session::recent(&action_workdir));
+                    (result, recent)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => {
+                    if let Some(recent) = recent {
+                        app.recent = recent;
+                    }
+                    app.announce_rename(&done_id, &done_name, cx);
+                }
+                Err(err) => {
+                    app.push_system_row(format!("Could not rename the session: {err:#}"), cx)
+                }
+            });
+        })
+        .detach();
     }
 
     /// The transcript's record of a rename, whichever store it went to.
@@ -1169,24 +1199,45 @@ impl TactApp {
             self.push_system_row("Cannot determine the workspace directory.".into(), cx);
             return;
         };
-        match session::duplicate(&workdir, &session_id) {
-            Ok(copy_id) => {
-                self.recent = session::recent(&workdir);
-                // Open the copy: pressing Duplicate is about continuing from
-                // here, not about leaving a row behind to find later.
-                self.resume_session(copy_id.clone(), cx);
-                self.push_system_row(
-                    format!(
-                        "Duplicated session {source_short} into {}. The copy carries the conversation and no provider state, so its next turn replays it.",
-                        session::short_id(&copy_id)
-                    ),
-                    cx,
-                );
-            }
-            Err(err) => {
-                self.push_system_row(format!("Could not duplicate the session: {err:#}"), cx)
-            }
-        }
+        // Copying every message can scale with the conversation, so the action
+        // and the refreshed sidebar run on the background executor. Opening the
+        // copy still happens on the foreground once the row is ready.
+        let action_workdir = workdir.clone();
+        let action_id = session_id.clone();
+        cx.spawn(async move |this, cx| {
+            let (result, recent) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = session::duplicate(&action_workdir, &action_id);
+                    let recent = result
+                        .as_ref()
+                        .ok()
+                        .map(|_| session::recent(&action_workdir));
+                    (result, recent)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(copy_id) => {
+                    if let Some(recent) = recent {
+                        app.recent = recent;
+                    }
+                    // Open the copy: pressing Duplicate is about continuing
+                    // from here, not about leaving a row behind to find later.
+                    app.resume_session(copy_id.clone(), cx);
+                    app.push_system_row(
+                        format!(
+                            "Duplicated session {source_short} into {}. The copy carries the conversation and no provider state, so its next turn replays it.",
+                            session::short_id(&copy_id)
+                        ),
+                        cx,
+                    );
+                }
+                Err(err) => {
+                    app.push_system_row(format!("Could not duplicate the session: {err:#}"), cx)
+                }
+            });
+        })
+        .detach();
     }
 
     /// Archive or restore the open session.
@@ -1210,13 +1261,36 @@ impl TactApp {
             self.push_system_row("Cannot determine the workspace directory.".into(), cx);
             return;
         };
-        match session::set_archived(&workdir, &session_id, archived) {
-            Ok(()) => {
-                self.recent = session::recent(&workdir);
-                self.announce_archive(&session_id, archived, cx);
-            }
-            Err(err) => self.push_system_row(format!("Could not archive the session: {err:#}"), cx),
-        }
+        // Archive is a single flag write, but the same store open and list
+        // refresh are still safer on the background executor.
+        let action_workdir = workdir.clone();
+        let action_id = session_id.clone();
+        let done_id = session_id.clone();
+        cx.spawn(async move |this, cx| {
+            let (result, recent) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = session::set_archived(&action_workdir, &action_id, archived);
+                    let recent = result
+                        .as_ref()
+                        .ok()
+                        .map(|_| session::recent(&action_workdir));
+                    (result, recent)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => {
+                    if let Some(recent) = recent {
+                        app.recent = recent;
+                    }
+                    app.announce_archive(&done_id, archived, cx);
+                }
+                Err(err) => {
+                    app.push_system_row(format!("Could not archive the session: {err:#}"), cx)
+                }
+            });
+        })
+        .detach();
     }
 
     /// The transcript's record of an archive, whichever store it went to.
@@ -1250,13 +1324,23 @@ impl TactApp {
             );
             return;
         }
-        match session::reveal(&workdir) {
-            Ok(()) => self.push_system_row(
-                format!("Opened {} in the file manager.", workdir.display()),
-                cx,
-            ),
-            Err(err) => self.push_system_row(format!("Could not open the workspace: {err:#}"), cx),
-        }
+        let action_workdir = workdir.clone();
+        let workdir_label = workdir.display().to_string();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { session::reveal(&action_workdir) })
+                .await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => {
+                    app.push_system_row(format!("Opened {workdir_label} in the file manager."), cx)
+                }
+                Err(err) => {
+                    app.push_system_row(format!("Could not open the workspace: {err:#}"), cx)
+                }
+            });
+        })
+        .detach();
     }
 
     /// Redraw a reopened session's stored transcript.
@@ -6879,6 +6963,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("the fixture makes its own workspace");
         dir
+    }
+
+    /// Connected session actions return through the background executor.
+    ///
+    /// The offline walk covers the in-memory preview path. This contract seeds
+    /// a real store, flips the shell out of offline mode, and waits for the
+    /// foreground update the background action posts: the row's name and archive
+    /// badge must come back from sqlite, not from the optimistic copy.
+    #[gpui_kit::test]
+    fn connected_session_actions_refresh_after_the_background_pass(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{SharedString, px, size};
+
+        cx.update(gpui_kit::init);
+        let workdir = connected_workdir();
+        let _cleanup = WorkspaceCleanup(workdir.clone());
+        let session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        tact_session::test_support::seed_session_history(
+            &workdir,
+            session_id,
+            &[tact_session::HistoryMessage {
+                role: tact_session::HistoryRole::User,
+                blocks: vec![tact_session::HistoryBlock::Text(
+                    "Seed the action row".to_string(),
+                )],
+            }],
+        );
+
+        let mut shell = None;
+        let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, Some(workdir.clone()));
+                app.offline = false;
+                app.recent = crate::session::recent(&workdir);
+                app.preview_current = Some(session_id.to_string());
+                app
+            });
+            shell = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let shell = shell.expect("the window built a shell");
+
+        shell.update(cx, |app, cx| {
+            app.rename_session(session_id, "Renamed in background".to_string(), cx)
+        });
+        cx.run_until_parked();
+        let renamed = crate::session::recent(&workdir);
+        assert_eq!(
+            renamed[0].name.as_deref(),
+            Some("Renamed in background"),
+            "rename persisted before the foreground redraw"
+        );
+        assert_eq!(
+            shell
+                .update(cx, |app, _| app.recent[0].name.clone())
+                .as_deref(),
+            Some("Renamed in background"),
+            "the sidebar adopted the background result"
+        );
+
+        shell.update(cx, |app, cx| app.set_open_session_archived(true, cx));
+        cx.run_until_parked();
+        let archived = crate::session::recent(&workdir);
+        assert!(archived[0].archived, "archive persisted");
+        assert!(
+            shell.update(cx, |app, _| app.open_session_archived()),
+            "the open row adopted the archive flag"
+        );
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let row = window.find(SharedString::from(format!("session-row-{session_id}")));
+            let label = row.label().unwrap_or_default().to_string();
+            assert!(
+                label.contains("Archived"),
+                "the rendered row shows the archived badge: {label}"
+            );
+        })
+        .unwrap();
     }
 
     /// The New-session control starts a real `tact-session` runtime.

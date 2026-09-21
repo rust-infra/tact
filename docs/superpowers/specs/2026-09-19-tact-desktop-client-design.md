@@ -1,6 +1,6 @@
 # Tact Desktop Client — Design Spec
 
-Status: approved; v1 implemented through Phase 7 (Phase 3 deferred)  
+Status: approved; v1 implemented through Phase 8 (Phase 3 deferred)
 Date: 2026-09-19  
 Scope: product and visual design for the `crates/tact-gui` desktop client. This
 document stays the design source of truth; implementation evidence lives in the

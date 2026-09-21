@@ -195,7 +195,7 @@ Status: complete.
   provider state or recorded token usage.
 
 Verified: `cargo test -p tact-gui --offline` passes outside the sandbox for the
-git-worktree fixture (71 library + 88 integration tests);
+git-worktree fixture (72 library + 88 integration tests);
 `cargo test -p tact-session --offline` passes 39 tests; `cargo check -p
 tact-gui --offline --all-targets` is clean. The click walk presses rename,
 duplicate, archive/unarchive, and reveal, and asserts the visible result of
@@ -220,8 +220,8 @@ workspace because they contend on the `target/` lock.
 
 - `cargo fmt --all -- --check` — pass.
 - `cargo check --workspace --all-targets --offline` — pass.
-- `cargo test -p tact-gui --offline` — 12 library + 14 integration tests pass.
-- `cargo test -p tact-session --offline` — 29 tests pass.
+- `cargo test -p tact-gui --offline` — 72 library + 88 integration tests pass (the shell suite needs to run outside the sandbox on hosts where `.git` is read-only).
+- `cargo test -p tact-session --offline` — 39 tests pass.
 - `cargo test -p tact-ui --offline` (outside the sandbox for wiremock) — 105
   tests pass across the unit and integration suites.
 - `cargo build --workspace --offline` — pass.

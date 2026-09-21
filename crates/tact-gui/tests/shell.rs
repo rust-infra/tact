@@ -3043,8 +3043,8 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
             window.try_find("session-rename-input").is_some(),
             "Rename asks for a name instead of answering with a notice"
         );
-        // The field opens on the name the row already shows, so the walk
-        // replaces it rather than appending to it.
+        // The field only seeds a stored name, so the walk replaces whatever it
+        // contains rather than appending to it.
         window.click("session-rename-input", cx);
         window.press("ctrl-a", cx);
         window.input("Renamed by the walk", cx);

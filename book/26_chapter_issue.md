@@ -47,6 +47,8 @@ Newest entries first. Each entry should include:
 
 **Pointers:** `crates/tact-session/src/session_actions.rs`; `crates/tact/src/store/session_store/sqlite.rs` (`migrate_sessions_title_and_archive`, `duplicate_session`); `crates/tact-gui/src/shell.rs` (`open_rename_dialog`, `duplicate_open_session`, `set_open_session_archived`, `reveal_workspace`); `crates/tact-gui/tests/shell.rs` (`every_entry_point_answers_a_click`); `book/01_chapter_store.md` (Session actions); `docs/token_usage_schema.md` (duplicate does not copy usage).
 
+## 1. 2026-09-21 — The work pane's five prototype-only actions answer a press
+
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
