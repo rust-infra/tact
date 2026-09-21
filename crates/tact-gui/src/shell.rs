@@ -48,6 +48,7 @@ use crate::composer::{self, Attachment};
 use crate::layout::{self, LayoutPrefs, LayoutPreset, LayoutStore};
 use crate::pane::{self, FilesPane, TasksPane, WorkPane};
 use crate::session::{self, Change, Conversation, Request, SessionHandle, SessionState};
+use crate::terminal::TerminalPane;
 use crate::theme;
 use crate::theme::accent_tint;
 use crate::transcript;
@@ -295,6 +296,14 @@ pub struct TactApp {
     /// Base font size in px. Every dimension in the shell is `rem`-based, so
     /// this one number is the zoom.
     zoom_rem: f32,
+    /// The embedded shell, once the user has started one. `None` until then:
+    /// opening the pane must not spawn a process.
+    terminal: Option<TerminalPane>,
+    /// Focus target for the terminal grid.
+    terminal_focus: FocusHandle,
+    /// Bumped whenever the terminal starts or stops, so the pump task for a
+    /// previous shell exits instead of waking the window forever.
+    terminal_epoch: u64,
     /// Where the post-v1 layout document is read and written.
     ///
     /// The offline constructors disable this so a test or preview never
@@ -703,6 +712,9 @@ impl TactApp {
             sidebar_width: SIDEBAR_WIDTH,
             work_pane_width: WORK_PANE_WIDTH,
             zoom_rem: layout::ZOOM_DEFAULT,
+            terminal: None,
+            terminal_focus: cx.focus_handle(),
+            terminal_epoch: 0,
             layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
         }
@@ -1521,6 +1533,126 @@ impl TactApp {
             format!("Unpinned session {short}.")
         };
         self.push_system_row(text, cx);
+    }
+
+    /// Start the embedded shell, if one is not already running.
+    ///
+    /// Spawning is explicit because a shell is a process with side effects: the
+    /// pane shows a Start control rather than launching one the moment it is
+    /// looked at.
+    pub fn start_terminal(&mut self, cx: &mut Context<Self>) {
+        if self.terminal.is_some() {
+            return;
+        }
+        let workdir = self.workspace_dir();
+        match TerminalPane::spawn(workdir.as_deref()) {
+            Ok(pane) => {
+                self.terminal = Some(pane);
+                self.terminal_epoch += 1;
+                let epoch = self.terminal_epoch;
+                self.spawn_terminal_pump(epoch, cx);
+                cx.notify();
+            }
+            Err(error) => self.push_system_row(format!("Could not start a shell: {error:#}"), cx),
+        }
+    }
+
+    /// Kill the running shell and start a fresh one.
+    pub(crate) fn restart_terminal(&mut self, cx: &mut Context<Self>) {
+        self.terminal = None;
+        self.terminal_epoch += 1;
+        self.start_terminal(cx);
+    }
+
+    /// Send raw input to the shell.
+    ///
+    /// Separate from [`Self::terminal_key`] because pasting a block of text is
+    /// not a keystroke: it must reach the child byte for byte, with no key
+    /// encoding in between.
+    pub fn terminal_input(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.write(text.as_bytes());
+        }
+        cx.notify();
+    }
+
+    /// The visible grid as text, for tests and status surfaces.
+    pub fn terminal_contents(&self) -> Option<String> {
+        self.terminal.as_ref().map(TerminalPane::contents)
+    }
+
+    /// Forward one keystroke to the shell.
+    pub(crate) fn terminal_key(&mut self, keystroke: &gpui_kit::Keystroke, cx: &mut Context<Self>) {
+        let Some(bytes) = crate::terminal::key_bytes(keystroke) else {
+            return;
+        };
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.write(&bytes);
+        }
+        cx.notify();
+    }
+
+    /// Wake the window whenever the shell produces output.
+    ///
+    /// The PTY reader is a blocking thread feeding a channel, so the pane polls
+    /// it on a short timer. The epoch guard is what stops a restarted terminal
+    /// from accumulating one wake-up task per shell.
+    fn spawn_terminal_pump(&self, epoch: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let keep_going = this
+                    .update(cx, |app, cx| {
+                        if app.terminal_epoch != epoch {
+                            return false;
+                        }
+                        let applied = app
+                            .terminal
+                            .as_mut()
+                            .map(|terminal| terminal.poll())
+                            .unwrap_or(0);
+                        if applied > 0 {
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The cell grid the terminal should measure itself to.
+    ///
+    /// Derived from the window rather than measured after layout: the pane is
+    /// the only thing in the column, so the window, the fixed chrome, and the
+    /// monospace cell size are enough to land within a cell of the real grid.
+    fn terminal_size(&self, window: &Window) -> (u16, u16) {
+        let rem = window.rem_size().as_f32();
+        // 0.75 rem glyphs in a monospace face advance about 0.45 rem.
+        let cell_width = (rem * 0.45).max(1.0);
+        let line_height = rem * 0.9375;
+        let width = if self.work_pane_is_drawer(window) {
+            window.bounds().size.width.as_f32()
+        } else {
+            self.work_pane_width.0 * rem
+        };
+        let height = window.bounds().size.height.as_f32()
+            - TITLE_BAR_HEIGHT.to_pixels(window.rem_size()).as_f32()
+            - STATUS_BAR_HEIGHT.to_pixels(window.rem_size()).as_f32()
+            - rem * 2.375;
+        let cols = ((width - rem * 2.0) / cell_width)
+            .floor()
+            .clamp(20.0, 400.0) as u16;
+        let rows = ((height - rem * 3.5) / line_height)
+            .floor()
+            .clamp(5.0, 200.0) as u16;
+        (cols, rows)
     }
 
     /// Hand the workspace to the desktop's file manager.
@@ -2838,6 +2970,7 @@ impl Render for TactApp {
         // have to be asked separately: the width decides what to sample, the
         // flag decides where the slide is in its travel.
         let work_pane_drawer_form = width < WORK_PANE_IN_FLOW_FROM.to_pixels(rem_size);
+        let terminal_size = self.terminal_size(window);
 
         // `.head h1` carries the session's own name; the title-bar chip echoes
         // it on Chat and takes the preset's name on Agent and Code, which is
@@ -2895,9 +3028,14 @@ impl Render for TactApp {
             workspace_row = workspace_row.child(work_pane(
                 self.work_pane,
                 &self.state,
-                &mut self.files,
-                &mut self.diffs,
-                &mut self.tasks_pane,
+                pane::PaneState {
+                    files: &mut self.files,
+                    diffs: &mut self.diffs,
+                    tasks: &mut self.tasks_pane,
+                    terminal: &mut self.terminal,
+                    terminal_focus: &self.terminal_focus,
+                    terminal_size,
+                },
                 columns.work_pane,
                 cx,
             ));
@@ -2943,9 +3081,14 @@ impl Render for TactApp {
                 workspace = workspace.child(work_pane_drawer(
                     self.work_pane,
                     &self.state,
-                    &mut self.files,
-                    &mut self.diffs,
-                    &mut self.tasks_pane,
+                    pane::PaneState {
+                        files: &mut self.files,
+                        diffs: &mut self.diffs,
+                        tasks: &mut self.tasks_pane,
+                        terminal: &mut self.terminal,
+                        terminal_focus: &self.terminal_focus,
+                        terminal_size,
+                    },
                     self.work_pane_width,
                     slide.progress,
                     cx,
@@ -6437,9 +6580,7 @@ fn resize_handle(
 fn work_pane(
     selected: WorkPane,
     state: &SessionState,
-    files: &mut FilesPane,
-    diffs: &mut pane::DiffPane,
-    tasks: &mut TasksPane,
+    panes: pane::PaneState<'_>,
     width: Rems,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -6450,7 +6591,7 @@ fn work_pane(
         .border_l_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().sidebar)
-        .child(pane::view(selected, state, files, diffs, tasks, cx))
+        .child(pane::view(selected, state, panes, cx))
         .id("work-pane")
         .test_support()
 }
@@ -6485,16 +6626,10 @@ fn work_pane_scrim(cx: &mut Context<TactApp>) -> impl IntoElement {
         }))
 }
 
-// The drawer threads the same five pane inputs the in-flow `work_pane` takes,
-// plus the slide geometry. Bundling them into a struct would be rebuilt at
-// every call site for a single helper, so the width is the noise here.
-#[allow(clippy::too_many_arguments)]
 fn work_pane_drawer(
     selected: WorkPane,
     state: &SessionState,
-    files: &mut FilesPane,
-    diffs: &mut pane::DiffPane,
-    tasks: &mut TasksPane,
+    panes: pane::PaneState<'_>,
     width: Rems,
     progress: f32,
     cx: &mut Context<TactApp>,
@@ -6513,7 +6648,7 @@ fn work_pane_drawer(
         // claims the press on its way out: a click on the pane's own tabs must
         // switch the pane, not read as a click on the scrim behind it.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(pane::view(selected, state, files, diffs, tasks, cx))
+        .child(pane::view(selected, state, panes, cx))
         .id("work-pane")
         .test_support()
 }

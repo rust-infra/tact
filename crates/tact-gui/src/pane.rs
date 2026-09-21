@@ -23,9 +23,9 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, Context, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
-    radians, relative, rems,
+    Animation, AnimationExt as _, AnyElement, App, Context, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, div, px, radians, relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -34,6 +34,7 @@ use tact_protocol::{SubagentStatusSnapshot, TaskStatusSnapshot};
 
 use crate::session::{SessionState, age_label, now_unix};
 use crate::shell::{TactApp, focus_visible_ring, prototype_button, prototype_icon_button};
+use crate::terminal::{TermColor, TerminalPane};
 
 /// `.panel.active{animation:panel 180ms var(--ease)}` -- the pane's body fades
 /// into place when a tab brings it in.
@@ -62,17 +63,20 @@ pub enum WorkPane {
     Files,
     /// Charts over the session's recorded activity.
     Stats,
+    /// A shell running in a real PTY.
+    Terminal,
 }
 
 impl WorkPane {
     /// Every pane in tab order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Plan,
         Self::Diff,
         Self::Tasks,
         Self::Subagents,
         Self::Files,
         Self::Stats,
+        Self::Terminal,
     ];
 
     /// Tab label.
@@ -87,6 +91,7 @@ impl WorkPane {
             Self::Subagents => "Agents",
             Self::Files => "Files",
             Self::Stats => "Stats",
+            Self::Terminal => "Term",
         }
     }
 
@@ -103,6 +108,7 @@ impl WorkPane {
             Self::Subagents => "subagent",
             Self::Files => "files",
             Self::Stats => "stats",
+            Self::Terminal => "terminal",
         }
     }
 
@@ -131,6 +137,7 @@ impl WorkPane {
             Self::Subagents => Some(state.subagents.len()),
             Self::Files => None,
             Self::Stats => None,
+            Self::Terminal => None,
         }
     }
 }
@@ -628,14 +635,33 @@ fn collect(path: &Path, depth: usize, files: &FilesPane, rows: &mut Vec<FileRow>
 /// One entry point rather than separate `tabs`/`content` helpers: both need
 /// `&mut Context`, and a single call keeps the two mutable borrows out of the
 /// same expression.
+pub(crate) struct PaneState<'a> {
+    pub(crate) files: &'a mut FilesPane,
+    pub(crate) diffs: &'a mut DiffPane,
+    pub(crate) tasks: &'a mut TasksPane,
+    /// The embedded shell, once the user has started one.
+    pub(crate) terminal: &'a mut Option<TerminalPane>,
+    /// Focus target for the terminal grid; typing goes to the PTY only while
+    /// this holds focus.
+    pub(crate) terminal_focus: &'a FocusHandle,
+    /// Grid the terminal should measure itself to, in cells.
+    pub(crate) terminal_size: (u16, u16),
+}
+
 pub(crate) fn view(
     selected: WorkPane,
     state: &SessionState,
-    files: &mut FilesPane,
-    diffs: &mut DiffPane,
-    tasks_pane: &mut TasksPane,
+    panes: PaneState<'_>,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
+    let PaneState {
+        files,
+        diffs,
+        tasks: tasks_pane,
+        terminal,
+        terminal_focus,
+        terminal_size,
+    } = panes;
     let body = match selected {
         WorkPane::Plan => plan(state, cx).into_any_element(),
         WorkPane::Diff => diff(state, diffs, cx).into_any_element(),
@@ -643,6 +669,9 @@ pub(crate) fn view(
         WorkPane::Subagents => subagents(state, cx).into_any_element(),
         WorkPane::Files => files_tree(state, files, cx).into_any_element(),
         WorkPane::Stats => stats(state, cx).into_any_element(),
+        WorkPane::Terminal => {
+            terminal_pane(terminal, terminal_focus, terminal_size, cx).into_any_element()
+        }
     };
     let body_id = SharedString::from(format!("work-pane-body-{}", selected.slug()));
     let footer = work_footer(cx).into_any_element();
@@ -729,8 +758,11 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
                 .flex_shrink_0()
                 .h(rems(1.75))
                 .items_center()
-                .gap(rems(0.3125))
-                .px_2()
+                .gap(rems(0.25))
+                // Seven tabs have to fit the 420 px column, so the chip's own
+                // padding is the prototype's 6 px rather than 8 px. The
+                // prototype only ever had five tabs.
+                .px(rems(0.375))
                 .rounded(rems(0.375))
                 .text_size(rems(0.6875))
                 .whitespace_nowrap()
@@ -788,7 +820,7 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
         .flex_1()
         .min_w_0()
         .overflow_hidden()
-        .gap(rems(0.125))
+        .gap(rems(0.0625))
         .test_support()
         .children(chips)
         .into_any_element()
@@ -2419,6 +2451,267 @@ fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement
 fn rems_for_depth(depth: usize) -> gpui_kit::Rems {
     // `.row2 { padding: 0 7px }` plus the prototype's 12px depth step.
     gpui_kit::rems(depth as f32 * 0.75 + 0.4375)
+}
+
+/// The Terminal pane: a shell in a real PTY, drawn as a character grid.
+///
+/// Nothing is spawned until the user presses Start. A pane that launched a
+/// shell merely by being opened would also launch one in every test that walks
+/// the work-pane tabs, and a shell is a process with side effects — the user
+/// should be the one who asks for it.
+fn terminal_pane(
+    terminal: &mut Option<TerminalPane>,
+    focus: &FocusHandle,
+    size: (u16, u16),
+    cx: &mut Context<TactApp>,
+) -> AnyElement {
+    let Some(pane) = terminal.as_mut() else {
+        return v_flex()
+            .gap_3()
+            .child(panel_head(
+                "Terminal",
+                "Run a shell in this workspace",
+                None,
+                cx,
+            ))
+            .child(empty(
+                "work-pane-empty-terminal",
+                "No terminal is running. Starting one opens your shell in the workspace directory.",
+                cx,
+            ))
+            .child(
+                prototype_button("terminal-start", false, cx)
+                    .label("Start terminal")
+                    .icon(IconName::Terminal)
+                    .tooltip("Open a shell in the workspace directory")
+                    .accessibility_label("Start terminal")
+                    .on_click(cx.listener(|this, _, _, cx| this.start_terminal(cx))),
+            )
+            .into_any_element();
+    };
+
+    // Drain anything the reader thread produced before drawing. The pump task
+    // also does this, but polling here keeps a frame self-sufficient: a render
+    // triggered by anything at all picks up the shell's output, so the grid is
+    // never a frame behind a wake-up that did not arrive.
+    pane.poll();
+    // The PTY and the parser are resized together, to the grid the pane will
+    // actually draw rather than to whatever size it opened with.
+    pane.resize(size.0, size.1);
+
+    let exited = pane.exited();
+    let program = pane.program().to_string();
+    let (cursor_row, cursor_col) = pane.cursor();
+    let show_cursor = exited.is_none();
+    let cols = pane.cols();
+    let mut grid = v_flex().w_full().gap_0();
+    for row in 0..pane.rows() {
+        let mut line = h_flex()
+            .w_full()
+            .h(rems(0.9375))
+            .items_center()
+            .flex_shrink_0();
+        // The cursor row is drawn in three pieces so the block lands in the
+        // cell the shell put the cursor in, not appended to the line.
+        if show_cursor && row == cursor_row {
+            for run in pane.row_runs_between(row, 0, cursor_col) {
+                line = line.child(terminal_run(run, cx));
+            }
+            line = line.child(terminal_cursor_cell(
+                pane.cell_text(row, cursor_col),
+                row,
+                cx,
+            ));
+            for run in pane.row_runs_between(row, cursor_col + 1, cols) {
+                line = line.child(terminal_run(run, cx));
+            }
+        } else {
+            for run in pane.row_runs(row) {
+                line = line.child(terminal_run(run, cx));
+            }
+        }
+        grid = grid.child(
+            line.id(SharedString::from(format!("terminal-row-{row}")))
+                .test_support(),
+        );
+    }
+
+    let mut body = v_flex().gap_2().child(
+        h_flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .child(SharedString::from(program)),
+            )
+            .child(
+                div()
+                    .text_size(rems(0.625))
+                    .text_color(crate::theme::ink3(cx))
+                    .child(SharedString::from(format!(
+                        "{}×{}",
+                        pane.cols(),
+                        pane.rows()
+                    ))),
+            )
+            .child(div().flex_1())
+            .child(
+                prototype_button("terminal-restart", false, cx)
+                    .label("Restart")
+                    .icon(IconName::RotateCw)
+                    .tooltip("Kill the shell and start a new one")
+                    .accessibility_label("Restart terminal")
+                    .on_click(cx.listener(|this, _, _, cx| this.restart_terminal(cx))),
+            ),
+    );
+
+    if let Some(code) = exited {
+        body = body.child(
+            div()
+                .id("terminal-exited")
+                .test_support()
+                .text_sm()
+                .text_color(cx.theme().danger)
+                .child(SharedString::from(format!(
+                    "The shell exited with status {code}. Restart to open a new one."
+                ))),
+        );
+    }
+
+    body.child(
+        // The grid is the keyboard target: focus it and every keystroke becomes
+        // PTY input. `.tab_index(0)` makes it reachable without the mouse.
+        div()
+            .id("terminal-grid")
+            .test_support()
+            // The grid is a canvas: without a name it is an unlabelled box in
+            // the accessibility tree. The visible text is the honest label.
+            .aria_label(SharedString::from(
+                pane.contents()
+                    .trim_end()
+                    .chars()
+                    .take(500)
+                    .collect::<String>(),
+            ))
+            .track_focus(focus)
+            .tab_index(0)
+            .focus_visible({
+                let ring = focus_visible_ring(cx);
+                move |style| style.shadow(ring.clone())
+            })
+            .on_click({
+                let focus = focus.clone();
+                move |_, window, cx| focus.focus(window, cx)
+            })
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                this.terminal_key(&event.keystroke, cx);
+            }))
+            .w_full()
+            .p_2()
+            .rounded(rems(0.375))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_size(rems(0.75))
+            .text_color(cx.theme().foreground)
+            .child(grid),
+    )
+    .into_any_element()
+}
+
+/// The block cursor: the cell's own character over the accent fill.
+fn terminal_cursor_cell(under: String, row: u16, cx: &App) -> AnyElement {
+    div()
+        .bg(cx.theme().accent)
+        .text_color(cx.theme().accent_foreground)
+        .whitespace_nowrap()
+        .id(SharedString::from(format!("terminal-cursor-{row}")))
+        .test_support()
+        .child(SharedString::from(if under.is_empty() {
+            " ".to_string()
+        } else {
+            under
+        }))
+        .into_any_element()
+}
+
+/// One styled run of terminal cells.
+fn terminal_run(run: crate::terminal::TermRun, cx: &App) -> AnyElement {
+    let (fg, bg) = if run.inverse {
+        (
+            terminal_color(run.bg, crate::theme::ink3(cx), cx),
+            terminal_color(run.fg, cx.theme().foreground, cx),
+        )
+    } else {
+        (
+            terminal_color(run.fg, cx.theme().foreground, cx),
+            terminal_color(run.bg, cx.theme().popover, cx),
+        )
+    };
+    div()
+        .bg(bg)
+        .text_color(fg)
+        .when(run.bold, |this| this.font_weight(FontWeight::BOLD))
+        .when(run.underline, |this| this.underline())
+        .whitespace_nowrap()
+        .child(SharedString::from(run.text))
+        .into_any_element()
+}
+
+/// Map a terminal colour onto the theme.
+///
+/// The 16 ANSI slots are the terminal's own palette, not the app's, so they are
+/// fixed values chosen to read against both themes; `Default` is the one slot
+/// that belongs to the application and takes the theme's own ink.
+fn terminal_color(color: TermColor, fallback: gpui_kit::Hsla, cx: &App) -> gpui_kit::Hsla {
+    const ANSI: [(u8, u8, u8); 16] = [
+        (0x1c, 0x1c, 0x1c),
+        (0xcc, 0x33, 0x33),
+        (0x33, 0x99, 0x33),
+        (0xcc, 0x99, 0x33),
+        (0x33, 0x66, 0xcc),
+        (0x99, 0x33, 0x99),
+        (0x33, 0x99, 0x99),
+        (0xcc, 0xcc, 0xcc),
+        (0x66, 0x66, 0x66),
+        (0xff, 0x66, 0x66),
+        (0x66, 0xff, 0x66),
+        (0xff, 0xff, 0x66),
+        (0x66, 0x99, 0xff),
+        (0xff, 0x66, 0xff),
+        (0x66, 0xff, 0xff),
+        (0xff, 0xff, 0xff),
+    ];
+    let _ = cx;
+    match color {
+        TermColor::Default => fallback,
+        TermColor::Rgb(r, g, b) => {
+            gpui_kit::rgba(((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | 0xff)
+                .into()
+        }
+        TermColor::Indexed(index) => {
+            let (r, g, b) = match index {
+                0..=15 => ANSI[index as usize],
+                16..=231 => {
+                    // The xterm 6×6×6 cube: the index carries three base-6
+                    // digits, each mapped onto the 0/95/135/175/215/255 ramp.
+                    let cube = index - 16;
+                    let ramp = |value: u8| if value == 0 { 0 } else { 55 + value * 40 };
+                    (ramp(cube / 36), ramp((cube % 36) / 6), ramp(cube % 6))
+                }
+                _ => {
+                    // 232..=255 are the 24-step grey ramp.
+                    let level = 8 + (index - 232) * 10;
+                    (level, level, level)
+                }
+            };
+            gpui_kit::rgba(((r as u32) << 24) | ((g as u32) << 16) | ((b as u32) << 8) | 0xff)
+                .into()
+        }
+    }
 }
 
 /// The Stats pane: the session's own numbers, drawn rather than listed.

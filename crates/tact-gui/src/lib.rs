@@ -10,6 +10,7 @@ mod layout;
 pub mod pane;
 mod session;
 pub mod shell;
+mod terminal;
 pub mod theme;
 mod transcript;
 

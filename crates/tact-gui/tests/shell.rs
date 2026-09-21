@@ -1299,13 +1299,14 @@ fn every_work_pane_renders_content_not_just_a_container(cx: &mut TestAppContext)
             "the default plan pane renders"
         );
 
-        // Tab order is Plan, Diff, Tasks, Subagent, Files, Stats.
+        // Tab order is Plan, Diff, Tasks, Agents, Files, Stats, Term.
         for (index, body) in [
             (0usize, "work-pane-body-plan"),
             (1, "work-pane-body-diff"),
             (3, "work-pane-body-subagent"),
             (4, "work-pane-body-files"),
             (5, "work-pane-body-stats"),
+            (6, "work-pane-body-terminal"),
         ] {
             window.within("work-pane-tabs").click(index, cx);
             window.render_frame(cx);
@@ -3297,7 +3298,7 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         );
 
         // Work pane: every tab, then the control each tab owns.
-        for index in 0..6usize {
+        for index in 0..7usize {
             window.within("work-pane-tabs").click(index, cx);
             window.render_frame(cx);
         }
@@ -3314,6 +3315,16 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         window.within("work-pane-tabs").click(4usize, cx);
         window.render_frame(cx);
         click!("work-pane-files-add");
+        // The terminal is the one pane that has to be asked to do anything:
+        // opening it must not spawn a process, so the walk presses Start and
+        // then leaves the shell running for the Drop to reap.
+        window.within("work-pane-tabs").click(6usize, cx);
+        window.render_frame(cx);
+        click!("terminal-start");
+        assert!(
+            window.try_find("terminal-grid").is_some(),
+            "Start terminal opens a grid"
+        );
         click!("work-pane-close");
         click!("toggle-work-pane");
 
@@ -3439,6 +3450,101 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         assert!(
             window.try_find("transcript").is_some(),
             "the shell survives the full walk"
+        );
+    })
+    .unwrap();
+}
+
+/// The Terminal pane runs a real shell in a real PTY.
+///
+/// The unit tests cover VT parsing and key encoding; this covers the pane's
+/// half: opening it must not spawn anything, Start must, bytes written to the
+/// shell must come back through the parser, and Restart must replace the
+/// child. `/bin/sh` is not guaranteed on every host, so a missing shell skips.
+#[gpui_kit::test]
+fn the_terminal_pane_runs_a_shell_in_a_pty(cx: &mut TestAppContext) {
+    if !std::path::Path::new("/bin/sh").exists() {
+        return;
+    }
+    activate_shipped_theme(cx);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+    let handle = handle.into();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(6usize, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("work-pane-body-terminal").is_some(),
+            "the Terminal tab renders its own body id"
+        );
+        assert!(
+            window.try_find("terminal-start").is_some(),
+            "an unstarted terminal offers a Start control"
+        );
+        assert!(
+            window.try_find("terminal-grid").is_none(),
+            "opening the pane must not spawn a shell"
+        );
+        assert_eq!(
+            app.update(cx, |app, _| app.terminal_contents()),
+            None,
+            "and no shell is attached yet"
+        );
+
+        window.click("terminal-start", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("terminal-grid").is_some(),
+            "Start opens the grid"
+        );
+    })
+    .unwrap();
+
+    // Ask the shell for a unique string and wait for it to come back through
+    // the PTY, the reader thread, and the VT parser. The deadline keeps a
+    // wedged child from hanging the suite.
+    app.update(cx, |app, cx| {
+        // `SHELL` may be the developer's own shell; a POSIX `printf` works in
+        // both it and `/bin/sh`.
+        app.terminal_input("printf 'tact-terminal-ok\\n'\n", cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut contents = String::new();
+    while std::time::Instant::now() < deadline {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        contents = app
+            .update(cx, |app, _| app.terminal_contents())
+            .unwrap_or_default();
+        if contents.contains("tact-terminal-ok") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        contents.contains("tact-terminal-ok"),
+        "the shell's output reached the grid: {contents:?}"
+    );
+
+    // Restart replaces the child, which the pane shows by clearing the grid
+    // back to a fresh prompt.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("terminal-restart", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("terminal-grid").is_some(),
+            "Restart leaves a running terminal behind, not an empty pane"
         );
     })
     .unwrap();
