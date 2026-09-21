@@ -760,31 +760,36 @@ pub(crate) fn view(
                 ),
         )
         .child(
-            v_flex().flex_1().min_h_0().overflow_y_scrollbar().child(
-                div()
-                    .w_full()
-                    .p_3()
-                    // Room for the overlay scrollbar, which gpui-component
-                    // paints *over* the scroller's right edge rather than
-                    // reserving a gutter for it: without this inset the last
-                    // characters of a full-width line sit under the thumb.
-                    .pr(rems(1.125))
-                    .id(body_id.clone())
-                    .test_support()
-                    .child(body)
-                    // `.panel` carries `animation:panel 180ms`, and
-                    // `@keyframes panel` is `opacity:0 -> 1` plus a 3px
-                    // lift. GPUI has no paint-level transform on a `Div`,
-                    // but a relative `top` is a non-layout inset, so it
-                    // gives the lift without jogging the scroll container.
-                    // The animation key is the body's own per-pane id, so
-                    // switching tabs replays it.
-                    .with_animation(
-                        SharedString::from(format!("{body_id}-enter")),
-                        panel_entrance(),
-                        |this, progress| this.opacity(progress).top(px(3.0 * (1.0 - progress))),
-                    ),
-            ),
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scrollbar()
+                .id("work-pane-body-scroll")
+                .child(
+                    div()
+                        .w_full()
+                        .p_3()
+                        // Room for the overlay scrollbar, which gpui-component
+                        // paints *over* the scroller's right edge rather than
+                        // reserving a gutter for it: without this inset the last
+                        // characters of a full-width line sit under the thumb.
+                        .pr(rems(1.125))
+                        .id(body_id.clone())
+                        .test_support()
+                        .child(body)
+                        // `.panel` carries `animation:panel 180ms`, and
+                        // `@keyframes panel` is `opacity:0 -> 1` plus a 3px
+                        // lift. GPUI has no paint-level transform on a `Div`,
+                        // but a relative `top` is a non-layout inset, so it
+                        // gives the lift without jogging the scroll container.
+                        // The animation key is the body's own per-pane id, so
+                        // switching tabs replays it.
+                        .with_animation(
+                            SharedString::from(format!("{body_id}-enter")),
+                            panel_entrance(),
+                            |this, progress| this.opacity(progress).top(px(3.0 * (1.0 - progress))),
+                        ),
+                ),
         )
         .child(footer)
 }
@@ -2442,11 +2447,12 @@ fn files_tree(
         );
     }
 
-    v_flex()
-        .w_full()
-        .child(head)
-        .child(card(cx, vec![tree.into_any_element()]))
-        .child(file_preview_card(files, cx))
+    let selected_preview = files.selected_preview().is_some();
+    let mut body = v_flex().w_full().child(head);
+    if selected_preview {
+        body = body.child(file_preview_card(files, cx));
+    }
+    body.child(card(cx, vec![tree.into_any_element()]))
 }
 
 /// The content below the tree for the file selected in it.

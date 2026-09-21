@@ -4228,6 +4228,20 @@ fn the_files_pane_previews_reveals_and_mentions_a_file(cx: &mut TestAppContext) 
             "the preview card renders the selected file content"
         );
 
+        for _ in 0..40 {
+            window.render_frame(cx);
+            if window
+                .try_find("work-pane-file-mention")
+                .is_some_and(|button| button.visible())
+            {
+                break;
+            }
+            window.scroll(
+                "work-pane-body-scroll",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-500.))),
+                cx,
+            );
+        }
         window.click("work-pane-file-mention", cx);
         window.render_frame(cx);
         assert_eq!(
