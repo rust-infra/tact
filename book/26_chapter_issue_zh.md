@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — Diff 与 Files 面板补齐主要动作
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-session/src/session_actions.rs`（`stage_path`、`reveal_path`、`open_path`）；`crates/tact-gui/src/pane.rs`（`DiffPane`、`FilesPane`、`FilePreview`、`diff_card`、`file_preview_card`）；`crates/tact-gui/src/shell.rs`（`stage_diff_path`、`draft_diff_review`、`select_file`、`open_selected_file`、`reveal_selected_file`、`mention_selected_file`） |
+
+**现象 / 动机：** Diff 面板在桌面规格里声明了 review 动作，但实际只渲染 diff 内容和不可用的 `Comment` 按钮。Files 面板虽然能渲染项目树，但文件行不能打开预览，`Reveal` / `Mention` 没有控件，共享的 `Open in editor` 也仍然对每次点击都说不可用。它们是 Work Pane 里最后两块主要动作仍然只是装饰的区域。
+
+**决策：** Diff 暂存通过共享 session action 层执行真实的 `git add`，不创建只在 GUI 内存在的 staged 状态。`Comment` 作为一次批量 review 草稿：它把所有已记录 diff 路径汇总进 composer，让用户补充评论后走普通队列发送，从而保持 session 是唯一真相源。Files 中点击文件行打开有界文本预览（64 KiB / 160 行），`Reveal` 通过文件管理器打开所在目录，`Mention` 向 composer 插入 `@relative/path`，`Open in editor` 用平台默认应用打开选中文件。`Add file` 仍保持不可用，因为 v1 不让 GUI 绕过 agent 工具创建文件。
+
+**改后行为：** Diff 卡片暴露 `Stage`；暂存会在 workspace 中运行 `git add`，并在转录中报告成功/失败。`Comment` 会准备包含所有变更文件的 review 草稿，而不是再提示协议不支持 review comments。Files 行会保留选中状态，在树下方渲染文本预览，明确显示 binary、读取失败、截断等状态，暴露 `Reveal` 与 `Mention`，并让 footer 打开当前选中文件。Mention 会把 workspace 相对路径 `@path` 追加到当前 composer 草稿，保留原有文本。
+
+**指针：** `crates/tact-gui/tests/shell.rs`（`the_diff_pane_stages_and_drafts_a_batch_review`、`the_files_pane_previews_reveals_and_mentions_a_file`）；`crates/tact-gui/src/pane.rs`（`files_preview_reads_the_selected_file_and_refreshes_on_invalidate`）；`crates/tact-session/src/session_actions.rs`（`stage_path_stages_a_repository_root_path_from_a_subdirectory`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
 ## 1. 2026-09-21 — Tasks 面板支持筛选、更新状态并打开所属会话
 
 | 字段 | 值 |

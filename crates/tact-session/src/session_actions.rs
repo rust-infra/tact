@@ -87,9 +87,85 @@ pub fn reveal(workdir: &Path) -> anyhow::Result<()> {
     if !dir.is_dir() {
         anyhow::bail!("cannot reveal {}: not a directory", dir.display());
     }
+    launch_path(&dir, "reveal")
+}
 
+/// Reveal `path` in the desktop's file manager.
+///
+/// A file is revealed through its parent: the launchers used here open the
+/// target they are handed, and handing them a directory keeps "Reveal" distinct
+/// from "Open in editor". The caller gets the path in the error or success text
+/// so a press never silently opens the wrong location.
+pub fn reveal_path(path: &Path) -> anyhow::Result<()> {
+    let target = reveal_target(path);
+    if !target.exists() {
+        anyhow::bail!("cannot reveal {}: it does not exist", path.display());
+    }
+    launch_path(&target, "reveal")
+}
+
+fn reveal_target(path: &Path) -> PathBuf {
+    if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent().unwrap_or(path).to_path_buf()
+    }
+}
+
+/// Open `path` with the platform's default application.
+///
+/// This is the file-manager-neutral counterpart to [`reveal_path`]. On Linux
+/// `xdg-open` is typically the desktop's MIME opener; on macOS `open` uses the
+/// default application. The function reports launcher failures rather than
+/// pretending a press worked.
+pub fn open_path(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        anyhow::bail!("cannot open {}: it does not exist", path.display());
+    }
+    launch_path(path, "open")
+}
+
+/// Stage one changed path in the workspace's Git index.
+///
+/// The Diff pane records changes at tool-call time, but a stage decision is a
+/// Git operation on the working tree. Resolve the recorded path the same way
+/// the diff reader does so a repository-root path still points at the right
+/// file when the session workspace is a subdirectory.
+pub fn stage_path(workdir: &Path, path: &str) -> anyhow::Result<()> {
+    let target = resolve_git_path(workdir, path);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["add", "--"])
+        .arg(&target)
+        .output()
+        .map_err(|error| anyhow::anyhow!("failed to run git add: {error}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git add {} failed: {}",
+            target.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn resolve_git_path(workdir: &Path, path: &str) -> PathBuf {
+    let recorded = Path::new(path);
+    if recorded.is_absolute() {
+        return recorded.to_path_buf();
+    }
+    let resolved = workdir.join(recorded);
+    if resolved.exists() {
+        resolved
+    } else {
+        PathBuf::from(format!(":(top){path}"))
+    }
+}
+
+fn launch_path(path: &Path, verb: &str) -> anyhow::Result<()> {
     let path_env = std::env::var_os("PATH").unwrap_or_default();
-    let (launcher, args) = reveal_command(&dir, &path_env)?;
+    let (launcher, args) = reveal_command(path, &path_env)?;
     let mut child = Command::new(&launcher)
         .args(&args)
         .spawn()
@@ -101,10 +177,10 @@ pub fn reveal(workdir: &Path) -> anyhow::Result<()> {
     thread::sleep(Duration::from_millis(150));
     match child.try_wait() {
         Ok(Some(status)) if !status.success() => anyhow::bail!(
-            "{} exited with {} while opening {}",
+            "{} exited with {} while trying to {verb} {}",
             launcher.display(),
             status,
-            dir.display()
+            path.display()
         ),
         Ok(_) => {
             thread::spawn(move || {
@@ -454,7 +530,59 @@ mod tests {
             reveal(&missing).is_err(),
             "revealing a path that is not a directory fails instead of opening the parent"
         );
+        let file = workspace.join("reviewed.txt");
+        std::fs::write(&file, "review\n").expect("file");
+        assert_eq!(
+            reveal_target(&file),
+            workspace,
+            "revealing a file opens its containing directory"
+        );
+        assert_eq!(
+            reveal_target(&workspace),
+            workspace,
+            "revealing a directory keeps the directory itself"
+        );
+        assert!(
+            open_path(&missing).is_err(),
+            "opening a missing path is a reported failure"
+        );
 
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn stage_path_stages_a_repository_root_path_from_a_subdirectory() {
+        let repo = temp_workspace();
+        if std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["init", "--quiet"])
+            .status()
+            .map(|status| !status.success())
+            .unwrap_or(true)
+        {
+            let _ = std::fs::remove_dir_all(repo);
+            return;
+        }
+        let nested = repo.join("src/nested");
+        std::fs::create_dir_all(&nested).expect("nested workspace");
+        std::fs::write(repo.join("src/lib.rs"), "pub fn lib() {}\n").expect("file");
+
+        stage_path(&nested, "src/lib.rs").expect("repository-root path stages");
+
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["diff", "--cached", "--name-only"])
+            .output()
+            .expect("git diff");
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "src/lib.rs",
+            "the nested workspace path resolves through the repository root"
+        );
+
+        let _ = std::fs::remove_dir_all(repo);
     }
 }

@@ -959,7 +959,7 @@ impl TactApp {
             self.preview_current = self.recent.first().map(|session| session.id.clone());
         }
         // Both panes are read from the workspace, and both cache what they read.
-        self.files.invalidate();
+        self.files.reset_workspace();
         self.diffs.invalidate();
         cx.notify();
     }
@@ -1431,6 +1431,7 @@ impl TactApp {
         self.session = Some(handle);
         self._pump = Some(Self::spawn_pump(streams, cx));
         self.conversation = Conversation::default();
+        self.files.reset_workspace();
         self.diffs.invalidate();
         self.state = SessionState {
             workdir: Some(workdir.clone()),
@@ -1833,6 +1834,172 @@ impl TactApp {
         self.files.on_toggle(path);
     }
 
+    /// Open a file row in the Files pane preview.
+    pub(crate) fn select_file(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.files.select_file(&path);
+        cx.notify();
+    }
+
+    /// The path selected in the Files pane, if any.
+    fn selected_file_path(&self) -> Option<std::path::PathBuf> {
+        self.files.selected_path().map(std::path::Path::to_path_buf)
+    }
+
+    /// Open the selected Files row with the desktop's default application.
+    pub(crate) fn open_selected_file(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selected_file_path() else {
+            self.push_system_row(
+                "Select a file in the Files pane before opening it.".to_string(),
+                cx,
+            );
+            return;
+        };
+        let label = path.display().to_string();
+        if self.offline {
+            self.push_system_row(
+                format!("The selected file is {label}; the offline preview does not open it."),
+                cx,
+            );
+            return;
+        }
+
+        let action_path = path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { session::open_path(&action_path) })
+                .await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => {
+                    app.push_system_row(format!("Opened {label} with the default application."), cx)
+                }
+                Err(err) => app.push_system_row(format!("Could not open {label}: {err:#}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Reveal the selected Files row in the desktop's file manager.
+    pub(crate) fn reveal_selected_file(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selected_file_path() else {
+            self.push_system_row(
+                "Select a file in the Files pane before revealing it.".to_string(),
+                cx,
+            );
+            return;
+        };
+        let label = path.display().to_string();
+        if self.offline {
+            self.push_system_row(
+                format!("The selected file is {label}; the offline preview does not reveal it."),
+                cx,
+            );
+            return;
+        }
+
+        let action_path = path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { session::reveal_path(&action_path) })
+                .await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => app.push_system_row(format!("Revealed {label} in the file manager."), cx),
+                Err(err) => app.push_system_row(format!("Could not reveal {label}: {err:#}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Insert the selected Files row into the composer as a mention.
+    pub(crate) fn mention_selected_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.selected_file_path() else {
+            self.push_system_row(
+                "Select a file in the Files pane before mentioning it.".to_string(),
+                cx,
+            );
+            return;
+        };
+        let mention = self.file_mention(&path);
+        self.insert_composer_text(&mention, window, cx);
+    }
+
+    /// Compose the path form the composer accepts for the selected file.
+    fn file_mention(&self, path: &std::path::Path) -> String {
+        let relative = self
+            .workspace_dir()
+            .and_then(|root| {
+                path.strip_prefix(root)
+                    .ok()
+                    .map(std::path::Path::to_path_buf)
+            })
+            .unwrap_or_else(|| path.to_path_buf());
+        format!("@{} ", relative.to_string_lossy().replace('\\', "/"))
+    }
+
+    /// Stage one changed path from the Diff pane.
+    pub(crate) fn stage_diff_path(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(workdir) = self.workspace_dir() else {
+            self.push_system_row(
+                "Cannot stage a diff without a workspace directory.".to_string(),
+                cx,
+            );
+            return;
+        };
+        if self.offline {
+            self.push_system_row(
+                format!("The change to {path} is recorded; the offline preview does not stage it."),
+                cx,
+            );
+            return;
+        }
+
+        let action_path = path.clone();
+        let label = path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { session::stage_path(&workdir, &action_path) })
+                .await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => {
+                    app.diffs.invalidate();
+                    app.push_system_row(format!("Staged {label}."), cx);
+                }
+                Err(err) => app.push_system_row(format!("Could not stage {label}: {err:#}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Prepare one batch review draft from every recorded diff.
+    pub(crate) fn draft_diff_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.diff.is_empty() {
+            self.push_system_row("There are no recorded changes to review.".to_string(), cx);
+            return;
+        }
+        let files = self
+            .state
+            .diff
+            .iter()
+            .map(|entry| format!("- `{}`", entry.path))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let draft = format!("Review these uncommitted changes:\n{files}\n\nComments:\n");
+        self.composer
+            .update(cx, |state, cx| state.set_value(draft, window, cx));
+        self.focus_composer(window, cx);
+        self.push_system_row(
+            format!(
+                "Prepared a review request for {} changed file{}.",
+                self.state.diff.len(),
+                if self.state.diff.len() == 1 { "" } else { "s" }
+            ),
+            cx,
+        );
+        cx.notify();
+    }
+
     /// Expand or collapse one Plan step.
     pub(crate) fn toggle_plan_step(&mut self, index: usize, cx: &mut Context<Self>) {
         if !self.state.plan_expanded.remove(&index) {
@@ -2101,11 +2268,16 @@ impl TactApp {
     /// the input or after whitespace, so a draft that ends in a word gets the
     /// separating space first.
     fn insert_mention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.insert_composer_text("@", window, cx);
+    }
+
+    /// Append `text` to the composer, separating it from an existing word.
+    fn insert_composer_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.composer.read(cx).value().to_string();
         let value = if draft.is_empty() || draft.ends_with(char::is_whitespace) {
-            format!("{draft}@")
+            format!("{draft}{text}")
         } else {
-            format!("{draft} @")
+            format!("{draft} {text}")
         };
         self.composer
             .update(cx, |state, cx| state.set_value(value, window, cx));
@@ -7089,15 +7261,16 @@ mod tests {
         .unwrap();
     }
 
-    /// The work pane's five prototype-only actions are not dead controls.
+    /// The work pane's prototype-only actions are not dead controls.
     ///
     /// The broad click walk can only show that a control renders and survives a
     /// press, which is exactly the shape these five used to hide in: they
-    /// carried no handler at all. Each now answers with the reason it cannot
-    /// act yet, and every reason is its own, so pressing the whole set leaves
-    /// five distinct rows rather than four silences and one notice.
+    /// carried no handler at all. Four still answer with their own unavailable
+    /// reason; Open in editor now asks for a selected Files row first. Pressing
+    /// the whole set leaves five distinct rows rather than four silences and
+    /// one notice.
     #[gpui_kit::test]
-    fn the_pane_actions_v1_does_not_back_each_answer_a_press(cx: &mut gpui_kit::TestAppContext) {
+    fn the_pane_actions_each_answer_a_press(cx: &mut gpui_kit::TestAppContext) {
         use crate::pane::WorkPane;
         use crate::transcript::TranscriptRow;
         use gpui_kit::AppContext as _;
@@ -7172,12 +7345,23 @@ mod tests {
                 5,
                 "each prototype-only action answers with its own reason: {seen:?}"
             );
-            for text in &seen {
+            for text in [&seen[0], &seen[2], &seen[3]] {
                 assert!(
                     text.contains("not available yet"),
                     "the row states the limit instead of a silent press: {text}"
                 );
             }
+            assert!(
+                seen[1].contains("Prepared a review request")
+                    || seen[1].contains("no recorded changes"),
+                "Comment routes through the batch review path instead of treating the protocol as a blocker: {}",
+                seen[1]
+            );
+            assert!(
+                seen[4].contains("Select a file"),
+                "Open in editor asks for a Files selection instead of pretending to open one: {}",
+                seen[4]
+            );
         })
         .unwrap();
     }

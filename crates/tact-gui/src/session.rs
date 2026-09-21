@@ -163,6 +163,21 @@ pub(crate) fn reveal(workdir: &std::path::Path) -> anyhow::Result<()> {
     tact_session::session_actions::reveal(workdir)
 }
 
+/// Reveal a file or directory in the desktop's file manager.
+pub(crate) fn reveal_path(path: &std::path::Path) -> anyhow::Result<()> {
+    tact_session::session_actions::reveal_path(path)
+}
+
+/// Open a file or directory with the desktop's default application.
+pub(crate) fn open_path(path: &std::path::Path) -> anyhow::Result<()> {
+    tact_session::session_actions::open_path(path)
+}
+
+/// Stage one path in the workspace's Git index.
+pub(crate) fn stage_path(workdir: &std::path::Path, path: &str) -> anyhow::Result<()> {
+    tact_session::session_actions::stage_path(workdir, path)
+}
+
 /// Short label for a session id: the first UUID segment.
 pub(crate) fn short_id(session_id: &str) -> &str {
     tact_session::sessions::short_id(session_id)

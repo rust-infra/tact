@@ -2115,6 +2115,51 @@ fn clicking_a_write_rows_diff_badge_opens_the_diff_pane(cx: &mut TestAppContext)
     .unwrap();
 }
 
+/// The Diff pane can stage one file and draft a batch review.
+///
+/// The review draft is deliberately routed through the composer rather than
+/// sent immediately: one press gathers every recorded path, then the user can
+/// add comments and send the batch through the normal queue. The stage action
+/// is offline here, so it reports what it would do without touching the test
+/// checkout's index.
+#[gpui_kit::test]
+fn the_diff_pane_stages_and_drafts_a_batch_review(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(1usize, cx);
+        window.render_frame(cx);
+
+        window.click("work-pane-diff-comment", cx);
+        window.render_frame(cx);
+        let draft = app.update(cx, |app, cx| app.composer_draft(cx));
+        assert!(
+            draft.contains("crates/tact-gui/src/shell.rs")
+                && draft.contains("crates/tact-gui/src/pane.rs")
+                && draft.ends_with("Comments:\n"),
+            "Comment gathers the changed files into one review draft: {draft:?}"
+        );
+
+        let before = app.update(cx, |app, _| app.transcript_len());
+        window.click("diff-stage-0", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.update(cx, |app, _| app.transcript_len()),
+            before + 1,
+            "Stage reports its offline result instead of silently doing nothing"
+        );
+    })
+    .unwrap();
+}
+
 /// The prototype hangs an assistant answer off a 24px gutter badge, one `.msg`
 /// gap (12px) away from the body, rather than starting flush with the column.
 #[gpui_kit::test]
@@ -3431,6 +3476,71 @@ fn the_files_pane_expands_a_directory_through_its_toggle(cx: &mut TestAppContext
         assert!(
             window.try_find(child).is_none(),
             "the same toggle collapses it again"
+        );
+    })
+    .unwrap();
+}
+
+/// A Files row opens a preview, and the preview can reveal or mention it.
+///
+/// The tree itself has covered expansion; this pins the file half of the spec's
+/// `open, reveal, mention in composer` contract. The shell under test is the
+/// offline preview, so the launchers report what they would do instead of
+/// opening a real application behind the test runner, while the composer draft
+/// is observed directly.
+#[gpui_kit::test]
+fn the_files_pane_previews_reveals_and_mentions_a_file(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::with_workspace(window, cx, Some(repo_root())));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(4usize, cx);
+        window.render_frame(cx);
+
+        let file = repo_root().join("Cargo.toml");
+        let row: SharedString = format!("file-row-{}", file.display()).into();
+        window.click(row, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("work-pane-file-preview").is_some(),
+            "clicking a file row opens the preview card"
+        );
+        assert!(
+            window.try_find("work-pane-file-content").is_some(),
+            "the preview card renders the selected file content"
+        );
+
+        window.click("work-pane-file-mention", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.update(cx, |app, cx| app.composer_draft(cx)),
+            "@Cargo.toml ",
+            "Mention inserts the workspace-relative path into the composer"
+        );
+
+        let before_reveal = app.update(cx, |app, _| app.transcript_len());
+        window.click("work-pane-file-reveal", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.update(cx, |app, _| app.transcript_len()),
+            before_reveal + 1,
+            "Reveal reports its offline result instead of silently doing nothing"
+        );
+
+        let before_open = app.update(cx, |app, _| app.transcript_len());
+        window.click("work-pane-open-editor", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.update(cx, |app, _| app.transcript_len()),
+            before_open + 1,
+            "Open in editor acts on the selected file"
         );
     })
     .unwrap();

@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Diff and Files panes complete their primary actions
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-session/src/session_actions.rs` (`stage_path`, `reveal_path`, `open_path`); `crates/tact-gui/src/pane.rs` (`DiffPane`, `FilesPane`, `FilePreview`, `diff_card`, `file_preview_card`); `crates/tact-gui/src/shell.rs` (`stage_diff_path`, `draft_diff_review`, `select_file`, `open_selected_file`, `reveal_selected_file`, `mention_selected_file`) |
+
+**Symptom / motivation:** The Diff pane advertised review actions in the desktop spec but only rendered diff bodies and an unavailable `Comment` button. The Files pane rendered a project tree but file rows did not open a preview, `Reveal`/`Mention` had no controls, and the shared `Open in editor` action still refused every press. These were the two remaining Work Pane surfaces where the prototype's primary actions were decorative.
+
+**Decision:** Route Diff staging through the shared session action layer as a real `git add` against the selected path; do not invent a GUI-only staged state. Treat `Comment` as one batch review draft: it gathers every recorded diff path into the composer so the user can add comments and send the review through the ordinary queue, which preserves the session as the source of truth. For Files, clicking a file row opens a bounded text preview (64 KiB / 160 lines), `Reveal` opens the containing directory through the file-manager launcher, `Mention` inserts `@relative/path` into the composer, and `Open in editor` opens the selected file through the platform default application. `Add file` remains unavailable because v1 does not create files outside the agent tools.
+
+**Behavior after:** Diff cards expose `Stage`; staging runs `git add` in the workspace and reports success/failure in the transcript. `Comment` prepares a review draft containing all changed paths instead of reporting that review comments are unsupported. Files rows persist a selection, render text previews under the tree, explicitly report binary/read-failure/truncated states, expose `Reveal` and `Mention` actions, and make the footer open the selected file. Mentioning appends a workspace-relative `@path` to the current composer draft, preserving existing text.
+
+**Pointers:** `crates/tact-gui/tests/shell.rs` (`the_diff_pane_stages_and_drafts_a_batch_review`, `the_files_pane_previews_reveals_and_mentions_a_file`); `crates/tact-gui/src/pane.rs` (`files_preview_reads_the_selected_file_and_refreshes_on_invalidate`); `crates/tact-session/src/session_actions.rs` (`stage_path_stages_a_repository_root_path_from_a_subdirectory`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.5
+
 ## 1. 2026-09-21 — Tasks pane filters, updates status, and opens the owning session
 
 | Field | Value |

@@ -7,6 +7,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
+    io::Read as _,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -120,6 +122,10 @@ impl WorkPane {
 #[derive(Default)]
 pub struct FilesPane {
     expanded: HashSet<PathBuf>,
+    /// The row whose preview is open, if any.
+    selected: Option<PathBuf>,
+    /// The selected file's content, refreshed whenever the walk invalidates.
+    preview: Option<FilePreview>,
     /// Advances whenever the cached walk stops describing `expanded`.
     revision: u64,
     cache: Option<FilesCache>,
@@ -130,6 +136,75 @@ struct FilesCache {
     root: PathBuf,
     revision: u64,
     rows: Vec<FileRow>,
+}
+
+/// Maximum bytes read for one Files preview.
+const FILE_PREVIEW_MAX_BYTES: usize = 64 * 1024;
+/// Maximum lines rendered for one Files preview.
+const FILE_PREVIEW_MAX_LINES: usize = 160;
+
+/// The selected file's preview content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FilePreview {
+    pub(crate) path: PathBuf,
+    pub(crate) lines: Vec<String>,
+    pub(crate) truncated: bool,
+    pub(crate) binary: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl FilePreview {
+    /// Read at most [`FILE_PREVIEW_MAX_BYTES`] so a large generated file does
+    /// not turn one tree click into an unbounded allocation.
+    fn load(path: &Path) -> Self {
+        let mut bytes = Vec::new();
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) => {
+                return Self {
+                    path: path.to_path_buf(),
+                    lines: Vec::new(),
+                    truncated: false,
+                    binary: false,
+                    error: Some(format!("Could not read {}: {error}", path.display())),
+                };
+            }
+        };
+        let mut truncated = false;
+        if let Err(error) = file
+            .by_ref()
+            .take((FILE_PREVIEW_MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+        {
+            return Self {
+                path: path.to_path_buf(),
+                lines: Vec::new(),
+                truncated: false,
+                binary: false,
+                error: Some(format!("Could not read {}: {error}", path.display())),
+            };
+        }
+        if bytes.len() > FILE_PREVIEW_MAX_BYTES {
+            bytes.truncate(FILE_PREVIEW_MAX_BYTES);
+            truncated = true;
+        }
+
+        let binary = bytes.contains(&0);
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        if lines.len() > FILE_PREVIEW_MAX_LINES {
+            lines.truncate(FILE_PREVIEW_MAX_LINES);
+            truncated = true;
+        }
+
+        Self {
+            path: path.to_path_buf(),
+            lines,
+            truncated,
+            binary,
+            error: None,
+        }
+    }
 }
 
 impl FilesPane {
@@ -153,6 +228,17 @@ impl FilesPane {
     /// listing goes stale — the agent writing files while the pane is closed.
     pub(crate) fn invalidate(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        if let Some(path) = self.selected.clone() {
+            self.preview = Some(FilePreview::load(&path));
+        }
+    }
+
+    /// Clear per-workspace navigation and preview state.
+    pub(crate) fn reset_workspace(&mut self) {
+        self.expanded.clear();
+        self.selected = None;
+        self.preview = None;
+        self.invalidate();
     }
 
     /// Flattened rows for the workspace rooted at `root`.
@@ -181,6 +267,23 @@ impl FilesPane {
     /// Handler for a click on a directory row.
     pub(crate) fn on_toggle(&mut self, path: PathBuf) {
         self.toggle(&path);
+    }
+
+    /// Open a file row in the pane's preview.
+    pub(crate) fn select_file(&mut self, path: &Path) {
+        let path = path.to_path_buf();
+        self.selected = Some(path.clone());
+        self.preview = Some(FilePreview::load(&path));
+    }
+
+    /// The file row whose preview is open.
+    pub(crate) fn selected_path(&self) -> Option<&Path> {
+        self.selected.as_deref()
+    }
+
+    /// The preview shown beneath the tree.
+    pub(crate) fn selected_preview(&self) -> Option<&FilePreview> {
+        self.preview.as_ref()
     }
 }
 
@@ -658,18 +761,13 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
         .into_any_element()
 }
 
-/// The pane's five prototype-only actions.
+/// The pane's still-unbacked prototype-only actions.
 ///
-/// The spec's pane section names none of them, and `Open in editor` collides
-/// with the v1 non-goal against replacing an editor. They keep the prototype's
-/// place and weight rather than disappearing, but a press has to land
-/// somewhere: each answers with the reason it cannot act yet, the shape the
-/// session menu already uses for rename/duplicate/archive/reveal.
-const OPEN_IN_EDITOR_UNAVAILABLE: &str =
-    "Opening an editor is not available yet: v1 does not replace an editor.";
+/// `Open in editor` is live for a selected Files row; the remaining controls
+/// keep the prototype's place and weight, but a press has to land somewhere:
+/// each answers with the reason it cannot act yet, the shape the session menu
+/// already uses for rename/duplicate/archive/reveal.
 const REFRESH_PLAN_UNAVAILABLE: &str = "Refreshing the plan is not available yet: the pane already follows every step the agent reports.";
-const COMMENT_DIFF_UNAVAILABLE: &str =
-    "Commenting on a diff is not available yet: the protocol carries no review comments.";
 const NEW_TASK_UNAVAILABLE: &str =
     "Creating a task is not available yet: tasks arrive from the agent's own task tool.";
 const ADD_FILE_UNAVAILABLE: &str =
@@ -690,10 +788,10 @@ fn work_footer(cx: &mut Context<TactApp>) -> impl IntoElement {
             prototype_button("work-pane-open-editor", false, cx)
                 .label("Open in editor")
                 .icon(IconName::Book)
-                .tooltip("Open the workspace in your editor")
-                .accessibility_label("Open the workspace in your editor")
+                .tooltip("Open the selected file with the default application")
+                .accessibility_label("Open the selected file")
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.push_system_row(OPEN_IN_EDITOR_UNAVAILABLE.to_string(), cx);
+                    this.open_selected_file(cx);
                 })),
         )
         .child(div().flex_1())
@@ -1238,8 +1336,10 @@ fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &mut Context<TactApp>) -
         Some(
             prototype_button("work-pane-diff-comment", false, cx)
                 .label("Comment")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.push_system_row(COMMENT_DIFF_UNAVAILABLE.to_string(), cx);
+                .tooltip("Draft one batch review in the composer")
+                .accessibility_label("Draft a batch review")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.draft_diff_review(window, cx);
                 }))
                 .into_any_element(),
         ),
@@ -1258,18 +1358,23 @@ fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &mut Context<TactApp>) -
     // The cache is keyed per path, so reading the working tree happens once
     // per file per invalidation rather than on every frame.
     let workdir = state.workdir.clone();
-    for entry in &state.diff {
+    for (index, entry) in state.diff.iter().enumerate() {
         let unified = diffs
             .diff(workdir.as_deref(), &entry.path)
             .map(str::to_string);
-        body = body.child(diff_card(entry, unified.as_deref(), cx));
+        body = body.child(diff_card(entry, unified.as_deref(), index, cx));
     }
 
     body
 }
 
 /// One changed file: a monospace header with stats, then the diff body.
-fn diff_card(entry: &DiffEntry, unified: Option<&str>, cx: &App) -> impl IntoElement {
+fn diff_card(
+    entry: &DiffEntry,
+    unified: Option<&str>,
+    index: usize,
+    cx: &mut Context<TactApp>,
+) -> impl IntoElement {
     let stats = match (entry.added, entry.removed) {
         (Some(added), Some(removed)) => h_flex()
             .flex_shrink_0()
@@ -1309,6 +1414,16 @@ fn diff_card(entry: &DiffEntry, unified: Option<&str>, cx: &App) -> impl IntoEle
                 .text_size(rems(0.65625))
                 .child(SharedString::from(entry.path.clone())),
         )
+        .child({
+            let path = entry.path.clone();
+            prototype_button(SharedString::from(format!("diff-stage-{index}")), false, cx)
+                .label("Stage")
+                .tooltip("Stage this changed path with git add")
+                .accessibility_label("Stage this changed path")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.stage_diff_path(path.clone(), cx);
+                }))
+        })
         .child(stats);
 
     // A real unified diff when git has one, so the pane shows the change
@@ -2008,7 +2123,7 @@ fn subagent_transcript_card(
     )
 }
 
-/// Workspace tree with expandable directories.
+/// Workspace tree with expandable directories and a file preview.
 fn files_tree(
     state: &SessionState,
     files: &mut FilesPane,
@@ -2023,6 +2138,7 @@ fn files_tree(
         ));
     };
 
+    let selected = files.selected_path().map(Path::to_path_buf);
     let rows = files.rows(&root);
     let head = panel_head(
         "Files",
@@ -2071,6 +2187,9 @@ fn files_tree(
         let row_id = SharedString::from(format!("file-row-{}", path.display()));
         let toggle_id = SharedString::from(format!("file-toggle-{}", path.display()));
         let is_expanded = row.is_dir && row.expanded;
+        let is_dir = row.is_dir;
+        let is_selected = selected.as_deref() == Some(path.as_path());
+        let toggle_path = path.clone();
 
         let marker = if row.is_dir {
             Button::new(toggle_id)
@@ -2088,7 +2207,7 @@ fn files_tree(
                 .text_color(cx.theme().muted_foreground)
                 .compact()
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_directory(path.clone());
+                    this.toggle_directory(toggle_path.clone());
                     cx.notify();
                 }))
                 .into_any_element()
@@ -2112,7 +2231,18 @@ fn files_tree(
                 .when(is_expanded, move |row| {
                     row.bg(hover_bg).text_color(hover_ink)
                 })
+                .when(is_selected, move |row| {
+                    row.bg(hover_bg).text_color(hover_ink)
+                })
                 .hover(move |row| row.bg(hover_bg).text_color(hover_ink))
+                .when(!is_dir, |row| {
+                    row.cursor_pointer().on_click(cx.listener({
+                        let path = path.clone();
+                        move |this, _, _, cx| {
+                            this.select_file(path.clone(), cx);
+                        }
+                    }))
+                })
                 .child(marker)
                 .child(
                     div()
@@ -2128,6 +2258,128 @@ fn files_tree(
         .w_full()
         .child(head)
         .child(card(cx, vec![tree.into_any_element()]))
+        .child(file_preview_card(files, cx))
+}
+
+/// The content below the tree for the file selected in it.
+fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement {
+    let mut children: Vec<AnyElement> = Vec::new();
+    let Some(preview) = files.selected_preview() else {
+        return card_with_id(
+            "work-pane-file-preview",
+            cx,
+            vec![
+                card_head("Preview", "select a file", cx).into_any_element(),
+                empty(
+                    "work-pane-empty-file-preview",
+                    "Select a file in the tree to preview it.",
+                    cx,
+                )
+                .into_any_element(),
+            ],
+        )
+        .into_any_element();
+    };
+
+    let name = preview
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| preview.path.display().to_string());
+    let note = if preview.error.is_some() {
+        "unreadable".to_string()
+    } else if preview.binary {
+        "binary".to_string()
+    } else {
+        format!(
+            "{} line{}{}",
+            preview.lines.len(),
+            if preview.lines.len() == 1 { "" } else { "s" },
+            if preview.truncated {
+                " · truncated"
+            } else {
+                ""
+            }
+        )
+    };
+    children.push(card_head("Preview", format!("{name} · {note}"), cx).into_any_element());
+    children.push(
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap(rems(0.375))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .px(rems(0.6875))
+            .py(rems(0.5))
+            .child(
+                prototype_button("work-pane-file-reveal", false, cx)
+                    .label("Reveal")
+                    .tooltip("Reveal the selected file in the file manager")
+                    .accessibility_label("Reveal the selected file")
+                    .on_click(cx.listener(|this, _, _, cx| this.reveal_selected_file(cx))),
+            )
+            .child(
+                prototype_button("work-pane-file-mention", false, cx)
+                    .label("Mention")
+                    .tooltip("Insert the selected file into the composer")
+                    .accessibility_label("Mention the selected file in the composer")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.mention_selected_file(window, cx)),
+                    ),
+            )
+            .into_any_element(),
+    );
+
+    if let Some(error) = preview.error.as_deref() {
+        children.push(empty("work-pane-file-error", error, cx).into_any_element());
+    } else if preview.binary {
+        children.push(
+            empty(
+                "work-pane-file-binary",
+                "Binary files are not rendered in the preview.",
+                cx,
+            )
+            .into_any_element(),
+        );
+    } else if preview.lines.is_empty() {
+        children.push(
+            empty("work-pane-empty-file-content", "This file is empty.", cx).into_any_element(),
+        );
+    } else {
+        let mut body = v_flex()
+            .id("work-pane-file-content")
+            .test_support()
+            .w_full()
+            .px(rems(0.6875))
+            .py(rems(0.5))
+            .gap(rems(0.0625));
+        for (index, line) in preview.lines.iter().enumerate() {
+            body = body.child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_size(rems(0.625))
+                    .line_height(relative(1.45))
+                    .whitespace_nowrap()
+                    .truncate()
+                    .child(SharedString::from(format!("{:>4}  {line}", index + 1))),
+            );
+        }
+        if preview.truncated {
+            body = body.child(
+                div()
+                    .pt(rems(0.25))
+                    .text_size(rems(0.625))
+                    .text_color(crate::theme::ink3(cx))
+                    .child(SharedString::from("Preview truncated.")),
+            );
+        }
+        children.push(body.into_any_element());
+    }
+
+    card_with_id("work-pane-file-preview", cx, children).into_any_element()
 }
 
 /// Indent step for one tree depth.
@@ -2371,6 +2623,54 @@ mod tests {
             collapsed.iter().map(|row| row.depth).collect::<Vec<_>>(),
             [0, 0]
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn files_preview_reads_the_selected_file_and_refreshes_on_invalidate() {
+        let root = scratch_dir("preview");
+        let path = root.join("src/lib.rs");
+        let mut files = FilesPane::default();
+
+        files.select_file(&path);
+        {
+            let preview = files
+                .selected_preview()
+                .expect("a selected file has a preview");
+            assert_eq!(preview.path, path);
+            assert!(preview.error.is_none());
+            assert_eq!(preview.lines, vec!["pub fn lib() {}".to_string()]);
+            assert!(!preview.truncated);
+            assert!(!preview.binary);
+        }
+
+        std::fs::write(&path, "pub fn lib() { /* changed */ }\n").unwrap();
+        files.invalidate();
+        assert_eq!(
+            files.selected_preview().expect("preview").lines,
+            vec!["pub fn lib() { /* changed */ }".to_string()],
+            "invalidation refreshes the selected file"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn files_preview_marks_binary_and_truncated_content() {
+        let root = scratch_dir("preview-edges");
+        let mut files = FilesPane::default();
+        let binary = root.join("binary.bin");
+        std::fs::write(&binary, [0, 1, 2, 3]).unwrap();
+        files.select_file(&binary);
+        assert!(files.selected_preview().expect("preview").binary);
+
+        let large = root.join("large.txt");
+        std::fs::write(&large, "x".repeat(FILE_PREVIEW_MAX_BYTES + 1)).unwrap();
+        files.select_file(&large);
+        let preview = files.selected_preview().expect("preview");
+        assert!(preview.truncated);
+        assert_eq!(preview.lines.len(), 1);
 
         let _ = std::fs::remove_dir_all(root);
     }

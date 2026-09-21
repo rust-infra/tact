@@ -343,6 +343,21 @@ sends `TaskUpdate` through the driver so durable timestamps and dependency
 cleanup stay owned by the task manager; clicking an owner cell with a session id
 resumes that session through the same path as the sidebar.
 
+Diff cards carry the review actions the table names. `Stage` runs `git add` on
+that recorded path through the shared session actions, so the index changes in
+the workspace rather than in a GUI-only copy. `Comment` gathers every recorded
+path into one composer draft, leaving the user free to add comments and send the
+batch through the ordinary queue; the GUI does not invent a review-comment
+protocol the session cannot persist or replay.
+
+Files actions are live as well. Clicking a file row opens a bounded text preview
+under the tree, with binary and read-failure states reported explicitly.
+`Reveal` opens the selected file's containing directory in the platform file
+manager, `Mention` inserts `@relative/path` into the composer, and the footer's
+`Open in editor` opens the selected file with the default application. `Add
+file` remains intentionally unavailable in v1: file creation belongs to the
+agent's own tools, not a second editor embedded in the work pane.
+
 Deferred tabs: `Browser`, `Terminal`, `Chart`, and free-form `Dock`.
 
 ### 6.6 Status bar

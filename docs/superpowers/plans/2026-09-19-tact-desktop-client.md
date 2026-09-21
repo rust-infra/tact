@@ -155,13 +155,17 @@ Exit criteria:
 
 Verified: Plan, Diff, Tasks, Subagent, and Files render from protocol
 snapshots; the Files pane sorts directories first and hides dotfiles by
-default; Plan rows expand to their input/result, failed steps can retry through
-the agent, and Open transcript reveals the matching tool card; Tasks rows
-filter/sort locally, advance status through `TaskUpdate`, and open their owning
-session; Subagent rows can cancel a running child and inspect its stored
-transcript; narrow windows use the work-pane drawer and sidebar overlay. Session
-adoption resets transcript, request, diff, task, and subagent state with the
-session's `SessionState`; Files expansion is an app-level navigation preference.
+default, opens a bounded file preview, reveals the selected path, inserts an
+`@relative/path` mention, and opens the selected file with the default
+application; Plan rows expand to their input/result, failed steps can retry
+through the agent, and Open transcript reveals the matching tool card; Tasks
+rows filter/sort locally, advance status through `TaskUpdate`, and open their
+owning session; Subagent rows can cancel a running child and inspect its stored
+transcript; Diff cards stage a path through `git add`, and Comment prepares one
+batch review draft in the composer; narrow windows use the work-pane drawer and
+sidebar overlay. Session adoption resets transcript, request, diff, task,
+subagent, and Files selection state with the session's `SessionState`; Files
+expansion is an app-level navigation preference.
 
 ## Phase 7 — Commands, settings, and polish
 

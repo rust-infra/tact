@@ -143,7 +143,7 @@ records which items the production shell has since resolved.
 | Diff horizontal scrolling in static renders | `--hide-scrollbars` is needed for deterministic headless captures; live behaviour was verified interactively | Note for future render scripts |
 | `--orange` is a dead token in the prototype | Unused; `base.yellow` in the theme JSON remains the amber palette entry | Cleanup during token import |
 | Spacing scale ownership | gpui-kit does not persist a custom `SpacingTokens` scale, so the app must own that snapshot | Phase 4 shell |
-| Work pane's five ghost buttons | `Open in editor`, `Refresh plan`, `Comment`, `New task` and `Add file` are drawn as buttons (`crates/tact-gui/src/pane.rs`) but carry no handler, no palette row and no chord. The spec's pane section names none of them, and `Open in editor` collides with the v1 non-goal against replacing an editor | Resolved in Phase 4–7: each answers with its own reason, and the reason *is* the v1 non-goal made visible (see the follow-up below) |
+| Work pane's five ghost buttons | `Open in editor`, `Refresh plan`, `Comment`, `New task` and `Add file` are drawn as buttons (`crates/tact-gui/src/pane.rs`) but originally carried no handler, no palette row and no chord. `Open in editor` and `Comment` now route through real file/review actions; the remaining controls answer with their own reason instead of swallowing a press | Resolved in Phase 4–7: live actions and explicit v1 limits are called out in the follow-up below |
 
 ## Verification performed
 
@@ -196,16 +196,15 @@ The production shell now verifies the items that Phase 2 could only park:
   project/branch/age metadata and a status badge; the short id is the fallback.
   Selecting a row or pressing `Ctrl+Tab` resumes that session through the shared
   `tact-session` runtime.
-- The work pane's five prototype-only actions answer a press instead of
-  swallowing it. The spec's pane section names none of them, and `Open in
-  editor` collides with the v1 non-goal against replacing an editor, so none of
-  the five has a v1 behaviour to wire. They keep the prototype's place and
-  weight -- dropping them would break the alignment the pass exists to hold --
-  and each one answers with the reason it cannot act. The reasons are
-  distinct per action, and `the_pane_actions_v1_does_not_back_each_answer_a_press`
-  in `crates/tact-gui/src/shell.rs` presses all five and reads back five
-  distinct system rows, so the broad walk's liveness-only gap is closed for
-  these five.
+- The work pane's action buttons answer a press instead of swallowing it.
+  `Open in editor` now acts on the selected Files row, `Comment` drafts one
+  batch review from every recorded diff, Diff cards expose `Stage`, and Files
+  rows open a bounded preview with `Reveal` and `Mention` actions. `Refresh
+  plan`, `New task`, and `Add file` remain explicitly unavailable because they
+  have no v1 protocol/store behavior to wire; they keep the prototype's place
+  and answer with distinct limits. `the_pane_actions_each_answer_a_press` in
+  `crates/tact-gui/src/shell.rs` presses the shared buttons and pins the
+  distinct outcomes, so the broad walk's liveness-only gap stays closed.
 - Plan step rows now act like the prototype they came from: clicking a row
   expands its input/result block, terminal failures carry the danger state and
   expose Retry, and Open transcript expands and scrolls to the tool card that
