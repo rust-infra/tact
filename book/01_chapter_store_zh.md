@@ -162,6 +162,12 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 | `compact_history()` | `replace_session_messages` — 重写 SQLite `messages` 以匹配压缩后的 context |
 | `execute_tool_call`（调度后） | 在由 `llm_call_last_message_id` 定位的 token 行上 `record_tool_schedule` |
 
+### 把会话读回来
+
+`tact::Agent::ensure_session` 读 store 只是为了恢复自己的 runtime context，store trait 始终留在 `tact` 内部。前端想**重绘**一个被重新打开的会话，走的是 `tact_session::history::history(workdir, session_id)`：它把存储行摊平成由 `HistoryBlock`（`Text`、`Thinking`、`ToolUse`、`ToolResult`）组成的 `HistoryMessage`——这条缝上不出现 store handle、不出现 `tact_llm` 类型，也不出现 GPUI / ratatui 类型。该翻译由 `tact-session` 的 `history` 模块为两个前端共同维护。
+
+保真度止步于 message 表。工具的耗时、请求卡片、进度行与生产者算出的 `arg_summary` 都属于展示态、从未被持久化，所以重绘出来的卡片没有耗时、退回通用 `ToolVisualKind`、detail 行改从约定的入参键推导，且在 store 里没有对应 `ToolResult` 时保持 `Running`。`load_session` 也不返回每行的 `created_at`，因此重绘行不打印时钟。压缩会重写 message 表，所以被摘要取代的 block 对所有读取方都是消失的，不只是 GUI。
+
 若未附加 session store（未调用 `with_session`），持久化方法为 no-op——便于测试。`list_sessions` 只返回 `ref_id = ''` 的顶层会话；`delete_session` 会级联删除 `ref_id = 该 id` 的子会话及其附属表。
 
 ### 输入历史裁剪

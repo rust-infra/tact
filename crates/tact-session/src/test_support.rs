@@ -252,6 +252,79 @@ pub async fn build_test_agent_with_session(
     (agent, work_dir, session_store, session_id)
 }
 
+/// Write a stored transcript into `workspace`'s session store.
+///
+/// A front end can only redraw what a session actually stored, so a test that
+/// covers a reopened transcript has to put one there first. Blocks are written
+/// back the way the agent persists them: prose and reasoning in the message's
+/// block vector, a tool result as its own user-role message.
+///
+/// A tool input stores its summary under the well-known `command` key, which
+/// is the key the reader lifts a card's detail line from.
+pub fn seed_session_history(
+    workspace: &std::path::Path,
+    session_id: &str,
+    messages: &[crate::history::HistoryMessage],
+) {
+    use crate::history::{HistoryBlock, HistoryRole};
+    use tact_llm::{ContentBlock, MessageContent, Role};
+
+    let tact_path = tact::consts::TactPath::new(workspace.to_path_buf());
+    let root_dir = workspace.display().to_string();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    runtime.block_on(async move {
+        let store = open_sqlite_session_store(&tact_path.session_db_path())
+            .await
+            .expect("session store");
+        store
+            .ensure_session_row(session_id, &root_dir, "")
+            .await
+            .expect("session row");
+        for (ordinal, message) in messages.iter().enumerate() {
+            let role = match message.role {
+                HistoryRole::User => Role::User,
+                HistoryRole::Assistant => Role::Assistant,
+            };
+            let blocks = message
+                .blocks
+                .iter()
+                .map(|block| match block {
+                    HistoryBlock::Text(text) => ContentBlock::Text { text: text.clone() },
+                    HistoryBlock::Thinking(thinking) => ContentBlock::Thinking {
+                        thinking: thinking.clone(),
+                        signature: String::new(),
+                    },
+                    HistoryBlock::ToolUse { id, name, detail } => ContentBlock::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: serde_json::json!({ "command": detail }),
+                    },
+                    HistoryBlock::ToolResult {
+                        tool_use_id,
+                        output,
+                    } => ContentBlock::ToolResult {
+                        tool_use_id: tool_use_id.clone(),
+                        content: output.clone(),
+                    },
+                })
+                .collect();
+            store
+                .append_message(
+                    session_id,
+                    role,
+                    &MessageContent::Blocks { content: blocks },
+                    ordinal as i64,
+                )
+                .await
+                .expect("append message");
+        }
+    });
+}
+
 /// `(sender, receiver)` pair for driving `run_command_loop` in tests.
 pub fn user_command_channels() -> (
     UnboundedSender<tact_protocol::UserCommand>,

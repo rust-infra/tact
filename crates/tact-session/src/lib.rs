@@ -13,11 +13,13 @@
 pub mod account;
 pub mod builder;
 pub mod driver;
+pub mod history;
 pub mod mcp_listing;
 pub mod runtime;
 pub mod sessions;
 pub mod test_support;
 pub mod user_message;
 
+pub use history::{HistoryBlock, HistoryMessage, HistoryRole};
 pub use runtime::{SessionOptions, SessionRuntime};
 pub use sessions::RecentSession;

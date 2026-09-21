@@ -161,6 +161,12 @@ Opened in `main.rs` via `open_sqlite_session_store` at `<workdir>/.tact/tact.db`
 | `compact_history()` | `replace_session_messages` — rewrite SQLite `messages` to match post-compaction context |
 | `execute_tool_call` (post-schedule) | `record_tool_schedule` on the token row keyed by `llm_call_last_message_id` |
 
+### Reading a session back
+
+`tact::Agent::ensure_session` reads the store only to restore its own runtime context, and the store trait stays inside `tact`. A front end that wants to *redraw* a reopened session instead goes through `tact_session::history::history(workdir, session_id)`, which flattens the stored rows into `HistoryMessage`s of `HistoryBlock`s (`Text`, `Thinking`, `ToolUse`, `ToolResult`) — no store handle, no `tact_llm` types, and no GPUI or ratatui types cross the seam. `tact-session`'s `history` module owns that translation for both front ends.
+
+Fidelity stops at the message table. Tool durations, request cards, progress lines and the producer's `arg_summary` are presentation state that was never persisted, so a redrawn card has no duration, falls back to the generic `ToolVisualKind`, derives its detail line from well-known input keys, and stays `Running` when no `ToolResult` was stored. `load_session` also does not return each row's `created_at`, so redrawn rows print no clock. Compaction rewrites the message table, so blocks a summary replaced are gone for every reader, not just for the GUI.
+
 If no session store is attached (`with_session` not called), persistence methods no-op — useful for tests. `list_sessions` returns only top-level rows (`ref_id = ''`); `delete_session` cascades to children with `ref_id = that id` and their dependent tables.
 
 ### Input history trimming

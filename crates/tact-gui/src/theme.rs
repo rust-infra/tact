@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::SharedString;
-use gpui_kit::component::{Edges, Theme, ThemeMode, ThemeRegistry};
+use gpui_kit::component::{ActiveTheme as _, Edges, Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{Anchor, App, Window, px};
 
 /// Light theme name declared in `themes/tact-anthropic.json`.
@@ -67,7 +67,15 @@ pub fn activate(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) -> a
         bottom: px(20.),
         left: px(20.),
     };
-    Theme::change(mode, window, cx);
+    // `Theme::change` calls `apply_config`, which resets the colour table, so
+    // pin the overlay after it. `.overlay` hard-codes `rgba(20,20,19,.18)` in
+    // both modes; the component fallback varies by theme, and the prototype's
+    // 2px backdrop blur is not exposed on this surface.
+    Theme::change(mode, None, cx);
+    Theme::global_mut(cx).overlay = gpui_kit::Hsla::from(gpui_kit::rgba(0x1414_132e));
+    if let Some(window) = window {
+        window.refresh();
+    }
     Ok(())
 }
 
@@ -137,12 +145,58 @@ pub fn toggle(window: &mut Window, cx: &mut App) {
     }
 }
 
+/// Alpha shared by the prototype's `--accentTint`, `--greenTint`, and
+/// `--redTint` washes: `.10` in light and `.12` in dark. Callers tint the hue
+/// they want at this alpha so light mode does not get the heavier dark wash.
+pub(crate) fn tint_alpha(cx: &App) -> f32 {
+    if cx.theme().is_dark() {
+        TINT_ALPHA_DARK
+    } else {
+        TINT_ALPHA_LIGHT
+    }
+}
+
+/// The alpha every `*Tint` variable in the prototype uses, and the wash the
+/// shell spends on badges, diff rows, selection fills and the focus ring.
+const TINT_ALPHA_LIGHT: f32 = 0.10;
+/// The dark prototype raises the same wash so it stays visible on a dark page.
+const TINT_ALPHA_DARK: f32 = 0.12;
+
+/// The prototype's `--accentTint` wash.
+pub(crate) fn accent_tint(cx: &App) -> gpui_kit::gpui::Hsla {
+    cx.theme().primary.opacity(tint_alpha(cx))
+}
+
+/// The prototype's tertiary ink (`--ink3`).
+///
+/// The shipped theme maps `muted.foreground` to the prototype's `--ink2`, so
+/// there is no theme role for `--ink3`; this helper keeps the two tiers from
+/// collapsing into one.
+pub(crate) fn ink3(cx: &App) -> gpui_kit::gpui::Hsla {
+    let rgba = if cx.theme().is_dark() {
+        INK3_DARK
+    } else {
+        INK3_LIGHT
+    };
+    gpui_kit::Hsla::from(gpui_kit::rgba(rgba))
+}
+
+/// `--ink3` in the light prototype.
+const INK3_LIGHT: u32 = 0x716e65ff;
+/// `--ink3` in the dark prototype.
+const INK3_DARK: u32 = 0x8c8a80ff;
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
-    use super::{DARK_THEME_NAME, LIGHT_THEME_NAME, theme_dir};
+    use gpui_kit::component::{ActiveTheme as _, ThemeMode, ThemeRegistry};
+
+    use super::{
+        DARK_THEME_NAME, INK3_DARK, INK3_LIGHT, LIGHT_THEME_NAME, TINT_ALPHA_DARK,
+        TINT_ALPHA_LIGHT, theme_dir,
+    };
 
     /// The reviewed design source. `themes/tact-anthropic.json` is a copy of it
     /// so a running window cannot drift from the reference that was signed off.
@@ -211,12 +265,82 @@ mod tests {
     /// The prototype names its colours by role; the theme names them by widget.
     /// Pinning the translation here keeps every surface on the prototype's
     /// palette instead of on a lookalike picked by eye.
+    #[gpui_kit::test]
+    fn activation_pins_the_dialog_overlay(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let content = fs::read_to_string(theme_dir().join("tact-anthropic.json"))
+                .expect("the shipped theme file");
+            ThemeRegistry::global_mut(cx)
+                .load_themes_from_str(&content)
+                .expect("the shipped theme parses");
+            super::activate(ThemeMode::Light, None, cx).expect("the theme activates");
+            assert_eq!(
+                cx.theme().overlay,
+                gpui_kit::Hsla::from(gpui_kit::rgba(0x1414_132e))
+            );
+        });
+    }
+
+    #[test]
+    fn the_tertiary_ink_matches_the_prototype() {
+        let html = fs::read_to_string(DESIGN_PROTOTYPE).expect("the prototype");
+        for (selector, rgba) in [
+            (":root{", INK3_LIGHT),
+            (":root[data-theme=dark]{", INK3_DARK),
+        ] {
+            let vars = prototype_vars(&html, selector);
+            assert_eq!(
+                format!("#{:06x}", rgba >> 8),
+                vars.get("--ink3").expect("the prototype's --ink3").as_str(),
+                "{selector} keeps --ink3 in sync"
+            );
+        }
+    }
+
+    /// The tint ladder is a pair of literals, so it gets the same treatment as
+    /// `--ink3`: parsed back out of the prototype rather than trusted.
+    ///
+    /// Every `*Tint` variable in a block is its hue at one alpha, and the shell
+    /// reads that alpha directly for badges, diff washes, selection fills and
+    /// the composer's focus ring, so a drift here tints half the window.
+    #[test]
+    fn the_tint_ladder_matches_the_prototype() {
+        let html = fs::read_to_string(DESIGN_PROTOTYPE).expect("the prototype");
+        for (selector, expected) in [
+            (":root{", TINT_ALPHA_LIGHT),
+            (":root[data-theme=dark]{", TINT_ALPHA_DARK),
+        ] {
+            let vars = prototype_vars(&html, selector);
+            for var in ["--accentTint", "--redTint", "--greenTint", "--blueTint"] {
+                let tint = vars.get(var).unwrap_or_else(|| panic!("{selector} {var}"));
+                let alpha: f32 = tint
+                    .rsplit_once(',')
+                    .unwrap_or_else(|| panic!("{var} is not an rgba triple: {tint}"))
+                    .1
+                    .trim_end_matches(')')
+                    .trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{var} carries an unreadable alpha: {tint}"));
+                assert!(
+                    (alpha - expected).abs() < 0.005,
+                    "{selector} {var} is {tint}, but the shell tints at {expected}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_theme_roles_carry_the_prototype_variables() {
         let html = fs::read_to_string(DESIGN_PROTOTYPE).expect("the prototype");
         let light = prototype_vars(&html, ":root{");
         let dark = prototype_vars(&html, ":root[data-theme=dark]{");
 
+        // `base.yellow` is the one colour without a prototype counterpart. The
+        // prototype declares `--orange` and never reads it, and no surface in
+        // the shell reads `yellow`, so the two are left alone rather than
+        // matched by guesswork. Every colour the shell can actually reach is
+        // pinned here.
         let roles = [
             // The colour behind the window.
             ("background", "--page"),
@@ -228,6 +352,32 @@ mod tests {
             ("muted.background", "--surface2"),
             // Hover and selection fills.
             ("accent.background", "--hover"),
+            // The ink ladder: body copy, then the secondary tier. The third
+            // tier is `ink3`, which the test above pins on its own because no
+            // component role carries it.
+            ("popover.foreground", "--ink"),
+            ("muted.foreground", "--ink2"),
+            // The rules: `--line` frames the chrome and the cards, `--line2`
+            // frames the fields inside them.
+            ("border", "--line"),
+            ("sidebar.border", "--line"),
+            ("title_bar.border", "--line"),
+            ("input.border", "--line2"),
+            // The single accent hue, its hover and pressed steps, and the ink
+            // that sits on it.
+            ("primary.background", "--accent"),
+            ("primary.hover.background", "--accentH"),
+            ("primary.active.background", "--accentA"),
+            ("accent.foreground", "--accentInk"),
+            // The status hues the badges and the diff counts read.
+            ("base.green", "--green"),
+            ("base.red", "--red"),
+            ("base.blue", "--blue"),
+            // The chrome and the alternating list rows reuse those tokens
+            // instead of introducing their own.
+            ("tab_bar.background", "--canvas"),
+            ("title_bar.background", "--canvas"),
+            ("list.even.background", "--surface2"),
         ];
 
         for (name, vars) in [(LIGHT_THEME_NAME, &light), (DARK_THEME_NAME, &dark)] {

@@ -15,5 +15,6 @@ tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }
 anyhow = { workspace = true }
 regex = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }
 uuid = { workspace = true }

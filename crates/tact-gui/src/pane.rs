@@ -8,8 +8,10 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
+use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
     ActiveTheme as _,
@@ -19,8 +21,9 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, relative, rems,
+    Animation, AnimationExt as _, AnyElement, App, Context, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
+    relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -28,7 +31,17 @@ use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::{SubagentStatusSnapshot, TaskStatusSnapshot};
 
 use crate::session::{SessionState, age_label, now_unix};
-use crate::shell::{TactApp, prototype_button, prototype_icon_button};
+use crate::shell::{TactApp, focus_visible_ring, prototype_button, prototype_icon_button};
+
+/// `.panel.active{animation:panel 180ms var(--ease)}` -- the pane's body fades
+/// into place when a tab brings it in.
+const PANEL_ENTRANCE: Duration = Duration::from_millis(180);
+
+/// The prototype's `--ease:cubic-bezier(.23,1,.32,1)`, shared with the shell's
+/// two sliding overlays.
+fn panel_entrance() -> Animation {
+    Animation::new(PANEL_ENTRANCE).with_easing(cubic_bezier(0.23, 1.0, 0.32, 1.0))
+}
 
 /// Which surface the work pane shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -410,11 +423,26 @@ pub(crate) fn view(
                 ),
         )
         .child(
-            v_flex()
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scrollbar()
-                .child(div().w_full().p_3().id(body_id).test_support().child(body)),
+            v_flex().flex_1().min_h_0().overflow_y_scrollbar().child(
+                div()
+                    .w_full()
+                    .p_3()
+                    .id(body_id.clone())
+                    .test_support()
+                    .child(body)
+                    // `.panel` carries `animation:panel 180ms`, and
+                    // `@keyframes panel` is `opacity:0 -> 1` plus a 3px
+                    // lift. GPUI has no paint-level transform on a `Div`,
+                    // but a relative `top` is a non-layout inset, so it
+                    // gives the lift without jogging the scroll container.
+                    // The animation key is the body's own per-pane id, so
+                    // switching tabs replays it.
+                    .with_animation(
+                        SharedString::from(format!("{body_id}-enter")),
+                        panel_entrance(),
+                        |this, progress| this.opacity(progress).top(px(3.0 * (1.0 - progress))),
+                    ),
+            ),
         )
         .child(footer)
 }
@@ -427,7 +455,7 @@ pub(crate) fn view(
 /// chip hide underneath it).
 fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>) -> AnyElement {
     let ink = cx.theme().foreground;
-    let ink3 = cx.theme().muted_foreground;
+    let ink3 = crate::theme::ink3(cx);
     let surface = cx.theme().popover;
     let line = cx.theme().border;
     // `.wtab:hover` uses the prototype's `--hover`, which the theme exposes as
@@ -435,7 +463,7 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
     let hover = cx.theme().accent;
     // `.count` is the inset well (`--surface2`); only the hovered tab uses `--hover`.
     let well = cx.theme().muted;
-    let tint = cx.theme().primary.opacity(0.12);
+    let tint = crate::theme::accent_tint(cx);
     let accent = cx.theme().accent_foreground;
 
     let mut chips: Vec<AnyElement> = Vec::with_capacity(WorkPane::ALL.len());
@@ -454,6 +482,15 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
                 .text_size(rems(0.6875))
                 .whitespace_nowrap()
                 .cursor_pointer()
+                // `.wtab` is a `<button>` in the prototype, so each pane chip is
+                // a tab stop. Without this the whole tab row was mouse-only --
+                // including the only route to the Files pane, which made that
+                // pane unreachable from the keyboard entirely.
+                .tab_index(0)
+                .focus_visible({
+                    let ring = focus_visible_ring(cx);
+                    move |style| style.shadow(ring.clone())
+                })
                 .when(active, |this| {
                     this.bg(surface)
                         .text_color(ink)
@@ -464,8 +501,8 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
                     this.text_color(ink3)
                         .hover(move |style| style.bg(hover).text_color(ink))
                 })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_work_pane(pane);
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_work_pane(pane, window);
                     cx.notify();
                 }))
                 .child(SharedString::from(pane.label()))
@@ -518,7 +555,7 @@ fn work_footer(cx: &App) -> impl IntoElement {
         .child(
             prototype_button("work-pane-open-editor", false, cx)
                 .label("Open in editor")
-                .icon(IconName::SquareTerminal)
+                .icon(IconName::Book)
                 .tooltip("Open the workspace in your editor")
                 .accessibility_label("Open the workspace in your editor"),
         )
@@ -526,7 +563,7 @@ fn work_footer(cx: &App) -> impl IntoElement {
         .child(
             div()
                 .text_xs()
-                .text_color(cx.theme().muted_foreground)
+                .text_color(crate::theme::ink3(cx))
                 .child(SharedString::from("Ctrl+\\ to close")),
         )
         .id("work-pane-footer")
@@ -562,7 +599,7 @@ fn panel_head(
                     div()
                         .mt(rems(0.1875))
                         .text_size(rems(0.6875))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(crate::theme::ink3(cx))
                         .child(subtitle.into()),
                 ),
         )
@@ -570,10 +607,15 @@ fn panel_head(
 }
 
 /// A bordered surface card, the prototype's `card`.
+///
+/// `.card{border-radius:var(--r10)}` is the prototype's 10 px step, which the
+/// theme's radius scale cannot express: its base is 6 px, so `radius_2xl()`
+/// measures 15 px and every card reads rounder than the design. The shell
+/// draws the step explicitly, as it does for the other `rem` boxes.
 fn card(cx: &App, children: Vec<AnyElement>) -> impl IntoElement {
     v_flex()
         .w_full()
-        .rounded(cx.theme().radius_2xl())
+        .rounded(rems(0.625))
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().popover)
@@ -590,7 +632,7 @@ fn card_with_id(id: &'static str, cx: &App, children: Vec<AnyElement>) -> impl I
         .id(id)
         .test_support()
         .w_full()
-        .rounded(cx.theme().radius_2xl())
+        .rounded(rems(0.625))
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().popover)
@@ -618,7 +660,7 @@ fn card_head(label: &str, note: impl Into<SharedString>, cx: &App) -> impl IntoE
             div()
                 .font_family(cx.theme().mono_font_family.clone())
                 .text_size(rems(0.625))
-                .text_color(cx.theme().muted_foreground)
+                .text_color(crate::theme::ink3(cx))
                 .child(note.into()),
         )
 }
@@ -648,10 +690,11 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
     );
 
     if total == 0 {
-        return v_flex()
-            .w_full()
-            .child(head)
-            .child(empty("No plan yet.", cx));
+        return v_flex().w_full().child(head).child(empty(
+            "work-pane-empty-plan",
+            "No plan yet.",
+            cx,
+        ));
     }
 
     let mut work = vec![
@@ -680,9 +723,10 @@ fn plan(state: &SessionState, cx: &App) -> impl IntoElement {
             )
             .into_any_element(),
     ];
+    let plan_len = state.plan.len();
     for (index, step) in state.plan.iter().enumerate() {
         let done_at = state.plan_done_at.get(&index).copied();
-        work.push(plan_step_row(index, current, step, done_at, cx).into_any_element());
+        work.push(plan_step_row(index, plan_len, current, step, done_at, cx).into_any_element());
     }
 
     let mut body = v_flex()
@@ -728,7 +772,7 @@ fn suggested_next_row(task: &tact_protocol::TaskSnapshot, cx: &App) -> impl Into
                 .flex_shrink_0()
                 .rounded_full()
                 .bg(cx.theme().muted)
-                .text_color(cx.theme().muted_foreground)
+                .text_color(crate::theme::ink3(cx))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -749,7 +793,7 @@ fn suggested_next_row(task: &tact_protocol::TaskSnapshot, cx: &App) -> impl Into
                     div()
                         .truncate()
                         .text_size(rems(0.65625))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(crate::theme::ink3(cx))
                         .child(SharedString::from(task.owner.clone())),
                 ),
         )
@@ -777,6 +821,7 @@ fn plan_bar_width(percent: usize) -> f32 {
 /// One plan row: status glyph, description, detail, and a trailing state.
 fn plan_step_row(
     index: usize,
+    len: usize,
     current: Option<usize>,
     step: &tact_protocol::PlanStep,
     done_at: Option<i64>,
@@ -784,24 +829,27 @@ fn plan_step_row(
 ) -> impl IntoElement {
     let executed = step.output.is_some();
     let is_current = current == Some(index);
+    let is_last = index + 1 == len;
+    let line = cx.theme().border;
+    let hover_bg = cx.theme().muted;
     let (icon, fg, bg, trailing) = if executed {
         (
             IconName::Check,
             cx.theme().success,
-            cx.theme().success.opacity(0.12),
+            cx.theme().success.opacity(crate::theme::tint_alpha(cx)),
             step_age(done_at),
         )
     } else if is_current {
         (
             IconName::CircleDot,
-            cx.theme().primary,
-            cx.theme().primary.opacity(0.12),
+            cx.theme().accent_foreground,
+            crate::theme::accent_tint(cx),
             "now".to_string(),
         )
     } else {
         (
             IconName::Circle,
-            cx.theme().muted_foreground,
+            crate::theme::ink3(cx),
             cx.theme().muted,
             // The prototype distinguishes the step queued behind the current
             // one from the ones after it.
@@ -814,13 +862,14 @@ fn plan_step_row(
     };
 
     h_flex()
+        .id(SharedString::from(format!("plan-step-{index}")))
         .w_full()
         .min_h(rems(2.625))
         .items_center()
         .gap_2()
-        .border_b_1()
-        .border_color(cx.theme().border)
-        .when(is_current, |row| row.bg(cx.theme().primary.opacity(0.12)))
+        .when(!is_last, |row| row.border_b_1().border_color(line))
+        .when(is_current, |row| row.bg(crate::theme::accent_tint(cx)))
+        .hover(move |row| row.bg(hover_bg))
         .px(rems(0.625))
         .py(rems(0.4375))
         .child(
@@ -850,7 +899,7 @@ fn plan_step_row(
                     div()
                         .truncate()
                         .text_size(rems(0.65625))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(crate::theme::ink3(cx))
                         .child(SharedString::from(step.tool.clone())),
                 ),
         )
@@ -859,7 +908,7 @@ fn plan_step_row(
                 .flex_shrink_0()
                 .font_family(cx.theme().mono_font_family.clone())
                 .text_size(rems(0.59375))
-                .text_color(cx.theme().muted_foreground)
+                .text_color(crate::theme::ink3(cx))
                 .child(SharedString::from(trailing)),
         )
 }
@@ -891,10 +940,11 @@ fn diff(state: &SessionState, diffs: &mut DiffPane, cx: &App) -> impl IntoElemen
     );
 
     if state.diff.is_empty() {
-        return v_flex()
-            .w_full()
-            .child(head)
-            .child(empty("No file changes yet.", cx));
+        return v_flex().w_full().child(head).child(empty(
+            "work-pane-empty-diff",
+            "No file changes yet.",
+            cx,
+        ));
     }
 
     let mut body = v_flex().w_full().gap(rems(0.625)).child(head);
@@ -991,8 +1041,20 @@ fn diff_body(unified: &str, cx: &App) -> impl IntoElement {
             number.reset_from(&text);
         }
         let (fg, bg, marker) = match kind {
-            DiffLineKind::Added => (cx.theme().success, cx.theme().success.opacity(0.10), "+"),
-            DiffLineKind::Removed => (cx.theme().danger, cx.theme().danger.opacity(0.10), "-"),
+            DiffLineKind::Added => (
+                cx.theme().success,
+                cx.theme()
+                    .success
+                    .opacity(crate::theme::tint_alpha(cx) * 0.7),
+                "+",
+            ),
+            DiffLineKind::Removed => (
+                cx.theme().danger,
+                cx.theme()
+                    .danger
+                    .opacity(crate::theme::tint_alpha(cx) * 0.7),
+                "-",
+            ),
             DiffLineKind::Meta => (cx.theme().muted_foreground, cx.theme().popover, ""),
             DiffLineKind::Context => (cx.theme().foreground, cx.theme().popover, " "),
         };
@@ -1015,7 +1077,7 @@ fn diff_body(unified: &str, cx: &App) -> impl IntoElement {
                         .border_r_1()
                         .border_color(cx.theme().border)
                         .pr(rems(0.4375))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(crate::theme::ink3(cx))
                         .text_align(gpui_kit::TextAlign::Right)
                         .child(SharedString::from(gutter)),
                 )
@@ -1153,15 +1215,17 @@ fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
     );
 
     if state.tasks.is_empty() {
-        return v_flex()
-            .w_full()
-            .child(head)
-            .child(empty("No tasks in this session.", cx));
+        return v_flex().w_full().child(head).child(empty(
+            "work-pane-empty-tasks",
+            "No tasks in this session.",
+            cx,
+        ));
     }
 
+    let tasks_len = state.tasks.len();
     let mut rows = vec![task_header_row(cx).into_any_element()];
-    for task in &state.tasks {
-        rows.push(task_row(task, cx).into_any_element());
+    for (index, task) in state.tasks.iter().enumerate() {
+        rows.push(task_row(index, task, index + 1 == tasks_len, cx).into_any_element());
     }
 
     let mut body = v_flex()
@@ -1196,7 +1260,7 @@ fn tasks(state: &SessionState, cx: &App) -> impl IntoElement {
                             .size(rems(1.125))
                             .flex_shrink_0()
                             .rounded_full()
-                            .bg(cx.theme().danger.opacity(0.12))
+                            .bg(cx.theme().danger.opacity(crate::theme::tint_alpha(cx)))
                             .text_color(cx.theme().danger)
                             .flex()
                             .items_center()
@@ -1239,41 +1303,55 @@ fn task_header_row(cx: &App) -> impl IntoElement {
         .px(rems(0.5))
         .py(rems(0.4375))
         .text_size(rems(0.59375))
-        .text_color(cx.theme().muted_foreground)
-        .child(div().flex_1().child(SharedString::from("Task")))
-        .child(div().w(rems(5.)).child(SharedString::from("Status")))
-        .child(div().w(rems(3.)).child(SharedString::from("Owner")))
+        .text_color(crate::theme::ink3(cx))
+        // `.tasks th { text-transform: uppercase }`. GPUI has no text
+        // transform, so the literals carry the case the CSS asked for.
+        .child(div().flex_1().child(SharedString::from("TASK")))
+        .child(div().w(rems(5.)).child(SharedString::from("STATUS")))
+        .child(div().w(rems(3.)).child(SharedString::from("OWNER")))
 }
 
 /// One task row with a status badge.
-fn task_row(task: &tact_protocol::TaskSnapshot, cx: &App) -> impl IntoElement {
+fn task_row(
+    index: usize,
+    task: &tact_protocol::TaskSnapshot,
+    is_last: bool,
+    cx: &App,
+) -> impl IntoElement {
     use tact_protocol::TaskStatusSnapshot as Status;
 
     let blocked = task.status == Status::Pending && !task.blocked_by.is_empty();
+    let line = cx.theme().border;
+    let hover_bg = cx.theme().muted;
     let (label, fg, bg) = if blocked {
         (
             "Blocked",
             cx.theme().danger,
-            cx.theme().danger.opacity(0.12),
+            cx.theme().danger.opacity(crate::theme::tint_alpha(cx)),
         )
     } else {
         match task.status {
-            Status::Completed => ("Done", cx.theme().success, cx.theme().success.opacity(0.12)),
+            Status::Completed => (
+                "Done",
+                cx.theme().success,
+                cx.theme().success.opacity(crate::theme::tint_alpha(cx)),
+            ),
             Status::InProgress => (
                 "In progress",
-                cx.theme().primary,
-                cx.theme().primary.opacity(0.12),
+                cx.theme().accent_foreground,
+                crate::theme::accent_tint(cx),
             ),
-            Status::Pending => ("Pending", cx.theme().muted_foreground, cx.theme().muted),
+            Status::Pending => ("Pending", crate::theme::ink3(cx), cx.theme().muted),
         }
     };
 
     h_flex()
+        .id(SharedString::from(format!("task-row-{index}")))
         .w_full()
         .items_center()
         .gap_2()
-        .border_b_1()
-        .border_color(cx.theme().border)
+        .when(!is_last, |row| row.border_b_1().border_color(line))
+        .hover(move |row| row.bg(hover_bg))
         .px(rems(0.5))
         .py(rems(0.5))
         .child(
@@ -1320,10 +1398,11 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
     );
 
     if state.subagents.is_empty() {
-        return v_flex()
-            .w_full()
-            .child(head)
-            .child(empty("No subagent runs yet.", cx));
+        return v_flex().w_full().child(head).child(empty(
+            "work-pane-empty-subagent",
+            "No subagent runs yet.",
+            cx,
+        ));
     }
 
     let mut rows = vec![card_head("Runs", format!("{count} total"), cx).into_any_element()];
@@ -1331,19 +1410,21 @@ fn subagents(state: &SessionState, cx: &App) -> impl IntoElement {
         let (label, fg, bg) = match run.status {
             SubagentStatusSnapshot::Running => (
                 "Running",
-                cx.theme().primary,
-                cx.theme().primary.opacity(0.12),
+                cx.theme().accent_foreground,
+                crate::theme::accent_tint(cx),
             ),
             SubagentStatusSnapshot::Completed => (
                 "Completed",
                 cx.theme().success,
-                cx.theme().success.opacity(0.12),
+                cx.theme().success.opacity(crate::theme::tint_alpha(cx)),
             ),
-            SubagentStatusSnapshot::Failed => {
-                ("Failed", cx.theme().danger, cx.theme().danger.opacity(0.12))
-            }
+            SubagentStatusSnapshot::Failed => (
+                "Failed",
+                cx.theme().danger,
+                cx.theme().danger.opacity(crate::theme::tint_alpha(cx)),
+            ),
             SubagentStatusSnapshot::Cancelled => {
-                ("Cancelled", cx.theme().muted_foreground, cx.theme().muted)
+                ("Cancelled", crate::theme::ink3(cx), cx.theme().muted)
             }
         };
         rows.push(
@@ -1400,9 +1481,11 @@ fn files_tree(
 ) -> impl IntoElement {
     let changed = state.diff.len();
     let Some(root) = state.workdir.clone() else {
-        return v_flex()
-            .w_full()
-            .child(empty("No workspace directory.", cx));
+        return v_flex().w_full().child(empty(
+            "work-pane-empty-workdir",
+            "No workspace directory.",
+            cx,
+        ));
     };
 
     let rows = files.rows(&root);
@@ -1421,13 +1504,18 @@ fn files_tree(
     );
 
     if rows.is_empty() {
-        return v_flex()
-            .w_full()
-            .child(head)
-            .child(empty("The workspace is empty.", cx));
+        return v_flex().w_full().child(head).child(empty(
+            "work-pane-empty-files",
+            "The workspace is empty.",
+            cx,
+        ));
     }
 
-    let hover_bg = cx.theme().primary.opacity(0.08);
+    let hover_bg = crate::theme::accent_tint(cx);
+    let hover_ink = cx.theme().accent_foreground;
+    // `.tree .row2 { color: var(--ink2) }`; the hovered and the expanded row
+    // take `--accentInk` below.
+    let ink2 = cx.theme().muted_foreground;
     let mut tree = v_flex().w_full().px(rems(0.4375)).py(rems(0.5));
     // `rows` is the pane's cached slice, so each row is borrowed rather than
     // owned; only the label has to be copied out per frame.
@@ -1439,12 +1527,15 @@ fn files_tree(
             (true, false) => IconName::Folder,
             (false, _) => IconName::File,
         };
-        let id = SharedString::from(format!("file-row-{}", path.display()));
+        // The row is the observation anchor for tests (`file-row-<path>`), so
+        // its expand toggle takes a separate id: two observed elements sharing
+        // one id make every query for it ambiguous.
+        let row_id = SharedString::from(format!("file-row-{}", path.display()));
+        let toggle_id = SharedString::from(format!("file-toggle-{}", path.display()));
         let is_expanded = row.is_dir && row.expanded;
-        let row_id = id.clone();
 
         let marker = if row.is_dir {
-            Button::new(id)
+            Button::new(toggle_id)
                 .icon(icon)
                 .tooltip(if row.expanded { "Collapse" } else { "Expand" })
                 .accessibility_label(if row.expanded {
@@ -1453,6 +1544,10 @@ fn files_tree(
                     "Expand folder"
                 })
                 .ghost()
+                // The prototype's tree rows are `.tree .row2{color:var(--ink2)}`
+                // and the chevron inherits that; the ghost variant would paint
+                // `secondary_foreground` (`--ink`) and out-shout its own label.
+                .text_color(cx.theme().muted_foreground)
                 .compact()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle_directory(path.clone());
@@ -1466,6 +1561,7 @@ fn files_tree(
         tree = tree.child(
             h_flex()
                 .id(row_id)
+                .test_support()
                 .w_full()
                 .min_w_0()
                 .h(rems(1.75))
@@ -1474,7 +1570,11 @@ fn files_tree(
                 .rounded(rems(0.375))
                 .pl(indent)
                 .pr(rems(0.4375))
-                .when(is_expanded, move |row| row.bg(hover_bg))
+                .text_color(ink2)
+                .when(is_expanded, move |row| {
+                    row.bg(hover_bg).text_color(hover_ink)
+                })
+                .hover(move |row| row.bg(hover_bg).text_color(hover_ink))
                 .child(marker)
                 .child(
                     div()
@@ -1499,8 +1599,15 @@ fn rems_for_depth(depth: usize) -> gpui_kit::Rems {
 }
 
 /// Muted placeholder used by every empty pane.
-fn empty(text: &str, cx: &App) -> impl IntoElement {
+///
+/// Each empty branch carries its own `work-pane-empty-*` id: a pane that
+/// silently renders nothing looks exactly like a pane that broke, so the tests
+/// read the line back by name.
+fn empty(id: &'static str, text: &str, cx: &App) -> impl IntoElement {
     div()
+        .id(id)
+        .test_support()
+        .aria_label(SharedString::from(text.to_string()))
         .px_3()
         .py_2()
         .text_sm()

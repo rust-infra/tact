@@ -4,22 +4,27 @@
 //! each row shape. Streaming and agent integration will mutate the same row
 //! model without changing the render path.
 
-use std::rc::Rc;
+use std::{rc::Rc, time::Duration};
 
 use gpui_kit::assets::IconName;
+use gpui_kit::base::animation::cubic_bezier;
+use gpui_kit::base::motion::{Presence, Transition, transition};
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
-    ActiveTheme as _, h_flex,
+    ActiveTheme as _, Icon, h_flex,
+    scroll::ScrollableElement as _,
     text::{MarkdownNode, MarkdownParseContext, TextView, markdown_ast},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::ToolVisualKind;
 
+use crate::session::Request;
+
 use gpui_kit::{
-    AnyElement, App, ClipboardItem, InteractiveElement as _, IntoElement, MouseButton,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    relative, rems,
+    AnyElement, App, ClipboardItem, InteractiveElement as _, IntoElement, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px, radians, relative,
+    rems,
 };
 
 /// Opens or closes one collapsible transcript row.
@@ -34,6 +39,12 @@ pub(crate) type RowToggle = Rc<dyn Fn(usize, &mut App)>;
 /// so clicking the counts jumps to the diff while clicking the row still opens
 /// the tool output.
 pub(crate) type OpenDiff = Rc<dyn Fn(&mut App)>;
+
+/// Renders an answered approval row's card.
+///
+/// The card's own controls are built beside the live request panel in the
+/// shell, so the row renderer only decides where the record sits.
+pub(crate) type ApprovalCard = Rc<dyn Fn(&Request, &str, &App) -> AnyElement>;
 
 /// How much supporting detail the transcript shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -136,6 +147,17 @@ pub(crate) enum TranscriptRow {
     Error {
         text: String,
     },
+    /// A permission or question card the user has already answered.
+    ///
+    /// The prototype's `.approval.done` keeps the question and swaps its
+    /// actions for the decision, so the transcript still reads as a record of
+    /// what was asked and granted. It is a row, not a slot beside the list:
+    /// an answered card must not stay the last thing on screen while the turn
+    /// it unblocked keeps writing rows underneath it.
+    Approval {
+        request: Request,
+        result: String,
+    },
 }
 
 /// The prototype's `.toolMeta`: the duration, then how much arrived.
@@ -224,8 +246,10 @@ fn parse_code_block(
 /// The prototype's `.code`: a bordered card with a `.codeHead` band over the
 /// fence body.
 ///
-/// Copy fires on press rather than click: a custom block carries no element id
-/// of its own, and `on_click` needs one that is unique among a message's blocks.
+/// `Copy` needs an id that is unique among a message's blocks, and a custom
+/// block has none of its own. The framework stamps every custom block with its
+/// byte range in the message, so the range's start is the anchor that stays
+/// unique and stable across re-renders.
 fn render_code_block(node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> AnyElement {
     let data = node.data::<CodeBlockData>();
     let language = data
@@ -233,8 +257,13 @@ fn render_code_block(node: &MarkdownNode, _window: &mut Window, cx: &mut App) ->
         .filter(|language| !language.is_empty())
         .unwrap_or("code");
     let code = data.map(|data| data.code.clone()).unwrap_or_default();
+    let anchor = node
+        .source_range()
+        .map(|range| range.start)
+        .unwrap_or_default();
+    let copy_id = SharedString::from(format!("code-block-copy-{anchor}"));
     let clipboard = code.clone();
-    let band_ink = cx.theme().muted_foreground;
+    let band_ink = crate::theme::ink3(cx);
     let hover_ink = cx.theme().foreground;
 
     v_flex()
@@ -268,7 +297,10 @@ fn render_code_block(node: &MarkdownNode, _window: &mut Window, cx: &mut App) ->
                         .flex_shrink_0()
                         .cursor_pointer()
                         .hover(move |style| style.text_color(hover_ink))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        .id(copy_id)
+                        .aria_label(SharedString::from("Copy code"))
+                        .test_support()
+                        .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(clipboard.clone()));
                         })
                         .child(SharedString::from("Copy")),
@@ -305,12 +337,12 @@ fn msg_meta(
         .gap(rems(0.4375))
         .mb(rems(0.4375))
         .text_size(rems(0.65625))
-        .text_color(cx.theme().muted_foreground);
+        .text_color(crate::theme::ink3(cx));
     row = row.child(
         div()
             .text_size(rems(0.6875))
             .font_semibold()
-            .text_color(cx.theme().foreground)
+            .text_color(cx.theme().muted_foreground)
             .child(SharedString::from(author.to_string())),
     );
     if !clock.is_empty() {
@@ -347,6 +379,11 @@ pub(crate) fn diff_line_counts(text: &str) -> Option<(u32, u32)> {
 
 /// The `.msgMeta` clock: local `HH:MM` for a Unix timestamp.
 pub(crate) fn clock_label(unix_seconds: i64) -> String {
+    // A row redrawn from stored history has no stamp of its own; showing one
+    // would date the message to whatever moment the session was reopened.
+    if unix_seconds <= 0 {
+        return String::new();
+    }
     match chrono::DateTime::from_timestamp(unix_seconds, 0) {
         Some(utc) => utc
             .with_timezone(&chrono::Local)
@@ -356,16 +393,67 @@ pub(crate) fn clock_label(unix_seconds: i64) -> String {
     }
 }
 
+/// `.chev{transition:transform 160ms var(--ease)}` -- both collapsible row
+/// summaries share the prototype's one chevron transition.
+const CHEVRON_ROTATION: Duration = Duration::from_millis(160);
+
+/// `.msg{animation:rise 320ms var(--ease) both}` -- the user and assistant
+/// message bodies lift into place on insertion.
+const MESSAGE_RISE: Duration = Duration::from_millis(320);
+
+fn chevron_rotation_policy() -> Transition {
+    Transition::new(CHEVRON_ROTATION).ease(cubic_bezier(0.23, 1.0, 0.32, 1.0))
+}
+
+fn message_rise_policy() -> Transition {
+    Transition::new(MESSAGE_RISE).ease(cubic_bezier(0.23, 1.0, 0.32, 1.0))
+}
+
+fn chevron_target(open: bool) -> f32 {
+    if open {
+        std::f32::consts::FRAC_PI_2
+    } else {
+        0.0
+    }
+}
+
 /// Render one transcript row at its virtual-list index.
+/// The callbacks a row's own controls need, bundled so the renderer's
+/// signature stays readable as rows grow more interactive.
+pub(crate) struct RowActions<'a> {
+    /// Opens or closes one collapsible row.
+    pub(crate) toggle: &'a RowToggle,
+    /// Jumps to the Diff pane from a write row's badge.
+    pub(crate) open_diff: &'a OpenDiff,
+    /// Draws an answered approval row's card.
+    pub(crate) approval: &'a ApprovalCard,
+}
+
 pub(crate) fn render_row(
     row: &TranscriptRow,
     index: usize,
     detail: TranscriptDetail,
-    toggle: &RowToggle,
-    open_diff: &OpenDiff,
-    cx: &App,
+    actions: RowActions<'_>,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
+    let RowActions {
+        toggle,
+        open_diff,
+        approval,
+    } = actions;
     let row_id = SharedString::from(format!("transcript-row-{index}"));
+    // `.msg` is the prototype's only inserted-row rise. Thinking, tool, and
+    // system rows keep their own entrance policy, so sample presence only for
+    // the user and assistant bodies.
+    let message_enter = match row {
+        TranscriptRow::User { .. } | TranscriptRow::Assistant { .. } => Some(
+            Presence::new((index, "transcript-msg-enter"), true)
+                .transition(message_rise_policy())
+                .sample(window, cx),
+        ),
+        _ => None,
+    };
     // Verbose expands every tool card's output, per this enum's contract; a
     // click on one card only toggles that card.
     let verbose = detail == TranscriptDetail::Verbose;
@@ -380,6 +468,10 @@ pub(crate) fn render_row(
             .w_full()
             .flex()
             .justify_end()
+            .when_some(message_enter, |this, sample| {
+                this.opacity(sample.progress)
+                    .top(px(5.0 * (1.0 - sample.progress)))
+            })
             .child(
                 // The prototype's `.msg.user .body`: a 72% cap, 10/12 padding,
                 // and a tail corner where the bubble meets the right edge.
@@ -424,6 +516,10 @@ pub(crate) fn render_row(
             .w_full()
             .min_w_0()
             .items_start()
+            .when_some(message_enter, |this, sample| {
+                this.opacity(sample.progress)
+                    .top(px(5.0 * (1.0 - sample.progress)))
+            })
             // The prototype's `.msg` gap between gutter and body. Vertical
             // rhythm belongs to the scroller's 18px row gap, not this row.
             .gap(rems(0.75))
@@ -442,7 +538,7 @@ pub(crate) fn render_row(
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().muted)
-                    .text_color(cx.theme().primary)
+                    .text_color(cx.theme().accent_foreground)
                     .text_size(rems(0.625))
                     .font_semibold()
                     .child(SharedString::from("T"))
@@ -494,12 +590,17 @@ pub(crate) fn render_row(
             } else {
                 "Normal · hidden"
             };
-            let chevron = if *expanded {
-                IconName::ChevronDown
-            } else {
-                IconName::ChevronRight
-            };
+            let chevron_rotation = transition(
+                (index, "thinking-chevron"),
+                chevron_target(*expanded),
+                chevron_rotation_policy(),
+                window,
+                cx,
+            );
             let toggle = toggle.clone();
+            // `.thinking button:hover` uses the prototype's `--hover`, which the
+            // theme exposes as `accent`.
+            let hover_bg = cx.theme().accent;
             v_flex()
                 .id(row_id)
                 .w_full()
@@ -516,9 +617,12 @@ pub(crate) fn render_row(
                         .gap(rems(0.5))
                         .px(rems(0.6875))
                         .py(rems(0.5625))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(crate::theme::ink3(cx))
+                        .hover(move |style| style.bg(hover_bg))
                         .on_click(move |_, _, cx| toggle(index, cx))
-                        .child(div().size(rems(0.875)).child(chevron))
+                        .child(div().size(rems(0.875)).child(
+                            Icon::new(IconName::ChevronRight).rotate(radians(chevron_rotation)),
+                        ))
                         .child(
                             div()
                                 .text_size(rems(0.71875))
@@ -563,32 +667,40 @@ pub(crate) fn render_row(
             // tinted icon chip, name, argument, and mono meta, over an output
             // block the reader opens.
             let (icon, tint, tone) = match status {
+                // `.tool.run .toolIcon { color: var(--accentInk) }`: the glyph
+                // sits on an `--accentTint` wash, so it takes the ink that is
+                // readable on that wash, not `--accent` itself.
                 ToolStatus::Running => (
                     IconName::LoaderCircle,
-                    cx.theme().primary.opacity(0.12),
-                    cx.theme().primary,
+                    crate::theme::accent_tint(cx),
+                    cx.theme().accent_foreground,
                 ),
                 ToolStatus::Succeeded => (
                     IconName::Check,
-                    cx.theme().success.opacity(0.12),
+                    cx.theme().success.opacity(crate::theme::tint_alpha(cx)),
                     cx.theme().success,
                 ),
                 ToolStatus::Failed => (
                     IconName::TriangleAlert,
-                    cx.theme().danger.opacity(0.12),
+                    cx.theme().danger.opacity(crate::theme::tint_alpha(cx)),
                     cx.theme().danger,
                 ),
             };
             let open = *expanded || verbose;
-            let chevron = if open {
-                IconName::ChevronDown
-            } else {
-                IconName::ChevronRight
-            };
+            let chevron_rotation = transition(
+                (index, "tool-chevron"),
+                chevron_target(open),
+                chevron_rotation_policy(),
+                window,
+                cx,
+            );
             let summary_id = SharedString::from(format!("tool-summary-{index}"));
             // The scroller renders rows from a plain `App`, so the click travels
             // back through the app entity instead of this view's context.
             let toggle = toggle.clone();
+            // `.tool:hover` raises the card to `--surface2` / `--line2`.
+            let hover_bg = cx.theme().muted;
+            let hover_border = cx.theme().input;
 
             v_flex()
                 .id(row_id)
@@ -601,6 +713,7 @@ pub(crate) fn render_row(
                 .when(open, |this| {
                     this.bg(cx.theme().muted).border_color(cx.theme().input)
                 })
+                .hover(move |style| style.bg(hover_bg).border_color(hover_border))
                 .overflow_hidden()
                 .child(
                     h_flex()
@@ -684,7 +797,7 @@ pub(crate) fn render_row(
                                 .flex_shrink_0()
                                 .font_family(cx.theme().mono_font_family.clone())
                                 .text_size(rems(0.625))
-                                .text_color(cx.theme().muted_foreground)
+                                .text_color(crate::theme::ink3(cx))
                                 .child(SharedString::from(tool_meta(
                                     duration,
                                     output,
@@ -697,21 +810,30 @@ pub(crate) fn render_row(
                             div()
                                 .flex_shrink_0()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(div().size(rems(0.875)).child(chevron)),
+                                .child(
+                                    div().size(rems(0.875)).child(
+                                        Icon::new(IconName::ChevronRight)
+                                            .rotate(radians(chevron_rotation)),
+                                    ),
+                                ),
                         )
                         .test_support(),
                 )
                 .when(open && !output.trim().is_empty(), |card| {
                     card.child(
                         // The prototype's `.out`: a scrollable mono window
-                        // indented past the icon column.
+                        // indented past the icon column. `overflow:auto` is
+                        // load-bearing -- the 150 px cap without it clips the
+                        // tail of a long command with no way to reach it.
+                        //
+                        // The scroll wrapper has to be the last step in the
+                        // chain, and it re-ids the element it wraps, so the
+                        // test anchor rides on an inner node instead.
                         v_flex()
-                            .id(SharedString::from(format!("tool-output-{index}")))
                             .ml(rems(2.4375))
                             .mr(rems(0.75))
                             .mb(rems(0.75))
                             .max_h(rems(9.375))
-                            .overflow_hidden()
                             .rounded(rems(0.4375))
                             .border_1()
                             .border_color(cx.theme().border)
@@ -722,13 +844,27 @@ pub(crate) fn render_row(
                             .text_size(rems(0.65625))
                             .line_height(relative(1.6))
                             .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(output.clone()))
-                            .test_support(),
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("tool-output-{index}")))
+                                    .test_support()
+                                    .child(SharedString::from(output.clone())),
+                            )
+                            .overflow_y_scrollbar()
+                            // One call site draws several scrollables, which
+                            // would otherwise share the caller's location as
+                            // their scroll-position key.
+                            .id(SharedString::from(format!("tool-output-scroll-{index}"))),
                     )
                 })
                 .test_support()
                 .into_any_element()
         }
+        TranscriptRow::Approval { request, result } => div()
+            .id(row_id)
+            .w_full()
+            .child(approval(request, result, cx))
+            .into_any_element(),
         TranscriptRow::System { text } => div()
             .id(row_id)
             .w_full()
@@ -740,11 +876,13 @@ pub(crate) fn render_row(
             .into_any_element(),
         TranscriptRow::Error { text } => h_flex()
             .id(row_id)
+            .role(gpui_kit::Role::Alert)
+            .aria_label(SharedString::from(text.clone()))
             .w_full()
             .min_w_0()
             .items_start()
             .gap_2()
-            .rounded(cx.theme().radius_2xl())
+            .rounded(rems(0.625))
             .border_1()
             .border_color(cx.theme().danger)
             .bg(cx.theme().popover)
@@ -920,9 +1058,20 @@ mod tests {
     }
 
     #[test]
+    fn the_chevron_rotates_a_quarter_turn_over_the_prototype_duration() {
+        assert_eq!(chevron_target(false), 0.0);
+        assert_eq!(chevron_target(true), std::f32::consts::FRAC_PI_2);
+    }
+
+    #[test]
     fn clock_labels_render_local_hh_mm() {
-        let label = clock_label(0);
+        let label = clock_label(1_700_000_000);
         assert_eq!(label.len(), 5, "HH:MM is five columns: {label:?}");
         assert_eq!(label.as_bytes()[2], b':');
+        assert_eq!(
+            clock_label(crate::session::NO_TIMESTAMP),
+            "",
+            "a row redrawn from history prints no clock rather than the epoch"
+        );
     }
 }

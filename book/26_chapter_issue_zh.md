@@ -32,6 +32,410 @@
 ---
 
 
+## 1. 2026-09-21 — 已答复的授权卡留在原位置，而不是挂在转录末尾
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/session.rs`（`TranscriptRow::Approval`、`Conversation::push_approval`、`to_markdown`）；`crates/tact-gui/src/shell.rs`（`answer`、`transcript_item_count`、`approval` 回调、`answer_panel`）；`crates/tact-gui/src/transcript.rs`（`ApprovalCard`、`RowActions`、`Approval` 分支）；TUI 先例 `crates/agent_tui_kit/src/state/select_popup.rs`（`log_confirm`）与 `book/10_chapter_permission.md` §6 |
+
+**Symptom / motivation:**答复授权框之后，那张已答复的卡片会一直停在转录底部，而刚刚被它放行的这一轮反而把新行追加到卡片**上方**——于是最新的内容往上顶，一张旧的授权卡却始终是屏幕上最后一个东西，直到下一个请求碰巧到来。原因是卡片的两半都活在对话列表**旁边**的槽位里：`SessionState::request` 放待答的、`SessionState::last_request` 放已答的，`transcript_item_count` 把它们渲染成 `1 + rows + extra`。列表里任何一行都不可能排到已答复卡片前面，因为那张卡根本不在列表里。终端端从来不是这个形状：它的 select 弹窗在答复时关闭（`log_confirm = false`），决定则以 `StepResult.permission_label` 的形式落到工具卡的 meta 行上。
+
+**Decision:** 已答复的授权就是一条转录行。`TranscriptRow::Approval { request, result }` 同时携带问题与决定，`Conversation::push_approval` 负责追加，`answer()` 走普通的 `Change::Appended(1)` 路径归档；`RequestAnswer` 与 `last_request` 槽位一并删除。只有**待答**的请求仍然排在行列表之外，因为那正是必须给出答案的位置；已答复的卡片没有理由继续吊在比它更晚的行下面。卡片本身的样子没变：仍是原型的 `.approval.done`，动作换成决定，记录依旧可读，只是跟着这一轮一起滚走。顺带掉出两个小结果：新请求不再需要清掉一张残留的已答复卡（已经没有可清的），`to_markdown` 多了一个分支，复制按钮把已答复卡写成 `> <prompt> -> <decision>`。由于行渲染器现在需要卡片自己的渲染器，shell 以 `ApprovalCard` 回调的形式交给它，并把 `render_row` 的回调打包进 `RowActions`，以留在 clippy 的参数上限之下。
+
+**Behavior after:**答复授权卡或提问卡会清掉待答提示，并把已答复卡片追加到它被问到的那个位置。这一轮之后写下的任何行都落在它下面，卡片随其余对话一起滚走，而不再悬在它们底下。决定仍然读作选项自己的标签（`Allow once` / `Deny` / `Always allow this tool`），卡片仍然丢掉被用来答复的那一行选项，待答请求也仍然渲染成末尾那张没有决定行的卡片。
+
+**Pointers:** `crates/tact-gui/src/session.rs`（`push_approval`、`to_markdown`）；`crates/tact-gui/src/shell.rs`（`answer`、`answer_panel`、`transcript_item_count`）；`crates/tact-gui/src/transcript.rs`（`RowActions`、`Approval` 分支）；`crates/tact-gui/src/shell.rs` 测试（`an_answered_approval_keeps_its_slot_instead_of_the_tail`）；`crates/tact-gui/tests/shell.rs`（`the_permission_card_leads_with_deny`、`the_once_permission_option_answers_the_card`、`the_lasting_permission_option_answers_the_card`）
+
+## 1. 2026-09-21 — 重新打开的会话会重绘它自己存下来的对话
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-session/src/history.rs`（`history`、`HistoryBlock`、`HistoryMessage`、`tool_detail`）；`crates/tact-session/src/lib.rs`（re-export）；`crates/tact-session/src/test_support.rs`（`seed_session_history`）；`crates/tact-gui/src/session.rs`（`session::history`、`Conversation::load_history`、`NO_TIMESTAMP`）；`crates/tact-gui/src/shell.rs`（`replay_history`、`resume_session`）；`crates/tact-gui/src/transcript.rs`（`clock_label`）；`crates/tact/src/store/session_store/sqlite.rs`（`messages` 表） |
+
+**现象 / 动机：** 在侧栏点一个会话时，壳层确实接管了那个会话的 runtime——agent 那边是真的保留了早前的轮次——但窗口给出的是一片空白。`adopt` 会为它接管的会话重置 `Conversation`，之后没有任何东西把它重绘回来，于是用户一离开再回来，对话就消失了，尽管每条消息都还在磁盘上。问题从来不在 store：`messages.content` 存着规范的 `MessageContent` block 向量，`Thinking`、`ToolUse`、`ToolResult` 都是原样落库的。缺的是从 store 到前端的那条路——`tact-session` 没有暴露任何读取入口，而 `tact-gui` 是刻意不依赖 `tact` / `tact_llm` 的。
+
+**决策：** 在 `tact-session` 本来就负责的那条缝上切开。新增的 `tact_session::history::history(workdir, session_id)` 打开工作区的 session store、加载消息，并把它们摊平成与展示无关的 `HistoryMessage`（由 `HistoryBlock` 组成：`Text`、`Thinking`、`ToolUse { id, name, detail }`、`ToolResult { tool_use_id, output }`），于是前端重绘一个会话既不需要 store handle，也不需要 `tact_llm` 类型。`tact-gui` 在 `Conversation::load_history` 里把它们映射成自己的行，并在每次 resume 时由 `replay_history` 调用。这个决策刻意保留 block 顺序而不是按类型重新分组，因为正是这个顺序让重绘出来的对话仍按 `think -> 工具 -> 内容` 读，与那一轮真实的产出顺序一致。保真度严格限定在 store 真实持有的范围内：卡片的耗时、实时输出尾巴、生产者算出的 `arg_summary` 都属于从未持久化的展示态，所以重绘的卡片改从约定的入参键（`command`、`file_path`、`path` ……）取 detail 行、退回通用 `ToolVisualKind`，并在 store 里没有对应结果时保持 `Running`——这也正是实时对话在一轮于工具中途结束时留下的样子。`load_session` 不返回每行的 `created_at`，因此重绘行带 `NO_TIMESTAMP`，`clock_label` 对它不打印任何东西，而不是把一条旧消息标成「会话被重新打开的那一刻」。
+
+**改后行为：** 切换会话会按存储顺序重绘存下来的轮次：重新打开的线程能看到自己的 `think -> 工具 -> 内容` 序列，工具卡片占住它自己那条 `ToolUse` 的位置并填入对应的 `ToolResult`。resume 提示仍落在重绘行之后。store 从未持有的东西回不来——耗时、请求卡片、进度行、模型归属、每条消息的时钟在重绘行上都不存在；压缩依然会删掉被摘要取代的 block，所以那些对**所有**读取方都是消失的，不只是 GUI。
+
+**指针：** `crates/tact-session/src/history.rs`（`a_reopened_session_redraws_thinking_tool_and_answer_in_order`）；`crates/tact-session/src/test_support.rs`（`seed_session_history`）；`crates/tact-gui/src/session.rs`（`a_stored_transcript_redraws_thinking_tool_and_answer_in_order`、`a_redrawn_tool_card_keeps_its_use_slot_and_a_stray_result_is_ignored`）；`crates/tact-gui/src/shell.rs`（`switching_sessions_redraws_the_stored_transcript`）；`book/01_chapter_store_zh.md`（把会话读回来）
+
+## 1. 2026-09-21 — 流式正文就停在工具卡与思考卡给它让出的位置
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/session.rs`（`Conversation::seal_open_assistant`、`ensure_tool`、`apply_thinking`、`end_turn`、`append_stream`、`push_user`）；TUI 先例 `crates/tui/src/widgets/state/app/agent.rs`（`ToolEvent::Started` 之前先 `flush_stream_pending`）、`crates/agent_tui_kit/src/state/log.rs`（`push_placeholder_rows`）、`docs/tool_rendering.md`（「The log block appears on `StepStarted`」） |
+
+**症状 / 动机：** 桌面端的对话里，一轮「先流一段正文、再跑一个工具、然后继续流正文」的回合，把后一段正文显示在了它**跟随的那个工具卡上方**。`Conversation` 整个回合只保留一个 `open_assistant` 下标，而每个 `StreamChunk` 只要那一行还是 `Assistant` 就复用它，于是工具之后到达的文本被追加回了工具之前就打开的那一行。思考也是同一个形状：因为工具生命周期没有清掉 `open_thinking`，迟到的 `Delta` 会写回一条已经位于卡片上方的思考行。终端客户端从来没有这个问题——它在分配工具占位行之前会先把待写正文 flush 掉，之后的正文追加在尾部——于是两个前端对同一串事件给出了不同的排布。
+
+**决策：** 卡片就是转录里的边界。`ensure_tool` 以及两处开启思考行的分支现在都先调用 `seal_open_assistant`，于是下一个 chunk 会在卡片**下方**开自己的新行；而工具卡本身仍然占住它首次出现的位置，之后每一次 `ToolProgress` / `StepFinished` 都写进同一行——这正是让一个长时间运行的卡片不会在读者眼皮底下移动的原因。这个决策刻意比「任何行都封住流」更窄：回合中途排队的 prompt 仍然不封（`push_user`），因为一个尚未派发的插话不该关掉那条仍在流式输出的行——这条规则由壳层既有的契约测试钉住。
+
+**改后行为：** 一轮对话在两个前端上都按产出顺序读作 `think -> 工具 -> 内容`。工具之前到达的正文留在工具上方，之后到达的留在下方，思考块停在它 `Started` 事件所占据的位置。工具卡在首次见到自己的 id 时分配，其后原地更新。
+
+**指针：** `crates/tact-gui/src/session.rs`（`prose_after_a_tool_opens_a_new_row_below_the_card`、`prose_after_a_thought_opens_a_new_row_below_it`、`a_queued_user_row_does_not_seal_the_open_stream`）；`docs/tool_rendering.md`；`book/23_chapter_tui.md`（工具占位行）
+
+## 1. 2026-09-21 — 第三级 ink 补到由组件绘制的控件上
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（composer 的附件 chip）；`crates/tact-gui/src/pane.rs`（`files_tree`）；`crates/tact-gui/src/theme.rs`（`ink3`、`INK3_LIGHT`、`INK3_DARK`）；`docs/design/tact-desktop-prototype.html`（`--ink3` 第 8-9 行、`.chip button` 第 19 行、`.tree .row2` 第 20 行）；`gpui-component-0.6.4/src/button/button.rs`（`Ghost` 前景色第 964 行、绘制期 `.text_color(normal_style.fg)` 第 663 行、`refine_style` 第 690 行、`impl Styled for Button` 第 546 行）；`crates/tact-gui/src/shell.rs`（`prototype_icon_button`，既有的同款写法） |
+
+**现象 / 动机：** 上面那条「第三级 ink」条目为原型的第三级墨色加了 `theme::ink3`，并把约三十个调用点迁了过去 —— 但它只能迁**外壳自己绘制**的那些。原型里有两个第三级控件是由 `Button` 组件画的，而组件的 variant 自带颜色：`ButtonVariant::Ghost` 渲染 `secondary_foreground`，本主题把它映射到原型的 `--ink`。于是附件 chip 的删除按钮（`x`）落在 `--ink`，而 `.chip button{color:var(--ink3)}` 要的是第三级，**整整强了两档**；文件树的展开箭头同样落在 `--ink`，可它所在的行是 `.tree .row2{color:var(--ink2)}` —— 一个附属操作喊得比它所属的标签还响。这两处此前没被抓到，是因为 `ElementSnapshot` 不暴露颜色：自动化只能证明控件被渲染出来且能按，永远证明不了它画成什么颜色，所以这一类缺口只有像素审计才看得见。
+
+**决策：** 在调用点直接告诉组件。`Button` 实现了 `Styled`，它的 render 会把调用方给的 `StyleRefinement` 细化在 variant 算出的颜色之上（第 663 行 `.text_color(normal_style.fg)`，随后第 690 行 `.refine_style(&instance_style)`），所以写在按钮上的 `.text_color(..)` 在静止态是生效的 —— 这正是 `prototype_icon_button` 给标题栏 `.icon` 方框用的既有写法。chip 的 `x` 取 `theme::ink3(cx)`；树的箭头取 `muted_foreground`，与它所在的行保持一致，而不是另发明一个值，这也是此前那条文件树条目给行本身定下的规则。composer 的 placeholder 是唯一够不到的一处，记录在案而不是糊过去：原型要 `.prompt::placeholder{color:var(--ink3)}`，但 `Input` 是用 `InputEditorStyle.muted_foreground`（`--ink2`）画 placeholder 的，且不提供按实例覆盖；改主题角色也不可行，因为 `the_theme_roles_carry_the_prototype_variables` 把 `muted.foreground` 钉在 `--ink2`，而原型真正写作 `--ink2` 的那些面会跟着一起动。
+
+**改后行为：** 附件 chip 的删除按钮在两种主题下都渲染为原型的第三级墨色；文件树的箭头与它自己的行同色，不再压过行标签。两者仍是 ghost 按钮，hover 与 focus 行为不变。
+
+**已知残留：** composer 的 placeholder 渲染在 `--ink2`，而原型要 `--ink3`；要抹平这一档差异，就得在 `Input` 之外自己画 placeholder，这需要一个决定，而不是悄悄绕过去。这个 `.text_color(..)` 覆盖也只在静止态成立：`Ghost` 会在 `hover` / `active` 的样式闭包里重新施加自己的 `secondary_foreground`，这些闭包注册在 `refine_style` 之前、指针悬停时后写生效，所以悬停中的 chip `x` 与树箭头仍会退回到 `--ink`。同一轮还顺手确认了两件与覆盖度有关的事，并都记进了设计评审：宽口径点击巡检抓不住「死了的控件」，因为 `every_entry_point_answers_a_click` 的 `click!` 宏只断言「渲染出来了 + 按下去没崩」；工作面板那五个 ghost 按钮（`Open in editor`、`Refresh plan`、`Comment`、`New task`、`Add file`）仍是唯一一组「没有处理函数、也没有任何已记录理由」的控件。
+
+**指针：** `crates/tact-gui/src/theme.rs`（`ink3`、`the_tertiary_ink_matches_the_prototype`）；`crates/tact-gui/src/shell.rs`（附件 chip、`prototype_icon_button`）；`crates/tact-gui/src/pane.rs`（`files_tree`）；`docs/design/tact-desktop-prototype.html`（第 8-9、19、20 行）；`docs/design/tact-desktop-design-review.md`（Phase 4-7 跟进清单、Parked items）。
+
+## 1. 2026-09-21 — 手绘控件开始响应键盘
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/shell.rs`（`focus_visible_ring`、`session_row`、`sidebar_meta_row`、`chrome_icon_button`、`tool_button`、`mini_chip`、`send_button`、侧栏的 `.new` 行、标题栏的 `.tab` 条）；`crates/tact-gui/tests/shell.rs`（`tab_reaches_the_drawn_controls_and_enter_runs_them`）；`docs/design/tact-desktop-prototype.html`（第 27 行 `button:focus-visible`、第 34-123 行的 `<button>` 行）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`（第 89-90、124-125、559 行）；上游 `gpui-pre-0.3.5` `src/elements/div.rs`（element state 自带的 handle 第 2246-2264 行、`focus_visible` 第 1292 行、Enter/Space 合成点击第 3013-3060 行、绘制期门槛第 3425-3430 行） |
+
+**症状 / 动机：** 原型把 `.row`、`.tab`、`.icon`、`.cmd`、`.new`、`.mini`、`.wtab`、`.toolbtn`、`.session`、`.send` 都写成 `<button>`，于是浏览器把它们全部放进 Tab 顺序，并给它们第 27 行的 `button:focus-visible` 环。壳层把同样的方块画成带 `on_click` 的普通 `div`，而 `div` 自己不说的话既不是 Tab 停靠点、也没有焦点环——于是指针能按到它们，键盘却只能到达 composer、搜索框和组件按钮。设计指南把这件事当成硬要求而不是点缀：它要求每个交互控件都为 focus-visible 状态做设计，无障碍清单的第一条就是「每个动作都能用键盘到达并操作」，而 spec 又把这份指南定为键盘访问与焦点的规范来源。
+
+**决策：** 在每个手绘控件的构造 helper 里向 GPUI 要齐两半。`tab_index(0)` 把元素同时标成可聚焦和 Tab 停靠点；只声明到这一步、不交 handle 的元素会从自己的 element state 拿到一个 handle，而 GPUI 会为带这个 id 的元素保留它——按 id 稳定，这是渲染函数里临时 `cx.focus_handle()` 做不到的。`Div::focus_visible` 只在元素已聚焦**且** `window.last_input_was_keyboard()` 时应用样式，也就是 `:focus-visible` 而不是 `:focus`，因此鼠标按下永远不会画出这个环。环本身是 `focus_visible_ring`：用纯强调色铺一个 **inset** 的 2px spread `BoxShadow`——GPUI 没有 `outline`，而阴影不参与布局。用 inset 而不是外阴影是**真机截图逼出来的**，不是审美取舍：GPUI 把外阴影画成元素**背后的一块填充**圆角矩形，于是那些自身背景透明或半透明的控件——只在「当前会话」时才有背景的会话行、标题栏的 `.tab` 芯片——会把这块填充透出来，「环」变成盖住整行的实心橙块。inset 阴影画在背景之后、子元素之前，所以无论背景什么样都保持 2px 的环。两处 `:focus-within` 环继续用 `--accentTint`，因为原型那两处是 `box-shadow`。激活那一半是 GPUI 自带的：带 `on_click` 的已聚焦元素会在未修饰的 Enter 或 Space **抬起**时收到合成点击，与原生 `<button>` 一致。这条契约既不能靠快照也不能靠像素：`ElementSnapshot` 读不到颜色，而这些控件用的是 element state 里的 handle、不是交给 `.test_support()` 的 handle；于是测试用 Tab 加 Enter 走到标题栏的侧栏开关——预览窗口里唯一能这样关掉侧栏的控件——并手工派发按键**抬起**，因为测试夹具的 `press` 只发按下。
+
+**改后行为：** Tab 按原型自己的顺序走过手绘的行、页签、图标与芯片，键盘按键会在当前聚焦的那个控件上画出强调色键盘环。Enter 或 Space 执行该控件自己的点击，于是这些控件不只是「可到达」，而是「可操作」。在预览壳层实测：改动前可到达 6 个 Tab 停靠点，改动后是 34 个；环本身也在活的 Wayland 截图里看过——聚焦的会话行读作 2px 强调色环（该行区域内约 700 个强调色像素），而不是外阴影版本画出的实心块（约 16000 个）。
+
+**已知残留：** 原型的 `outline-offset: 2px` 在 GPUI 没有对应物，所以环贴着盒子画——阴影改成 inset 之后是贴在内侧——而不是离开 2px。refine 样式是整体替换阴影列表而不是追加，因此聚焦的活动标题页签会用环替代自己的 `0 1px 2px` 抬升，聚焦的发送方块则用环替代顶部高光。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`focus_visible_ring`、`session_row`、`sidebar_meta_row`、`chrome_icon_button`、`tool_button`、`mini_chip`、`send_button`、侧栏的 `.new` 行、标题栏的 `.tab` 条）；`crates/tact-gui/tests/shell.rs`；`docs/design/tact-desktop-prototype.html`；`docs/design/tact-desktop-design-review.md`。
+
+## 1. 2026-09-21 — 强调按钮的高光、活动页签的抬升、ghost 按钮的描边与主题阶梯的钉住
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`send_button`、`prototype_button`、工作区页签、`request_panel`）；`crates/tact-gui/src/theme.rs`（`TINT_ALPHA_LIGHT`、`TINT_ALPHA_DARK`、`tint_alpha`、`the_tint_ladder_matches_the_prototype`、`the_theme_roles_carry_the_prototype_variables`）；`docs/design/tact-desktop-prototype.html`（`.tab.active` 第 12 行、`.btn.ghost` / `.btn.primary` 第 18 行、`.send` / `.send.run` 第 19 行、`--orange` 第 8-9 行）；`gpui-component-0.6.4/src/button/button.rs`（`Ghost` 边框第 1032 行、`Custom` 边框第 1033-1039 行、custom 背景第 925/943 行）；`gpui-pre-0.3.5/src/elements/div.rs`（hover 是替换，第 848-855 行；绘制期 refine，第 3454-3469 行） |
+
+**症状 / 动机：** 三个凸起表面仍然画得太平。原型的 `.send` 带 `box-shadow: inset 0 1px 0 rgba(255,255,255,.2)`，而 `.send.run` 只换填充和边框，所以运行中的停止状态也应保留这条高光；发布版的方形按钮完全没有阴影。`.btn.primary` 带同样的内阴影，让权限卡的 “Allow always” 和提问卡的 “Confirm” 读起来是凸起的，但按钮组件自带的 `shadow(bool)` 不能接收阴影列表。活动标题页签还缺原型的 `0 1px 2px rgba(20,20,19,.06)` 抬升（它的描边已经由页签边框建模）。另外，主题角色测试只钉了五个映射，三道墨阶、线框角色、强调色的 hover/pressed 档和状态色都可能漂移；tint 透明度还是一对裸字面量；原型未被读取的 `--orange` 也没有与主题的 `base.yellow` 一起说明。此外，ghost 按钮在指针悬停时丢掉了描边：壳层手工恢复了原型的 `1px solid var(--line)`，但组件的 `Ghost` variant 在任何状态都返回 `transparent` 边框，而它的 hover 样式是在绘制期 refine 到调用方样式之上的，于是指针一到描边就消失。
+
+**决策：** 每个值都取自原型。`send_button` 在 running/idle 分支之前无条件加上内阴影 `BoxShadow`，于是强调色发送键和停止键都有同一条高光。`prototype_button` 通过 `<Button as gpui_kit::Styled>::shadow(...)` 给主按钮加同样的内阴影——因为组件自带的 `Button::shadow(bool)` 占用同名 setter；组件会克隆调用方的实例样式，并在最后把它 refine 到 variant 的填充与边框之上，所以调用方的阴影列表能保留。活动工作区页签用原型自己的 `0x141413` 墨色加上 `0 1px 2px` 抬升，而不是用暗色下会翻成近白的 foreground；`0 0 0 1px var(--line)` 仍由边框承担。主题测试现在覆盖 21 个可达映射，并对 `:root` 与 `:root[data-theme=dark]` 逐条断言。`TINT_ALPHA_LIGHT` / `TINT_ALPHA_DARK` 取代裸的 tint 透明度，`the_tint_ladder_matches_the_prototype` 从两个原型块解析 `--accentTint`、`--redTint`、`--greenTint`、`--blueTint` 并比较 alpha。`.btn.ghost` 这种形态从 `Ghost` variant 改到 `ButtonVariant::Custom`：它的边框颜色在各状态间不变，并且可以显式指定 hover 填充。调用点无法自己追加 hover 样式——`hover` 会断言其未被设置并整体替换，而且 `Ghost` 的 hover 样式会在绘制期继续覆盖调用点的边框。静态填充仍由调用点的 `.bg`（`--surface`）承担，因为 `Custom` 自带的常态背景是它颜色的 20% 混合。
+
+**改后行为：** 发送/停止方块与审批/提问的主按钮在两个主题下都带原型顶部高光；选中的工作区页签从轨道上抬起，同时保留线框描边；21 个角色映射与四个 tint alpha 都钉在两个原型块上；`base.yellow` 继续有意不匹配原型未使用的 `--orange`；ghost 按钮在指针悬停时也保留自己的 `--line` 描边，而不是把它丢掉。
+
+**已知残留：** 两个发布主题里的 `base.yellow` 都是 `#D9A441`，而原型的 `--orange` 浅色是 `#9F5D2F`、暗色是 `#D9A441`；原型声明了 `--orange` 却从未读取（`var(--orange)` 没有出现），壳层也没有表面读取 `yellow`，所以浅色值保持不动，不靠猜测重映射。有一处 ghost 细节仍未对齐：悬停时的描边保持在 `--line`，没有跟进到原型的 `--line2`，因为 `Custom` 在各状态间只有一个边框颜色。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`send_button`、`prototype_button`、工作区页签、`request_panel`）；`crates/tact-gui/src/theme.rs`（`TINT_ALPHA_LIGHT`、`TINT_ALPHA_DARK`、`tint_alpha`、`the_tint_ladder_matches_the_prototype`、`the_theme_roles_carry_the_prototype_variables`）；`docs/design/tact-desktop-prototype.html`（`.tab.active` 第 12 行、`.btn.primary` 第 18 行、`.send` / `.send.run` 第 19 行、`--orange` 第 8-9 行）；`gpui-component-0.6.4/src/button/button.rs`；`gpui-pre-0.3.5/src/elements/div.rs`；`docs/design/tact-desktop-design-review.md`。
+
+## 1. 2026-09-21 — 三级墨 `--ink3`、对话框遮罩与 composer 的暗色阴影
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/theme.rs`（`ink3`、`activate`）；`crates/tact-gui/src/shell.rs`（`sidebar_meta_row`、`prompt_composer`、palette 页脚）；`crates/tact-gui/src/pane.rs`；`crates/tact-gui/src/transcript.rs`（`TranscriptRow::Error`）；`docs/design/tact-desktop-prototype.html`（`--ink3` 第 8-9 行、`.composer` 第 19 行、`.overlay` 第 22 行、worktree 行第 65 行） |
+
+**症状 / 动机：** 第三遍像素审计发现壳层根本没有原型三级墨的角色，于是把它悄悄压成了两级。原型在 `--ink` 与 `--ink2` 之外还定义了 `--ink3`（浅色 `#716e65`、深色 `#8c8a80`），而发布的主题把 `muted.foreground` 映射到 `--ink2`，因此凡是复用 `muted_foreground` 充当三级墨的调用点都深了一级——在 palette 分组标题、状态栏元信息、卡片注释这些原型刻意压到 `--ink2` 之下的位置最明显。另外两个取值也落在了主题默认值上，而不是原型自己的值：`.overlay` 两个模式都固定 `rgba(20,20,19,.18)`，组件默认却随主题翻转；`.composer` 的常态阴影是固定墨色，卡片却从 `foreground.opacity(...)` 推导，在暗色下变成近乎白色的光晕。worktree 的中性状态圆点漂得同样远：`.dot` 是 `--line2` 加 `--surface2` 光晕，而不是半透明墨色。
+
+**决策：** 补上缺失的主题角色，而不是再近似一次。`theme::ink3(cx)` 返回 `INK3_LIGHT` / `INK3_DARK`，并用一条单元测试从原型两个 `:root` 块里解析 `--ink3`，让常量无法悄悄漂移；随后把 shell、pane、transcript 的调用点迁到它上面（约三十处），而原型确实写成 `--ink2` 的位置（`.status strong`、`.tree .row2`）继续留在 `muted_foreground`。对话框遮罩在 `Theme::change` **之后**钉成 18% 的 `0x141413`，因为该调用会执行 `apply_config` 重置颜色表，写在它前面的赋值会被覆盖；这条由 `activation_pins_the_dialog_overlay` 锁住。composer 的常态阴影直接取同一个墨色常量，不再用会翻转的 foreground；`sidebar_meta_row` 的中性圆点回到 `--line2` / `--surface2`，它最后一个 `muted` 参数也随之退休。
+
+**改后行为：** 三级标签、注释、图标与状态栏元信息在两个主题下都按原型第三级渲染，而真正的 `--ink2` 表面保持不变；命令面板的遮罩在浅色与深色下重量一致；composer 在暗色下浮在阴影上而不是浅色光晕上；空闲 worktree 圆点读作中性的线与面。transcript 的错误行现在带 `Role::Alert` 和错误文本的无障碍标签，屏幕阅读器会念出这一行已经画出的失败。
+
+**已知残留：** 原型的 `.overlay` 还要求 `backdrop-filter: blur(2px)`，当前 GPUI 表面没有暴露该能力；遮罩只钉了颜色、没有模糊，这一偏差记录在设计评审里。
+
+**指针：** `crates/tact-gui/src/theme.rs`（`ink3`、`INK3_LIGHT`、`INK3_DARK`、`activate`、`activation_pins_the_dialog_overlay`、`the_tertiary_ink_matches_the_prototype`）；`crates/tact-gui/src/shell.rs`（`sidebar_meta_row`、`prompt_composer`、palette 页脚、状态栏）；`crates/tact-gui/src/pane.rs`（work 页脚、面板标题、步骤、计划行、diff 行号、状态徽章）；`crates/tact-gui/src/transcript.rs`（`TranscriptRow::Error`、代码头带、msg meta、thinking 与 tool meta）；`crates/tact-gui/tests/shell.rs`（`the_error_row_reports_its_text_as_an_alert`）；`docs/design/tact-desktop-prototype.html`（`--ink3` 第 8-9 行、`.composer` 第 19 行、`.overlay` 第 22 行、worktree 行第 65 行）；`docs/design/tact-desktop-design-review.md`。
+
+
+---
+
+
+## 1. 2026-09-21 — 工具图标、任务表头、worktree 行与两处 focus 环
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/transcript.rs`（运行中的工具图标）；`crates/tact-gui/src/pane.rs`（`task_header_row`、文件树行）；`crates/tact-gui/src/shell.rs`（`sidebar_meta_row`、`worktree_row`、`approval_details`）；`docs/design/tact-desktop-prototype.html`（`.tool.run .toolIcon` L17、`.approval p` L18、`.tasks th` 与 `.tree .row2` L20、`.row` L13、worktree 行 L65） |
+
+**症状 / 动机：** 同一轮像素审计的第二遍又找出六处：桌面壳层落在了组件或主题默认值上，而不是原型自己的取值。运行中的工具把图标画成 `--accent`（`primary`）压在 `--accentTint` 底色上，而 `.tool.run .toolIcon` 要的是 `--accentInk`——浅色下 `#D97757` 应为 `#AB5036`。任务表把 `Task`/`Status`/`Owner` 原样输出，而 `.tasks th` 会做大写转换。审批段落只设了 12 px、没有行高，而 `.approval p` 要求 `1.5`。文件树的行继承了 `--ink`，而 `.tree .row2` 要求 `--ink2`。当前 worktree 行被画成 `.row.active`——`--accentTint` 填充、accent 圆点、主题的 6 px 圆角——而原型把它画成普通 `.row`（7 px），唯一的标记是 `.badge.run`。另外两条 `:focus-within` 规则——`.search` 与 `.composer`——完全没有生效：两个组件都以 `appearance(false).bordered(false)` 创建，所以既没有强调色边框、也没有 2 px `--accentTint` 外圈，composer 卡片还缺了它的常态 `box-shadow`。
+
+**决策：** 组件默认值与原型冲突时一律取原型值。运行中工具的底色保留 `--accentTint`，图标改用 `cx.theme().accent_foreground`。表头写成字面量 `TASK`/`STATUS`/`OWNER`，因为 GPUI 没有 `text-transform`。审批段落补 `line_height(relative(1.5))`。文件树的行以 `muted_foreground`（`--ink2`）起步，再由既有的 `when(is_expanded)`/`hover` 层抬到 `--accentInk`。`worktree_row` 的圆点与活动填充传 `false`，保留 `.badge.run`，并保留 `selected`，让无障碍树仍能报出当前 worktree；侧栏行改用 `px(7.)`，即原型 `.row` 的圆角，而不是主题的 6 px。搜索框与 composer 卡片改为跟踪各自输入框的 focus handle（`track_focus` + `focus`），这是 GPUI 里容器表达 `:focus-within` 的方式：获得焦点时边框转为强调色，搜索框底色抬到 `--surface`，两者都画出 2 px 的 `--accentTint` 外圈。composer 卡片同时补上常态阴影（`--ink` 4% 的 `0 1px 2px` 与 3.5% 的 `0 8px 24px`），聚焦样式会像原型的两条 `box-shadow` 声明那样把它替换掉。
+
+**改后行为：** 运行中的工具是「底色上的深色墨」，而不是强调色压在底色上；任务表表头为大写；审批正文的折行行距是字号的 1.5 倍；文件树的常态行使用次级墨色；当前 worktree 不再看起来像被选中——它的唯一标记是 `1 active`，而 `aria-selected` 仍然指明窗口当前锁定哪个 worktree；搜索框或 composer 获得焦点时边框转为强调色、搜索框底色抬到 `--surface` 并画出外圈，而内部输入框未聚焦时 composer 卡片靠常态阴影浮起。
+
+**已知残留：** 目录行的展开开关是 `gpui-component` 的 ghost `Button`，图标默认用 `secondary_foreground`（`--ink`）、hover 时切到 `accent_foreground`，所以未 hover 时它不跟随行的 `--ink2`。外圈本身是颜色与阴影，`ElementSnapshot` 读不到，因此它们由构造方式保证，而不是由集成断言锁住。
+
+**指针：** `crates/tact-gui/src/transcript.rs`（运行中的工具图标）；`crates/tact-gui/src/pane.rs`（`task_header_row`、文件树行）；`crates/tact-gui/src/shell.rs`（`sidebar_meta_row`、`worktree_row`、`approval_details`）；`docs/design/tact-desktop-design-review.md`。
+
+
+---
+
+## 1. 2026-09-21 — 侧栏、标题页签与 tint 表面通过像素审计
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（标题页签、`sidebar_row_fills` 与 hover token、`sidebar_meta_row`）；`crates/tact-gui/src/pane.rs`（tint、hover、末行边框）；`crates/tact-gui/src/transcript.rs`（tint、卡片 hover）；`crates/tact-gui/src/theme.rs`（`tint_alpha`、`accent_tint`）；`crates/tact-gui/tests/shell.rs`（`the_title_bar_controls_use_the_prototype_boxes`、`the_sidebar_lists_worktrees_and_background_work`）；`docs/design/tact-desktop-design-review.md` |
+
+**症状 / 动机：** 对 `docs/design/tact-desktop-prototype.html` 的像素审计发现桌面壳层有十处滑回了组件默认值。侧栏的 hover 与活动行共用同一个 token，指向会话和选中会话看起来一样。Chat/Agent/Code 走的是原生 `TabBar::segmented()`——高 32 px、铺 `--line`——而不是原型 `.tabs`（2 px 内边距、1 px 边框、`--surface2`）配 26 px 的 `.tab`。worktree 与 background 行没有使用 `.row` 盒子。tint 底色被硬编码成 `.12`，而浅色主题应为 `.10`。三处强调文字用了 `primary` 而不是 `--accentInk`。若干元素缺少原型已有的 hover 反馈。plan/tasks 的最后一行还留着 `border-bottom`。状态栏项目 chip 用了完整的 `--ink`，而不是 `--ink2`。新增/删除 diff 行比原型的 `color-mix(... 70%)` 更重。侧栏第一组与页眉相距 16 px，而不是 6 px。
+
+**决策：** 所有取值收拢到单一来源。侧栏 hover 取 `--hover`（`accent.background`），活动行取 `--accentTint`，两者统一经过 `crates/tact-gui/src/theme.rs` 的 `tint_alpha`/`accent_tint` 以及 `sidebar_row_fills` 中的行填充。标题页签在 `crates/tact-gui/src/shell.rs` 手工搭建；每个页签保留整数 id，`within("workspace-tabs")` 仍可点击。`sidebar_meta_row` 采用 `.row` 几何并复用 17 px mono `SessionBadge`。diff 行取 tint alpha 的 70%，列表末行去掉 `border-bottom`，状态栏 chip 与侧栏标题分别使用 `--ink2`/`--accentInk`。
+
+**改后行为：** 侧栏 hover 不再与选中行同色；标题页签不高于 26 px，也不再用边框色作填充；worktree/background 行保持 44 px 最小高度；浅色主题拿到原型 `.10` 的 tint；新增/删除 diff 底色更轻。
+
+**保留的折中：** 命令面板继续使用原生 `Command`。它的选中行绘制 `accent.background` + `accent_foreground`（即 `--hover` + `--accentInk`），而原型想要 `--accentTint` + `--ink`。组件没有逐行样式钩子，`accent.background` 也不能改——它同时承载 `.tab`、`.icon`、`.row`、`.cmd`、`.wtab` 的 hover；要消除差异只能替换面板列表，同时保留组件自己的筛选与键盘行为。
+
+**指针：** `crates/tact-gui/src/shell.rs`（标题页签、`sidebar_row_fills` 与 hover token、`sidebar_meta_row`）；`crates/tact-gui/src/pane.rs`（tint、hover、末行边框）；`crates/tact-gui/src/transcript.rs`（tint、卡片 hover）；`crates/tact-gui/src/theme.rs`（`tint_alpha`、`accent_tint`）；`crates/tact-gui/tests/shell.rs`（`the_title_bar_controls_use_the_prototype_boxes`、`the_sidebar_lists_worktrees_and_background_work`）；`docs/design/tact-desktop-design-review.md`。
+
+
+---
+
+## 1. 2026-09-21 — 卡片圆角、强调文字色与工具输出的滚动
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/pane.rs`（`card`、`card_with_id`）；`crates/tact-gui/src/transcript.rs`（助手 gutter、工具卡的 `.out`、错误行）；`crates/tact-gui/src/shell.rs`（`accent_tint`、侧栏搜索框、`session_row`、`worktree_row`、`background_row`、`status_pill`、`approval_card`、`status_bar`）；`docs/design/tact-desktop-prototype.html`（`.card`、`.tool`、`.code`、`.badge.run`、`.row.active`、`.gutter`、`.out`、`.search input`、`.accent`） |
+
+**症状 / 动机：** 把原型的布局取值逐条与壳层对照后，还剩五处是按组件默认值画、而不是按设计画的。卡片与代码卡圆角是 15 px，而 `.card`、`.tool`、`.code`、`.thinking`、`.approval` 都写 `--r10`（10 px）——因为主题的圆角基数是 6 px，`radius_2xl()` 是它的 2.5 倍。长命令输出按原型的 150 px 截断，但用的是 `overflow:hidden`，超出上限的部分够不到——原型写的是 `overflow:auto`。强调色上的文字用了 `primary`，而原型的 `--accentInk` 在浅色下要暗好几级、深色下更亮。`--accentTint` 被硬编码成 `.12`，而浅色主题是 `.10`。侧栏搜索还在壳层自己的 30 px 凹槽里画了第二个带边框的输入框，而 `.search input{border:0;background:transparent}` 正是为了避免这个。
+
+**决策：** 每个取值都从原型取，而不是从最接近的组件 token 取。卡片圆角在 `card`、`card_with_id` 与错误行上改成显式 `rems(0.625)`——与壳层其他 rem 盒子同样的处理——因为单一主题圆角表达不了原型 6/8/10/14 这一族。`.out` 保留 150 px 上限并加上 `overflow_y_scrollbar()`；它必须是链条的最后一步，因为它会把盒子变成 `Scrollable` 并重新给被包裹元素赋 id，所以测试锚点移到内层节点，滚动包裹层按行取 id，避免各卡片共用一个滚动位置。强调态改用 `accent_foreground`（`.badge.run`、`.row.active strong`、`.gutter`、`.approval .warn` 与状态栏 `.accent` 规则），并新增 `accent_tint()` 按主题读取 `--accentTint`——浅色 `.10`、深色 `.12`——供它们背后的底色使用。搜索框用 `appearance(false).bordered(false)` 绘制。
+
+**改后行为：** 卡片、代码卡、工具卡与审批卡都使用原型的 10 px 圆角；输出超过 150 px 的命令在自己的框内滚动而不是被裁掉；活动会话标题、它的运行徽标、助手 gutter、审批警告块与 `1 running` 状态段都呈现为强调文字色而不是更亮的强调色；强调底色在两个主题下都是原型的透明度；侧栏搜索是一个凹槽加透明输入框。完整套件——70 个集成用例加单元测试——通过，`cargo fmt --check` 与 `cargo clippy --all-targets -- -D warnings` 干净。
+
+**指针：** `crates/tact-gui/src/pane.rs`（`card`、`card_with_id`）；`crates/tact-gui/src/transcript.rs`（助手 gutter 与工具卡的 `.out`）；`crates/tact-gui/src/shell.rs`（`accent_tint`、侧栏搜索、`session_row`、`status_pill`、`status_bar`）；`docs/design/tact-desktop-prototype.html`（`.card`、`.out`、`.badge.run`、`.search input`）；`docs/design/tact-desktop-design-review.md`（像素跟进条目）。
+
+
+---
+
+
+## 1. 2026-09-21 — 会话标题 chip 打开了 spec 要求的下拉
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`SessionChip`、`title_bar`、`push_system_row`）；`crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`）；`docs/design/tact-desktop-prototype.html`（`.session`，第 37 行）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`（第 230-231 行） |
+
+**症状 / 动机：** 原型把会话标题画成真正的 `<button class="session">` 并带一个 chevron；spec 要求「会话标题带下拉：重命名、复制、归档，以及在适用时在文件系统中显示」。v1 只渲染了触发器、后面什么都没有：一个 `h_flex()` 套着列表图标、截断的标题和 `ChevronDown`，没有 id、没有可按区域、也没有 popover——于是标题栏里唯一长得像菜单的控件，成了唯一点了没反应的控件。
+
+**决策：** 菜单用壳层已经验证过的原语搭出来：`Popover` + `Selectable` 触发器 + `Button` 行，与 composer 的附件菜单、用量菜单同栈。触发器改成一个小 `SessionChip` 类型，完整保留原型的盒子——水平 7 px、垂直 4 px 内边距，6 px 圆角，7 px 间距，240 px 上限的 12.5 px 截断标题，列表图标与 chevron——只新增 hover 与展开态配色。四行接到应用今天确实能做的事上。重命名、复制、归档完全没有后端：`SessionHandle` 只暴露 `session_id`/`submit`/`cancel`/`send`，`tact_protocol::UserCommand` 没有对应变体，sessions 表没有标题列也没有归档列，显示标题还是从第一条用户消息推导出来的。Reveal 有工作区路径，但仓库里没有任何平台打开文件的辅助函数。因此每一行都通过壳层既有的 `push_system_row` 通知说明缺的是什么能力，而不是假装执行——尤其没有把归档映射成删除。
+
+**改后行为：** 按下 chip 会打开面板，按下任意一行都会往 transcript 追加一行说明性 system 行，同时面板保持打开，与 composer 自己的菜单行为一致；在外部按下会关闭它。`every_entry_point_answers_a_click` 会走一遍：打开、断言面板存在、依次按下四行并断言 transcript 每次恰好加一行，最后在外部按下并断言面板消失。spec 里 rename/duplicate/archive/reveal 的语义仍需要 store 或协议契约之后才能真正工作；这一点写在设计评审里，而不是留在暗示中。集成套件为 70 个通过用例。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`SessionChip`、`title_bar`、`push_system_row`）；`crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`）；`docs/design/tact-desktop-prototype.html`（`.session`，第 37 行）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`（第 230-231 行）；`docs/design/tact-desktop-design-review.md`（session chip 跟进）。
+
+
+---
+
+
+## 1. 2026-09-21 — 输入框不再越过原型的上限继续增长
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`prompt_composer`）；`crates/tact-gui/tests/shell.rs`（`the_prompt_grows_between_the_prototype_minimum_and_maximum`、`the_composer_controls_use_the_prototype_boxes`）；`docs/design/tact-desktop-prototype.html`（`.prompt`，第 19、118 行） |
+
+**症状 / 动机：** `rows="2"` 的 textarea 带着 `.prompt{min-height:48px;max-height:150px}`，这是让长草稿留在 composer 里、而不是让输入框吃掉 transcript 的那条规则。v1 两端都没守住：textarea 上的 `min_h(rems(3.))` 加上外层自己的 `10px`/`6px` padding，让空输入框量到 64 px，比原型下限高出 16 px；而 `.auto_grow(1, 8)` 把唯一的上限放在八行，于是 600 词的草稿量到 192 px——比原型上限超出 42 px——中间没有任何东西拦住它。
+
+**决策：** 把上限表达成行数，因为 GPUI 的 textarea 对自动增长框是按整行（`rows * window.line_height()`）布局，而不是按连续像素：textarea 上的 `min_h`/`max_h` 在这套布局里不会生效，而低于行最小值的 `max_h` 还会输给行本身。`.auto_grow(1, 5)` 是仍能落在原型 150 px 上限之内的最大行数——六行已经量到 152 px。textarea 保留原型的 `13px`/`1.5` 文本度量，其 accessibility id 改为 `prompt-composer-field`，这样输入框与 `.prompt` 外框不再共用同一个 id。
+
+**改后行为：** 输入框静止时量到 52 px，比原型下限高 4 px、比 v1 矮 12 px；600 词草稿把它撑到 132 px 后停住：比原型上限低 18 px、比 v1 允许的低 60 px。`the_prompt_grows_between_the_prototype_minimum_and_maximum` 会输入这份草稿并固定两端，`the_composer_controls_use_the_prototype_boxes` 继续固定 48 px 下限。集成套件为 70 个通过用例。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`prompt_composer`）；`crates/tact-gui/tests/shell.rs`（`the_prompt_grows_between_the_prototype_minimum_and_maximum`）；`docs/design/tact-desktop-prototype.html`（`.prompt`，第 19 行；textarea，第 118 行）；`docs/design/tact-desktop-design-review.md`（`.prompt` 有上限）。
+
+
+---
+
+
+## 1. 2026-09-21 — 剩余的动效与图标回退现在与设计对齐
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/pane.rs`（`PANEL_ENTRANCE`、`panel_entrance`）；`crates/tact-gui/src/transcript.rs`（`MESSAGE_RISE`、`message_rise_policy`、`CHEVRON_ROTATION`、`chevron_rotation_policy`、`chevron_target`、`render_row`）；`crates/tact-gui/src/shell.rs`（`prompt_composer`、`MessageScroller` 的行闭包）；`crates/tact-gui/tests/shell.rs`（动效与点击套件）；`docs/design/tact-desktop-prototype.html`（`@keyframes panel`、`@keyframes rise`、`.chev`、`.send`、`.workFoot`） |
+
+**症状 / 动机：** 壳层此前已经对齐了原型两个浮层的滑动，但剩下的可见动效仍然是硬切或替身：`.panel.active` 只有淡入、没有那 3px 抬升；新到的 `.msg` 行不会上升；两个可折叠摘要还在 `ChevronRight` 与 `ChevronDown` 之间换图标，而不是让同一个 chevron 用 `160ms` 旋转。另有两个静态图标仍来自组件默认值：运行中的 composer 动作用了暂停图标，而原型画的是方形停止；`Open in editor` 用了终端图标，而原型画的是书。
+
+**决策：** 每个一次性入场都继续使用原型自己的 `--ease` 曲线。`.panel` 保留原有的 `with_animation` 淡入，并补上相对的 `top(3px * (1 - progress))` 替身——这是视觉 inset，不是布局变化，所以不会推动滚动容器。`.msg` 在用户与助手行上使用 `Presence`，首次采样从透明度 `0` 与 `translateY(5px)` 开始，`320ms` 后收敛；位移同样落在相对的 `top` inset 上。虚拟列表只渲染可见行，所以屏幕外的行会在第一次进入渲染窗口时才开始上升，而不是仍处于虚拟化状态时——这是有意接受的、比 CSS `both` 弱的一点。两个摘要现在都渲染同一个 `Icon::new(IconName::ChevronRight)`，并用 `transition((index, channel), chevron_target(open), chevron_rotation_policy(), window, cx)` 驱动，所以一次切换会让真实 SVG 在 executor 时钟上从 `0 -> pi/2` 旋转；中途反向按下时会从当前角度回退。composer 的运行图标改为 `SquareStop`，work footer 的图标改为 `Book`。
+
+**改后行为：** 切换 work pane 标签时，新面板用 `180ms` 淡入并抬升；新到的用户/助手行用 `320ms` 上升；thinking 与 tool 摘要用 `160ms` 旋转同一个 chevron；运行中的 composer 动作是方形停止图标；`Open in editor` 带原型的书本图标。新的 chevron 契约由 `the_chevron_rotates_a_quarter_turn_over_the_prototype_duration` 单测固定，现有集成套件继续覆盖每条入场与点击路径。减弱动态效果时，`Presence` 与 `transition` 的采样仍然直接解析到终态，无需逐个调用点加判断。
+
+**指针：** `crates/tact-gui/src/pane.rs`（`panel_entrance`、`view`）；`crates/tact-gui/src/transcript.rs`（`MESSAGE_RISE`、`message_rise_policy`、`CHEVRON_ROTATION`、`chevron_rotation_policy`、`chevron_target`、`render_row`）；`crates/tact-gui/src/shell.rs`（`prompt_composer`、`MessageScroller::new`）；`docs/design/tact-desktop-prototype.html`（`@keyframes panel`、`@keyframes rise`、`.chev`、`.send`、`.workFoot`）；`docs/design/tact-desktop-design-review.md`（Phase 4-7 跟进）。
+
+
+---
+
+
+## 1. 2026-09-20 — 抽屉与浮起的侧栏现在两个方向都会滑动
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`OVERLAY_SLIDE`、`WORK_PANE_DRAWER_OFFSET`、`SIDEBAR_OVERLAY_OFFSET`、`WORK_PANE_DRAWER_PRESENCE`、`SIDEBAR_OVERLAY_PRESENCE`、`overlay_slide`、`overlay_inset`、`work_pane_drawer`、`sidebar_overlay`、`TactApp::render`）；`crates/tact-gui/tests/shell.rs`（`settle_motion`、`the_work_pane_drawer_slides_in_and_out_over_the_prototype_duration`）；`docs/design/tact-desktop-prototype.html`（第 25-27 行） |
+
+**症状 / 动机：** 原型里会动的只有这两个浮层，而且每次切换都动：`@media(max-width:1120px)` 给 `.work` 的是 `transform:translateX(105%)` 配 `transition:transform 180ms var(--ease)`，它那条 `<=880px` 的同族规则给浮起 `.sidebar` 的是镜像的 `translateX(-105%)`；而关闭路径只翻转 `body.workOpen`——面板本身从不被移除，是「过渡回画面之外」。v1 在标志翻转的那一帧直接挂载/卸载两者，于是抽屉和侧栏都是硬切出场，关闭方向更是完全没有原型那条退出过渡的对应物。
+
+**决策：** 把两个问题分开问，因为答案不同。某个浮层「能不能」是抽屉形态，只取决于宽度（`work_pane_drawer_form`）；它「在不在画面上」交给 `Presence`——退出期间保留节点，过渡结束的那一帧才丢弃。180ms 与 `cubic-bezier(.23,1,.32,1)` 取自原型自己的令牌，收在一个 `overlay_slide()` 里，两个浮层共用同一套时序。这个 GPUI 没有绘制层的 transform，所以 `overlay_inset` 把 `translateX(±105%)` 落在浮层自身的锚定 inset 上——同一份几何，抽屉写 `right`、侧栏写 `left`。scrim 被刻意排除在滑动之外：原型把它写成自己那条窄规则里的 `display` 开关，所以它与面板同帧出现/消失，抽屉是「不被压暗地」滑出去的。
+
+**改后行为：** 在「面板没有列位」的宽度上按预设，抽屉从 960 + 441px 处用 180ms 滑入；关闭时节点仍然挂着并往回滑，滑完才卸载——`the_work_pane_drawer_slides_in_and_out_over_the_prototype_duration` 把时钟推到 90ms 与 290ms 并检查两端，且做过两次变异验证（把 inset 变成空操作、以及关闭即卸载，各自都会让它失败）。减弱动态效果无需逐浮层判断即已生效：`gpui-base` 的 motion 层在 `App::reduce_motion()` 为真时直接解析到终态；契约测试正是靠打开它（`settle_motion`）来断言稳定几何，所以「读取浮层最终位置」的那些测试不会与过渡抢时间。集成测试为 69 个通过。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`OVERLAY_SLIDE`、`overlay_slide`、`overlay_inset`，以及 `TactApp::render` 里两处 `Presence` 采样）；`crates/tact-gui/tests/shell.rs`（`settle_motion`、`the_work_pane_drawer_slides_in_and_out_over_the_prototype_duration`）；`docs/design/tact-desktop-design-review.md`（动效条目）；`docs/design/tact-desktop-prototype.html`（`@media(max-width:1120px)` 及其 `<=880px` 同族规则，第 25-27 行）。
+
+---
+
+## 1. 2026-09-20 — 桌面三列在 1320px 以下一起收缩
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`Columns`、`Columns::for_width`、`Columns::NARROW_UNDER`、`TranscriptFrame`、`title_bar`、`sidebar`、`work_pane`、`transcript`）；`crates/tact-gui/tests/shell.rs`（`the_narrow_breakpoint_shrinks_the_three_columns`）；`docs/design/tact-desktop-prototype.html`（第 24 行） |
+
+**症状 / 动机：** 原型的第一条媒体查询让三列一起收缩——`@media(max-width:1320px){:root{--sidebar:244px;--work:374px}.thread{width:min(680px,calc(100% - 36px))}}`——而 v1 在任何宽度都保持 260 / 420 / 720。受影响的并不只是列宽：`.thread` 的规则把转录限制在「列宽减去两侧留白」，所以原型在 1320px 以上始终留 48px（每侧 24px）、以下留 36px；而 v1 的 `w_full().max_w(720px)` 让正文吃满整列，转录列一旦窄于 720px 就完全丢掉了留白。
+
+**决策：** 每帧用 `Columns::for_width(width, rem_size)` 解析出这三个宽度，再交给所有按列绘制的界面：标题栏左右两段、流内工作面板、侧栏列，以及转录的 text measure。留白改由转录列的内边距承担——同一条 `min(680px, 100% - 36px)` 规则在 flex 里的写法：内边距之内的 `w_full()` 就是 `100% - 留白` 那一项，`max_w` 是上限。只有列会收缩：工作面板在抽屉形态下仍是 420px，因为原型自己的 `@media(max-width:1120px)` 块在它变成浮层时把 `.work` 重置为 `min(420px,88vw)`；浮起的侧栏也仍取列宽。
+
+**改后行为：** 1300px 窗口下侧栏量到 244px、面板 374px、转录 646px（682px 的列减去 36px 留白）；1440px 下壳层与原来完全一致——260 / 420 / 720 加每侧 24px 留白，宽布局不受影响。`the_narrow_breakpoint_shrinks_the_three_columns` 在 1300px 钉住这三个数值，并做过变异验证（把解析器强制走宽分支即失败）。集成测试为 68 个通过。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`Columns`、`Columns::for_width`、`Columns::NARROW_UNDER`、`TranscriptFrame`、`title_bar`、`sidebar`、`work_pane`、`transcript`、`TactApp::render`）；`crates/tact-gui/tests/shell.rs`（`the_narrow_breakpoint_shrinks_the_three_columns`、`wide_window_lays_out_three_columns`）；`docs/design/tact-desktop-design-review.md`（列宽相关条目）；`docs/design/tact-desktop-prototype.html`（`@media(max-width:1320px)`，第 24 行）。
+
+---
+
+## 1. 2026-09-20 — 工作区抽屉响应 Escape，窄窗口按预设会把它带回来
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`select_work_pane`、`work_pane_is_drawer`、`on_stop_task`、`TactApp::render`）；`crates/tact-gui/src/pane.rs`（工作面板标签）；`crates/tact-gui/tests/shell.rs`（`a_preset_press_opens_the_drawer_only_where_the_pane_has_no_column`、`escape_closes_the_work_drawer_but_leaves_the_column_alone`）；`docs/design/tact-desktop-prototype.html`（`pane()`，第 148 行；全局 keydown，第 159 行） |
+
+**症状 / 动机：** 抽屉又漏了原型的两条规则，两条都源于「低于壳层 1280px 阈值时，抽屉是面板唯一的容身之处」。原型 `pane(name)` 结尾是 `if(innerWidth<=1120) work(true)`——窄窗口上选中一个面板同时也是要求看见它；而 v1 的 `set_work_pane` 只赋值，于是在 1100px 按下预设，面板被换到了已关闭的抽屉背后，屏幕上什么也没变：标签亮了、正文没出现，正是上一轮浮起侧栏那种「按了等于没按」。另一处是原型的全局 keydown 写 `if(overlay.open) closePalette(); else if(body.workOpen) work(false)`，而 v1 把 `escape` 绑给了 `StopTask`，抽屉没有任何 Escape 通路：抽屉开着且没有回合在跑时 `stop()` 直接早退，这个键什么也不做。
+
+**决策：** 当面板没地方可放时，「选中面板」与「让面板可见」是同一个动作：`select_work_pane(pane, window)` 赋值之后再判宽度，低于 `WORK_PANE_IN_FLOW_FROM`（即「打开的面板只能是抽屉」的那个宽度）就把抽屉打开。高于该宽度时 `innerWidth` 守卫的语义保持不变——按预设不会把已关闭的列打开。`work_pane_is_drawer(window)` 成为抽屉形态的唯一判定，由 `TactApp::render` 与按键通路共用，`on_stop_task` 在触达任务之前先解散抽屉。Escape 只有抽屉这一半需要写代码：获得焦点的对话框自带 `Dialog` 键上下文并压过 `TactApp`，所以调色板早已把 Escape 当作自己的 `Cancel` 消费掉，轮不到壳层。
+
+**改后行为：** 1100px 下先关掉抽屉再按预设，抽屉会带着该预设的面板回来；1440px 下同样一按仍然保持关闭，于是宽度条件本身就是契约而不是测试的布置细节。抽屉浮在转录之上时 Escape 会解散它；面板自己拥有列宽时，Escape 保持 v1 语义去停任务。`a_preset_press_opens_the_drawer_only_where_the_pane_has_no_column` 与 `escape_closes_the_work_drawer_but_leaves_the_column_alone` 都在两种宽度上跑并断言结果不同；两条都做过变异验证（把所钉的分支删掉即失败）。集成测试为 67 个通过。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`select_work_pane`、`work_pane_is_drawer`、`on_stop_task`、`TactApp::render`）；`crates/tact-gui/src/pane.rs`（工作面板标签）；`crates/tact-gui/tests/shell.rs`（`a_preset_press_opens_the_drawer_only_where_the_pane_has_no_column`、`escape_closes_the_work_drawer_but_leaves_the_column_alone`、`the_workspace_tabs_pair_each_preset_with_its_pane`）；`docs/design/tact-desktop-design-review.md`（Escape 与 `pane()` 两条）；`docs/design/tact-desktop-prototype.html`（`pane()`，第 148 行；全局 keydown，第 159 行）。
+
+---
+
+## 1. 2026-09-20 — 工作区抽屉补上原型的 scrim，浮起的侧栏保住自己的点击
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`work_pane_scrim`、`work_pane_drawer`、`sidebar_overlay`、`TactApp::render`）；`crates/tact-gui/src/transcript.rs`（`render_code_block`）；`crates/tact-gui/tests/shell.rs`（`the_work_pane_drawer_swallows_presses_behind_it`、`the_sidebar_overlay_keeps_its_presses_above_the_scrim`、`the_floating_sidebar_stays_above_the_work_pane_where_they_overlap`、`the_code_block_copy_chip_writes_its_fence_to_the_clipboard`）；`docs/design/tact-desktop-prototype.html`（`.scrim`、`body.workOpen`、`#scrim` 的点击处理、`.codeHead`） |
+
+**症状 / 动机：** 两个窄窗口缺陷，此前每一个测试都从旁边走了过去。原型用自己的 `.scrim` 兜住窄布局：`body.workOpen .scrim{position:absolute;inset:0;z-index:25;display:block;background:rgba(20,20,19,.14)}`，配 `q('#scrim').onclick=()=>work(false)`——按下抽屉之外的地方只会关掉抽屉，而不是落到抽屉正好盖住的那个控件上。壳层只画了抽屉，于是在 1100px（面板已浮成抽屉、侧栏仍是列）按一下侧栏的会话行，会**既选中那一行、又关掉抽屉**：这一下按到了用户根本没瞄的控件。另一处是 `sidebar_overlay` 拿到的是 `self.session`，而列形态拿到的是 `open_session_id()`；离线壳层的「当前行」走 `preview_current`，所以低于 960px 时浮起的侧栏压根没有活动行，按会话在画面上什么也不会发生。
+
+**决策：** 画出 scrim——`.absolute().inset_0()` 加 `rgba(20,20,19,.14)` 的原型底纹——作为覆盖整个工作区的那层；用 mouse-down 上的 `stop_propagation` 吞掉它该吞的那一下，保证这一下不会同时落到被盖住的控件上；再由它的 click 关掉抽屉。GPUI 没有 `z-index`，所以原型 `25 < 30 < 40` 的层叠改由渲染顺序下的「点击归属」表达：抽屉与浮起的侧栏各自在冒泡路上认领自己的那一下，这正是一次按下不会同时被算成「控件点击」和「scrim 点击」的原因。浮起的侧栏改用 `open_session_id()`，与列形态拿到同一个 `current`。
+
+**改后行为：** 面板作为抽屉时，按在它外面会关掉面板且底下的东西一律不响应，按在抽屉自己的页签上仍然切换面板。低于侧栏断点后，按浮起的会话行会选中它并让工作区面板保持打开，对应原型里 `.sidebar{z-index:40}` 压在 `.scrim{z-index:25}` 之上。`ElementSnapshot::visible()` 表达不了这些——它只是与视口求交——所以两条契约都是行为断言：先按下，再读回这一下本该改变的状态。这一轮顺手关掉了点击巡检里最后一个够不到的控件：转录里围栏代码卡的 `Copy` 标签既没有元素 id 也没有可访问名字，任何测试都按不到它。它现在用框架给这个块打的那个锚点做 id——`code-block-copy-<anchor>`，即该围栏在消息里的字节偏移，markdown 渲染器就是这么给自定义块打点的——带上 `aria_label("Copy code")`，并在 click 时把围栏正文写进剪贴板；`the_code_block_copy_chip_writes_its_fence_to_the_clipboard` 会按下它并读回剪贴板。集成测试为 65 个通过。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`work_pane_scrim`、`work_pane_drawer`、`sidebar_overlay`、`TactApp::render`）；`crates/tact-gui/src/transcript.rs`（`render_code_block`）；`crates/tact-gui/tests/shell.rs`（`the_work_pane_drawer_swallows_presses_behind_it`、`the_sidebar_overlay_keeps_its_presses_above_the_scrim`、`the_floating_sidebar_stays_above_the_work_pane_where_they_overlap`、`the_code_block_copy_chip_writes_its_fence_to_the_clipboard`）；`docs/design/tact-desktop-design-review.md`（Phase 4–7 跟进）；`docs/design/tact-desktop-prototype.html`（`.scrim`，第 25 行；`#scrim` 处理，第 147 行；`.codeHead`，第 90 行）。
+
+---
+
+## 1. 2026-09-20 — 状态栏每个分段都有可读名字并钉住取值，标题栏预设也逐个按下
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`status_bar`、`status_item`、`Workspace::work_pane`、`title_bar`）；`crates/tact-gui/tests/shell.rs`（`the_status_bar_renders_its_segmented_chips`、`the_workspace_tabs_pair_each_preset_with_its_pane`）；`docs/design/tact-desktop-prototype.html`（`footer.status`，以及 `.tab` 的点击处理） |
+
+**症状 / 动机：** 原型页脚是一排分段——项目、分支、权限、diff 增减、checks、上下文、余额、running——每段读的是会话状态里不同的一项。壳层画出了同样一排，但没有任何断言读它的文本：`the_status_bar_renders_its_segmented_chips` 只问 `status-bar` 挂没挂载，于是某段读错字段、格式写错、甚至整段消失，测试都照样全绿。这些分段同时没有可访问名字，辅助技术在肉眼看到 `42% context` 的位置只能碰到一排没有标签的盒子。
+
+同一轮里还翻出第二个空洞：标题栏的三个预设页签（`Chat`、`Agent`、`Code`）从来没有被任何测试按过——点击巡检一路长满了窗口主体，唯独漏掉这三个顶层切换；于是壳层「预设对应哪个工作区面板」这条映射（原型里是 `pane(n==='agent'?'tasks':n==='code'?'diff':'plan')`）只靠读源码成立。
+
+**决策：** 标题栏预设改由 `the_workspace_tabs_pair_each_preset_with_its_pane` 逐个按下，每按一个就读回它打开的面板，`TabBar` 与壳层的配对映射都被覆盖。`status_item` 接收该段的 id，并用与画面同一个字符串设置可访问名字——这既让分段可被朗读，也让测试能读回它；两段不是「图标 + 文本」的普通组合（`status-permission`、`status-diff`）手工补上同样的一对。测试改为读回每段文本并与预览种入的会话比对——`Ask permission`、`+676 −152`、`42% context`、`$18.42`、`1 running`——而不是断言「状态栏存在」。回合计数段反过来断言 *不存在*，因为预览没有 `TurnStats` 可显示。原型里的 `checks passing` 段保持不实现：协议不上报 check 状态，硬画就是一段永远不会变的死分段；该偏差记在设计评审里，而不是用占位内容填上。
+
+**改后行为：** 状态栏挂载的每一段都把文本暴露给无障碍树和 `try_find`，且每段取值都钉在它背后的状态上：diff 增减段是已记录改动之和，上下文段与 composer 的 `.ring` 读同一份 usage 快照，余额段按 provider 上报的币种排版。删掉某段、改写措辞、或把某段接到错误字段，都会让 `the_status_bar_renders_its_segmented_chips` 失败；按下某个预设会把它对应的工作区面板切到前台，另外两个面板不再挂载。集成测试为 63 个通过。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`status_bar`、`status_item`、`balance_label`、`Workspace::work_pane`、`title_bar`）；`crates/tact-gui/tests/shell.rs`（`the_status_bar_renders_its_segmented_chips`、`the_workspace_tabs_pair_each_preset_with_its_pane`）；`docs/design/tact-desktop-design-review.md`（Phase 4–7 跟进）；`docs/design/tact-desktop-prototype.html`（`footer.status`，第 132 行）。
+
+---
+
+## 1. 2026-09-20 — 预览壳层画出原型的上下文圆环，点击巡检覆盖请求卡的按钮与 composer 自己的入口
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`seed_preview`、`with_question`、`answer_panel`、`request_panel`）；`crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`、`the_composer_controls_use_the_prototype_boxes`、`the_permission_card_reports_the_choice_it_was_given`、`the_question_card_confirms_the_toggled_choices`、`the_question_card_cancels_without_choosing`、`a_press_in_the_prompt_box_sends_the_draft`）；`docs/design/tact-desktop-prototype.html`（`.ring`、`.send`） |
+
+**症状 / 动机：** 点击巡检有两处它看不见的空洞，以及这两处量出来的第三个问题。
+
+1. *预览壳层不画上下文圆环。* 原型的 composer 带一个读数 `42` 的 `.ring`，状态栏也重复 `42% context`；而预览从未种入 usage 快照，圆环因此根本不挂载。巡检里那段圆环分支虽然还写着，却是一个预览永远走 `else` 的 `if`——一个围着「设计评审面已经丢掉的控件」的死检查。
+2. *请求卡自己的按钮从来没被按过。* 巡检有意跳过 `request-option-*`，因为按下就会结算它后面断言要读的那个请求；而 `request-confirm` / `request-cancel` 它也够不着：这两个按钮只在多选 `ask_user` 形态下渲染，预览种入的却是权限卡。上一轮那种只 diff `.id("...")` 字面量的覆盖审计完全漏掉它们，因为两个 id 都是经 `prototype_button` 传进去的。
+3. *圆环一旦挂载，用的是组件自己的盒子而不是原型的。* 它的触发器是标准 `Button`，而 `gpui-component` 对「带子元素」的按钮——这里是画百分比的圆——按 `size * 0.2` 加左右内边距，再套 32 px 的 compact 高度。于是圆环量到 34x32，而原型 `.ring` 是 `width:24px;height:24px`。它又是 `.bar` 里剩下的最高控件，composer 工具条的高度就被它一个人顶起来了。
+
+**决策：** 预览种入两处读数共用的 usage——`4200 / 10000` tokens，圆环画 `42`、状态栏写 `42% context`——于是设计评审面上有原型画的那个控件，而不是留一个洞。请求卡的两种形态保持分开：`request_panel` 的 `Confirm` / `Cancel` 只由 agent 会话产生的请求渲染，因此新增构造器 `TactApp::with_question`，与 `preview`、`with_sessions` 并列，用来在离线壳层上把该形态摆到屏幕里。已答复的卡片新增 `request-decision`：一行带无障碍标签的决策行，测试因此能读出「按下产生了哪个决定」，而不只是「按钮消失了」。巡检改为按下 composer 的完整选项表（5 个模型、5 个思考预算、6 档 effort、3 种权限模式），而不是各取一个样本；圆环也不再是条件分支。圆环触发器改用 `.with_size(px(24.)).px(px(0.))` 取代 `.compact()`：`with_size` 只对图标按钮生效，内容为子元素的按钮仍会保留内边距，所以要拿到原型自己的盒子必须两个都写。
+
+**改后行为：** `--preview` 在 composer 旁显示 42% 的上下文圆环、状态栏显示 `42% context`，与原型的两处读数一致；按下圆环会打开它自己的计数弹层。在权限卡上按 `Deny`，三行选项会被 `Deny` 取代；在提问卡上勾选后按 `Confirm` 报 `Confirmed N choice(s)`，按 `Cancel` 报 `Dismissed` 并丢弃已勾选的选项。在提示框里按下会把光标落在随后输入的草稿上，`.send` 的发送那一半把草稿变成 transcript 的第一行、让空状态占位消失、并清空输入框，于是再按一次不会再发出任何东西。圆环量到 24x24，与 `.ring` 一致，所以挂上圆环后 composer 工具条仍是原型的高度；`the_composer_controls_use_the_prototype_boxes` 钉住 `.mini` 的 25 px、`.send` 的 28x28，现在再加上 `.ring` 的 24x24。新增覆盖：`the_permission_card_reports_the_choice_it_was_given`、`the_question_card_confirms_the_toggled_choices`、`the_question_card_cancels_without_choosing`、`a_press_in_the_prompt_box_sends_the_draft`，以及巡检里扩充后的选项表。壳层注册的控件现在都有测试按过，例外是侧栏头像（原型里同样是无 handler 的标签）与附件走的原生文件对话框。集成测试套件现为 59 个通过用例。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`seed_preview`、`with_question`、`answer_panel`、`request_panel`、`composer_bar`）；`crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`、`the_permission_card_reports_the_choice_it_was_given`、`the_question_card_confirms_the_toggled_choices`、`the_question_card_cancels_without_choosing`、`a_press_in_the_prompt_box_sends_the_draft`、`the_composer_controls_use_the_prototype_boxes`）；`docs/design/tact-desktop-prototype.html`（`.ring`、`footer.status`）。
+
+---
+
+## 1. 2026-09-20 — 列不存在时标题栏也不再为它留宽，worktree 行按下后离线壳层的会话列表保留
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`sidebar_in_flow`、`TitleBarState::sidebar_float`、`switch_worktree`、`resume_session`）；`crates/tact-gui/tests/shell.rs`（`the_title_bar_gives_up_the_sidebar_column_when_the_sidebar_closes`、`clicking_between_sessions_and_worktrees_keeps_one_open_row`、`the_title_bar_toggles_survive_every_width_around_the_overlay_breakpoint`、`the_chrome_stays_inside_the_viewport_at_every_width`）；`docs/design/tact-desktop-prototype.html`（`@media(max-width:880px)`） |
+
+**症状 / 动机：** 壳层有两处仍在为已经不存在的列排版。
+
+1. *关掉侧栏后标题栏还占着它的宽度。* 侧栏关闭时主体已经不画会话列，但标题栏只在 `SIDEBAR_OVERLAY_UNDER` 以下才停止预留 `SIDEBAR_WIDTH`。于是在宽窗口下 transcript 从窗口边缘开始，而标签页与会话 chip 仍往里缩了一整列，浮在主体已经让出的空隙上。
+2. *按下 worktree 行会把离线壳层的侧栏清空。* `switch_worktree` 每次重新定根都重读会话存储：对连上 agent 的窗口这是对的，对 `--preview` 与每个测试窗口所用的离线壳层则是错的。这类壳层没有存储，它的行是构造时交给它的，重读会把这些行换成本地 `.tact` 数据库里碰巧有的东西，演示列表再也回不来。
+
+**决策：** 侧栏是否为列，这条规则现在只有一个出处。`sidebar_in_flow` 等于 `!sidebar_is_overlay && self.sidebar_open`，主体按同一个条件画出这一列，标题栏则取 `!sidebar_in_flow` 作为浮起标志——所以侧栏一关，标题栏在任何宽度下都会随主体的列一起交出预留宽度，而不只是断点以下才交。`switch_worktree` 只在壳层连上时重读会话列表：这正是 `resume_session` 早就做的离线豁免——离线壳层的点击只改变窗口显示什么，绝不查询存储。
+
+**改后行为：** 在 1440px 关闭侧栏后，transcript 的起点左移，标题栏左段从一整列收缩到只包住自己的控件，而重新打开侧栏的开关仍然点得到。在预览或离线壳层里按下 worktree 行仍会重新定根——分支行、Files 面板、被标记为当前的 worktree 行都跟着走——而侧栏保留它构造时拿到的那些行，被标记为打开的会话也留在原处。`the_title_bar_gives_up_the_sidebar_column_when_the_sidebar_closes` 把标题栏的收缩与 transcript 的左移钉在一起；`clicking_between_sessions_and_worktrees_keeps_one_open_row` 在两张列表之间切换三轮，断言每一次按下后被点的那张列表恰好只有一行打开，且按下 worktree 行不会挪动侧栏标记的打开会话。`the_chrome_stays_inside_the_viewport_at_every_width` 把这张网从「存在」扩到「真正可达」：它扫 1440、1320、1280、1279、960、959、880 与 700px，断言壳层在每个宽度都会挂载的每个控件都*完整*落在视口内——`visible()` 只表示有交集——随后把两个面板开关各关一次再开一次。把标题栏改回两段都预留列宽，它就会以当年的形态失败：`toggle-work-pane` 的 `origin.x = 1053px`，只不过这次是在 960px 窗口里。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`sidebar_in_flow`、`TitleBarState::sidebar_float`、`switch_worktree`、`resume_session`）；`crates/tact-gui/tests/shell.rs`（`the_title_bar_gives_up_the_sidebar_column_when_the_sidebar_closes`、`clicking_between_sessions_and_worktrees_keeps_one_open_row`、`the_chrome_stays_inside_the_viewport_at_every_width`）；`docs/design/tact-desktop-prototype.html`（`@media(max-width:880px)`）。
+
+---
+
+## 1. 2026-09-20 — 侧栏搜索框按下即接管光标，窗口变窄时标题栏的开关仍留在屏幕内
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`sidebar_top`、`title_bar`、`TitleBarState`、`SIDEBAR_OVERLAY_UNDER`、`WORK_PANE_IN_FLOW_FROM`、`WORK_PANE_WIDTH`，以及 `TactApp::render` 里的 `sidebar_is_overlay` / `work_pane_in_flow` 判定）；`crates/tact-gui/tests/shell.rs`（`the_sidebar_search_filters_the_session_list`、`the_side_columns_overlay_when_the_window_narrows`、`clicking_between_sessions_and_worktrees_keeps_one_open_row`）；`docs/design/tact-desktop-prototype.html`（`.search`、`.search:focus-within`、`@media(max-width:1120px)`、`@media(max-width:880px)`） |
+
+**症状 / 动机：** 两个点击巡检够不到的控件，成因相同：壳层复刻了原型的**外观**，却丢掉了浏览器免费提供的行为。
+
+1. *侧栏会话过滤框点不到。* 原型的输入框是 `<label class="search">` 里的原生 `<input>`，浏览器在 label 内任意位置按下时都会聚焦它——随后 `:focus-within` 画出强调色描边。壳层搭了一样的 wrapper + `Input` 外形，但 wrapper 没有挂按下处理，而 `gpui-component` 的 `Input` 不会自己响应点击取得焦点，于是这个画出来的输入框永远拿不到光标，往里敲的字也全都落空。
+2. *窗口变窄时标题栏的 work pane 开关跑到屏幕外。* 标题栏由固定的 `SIDEBAR_WIDTH` 段、可伸缩的中段和固定的 `WORK_PANE_WIDTH` 段组成。原型在两侧面板不再作为列存在时会丢掉对应的网格列——`@media(max-width:1120px)` 把 `.work` 变成绝对定位抽屉，`@media(max-width:880px)` 则丢掉 `.tl`/`.tr` 两列——但壳层一直保留着这两个固定宽度。于是在 `SIDEBAR_OVERLAY_UNDER`（60rem，默认 rem 下 960px）以下，整行排不下，`toggle-work-pane` 被挤出视口：900px 窗口里量到 `bounds.origin.x = 1053px`，即 `visible() == false`，点不到。
+
+**决策：** 标题栏改为接收一个小的 `TitleBarState` 结构体，`sidebar_float` 与 `work_pane_float` 和它本来就需要的字段放在一起；对应面板浮起后，两侧的段不再预留列宽——`sidebar_float` 时左段收缩到只包住自己的控件，不再占着 `SIDEBAR_WIDTH`，`work_pane_float` 时右段对 `WORK_PANE_WIDTH` 做同样的事。两个标志都来自决定布局的同一组判定，因此标题栏和壳层不可能对"还有哪些列存在"各执一词。阈值是严格的——`SIDEBAR_OVERLAY_UNDER` 为 60rem，恰好 960px 时侧栏仍然保留自己的列，只有 `width < 60rem` 才让它浮起。过滤框那边，`session-search` wrapper 挂上 `on_mouse_down(MouseButton::Left)` 并把焦点交给 `Input` 的 focus handle，这正是浏览器为原型做的 label 按下行为。
+
+**改后行为：** 在搜索框任意位置按下都会聚焦它，于是打字就能过滤侧栏会话列表；清空查询后每一行都会回来，因为过滤只是会话之上的一层视图，而不是破坏性编辑。900x640 时侧栏浮在 transcript 之上、work pane 是右侧抽屉，标题栏的两个开关仍然能把它们挂载 / 卸载。同一处测量此前在 900px 窗口里把开关放在 `bounds.origin.x = 1053px`，现在读数是 `828px`，落在视口内。`the_sidebar_search_filters_the_session_list` 点击输入框、输入 `d464`，断言唯一匹配的预览会话留下来、另外两条消失，再用 `ctrl-a`、`backspace` 清空查询把它们带回；`the_side_columns_overlay_when_the_window_narrows` 钉住 900x640 的形态和两个开关。`clicking_between_sessions_and_worktrees_keeps_one_open_row` 在会话列表与 worktree 列表之间来回切换三轮，断言每一次按下后被点的那张列表恰好只有一行打开，且按下 worktree 行不会挪动侧栏标记的打开会话。集成测试套件现为 59 个通过用例。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`sidebar_top`、`title_bar`、`TitleBarState`、`SIDEBAR_OVERLAY_UNDER`、`WORK_PANE_IN_FLOW_FROM`、`WORK_PANE_WIDTH`、`sidebar_is_overlay`、`work_pane_in_flow`）；`crates/tact-gui/tests/shell.rs`（`the_sidebar_search_filters_the_session_list`、`the_side_columns_overlay_when_the_window_narrows`、`clicking_between_sessions_and_worktrees_keeps_one_open_row`）；`docs/design/tact-desktop-prototype.html`（`.search`、`.search:focus-within`、`@media(max-width:1120px)`、`@media(max-width:880px)`）。
+
+---
+
+## 1. 2026-09-20 — 命令面板每一行只执行一次命令，并落到与快捷键相同的状态
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`open_palette`、`run_palette_command`、`focus_composer`、`open_settings`、`PaletteCommand`、各个 `on_*` action 处理函数）；`crates/tact-gui/src/commands.rs`（`command`、`groups`、`init`）；`crates/tact-gui/tests/shell.rs`（`the_command_palette_rows_run_their_commands`、`the_command_palette_rows_past_the_fold_run_their_commands`、`the_palette_new_session_row_answers_like_the_chord`、`the_command_palette_session_rows_answer_without_an_agent`）；`Root::close_dialog`（LIFO 对话框栈）；上游 `gpui-component-0.6.4` `src/command/state.rs`（`CommandState::confirm`） |
+
+**症状 / 动机：** `CommandState::confirm` 会把选中行跑两遍——它先派发该行自己的 GPUI action，*再* defer `Command` 的 `on_confirm` 回调。而 tact 把两端都接上了：`commands::command()` 给每个 `CommandItem` 挂了真实 action（这也正是面板画出 `Kbd` 快捷键列的依据），`open_palette` 的 `on_confirm` 又通过 `PaletteCommand::from_index` 把行号解成命令并调 `run_palette_command`。于是面板每一行都把自己的命令执行了两次。修掉双重派发后，又暴露出两个更具体的行级时序问题：
+
+1. *开关类命令互相抵消。* Toggle sidebar、Toggle work pane、Toggle theme 都是先翻转标志，紧接着又翻回去。按这三行中的任何一行都完全没有反应——这是这个 bug 最有欺骗性的形态，因为行看起来是"死"的，而不是"翻倍"的。
+2. *非幂等命令做了两遍活。* New session 追加两条提示，Cycle sessions 跳两个会话，Compact session 发两次压缩。面板行与它自己的键盘快捷键行为不一致。
+3. *幂等命令把所有痕迹都盖住了。* Open diff、Open tasks、Focus composer 两种走法都落到同一个状态，所以这个 bug 恰恰在点击巡检最先会跑到的地方完全不可见。
+4. *Focus composer 的焦点被覆盖。* 该行在面板仍打开时先聚焦 composer；随后关闭对话框又把焦点还给面板打开前的持有者，覆盖了该行刚设好的焦点。点击结束时看不出任何效果。
+5. *Open settings 被连同面板一起弹掉。* 该行同步打开 Settings，但面板的 `on_confirm` 在该行 action 之后才关闭面板；`Root::close_dialog` 弹出 LIFO 对话框栈，于是新打开的 Settings 位于栈顶，和面板一起被弹出。
+
+**决策：** 以行自身的 action 作为唯一的派发路径。`on_confirm` 现在通过 `std::mem::take` 查询 `palette_live`，只有面板仍是其栈顶对话框时才关闭；`on_cancel` 会清掉这个标志，避免 Escape 关闭的面板被误认成某一行替换后的对话框。`PaletteCommand::from_index`——`commands::groups()` 顺序的第二份手工副本——直接删除，而不是继续维护同步。每个 `on_*` action 处理函数统一汇入 `run_palette_command`，于是面板行与键盘快捷键派发同一个 action、落到同一张表的同一个分支。不能简单地"删掉索引表、只留 action"：一旦摘掉行上的 action，面板就会丢掉 `Kbd` 快捷键提示；而如果放任处理函数继续各自抄一份分支逻辑，这张表就仍是两条路径唯一对账的地方。需要活过面板关闭的行会在同一次同步派发中自己弹出面板：Focus composer 先关面板再聚焦 composer，于是对话框恢复焦点发生在移交焦点之前；Open settings 先关面板再同步打开 Settings。vendored `Command::on_confirm` 虽然一帧后才到，但 `palette_live` 已被清掉，因此不会再动对话框栈。在键盘快捷键路径上没有面板，同一个分支只会执行一次聚焦或一次 `open_dialog`。
+
+**改后行为：** 面板行与它的快捷键做同一件事，且只做一次。Toggle sidebar 与 Toggle work pane 落到相反状态，而不是读回出发时的状态；Toggle theme 只切一次；New session 只追加一条提示；循环会话只移动一个会话。`the_command_palette_rows_run_their_commands` 把两种形态都钉住——必须落到相反状态的开关，以及必须落到指定主体的面板切换；`the_palette_new_session_row_answers_like_the_chord` 钉住那个"跑两遍就会多出一行"的行——它多跑一次就会多出第二条 transcript 行。两条都做过变异验证：对着未修复的源码，它们恰好在这些断言上失败。Focus composer 现在会在同一次派发中先关闭面板，再把焦点交给 composer，因此对话框恢复焦点时不会再覆盖它；Open settings 同样先关闭面板、再同步打开 Settings，由 `palette_live` 告诉面板迟到的确认不要弹掉替换后的对话框。覆盖补充：面板测试现在会点击全部 16 行；低于折叠区的行先把 `command` 列表滚动进视野，再断言每一行各自的可观察效果。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`open_palette`、`run_palette_command`、`focus_composer`、`open_settings`、`PaletteCommand`、`on_*`）；`crates/tact-gui/src/commands.rs`（`command`、`groups`、`init`）；`crates/tact-gui/tests/shell.rs`（`the_command_palette_rows_run_their_commands`、`the_command_palette_rows_past_the_fold_run_their_commands`、`the_palette_new_session_row_answers_like_the_chord`、`the_command_palette_session_rows_answer_without_an_agent`）；`Root::close_dialog`；上游 `gpui-component-0.6.4` `src/command/state.rs` 的 `CommandState::confirm`。
+
+---
+
 ## 1. 2026-09-20 — 桌面端每个入口都能点，worktree 行会切换窗口的工作区
 
 | 字段 | 值 |

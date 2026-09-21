@@ -8,11 +8,14 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
+use gpui_kit::base::animation::cubic_bezier;
+use gpui_kit::base::motion::{Presence, Transition};
 use gpui_kit::base::{Selectable, StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     command::{Command, CommandState},
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
@@ -23,15 +26,14 @@ use gpui_kit::component::{
     scroll::ScrollableElement as _,
     setting::{SettingGroup, SettingItem, SettingPage, Settings},
     switch::Switch,
-    tab::{Tab, TabBar},
     tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, Entity, FocusHandle,
-    Focusable as _, InteractiveElement, IntoElement, ParentElement as _, Rems, Render, RenderOnce,
-    SharedString, Stateful, StatefulInteractiveElement, StyleRefinement, Styled as _, Subscription,
-    Window, div, px, rems,
+    Focusable as _, InteractiveElement, IntoElement, MouseButton, ParentElement as _, Pixels, Rems,
+    Render, RenderOnce, SharedString, Stateful, StatefulInteractiveElement, StyleRefinement,
+    Styled as _, Subscription, Window, div, px, relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -42,10 +44,9 @@ use crate::RecentSession;
 use crate::commands;
 use crate::composer::{self, Attachment};
 use crate::pane::{self, FilesPane, WorkPane};
-use crate::session::{
-    self, Change, Conversation, Request, RequestAnswer, SessionHandle, SessionState,
-};
+use crate::session::{self, Change, Conversation, Request, SessionHandle, SessionState};
 use crate::theme;
+use crate::theme::accent_tint;
 use crate::transcript;
 
 /// Fixed title bar height (44 px at the default 16 px rem).
@@ -63,9 +64,78 @@ const STATUS_BAR_HEIGHT: Rems = rems(1.625);
 /// Cap on the transcript's text measure (720 px at the default rem), which is
 /// the prototype's `.thread { width: min(720px, 100% - 48px) }`.
 const TRANSCRIPT_MEASURE: Rems = rems(45.);
+
+/// The prototype's three column widths, which shrink together at 1320 px:
+/// `@media(max-width:1320px){:root{--sidebar:244px;--work:374px}
+/// .thread{width:min(680px,calc(100% - 36px))}}`.
+///
+/// Only the columns shrink. The work pane keeps 420 px in its drawer form,
+/// because the prototype's own narrow rule resets it
+/// (`@media(max-width:1120px)` gives `.work{width:min(420px,88vw)}`), and the
+/// floating sidebar keeps the column's width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Columns {
+    sidebar: Rems,
+    work_pane: Rems,
+    thread: Rems,
+    /// One side's share of the thread's `100% - 48px` gutter.
+    gutter: Rems,
+}
+
+impl Columns {
+    /// 1320 px at the default rem, the width the prototype's first media query
+    /// starts at.
+    const NARROW_UNDER: Rems = rems(82.5);
+
+    fn for_width(width: Pixels, rem_size: Pixels) -> Self {
+        if width <= Self::NARROW_UNDER.to_pixels(rem_size) {
+            Self {
+                sidebar: rems(15.25),
+                work_pane: rems(23.375),
+                thread: rems(42.5),
+                gutter: rems(1.125),
+            }
+        } else {
+            Self {
+                sidebar: SIDEBAR_WIDTH,
+                work_pane: WORK_PANE_WIDTH,
+                thread: TRANSCRIPT_MEASURE,
+                gutter: rems(1.5),
+            }
+        }
+    }
+}
 /// Width from which the work pane sits in the layout (1280 px at the default
 /// rem). Below it the drawer form applies (Phase 6).
 const WORK_PANE_IN_FLOW_FROM: Rems = rems(80.);
+
+/// The prototype's only motion token, `--ease:cubic-bezier(.23,1,.32,1)`, and
+/// the `180ms` it gives `.work` and `.sidebar`.
+const OVERLAY_SLIDE: Duration = Duration::from_millis(180);
+/// `transform:translateX(105%)` of the drawer's own width, which is how far
+/// `@media(max-width:1120px)` parks `.work` past the right edge.
+const WORK_PANE_DRAWER_OFFSET: Rems = rems(WORK_PANE_WIDTH.0 * 1.05);
+/// The same `105%` for the floating sidebar, which the prototype parks past
+/// the left edge instead (`translateX(-105%)`).
+const SIDEBAR_OVERLAY_OFFSET: Rems = rems(SIDEBAR_WIDTH.0 * 1.05);
+/// The presence keys the two sliding overlays keep their transition under.
+const WORK_PANE_DRAWER_PRESENCE: &str = "work-pane-drawer-slide";
+const SIDEBAR_OVERLAY_PRESENCE: &str = "sidebar-overlay-slide";
+
+/// `transition:transform 180ms var(--ease)` as `gpui-base`'s motion layer
+/// wants it. Reused so both sliding surfaces share one timing.
+fn overlay_slide() -> Transition {
+    Transition::new(OVERLAY_SLIDE).ease(cubic_bezier(0.23, 1.0, 0.32, 1.0))
+}
+
+/// The inset that stands in for `translateX(±105%)`.
+///
+/// This GPUI has no paint-level transform, so the offset rides on the inset
+/// the overlay is anchored by: at `progress == 1` the overlay rests, and at
+/// `0` it sits a full width plus the prototype's 5% offscreen.
+fn overlay_inset(offset: Rems, progress: f32) -> Rems {
+    rems(offset.0 * (progress - 1.0))
+}
 
 /// The three top-level workspace presets over one session model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,7 +189,8 @@ impl Workspace {
     }
 }
 
-/// One selectable command in the palette.
+/// One command the shell can run, reachable from both the keyboard contract
+/// and the matching palette row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaletteCommand {
     OpenPalette,
@@ -138,31 +209,6 @@ enum PaletteCommand {
     McpServers,
     OpenSettings,
     ToggleTheme,
-}
-
-impl PaletteCommand {
-    /// Resolve the model coordinates used by [`Command::on_confirm`].
-    fn from_index(index: gpui_kit::component::IndexPath) -> Option<Self> {
-        match (index.section, index.row) {
-            (0, 0) => Some(Self::OpenPalette),
-            (0, 1) => Some(Self::ToggleSidebar),
-            (0, 2) => Some(Self::ToggleWorkPane),
-            (0, 3) => Some(Self::OpenDiff),
-            (0, 4) => Some(Self::OpenTasks),
-            (1, 0) => Some(Self::NewSession),
-            (1, 1) => Some(Self::FocusComposer),
-            (1, 2) => Some(Self::StopTask),
-            (1, 3) => Some(Self::CycleTranscriptDetail),
-            (1, 4) => Some(Self::CycleSessions),
-            (1, 5) => Some(Self::CycleSessionsBackward),
-            (1, 6) => Some(Self::CompactSession),
-            (1, 7) => Some(Self::SessionStats),
-            (1, 8) => Some(Self::McpServers),
-            (2, 0) => Some(Self::OpenSettings),
-            (2, 1) => Some(Self::ToggleTheme),
-            _ => None,
-        }
-    }
 }
 
 /// The application shell view.
@@ -213,8 +259,14 @@ pub struct TactApp {
     offline: bool,
     /// Keeps the event pump alive for as long as the window is open.
     _pump: Option<session::Pump>,
-    /// Command palette interaction state, retained while its dialog is open.
+    /// Command palette interaction state, retained while its dialog is open,
+    /// plus whether that dialog is still on the window's stack. A palette row
+    /// dispatches its action while the palette is open, and the palette's own
+    /// confirmation arrives one frame later; the flag lets that late callback
+    /// tell "close the palette" apart from "a row already replaced it" — the
+    /// settings row pops the palette itself so its dialog survives.
     palette: Option<Entity<CommandState>>,
+    palette_live: bool,
     /// Stable focus for the application's window-level shortcut context.
     root_focus: FocusHandle,
     /// How much supporting detail the transcript shows.
@@ -249,6 +301,24 @@ impl TactApp {
         app
     }
 
+    /// An offline shell rooted at `workdir`.
+    ///
+    /// `None` clears the workspace and the branch so the shell renders the
+    /// no-workspace empty state. `Some` re-roots the same fields without
+    /// starting an agent session. [`Self::new`] roots itself at the process
+    /// working directory, so tests that need either edge case use this seam.
+    pub fn with_workspace(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        workdir: Option<PathBuf>,
+    ) -> Self {
+        let mut app = Self::build(window, cx, None, Vec::new());
+        app.offline = true;
+        app.state.branch = workdir.as_deref().and_then(git_branch);
+        app.state.workdir = workdir;
+        app
+    }
+
     /// A shell seeded with prototype-shaped demo content for design review.
     ///
     /// Selected by `--preview` / `TACT_GUI_PREVIEW`. The rows, plan, diff and
@@ -259,6 +329,86 @@ impl TactApp {
         let mut app = Self::build(window, cx, None, preview_sessions());
         app.offline = true;
         app.seed_preview(&mut *cx);
+        app
+    }
+
+    /// An offline shell holding one pending `ask_user` question.
+    ///
+    /// The preview seeds the permission shape, whose options answer in a single
+    /// press. A question is the multi-select shape, and it is the only one that
+    /// renders `Confirm` and `Cancel`; since a request arrives from an agent
+    /// session, an offline shell has no other way to put that card on screen.
+    /// This is the seam the click tests use to reach those two actions.
+    pub fn with_question(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        prompt: impl Into<String>,
+        options: Vec<String>,
+    ) -> Self {
+        let mut app = Self::build(window, cx, None, Vec::new());
+        app.offline = true;
+        app.state.request = Some(Request {
+            id: 1,
+            prompt: prompt.into(),
+            options,
+            multi: true,
+            selected: Vec::new(),
+        });
+        app.sync_transcript_count(&mut *cx);
+        app
+    }
+
+    /// An offline shell whose thread is one expanded tool card carrying
+    /// `output`.
+    ///
+    /// The preview's own tool rows produce a handful of lines, which fit inside
+    /// the card's 150px window; a command that streams more than that is the
+    /// only way to reach the block's scroll path, so tests that exercise it
+    /// seed a longer body here.
+    pub fn with_tool_output(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        output: impl Into<String>,
+    ) -> Self {
+        let mut app = Self::build(window, cx, None, Vec::new());
+        app.offline = true;
+        app.conversation.push_row(transcript::TranscriptRow::Tool {
+            display_name: "Running".to_string(),
+            detail: "cargo test -p tact".to_string(),
+            output: output.into(),
+            duration: "1.0s".to_string(),
+            status: transcript::ToolStatus::Succeeded,
+            expanded: true,
+            visual_kind: tact_protocol::ToolVisualKind::Command,
+            diff_stats: None,
+        });
+        app.record_change(Change::Appended(1), cx);
+        // The card is the whole thread here, so the shell starts at the top;
+        // following the tail is a live session's behaviour.
+        app.follow_tail = false;
+        app.scroll_transcript_to_top(cx);
+        cx.notify();
+        app
+    }
+
+    /// An offline shell whose thread is one error row carrying `text`.
+    ///
+    /// An agent error normally arrives through `AgentUpdate::Error`; this seam
+    /// puts the same [`transcript::TranscriptRow::Error`] on screen so its
+    /// alert semantics can be asserted without a provider.
+    pub fn with_error(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        text: impl Into<String>,
+    ) -> Self {
+        let mut app = Self::build(window, cx, None, Vec::new());
+        app.offline = true;
+        app.conversation
+            .push_row(transcript::TranscriptRow::Error { text: text.into() });
+        app.record_change(Change::Appended(1), cx);
+        app.follow_tail = false;
+        app.scroll_transcript_to_top(cx);
+        cx.notify();
         app
     }
 
@@ -290,10 +440,22 @@ impl TactApp {
         // `auto` — and would leave the chip on its fallback label.
         self.state.permission_mode = "default".to_string();
         self.state.running = true;
-        // The prototype's transcript carries a live permission request. The
-        // card only exists while one is pending, so the preview seeds one;
-        // answering it (there is no agent to hear the answer) demonstrates the
-        // resolved `.approval.done` state in the same place.
+        // `.ring` and the status bar's `42% context` chip read the same usage
+        // snapshot, so the preview seeds one that draws 42 in both: the ring
+        // measures the prompt against `total`, and the chip measures it against
+        // the two counts together.
+        self.state.usage = Some(tact_protocol::TokenUsageInfo {
+            prompt: 4_200,
+            completion: 5_800,
+            total: 10_000,
+            prompt_cache_hit_tokens: 3_200,
+            prompt_cache_miss_tokens: 1_000,
+            reasoning_tokens: 1_800,
+        });
+        // The prototype's transcript carries a live permission request. Only a
+        // pending request sits past the rows, so the preview seeds one;
+        // answering it (there is no agent to hear the answer) files the
+        // `.approval.done` card into the transcript as a row.
         self.state.request = Some(Request {
             id: 1,
             prompt: "Run command: cargo check -p tact-gui".to_string(),
@@ -443,7 +605,7 @@ impl TactApp {
         let transcript_state = cx.new(|cx| MessageScrollerState::new(2, cx));
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .auto_grow(1, 8)
+                .auto_grow(1, 5)
                 .submit_on_enter(true)
                 .placeholder("Message Tact — type @ for files or / for skills")
         });
@@ -502,6 +664,7 @@ impl TactApp {
             offline: false,
             _pump: pump,
             palette: None,
+            palette_live: false,
             root_focus,
             detail: transcript::TranscriptDetail::Normal,
             follow_tail: true,
@@ -559,16 +722,22 @@ impl TactApp {
         self.conversation.len()
     }
 
+    /// The current message draft, for tests and command surfaces.
+    pub fn composer_draft(&self, cx: &App) -> String {
+        self.composer.read(cx).value().to_string()
+    }
+
     /// Open the Tact command palette over the current window.
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = cx.new(|cx| CommandState::new(window, cx));
         self.palette = Some(state.clone());
-        let owner = cx.weak_entity();
+        self.palette_live = true;
         let dialog_state = state.clone();
+        let owner = cx.weak_entity();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            let owner = owner.clone();
             let dialog_state = dialog_state.clone();
+            let owner = owner.clone();
             dialog
                 // The prototype's palette is chrome-less: its first row is the
                 // search field, with the dismissal legend in `.pfoot` and the
@@ -582,14 +751,44 @@ impl TactApp {
                             Command::new(&dialog_state)
                                 .placeholder("Search commands, sessions, files…")
                                 // `.pfoot`: the keyboard legend under the list.
-                                .footer(|_, _, cx| palette_footer(cx.theme().muted_foreground))
-                                .on_confirm(move |index, window, cx| {
-                                    if let Some(command) = PaletteCommand::from_index(index) {
-                                        let _ = owner.update(cx, |app, cx| {
-                                            app.run_palette_command(command, window, cx)
-                                        });
+                                .footer(|_, _, cx| palette_footer(crate::theme::ink3(cx)))
+                                // Every item carries its own GPUI action, and
+                                // `CommandState::confirm` dispatches it before
+                                // this callback runs. Running the command here
+                                // too would execute every palette row twice —
+                                // a no-op for idempotent rows like Open diff,
+                                // but a silent double toggle for sidebar, work
+                                // pane, theme, and session cycling.
+                                //
+                                // The callback also arrives one frame late, so
+                                // it must not pop a dialog a row opened on top
+                                // of the palette. `palette_live` is the shell's
+                                // record that the palette is still the topmost
+                                // dialog; the Open settings row clears it after
+                                // closing the palette itself.
+                                .on_confirm({
+                                    let owner = owner.clone();
+                                    move |_, window, cx| {
+                                        let still_open = owner
+                                            .update(cx, |app, _| {
+                                                std::mem::take(&mut app.palette_live)
+                                            })
+                                            .unwrap_or(false);
+                                        if still_open {
+                                            window.close_dialog(cx);
+                                        }
                                     }
-                                    window.close_dialog(cx);
+                                })
+                                // Escape, the cancel chord, and the backdrop
+                                // all leave through this hook; clearing the
+                                // flag here keeps a dismissed palette from
+                                // making some later dialog look like a row's
+                                // replacement for it.
+                                .on_cancel({
+                                    let owner = owner.clone();
+                                    move |_, cx| {
+                                        let _ = owner.update(cx, |app, _| app.palette_live = false);
+                                    }
                                 }),
                             |command, group| command.group(group),
                         ),
@@ -602,7 +801,11 @@ impl TactApp {
         });
     }
 
-    /// Execute one palette command.
+    /// Execute one command.
+    ///
+    /// Every action handler below funnels through here, so a palette row and
+    /// its keyboard chord cannot drift apart: both dispatch the same GPUI
+    /// action, and that action lands on exactly one arm of this table.
     fn run_palette_command(
         &mut self,
         command: PaletteCommand,
@@ -632,7 +835,19 @@ impl TactApp {
                 cx.notify();
             }
             PaletteCommand::NewSession => self.new_session(cx),
-            PaletteCommand::FocusComposer => self.focus_composer(window, cx),
+            PaletteCommand::FocusComposer => {
+                // A palette row runs this while its palette is still open, and
+                // closing a dialog gives focus back to whatever held it before
+                // the dialog opened — which would undo a focus handed over
+                // before the pop. Close the palette first (the same LIFO
+                // reason as `OpenSettings`), then focus; `palette_live` keeps
+                // the palette's own late confirmation from popping anything.
+                // On the chord path no palette is open and only the focus runs.
+                if std::mem::take(&mut self.palette_live) {
+                    window.close_dialog(cx);
+                }
+                self.focus_composer(window, cx);
+            }
             PaletteCommand::StopTask => self.stop(cx),
             PaletteCommand::CycleTranscriptDetail => self.cycle_detail(cx),
             PaletteCommand::CycleSessions => match self.next_session_id() {
@@ -658,7 +873,20 @@ impl TactApp {
             PaletteCommand::McpServers => {
                 self.send_command(tact_protocol::UserCommand::McpList, cx)
             }
-            PaletteCommand::OpenSettings => self.open_settings(window, cx),
+            PaletteCommand::OpenSettings => {
+                // A palette row runs this while its palette is still open, and
+                // `Root::close_dialog` pops the top of a LIFO stack: opening
+                // settings first would let the palette's own (one frame late)
+                // confirmation pop the settings dialog instead. Pop the
+                // palette here, in the same dispatch, and open settings after
+                // it; `palette_live` then tells that late confirmation to
+                // leave the stack alone. On the chord path no palette is open
+                // and this is a single `open_dialog`.
+                if std::mem::take(&mut self.palette_live) {
+                    window.close_dialog(cx);
+                }
+                self.open_settings(window, cx);
+            }
             PaletteCommand::ToggleTheme => {
                 theme::toggle(window, cx);
                 let note = theme_toast(cx);
@@ -693,19 +921,26 @@ impl TactApp {
     /// Re-root the window's workspace at another git worktree.
     ///
     /// The worktree group is where the window's workspace is chosen, so a click
-    /// moves the branch line, the Files pane, and the sessions the sidebar
-    /// lists to that directory. An attached agent session keeps its own root:
-    /// the window re-scopes what it shows without restarting the session, which
-    /// also means the next new session starts in the worktree the user picked.
+    /// moves the branch line and the panes that read the live repository, and —
+    /// in a connected window — the sessions the sidebar lists. An attached
+    /// agent session keeps its own root: the window re-scopes what it shows
+    /// without restarting the session, which also means the next new session
+    /// starts in the worktree the user picked.
     fn switch_worktree(&mut self, worktree: PathBuf, cx: &mut Context<Self>) {
         if self.state.workdir.as_deref() == Some(worktree.as_path()) {
             return;
         }
         self.state.branch = git_branch(&worktree);
         self.state.workdir = Some(worktree.clone());
-        // The list the window shows belongs to the workspace it just left.
-        self.recent = session::recent(&worktree);
-        self.preview_current = self.recent.first().map(|session| session.id.clone());
+        // The list the window shows belongs to the workspace it just left, so a
+        // connected window swaps in the new worktree's own sessions. An offline
+        // shell owns no store: its rows are demo data handed to the
+        // constructor, and re-rooting must not replace them with whatever the
+        // filesystem happens to hold.
+        if !self.offline {
+            self.recent = session::recent(&worktree);
+            self.preview_current = self.recent.first().map(|session| session.id.clone());
+        }
         // Both panes are read from the workspace, and both cache what they read.
         self.files.invalidate();
         self.diffs.invalidate();
@@ -739,7 +974,8 @@ impl TactApp {
         match session::resume(workdir.clone(), session_id.clone()) {
             Ok((handle, streams)) => {
                 let short = session::short_id(&session_id).to_string();
-                self.adopt(workdir, handle, streams, cx);
+                self.adopt(workdir.clone(), handle, streams, cx);
+                self.replay_history(&workdir, &session_id, cx);
                 self.push_system_row(
                     format!("Resumed session {short} — the agent keeps its earlier turns."),
                     cx,
@@ -750,6 +986,30 @@ impl TactApp {
                 cx,
             ),
         }
+    }
+
+    /// Redraw a reopened session's stored transcript.
+    ///
+    /// Switching sessions used to hand the window a blank page while the store
+    /// still held the conversation; this redraws it. An unreadable or empty
+    /// history leaves the blank page the shell would have shown anyway, so a
+    /// resume never fails over a transcript that cannot be replayed.
+    fn replay_history(
+        &mut self,
+        workdir: &std::path::Path,
+        session_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let messages = session::history(workdir, session_id);
+        if messages.is_empty() {
+            return;
+        }
+        self.conversation.load_history(&messages);
+        // The rows arrived in one go, so the scroller is resized rather than
+        // appended to one at a time. `follow_tail` then lands on the newest
+        // turn, which is what a reopened thread should show.
+        self.record_change(Change::None, cx);
+        cx.notify();
     }
 
     /// The session after the current one in sidebar order, wrapping at the end.
@@ -1011,35 +1271,51 @@ impl TactApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_palette(window, cx);
+        self.run_palette_command(PaletteCommand::OpenPalette, window, cx);
     }
 
     fn on_new_session(
         &mut self,
         _: &commands::NewSession,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.new_session(cx);
+        self.run_palette_command(PaletteCommand::NewSession, window, cx);
     }
 
+    /// Escape stops the running task -- unless the work pane is the drawer the
+    /// prototype's Escape dismisses first.
+    ///
+    /// `docs/design/tact-desktop-prototype.html:159` runs
+    /// `if(overlay.open) closePalette(); else if(body.workOpen) work(false)`.
+    /// The palette half needs nothing here: a focused dialog carries its own
+    /// `Dialog` key context, which outranks this one, so Escape is its `Cancel`
+    /// before the shell is ever consulted. The drawer half is this: while the
+    /// pane floats over the transcript, the key dismisses the overlay in front
+    /// of the user. Where the pane has a column of its own it keeps its v1
+    /// meaning -- Escape stops the task -- because tearing a persistent column
+    /// out of the layout is not what Escape is for here.
     fn on_stop_task(
         &mut self,
         _: &commands::StopTask,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.stop(cx);
+        if self.work_pane_is_drawer(window) {
+            self.close_work_pane();
+            cx.notify();
+            return;
+        }
+        self.run_palette_command(PaletteCommand::StopTask, window, cx);
     }
 
     fn on_toggle_work_pane(
         &mut self,
         _: &commands::ToggleWorkPane,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.work_pane_open = !self.work_pane_open;
-        cx.notify();
+        self.run_palette_command(PaletteCommand::ToggleWorkPane, window, cx);
     }
 
     fn on_focus_composer(
@@ -1048,26 +1324,25 @@ impl TactApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.focus_composer(window, cx);
+        self.run_palette_command(PaletteCommand::FocusComposer, window, cx);
     }
 
     fn on_cycle_detail(
         &mut self,
         _: &commands::CycleTranscriptDetail,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_palette_command(PaletteCommand::CycleTranscriptDetail, _window, cx);
+        self.run_palette_command(PaletteCommand::CycleTranscriptDetail, window, cx);
     }
 
     fn on_toggle_sidebar(
         &mut self,
         _: &commands::ToggleSidebar,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sidebar_open = !self.sidebar_open;
-        cx.notify();
+        self.run_palette_command(PaletteCommand::ToggleSidebar, window, cx);
     }
 
     fn on_open_diff(
@@ -1094,7 +1369,7 @@ impl TactApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_settings(window, cx);
+        self.run_palette_command(PaletteCommand::OpenSettings, window, cx);
     }
 
     fn on_cycle_sessions(
@@ -1127,28 +1402,28 @@ impl TactApp {
     fn on_compact_session(
         &mut self,
         _: &commands::CompactSession,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.send_command(tact_protocol::UserCommand::Compact, cx);
+        self.run_palette_command(PaletteCommand::CompactSession, window, cx);
     }
 
     fn on_session_stats(
         &mut self,
         _: &commands::SessionStats,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.send_command(tact_protocol::UserCommand::QueryStats, cx);
+        self.run_palette_command(PaletteCommand::SessionStats, window, cx);
     }
 
     fn on_mcp_servers(
         &mut self,
         _: &commands::McpServers,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.send_command(tact_protocol::UserCommand::McpList, cx);
+        self.run_palette_command(PaletteCommand::McpServers, window, cx);
     }
 
     fn on_toggle_theme(
@@ -1157,9 +1432,7 @@ impl TactApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        theme::toggle(window, cx);
-        let note = theme_toast(cx);
-        self.toast(note, cx);
+        self.run_palette_command(PaletteCommand::ToggleTheme, window, cx);
     }
 
     /// Select a work pane tab.
@@ -1167,9 +1440,34 @@ impl TactApp {
         self.work_pane = pane;
     }
 
+    /// Select a work pane the way its own tab does, opening the pane when this
+    /// width only has the drawer form.
+    ///
+    /// The prototype's `pane(n)` ends with `if(innerWidth<=1120) work(true)`:
+    /// on a narrow window, selecting a pane is also asking to see it, because
+    /// there the pane has no column to be shown in. Without this a preset press
+    /// below the drawer threshold changed the pane behind a closed drawer and
+    /// nothing on screen moved -- the same failure the floating sidebar had.
+    pub(crate) fn select_work_pane(&mut self, pane: WorkPane, window: &Window) {
+        self.set_work_pane(pane);
+        if window.bounds().size.width < WORK_PANE_IN_FLOW_FROM.to_pixels(window.rem_size()) {
+            self.work_pane_open = true;
+        }
+    }
+
     /// Close the work pane, as the `.workTop` close button does.
     pub(crate) fn close_work_pane(&mut self) {
         self.work_pane_open = false;
+    }
+
+    /// Whether the work pane is rendering as the prototype's overlay drawer.
+    ///
+    /// Below `WORK_PANE_IN_FLOW_FROM` the open pane has no column to sit in, so
+    /// it floats over the transcript as a drawer. That is the form `escape`
+    /// dismisses, and the form `select_work_pane` has to bring back.
+    fn work_pane_is_drawer(&self, window: &Window) -> bool {
+        self.work_pane_open
+            && window.bounds().size.width < WORK_PANE_IN_FLOW_FROM.to_pixels(window.rem_size())
     }
 
     /// Expand or collapse a directory in the Files pane.
@@ -1360,10 +1658,14 @@ impl TactApp {
     }
 
     /// The virtual transcript contains the session header, the conversation
-    /// rows, and at most one permission/answer card.
+    /// rows, and at most one *pending* card.
+    ///
+    /// An answered card is a conversation row, so it is counted by `rows`; only
+    /// a request the agent is still waiting on sits outside the list, at the
+    /// tail where the answer has to be given.
     fn transcript_item_count(&self) -> usize {
         let rows = self.conversation.len();
-        let extra = usize::from(self.state.request.is_some() || self.state.last_request.is_some());
+        let extra = usize::from(self.state.request.is_some());
         let empty = usize::from(rows == 0 && extra == 0);
         1 + rows + extra + empty
     }
@@ -1489,14 +1791,17 @@ impl TactApp {
 
     /// Send a response and settle the prompt so it cannot be answered twice.
     ///
-    /// The answered request is kept as [`RequestAnswer`] so its card can show
-    /// the outcome; only the pending slot is cleared.
+    /// The answered card moves into the transcript as a row, which is what
+    /// keeps it from being the last thing on screen once the turn it unblocked
+    /// resumes: only the pending slot is dropped, so the card keeps the slot it
+    /// was asked in.
     fn answer(&mut self, response: UiResponse, result: String, cx: &mut Context<Self>) {
         if let Some(session) = self.session.as_ref() {
             session.send(tact_protocol::UserCommand::UiResponse(response));
         }
         if let Some(request) = self.state.request.take() {
-            self.state.last_request = Some(session::RequestAnswer { request, result });
+            self.conversation.push_approval(request, result);
+            self.record_change(Change::Appended(1), cx);
         }
         self.sync_transcript_count(cx);
         cx.notify();
@@ -1532,10 +1837,20 @@ impl Render for TactApp {
             self.files.invalidate();
         }
         self.files_listed = files_visible;
+        let columns = Columns::for_width(width, rem_size);
         let sidebar_is_overlay = width < SIDEBAR_OVERLAY_UNDER.to_pixels(rem_size);
-        let work_pane_in_flow =
-            self.work_pane_open && width >= WORK_PANE_IN_FLOW_FROM.to_pixels(rem_size);
-        let work_pane_is_drawer = self.work_pane_open && !work_pane_in_flow;
+        // The sidebar is a real column only when it is both open and wide
+        // enough to sit beside the transcript. The title bar reserves the
+        // column's width on this same condition, so closing the sidebar at a
+        // wide width does not leave the header holding a gap the body dropped.
+        let sidebar_in_flow = !sidebar_is_overlay && self.sidebar_open;
+        let work_pane_is_drawer = self.work_pane_is_drawer(window);
+        let work_pane_in_flow = self.work_pane_open && !work_pane_is_drawer;
+        // The drawer *form* is a function of the width alone. Whether it is on
+        // screen is `work_pane_open`, which the slide samples -- so the two
+        // have to be asked separately: the width decides what to sample, the
+        // flag decides where the slide is in its travel.
+        let work_pane_drawer_form = width < WORK_PANE_IN_FLOW_FROM.to_pixels(rem_size);
 
         // `.head h1` carries the session's own name; the title-bar chip echoes
         // it on Chat and takes the preset's name on Agent and Code, which is
@@ -1555,23 +1870,27 @@ impl Render for TactApp {
             Workspace::Chat => session_heading.clone(),
             preset => SharedString::from(format!("{} workspace", preset.label())),
         };
-        let transcript_header = TranscriptHeader {
-            heading: session_heading.clone(),
-            subtitle: self.preview_current.as_ref().map(|_| {
-                SharedString::from(
-                    "Turn Direction A into a clickable prototype with Anthropic tokens and gpui-kit component boundaries.",
-                )
-            }),
-            detail: self.detail,
+        let transcript_frame = TranscriptFrame {
+            header: TranscriptHeader {
+                heading: session_heading.clone(),
+                subtitle: self.preview_current.as_ref().map(|_| {
+                    SharedString::from(
+                        "Turn Direction A into a clickable prototype with Anthropic tokens and gpui-kit component boundaries.",
+                    )
+                }),
+                detail: self.detail,
+            },
+            columns,
         };
 
         let mut workspace_row = h_flex().size_full().min_h_0().items_stretch();
-        if !sidebar_is_overlay && self.sidebar_open {
+        if sidebar_in_flow {
             workspace_row = workspace_row.child(sidebar(
                 &self.state,
                 &self.recent,
                 self.open_session_id(),
                 &self.session_search,
+                columns.sidebar,
                 cx,
             ));
         }
@@ -1581,7 +1900,7 @@ impl Render for TactApp {
             self.composer.clone(),
             &self.state,
             &self.attachments,
-            transcript_header,
+            transcript_frame,
             cx,
         ));
 
@@ -1591,28 +1910,64 @@ impl Render for TactApp {
                 &self.state,
                 &mut self.files,
                 &mut self.diffs,
+                columns.work_pane,
                 cx,
             ));
         }
 
         let mut workspace = div().relative().flex_1().min_h_0().child(workspace_row);
-        if sidebar_is_overlay && self.sidebar_open {
-            workspace = workspace.child(sidebar_overlay(
-                &self.state,
-                &self.recent,
-                self.session.as_ref().map(SessionHandle::session_id),
-                &self.session_search,
-                cx,
-            ));
-        }
+        // The three floating surfaces are painted in the prototype's own
+        // stacking order -- `.scrim` at `z-index:25`, `.work` at `30`, the
+        // floating `.sidebar` at `40` -- because GPUI has no z-index and paint
+        // order is what hit testing walks. The scrim therefore dims the
+        // workspace under both, and the sidebar still wins where a narrow
+        // window makes the sidebar and the drawer overlap.
+        // `.scrim` only toggles `display` -- the prototype declares it inside
+        // its own narrow block as `body.workOpen .scrim{...display:block}` --
+        // so it appears and disappears on the frame the pane does, with no
+        // transition of its own, and the drawer slides out un-dimmed.
         if work_pane_is_drawer {
-            workspace = workspace.child(work_pane_drawer(
-                self.work_pane,
-                &self.state,
-                &mut self.files,
-                &mut self.diffs,
-                cx,
-            ));
+            workspace = workspace.child(work_pane_scrim(cx));
+        }
+        // `.work` and the floating `.sidebar` are the two surfaces the
+        // prototype gives `transition:transform 180ms`. Both therefore stay in
+        // the tree for the length of the exit, which is why the mount is gated
+        // on the width-only form and the open flag goes to `Presence` instead:
+        // `should_render` keeps the panel alive while it slides away, and
+        // drops it on the frame the transition finishes.
+        if work_pane_drawer_form {
+            let slide = Presence::new(WORK_PANE_DRAWER_PRESENCE, self.work_pane_open)
+                .transition(overlay_slide())
+                .sample(window, cx);
+            if slide.should_render() {
+                workspace = workspace.child(work_pane_drawer(
+                    self.work_pane,
+                    &self.state,
+                    &mut self.files,
+                    &mut self.diffs,
+                    slide.progress,
+                    cx,
+                ));
+            }
+        }
+        if sidebar_is_overlay {
+            let slide = Presence::new(SIDEBAR_OVERLAY_PRESENCE, self.sidebar_open)
+                .transition(overlay_slide())
+                .sample(window, cx);
+            if slide.should_render() {
+                workspace = workspace.child(sidebar_overlay(
+                    &self.state,
+                    &self.recent,
+                    // The same `current` the column gets: an offline shell marks
+                    // its open row through `preview_current`, so passing only
+                    // `self.session` left the floating sidebar with no active row
+                    // and a session press that looked like it did nothing.
+                    self.open_session_id(),
+                    &self.session_search,
+                    slide.progress,
+                    cx,
+                ));
+            }
         }
 
         v_flex()
@@ -1641,11 +1996,20 @@ impl Render for TactApp {
             .on_action(cx.listener(Self::on_mcp_servers))
             .on_action(cx.listener(Self::on_toggle_theme))
             .child(title_bar(
-                self.workspace,
-                self.sidebar_open,
-                self.work_pane_open,
-                chip_heading,
-                width < px(1320.),
+                TitleBarState {
+                    workspace: self.workspace,
+                    sidebar_open: self.sidebar_open,
+                    work_pane_open: self.work_pane_open,
+                    session_heading: chip_heading,
+                    compact: width < px(1320.),
+                    // `SIDEBAR_OVERLAY_UNDER` and `WORK_PANE_IN_FLOW_FROM`: a
+                    // segment reserves its column's width only while the shell
+                    // really lays that column out, which also covers a panel
+                    // the user has closed.
+                    sidebar_float: !sidebar_in_flow,
+                    work_pane_float: !work_pane_in_flow,
+                    columns,
+                },
                 cx,
             ))
             .child(workspace)
@@ -1684,14 +2048,107 @@ async fn next_account(
     update
 }
 
-fn title_bar(
+/// The title bar's session chip: a list glyph, the open session's name, and the
+/// disclosure chevron.
+///
+/// It is the trigger of the session dropdown, which is why it is a named type:
+/// [`Popover`] takes a [`Selectable`] trigger, and a bare `div` cannot implement
+/// that trait. The box is the prototype's `.session` -- a 7 px inline pad, a
+/// 4 px block pad, a 6 px radius, and a 12.5 px label truncated at 240 px -- so
+/// it keeps its own metrics rather than borrowing [`MiniTrigger`]'s 25 px
+/// `.mini`, which the title bar has no room for.
+#[derive(IntoElement)]
+struct SessionChip {
+    /// The name the chip shows, truncated to the prototype's 240 px cap.
+    label: SharedString,
+    /// Whether the dropdown is open. An open menu paints the chip exactly as
+    /// the pointer does, so the control reads as held while its rows show.
+    selected: bool,
+}
+
+impl SessionChip {
+    fn new(label: impl Into<SharedString>) -> Self {
+        Self {
+            label: label.into(),
+            selected: false,
+        }
+    }
+}
+
+impl Selectable for SessionChip {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl RenderOnce for SessionChip {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self { label, selected } = self;
+        let hover = cx.theme().accent;
+        let ink = cx.theme().foreground;
+        h_flex()
+            .id("session-menu")
+            .test_support()
+            .min_w_0()
+            .max_w(rems(15.))
+            .items_center()
+            .gap(rems(0.4375))
+            .px(rems(0.4375))
+            .py(rems(0.25))
+            .rounded(rems(0.375))
+            .text_color(cx.theme().muted_foreground)
+            .when(selected, |this| this.bg(hover).text_color(ink))
+            .hover(move |style| style.bg(hover).text_color(ink))
+            .child(IconName::MessageSquareText)
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(rems(0.78125))
+                    .text_color(ink)
+                    .child(label),
+            )
+            .child(Icon::from(IconName::ChevronDown).with_size(px(13.)))
+    }
+}
+
+/// Everything the title bar reads from the shell for one frame.
+///
+/// The responsive flags travel together: `compact` drops the palette chord,
+/// `sidebar_float` drops the sidebar column's reserved width whenever the shell
+/// stops laying that column out -- the sidebar floats over the transcript or is
+/// closed -- and `work_pane_float` does the same for the work-pane column once
+/// the pane is a drawer or hidden. Keeping them in one value stops the call site
+/// from growing a positional argument per breakpoint.
+struct TitleBarState {
     workspace: Workspace,
     sidebar_open: bool,
     work_pane_open: bool,
     session_heading: SharedString,
     compact: bool,
-    cx: &mut Context<TactApp>,
-) -> impl IntoElement {
+    sidebar_float: bool,
+    work_pane_float: bool,
+    /// `.top` shares the shell's `grid-template-columns`, so the chrome's two
+    /// side segments reserve whatever the columns below them actually take.
+    columns: Columns,
+}
+
+fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElement {
+    let TitleBarState {
+        workspace,
+        sidebar_open,
+        work_pane_open,
+        session_heading,
+        compact,
+        sidebar_float,
+        work_pane_float,
+        columns,
+    } = state;
     let dark = cx.theme().is_dark();
     let (theme_icon, theme_action) = if dark {
         (IconName::Sun, "Switch to light theme")
@@ -1709,40 +2166,181 @@ fn title_bar(
         (IconName::PanelLeftOpen, "Show sidebar")
     };
 
-    let tabs = TabBar::new("workspace-tabs")
-        .segmented()
-        .selected_index(workspace.index())
-        .children(Workspace::ALL.map(|preset| Tab::new().label(preset.label())))
-        .on_click(cx.listener(|this, index, _, cx| {
-            // Selecting a preset also selects its work pane, exactly as
-            // `pane(n==='agent'?'tasks':n==='code'?'diff':'plan')` does in the
-            // prototype.
-            let preset = Workspace::from_index(*index);
-            this.workspace = preset;
-            this.set_work_pane(preset.work_pane());
-            cx.notify();
-        }));
-
-    // The prototype's session chip: a list glyph, the name, then a chevron.
-    let session_label = h_flex()
-        .min_w_0()
-        .max_w(rems(15.))
+    // `.tabs` / `.tab`: a 2px-padded segmented strip on `--surface2`, ringed by
+    // a 1px `--line` border, whose 26px tabs take `--surface` when active. The
+    // stock `TabBar::segmented()` is 32px tall on a `--line`-filled bar with
+    // `--page` inside and exposes no per-tab box override, so the strip is
+    // composed here. Every tab keeps the integer id that
+    // `within("workspace-tabs")` selects by.
+    let tab_hover = cx.theme().accent;
+    let tab_ink = cx.theme().foreground;
+    let tab_muted = cx.theme().muted_foreground;
+    let tab_line = cx.theme().border;
+    let tabs = h_flex()
+        .id("workspace-tabs")
         .items_center()
-        .gap(rems(0.4375))
-        .px(rems(0.4375))
-        .py(rems(0.25))
-        .rounded(rems(0.375))
-        .text_color(cx.theme().muted_foreground)
-        .child(IconName::MessageSquareText)
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .text_size(rems(0.78125))
-                .text_color(cx.theme().foreground)
-                .child(session_heading),
+        .gap(px(2.))
+        .p(px(2.))
+        .border_1()
+        .border_color(tab_line)
+        .rounded(rems(0.5625))
+        .bg(cx.theme().muted)
+        .children(
+            Workspace::ALL
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, preset)| {
+                    let active = index == workspace.index();
+                    h_flex()
+                        .id(index)
+                        .items_center()
+                        .h(px(26.))
+                        .px(rems(0.6875))
+                        // `.tab.active` draws its `0 0 0 1px var(--line)` ring;
+                        // the transparent border keeps every tab the same box.
+                        .border_1()
+                        .border_color(if active {
+                            tab_line
+                        } else {
+                            cx.theme().transparent
+                        })
+                        .rounded(rems(0.375))
+                        .when(active, |tab| {
+                            // `.tab.active{box-shadow:0 1px 2px rgba(20,20,19,.06),
+                            // 0 0 0 1px var(--line)}`: the ring is the border
+                            // above, the lift is the prototype's own ink, which
+                            // stays dark in both themes rather than flipping
+                            // with `foreground`.
+                            tab.bg(cx.theme().popover).shadow(vec![
+                                gpui_kit::gpui::BoxShadow::new(
+                                    px(0.),
+                                    px(1.),
+                                    gpui_kit::Hsla::from(gpui_kit::rgba(0x1414_13ff)).opacity(0.06),
+                                )
+                                .blur_radius(px(2.)),
+                            ])
+                        })
+                        .text_size(rems(0.75))
+                        .font_semibold()
+                        .text_color(if active { tab_ink } else { tab_muted })
+                        // `.tab.active` wins over `.tab:hover` in the sheet, so
+                        // only the inactive tabs answer the pointer.
+                        .when(!active, |tab| {
+                            tab.hover(move |style| style.bg(tab_hover).text_color(tab_ink))
+                        })
+                        // `.tab` is a `<button>` in the prototype. Focusing an
+                        // active tab replaces its `0 1px 2px` lift with the
+                        // ring, since a refined style swaps the whole shadow
+                        // list; the lift is not part of the ring contract.
+                        .tab_index(0)
+                        .focus_visible({
+                            let ring = focus_visible_ring(cx);
+                            move |style| style.shadow(ring.clone())
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            // Selecting a preset also selects its work pane,
+                            // exactly as
+                            // `pane(n==='agent'?'tasks':n==='code'?'diff':'plan')`
+                            // does in the prototype -- and, like it, opens the
+                            // pane when the width leaves it no column to be
+                            // shown in.
+                            this.workspace = preset;
+                            this.select_work_pane(preset.work_pane(), window);
+                            cx.notify();
+                        }))
+                        .child(SharedString::from(preset.label()))
+                        .test_support()
+                }),
         )
-        .child(Icon::from(IconName::ChevronDown).with_size(px(13.)));
+        .test_support();
+
+    // The prototype's session chip: a list glyph, the name, then a chevron --
+    // and, because the prototype makes it a real `<button>`, the trigger of the
+    // session dropdown. v1 has no backing for rename, duplicate, or archive
+    // (the store keeps no title or archive column, and the protocol carries no
+    // such command) and no platform-open helper to reveal a directory with, so
+    // each row answers with a truthful system row rather than an invented edit
+    // -- the same shape as the add-file menu's plugin notice below.
+    let menu_owner = cx.weak_entity();
+    let session_menu = Popover::new("session-menu")
+        .anchor(gpui_kit::Anchor::TopLeft)
+        .trigger(SessionChip::new(session_heading))
+        .content(move |_state, _window, _cx| {
+            let rename_owner = menu_owner.clone();
+            let duplicate_owner = menu_owner.clone();
+            let archive_owner = menu_owner.clone();
+            let reveal_owner = menu_owner.clone();
+            v_flex()
+                .id("session-menu-panel")
+                .test_support()
+                .gap_1()
+                .min_w(rems(13.))
+                .child(
+                    Button::new("session-menu-rename")
+                        .icon(IconName::PencilLine)
+                        .label("Rename")
+                        .ghost()
+                        .compact()
+                        .on_click(move |_, _, cx| {
+                            let _ = rename_owner.update(cx, |app, cx| {
+                                app.push_system_row(
+                                    "Renaming a session is not available yet: the session store keeps no title."
+                                        .to_string(),
+                                    cx,
+                                )
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("session-menu-duplicate")
+                        .icon(IconName::Copy)
+                        .label("Duplicate")
+                        .ghost()
+                        .compact()
+                        .on_click(move |_, _, cx| {
+                            let _ = duplicate_owner.update(cx, |app, cx| {
+                                app.push_system_row(
+                                    "Duplicating a session is not available yet: the protocol has no duplicate command."
+                                        .to_string(),
+                                    cx,
+                                )
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("session-menu-archive")
+                        .icon(IconName::Archive)
+                        .label("Archive")
+                        .ghost()
+                        .compact()
+                        .on_click(move |_, _, cx| {
+                            let _ = archive_owner.update(cx, |app, cx| {
+                                app.push_system_row(
+                                    "Archiving a session is not available yet: the store keeps no archive column, so nothing was removed."
+                                        .to_string(),
+                                    cx,
+                                )
+                            });
+                        }),
+                )
+                .child(
+                    Button::new("session-menu-reveal")
+                        .icon(IconName::FolderOpen)
+                        .label("Reveal in filesystem")
+                        .ghost()
+                        .compact()
+                        .on_click(move |_, _, cx| {
+                            let _ = reveal_owner.update(cx, |app, cx| {
+                                app.push_system_row(
+                                    "Revealing in the file manager is not available yet: the desktop build ships no platform-open helper."
+                                        .to_string(),
+                                    cx,
+                                )
+                            });
+                        }),
+                )
+        });
 
     // The prototype's `.cmd`: a bordered search field with the palette chord
     // in a `kbd` chip on the trailing edge. The chip only fits when the title
@@ -1846,9 +2444,11 @@ fn title_bar(
                 h_flex()
                     .id("title-bar-left")
                     .test_support()
-                    .w(SIDEBAR_WIDTH)
-                    .h_full()
-                    .flex_shrink_0()
+                    .when_else(
+                        sidebar_float,
+                        |this| this.h_full().flex_shrink_0(),
+                        |this| this.w(columns.sidebar).h_full().flex_shrink_0(),
+                    )
                     .items_center()
                     .gap(rems(0.625))
                     .px_3()
@@ -1881,7 +2481,7 @@ fn title_bar(
                     .gap_2()
                     .px_2()
                     .child(tabs)
-                    .child(session_label),
+                    .child(session_menu),
             )
             .child(
                 // `.tr`: the work-pane column's title-bar controls, including
@@ -1889,9 +2489,11 @@ fn title_bar(
                 h_flex()
                     .id("title-bar-right")
                     .test_support()
-                    .w(WORK_PANE_WIDTH)
-                    .h_full()
-                    .flex_shrink_0()
+                    .when_else(
+                        work_pane_float,
+                        |this| this.h_full().flex_shrink_0(),
+                        |this| this.w(columns.work_pane).h_full().flex_shrink_0(),
+                    )
                     .items_center()
                     .justify_end()
                     .gap(rems(0.375))
@@ -2093,18 +2695,29 @@ fn preview_subagents() -> Vec<tact_protocol::SubagentRunSnapshot> {
     ]
 }
 
+/// `.row:hover` is the prototype's `--hover` while `.row.active` is its
+/// `--accentTint`. They are different tokens, so a hovered row can never read
+/// as the session the shell has open.
+fn sidebar_row_fills(cx: &App) -> (gpui_kit::gpui::Hsla, gpui_kit::gpui::Hsla) {
+    (cx.theme().accent, accent_tint(cx))
+}
+
 fn sidebar(
     state: &SessionState,
     recent: &[RecentSession],
     current: Option<&str>,
     search: &Entity<InputState>,
+    width: Rems,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     let session_line = session_activity_line(state);
     // Bound once: hover and highlight closures must not borrow the context.
-    let radius = cx.theme().radius;
-    let hover_bg = cx.theme().sidebar_accent;
-    let current_bg = cx.theme().sidebar_accent;
+    // `.row { border-radius: 7px }`: the prototype's own value, one pixel
+    // above the theme's general 6 px.
+    let radius = px(7.);
+    let (hover_bg, current_bg) = sidebar_row_fills(cx);
+    // `.row.active` rings itself with `inset 0 0 0 1px rgba(217,119,87,.08)`.
+    let current_ring = cx.theme().primary.opacity(0.08);
     let muted = cx.theme().muted_foreground;
     let primary = cx.theme().primary;
     let blue = cx.theme().info;
@@ -2125,7 +2738,9 @@ fn sidebar(
     });
     let open_diff = (!state.running && added + removed > 0).then_some((added, removed));
 
-    let mut list = v_flex().gap(rems(0.75)).px_2().pt(rems(1.)).pb_3();
+    // `.sideScroll` pads 4px and `.group:first-child` adds another 2px above
+    // the first label; the horizontal and bottom insets already match.
+    let mut list = v_flex().gap(rems(0.75)).px_2().pt(rems(0.375)).pb_3();
     for bucket in session_buckets(recent, &query, now) {
         let mut rows = v_flex().gap(rems(0.0625));
         for session in bucket.sessions {
@@ -2140,6 +2755,7 @@ fn sidebar(
                 diff,
                 hover_bg,
                 current_bg,
+                current_ring,
                 muted,
                 primary,
                 blue,
@@ -2161,6 +2777,9 @@ fn sidebar(
     if query.is_empty() && recent.is_empty() {
         list = list.child(
             v_flex()
+                .id("sidebar-no-sessions")
+                .test_support()
+                .aria_label(SharedString::from("No sessions yet"))
                 .px_2()
                 .py_3()
                 .text_xs()
@@ -2181,7 +2800,7 @@ fn sidebar(
                 .id("worktree-rows")
                 .test_support();
             for worktree in &worktrees {
-                rows = rows.child(worktree_row(worktree, radius, hover_bg, muted, primary, cx));
+                rows = rows.child(worktree_row(worktree, radius, hover_bg, primary, cx));
             }
             list = list.child(
                 v_flex()
@@ -2195,7 +2814,7 @@ fn sidebar(
         if !background.is_empty() {
             let mut rows = v_flex().gap(rems(0.0625));
             for task in &background {
-                rows = rows.child(background_row(task, radius, hover_bg, muted, primary, cx));
+                rows = rows.child(background_row(task, radius, hover_bg, primary, cx));
             }
             list = list.child(
                 v_flex()
@@ -2208,7 +2827,7 @@ fn sidebar(
 
     v_flex()
         .flex_shrink_0()
-        .w(SIDEBAR_WIDTH)
+        .w(width)
         .h_full()
         .border_r_1()
         .border_color(cx.theme().sidebar_border)
@@ -2231,7 +2850,9 @@ fn sidebar(
 /// Mirrors the prototype's `sideTop` block, which keeps both controls pinned
 /// above the scrolling session list.
 fn sidebar_top(search: &Entity<InputState>, cx: &mut Context<TactApp>) -> impl IntoElement {
-    let hover_bg = cx.theme().sidebar_accent;
+    // `.new:hover` lifts the button to the prototype's `--hover`.
+    let hover_bg = cx.theme().accent;
+    let hover_border = crate::theme::ink3(cx);
 
     v_flex()
         .flex_shrink_0()
@@ -2254,7 +2875,14 @@ fn sidebar_top(search: &Entity<InputState>, cx: &mut Context<TactApp>) -> impl I
                 .text_size(rems(0.78125))
                 .font_semibold()
                 .text_color(cx.theme().foreground)
-                .hover(move |style| style.bg(hover_bg))
+                .hover(move |style| style.bg(hover_bg).border_color(hover_border))
+                // `.new` is a `<button>` in the prototype, so the row is a tab
+                // stop and takes the line 27 ring.
+                .tab_index(0)
+                .focus_visible({
+                    let ring = focus_visible_ring(cx);
+                    move |style| style.shadow(ring.clone())
+                })
                 .on_click(cx.listener(|this, _, _, cx| this.new_session(cx)))
                 .child(IconName::Plus)
                 .child(div().flex_1().child(SharedString::from("New session")))
@@ -2263,11 +2891,24 @@ fn sidebar_top(search: &Entity<InputState>, cx: &mut Context<TactApp>) -> impl I
                 .child(
                     div()
                         .text_size(rems(0.6875))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(crate::theme::ink3(cx))
                         .child(SharedString::from(commands::hint("\u{2318}N", "Ctrl+N"))),
                 ),
         )
-        .child(
+        .child({
+            let search = search.clone();
+            // `.search:focus-within { border-color: var(--accent);
+            // background: var(--surface); box-shadow: 0 0 0 2px
+            // var(--accentTint) }`. Tracking the field's own handle makes the
+            // wrapper's focused style mean "the field inside is focused",
+            // which is what `:focus-within` asks for.
+            let field_focus = search.focus_handle(cx);
+            let accent = cx.theme().primary;
+            let surface = cx.theme().popover;
+            let ring = vec![
+                gpui_kit::gpui::BoxShadow::new(px(0.), px(0.), accent_tint(cx))
+                    .spread_radius(px(2.)),
+            ];
             h_flex()
                 .id("session-search")
                 .test_support()
@@ -2279,16 +2920,35 @@ fn sidebar_top(search: &Entity<InputState>, cx: &mut Context<TactApp>) -> impl I
                 .bg(cx.theme().muted)
                 .px(rems(0.5))
                 .rounded(rems(0.5))
-                .text_color(cx.theme().muted_foreground)
+                .text_color(crate::theme::ink3(cx))
+                .track_focus(&field_focus)
+                .focus(move |style| style.border_color(accent).bg(surface).shadow(ring.clone()))
+                // The prototype's field is a native `<input>` with a
+                // `:focus-within` ring, and a browser focuses it on the press
+                // that lands anywhere in the label. GPUI does not, so the wrapper
+                // has to hand the press to the input's focus handle — without
+                // this the field is drawn and filterable but unreachable by
+                // mouse.
+                .on_mouse_down(MouseButton::Left, {
+                    let search = search.clone();
+                    move |_, window, cx| {
+                        search.update(cx, |search, cx| {
+                            search.focus_handle(cx).focus(window, cx);
+                        });
+                    }
+                })
                 .child(IconName::Search)
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .text_size(rems(0.75))
-                        .child(Input::new(search)),
-                ),
-        )
+                        // `.search input{border:0;background:transparent}`:
+                        // the well is the shell's own box, so the field inside
+                        // it must not paint a second bordered one.
+                        .child(Input::new(&search).appearance(false).bordered(false)),
+                )
+        })
         .id("sidebar-top")
         .test_support()
 }
@@ -2317,6 +2977,36 @@ impl SessionBadge {
     }
 }
 
+/// The prototype's keyboard ring: line 27 declares
+/// `button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}`,
+/// which every `.row`, `.tab`, `.icon`, `.cmd`, `.new`, `.mini`, `.wtab`,
+/// `.toolbtn`, `.session` and `.send` inherits because the prototype draws each
+/// of them as a `<button>`.
+///
+/// GPUI has no outline, so the ring is a `BoxShadow` with a 2 px spread: it
+/// takes no part in layout, which is the outline property that matters here.
+/// The prototype's `outline-offset` has no counterpart, so the ring hugs the box
+/// -- from the inside, now -- instead of standing 2 px off it. The two
+/// `:focus-within` rings use
+/// `--accentTint` because the prototype draws those with `box-shadow`; this one
+/// is the plain accent, as the prototype's outline is.
+///
+/// The ring is **inset**, and that is load-bearing rather than cosmetic: GPUI
+/// paints a drop shadow as a *filled* rounded rect behind the element, so on any
+/// control whose own background is transparent or translucent -- the session
+/// rows (`.bg` only when current), the title-bar `.tab` chips -- that fill shows
+/// straight through and the "ring" reads as a solid orange slab covering the
+/// whole row (verified on screen, 2026-09-21). An inset shadow is drawn after
+/// the background and before the children, so it stays a 2 px ring whatever the
+/// background is.
+pub(crate) fn focus_visible_ring(cx: &App) -> Vec<gpui_kit::gpui::BoxShadow> {
+    vec![
+        gpui_kit::gpui::BoxShadow::new(px(0.), px(0.), cx.theme().primary)
+            .spread_radius(px(2.))
+            .inset(),
+    ]
+}
+
 /// One sidebar session row: status dot, title, and a metadata badge.
 #[allow(clippy::too_many_arguments)]
 fn session_row(
@@ -2327,6 +3017,7 @@ fn session_row(
     diff: Option<(u32, u32)>,
     hover_bg: gpui_kit::gpui::Hsla,
     current_bg: gpui_kit::gpui::Hsla,
+    current_ring: gpui_kit::gpui::Hsla,
     muted: gpui_kit::gpui::Hsla,
     primary: gpui_kit::gpui::Hsla,
     blue: gpui_kit::gpui::Hsla,
@@ -2357,8 +3048,8 @@ fn session_row(
     let badge = if is_current {
         Some(SessionBadge {
             text: "Running".to_string(),
-            fg: primary,
-            bg: primary.opacity(0.12),
+            fg: cx.theme().accent_foreground,
+            bg: accent_tint(cx),
         })
     } else if let Some((added, removed)) = diff {
         Some(SessionBadge {
@@ -2388,8 +3079,19 @@ fn session_row(
         .px_2()
         .py(rems(0.4375))
         .rounded(rems(0.4375))
-        .when(is_current, move |row| row.bg(current_bg))
+        .when(is_current, move |row| {
+            row.bg(current_bg).border_1().border_color(current_ring)
+        })
         .hover(move |style| style.bg(hover_bg))
+        // The prototype's session rows are `<button>`s, so they are tab stops
+        // with the line 27 ring. A drawn row is neither until it says so; the
+        // element's own id gives the focus handle a stable identity across
+        // frames.
+        .tab_index(0)
+        .focus_visible({
+            let ring = focus_visible_ring(cx);
+            move |style| style.shadow(ring.clone())
+        })
         .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
         .child(
             // `.dot`: a 7px ink circle inside a 3px halo, so a running row
@@ -2415,7 +3117,9 @@ fn session_row(
                         .truncate()
                         .text_size(rems(0.75))
                         .font_semibold()
-                        .when(is_current, |title| title.text_color(primary))
+                        .when(is_current, |title| {
+                            title.text_color(cx.theme().accent_foreground)
+                        })
                         .child(SharedString::from(label)),
                 )
                 .child(
@@ -2462,7 +3166,7 @@ fn kbd_chip(label: &'static str, cx: &App) -> impl IntoElement {
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().muted)
-        .text_color(cx.theme().muted_foreground)
+        .text_color(crate::theme::ink3(cx))
         .text_size(rems(0.65625))
         .child(SharedString::from(label))
 }
@@ -2624,21 +3328,25 @@ fn worktree_row(
     worktree: &WorktreeRow,
     radius: gpui_kit::gpui::Pixels,
     hover_bg: gpui_kit::gpui::Hsla,
-    muted: gpui_kit::gpui::Hsla,
     primary: gpui_kit::gpui::Hsla,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
-    let badge = worktree
-        .is_current
-        .then_some(("1 active", primary, primary.opacity(0.14)));
+    let badge =
+        worktree
+            .is_current
+            .then_some(("1 active", cx.theme().accent_foreground, accent_tint(cx)));
     let path = worktree.path.clone();
     sidebar_meta_row(
         SharedString::from(format!("worktree-row-{}", worktree.name)),
         SharedString::from(worktree.name.clone()),
         SharedString::from(worktree.detail.clone()),
         badge,
-        worktree.is_current,
-        worktree.is_current,
+        // `.row`, not `.row.active`: the open worktree is told apart by its
+        // `.badge.run` alone, so the dot stays neutral and the row keeps its
+        // hover fill. The state itself still reaches the accessibility tree
+        // through `selected`.
+        false,
+        false,
         Some(worktree.is_current),
         Some(Rc::new(
             move |this: &mut TactApp, cx: &mut Context<TactApp>| {
@@ -2647,7 +3355,6 @@ fn worktree_row(
         )),
         radius,
         hover_bg,
-        muted,
         primary,
         cx,
     )
@@ -2658,7 +3365,6 @@ fn background_row(
     task: &BackgroundRow,
     radius: gpui_kit::gpui::Pixels,
     hover_bg: gpui_kit::gpui::Hsla,
-    muted: gpui_kit::gpui::Hsla,
     primary: gpui_kit::gpui::Hsla,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -2666,14 +3372,13 @@ fn background_row(
         SharedString::from(format!("background-row-{}", task.command)),
         SharedString::from(task.command.clone()),
         SharedString::from("Running"),
-        Some(("Running", primary, primary.opacity(0.14))),
+        Some(("Running", cx.theme().accent_foreground, accent_tint(cx))),
         true,
         false,
         None,
         None,
         radius,
         hover_bg,
-        muted,
         primary,
         cx,
     )
@@ -2704,15 +3409,22 @@ fn sidebar_meta_row(
     on_click: Option<SidebarRowClick>,
     radius: gpui_kit::gpui::Pixels,
     hover_bg: gpui_kit::gpui::Hsla,
-    muted: gpui_kit::gpui::Hsla,
     primary: gpui_kit::gpui::Hsla,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     let (dot, dot_bg) = if active_dot {
-        (primary, primary.opacity(0.16))
+        // `.running .dot`: the ink over its own tint.
+        (primary, accent_tint(cx))
     } else {
-        (muted.opacity(0.5), muted.opacity(0.12))
+        // `.dot { background: var(--line2); box-shadow: 0 0 0 3px
+        // var(--surface2) }`. The theme exposes those as `input` and `muted`;
+        // ink2 is a text tier and would darken the neutral marker.
+        (cx.theme().input, cx.theme().muted)
     };
+    let mono = cx.theme().mono_font_family.clone();
+    // `.row.active` / `.tree .row2.active` fill with `--accentTint`.
+    let highlight_bg = accent_tint(cx);
+    let accent_ink = cx.theme().accent_foreground;
 
     h_flex()
         .id(id)
@@ -2721,24 +3433,35 @@ fn sidebar_meta_row(
         // Only the rows that do something carry a handler: a row that
         // highlights on hover and answers nothing is a dead control.
         .when_some(on_click, |row, on_click| {
-            row.on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+            row.tab_index(0)
+                .focus_visible({
+                    let ring = focus_visible_ring(cx);
+                    move |style| style.shadow(ring.clone())
+                })
+                .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
         })
         .items_start()
-        .gap_2()
+        // `.row`: 44px minimum, 7px 8px padding, 7px gap.
+        .min_h(rems(2.75))
+        .gap(rems(0.4375))
         .px_2()
-        .py_1()
+        .py(rems(0.4375))
         .rounded(radius)
-        .when(highlighted, move |row| row.bg(primary.opacity(0.10)))
+        .when(highlighted, move |row| row.bg(highlight_bg))
         .hover(move |style| style.bg(hover_bg))
         .child(
+            // `.dot`: a 7px ink circle inside a 3px halo, like the session
+            // rows above it.
             div()
-                .mt_1()
-                .size(rems(0.4375))
+                .mt(rems(0.3125))
+                .size(rems(0.875))
                 .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
                 .rounded_full()
-                .bg(dot)
-                .border_1()
-                .border_color(dot_bg),
+                .bg(dot_bg)
+                .child(div().size(rems(0.4375)).rounded_full().bg(dot)),
         )
         .child(
             v_flex()
@@ -2748,8 +3471,11 @@ fn sidebar_meta_row(
                 .child(
                     div()
                         .truncate()
-                        .text_sm()
-                        .when(highlighted, move |title_div| title_div.text_color(primary))
+                        .text_size(rems(0.75))
+                        .font_semibold()
+                        .when(highlighted, move |title_div| {
+                            title_div.text_color(accent_ink)
+                        })
                         .child(title),
                 )
                 .child(
@@ -2760,20 +3486,18 @@ fn sidebar_meta_row(
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .text_xs()
-                                .text_color(muted)
+                                .text_size(rems(0.65625))
+                                .text_color(crate::theme::ink3(cx))
                                 .child(meta),
                         )
                         .when_some(badge, |row, (text, fg, bg)| {
                             row.child(
-                                div()
-                                    .flex_shrink_0()
-                                    .rounded(radius)
-                                    .bg(bg)
-                                    .px_1()
-                                    .text_xs()
-                                    .text_color(fg)
-                                    .child(SharedString::from(text)),
+                                SessionBadge {
+                                    text: text.to_string(),
+                                    fg,
+                                    bg,
+                                }
+                                .render(mono.clone()),
                             )
                         }),
                 ),
@@ -2844,7 +3568,7 @@ fn group_label(label: &str, count: usize, cx: &App) -> impl IntoElement {
         .px_2()
         .pb(rems(0.3125))
         .text_size(rems(0.65625))
-        .text_color(cx.theme().muted_foreground)
+        .text_color(crate::theme::ink3(cx))
         .child(SharedString::from(label.to_uppercase()))
         .child(div().flex_1())
         .child(SharedString::from(count.to_string()))
@@ -2914,7 +3638,7 @@ fn sidebar_footer(
                     div()
                         .truncate()
                         .text_size(rems(0.65625))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(crate::theme::ink3(cx))
                         .child(SharedString::from(meta)),
                 ),
         )
@@ -2926,19 +3650,24 @@ fn sidebar_overlay(
     recent: &[RecentSession],
     current: Option<&str>,
     search: &Entity<InputState>,
+    progress: f32,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     v_flex()
         .absolute()
         .top_0()
         .bottom_0()
-        .left_0()
+        .left(overlay_inset(SIDEBAR_OVERLAY_OFFSET, progress))
         .w(SIDEBAR_WIDTH)
         .border_r_1()
         .border_color(cx.theme().sidebar_border)
         .bg(cx.theme().sidebar)
         .shadow_xl()
-        .child(sidebar(state, recent, current, search, cx))
+        // The sidebar floats above the work pane's scrim -- `z-index:40`
+        // against its `25` -- so it keeps the presses aimed at it instead of
+        // letting the scrim close the work pane behind the user's back.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(sidebar(state, recent, current, search, SIDEBAR_WIDTH, cx))
         .id("sidebar-overlay")
         .test_support()
 }
@@ -2948,6 +3677,14 @@ struct TranscriptHeader {
     heading: SharedString,
     subtitle: Option<SharedString>,
     detail: transcript::TranscriptDetail,
+}
+
+/// Everything the transcript column needs to draw itself: its header text and
+/// the column widths the prototype's `.thread` rule is measured against.
+#[derive(Clone)]
+struct TranscriptFrame {
+    header: TranscriptHeader,
+    columns: Columns,
 }
 
 /// A click listener stored in a virtual-list renderer, which only receives
@@ -2960,9 +3697,10 @@ fn transcript(
     composer: Entity<TextareaState>,
     session: &SessionState,
     attachments: &[Attachment],
-    header: TranscriptHeader,
+    frame: TranscriptFrame,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
+    let TranscriptFrame { header, columns } = frame;
     let TranscriptHeader {
         heading,
         subtitle,
@@ -2970,8 +3708,7 @@ fn transcript(
     } = header;
     let rows = rows.to_vec();
     let request = session.request.clone();
-    let answer = session.last_request.clone();
-    let empty = rows.is_empty() && request.is_none() && answer.is_none();
+    let empty = rows.is_empty() && request.is_none();
     let subtitle =
         subtitle.unwrap_or_else(|| session_intro_subtitle(&project_label(session), empty));
 
@@ -3000,6 +3737,10 @@ fn transcript(
         })
     };
 
+    // Answered approval rows render the same card the pending panel does, so
+    // the row renderer borrows the shell's card instead of re-deriving it.
+    let approval: transcript::ApprovalCard =
+        Rc::new(|request, result, cx| answer_panel(request, result, cx).into_any_element());
     let cycle: ShellClick = Rc::new(cx.listener(|this, _, _, cx| this.cycle_detail(cx)));
     let focus_composer: ShellClick =
         Rc::new(cx.listener(|this, _, window, cx| this.focus_composer(window, cx)));
@@ -3025,7 +3766,6 @@ fn transcript(
     let row_count = rows.len();
     let row_items = rows;
     let request_for_render = request;
-    let answer_for_render = answer;
     let choose_for_render = choose;
     let confirm_for_render = confirm;
     let cancel_for_render = cancel;
@@ -3034,7 +3774,7 @@ fn transcript(
     let heading_for_render = heading;
     let subtitle_for_render = subtitle;
 
-    let scroller = MessageScroller::new("transcript-list", state, move |index, _, cx| {
+    let scroller = MessageScroller::new("transcript-list", state, move |index, window, cx| {
         if index == 0 {
             session_intro(
                 &heading_for_render,
@@ -3051,8 +3791,12 @@ fn transcript(
                 &row_items[index - 1],
                 index - 1,
                 detail,
-                &toggle,
-                &open_diff,
+                transcript::RowActions {
+                    toggle: &toggle,
+                    open_diff: &open_diff,
+                    approval: &approval,
+                },
+                window,
                 cx,
             )
         } else if let Some(request) = &request_for_render {
@@ -3064,8 +3808,6 @@ fn transcript(
                 cx,
             )
             .into_any_element()
-        } else if let Some(answer) = &answer_for_render {
-            answer_panel(answer, cx).into_any_element()
         } else {
             div().into_any_element()
         }
@@ -3087,7 +3829,7 @@ fn transcript(
 
     let body = v_flex()
         .w_full()
-        .max_w(TRANSCRIPT_MEASURE)
+        .max_w(columns.thread)
         .mx_auto()
         .flex_1()
         .min_h_0()
@@ -3099,6 +3841,9 @@ fn transcript(
         .min_w_0()
         .h_full()
         .overflow_hidden()
+        // `.thread { width: min(720px, 100% - 48px) }`: the gutters are part of
+        // the rule, so the body is capped at the column's width minus them.
+        .px(columns.gutter)
         .child(transcript_toolbar(session, detail, cx))
         .child(body)
         .id("transcript")
@@ -3126,6 +3871,13 @@ fn chrome_icon_button(id: &'static str, icon: IconName, active: bool, cx: &App) 
         .when(active, |this| this.bg(hover).text_color(ink))
         .text_color(muted)
         .hover(move |style| style.bg(hover).text_color(ink))
+        // `.icon` is a `<button>` in the prototype, so it takes the keyboard
+        // ring there and the tab stop with it.
+        .tab_index(0)
+        .focus_visible({
+            let ring = focus_visible_ring(cx);
+            move |style| style.shadow(ring.clone())
+        })
         .child(Icon::from(icon).with_size(px(16.)))
 }
 
@@ -3153,15 +3905,42 @@ pub(crate) fn prototype_button(id: impl Into<SharedString>, primary: bool, cx: &
         .text_size(rems(0.71875))
         .font_semibold();
     if primary {
-        button
-            .primary()
-            .border_color(cx.theme().primary_active)
-            .text_color(cx.theme().foreground)
+        // `.btn.primary{...box-shadow:inset 0 1px 0 rgba(255,255,255,.2)}`. The
+        // button's own `shadow(bool)` takes the name the styled setter wants, so
+        // the shadow list is applied by path; the component refines the caller's
+        // instance style on top of the variant's fill, so it survives.
+        let inset = gpui_kit::gpui::BoxShadow::new(
+            px(0.),
+            px(1.),
+            gpui_kit::Hsla::from(gpui_kit::rgba(0xffff_ffff)).opacity(0.2),
+        )
+        .inset();
+        <Button as gpui_kit::Styled>::shadow(
+            button
+                .primary()
+                .border_color(cx.theme().primary_active)
+                .text_color(cx.theme().foreground),
+            vec![inset],
+        )
     } else {
+        // `.btn.ghost{border:1px solid var(--line);background:var(--surface)}`
+        // plus `.btn.ghost:hover{background:var(--hover);border-color:var(--line2)}`.
+        // The `Ghost` variant can express neither half: its border is
+        // `transparent` in every state (`button.rs:1032`), which erases the
+        // resting outline the moment the pointer arrives, and its hover wash is
+        // the theme accent rather than the prototype's `--hover`. `Custom`
+        // holds one border colour across the states and takes an explicit hover
+        // fill, so the outline survives the pointer. The hover step from
+        // `--line` to `--line2` is the one part left unmatched, because a
+        // button's own `hover` style cannot be extended from the call site.
+        let variant = ButtonCustomVariant::new(cx)
+            .color(cx.theme().border)
+            .foreground(cx.theme().foreground)
+            .hover(cx.theme().accent)
+            .active(cx.theme().accent);
         button
-            .ghost()
+            .custom(variant)
             .border_1()
-            .border_color(cx.theme().border)
             .bg(cx.theme().popover)
             .text_color(cx.theme().foreground)
     }
@@ -3208,6 +3987,13 @@ fn tool_button(
         .text_size(rems(0.71875))
         .text_color(cx.theme().muted_foreground)
         .hover(move |style| style.bg(hover).text_color(ink))
+        // `.toolbtn` is a `<button>` in the prototype; the drawn chip is a tab
+        // stop with the same ring.
+        .tab_index(0)
+        .focus_visible({
+            let ring = focus_visible_ring(cx);
+            move |style| style.shadow(ring.clone())
+        })
         .child(Icon::from(icon).with_size(px(16.)));
     if let Some(label) = label {
         chip = chip.child(SharedString::from(label));
@@ -3317,7 +4103,7 @@ fn status_pill(
     let (fg, bg, border) = if active {
         (
             cx.theme().accent_foreground,
-            cx.theme().primary.opacity(0.12),
+            accent_tint(cx),
             cx.theme().transparent,
         )
     } else {
@@ -3388,7 +4174,7 @@ fn session_intro(
                     div()
                         .max_w(rems(42.))
                         .text_size(rems(0.75))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(crate::theme::ink3(cx))
                         .child(SharedString::from(subtitle)),
                 ),
         )
@@ -3514,12 +4300,14 @@ fn request_panel(
 /// An answered request: the same card with its decision in place of the actions.
 ///
 /// This is the prototype's `.approval.done`, which keeps `Allowed once` where
-/// the buttons were so the transcript still reads as a record.
-fn answer_panel(answer: &RequestAnswer, cx: &App) -> impl IntoElement {
+/// the buttons were so the transcript still reads as a record. An answered card
+/// is a transcript row, so it scrolls away with the turn it unblocked instead
+/// of staying pinned below rows that arrived after it.
+fn answer_panel(request: &Request, result: &str, cx: &App) -> impl IntoElement {
     approval_card(
         cx,
         vec![
-            approval_details(&answer.request, cx).into_any_element(),
+            approval_details(request, cx).into_any_element(),
             h_flex()
                 .items_center()
                 .gap(rems(0.375))
@@ -3527,7 +4315,10 @@ fn answer_panel(answer: &RequestAnswer, cx: &App) -> impl IntoElement {
                 .font_semibold()
                 .text_color(cx.theme().success)
                 .child(div().size(rems(0.8125)).child(IconName::Check))
-                .child(SharedString::from(answer.result.clone()))
+                .child(SharedString::from(result.to_string()))
+                .id("request-decision")
+                .aria_label(SharedString::from(result.to_string()))
+                .test_support()
                 .into_any_element(),
         ],
     )
@@ -3564,6 +4355,8 @@ fn approval_details(request: &Request, cx: &App) -> impl IntoElement {
         .child(
             div()
                 .text_size(rems(0.75))
+                // `.approval p { font-size: 12px; line-height: 1.5 }`.
+                .line_height(relative(1.5))
                 .text_color(cx.theme().muted_foreground)
                 .child(SharedString::from(match command {
                     // The command moves into its own block, so the paragraph
@@ -3591,8 +4384,8 @@ fn request_headline(label: &str, cx: &App) -> impl IntoElement {
                 .items_center()
                 .justify_center()
                 .rounded(rems(0.4375))
-                .bg(cx.theme().primary.opacity(0.12))
-                .text_color(cx.theme().primary)
+                .bg(accent_tint(cx))
+                .text_color(cx.theme().accent_foreground)
                 .child(IconName::TriangleAlert),
         )
         .child(
@@ -3755,7 +4548,15 @@ fn mini_chip(
         .rounded(rems(0.375))
         .text_size(rems(0.65625))
         .text_color(cx.theme().muted_foreground)
-        .hover(move |style| style.bg(hover).text_color(ink));
+        .hover(move |style| style.bg(hover).text_color(ink))
+        // `.mini` is a `<button>` in the prototype, so the drawn chip is a tab
+        // stop, and the keyboard ring is what tells a keyboard user which chip
+        // the arrow keys or Enter will act on.
+        .tab_index(0)
+        .focus_visible({
+            let ring = focus_visible_ring(cx);
+            move |style| style.shadow(ring.clone())
+        });
     if strong {
         chip = chip
             .border_1()
@@ -3800,6 +4601,19 @@ fn send_button(
         .size(rems(1.75))
         .rounded(rems(0.5))
         .border_1()
+        // `.send{...box-shadow:inset 0 1px 0 rgba(255,255,255,.2)}`: the
+        // hairline along the top edge is what makes the accent square read as
+        // raised. `.send.run` swaps the fill and the border but does not reset
+        // the shadow, so it stays on in both states. The white is the
+        // prototype's own literal rather than a theme role.
+        .shadow(vec![
+            gpui_kit::gpui::BoxShadow::new(
+                px(0.),
+                px(1.),
+                gpui_kit::Hsla::from(gpui_kit::rgba(0xffff_ffff)).opacity(0.2),
+            )
+            .inset(),
+        ])
         .when(running, |this| {
             this.bg(run_bg).border_color(run_bg).text_color(page)
         })
@@ -3810,6 +4624,14 @@ fn send_button(
                 .hover(move |style| style.bg(hover))
         })
         .when(!enabled, |this| this.opacity(0.38))
+        // `.send` is a `<button>` in the prototype. The ring replaces this
+        // square's top hairline while it is focused, because a refined style
+        // swaps the shadow list rather than appending to it.
+        .tab_index(0)
+        .focus_visible({
+            let ring = focus_visible_ring(cx);
+            move |style| style.shadow(ring.clone())
+        })
         .child(Icon::from(icon).with_size(px(16.)))
 }
 
@@ -3821,7 +4643,7 @@ fn prompt_composer(
 ) -> impl IntoElement {
     let running = session.running;
     let (primary_icon, primary_action) = if running {
-        (IconName::Pause, "Stop the active turn")
+        (IconName::SquareStop, "Stop the active turn")
     } else {
         (IconName::ArrowUp, "Send message")
     };
@@ -4085,7 +4907,7 @@ fn prompt_composer(
     let usage_snapshot = session.usage.clone();
     let usage_for_panel = usage_snapshot.clone();
     let mono_font = cx.theme().mono_font_family.clone();
-    let muted_ink = cx.theme().muted_foreground;
+    let muted_ink = crate::theme::ink3(cx);
     // `.ring`: a 24px circle whose centre is the percentage alone; the counts
     // stay in the popover and the accessible name.
     let usage_ring = usage_snapshot.as_ref().map(|usage| {
@@ -4102,7 +4924,13 @@ fn prompt_composer(
                     .tooltip("Context usage")
                     .accessibility_label("Context usage")
                     .ghost()
-                    .compact()
+                    // `.ring { width:24px; height:24px; }`. The component's
+                    // compact button is 32 px tall, and it pads any button with
+                    // children out to 34 wide, either of which grows the bar
+                    // past the prototype's; a button with an icon would have
+                    // taken `with_size` alone.
+                    .with_size(px(24.))
+                    .px(px(0.))
                     .child(
                         ProgressCircle::new("composer-usage-ring")
                             .value(percentage)
@@ -4141,7 +4969,8 @@ fn prompt_composer(
     controls = controls.child(div().flex_1());
 
     // `.send`: a 28px icon-only square that is inert while there is nothing to
-    // send, and shows the pause glyph while a turn is in flight.
+    // send, and swaps to the prototype's square stop glyph while a turn is in
+    // flight.
     controls = controls.child(
         tooltip_label(
             send_button(
@@ -4164,12 +4993,35 @@ fn prompt_composer(
         .test_support(),
     );
 
+    // `.composer { border: 1px solid var(--line2); border-radius: 12px;
+    // background: var(--surface); box-shadow: 0 1px 2px rgba(20,20,19,.04),
+    // 0 8px 24px rgba(20,20,19,.035) }`, and `.composer:focus-within {
+    // border-color: var(--accent); box-shadow: 0 0 0 2px var(--accentTint) }`:
+    // the ring replaces the resting shadow while the field inside has focus.
+    let composer_focus = composer.focus_handle(cx);
+    let accent = cx.theme().primary;
+    let ring =
+        vec![gpui_kit::gpui::BoxShadow::new(px(0.), px(0.), accent_tint(cx)).spread_radius(px(2.))];
+    // `.composer` hard-codes its resting shadow as rgba(20,20,19,.04) and
+    // rgba(20,20,19,.035) in both modes. `foreground` flips to near-white in
+    // the dark theme, so it would paint a glow instead of a shadow.
+    let shadow_ink = gpui_kit::Hsla::from(gpui_kit::rgba(0x1414_13ff));
     let mut body = v_flex()
+        .id("composer-card")
+        .test_support()
         .w_full()
         .rounded(rems(0.75))
         .border_1()
         .border_color(cx.theme().input)
-        .bg(cx.theme().popover);
+        .bg(cx.theme().popover)
+        .shadow(vec![
+            gpui_kit::gpui::BoxShadow::new(px(0.), px(1.), shadow_ink.opacity(0.04))
+                .blur_radius(px(2.)),
+            gpui_kit::gpui::BoxShadow::new(px(0.), px(8.), shadow_ink.opacity(0.035))
+                .blur_radius(px(24.)),
+        ])
+        .track_focus(&composer_focus)
+        .focus(move |style| style.border_color(accent).shadow(ring.clone()));
 
     if !attachments.is_empty() {
         let mut chips = h_flex()
@@ -4188,6 +5040,10 @@ fn prompt_composer(
             .tooltip("Remove attachment (Ctrl+Shift+Backspace removes the last chip)")
             .accessibility_label("Remove attachment")
             .ghost()
+            // The prototype's `.chip button{color:var(--ink3)}`. The ghost
+            // variant paints `secondary_foreground`, which is the prototype's
+            // `--ink` -- two tiers too strong for a tertiary affordance.
+            .text_color(crate::theme::ink3(cx))
             .compact();
             let remove = remove.on_click(cx.listener(move |this, _, _, cx| {
                 this.remove_attachment(index, cx);
@@ -4261,8 +5117,9 @@ fn prompt_composer(
                         .appearance(false)
                         .bordered(false)
                         .w_full()
-                        .min_h(rems(3.))
-                        .accessibility_id("prompt-composer-input")
+                        .text_size(rems(0.8125))
+                        .line_height(relative(1.5))
+                        .accessibility_id("prompt-composer-field")
                         .aria_label("Message Tact"),
                 ),
         )
@@ -4387,11 +5244,12 @@ fn work_pane(
     state: &SessionState,
     files: &mut FilesPane,
     diffs: &mut pane::DiffPane,
+    width: Rems,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     v_flex()
         .flex_shrink_0()
-        .w(WORK_PANE_WIDTH)
+        .w(width)
         .h_full()
         .border_l_1()
         .border_color(cx.theme().border)
@@ -4402,23 +5260,56 @@ fn work_pane(
 }
 
 /// Work pane as a right drawer when the window is too narrow for three columns.
+/// The prototype's `.scrim`, up while the work pane is out as a drawer.
+///
+/// `body.workOpen .scrim` covers everything but the drawer and
+/// `q('#scrim').onclick=()=>work(false)`: a press anywhere behind the drawer
+/// closes it instead of reaching the control under the pointer. Without it a
+/// control that merely sits in the window answers a press the user aimed at the
+/// drawer's surroundings -- the one difference `ElementSnapshot::visible()`,
+/// an intersection with the viewport, cannot tell apart from reachability.
+fn work_pane_scrim(cx: &mut Context<TactApp>) -> impl IntoElement {
+    // `.scrim{background:rgba(20,20,19,.14)}` -- the same wash in both themes.
+    let wash = gpui_kit::Hsla::from(gpui_kit::rgba(0x1414_1324));
+    div()
+        .absolute()
+        .inset_0()
+        .bg(wash)
+        .id("work-pane-scrim")
+        .test_support()
+        // Claim the press before it reaches the hitboxes under the scrim: the
+        // sidebar's rows and the transcript both sit at the same point, and
+        // without this a click would land on the scrim *and* on whichever
+        // control the drawer happens to be covering.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.work_pane_open = false;
+            cx.notify();
+        }))
+}
+
 fn work_pane_drawer(
     selected: WorkPane,
     state: &SessionState,
     files: &mut FilesPane,
     diffs: &mut pane::DiffPane,
+    progress: f32,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     v_flex()
         .absolute()
         .top_0()
-        .right_0()
         .bottom_0()
+        .right(overlay_inset(WORK_PANE_DRAWER_OFFSET, progress))
         .w(WORK_PANE_WIDTH)
         .border_l_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().sidebar)
         .shadow_xl()
+        // The drawer is above the scrim (`z-index:30` against `25`), so it
+        // claims the press on its way out: a click on the pane's own tabs must
+        // switch the pane, not read as a click on the scrim behind it.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(pane::view(selected, state, files, diffs, cx))
         .id("work-pane")
         .test_support()
@@ -4461,19 +5352,22 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
         .bg(cx.theme().tab_bar)
         .px(rems(0.6875))
         .text_size(rems(0.65625))
-        .text_color(cx.theme().muted_foreground)
+        .text_color(crate::theme::ink3(cx))
         .child(status_item(
+            "status-project",
             Some(IconName::Box),
             project,
-            cx.theme().foreground,
+            // `.status strong` is `--ink2`, not the transcript's full ink.
+            cx.theme().muted_foreground,
             cx,
         ));
 
     if let Some(branch) = state.branch.as_deref() {
         bar = bar.child(status_item(
+            "status-branch",
             Some(IconName::GitBranch),
             branch.to_string(),
-            cx.theme().muted_foreground,
+            crate::theme::ink3(cx),
             cx,
         ));
     }
@@ -4483,13 +5377,16 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
             .items_center()
             .gap(rems(0.3125))
             .flex_shrink_0()
-            .text_color(cx.theme().muted_foreground)
+            .text_color(crate::theme::ink3(cx))
             .child(
                 div()
                     .text_color(cx.theme().accent_foreground)
                     .child("\u{25cf}"),
             )
-            .child(SharedString::from(permission)),
+            .child(SharedString::from(permission))
+            .id("status-permission")
+            .aria_label(SharedString::from(permission))
+            .test_support(),
     );
 
     if added > 0 || removed > 0 {
@@ -4507,7 +5404,10 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
                     div()
                         .text_color(cx.theme().danger)
                         .child(SharedString::from(format!("\u{2212}{removed}"))),
-                ),
+                )
+                .id("status-diff")
+                .aria_label(SharedString::from(format!("+{added} \u{2212}{removed}")))
+                .test_support(),
         );
     }
 
@@ -4516,26 +5416,45 @@ fn status_bar(workspace: Workspace, state: &SessionState, cx: &App) -> impl Into
             (taken, Some(max)) => format!("turn {taken}/{max}"),
             (taken, None) => format!("turn {taken}"),
         };
-        bar = bar.child(status_item(None, label, cx.theme().muted_foreground, cx));
+        bar = bar.child(status_item(
+            "status-turns",
+            None,
+            label,
+            crate::theme::ink3(cx),
+            cx,
+        ));
     }
 
     bar = bar.child(div().flex_1());
 
     if let Some(context) = context {
-        bar = bar.child(status_item(None, context, cx.theme().muted_foreground, cx));
+        bar = bar.child(status_item(
+            "status-context",
+            None,
+            context,
+            crate::theme::ink3(cx),
+            cx,
+        ));
     }
 
     // The prototype closes the bar with the account balance; the provider only
     // reports one for accounts that track it, so the chip is conditional.
     if let Some(balance) = balance_label(state) {
-        bar = bar.child(status_item(None, balance, cx.theme().muted_foreground, cx));
+        bar = bar.child(status_item(
+            "status-balance",
+            None,
+            balance,
+            crate::theme::ink3(cx),
+            cx,
+        ));
     }
 
     if running > 0 {
         bar = bar.child(status_item(
+            "status-running",
             None,
             format!("{running} running"),
-            cx.theme().primary,
+            cx.theme().accent_foreground,
             cx,
         ));
     }
@@ -4561,7 +5480,12 @@ fn balance_label(state: &SessionState) -> Option<String> {
 }
 
 /// One status-bar segment: an optional glyph plus text.
+///
+/// The `id` is what makes a chip observable: without it the segment is not in
+/// the walk's registry, and the footer contract (which chip reads which piece
+/// of session state) can only be asserted by reading the source.
 fn status_item(
+    id: &'static str,
     icon: Option<IconName>,
     label: String,
     color: gpui_kit::Hsla,
@@ -4574,7 +5498,10 @@ fn status_item(
         .text_color(color)
         .font_family(cx.theme().font_family.clone())
         .children(icon.map(|icon| Icon::from(icon).with_size(px(12.))))
-        .child(SharedString::from(label))
+        .child(SharedString::from(label.clone()))
+        .id(id)
+        .aria_label(SharedString::from(label))
+        .test_support()
 }
 
 fn settings_panel(
@@ -4838,7 +5765,332 @@ mod tests {
         session_name, session_row_title, worktree_rows,
     };
     use crate::pane::WorkPane;
+    use crate::session::SessionHandle;
     use crate::{RecentSession, session::SessionState, transcript};
+    use tact_session::{HistoryBlock, HistoryMessage, HistoryRole};
+
+    /// The Stop half of the composer's primary control reaches the session.
+    ///
+    /// A running turn is only reachable from a live agent session, so this test
+    /// builds the handle's sender half itself and reads back what the press
+    /// dispatched. The receiver is the proof: the square stop glyph renders
+    /// identically whether or not the press reached the agent.
+    #[gpui_kit::test]
+    fn the_stop_control_cancels_the_running_turn(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, _| {
+                app.session = Some(session);
+                app.state.running = true;
+            });
+            Root::new(shell, window, cx)
+        });
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("composer-primary", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::Cancel)),
+            "the primary control cancels the turn it is drawn for"
+        );
+        assert!(
+            dispatched.try_recv().is_err(),
+            "and cancelling dispatches nothing else"
+        );
+    }
+
+    /// The Send half hands the draft to the session, not only to the transcript.
+    ///
+    /// The integration suite presses this control and reads the row it appends,
+    /// but an offline shell appends that row whether or not a session is
+    /// attached, so it cannot tell a queued command from a painted one. The
+    /// channel here is what separates the two.
+    #[gpui_kit::test]
+    fn the_send_control_hands_the_draft_to_the_session(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, cx| {
+                app.session = Some(session);
+                app.composer
+                    .update(cx, |state, cx| state.set_value("Ship the diff", window, cx));
+            });
+            Root::new(shell, window, cx)
+        });
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("composer-primary", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::SubmitTask(task)) if task == "Ship the diff"),
+            "an idle shell hands the draft to the session"
+        );
+    }
+
+    /// The palette-only commands reach the session as protocol commands.
+    ///
+    /// The integration suite proves each of these three rows answers, but an
+    /// offline shell answers with a notice; the mapping from the row to the
+    /// command the driver understands is only visible with a session attached.
+    /// They are the three the palette reaches and no chord does.
+    #[gpui_kit::test]
+    fn the_palette_only_commands_map_onto_their_protocol_commands(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let _window = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, _| app.session = Some(session));
+            shell.update(cx, |app, cx| {
+                for command in [
+                    super::PaletteCommand::CompactSession,
+                    super::PaletteCommand::SessionStats,
+                    super::PaletteCommand::McpServers,
+                ] {
+                    app.run_palette_command(command, window, cx);
+                }
+            });
+            Root::new(shell, window, cx)
+        });
+
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::Compact)),
+            "the compact row asks the session to compact"
+        );
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::QueryStats)),
+            "the stats row asks the session for its token stats"
+        );
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::McpList)),
+            "the MCP row asks the session for its servers"
+        );
+        assert!(
+            dispatched.try_recv().is_err(),
+            "and the three rows dispatch exactly one command each"
+        );
+    }
+
+    /// An answered approval card stops being the tail of the transcript.
+    ///
+    /// The card used to live in a slot *beside* the list, so once it was
+    /// answered it stayed the last thing on screen for the rest of the session
+    /// while the turn it unblocked appended rows above it. It is a conversation
+    /// row now: the answer files it in the slot it was asked in, and whatever
+    /// the turn writes next lands below it.
+    ///
+    /// Both halves matter to the regression. Order alone would not catch a card
+    /// that is copied into the list *and* left in the slot, so the item count is
+    /// pinned too: a pending request is still one item past the rows, an
+    /// answered one is only its own row.
+    #[gpui_kit::test]
+    fn an_answered_approval_keeps_its_slot_instead_of_the_tail(cx: &mut gpui_kit::TestAppContext) {
+        use crate::session::Request;
+        use crate::transcript::TranscriptRow;
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let mut shell = None;
+        let handle = cx
+            .open_window(size(px(1440.), px(900.)), |window, cx| {
+                let app = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+                app.update(cx, |app, _| {
+                    app.state.request = Some(Request {
+                        id: 7,
+                        prompt: "Run command: cargo check -p tact-gui".to_string(),
+                        options: vec![
+                            "Allow once".to_string(),
+                            "Deny".to_string(),
+                            "Always allow this tool".to_string(),
+                        ],
+                        multi: false,
+                        selected: Vec::new(),
+                    });
+                });
+                shell = Some(app.clone());
+                Root::new(app, window, cx)
+            })
+            .into();
+        let shell = shell.expect("the shell is created with its window");
+
+        cx.update_window(handle, |_, _, cx| {
+            shell.update(cx, |app, cx| {
+                // The seeded request is one item past the single header.
+                assert_eq!(
+                    app.transcript_item_count(),
+                    2,
+                    "a pending request is a card at the tail, extra to the rows"
+                );
+
+                // Row 0 of the seeded trio is `Allow once`.
+                app.choose(0, cx);
+                assert!(app.state.request.is_none(), "the pending slot is cleared");
+
+                let rows = app.conversation.rows();
+                assert_eq!(rows.len(), 1, "the answer files the card as one row");
+                assert!(
+                    matches!(
+                        rows[0],
+                        TranscriptRow::Approval { ref result, .. } if result == "Allow once"
+                    ),
+                    "the row is the answered card, phrased by its own label: {rows:?}"
+                );
+                assert_eq!(
+                    app.transcript_item_count(),
+                    2,
+                    "and the answered card is the row, not a card beside it"
+                );
+
+                // The turn resumes: a later row must land *below* the record.
+                app.push_system_row("the turn moved on".to_string(), cx);
+                let rows = app.conversation.rows();
+                assert!(
+                    matches!(rows[0], TranscriptRow::Approval { .. }),
+                    "the record keeps the slot it was asked in: {rows:?}"
+                );
+                assert!(
+                    matches!(rows[1], TranscriptRow::System { .. }),
+                    "the next row follows it instead of being pushed above it: {rows:?}"
+                );
+                assert_eq!(
+                    app.transcript_item_count(),
+                    3,
+                    "two rows beside the header, and no card left at the tail"
+                );
+            });
+        })
+        .unwrap();
+    }
+
+    /// Escape stops at the layer that owns it.
+    ///
+    /// `escape` is StopTask for the shell, but an open palette or dialog takes
+    /// the press first, and the turn behind it must survive. The last phase is
+    /// the control: with nothing over the shell the same press is the turn's
+    /// own stop, so the two earlier silences are not a dead binding.
+    #[gpui_kit::test]
+    fn escape_stops_at_the_layer_that_owns_it(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+        use std::time::Duration;
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+        cx.update(crate::commands_init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let handle = cx
+            .open_window(size(px(1440.), px(900.)), move |window, cx| {
+                let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+                shell.update(cx, |app, _| {
+                    app.session = Some(session);
+                    app.state.running = true;
+                });
+                Root::new(shell, window, cx)
+            })
+            .into();
+
+        // The palette is the top layer while it is up.
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("open-command-palette", cx);
+            // Dialog entrance is a 250 ms wall-clock animation.
+            std::thread::sleep(Duration::from_millis(400));
+            window.render_frame(cx);
+            assert!(
+                window.try_find("command").is_some(),
+                "the palette opens over the shell"
+            );
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("command").is_none(),
+                "escape reaches the focused palette"
+            );
+        })
+        .unwrap();
+        assert!(
+            dispatched.try_recv().is_err(),
+            "the palette consumed escape instead of passing it on to StopTask"
+        );
+
+        // So is the settings dialog.
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("open-settings", cx);
+            std::thread::sleep(Duration::from_millis(400));
+            window.render_frame(cx);
+            assert!(
+                window.try_find("settings-theme-light").is_some(),
+                "the dialog opens over the shell"
+            );
+            window.press("escape", cx);
+            std::thread::sleep(Duration::from_millis(400));
+            window.render_frame(cx);
+            assert!(
+                window.try_find("settings-theme-light").is_none(),
+                "escape reaches the focused dialog"
+            );
+        })
+        .unwrap();
+        assert!(
+            dispatched.try_recv().is_err(),
+            "the dialog consumed escape instead of passing it on to StopTask"
+        );
+
+        // With nothing over it, the press belongs to the shell.
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("escape", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::Cancel)),
+            "bare escape is the running turn's own stop"
+        );
+    }
 
     /// The worktree group reads the repository the session is rooted in.
     #[test]
@@ -5108,5 +6360,291 @@ mod tests {
             "Auto approve",
             "the driver reads an unknown mode as auto, so the label must not claim otherwise"
         );
+    }
+
+    /// A workspace a connected shell can start a real runtime in.
+    ///
+    /// `SessionRuntime::start` opens `<workdir>/.tact/tact.db`, so a writable
+    /// directory is all the fixture has to supply -- the store creates its own
+    /// parent directory. The provider is process-global and has to be installed
+    /// before the session thread reaches for it; it is deliberately keyless, so
+    /// the agent reports `AgentUpdate::Error` on the stream instead of taking
+    /// the panic path in a background thread.
+    /// Removes a fixture workspace once the test that made it ends.
+    ///
+    /// The runtime holds the sqlite file open on its own thread, so the guard
+    /// only unlinks the directory -- whatever the session thread is still
+    /// finishing keeps working against the open descriptor.
+    struct WorkspaceCleanup(std::path::PathBuf);
+
+    impl Drop for WorkspaceCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn connected_workdir() -> std::path::PathBuf {
+        static INSTALLING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _installing = INSTALLING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        tact_session::test_support::install_test_config();
+
+        let dir = std::env::temp_dir().join(format!(
+            "tact-gui-session-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the fixture makes its own workspace");
+        dir
+    }
+
+    /// The New-session control starts a real `tact-session` runtime.
+    ///
+    /// Every other contract in this suite drives an offline shell, whose
+    /// `new_session` returns before it reaches `session::start`. The connected
+    /// branch is the one that touches the store, and "start a session" is what
+    /// the prototype's `New session` row claims, so it is pinned here rather
+    /// than read: the press has to hand the window a handle, and that session
+    /// has to exist in the workspace's own database afterwards.
+    #[gpui_kit::test]
+    fn the_new_session_control_starts_a_runtime_and_writes_its_row(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+        let workdir = connected_workdir();
+        let _cleanup = WorkspaceCleanup(workdir.clone());
+
+        let mut shell = None;
+        let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, Some(workdir.clone()));
+                app.offline = false;
+                app
+            });
+            shell = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let shell = shell.expect("the window built a shell");
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("session-new", cx);
+            window.render_frame(cx);
+
+            let started = shell
+                .update(cx, |app, _| {
+                    app.session
+                        .as_ref()
+                        .map(|session| session.session_id().to_string())
+                })
+                .expect("the press adopted a session");
+            assert!(
+                crate::session::recent(&workdir)
+                    .iter()
+                    .any(|row| row.id == started),
+                "the runtime wrote its own row: {started} is not in the workspace store"
+            );
+            assert_eq!(
+                shell.update(cx, |app, _| app.open_session_id().map(str::to_string)),
+                Some(started),
+                "the sidebar marks the session the runtime started"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Cycling sessions resumes the runtime the row names.
+    ///
+    /// An offline shell only moves the row its sidebar marks open, which the
+    /// integration suite already covers. The connected branch goes through
+    /// `resume_session` into `session::resume` and so into the store, so this
+    /// test starts two real sessions through the control and then cycles
+    /// between them, asserting the adopted id is the other row's id rather than
+    /// only the highlighted row.
+    #[gpui_kit::test]
+    fn cycling_sessions_resumes_the_runtime_the_row_names(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+        cx.update(crate::commands_init);
+        let workdir = connected_workdir();
+        let _cleanup = WorkspaceCleanup(workdir.clone());
+
+        let mut shell = None;
+        let handle = cx
+            .open_window(size(px(1440.), px(900.)), |window, cx| {
+                let app = cx.new(|cx| {
+                    let mut app = super::TactApp::with_workspace(window, cx, Some(workdir.clone()));
+                    app.offline = false;
+                    app
+                });
+                shell = Some(app.clone());
+                Root::new(app, window, cx)
+            })
+            .into();
+        let shell = shell.expect("the window built a shell");
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            // Two presses leave two rows in the workspace's own store.
+            window.click("session-new", cx);
+            window.render_frame(cx);
+            window.click("session-new", cx);
+            window.render_frame(cx);
+
+            let (rows, started) = shell.update(cx, |app, _| {
+                (
+                    app.recent
+                        .iter()
+                        .map(|row| row.id.clone())
+                        .collect::<Vec<_>>(),
+                    app.open_session_id().map(str::to_string),
+                )
+            });
+            assert_eq!(rows.len(), 2, "two presses leave two stored sessions");
+            let started = started.expect("the second press adopted a session");
+
+            window.press("ctrl-tab", cx);
+            window.render_frame(cx);
+
+            let resumed = shell
+                .update(cx, |app, _| {
+                    app.session
+                        .as_ref()
+                        .map(|session| session.session_id().to_string())
+                })
+                .expect("cycling leaves a session attached");
+            let expected = rows
+                .iter()
+                .find(|id| id.as_str() != started)
+                .expect("a second row exists to cycle to")
+                .clone();
+            assert_eq!(
+                resumed, expected,
+                "Primary+Tab resumes the row it moved to, not only the highlighted one"
+            );
+            assert_eq!(
+                shell.update(cx, |app, _| app.recent.len()),
+                2,
+                "resuming reuses the row instead of starting another session"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Switching sessions redraws the transcript the store still holds.
+    ///
+    /// The reported bug: clicking a session in the sidebar adopted its runtime
+    /// but handed the window a blank page, so the conversation vanished until
+    /// the next turn. The store keeps the canonical blocks, so a resume
+    /// redraws them — in stored order, which is what keeps `thinking -> tool ->
+    /// answer` reading the way the turn produced it.
+    #[gpui_kit::test]
+    fn switching_sessions_redraws_the_stored_transcript(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+        cx.update(crate::commands_init);
+        let workdir = connected_workdir();
+        let _cleanup = WorkspaceCleanup(workdir.clone());
+
+        let session_id = "7d0e2f14-8a51-4b7a-9c2e-5f6a1b2c3d4e".to_string();
+        tact_session::test_support::seed_session_history(
+            &workdir,
+            &session_id,
+            &[
+                HistoryMessage {
+                    role: HistoryRole::User,
+                    blocks: vec![HistoryBlock::Text("check the build".into())],
+                },
+                HistoryMessage {
+                    role: HistoryRole::Assistant,
+                    blocks: vec![
+                        HistoryBlock::Thinking("weighing".into()),
+                        HistoryBlock::ToolUse {
+                            id: "tool_1".into(),
+                            name: "bash".into(),
+                            detail: "cargo test".into(),
+                        },
+                    ],
+                },
+                HistoryMessage {
+                    role: HistoryRole::User,
+                    blocks: vec![HistoryBlock::ToolResult {
+                        tool_use_id: "tool_1".into(),
+                        output: "ok\n".into(),
+                    }],
+                },
+                HistoryMessage {
+                    role: HistoryRole::Assistant,
+                    blocks: vec![HistoryBlock::Text("it passes".into())],
+                },
+            ],
+        );
+
+        let mut shell = None;
+        let handle = cx
+            .open_window(size(px(1440.), px(900.)), |window, cx| {
+                let app = cx.new(|cx| {
+                    let mut app = super::TactApp::with_workspace(window, cx, Some(workdir.clone()));
+                    app.offline = false;
+                    app
+                });
+                shell = Some(app.clone());
+                Root::new(app, window, cx)
+            })
+            .into();
+        let shell = shell.expect("the window built a shell");
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            shell.update(cx, |app, cx| app.resume_session(session_id.clone(), cx));
+            window.render_frame(cx);
+
+            let rows = shell.update(cx, |app, _| app.conversation.rows().to_vec());
+            assert_eq!(rows.len(), 5, "the stored turns plus the resume notice: {rows:?}");
+            assert!(matches!(
+                &rows[0],
+                transcript::TranscriptRow::User { text, .. } if text == "check the build"
+            ));
+            assert!(matches!(
+                &rows[1],
+                transcript::TranscriptRow::Thinking { text, .. } if text == "weighing"
+            ));
+            assert!(matches!(
+                &rows[2],
+                transcript::TranscriptRow::Tool { display_name, detail, output, .. }
+                    if display_name == "bash" && detail == "cargo test" && output.trim() == "ok"
+            ));
+            assert!(matches!(
+                &rows[3],
+                transcript::TranscriptRow::Assistant { markdown, .. } if markdown == "it passes"
+            ));
+            assert!(
+                matches!(&rows[4], transcript::TranscriptRow::System { text } if text.contains("Resumed")),
+                "the resume notice still lands after the redrawn turns"
+            );
+            // The scroller has to be told the transcript grew, or the redrawn
+            // rows render past the end of the virtual list.
+            assert_eq!(
+                shell.update(cx, |app, _| app.transcript_item_count()),
+                6,
+                "header + five rows"
+            );
+        })
+        .unwrap();
     }
 }

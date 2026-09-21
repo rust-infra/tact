@@ -6,14 +6,19 @@
 //! GPUI type crosses into the headless crates and no protocol type reaches the
 //! row renderer — [`Conversation`] is the seam in both directions.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use gpui_kit::Task;
 use tact_protocol::{
     AgentUpdate, ModelCallParams, PlanStep, StepStatus, SubagentRunSnapshot, TaskSnapshot,
     ThinkingChunk, TokenUsageInfo, ToolOutputChunk, ToolVisualKind, UserCommand,
 };
-use tact_session::{RecentSession, SessionOptions, SessionRuntime};
+use tact_session::{
+    HistoryBlock, HistoryMessage, HistoryRole, RecentSession, SessionOptions, SessionRuntime,
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::pane::DiffEntry;
@@ -26,6 +31,14 @@ pub(crate) struct SessionHandle {
 }
 
 impl SessionHandle {
+    /// Wrap the driver's command channel with the session's identity.
+    pub(crate) fn new(session_id: String, commands: UnboundedSender<UserCommand>) -> Self {
+        Self {
+            session_id,
+            commands,
+        }
+    }
+
     /// Session id the agent writes history to.
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
@@ -84,10 +97,7 @@ pub(crate) fn resume(
 
 /// Split a started runtime into the front end's handle and event streams.
 fn from_runtime(runtime: SessionRuntime) -> anyhow::Result<(SessionHandle, SessionStreams)> {
-    let handle = SessionHandle {
-        session_id: runtime.session_id().to_string(),
-        commands: runtime.commands.clone(),
-    };
+    let handle = SessionHandle::new(runtime.session_id().to_string(), runtime.commands.clone());
     let streams = SessionStreams {
         events: runtime.events,
         account: runtime.account,
@@ -104,6 +114,22 @@ pub(crate) fn recent(workdir: &std::path::Path) -> Vec<RecentSession> {
         Ok(sessions) => sessions,
         Err(err) => {
             tracing::warn!("cannot list sessions for {}: {err:#}", workdir.display());
+            Vec::new()
+        }
+    }
+}
+
+/// A session's persisted conversation, oldest first.
+///
+/// Reopening a session must redraw what it already said instead of starting on
+/// a blank page. A store that cannot be read yields an empty history rather
+/// than an error the shell would have to render, the same bargain [`recent`]
+/// makes for the session list.
+pub(crate) fn history(workdir: &std::path::Path, session_id: &str) -> Vec<HistoryMessage> {
+    match tact_session::history::history(workdir, session_id) {
+        Ok(messages) => messages,
+        Err(err) => {
+            tracing::warn!("cannot read session {session_id} history: {err:#}");
             Vec::new()
         }
     }
@@ -158,19 +184,6 @@ pub(crate) struct Request {
     pub(crate) selected: Vec<usize>,
 }
 
-/// A request the user has answered, kept so the card can report the outcome.
-///
-/// The prototype leaves the approval card in place after it is answered
-/// (`.approval.done`) and swaps its actions for the decision, so the question
-/// and the answer stay readable instead of disappearing together.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RequestAnswer {
-    /// The card that was answered.
-    pub(crate) request: Request,
-    /// The decision, already phrased for display.
-    pub(crate) result: String,
-}
-
 /// Non-transcript session state: what the work panes, composer, and status bar
 /// read. Kept separate from [`Conversation`] so pane rendering never walks the
 /// transcript.
@@ -196,10 +209,10 @@ pub(crate) struct SessionState {
     pub(crate) model: Option<ModelCallParams>,
     /// The agent has a turn in flight.
     pub(crate) running: bool,
-    /// A blocking choice the agent is waiting on.
+    /// A blocking choice the agent is waiting on. Answering it appends a
+    /// [`TranscriptRow::Approval`] row, so the record keeps the slot it was
+    /// asked in instead of hanging off the tail of the list.
     pub(crate) request: Option<Request>,
-    /// The most recently answered request, shown until the next one arrives.
-    pub(crate) last_request: Option<RequestAnswer>,
     /// Latest balance / quota update, when the provider supports one.
     pub(crate) account: Option<tact_protocol::AccountUpdate>,
     /// Workspace the session is scoped to; the Files pane roots itself here.
@@ -245,15 +258,138 @@ impl Conversation {
         self.rows.len()
     }
 
+    /// Replace the transcript with a session's persisted history.
+    ///
+    /// Blocks replay in stored order, so a redrawn transcript reads
+    /// `thinking -> tool -> answer` the way the turn produced it, and a tool
+    /// card takes the slot of its own `ToolUse` block.
+    ///
+    /// Only what was stored can come back: a redrawn card has no duration, no
+    /// live output tail and the producer's visual kind was never persisted, so
+    /// it falls back to the generic one. The store keeps no per-message
+    /// timestamp, so redrawn rows carry [`NO_TIMESTAMP`] and print no clock.
+    /// A result fills the card its own `ToolUse` opened, which is also the only
+    /// evidence the store keeps that the tool finished.
+    pub(crate) fn load_history(&mut self, messages: &[HistoryMessage]) -> usize {
+        self.rows.clear();
+        self.open_tools.clear();
+        self.open_thinking = None;
+        self.open_assistant = None;
+        self.thinking_started_at = None;
+
+        let answered: HashSet<&str> = messages
+            .iter()
+            .flat_map(|message| message.blocks.iter())
+            .filter_map(|block| match block {
+                HistoryBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        let mut tools: HashMap<&str, usize> = HashMap::new();
+        for message in messages {
+            for block in &message.blocks {
+                match block {
+                    HistoryBlock::Text(text) => {
+                        let text = text.trim();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        match message.role {
+                            HistoryRole::User => {
+                                self.push_row(TranscriptRow::User {
+                                    text: text.to_string(),
+                                    sent_at: NO_TIMESTAMP,
+                                });
+                            }
+                            HistoryRole::Assistant => {
+                                self.push_row(TranscriptRow::Assistant {
+                                    markdown: text.to_string(),
+                                    streaming: false,
+                                    sent_at: NO_TIMESTAMP,
+                                    model: None,
+                                });
+                            }
+                        }
+                    }
+                    HistoryBlock::Thinking(text) => {
+                        let text = text.trim();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        self.push_row(TranscriptRow::Thinking {
+                            text: text.to_string(),
+                            duration_seconds: None,
+                            expanded: true,
+                        });
+                    }
+                    HistoryBlock::ToolUse { id, name, detail } => {
+                        // A card whose turn ended without a result is left
+                        // running, exactly as the live transcript left it.
+                        let status = if answered.contains(id.as_str()) {
+                            ToolStatus::Succeeded
+                        } else {
+                            ToolStatus::Running
+                        };
+                        let index = self.push_row(TranscriptRow::Tool {
+                            display_name: name.clone(),
+                            detail: first_line(detail),
+                            output: String::new(),
+                            duration: String::new(),
+                            status,
+                            expanded: false,
+                            visual_kind: ToolVisualKind::default(),
+                            diff_stats: None,
+                        });
+                        tools.insert(id.as_str(), index);
+                    }
+                    HistoryBlock::ToolResult {
+                        tool_use_id,
+                        output,
+                    } => {
+                        let Some(&index) = tools.get(tool_use_id.as_str()) else {
+                            continue;
+                        };
+                        if let Some(TranscriptRow::Tool {
+                            output: stored,
+                            status,
+                            ..
+                        }) = self.rows.get_mut(index)
+                        {
+                            stored.push_str(output.trim());
+                            retain_output_tail(stored);
+                            *status = ToolStatus::Succeeded;
+                        }
+                    }
+                }
+            }
+        }
+        self.rows.len()
+    }
+
     /// Start a new turn: seal live rows so the next chunk opens fresh ones.
     fn end_turn(&mut self) {
+        self.seal_open_assistant();
+        self.open_thinking = None;
+        self.open_tools.clear();
+    }
+
+    /// Stop appending to the open assistant row; the next chunk opens its own.
+    ///
+    /// A thinking or tool row is a real boundary in the transcript, so prose
+    /// that arrives after one belongs *below* it. Without this the chunk would
+    /// be appended to the row that opened before the card, which reads as the
+    /// answer jumping above the tool it came from. The terminal client has the
+    /// same rule: it flushes pending prose before allocating a card, and later
+    /// prose appends at the tail.
+    ///
+    /// A prompt queued mid-turn deliberately does *not* seal ([`Self::push_user`]).
+    fn seal_open_assistant(&mut self) {
         if let Some(index) = self.open_assistant.take()
             && let Some(TranscriptRow::Assistant { streaming, .. }) = self.rows.get_mut(index)
         {
             *streaming = false;
         }
-        self.open_thinking = None;
-        self.open_tools.clear();
     }
 
     /// Append the user's own message.
@@ -296,6 +432,17 @@ impl Conversation {
     /// Append a local system note (startup failures, cancelled turns).
     pub(crate) fn push_system(&mut self, text: String) -> usize {
         self.rows.push(TranscriptRow::System { text });
+        self.rows.len()
+    }
+
+    /// Append an answered permission or question card.
+    ///
+    /// The card is a row rather than a slot beside the list, so it keeps the
+    /// slot it was asked in: the prototype's `.approval.done` still reads as a
+    /// record, but the transcript keeps moving past it instead of leaving the
+    /// answered card as the last thing on screen for the rest of the session.
+    pub(crate) fn push_approval(&mut self, request: Request, result: String) -> usize {
+        self.rows.push(TranscriptRow::Approval { request, result });
         self.rows.len()
     }
 
@@ -583,7 +730,6 @@ impl Conversation {
                 options,
                 ..
             } => {
-                state.last_request = None;
                 state.request = Some(Request {
                     id: request_id,
                     prompt,
@@ -598,7 +744,6 @@ impl Conversation {
                 prompt,
                 options,
             } => {
-                state.last_request = None;
                 state.request = Some(Request {
                     id: request_id,
                     prompt,
@@ -641,6 +786,7 @@ impl Conversation {
     fn apply_thinking(&mut self, chunk: ThinkingChunk) -> Change {
         match chunk {
             ThinkingChunk::Started => {
+                self.seal_open_assistant();
                 let index = self.rows.len();
                 self.rows.push(TranscriptRow::Thinking {
                     text: String::new(),
@@ -655,6 +801,7 @@ impl Conversation {
                 let index = match self.open_thinking {
                     Some(index) => index,
                     None => {
+                        self.seal_open_assistant();
                         let index = self.rows.len();
                         self.rows.push(TranscriptRow::Thinking {
                             text: String::new(),
@@ -731,6 +878,9 @@ impl Conversation {
         if self.open_tools.contains_key(tool_id) {
             return Change::None;
         }
+        // The card takes the position of its first appearance and keeps it:
+        // every later update writes into this same row.
+        self.seal_open_assistant();
         let index = self.rows.len();
         self.rows.push(TranscriptRow::Tool {
             display_name: name.to_string(),
@@ -875,6 +1025,9 @@ impl Conversation {
                 TranscriptRow::System { text } | TranscriptRow::Error { text } => {
                     blocks.push(quoted(text));
                 }
+                TranscriptRow::Approval { request, result } => {
+                    blocks.push(quoted(&format!("{} -> {result}", request.prompt.trim())));
+                }
             }
         }
         blocks.retain(|block| !block.is_empty());
@@ -948,6 +1101,14 @@ fn mark_plan_step(state: &mut SessionState, tool_id: &str, output: String) {
         state.plan_done_at.entry(index).or_insert_with(now_unix);
     }
 }
+
+/// Marker for a row that has no wall-clock stamp of its own.
+///
+/// A row redrawn from stored history knows what was said but not when: the
+/// store keeps no per-message timestamp. Zero is not a real Unix second here —
+/// [`crate::transcript`] prints no clock for it — so it cannot be mistaken for
+/// the epoch.
+pub(crate) const NO_TIMESTAMP: i64 = 0;
 
 /// Bytes of tool output kept per row.
 const TOOL_OUTPUT_LIMIT: usize = 8 * 1024;
@@ -1092,6 +1253,93 @@ mod tests {
         assert!(matches!(
             &conversation.rows()[0],
             TranscriptRow::Assistant { streaming: true, markdown, .. } if markdown == "onemore"
+        ));
+    }
+
+    #[test]
+    fn prose_after_a_tool_opens_a_new_row_below_the_card() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+
+        conversation.apply(AgentUpdate::StreamChunk("before".into()), &mut state);
+        conversation.apply(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                tool_name: "bash".into(),
+                arg_summary: "cargo test".into(),
+                arg_full: String::new(),
+                presentation: presentation("Bash"),
+            },
+            &mut state,
+        );
+        conversation.apply(AgentUpdate::StreamChunk("after".into()), &mut state);
+        // The card keeps the slot it was allocated in when it first appeared;
+        // finishing the step updates that row instead of appending a new one.
+        conversation.apply(
+            AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                result: tact_protocol::StepResult {
+                    tool: "bash".into(),
+                    arg_summary: "cargo test".into(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "ok".into(),
+                    detail: None,
+                    duration_us: Some(1_000),
+                    permission_label: None,
+                    presentation: presentation("Bash"),
+                },
+            },
+            &mut state,
+        );
+
+        assert_eq!(conversation.len(), 3, "{:?}", conversation.rows());
+        assert!(matches!(
+            &conversation.rows()[0],
+            TranscriptRow::Assistant { markdown, streaming: false, .. } if markdown == "before"
+        ));
+        assert!(matches!(
+            &conversation.rows()[1],
+            TranscriptRow::Tool { display_name, status: ToolStatus::Succeeded, .. }
+                if display_name == "Bash"
+        ));
+        assert!(matches!(
+            &conversation.rows()[2],
+            TranscriptRow::Assistant { markdown, streaming: true, .. } if markdown == "after"
+        ));
+    }
+
+    #[test]
+    fn prose_after_a_thought_opens_a_new_row_below_it() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+
+        conversation.apply(AgentUpdate::StreamChunk("before".into()), &mut state);
+        conversation.apply(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+            &mut state,
+        );
+        conversation.apply(
+            AgentUpdate::ThinkingChunk(ThinkingChunk::Delta("weighing".into())),
+            &mut state,
+        );
+        conversation.apply(AgentUpdate::StreamChunk("after".into()), &mut state);
+
+        // thinking sits between the two prose rows, in arrival order.
+        assert_eq!(conversation.len(), 3, "{:?}", conversation.rows());
+        assert!(matches!(
+            &conversation.rows()[0],
+            TranscriptRow::Assistant { markdown, streaming: false, .. } if markdown == "before"
+        ));
+        assert!(matches!(
+            &conversation.rows()[1],
+            TranscriptRow::Thinking { text, .. } if text == "weighing"
+        ));
+        assert!(matches!(
+            &conversation.rows()[2],
+            TranscriptRow::Assistant { markdown, streaming: true, .. } if markdown == "after"
         ));
     }
 
@@ -1389,6 +1637,18 @@ mod tests {
             visual_kind: ToolVisualKind::FileRead,
             diff_stats: None,
         });
+        // An answered approval is a row like any other, so the copy button has
+        // to write the question and the decision it settled on.
+        conversation.push_approval(
+            Request {
+                id: 3,
+                prompt: "Run command: cargo check -p tact-gui".to_string(),
+                options: vec!["Allow once".to_string(), "Deny".to_string()],
+                multi: false,
+                selected: Vec::new(),
+            },
+            "Allow once".to_string(),
+        );
 
         assert_eq!(
             conversation.to_markdown(),
@@ -1397,9 +1657,127 @@ mod tests {
                 "Done — see `shell.rs`.\n\n",
                 "> The prototype has two buttons.\n\n",
                 "- **Read** `crates/tact-gui/src/shell.rs` (succeeded · 1.2s)\n\n",
-                "```\nline one\nline two\n```",
+                "```\nline one\nline two\n```\n\n",
+                "> Run command: cargo check -p tact-gui -> Allow once",
             )
         );
+    }
+
+    /// A stored session: prose, reasoning, a tool, its result, then the answer.
+    fn stored_turns() -> Vec<HistoryMessage> {
+        vec![
+            HistoryMessage {
+                role: HistoryRole::User,
+                blocks: vec![HistoryBlock::Text("check the build".into())],
+            },
+            HistoryMessage {
+                role: HistoryRole::Assistant,
+                blocks: vec![
+                    HistoryBlock::Thinking("weighing".into()),
+                    HistoryBlock::ToolUse {
+                        id: "tool_1".into(),
+                        name: "bash".into(),
+                        detail: "cargo test".into(),
+                    },
+                ],
+            },
+            HistoryMessage {
+                role: HistoryRole::User,
+                blocks: vec![HistoryBlock::ToolResult {
+                    tool_use_id: "tool_1".into(),
+                    output: "ok".into(),
+                }],
+            },
+            HistoryMessage {
+                role: HistoryRole::Assistant,
+                blocks: vec![HistoryBlock::Text("it passes".into())],
+            },
+        ]
+    }
+
+    #[test]
+    fn a_stored_transcript_redraws_thinking_tool_and_answer_in_order() {
+        let mut conversation = Conversation::default();
+
+        assert_eq!(conversation.load_history(&stored_turns()), 4);
+
+        assert!(matches!(
+            &conversation.rows()[0],
+            TranscriptRow::User { text, sent_at } if text == "check the build" && *sent_at == NO_TIMESTAMP
+        ));
+        assert!(matches!(
+            &conversation.rows()[1],
+            TranscriptRow::Thinking { text, .. } if text == "weighing"
+        ));
+        assert!(matches!(
+            &conversation.rows()[2],
+            TranscriptRow::Tool { display_name, detail, output, status: ToolStatus::Succeeded, .. }
+                if display_name == "bash" && detail == "cargo test" && output == "ok"
+        ));
+        assert!(matches!(
+            &conversation.rows()[3],
+            TranscriptRow::Assistant { markdown, streaming: false, sent_at, .. }
+                if markdown == "it passes" && *sent_at == NO_TIMESTAMP
+        ));
+    }
+
+    #[test]
+    fn a_redrawn_tool_card_keeps_its_use_slot_and_a_stray_result_is_ignored() {
+        let mut conversation = Conversation::default();
+        let messages = vec![
+            HistoryMessage {
+                role: HistoryRole::Assistant,
+                blocks: vec![
+                    HistoryBlock::Text("looking".into()),
+                    HistoryBlock::ToolUse {
+                        id: "tool_1".into(),
+                        name: "read_file".into(),
+                        detail: "src/main.rs".into(),
+                    },
+                    HistoryBlock::Text("done".into()),
+                ],
+            },
+            // A turn that ended before the tool answered: the card stays live
+            // rather than claiming a result the store never recorded.
+            HistoryMessage {
+                role: HistoryRole::Assistant,
+                blocks: vec![HistoryBlock::ToolUse {
+                    id: "tool_2".into(),
+                    name: "bash".into(),
+                    detail: "sleep 1".into(),
+                }],
+            },
+            HistoryMessage {
+                role: HistoryRole::User,
+                blocks: vec![HistoryBlock::ToolResult {
+                    tool_use_id: "never_seen".into(),
+                    output: "orphan".into(),
+                }],
+            },
+        ];
+
+        assert_eq!(conversation.load_history(&messages), 4);
+
+        assert_eq!(
+            conversation
+                .rows()
+                .iter()
+                .map(|row| match row {
+                    TranscriptRow::Assistant { markdown, .. } => markdown.clone(),
+                    TranscriptRow::Tool { display_name, .. } => format!("<{display_name}>"),
+                    other => panic!("unexpected row {other:?}"),
+                })
+                .collect::<Vec<_>>(),
+            vec!["looking", "<read_file>", "done", "<bash>"],
+            "a card holds the slot of its own ToolUse block"
+        );
+        assert!(matches!(
+            &conversation.rows()[3],
+            TranscriptRow::Tool {
+                status: ToolStatus::Running,
+                ..
+            }
+        ));
     }
 
     #[test]
