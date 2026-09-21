@@ -162,6 +162,11 @@ pub(crate) fn set_pinned(
     tact_session::session_actions::set_pinned(workdir, session_id, pinned)
 }
 
+/// Hand an http(s) URL to the desktop's default browser.
+pub(crate) fn open_url(url: &str) -> anyhow::Result<()> {
+    tact_session::session_actions::open_url(url)
+}
+
 /// Copy a session's conversation into a new session and return its id.
 pub(crate) fn duplicate(workdir: &std::path::Path, session_id: &str) -> anyhow::Result<String> {
     tact_session::session_actions::duplicate(workdir, session_id)

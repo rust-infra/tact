@@ -139,6 +139,59 @@ pub fn open_path(path: &Path) -> anyhow::Result<()> {
     launch_path(path, "open")
 }
 
+/// Open an `http` or `https` URL in the desktop's default browser.
+///
+/// The URL is handed to the same launcher chain [`open_path`] uses, but it is
+/// never canonicalized: a URL is not a filesystem path, and `Path::exists` on
+/// one would both be meaningless and reject every valid link.
+pub fn open_url(url: &str) -> anyhow::Result<()> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("cannot open an empty URL");
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if !(lowered.starts_with("http://") || lowered.starts_with("https://")) {
+        anyhow::bail!("only http and https URLs can be opened: {trimmed}");
+    }
+    let url = OsString::from(trimmed);
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let mut tried = Vec::new();
+    for (program, subcommand) in LAUNCHERS {
+        let Some(launcher) = find_on_path(program, &path_env) else {
+            tried.push(program);
+            continue;
+        };
+        let mut args: Vec<OsString> = subcommand.iter().map(OsString::from).collect();
+        args.push(url.clone());
+        let mut child = Command::new(&launcher)
+            .args(&args)
+            .spawn()
+            .map_err(|error| anyhow::anyhow!("failed to launch {}: {error}", launcher.display()))?;
+        // Same grace period as `launch_path`: a launcher that is present but
+        // has no browser to hand the URL to must be reported, not swallowed.
+        thread::sleep(Duration::from_millis(150));
+        match child.try_wait() {
+            Ok(Some(status)) if !status.success() => {
+                anyhow::bail!(
+                    "{} exited with {} while trying to open {trimmed}",
+                    launcher.display(),
+                    status
+                );
+            }
+            // `Err` is a launcher that is still starting; treat it as handed
+            // over and reap it in the background, exactly as `launch_path`
+            // does for a file.
+            Ok(_) | Err(_) => {
+                thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(());
+            }
+        }
+    }
+    anyhow::bail!("no URL launcher on PATH (tried {})", tried.join(", "))
+}
+
 /// Stage one changed path in the workspace's Git index.
 ///
 /// The Diff pane records changes at tool-call time, but a stage decision is a

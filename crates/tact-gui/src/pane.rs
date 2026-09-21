@@ -15,6 +15,7 @@ use std::{
 
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon,
     button::{Button, ButtonVariants as _},
@@ -23,9 +24,10 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, App, Context, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, px, radians, relative, rems,
+    Animation, AnimationExt as _, AnyElement, App, Context, FocusHandle, Focusable as _,
+    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
+    radians, relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -66,11 +68,13 @@ pub enum WorkPane {
     Stats,
     /// A shell running in a real PTY.
     Terminal,
+    /// URLs handed to the system browser.
+    Browser,
 }
 
 impl WorkPane {
     /// Every pane in tab order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Plan,
         Self::Diff,
         Self::Tasks,
@@ -78,6 +82,7 @@ impl WorkPane {
         Self::Files,
         Self::Stats,
         Self::Terminal,
+        Self::Browser,
     ];
 
     /// Tab label.
@@ -93,6 +98,7 @@ impl WorkPane {
             Self::Files => "Files",
             Self::Stats => "Stats",
             Self::Terminal => "Term",
+            Self::Browser => "Browser",
         }
     }
 
@@ -110,6 +116,7 @@ impl WorkPane {
             Self::Files => "files",
             Self::Stats => "stats",
             Self::Terminal => "terminal",
+            Self::Browser => "browser",
         }
     }
 
@@ -139,6 +146,7 @@ impl WorkPane {
             Self::Files => None,
             Self::Stats => None,
             Self::Terminal => None,
+            Self::Browser => None,
         }
     }
 }
@@ -649,6 +657,10 @@ pub(crate) struct PaneState<'a> {
     pub(crate) terminal_size: (u16, u16),
     /// Edge the pane is currently docked to, so the header can say so.
     pub(crate) side: WorkPaneSide,
+    /// Browser pane address field.
+    pub(crate) browser_url: &'a gpui_kit::Entity<InputState>,
+    /// URLs the Browser pane has opened, newest first.
+    pub(crate) browser_history: &'a [String],
 }
 
 pub(crate) fn view(
@@ -665,6 +677,8 @@ pub(crate) fn view(
         terminal_focus,
         terminal_size,
         side,
+        browser_url,
+        browser_history,
     } = panes;
     let body = match selected {
         WorkPane::Plan => plan(state, cx).into_any_element(),
@@ -676,6 +690,7 @@ pub(crate) fn view(
         WorkPane::Terminal => {
             terminal_pane(terminal, terminal_focus, terminal_size, cx).into_any_element()
         }
+        WorkPane::Browser => browser_pane(browser_url, browser_history, cx).into_any_element(),
     };
     let body_id = SharedString::from(format!("work-pane-body-{}", selected.slug()));
     let footer = work_footer(side, cx).into_any_element();
@@ -762,13 +777,14 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
                 .flex_shrink_0()
                 .h(rems(1.75))
                 .items_center()
-                .gap(rems(0.25))
-                // Seven tabs have to fit the 420 px column, so the chip's own
-                // padding is the prototype's 6 px rather than 8 px. The
-                // prototype only ever had five tabs.
-                .px(rems(0.375))
+                .gap(rems(0.1875))
+                // Eight tabs have to fit the 420 px column, and the strip
+                // clips rather than scrolls, so the prototype's chip is
+                // tightened where the prototype never went: 4 px of side
+                // padding and 10 px type instead of 8 px and 11 px.
+                .px(rems(0.25))
                 .rounded(rems(0.375))
-                .text_size(rems(0.6875))
+                .text_size(rems(0.625))
                 .whitespace_nowrap()
                 .cursor_pointer()
                 // `.wtab` is a `<button>` in the prototype, so each pane chip is
@@ -821,11 +837,10 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
 
     h_flex()
         .id("work-pane-tabs")
+        .test_support()
         .flex_1()
         .min_w_0()
         .overflow_hidden()
-        .gap(rems(0.0625))
-        .test_support()
         .children(chips)
         .into_any_element()
 }
@@ -2470,6 +2485,137 @@ fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement
 fn rems_for_depth(depth: usize) -> gpui_kit::Rems {
     // `.row2 { padding: 0 7px }` plus the prototype's 12px depth step.
     gpui_kit::rems(depth as f32 * 0.75 + 0.4375)
+}
+
+/// The Browser pane: an address bar that hands URLs to the system browser.
+///
+/// This is deliberately *not* an embedded web view, and the pane says so. GPUI
+/// renders its own GPU surface and has no way to host a `webkit2gtk` or `wry`
+/// view inside it, so an "embedded browser" here would be a screenshot at
+/// worst and a lie at best. What it does instead is what the tab can honestly
+/// do: normalize an address, hand it to the desktop's default browser, and keep
+/// the last few so a link is one press away.
+fn browser_pane(
+    input: &gpui_kit::Entity<InputState>,
+    history: &[String],
+    cx: &mut Context<TactApp>,
+) -> AnyElement {
+    let field_focus = input.read(cx).focus_handle(cx);
+    let mut body = v_flex()
+        .gap_3()
+        .child(panel_head(
+            "Browser",
+            "Links open in your system browser; Tact has no embedded web view",
+            None,
+            cx,
+        ))
+        .child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .child(
+                    // The field is wrapped so the whole box focuses it, the
+                    // way the sidebar's search field does: GPUI does not focus
+                    // an input from a press that lands on its surroundings.
+                    div()
+                        .id("browser-url")
+                        .test_support()
+                        .flex_1()
+                        .min_w_0()
+                        .track_focus(&field_focus)
+                        .on_mouse_down(MouseButton::Left, {
+                            let input = input.clone();
+                            move |_, window, cx| {
+                                input.update(cx, |input, cx| {
+                                    input.focus_handle(cx).focus(window, cx);
+                                });
+                            }
+                        })
+                        .child(Input::new(input).appearance(false)),
+                )
+                .child(
+                    prototype_button("browser-open", false, cx)
+                        .label("Open")
+                        .icon(IconName::ExternalLink)
+                        .tooltip("Open the address in your default browser")
+                        .accessibility_label("Open address in browser")
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_browser_url(window, cx)),
+                        ),
+                ),
+        );
+
+    if history.is_empty() {
+        return body
+            .child(empty(
+                "work-pane-empty-browser",
+                "No addresses opened yet. Type one above and press Open.",
+                cx,
+            ))
+            .into_any_element();
+    }
+
+    let mut list = v_flex().w_full().gap(rems(0.25));
+    for (index, url) in history.iter().enumerate() {
+        let url = url.clone();
+        list = list.child(
+            h_flex()
+                .id(SharedString::from(format!("browser-history-{index}")))
+                .test_support()
+                .aria_label(SharedString::from(format!("Open {url}")))
+                .w_full()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py(rems(0.375))
+                .rounded(rems(0.375))
+                .text_size(rems(0.6875))
+                .text_color(cx.theme().foreground)
+                .tab_index(0)
+                .focus_visible({
+                    let ring = focus_visible_ring(cx);
+                    move |style| style.shadow(ring.clone())
+                })
+                .hover(|style| style.bg(cx.theme().accent))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_browser_history(index, cx);
+                }))
+                .child(IconName::Link)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(url)),
+                ),
+        );
+    }
+
+    body = body
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .child(
+                    div()
+                        .text_size(rems(0.625))
+                        .text_color(crate::theme::ink3(cx))
+                        .child(SharedString::from("Recent addresses")),
+                )
+                .child(
+                    prototype_button("browser-clear", false, cx)
+                        .label("Clear")
+                        .icon(IconName::X)
+                        .tooltip("Forget every remembered address")
+                        .accessibility_label("Clear browser history")
+                        .on_click(cx.listener(|this, _, _, cx| this.clear_browser_history(cx))),
+                ),
+        )
+        .child(list);
+
+    body.into_any_element()
 }
 
 /// The Terminal pane: a shell in a real PTY, drawn as a character grid.

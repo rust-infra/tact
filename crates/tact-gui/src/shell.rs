@@ -263,6 +263,13 @@ pub struct TactApp {
     composer: Entity<TextareaState>,
     /// Sidebar session filter, bound to the prototype's search field.
     session_search: Entity<InputState>,
+    /// Browser pane URL field. The pane hands its value to the system browser;
+    /// the shell has no embedded web view.
+    browser_url: Entity<InputState>,
+    /// Keeps the URL field's Enter binding alive for the window's lifetime.
+    _browser_subscription: Subscription,
+    /// URLs the Browser pane has opened, newest first.
+    browser_history: Vec<String>,
     /// The agent session, once one is attached.
     session: Option<SessionHandle>,
     /// Recent sessions for the workspace, newest first.
@@ -660,11 +667,20 @@ impl TactApp {
         });
         let session_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions"));
+        let browser_url =
+            cx.new(|cx| InputState::new(window, cx).placeholder("https://example.com"));
         let root_focus = cx.focus_handle();
         window.defer(cx, {
             let root_focus = root_focus.clone();
             move |window, cx| root_focus.focus(window, cx)
         });
+        // Enter in the URL field opens the address, the way an address bar does.
+        let browser_subscription =
+            cx.subscribe_in(&browser_url, window, |this, _, event, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.open_browser_url(window, cx);
+                }
+            });
         let composer_subscription =
             cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
                 if let InputEvent::PressEnter {
@@ -708,6 +724,9 @@ impl TactApp {
             transcript_state,
             composer,
             session_search,
+            browser_url,
+            _browser_subscription: browser_subscription,
+            browser_history: Vec::new(),
             session,
             recent,
             preview_current: None,
@@ -797,6 +816,74 @@ impl TactApp {
     /// Zoom one step out from the current base font size.
     fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.set_zoom(self.zoom_rem - 1.0, window, cx);
+    }
+
+    /// Hand the Browser pane's address to the system browser.
+    ///
+    /// The pane is honest about its shape: Tact has no embedded web view, so
+    /// this opens the URL in whatever browser the desktop uses. The URL is
+    /// normalized only by adding a scheme when one is missing, so typing
+    /// `example.com` behaves like an address bar.
+    pub(crate) fn open_browser_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.browser_url.read(cx).value().trim().to_string();
+        if raw.is_empty() {
+            return;
+        }
+        let url = normalize_url(&raw);
+        if self.offline {
+            self.push_system_row(
+                format!("The offline preview does not open a browser; it would open {url}."),
+                cx,
+            );
+            self.remember_browser_url(url);
+            self.browser_url
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            return;
+        }
+        match session::open_url(&url) {
+            Ok(()) => {
+                self.push_system_row(format!("Opened {url} in the system browser."), cx);
+                self.remember_browser_url(url);
+                self.browser_url
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+            }
+            Err(error) => self.push_system_row(format!("Could not open {url}: {error:#}"), cx),
+        }
+    }
+
+    /// Re-open one of the remembered addresses.
+    pub(crate) fn open_browser_history(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(url) = self.browser_history.get(index).cloned() else {
+            return;
+        };
+        if self.offline {
+            self.push_system_row(
+                format!("The offline preview does not open a browser; it would open {url}."),
+                cx,
+            );
+            self.remember_browser_url(url);
+            return;
+        }
+        match session::open_url(&url) {
+            Ok(()) => {
+                self.push_system_row(format!("Opened {url} in the system browser."), cx);
+                self.remember_browser_url(url);
+            }
+            Err(error) => self.push_system_row(format!("Could not open {url}: {error:#}"), cx),
+        }
+    }
+
+    /// Remember a URL the pane opened, newest first and de-duplicated.
+    fn remember_browser_url(&mut self, url: String) {
+        self.browser_history.retain(|seen| seen != &url);
+        self.browser_history.insert(0, url);
+        self.browser_history.truncate(10);
+    }
+
+    /// Forget every remembered URL.
+    pub(crate) fn clear_browser_history(&mut self, cx: &mut Context<Self>) {
+        self.browser_history.clear();
+        cx.notify();
     }
 
     /// Move the work pane to its next edge.
@@ -3074,6 +3161,8 @@ impl Render for TactApp {
                         terminal_focus: &self.terminal_focus,
                         terminal_size,
                         side: self.work_pane_side,
+                        browser_url: &self.browser_url,
+                        browser_history: &self.browser_history,
                     },
                     WorkPaneSide::Right,
                     columns.work_pane,
@@ -3092,6 +3181,8 @@ impl Render for TactApp {
                         terminal_focus: &self.terminal_focus,
                         terminal_size,
                         side: self.work_pane_side,
+                        browser_url: &self.browser_url,
+                        browser_history: &self.browser_history,
                     },
                     WorkPaneSide::Left,
                     columns.work_pane,
@@ -3121,6 +3212,8 @@ impl Render for TactApp {
                             terminal_focus: &self.terminal_focus,
                             terminal_size,
                             side: self.work_pane_side,
+                            browser_url: &self.browser_url,
+                            browser_history: &self.browser_history,
                         },
                         WORK_PANE_BOTTOM_HEIGHT,
                         cx,
@@ -3194,6 +3287,8 @@ impl Render for TactApp {
                         terminal_focus: &self.terminal_focus,
                         terminal_size,
                         side: self.work_pane_side,
+                        browser_url: &self.browser_url,
+                        browser_history: &self.browser_history,
                     },
                     self.work_pane_width,
                     slide.progress,
@@ -3288,6 +3383,19 @@ impl Render for TactApp {
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
     }
+}
+
+/// Give `raw` an `https://` scheme when the user typed a bare host.
+///
+/// An address bar accepting `example.com` is not a convenience; a URL without a
+/// scheme is not a URL, and handing `example.com` to a browser launcher makes it
+/// guess. Anything that already carries a scheme is left exactly as typed.
+fn normalize_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.contains("://") {
+        return trimmed.to_string();
+    }
+    format!("https://{trimmed}")
 }
 
 /// Workspace name shown in the title bar, sidebar footer, and transcript intro.

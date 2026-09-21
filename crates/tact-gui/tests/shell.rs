@@ -1299,7 +1299,7 @@ fn every_work_pane_renders_content_not_just_a_container(cx: &mut TestAppContext)
             "the default plan pane renders"
         );
 
-        // Tab order is Plan, Diff, Tasks, Agents, Files, Stats, Term.
+        // Tab order is Plan, Diff, Tasks, Agents, Files, Stats, Term, Browser.
         for (index, body) in [
             (0usize, "work-pane-body-plan"),
             (1, "work-pane-body-diff"),
@@ -1307,6 +1307,7 @@ fn every_work_pane_renders_content_not_just_a_container(cx: &mut TestAppContext)
             (4, "work-pane-body-files"),
             (5, "work-pane-body-stats"),
             (6, "work-pane-body-terminal"),
+            (7, "work-pane-body-browser"),
         ] {
             window.within("work-pane-tabs").click(index, cx);
             window.render_frame(cx);
@@ -3298,7 +3299,7 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         );
 
         // Work pane: every tab, then the control each tab owns.
-        for index in 0..7usize {
+        for index in 0..8usize {
             window.within("work-pane-tabs").click(index, cx);
             window.render_frame(cx);
         }
@@ -3325,6 +3326,11 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
             window.try_find("terminal-grid").is_some(),
             "Start terminal opens a grid"
         );
+        // The Browser pane's Open button is a no-op with an empty address, so
+        // the walk only has to prove it answers a press.
+        window.within("work-pane-tabs").click(7usize, cx);
+        window.render_frame(cx);
+        click!("browser-open");
         click!("work-pane-close");
         click!("toggle-work-pane");
 
@@ -3450,6 +3456,71 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         assert!(
             window.try_find("transcript").is_some(),
             "the shell survives the full walk"
+        );
+    })
+    .unwrap();
+}
+
+/// The Browser pane normalizes an address and remembers what it opened.
+///
+/// The pane does not embed a web view, so the preview path is the one the test
+/// can drive end to end: it records the address and says it would open it,
+/// without launching anything behind the user's back.
+#[gpui_kit::test]
+fn the_browser_pane_normalizes_and_remembers_addresses(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(7usize, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("work-pane-body-browser").is_some(),
+            "the Browser tab renders its own body id"
+        );
+        assert!(
+            window.try_find("work-pane-empty-browser").is_some(),
+            "an untouched Browser pane says it has no addresses"
+        );
+
+        // A bare host is normalized the way an address bar does.
+        window.click("browser-open", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("browser-history-0").is_none(),
+            "an empty address is not recorded"
+        );
+
+        window.click("browser-url", cx);
+        window.input("example.com", cx);
+        window.render_frame(cx);
+        window.click("browser-open", cx);
+        window.render_frame(cx);
+
+        let row = window.find("browser-history-0");
+        assert_eq!(
+            row.label(),
+            Some("Open https://example.com"),
+            "the bare host gained its scheme before it was remembered"
+        );
+        assert!(
+            window.try_find("work-pane-empty-browser").is_none(),
+            "the empty state gives way to the history list"
+        );
+
+        window.click("browser-clear", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("browser-history-0").is_none(),
+            "Clear forgets every remembered address"
+        );
+        assert!(
+            window.try_find("work-pane-empty-browser").is_some(),
+            "and the empty state comes back"
         );
     })
     .unwrap();
