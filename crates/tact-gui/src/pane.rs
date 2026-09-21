@@ -862,11 +862,15 @@ fn work_tabs(selected: WorkPane, state: &SessionState, cx: &mut Context<TactApp>
                         .truncate()
                         .child(SharedString::from(pane.label())),
                 )
-                .when_some(count, |this, count| {
+                .when_some(if active { count } else { None }, |this, count| {
                     this.child(
                         // `.count{min-width:16px;height:16px;padding:0 4px;
                         // border-radius:5px;background:var(--surface2)}`, and
                         // the active tab recolours it with the accent tint.
+                        // Only the active chip keeps its count: eight labels
+                        // plus every badge do not fit the pane's narrow tab
+                        // strip, and truncated tab names are worse than a
+                        // count the body can explain once the pane is open.
                         h_flex()
                             .min_w(rems(1.))
                             .h(rems(1.))

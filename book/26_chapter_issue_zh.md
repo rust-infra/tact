@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — 工作面板 tab 保住名称，不再为所有计数让位
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/pane.rs`（`WorkPane::label`、`work_tabs`） |
+
+**现象 / 动机：** 工作面板在约 384 px 的条带里放了八个 28 px chip。每个 chip 同时保留文字和计数徽标，于是可压缩的 chip 被挤到只剩 `Pl...`、`Ta...`、`Ag...`、`Fil...`、`Brow...`。计数还在，但主要导航名称读不出来了。
+
+**决策：** 只让当前选中的 chip 保留计数徽标。当前面板的计数最有即时价值；其余七个名称拿回宽度并保持可读。面板正文本来就会解释当前数量，因此用户真正操作时没有信息损失。
+
+**改后行为：** 八个工作面板 tab 都显示完整名称（Plan、Diff、Tasks、Agents、Files、Stats、Term、Browser）；只有 active tab 带数字徽标。
+
+**指针：** `crates/tact-gui/src/pane.rs`（`work_tabs`）；`crates/tact-gui/tests/shell.rs`（`every_work_pane_renders_content_not_just_a_container`、`every_entry_point_answers_a_click`）
+
 ## 1. 2026-09-21 — Thinking 与工具卡片按测量高度柔和展开
 
 | 字段 | 值 |

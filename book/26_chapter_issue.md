@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Work-pane tabs keep their names instead of every count
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/pane.rs` (`WorkPane::label`, `work_tabs`) |
+
+**Symptom / motivation:** The work pane has eight 28 px chips in a roughly 384 px strip. Each chip kept its label *and* a count badge, so the flexible chips shrank until labels read `Pl...`, `Ta...`, `Ag...`, `Fil...`, and `Brow...`. The counts were still visible, but the primary navigation labels were not.
+
+**Decision:** Keep the count badge only on the selected chip. The active pane is the one whose count is immediately useful; the other seven labels get the width back and stay readable. The pane body already explains the selected count, so no information is lost at the moment the user acts on it.
+
+**Behavior after:** All eight work-pane tabs show their full names (Plan, Diff, Tasks, Agents, Files, Stats, Term, Browser); only the active tab carries a numeric badge.
+
+**Pointers:** `crates/tact-gui/src/pane.rs` (`work_tabs`); `crates/tact-gui/tests/shell.rs` (`every_work_pane_renders_content_not_just_a_container`, `every_entry_point_answers_a_click`)
+
 ## 1. 2026-09-21 — Thinking and tool cards expand with a measured reveal
 
 | Field | Value |
