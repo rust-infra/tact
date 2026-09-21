@@ -73,10 +73,15 @@ Or from a clone:
 ```
 
 The installer prefers a matching GitHub release asset when one exists, otherwise
-builds `tact-ui` from source (requires **Rust 1.85+** / edition 2024; installs
-rustup if needed). Pass `--from-source` / `-FromSource` to skip the release
-download, or `--release` / `-Release` to prefer a pre-built binary with source
-fallback:
+builds from source (requires **Rust 1.85+** / edition 2024; installs rustup if
+needed). It installs both binaries from the same archive: `tact-ui` (the TUI and
+headless CLI) and `tact-gui` (the desktop client). On Linux it also writes
+`~/.local/share/applications/tact-gui.desktop` with an absolute `Exec` and
+installs the icon, so Tact appears in the application menu. Pass `--no-gui` to
+install only the TUI.
+
+Pass `--from-source` / `-FromSource` to skip the release download, or
+`--release` / `-Release` to prefer a pre-built binary with source fallback:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rust-infra/tact/main/scripts/install.sh | bash -s -- --release
@@ -91,6 +96,7 @@ Install options:
 | Unix | `--from-source` | Build from source only |
 | Unix | `--release` | Prefer GitHub release, fall back to source |
 | Unix | `--release-only` | Require a GitHub release (no source fallback) |
+| Unix | `--no-gui` | Install only the TUI; skip the desktop client |
 | Windows | `-InstallDir PATH` | Install location (default: `%USERPROFILE%\.local\bin`) |
 | Windows | `-FromSource` | Build from source only |
 | Windows | `-Release` | Prefer GitHub release, fall back to source |
@@ -110,8 +116,9 @@ sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
 git clone https://github.com/rust-infra/tact.git
 cd tact
 rustup toolchain install stable   # if needed; rustc >= 1.85
-cargo build --release --locked -p tact-ui
+cargo build --release --locked -p tact-ui -p tact-gui
 ./target/release/tact-ui --help
+./target/release/tact-gui        # the desktop client
 ```
 
 Via Cargo (coming soon to crates.io):
@@ -127,7 +134,11 @@ git tag v1.1.30
 git push origin v1.1.30
 ```
 
-GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.
+GitHub Actions (`.github/workflows/release.yml`) uploads
+`tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`. Each
+archive contains the `tact-ui-<target-triple>/` directory with **both** binaries
+(`tact-ui`, `tact-gui`), and on Linux the desktop entry and icon the installer
+uses.
 
 ### 2. Configure
 

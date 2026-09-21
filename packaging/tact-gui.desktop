@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Tact
+GenericName=Agent workspace
+Comment=Local-first desktop workspace for long-running agent work
+Exec=tact-gui
+Icon=tact-gui
+Terminal=false
+Categories=Development;Utility;
+Keywords=agent;ai;tact;terminal;code;

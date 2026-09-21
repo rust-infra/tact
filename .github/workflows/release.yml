@@ -13,6 +13,8 @@ env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: tact-ui
   CRATE_PACKAGE: tact-ui
+  GUI_BINARY_NAME: tact-gui
+  GUI_CRATE_PACKAGE: tact-gui
 
 jobs:
   build:
@@ -57,8 +59,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev
 
-      - name: Build release binary
-        run: cargo build --release -p "${CRATE_PACKAGE}" --target "${{ matrix.target }}"
+      - name: Build release binaries
+        run: cargo build --release -p "${CRATE_PACKAGE}" -p "${GUI_CRATE_PACKAGE}" --target "${{ matrix.target }}"
         shell: bash
 
       - name: Package release asset
@@ -81,18 +83,30 @@ jobs:
           target="${{ matrix.target }}"
           archive="${{ matrix.archive }}"
           asset="${BINARY_NAME}-v${version}-${target}.${archive}"
-          bin_path="target/${target}/release/${BINARY_NAME}"
+          release_dir="target/${target}/release"
+          # The archive holds a directory rather than loose files, because the
+          # desktop client ships beside the TUI: `scripts/install.sh` looks for
+          # `${BINARY_NAME}-<triple>/` and installs both binaries from it.
+          staging="${BINARY_NAME}-${target}"
+          rm -rf "${staging}"
+          mkdir -p "${staging}"
 
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            bin_path="${bin_path}.exe"
-            cp "${bin_path}" "${BINARY_NAME}.exe"
-            7z a -tzip "${asset}" "${BINARY_NAME}.exe"
+          if [[ "${archive}" == "zip" ]]; then
+            cp "${release_dir}/${BINARY_NAME}.exe" "${staging}/${BINARY_NAME}.exe"
+            cp "${release_dir}/${GUI_BINARY_NAME}.exe" "${staging}/${GUI_BINARY_NAME}.exe"
+            7z a -tzip "${asset}" "${staging}"
           else
-            cp "${bin_path}" "${BINARY_NAME}"
+            cp "${release_dir}/${BINARY_NAME}" "${staging}/${BINARY_NAME}"
+            cp "${release_dir}/${GUI_BINARY_NAME}" "${staging}/${GUI_BINARY_NAME}"
             if command -v strip >/dev/null 2>&1; then
-              strip "${BINARY_NAME}" || true
+              strip "${staging}/${BINARY_NAME}" || true
+              strip "${staging}/${GUI_BINARY_NAME}" || true
             fi
-            tar -czf "${asset}" "${BINARY_NAME}"
+            if [[ "${RUNNER_OS}" == "Linux" ]]; then
+              cp packaging/tact-gui.desktop "${staging}/tact-gui.desktop"
+              cp tact.png "${staging}/tact.png"
+            fi
+            tar -czf "${asset}" "${staging}"
           fi
 
           echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"

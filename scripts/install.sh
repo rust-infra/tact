@@ -6,6 +6,10 @@ REPO="${TACT_INSTALL_REPO:-rust-infra/tact}"
 GIT_REF="${TACT_INSTALL_GIT_REF:-main}"
 BINARY_NAME="tact-ui"
 CRATE_PACKAGE="tact-ui"
+# The desktop client ships beside the TUI in the same release asset. Install it
+# unless the caller opts out with --no-gui.
+GUI_BINARY_NAME="tact-gui"
+GUI_CRATE_PACKAGE="tact-gui"
 DEFAULT_VERSION="0.19.0"
 # Matches workspace.package.rust-version (edition 2024).
 MIN_RUSTC_VERSION="1.85.0"
@@ -16,12 +20,15 @@ FROM_SOURCE=0
 RELEASE_ONLY=0
 NO_MODIFY_PATH=0
 SKIP_DEPS=0
+INSTALL_GUI=1
+ICON_SOURCE_NAME="tact.png"
 
 usage() {
   cat <<'EOF'
 Usage: install.sh [OPTIONS]
 
-Install the tact-ui binary on Linux or macOS.
+Install the tact-ui binary, and the tact-gui desktop client beside it, on Linux
+or macOS.
 
 By default the installer downloads a matching GitHub release asset when one
 exists, otherwise it builds from source (Rust 1.85+ / edition 2024 required).
@@ -35,6 +42,7 @@ Options:
   --git-ref REF       Git branch/tag when cloning (default: main)
   --skip-deps         Skip OS package / rustup dependency installation
   --no-modify-path    Do not append the install directory to shell PATH
+  --no-gui            Install only the TUI; skip the desktop client
   -h, --help          Show this help
 
 Environment:
@@ -70,6 +78,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --skip-deps) SKIP_DEPS=1; shift ;;
+    --no-gui) INSTALL_GUI=0; shift ;;
     --no-modify-path) NO_MODIFY_PATH=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (try --help)" ;;
@@ -251,23 +260,41 @@ try_install_release() {
   fi
 
   tar -xzf "${tmp}/${asset_name}" -C "$tmp"
+
+  # Archives have shipped two shapes: loose binaries at the root, and a
+  # `tact-ui-<triple>/` directory. Look in both rather than pinning one.
+  local dir=""
   if [[ -f "${tmp}/${BINARY_NAME}" ]]; then
-    install_binary "${tmp}/${BINARY_NAME}"
-    return 0
+    dir="$tmp"
+  elif [[ -f "${tmp}/${BINARY_NAME}-${triple}/${BINARY_NAME}" ]]; then
+    dir="${tmp}/${BINARY_NAME}-${triple}"
   fi
-  if [[ -f "${tmp}/${BINARY_NAME}-${triple}/${BINARY_NAME}" ]]; then
-    install_binary "${tmp}/${BINARY_NAME}-${triple}/${BINARY_NAME}"
-    return 0
+  if [[ -z "$dir" ]]; then
+    warn "release archive did not contain ${BINARY_NAME}"
+    return 1
   fi
 
-  warn "release archive did not contain ${BINARY_NAME}"
-  return 1
+  install_binary "${dir}/${BINARY_NAME}" "$BINARY_NAME"
+  if [[ "$INSTALL_GUI" -eq 1 ]]; then
+    if [[ -f "${dir}/${GUI_BINARY_NAME}" ]]; then
+      install_binary "${dir}/${GUI_BINARY_NAME}" "$GUI_BINARY_NAME"
+      install_desktop_entry "$dir"
+    else
+      warn "release archive has no ${GUI_BINARY_NAME}; build from source to get the desktop client"
+    fi
+  fi
+  return 0
 }
 
 build_from_source() {
   local root="$1"
   local -a cargo_args=(build --release -p "$CRATE_PACKAGE")
-  log "Building ${BINARY_NAME} from source (rustc >= ${MIN_RUSTC_VERSION})..."
+  if [[ "$INSTALL_GUI" -eq 1 ]]; then
+    cargo_args+=(-p "$GUI_CRATE_PACKAGE")
+    log "Building ${BINARY_NAME} and ${GUI_BINARY_NAME} from source (rustc >= ${MIN_RUSTC_VERSION})..."
+  else
+    log "Building ${BINARY_NAME} from source (rustc >= ${MIN_RUSTC_VERSION})..."
+  fi
   need_cmd cargo
   if [[ -f "${root}/Cargo.lock" ]]; then
     cargo_args+=(--locked)
@@ -278,19 +305,71 @@ build_from_source() {
   )
   local built="${root}/target/release/${BINARY_NAME}"
   [[ -f "$built" ]] || die "build succeeded but binary missing: ${built}"
-  install_binary "$built"
+  install_binary "$built" "$BINARY_NAME"
+
+  if [[ "$INSTALL_GUI" -eq 1 ]]; then
+    local gui_built="${root}/target/release/${GUI_BINARY_NAME}"
+    [[ -f "$gui_built" ]] || die "build succeeded but binary missing: ${gui_built}"
+    install_binary "$gui_built" "$GUI_BINARY_NAME"
+    install_desktop_entry "$root"
+  fi
+}
+
+# Copy the packaged desktop entry and icon into the user's XDG data dirs.
+#
+# Only Linux has `.desktop` entries; the binaries themselves are installed by
+# the caller. `Exec` is rewritten to the absolute installed path so the entry
+# works even when the install directory is not on the launcher's PATH.
+install_desktop_entry() {
+  local root="$1"
+  [[ "$OS" == "Linux" ]] || return 0
+  local desktop="${root}/packaging/tact-gui.desktop"
+  [[ -f "$desktop" ]] || desktop="${root}/tact-gui.desktop"
+  if [[ ! -f "$desktop" ]]; then
+    warn "no desktop entry under ${root}; skipping the application menu entry"
+    return 0
+  fi
+
+  local data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+  local apps_dir="${data_home}/applications"
+  local icon_dir="${data_home}/icons/hicolor/512x512/apps"
+  mkdir -p "$apps_dir" "$icon_dir"
+
+  sed "s|^Exec=.*|Exec=${INSTALL_DIR}/${GUI_BINARY_NAME}|" "$desktop" \
+    >"${apps_dir}/tact-gui.desktop"
+  log "Installed ${apps_dir}/tact-gui.desktop"
+
+  local icon=""
+  for candidate in "${root}/packaging/${ICON_SOURCE_NAME}" "${root}/${ICON_SOURCE_NAME}"; do
+    if [[ -f "$candidate" ]]; then
+      icon="$candidate"
+      break
+    fi
+  done
+  if [[ -n "$icon" ]]; then
+    cp "$icon" "${icon_dir}/tact-gui.png"
+    log "Installed ${icon_dir}/tact-gui.png"
+  else
+    warn "no icon found; the application menu entry will use a generic icon"
+  fi
+
+  command -v update-desktop-database >/dev/null 2>&1 && \
+    update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
+  command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+    gtk-update-icon-cache -f -t "${data_home}/icons/hicolor" >/dev/null 2>&1 || true
 }
 
 install_binary() {
   local src="$1"
+  local name="$2"
   mkdir -p "$INSTALL_DIR"
   if [[ "$USE_SYSTEM" -eq 1 && ! -w "$INSTALL_DIR" ]]; then
     need_cmd sudo
-    sudo install -m 0755 "$src" "${INSTALL_DIR}/${BINARY_NAME}"
+    sudo install -m 0755 "$src" "${INSTALL_DIR}/${name}"
   else
-    install -m 0755 "$src" "${INSTALL_DIR}/${BINARY_NAME}"
+    install -m 0755 "$src" "${INSTALL_DIR}/${name}"
   fi
-  log "Installed ${BINARY_NAME} -> ${INSTALL_DIR}/${BINARY_NAME}"
+  log "Installed ${name} -> ${INSTALL_DIR}/${name}"
 }
 
 ensure_path() {
@@ -344,12 +423,14 @@ main() {
     build_from_source "$src_root"
     ensure_path
     log "Done. Run: ${BINARY_NAME} --help"
+    [[ "$INSTALL_GUI" -eq 1 ]] && log "Desktop client: ${INSTALL_DIR}/${GUI_BINARY_NAME}"
     return 0
   fi
 
   if try_install_release "$version" "$triple"; then
     ensure_path
     log "Done. Run: ${BINARY_NAME} --help"
+    [[ "$INSTALL_GUI" -eq 1 ]] && log "Desktop client: ${INSTALL_DIR}/${GUI_BINARY_NAME}"
     return 0
   fi
 
@@ -362,6 +443,7 @@ main() {
   build_from_source "$src_root"
   ensure_path
   log "Done. Run: ${BINARY_NAME} --help"
+  [[ "$INSTALL_GUI" -eq 1 ]] && log "Desktop client: ${INSTALL_DIR}/${GUI_BINARY_NAME}"
 }
 
 main "$@"

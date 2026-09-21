@@ -8,6 +8,7 @@ param(
     [string]$GitRef = "main",
     [switch]$SkipDeps,
     [switch]$NoModifyPath,
+    [switch]$NoGui,
     [switch]$Help
 )
 
@@ -16,6 +17,9 @@ $ErrorActionPreference = "Stop"
 $Repo = if ($env:TACT_INSTALL_REPO) { $env:TACT_INSTALL_REPO } else { "rust-infra/tact" }
 $BinaryName = "tact-ui"
 $CratePackage = "tact-ui"
+# The desktop client ships beside the TUI in the same release asset.
+$GuiBinaryName = "tact-gui"
+$GuiCratePackage = "tact-gui"
 $DefaultVersion = "0.19.0"
 # Matches workspace.package.rust-version (edition 2024).
 $MinRustcVersion = "1.85.0"
@@ -24,7 +28,8 @@ function Show-Help {
     @"
 Usage: install.ps1 [OPTIONS]
 
-Install the tact-ui binary on Windows.
+Install the tact-ui binary, and the tact-gui desktop client beside it, on
+Windows.
 
 By default the installer downloads a matching GitHub release asset when one
 exists, otherwise it builds from source (Rust 1.85+ / edition 2024 required).
@@ -37,6 +42,7 @@ Options:
   -GitRef REF          Git branch/tag when cloning (default: main)
   -SkipDeps            Skip rustup / optional SQLite helper installation
   -NoModifyPath        Do not add the install directory to the user PATH
+  -NoGui               Install only the TUI; skip the desktop client
   -Help                Show this help
 
 Environment:
@@ -188,22 +194,30 @@ function Install-WindowsDeps {
     Write-Warn "Windows builds compile SQLite from source via sqlx; Visual Studio C++ build tools may be required."
 }
 
-function Install-BinaryFile([string]$SourcePath, [string]$DestDir) {
+function Install-BinaryFile([string]$SourcePath, [string]$Name, [string]$DestDir) {
     if (-not (Test-Path $DestDir)) {
         New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
     }
-    $dest = Join-Path $DestDir "$BinaryName.exe"
+    $dest = Join-Path $DestDir "$Name.exe"
     Copy-Item -Path $SourcePath -Destination $dest -Force
-    Write-Step "Installed $BinaryName -> $dest"
+    Write-Step "Installed $Name -> $dest"
 }
 
 function Build-FromSource([string]$Root) {
-    Write-Step "Building $BinaryName from source (rustc >= $MinRustcVersion)..."
+    if ($NoGui) {
+        Write-Step "Building $BinaryName from source (rustc >= $MinRustcVersion)..."
+    }
+    else {
+        Write-Step "Building $BinaryName and $GuiBinaryName from source (rustc >= $MinRustcVersion)..."
+    }
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Fail "cargo not found"
     }
 
     $cargoArgs = @("build", "--release", "-p", $CratePackage)
+    if (-not $NoGui) {
+        $cargoArgs += @("-p", $GuiCratePackage)
+    }
     if (Test-Path (Join-Path $Root "Cargo.lock")) {
         $cargoArgs += "--locked"
     }
@@ -223,7 +237,15 @@ function Build-FromSource([string]$Root) {
     if (-not (Test-Path $built)) {
         Fail "build succeeded but binary missing: $built"
     }
-    Install-BinaryFile $built $InstallDir
+    Install-BinaryFile $built $BinaryName $InstallDir
+
+    if (-not $NoGui) {
+        $guiBuilt = Join-Path $Root "target\release\$GuiBinaryName.exe"
+        if (-not (Test-Path $guiBuilt)) {
+            Fail "build succeeded but binary missing: $guiBuilt"
+        }
+        Install-BinaryFile $guiBuilt $GuiBinaryName $InstallDir
+    }
 }
 
 function Try-InstallRelease([string]$Version, [string]$Triple) {
@@ -255,7 +277,19 @@ function Try-InstallRelease([string]$Version, [string]$Triple) {
         return $false
     }
 
-    Install-BinaryFile $candidate $InstallDir
+    Install-BinaryFile $candidate $BinaryName $InstallDir
+
+    if (-not $NoGui) {
+        $guiCandidate = Get-ChildItem -Path $tmp -Filter "$GuiBinaryName.exe" -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+        if ($guiCandidate -and (Test-Path $guiCandidate)) {
+            Install-BinaryFile $guiCandidate $GuiBinaryName $InstallDir
+        }
+        else {
+            Write-Warn "release archive has no $GuiBinaryName.exe; build from source to get the desktop client"
+        }
+    }
+
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     return $true
 }
