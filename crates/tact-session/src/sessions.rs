@@ -37,6 +37,12 @@ pub struct RecentSession {
     /// stays listable, so a front end can group it or badge it but must not drop
     /// it -- clearing the flag has to restore the session.
     pub archived: bool,
+    /// Whether the session is pinned.
+    ///
+    /// Pinned rows sort ahead of the rest and keep their own newest-first order
+    /// among themselves. Like archiving, pinning changes no other property, so
+    /// unpinning is the whole undo.
+    pub pinned: bool,
 }
 
 /// Longest title a session list shows before eliding.
@@ -74,7 +80,7 @@ pub fn recent(workdir: &Path) -> anyhow::Result<Vec<RecentSession>> {
     runtime.block_on(async move {
         let store = tact::store::open_sqlite_session_store(&tact_path.session_db_path()).await?;
         let sessions = store.list_sessions(Some(&root_dir)).await?;
-        Ok(sessions
+        let mut sessions: Vec<RecentSession> = sessions
             .into_iter()
             .map(|session| RecentSession {
                 id: session.id,
@@ -83,8 +89,15 @@ pub fn recent(workdir: &Path) -> anyhow::Result<Vec<RecentSession>> {
                 title: session.first_user_text.as_deref().and_then(session_title),
                 name: session.title,
                 archived: session.archived_at.is_some(),
+                pinned: session.pinned_at.is_some(),
             })
-            .collect())
+            .collect();
+        // The store orders by `updated_at` alone. Pinning is a list policy, so
+        // the split happens here rather than in SQL: a stable partition keeps
+        // each group's own newest-first order without a second sort key the
+        // store would have to know about.
+        sessions.sort_by_key(|session| !session.pinned);
+        Ok(sessions)
     })
 }
 
@@ -151,6 +164,44 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&workspace);
         let _ = std::fs::remove_dir_all(&other);
+    }
+
+    /// Pinned rows sort ahead of newer unpinned ones.
+    ///
+    /// The store orders by `updated_at` alone, so this is the presentation
+    /// policy: a stable partition, not a second sort key the store would have
+    /// to learn.
+    #[test]
+    fn recent_sorts_pinned_sessions_first() {
+        let workspace = temp_workspace();
+        seed(
+            &workspace,
+            &["11111111-aaaa", "22222222-bbbb", "33333333-cccc"],
+        );
+        let tact_path = TactPath::new(workspace.clone());
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let store = tact::store::open_sqlite_session_store(&tact_path.session_db_path())
+                    .await
+                    .expect("store");
+                store.pin_session("22222222-bbbb", true).await.expect("pin");
+            });
+
+        let sessions = recent(&workspace).expect("recent sessions");
+        assert_eq!(
+            sessions[0].id, "22222222-bbbb",
+            "the pinned row leads: {sessions:?}"
+        );
+        assert!(sessions[0].pinned);
+        assert!(
+            sessions[1..].iter().all(|row| !row.pinned),
+            "the rest keep their unpinned order"
+        );
+
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 
     #[test]

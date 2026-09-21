@@ -1101,6 +1101,13 @@ impl TactApp {
     }
 
     /// Whether the open session is archived, for the menu's archive row.
+    /// Whether the open session is pinned, for the menu's label.
+    fn open_session_pinned(&self) -> bool {
+        self.open_session_id()
+            .and_then(|id| self.recent.iter().find(|row| row.id == id))
+            .is_some_and(|row| row.pinned)
+    }
+
     fn open_session_archived(&self) -> bool {
         self.open_row().is_some_and(|row| row.archived)
     }
@@ -1278,6 +1285,7 @@ impl TactApp {
                 updated_at_unix: session::now_unix(),
                 name: Some(format!("{} (copy)", session_row_title(&source))),
                 archived: false,
+                pinned: false,
                 ..source
             };
             let copy_id = copy.id.clone();
@@ -1398,6 +1406,76 @@ impl TactApp {
             format!("Archived session {short}; it keeps its transcript and can be restored.")
         } else {
             format!("Restored session {short}.")
+        };
+        self.push_system_row(text, cx);
+    }
+
+    /// Pin or unpin the open session.
+    ///
+    /// Pinning only changes list order: the row keeps its messages and its
+    /// place in the store, and unpinning is the whole undo. The sidebar's
+    /// pinned rows sort ahead of the rest.
+    fn set_open_session_pinned(&mut self, pinned: bool, cx: &mut Context<Self>) {
+        let Some(session_id) = self.open_session_id().map(str::to_string) else {
+            self.push_system_row("No session is open to pin.".into(), cx);
+            return;
+        };
+        if self.offline {
+            if let Some(row) = self.recent.iter_mut().find(|row| row.id == session_id) {
+                row.pinned = pinned;
+                self.resort_recent();
+                self.announce_pin(&session_id, pinned, cx);
+            }
+            return;
+        }
+        let Some(workdir) = self.workspace_dir() else {
+            self.push_system_row("Cannot determine the workspace directory.".into(), cx);
+            return;
+        };
+        let action_workdir = workdir.clone();
+        let action_id = session_id.clone();
+        let done_id = session_id.clone();
+        cx.spawn(async move |this, cx| {
+            let (result, recent) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = session::set_pinned(&action_workdir, &action_id, pinned);
+                    let recent = result
+                        .as_ref()
+                        .ok()
+                        .map(|_| session::recent(&action_workdir));
+                    (result, recent)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => {
+                    if let Some(recent) = recent {
+                        app.recent = recent;
+                    }
+                    app.announce_pin(&done_id, pinned, cx);
+                }
+                Err(err) => app.push_system_row(format!("Could not pin the session: {err:#}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Keep the pinned-first order after an offline edit.
+    ///
+    /// The connected path re-reads the store, which already sorts pinned rows
+    /// first; the offline preview has no store to re-read, so it re-applies the
+    /// same stable partition the store's list uses.
+    fn resort_recent(&mut self) {
+        self.recent.sort_by_key(|row| !row.pinned);
+    }
+
+    /// The transcript's record of a pin, whichever store it went to.
+    fn announce_pin(&mut self, session_id: &str, pinned: bool, cx: &mut Context<Self>) {
+        let short = session::short_id(session_id).to_string();
+        let text = if pinned {
+            format!("Pinned session {short}; it now sorts ahead of the rest.")
+        } else {
+            format!("Unpinned session {short}.")
         };
         self.push_system_row(text, cx);
     }
@@ -2879,6 +2957,7 @@ impl Render for TactApp {
                     work_pane_float: !work_pane_in_flow,
                     columns,
                     open_archived: self.open_session_archived(),
+                    open_pinned: self.open_session_pinned(),
                 },
                 cx,
             ))
@@ -3017,6 +3096,9 @@ struct TitleBarState {
     /// read "Unarchive" for a session that is already archived, or the flag
     /// would be a one-way door in the menu.
     open_archived: bool,
+    /// Whether the open session is pinned, for the same reason: the row reads
+    /// "Unpin" once it is.
+    open_pinned: bool,
 }
 
 fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElement {
@@ -3030,6 +3112,7 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
         work_pane_float,
         columns,
         open_archived,
+        open_pinned,
     } = state;
     let dark = cx.theme().is_dark();
     let (theme_icon, theme_action) = if dark {
@@ -3157,12 +3240,14 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
             let rename_owner = menu_owner.clone();
             let duplicate_owner = menu_owner.clone();
             let archive_owner = menu_owner.clone();
+            let pin_owner = menu_owner.clone();
             let reveal_owner = menu_owner.clone();
             let archive_label = if open_archived {
                 "Unarchive"
             } else {
                 "Archive"
             };
+            let pin_label = if open_pinned { "Unpin" } else { "Pin" };
             v_flex()
                 .id("session-menu-panel")
                 .test_support()
@@ -3195,6 +3280,22 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
                                 menu.update(cx, |state, cx| state.dismiss(window, cx));
                                 let _ = duplicate_owner
                                     .update(cx, |app, cx| app.duplicate_open_session(cx));
+                            }
+                        }),
+                )
+                .child(
+                    Button::new("session-menu-pin")
+                        .icon(IconName::Pin)
+                        .label(pin_label)
+                        .ghost()
+                        .compact()
+                        .on_click({
+                            let menu = menu.clone();
+                            move |_, window, cx| {
+                                menu.update(cx, |state, cx| state.dismiss(window, cx));
+                                let _ = pin_owner.update(cx, |app, cx| {
+                                    app.set_open_session_pinned(!open_pinned, cx)
+                                });
                             }
                         }),
                 )
@@ -3461,6 +3562,9 @@ fn preview_sessions() -> Vec<RecentSession> {
             // The prototype's `Remote MCP transport` row is the one that reads
             // as archived, so the preview shows the badge somewhere.
             archived: *title == "Remote MCP transport",
+            // The newest preview row is pinned, so the pinned-first order and
+            // the pin marker are both visible in the design shell.
+            pinned: *title == "Desktop client design",
         })
         .collect()
 }
@@ -3924,9 +4028,10 @@ fn session_row(
     // The prototype's metadata line reads `<project> · <branch>`; the age is
     // what makes two rows of the same workspace distinguishable.
     let age = session::age_label(session::now_unix().saturating_sub(session.updated_at_unix));
+    let pinned = if session.pinned { " · pinned" } else { "" };
     let meta = match branch {
-        Some(branch) => format!("{project} · {branch} · {age}"),
-        None => format!("{project} · {age}"),
+        Some(branch) => format!("{project} · {branch} · {age}{pinned}"),
+        None => format!("{project} · {age}{pinned}"),
     };
     // `.running .dot` / `.review .dot` / `.done .dot`: the row's state picks the
     // dot's ink and the halo behind it. A session with no turns yet reads as the
@@ -4443,9 +4548,23 @@ struct SessionBucket {
 /// short list degenerates into a single "Sessions" group rather than a lonely
 /// "Today" heading.
 fn session_buckets(recent: &[RecentSession], query: &str, now: i64) -> Vec<SessionBucket> {
+    // The filter matches every label the row shows -- the id, the derived
+    // title, and the user's own name -- because a search that only knows ids
+    // is a search for something the sidebar never prints.
     let matched: Vec<&RecentSession> = recent
         .iter()
-        .filter(|session| query.is_empty() || session.id.to_lowercase().contains(query))
+        .filter(|session| {
+            query.is_empty()
+                || session.id.to_lowercase().contains(query)
+                || session
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| title.to_lowercase().contains(query))
+                || session
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.to_lowercase().contains(query))
+        })
         .collect();
 
     if matched.is_empty() {
@@ -7275,6 +7394,7 @@ mod tests {
                         title: Some("Task session".into()),
                         name: None,
                         archived: false,
+                        pinned: false,
                     }],
                 );
                 app.set_work_pane(WorkPane::Tasks);
@@ -7900,6 +8020,7 @@ mod tests {
             title: Some("Desktop client design".to_string()),
             name: None,
             archived: false,
+            pinned: false,
         }];
 
         // The stored title wins, so the chip and the sidebar row agree about
@@ -7962,6 +8083,7 @@ mod tests {
             title: None,
             name: None,
             archived: false,
+            pinned: false,
         }
     }
 

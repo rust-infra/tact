@@ -153,6 +153,15 @@ pub(crate) fn set_archived(
     tact_session::session_actions::set_archived(workdir, session_id, archived)
 }
 
+/// Set or clear a session's pinned flag. This only changes list order.
+pub(crate) fn set_pinned(
+    workdir: &std::path::Path,
+    session_id: &str,
+    pinned: bool,
+) -> anyhow::Result<()> {
+    tact_session::session_actions::set_pinned(workdir, session_id, pinned)
+}
+
 /// Copy a session's conversation into a new session and return its id.
 pub(crate) fn duplicate(workdir: &std::path::Path, session_id: &str) -> anyhow::Result<String> {
     tact_session::session_actions::duplicate(workdir, session_id)

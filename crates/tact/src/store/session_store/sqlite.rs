@@ -44,7 +44,8 @@ impl SqliteSessionStore {
     ///
     /// `title` is the name the user gave the session; `archived_at` is a policy
     /// flag, not a tombstone -- archiving keeps the session and its messages, so
-    /// it must never be expressed as a delete.
+    /// it must never be expressed as a delete. `pinned_at` is the same shape of
+    /// marker for list order.
     async fn migrate_sessions_title_and_archive(pool: &SqlitePool) -> Result<()> {
         let cols = sqlx::query("PRAGMA table_info(sessions)")
             .fetch_all(pool)
@@ -66,6 +67,12 @@ impl SqliteSessionStore {
                 .await
                 .context("failed to add sessions.archived_at column")?;
         }
+        if !names.iter().any(|name| name == "pinned_at") {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN pinned_at TIMESTAMP")
+                .execute(pool)
+                .await
+                .context("failed to add sessions.pinned_at column")?;
+        }
         Ok(())
     }
 
@@ -83,7 +90,8 @@ impl SqliteSessionStore {
                 lock_epoch TEXT NOT NULL DEFAULT '',
                 ref_id TEXT NOT NULL DEFAULT '',
                 title TEXT NOT NULL DEFAULT '',
-                archived_at TIMESTAMP
+                archived_at TIMESTAMP,
+                pinned_at TIMESTAMP
             );
             "#,
         )
@@ -618,6 +626,7 @@ impl super::SessionStore for SqliteSessionStore {
                     s.updated_at,
                     s.title,
                     s.archived_at,
+                    s.pinned_at,
                     COUNT(m.id) as message_count,
                     (
                         SELECT content FROM messages fm
@@ -647,6 +656,7 @@ impl super::SessionStore for SqliteSessionStore {
                     s.updated_at,
                     s.title,
                     s.archived_at,
+                    s.pinned_at,
                     COUNT(m.id) as message_count,
                     (
                         SELECT content FROM messages fm
@@ -689,6 +699,11 @@ impl super::SessionStore for SqliteSessionStore {
                     "archived_at",
                     "failed to parse session archived_at",
                 )?,
+                pinned_at: parse_optional_timestamp(
+                    &row,
+                    "pinned_at",
+                    "failed to parse session pinned_at",
+                )?,
             });
         }
 
@@ -723,6 +738,20 @@ impl super::SessionStore for SqliteSessionStore {
         Ok(())
     }
 
+    async fn pin_session(&self, session_id: &str, pinned: bool) -> Result<()> {
+        let stamp: Option<String> = pinned.then(|| Self::now().to_rfc3339());
+        let updated = sqlx::query("UPDATE sessions SET pinned_at = ? WHERE id = ?")
+            .bind(stamp)
+            .bind(session_id)
+            .execute(&*self.pool)
+            .await
+            .context("failed to pin session")?;
+        if updated.rows_affected() == 0 {
+            anyhow::bail!("cannot pin unknown session {session_id}");
+        }
+        Ok(())
+    }
+
     async fn duplicate_session(&self, session_id: &str, new_id: &str) -> Result<()> {
         let mut tx = self
             .pool
@@ -736,8 +765,8 @@ impl super::SessionStore for SqliteSessionStore {
         let now = Self::now();
         let inserted = sqlx::query(
             r#"
-            INSERT INTO sessions (id, created_at, updated_at, root_dir, ref_id, title, archived_at)
-            SELECT ?, ?, ?, root_dir, '', title, NULL
+            INSERT INTO sessions (id, created_at, updated_at, root_dir, ref_id, title, archived_at, pinned_at)
+            SELECT ?, ?, ?, root_dir, '', title, NULL, NULL
             FROM sessions WHERE id = ?
             "#,
         )
@@ -1391,6 +1420,7 @@ mod tests {
             .await
             .unwrap();
         store.archive_session("legacy-1", true).await.unwrap();
+        store.pin_session("legacy-1", true).await.unwrap();
 
         let sessions = store.list_sessions(None).await.unwrap();
         assert_eq!(sessions[0].title.as_deref(), Some("Named after the fact"));
@@ -1398,6 +1428,52 @@ mod tests {
             sessions[0].archived_at.is_some(),
             "the archive flag is readable on a migrated row"
         );
+        assert!(
+            sessions[0].pinned_at.is_some(),
+            "the pin flag is readable on a migrated row"
+        );
+    }
+
+    /// Pinning sets and clears a marker without touching the row.
+    ///
+    /// The flag is list order, so the test reads it back through
+    /// `list_sessions` -- the same call the sidebar's reload uses -- rather
+    /// than through a private query.
+    #[tokio::test]
+    async fn test_pin_session_sets_and_clears_the_flag() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("pinned.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store.create_session("pinned", "/tmp", "").await.unwrap();
+        store.create_session("plain", "/tmp", "").await.unwrap();
+
+        store.pin_session("pinned", true).await.unwrap();
+        let sessions = store.list_sessions(None).await.unwrap();
+        let pinned = sessions.iter().find(|row| row.id == "pinned").unwrap();
+        let plain = sessions.iter().find(|row| row.id == "plain").unwrap();
+        assert!(pinned.pinned_at.is_some());
+        assert!(plain.pinned_at.is_none());
+
+        store.pin_session("pinned", false).await.unwrap();
+        let sessions = store.list_sessions(None).await.unwrap();
+        let pinned = sessions.iter().find(|row| row.id == "pinned").unwrap();
+        assert!(
+            pinned.pinned_at.is_none(),
+            "unpinning clears the marker rather than leaving a stale stamp"
+        );
+    }
+
+    /// Pinning an unknown session has to fail, not silently no-op.
+    #[tokio::test]
+    async fn test_pin_session_rejects_an_unknown_id() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("missing.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        let error = store
+            .pin_session("no-such-session", true)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unknown session"), "{error:#}");
     }
 
     #[tokio::test]

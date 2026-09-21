@@ -34,6 +34,11 @@ pub struct SessionSummary {
     /// When the session was archived, if it was. Archiving is a policy flag:
     /// the row and its messages stay, and clearing the flag restores it.
     pub archived_at: Option<DateTime<Utc>>,
+    /// When the session was pinned, if it was.
+    ///
+    /// Pinning is a list-order policy, not a state: the row keeps every other
+    /// property and clearing the flag returns it to the ordinary date order.
+    pub pinned_at: Option<DateTime<Utc>>,
 }
 
 /// The first text a message carries, ignoring non-text blocks.
@@ -119,6 +124,13 @@ pub trait SessionStore: Send + Sync {
     /// This is deliberately not a delete: `archived_at` marks policy, and the
     /// session's row and messages must survive it so the flag can be cleared.
     async fn archive_session(&self, session_id: &str, archived: bool) -> Result<()>;
+
+    /// Set or clear a session's pinned flag.
+    ///
+    /// Like archiving, this only moves a marker: the row, its messages, and its
+    /// place in the store are untouched, so unpinning restores the session to
+    /// the ordinary date order with nothing lost.
+    async fn pin_session(&self, session_id: &str, pinned: bool) -> Result<()>;
 
     /// Copy a session's own row and messages under `new_id`.
     ///

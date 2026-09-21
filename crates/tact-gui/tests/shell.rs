@@ -286,6 +286,7 @@ fn the_work_pane_drawer_swallows_presses_behind_it(cx: &mut TestAppContext) {
             title: Some("Desktop client design".to_string()),
             name: None,
             archived: false,
+            pinned: false,
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
@@ -294,6 +295,7 @@ fn the_work_pane_drawer_swallows_presses_behind_it(cx: &mut TestAppContext) {
             title: None,
             name: None,
             archived: false,
+            pinned: false,
         },
     ];
     // 1100px is past `WORK_PANE_IN_FLOW_FROM` (80rem = 1280px), so the pane is
@@ -378,6 +380,7 @@ fn the_sidebar_overlay_keeps_its_presses_above_the_scrim(cx: &mut TestAppContext
         title: Some("Overlay ordering".to_string()),
         name: None,
         archived: false,
+        pinned: false,
     }];
     // 900px: below the sidebar threshold, so the sidebar floats over the
     // transcript; still past the work pane's own threshold, so that one is
@@ -438,6 +441,7 @@ fn the_floating_sidebar_stays_above_the_work_pane_where_they_overlap(cx: &mut Te
         title: Some("Narrow overlap".to_string()),
         name: None,
         archived: false,
+        pinned: false,
     }];
     // 640px: below the sidebar threshold, so the sidebar floats, and below the
     // work pane's own threshold, so that one is already out as a drawer.
@@ -1031,6 +1035,7 @@ fn sidebar_lists_recent_sessions_beside_the_new_session_affordance(cx: &mut Test
             title: Some("Desktop client design".to_string()),
             name: None,
             archived: false,
+            pinned: false,
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
@@ -1039,6 +1044,7 @@ fn sidebar_lists_recent_sessions_beside_the_new_session_affordance(cx: &mut Test
             title: None,
             name: None,
             archived: false,
+            pinned: false,
         },
     ];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
@@ -3797,6 +3803,7 @@ fn the_new_session_chord_answers_like_the_sidebar_button(cx: &mut TestAppContext
             title: Some("Desktop client design".to_string()),
             name: None,
             archived: false,
+            pinned: false,
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
@@ -3805,6 +3812,7 @@ fn the_new_session_chord_answers_like_the_sidebar_button(cx: &mut TestAppContext
             title: None,
             name: None,
             archived: false,
+            pinned: false,
         },
     ];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
@@ -3888,6 +3896,7 @@ fn the_empty_transcript_focuses_the_composer(cx: &mut TestAppContext) {
         title: None,
         name: None,
         archived: false,
+        pinned: false,
     }];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
         let shell = cx.new(|cx| TactApp::with_sessions(window, cx, sessions));
@@ -4358,6 +4367,7 @@ fn the_palette_new_session_row_answers_like_the_chord(cx: &mut TestAppContext) {
         title: None,
         name: None,
         archived: false,
+        pinned: false,
     }];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
         let shell = cx.new(|cx| TactApp::with_sessions(window, cx, sessions));
@@ -4699,6 +4709,7 @@ fn the_command_palette_session_rows_answer_without_an_agent(cx: &mut TestAppCont
             title: None,
             name: None,
             archived: false,
+            pinned: false,
         },
         RecentSession {
             id: "22222222-cccc-dddd".to_string(),
@@ -4707,6 +4718,7 @@ fn the_command_palette_session_rows_answer_without_an_agent(cx: &mut TestAppCont
             title: None,
             name: None,
             archived: false,
+            pinned: false,
         },
     ];
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
@@ -4750,6 +4762,78 @@ fn the_command_palette_session_rows_answer_without_an_agent(cx: &mut TestAppCont
         })
         .unwrap();
     }
+}
+
+/// Pinning moves a session to the head of the list and labels it.
+///
+/// The walk that presses every entry point cannot assert order with a stable
+/// identity, so this pins one named row: the label has to say so, the row has
+/// to move ahead of the rows that arrived after it, and unpinning has to put
+/// the list back.
+#[gpui_kit::test]
+fn pinning_a_session_moves_it_to_the_head_of_the_list(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    let target = "3b78ba4-1d02-4a33-8b71-3333bbbb2222";
+    let target_row: SharedString = format!("session-row-{target}").into();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+
+        // Make the row current first: the session menu acts on the open
+        // session, not on whatever the pointer last hovered.
+        window.click(target_row.clone(), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(target_row.clone()).selected(),
+            Some(true),
+            "the walk starts on the row it means to pin"
+        );
+
+        window.click("session-menu", cx);
+        window.render_frame(cx);
+        let label = window
+            .find("session-menu-pin")
+            .label()
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(label, "Pin", "an unpinned session offers to pin");
+
+        window.click("session-menu-pin", cx);
+        window.render_frame(cx);
+
+        let row = window
+            .find(target_row.clone())
+            .label()
+            .unwrap_or_default()
+            .to_string();
+        assert!(row.contains("pinned"), "the pinned row says so: {row}");
+
+        // The menu now offers the undo, and the row leads the pinned group.
+        window.click("session-menu", cx);
+        window.render_frame(cx);
+        let undo = window
+            .find("session-menu-pin")
+            .label()
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(undo, "Unpin", "a pinned session offers to unpin");
+        window.click("session-menu-pin", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.update(cx, |app, _| app.recent_row_ids().first().cloned()),
+            Some("7fbab10-2c41-4c9a-9f10-2222aaaa1111".to_string()),
+            "unpinning returns the preview's own pinned row to the head"
+        );
+    })
+    .unwrap();
 }
 
 /// The sidebar's filter narrows the session list to what it matches.
@@ -4805,6 +4889,29 @@ fn the_sidebar_search_filters_the_session_list(cx: &mut TestAppContext) {
 
         // Clearing the query restores the full list, so the filter is a view
         // over the sessions rather than a destructive edit of them.
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.render_frame(cx);
+        for id in dropped {
+            assert!(
+                window.try_find(row(id)).is_some(),
+                "clearing the query brings {id} back"
+            );
+        }
+
+        // The filter reads the labels the row prints, not only the id: a search
+        // for an id nobody can see was the whole of the old behaviour.
+        let by_title = "6278b7fa-3c92-4f18-9b27-6666eeee5555";
+        window.input("remote mcp", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find(row(by_title)).is_some(),
+            "a session whose title matches the query stays in the list"
+        );
+        assert!(
+            window.try_find(row(kept)).is_none(),
+            "the id match is not a title match"
+        );
         window.press("ctrl-a", cx);
         window.press("backspace", cx);
         window.render_frame(cx);

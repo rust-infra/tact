@@ -1,5 +1,5 @@
-//! Session actions shared by both front ends: rename, duplicate, archive, and
-//! reveal in the file manager.
+//! Session actions shared by both front ends: rename, duplicate, archive,
+//! pin, and reveal in the file manager.
 //!
 //! The store owns the facts -- a session's name, its archive flag, the copy --
 //! so a front end calls one of these and redraws its list from
@@ -7,9 +7,11 @@
 //! `.tact/tact.db`, the same store the list is read from, so an action can never
 //! touch another workspace's session.
 //!
-//! Two of these are deliberately conservative. **Archiving sets a flag and never
-//! deletes**: the session, its messages and its child sessions all survive, so
-//! clearing the flag restores the row exactly as it was. **Duplicating copies
+//! Three of these are deliberately conservative. **Archiving sets a flag and
+//! never deletes**: the session, its messages and its child sessions all
+//! survive, so clearing the flag restores the row exactly as it was. **Pinning
+//! only sets a marker**: the session keeps its place in the store and simply
+//! sorts ahead of the unpinned rows. **Duplicating copies
 //! the conversation, not the provider state**: the copy replays its messages on
 //! its first turn instead of resuming a request/response chain that belonged to
 //! the original.
@@ -54,6 +56,18 @@ pub fn set_archived(workdir: &Path, session_id: &str, archived: bool) -> anyhow:
     runtime()?.block_on(async move {
         let store = tact::store::open_sqlite_session_store(&tact_path.session_db_path()).await?;
         store.archive_session(session_id, archived).await
+    })
+}
+
+/// Set or clear a session's pinned flag.
+///
+/// Pinning is list order, not state: the row, its messages, and its children
+/// are untouched, and unpinning returns the session to the ordinary date order.
+pub fn set_pinned(workdir: &Path, session_id: &str, pinned: bool) -> anyhow::Result<()> {
+    let tact_path = TactPath::new(workdir.to_path_buf());
+    runtime()?.block_on(async move {
+        let store = tact::store::open_sqlite_session_store(&tact_path.session_db_path()).await?;
+        store.pin_session(session_id, pinned).await
     })
 }
 
