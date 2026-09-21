@@ -1829,7 +1829,7 @@ fn clicking_a_thinking_summary_reveals_it_softly(cx: &mut TestAppContext) {
 /// under the same 150px cap: a 200-line body laid out 3417px tall and was then
 /// clipped at 150px, so everything past the first screenful could not be read.
 #[gpui_kit::test]
-fn a_long_tool_output_scrolls_inside_its_150px_window(cx: &mut TestAppContext) {
+fn a_long_tool_output_scrolls_inside_its_expanded_window(cx: &mut TestAppContext) {
     activate_shipped_theme(cx);
     let output: String = (1..=200).map(|line| format!("line {line:03}\n")).collect();
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
@@ -1851,12 +1851,12 @@ fn a_long_tool_output_scrolls_inside_its_150px_window(cx: &mut TestAppContext) {
             height(row) < 400.0,
             "the card does not grow to the body's height: row {row:?}, body {body:?}"
         );
-        // The block's window is the card minus its summary row and the block's
-        // bottom margin; the prototype's ceiling is 150px.
+        // The expanded block is capped at ten mono lines plus padding; its
+        // body remains scrollable instead of growing to the full output.
         let window_height = height(row) - height(summary) - 12.0;
         assert!(
-            (140.0..=160.0).contains(&window_height),
-            "the output window is the prototype's 150px: measured {window_height}"
+            (175.0..=205.0).contains(&window_height),
+            "the output window is about ten lines: measured {window_height}"
         );
 
         // The body is laid out inside the block's own scroll container, not in
@@ -1964,11 +1964,6 @@ fn the_permission_card_reports_the_choice_it_was_given(cx: &mut TestAppContext) 
         window.click("request-option-1", cx);
         window.render_frame(cx);
 
-        assert_eq!(
-            window.find("request-decision").label(),
-            Some("Deny"),
-            "the decision reports the option the user pressed"
-        );
         for id in ["request-option-0", "request-option-1", "request-option-2"] {
             assert!(
                 window.try_find(id).is_none(),
@@ -1976,8 +1971,8 @@ fn the_permission_card_reports_the_choice_it_was_given(cx: &mut TestAppContext) 
             );
         }
         assert!(
-            window.try_find("request-panel").is_some(),
-            "the answered card stays in the transcript as a row, not a card at the tail"
+            window.try_find("request-panel").is_none(),
+            "the answered card disappears"
         );
     })
     .unwrap();
@@ -2006,18 +2001,13 @@ fn the_once_permission_option_answers_the_card(cx: &mut TestAppContext) {
         window.click("request-option-0", cx);
         window.render_frame(cx);
 
-        assert_eq!(
-            window.find("request-decision").label(),
-            Some("Allow once"),
-            "the one-shot grant reports its own label"
-        );
         assert!(
             window.try_find("request-option-0").is_none(),
             "the resolved card drops the row it was answered with"
         );
         assert!(
-            window.try_find("request-panel").is_some(),
-            "the answered card stays in the transcript as a row, not a card at the tail"
+            window.try_find("request-panel").is_none(),
+            "the answered card disappears"
         );
     })
     .unwrap();
@@ -2048,18 +2038,13 @@ fn the_lasting_permission_option_answers_the_card(cx: &mut TestAppContext) {
         window.click("request-option-2", cx);
         window.render_frame(cx);
 
-        assert_eq!(
-            window.find("request-decision").label(),
-            Some("Always allow this tool"),
-            "the lasting grant reports its own label"
-        );
         assert!(
             window.try_find("request-option-2").is_none(),
             "the resolved card drops the row it was answered with"
         );
         assert!(
-            window.try_find("request-panel").is_some(),
-            "the answered card stays in the transcript as a row, not a card at the tail"
+            window.try_find("request-panel").is_none(),
+            "the answered card disappears"
         );
     })
     .unwrap();
@@ -2119,14 +2104,13 @@ fn the_question_card_confirms_the_toggled_choices(cx: &mut TestAppContext) {
 
         window.click("request-confirm", cx);
         window.render_frame(cx);
-        assert_eq!(
-            window.find("request-decision").label(),
-            Some("Confirmed 1 choice"),
-            "Confirm reports how many choices it sent"
-        );
         assert!(
             window.try_find("request-confirm").is_none(),
             "the resolved question drops its actions"
+        );
+        assert!(
+            window.try_find("request-panel").is_none(),
+            "the resolved question card disappears"
         );
     })
     .unwrap();
@@ -2163,14 +2147,13 @@ fn the_question_card_cancels_without_choosing(cx: &mut TestAppContext) {
 
         window.click("request-cancel", cx);
         window.render_frame(cx);
-        assert_eq!(
-            window.find("request-decision").label(),
-            Some("Dismissed"),
-            "Cancel answers without the toggled choices"
-        );
         assert!(
             window.try_find("request-option-0").is_none(),
             "the dismissed card drops its choices too"
+        );
+        assert!(
+            window.try_find("request-panel").is_none(),
+            "the dismissed question card disappears"
         );
     })
     .unwrap();
@@ -2263,6 +2246,38 @@ fn clicking_a_write_rows_diff_badge_opens_the_diff_pane(cx: &mut TestAppContext)
             window.try_find("tool-output-5").is_none(),
             "the badge does not also expand the tool card"
         );
+    })
+    .unwrap();
+}
+
+/// A session row's actions live behind the row itself: a right press selects
+/// that session and opens the same rename/duplicate/pin/archive menu as the
+/// title-bar session chip.
+#[gpui_kit::test]
+fn right_clicking_a_session_row_opens_its_context_menu(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click("session-row-7fbab10-2c41-4c9a-9f10-2222aaaa1111", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("session-context-menu-panel").is_some(),
+            "right-clicking a session row opens its context menu"
+        );
+        for id in [
+            "session-context-menu-rename",
+            "session-context-menu-duplicate",
+            "session-context-menu-pin",
+            "session-context-menu-archive",
+            "session-context-menu-reveal",
+        ] {
+            assert!(window.try_find(id).is_some(), "the row menu exposes {id}");
+        }
     })
     .unwrap();
 }
@@ -2586,6 +2601,10 @@ fn the_composer_option_rows_keep_the_choice_they_set(cx: &mut TestAppContext) {
         assert_eq!(window.find("composer-model-gpt-5").label(), Some("gpt-5"));
         window.click("composer-model-gpt-5", cx);
         window.render_frame(cx);
+        assert!(
+            window.try_find("composer-model-panel").is_none(),
+            "choosing a model closes the picker"
+        );
         notices += 1;
         assert_eq!(app.update(cx, |app, _| app.transcript_len()), notices);
         dismiss(window, cx);
@@ -2602,18 +2621,6 @@ fn the_composer_option_rows_keep_the_choice_they_set(cx: &mut TestAppContext) {
             Some(false),
             "the previous model row is unchecked"
         );
-
-        assert_eq!(window.find("composer-budget-8192").label(), Some("8k"));
-        window.click("composer-budget-8192", cx);
-        window.render_frame(cx);
-        notices += 1;
-        assert_eq!(app.update(cx, |app, _| app.transcript_len()), notices);
-        dismiss(window, cx);
-
-        window.click("composer-model", cx);
-        window.render_frame(cx);
-        assert_eq!(window.find("composer-budget-8192").checked(), Some(true));
-        assert_eq!(window.find("composer-budget-0").checked(), Some(false));
         dismiss(window, cx);
 
         // Effort.
@@ -2702,6 +2709,13 @@ fn the_model_picker_filters_a_long_list(cx: &mut TestAppContext) {
         assert!(
             window.try_find("composer-model-gpt-5").is_some(),
             "clearing the search restores the full list"
+        );
+
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-model-panel").is_none(),
+            "Escape closes the model picker"
         );
     })
     .unwrap();
@@ -3611,11 +3625,6 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
                     "composer-model-gpt-5",
                     "composer-model-deepseek-chat",
                     "composer-model-kimi-k2-0905-preview",
-                    "composer-budget-0",
-                    "composer-budget-8192",
-                    "composer-budget-16384",
-                    "composer-budget-32768",
-                    "composer-budget-65536",
                 ][..],
             ),
             (
@@ -3642,23 +3651,6 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         ] {
             for item in items {
                 click!(chip);
-                if item.starts_with("composer-budget-") {
-                    for _ in 0..12 {
-                        window.render_frame(cx);
-                        let visible = match window.try_find(*item) {
-                            Some(target) => target.visible(),
-                            None => false,
-                        };
-                        if visible {
-                            break;
-                        }
-                        window.scroll(
-                            "composer-model-panel",
-                            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-120.))),
-                            cx,
-                        );
-                    }
-                }
                 click!(*item);
             }
             dismiss_popover(window, cx, panel);

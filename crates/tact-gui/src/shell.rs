@@ -135,6 +135,11 @@ const WORK_PANE_BOTTOM_HEIGHT: Rems = rems(18.);
 /// rem). Below it the drawer form applies (Phase 6).
 const WORK_PANE_IN_FLOW_FROM: Rems = rems(80.);
 
+/// Thinking-budget tiers are hidden while the provider's model list is the
+/// primary control. The command and persistence path stay in place so the UI
+/// can be restored without reopening the protocol work.
+const THINKING_BUDGET_UI_ENABLED: bool = false;
+
 /// The prototype's only motion token, `--ease:cubic-bezier(.23,1,.32,1)`, and
 /// the `180ms` it gives `.work` and `.sidebar`.
 const OVERLAY_SLIDE: Duration = Duration::from_millis(180);
@@ -1555,6 +1560,45 @@ impl TactApp {
         self.switch_workspace(path, cx);
     }
 
+    /// Open a project directory and bind the visible session to it.
+    ///
+    /// Worktree switches deliberately keep the running session attached so a
+    /// branch move does not restart the agent. Opening a project is different:
+    /// the directory owns the session store, so the window resumes that
+    /// project's newest session (or starts one) after switching.
+    fn open_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.is_dir() {
+            self.push_system_row(
+                format!(
+                    "{} is not a directory; the project was not changed.",
+                    path.display()
+                ),
+                cx,
+            );
+            return;
+        }
+        self.switch_workspace(path.clone(), cx);
+        if self.offline {
+            return;
+        }
+        let startup_resume = startup_resume_id(&self.recent);
+        match startup_resume {
+            Some(session_id) => match session::resume(path.clone(), session_id) {
+                Ok((handle, streams)) => self.adopt(path, handle, streams, cx),
+                Err(error) => self.push_system_row(
+                    format!("Could not resume the project session: {error:#}"),
+                    cx,
+                ),
+            },
+            None => match session::start(path.clone()) {
+                Ok((handle, streams)) => self.adopt(path, handle, streams, cx),
+                Err(error) => {
+                    self.push_system_row(format!("Could not start a session: {error:#}"), cx)
+                }
+            },
+        }
+    }
+
     /// Ask the platform for a directory and open it as the workspace.
     ///
     /// The offline preview owns no store and must not put a modal file dialog
@@ -1581,7 +1625,7 @@ impl TactApp {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let _ = this.update(cx, |app, cx| app.open_workspace(path, cx));
+            let _ = this.update(cx, |app, cx| app.open_project(path, cx));
         })
         .detach();
     }
@@ -3403,6 +3447,13 @@ impl TactApp {
         // honest state of this is: the artifact is real and the fix belongs
         // upstream (or in a fork) rather than in a scroll call that makes it
         // worse.
+        //
+        // The scroller's tail-follow is the remaining source of the same jump:
+        // `record_change` calls `scroll_to_end` whenever `follow_tail` is set,
+        // and expanding a card is an explicit read operation, not new output.
+        // Leave follow mode before remeasuring so the current viewport stays
+        // put while the card grows.
+        self.follow_tail = false;
         self.record_change(Change::Resized(index), cx);
         cx.notify();
     }
@@ -3540,20 +3591,16 @@ impl TactApp {
         self.answer(response, "Dismissed".to_string(), cx);
     }
 
-    /// Send a response and settle the prompt so it cannot be answered twice.
+    /// Send a response and remove the prompt so it cannot be answered twice.
     ///
-    /// The answered card moves into the transcript as a row, which is what
-    /// keeps it from being the last thing on screen once the turn it unblocked
-    /// resumes: only the pending slot is dropped, so the card keeps the slot it
-    /// was asked in.
-    fn answer(&mut self, response: UiResponse, result: String, cx: &mut Context<Self>) {
+    /// The decision is transport, not conversation content: once the agent has
+    /// received it, the card should disappear instead of leaving a second copy
+    /// of the request in the transcript.
+    fn answer(&mut self, response: UiResponse, _result: String, cx: &mut Context<Self>) {
         if let Some(session) = self.session.as_ref() {
             session.send(tact_protocol::UserCommand::UiResponse(response));
         }
-        if let Some(request) = self.state.request.take() {
-            self.conversation.push_approval(request, result);
-            self.record_change(Change::Appended(1), cx);
-        }
+        self.state.request.take();
         self.sync_transcript_count(cx);
         cx.notify();
     }
@@ -5174,8 +5221,11 @@ fn session_row(
         Some(badge) => format!("{label} · {meta} · {}", badge.text),
         None => format!("{label} · {meta}"),
     };
+    let on_click = Rc::new(on_click);
+    let left_click = on_click.clone();
+    let right_click = on_click.clone();
 
-    h_flex()
+    let row = h_flex()
         .id(SharedString::from(format!("session-row-{}", session.id)))
         .test_support()
         .aria_label(SharedString::from(accessible))
@@ -5201,7 +5251,11 @@ fn session_row(
             let ring = focus_visible_ring(cx);
             move |style| style.shadow(ring.clone())
         })
-        .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+        .on_click(cx.listener(move |this, _, _, cx| left_click(this, cx)))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, _, _, cx| right_click(this, cx)),
+        )
         .child(
             // `.dot`: a 7px ink circle inside a 3px halo, so a running row
             // carries a visible ring rather than a hairline border.
@@ -5245,7 +5299,163 @@ fn session_row(
                         )
                         .when_some(badge, |row, badge| row.child(badge.render(mono.clone()))),
                 ),
-        )
+        );
+    session_context_menu(
+        row.into_any_element(),
+        session.id.clone(),
+        session.pinned,
+        session.archived,
+        cx.weak_entity(),
+    )
+    .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct SessionRowTrigger {
+    row: AnyElement,
+    selected: bool,
+}
+
+impl SessionRowTrigger {
+    fn new(row: AnyElement) -> Self {
+        Self {
+            row,
+            selected: false,
+        }
+    }
+}
+
+impl Selectable for SessionRowTrigger {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl RenderOnce for SessionRowTrigger {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        self.row
+    }
+}
+
+/// Right-click menu for one sidebar session row.
+///
+/// The right-click event first selects the row through the same `on_click`
+/// callback as a left press; the menu then reuses the shell's open-session
+/// actions. Keeping those actions shared means the row menu cannot drift from
+/// the title-bar session menu.
+fn session_context_menu(
+    row: AnyElement,
+    session_id: String,
+    open_pinned: bool,
+    open_archived: bool,
+    owner: gpui_kit::WeakEntity<TactApp>,
+) -> impl IntoElement {
+    let archive_label = if open_archived {
+        "Unarchive"
+    } else {
+        "Archive"
+    };
+    let pin_label = if open_pinned { "Unpin" } else { "Pin" };
+    Popover::new(SharedString::from(format!(
+        "session-context-menu-{session_id}"
+    )))
+    .anchor(gpui_kit::Anchor::TopLeft)
+    .mouse_button(MouseButton::Right)
+    .trigger(SessionRowTrigger::new(row))
+    .content(move |_state, _window, popover_cx| {
+        let menu = popover_cx.entity();
+        let rename_owner = owner.clone();
+        let duplicate_owner = owner.clone();
+        let pin_owner = owner.clone();
+        let archive_owner = owner.clone();
+        let reveal_owner = owner.clone();
+        v_flex()
+            .id("session-context-menu-panel")
+            .test_support()
+            .gap_1()
+            .min_w(rems(13.))
+            .child(
+                Button::new("session-context-menu-rename")
+                    .icon(IconName::PencilLine)
+                    .label("Rename")
+                    .ghost()
+                    .compact()
+                    .on_click({
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = rename_owner
+                                .update(cx, |app, cx| app.open_rename_dialog(window, cx));
+                        }
+                    }),
+            )
+            .child(
+                Button::new("session-context-menu-duplicate")
+                    .icon(IconName::Copy)
+                    .label("Duplicate")
+                    .ghost()
+                    .compact()
+                    .on_click({
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = duplicate_owner
+                                .update(cx, |app, cx| app.duplicate_open_session(cx));
+                        }
+                    }),
+            )
+            .child(
+                Button::new("session-context-menu-pin")
+                    .icon(IconName::Pin)
+                    .label(pin_label)
+                    .ghost()
+                    .compact()
+                    .on_click({
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = pin_owner.update(cx, |app, cx| {
+                                app.set_open_session_pinned(!open_pinned, cx)
+                            });
+                        }
+                    }),
+            )
+            .child(
+                Button::new("session-context-menu-archive")
+                    .icon(IconName::Archive)
+                    .label(archive_label)
+                    .ghost()
+                    .compact()
+                    .on_click({
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = archive_owner.update(cx, |app, cx| {
+                                app.set_open_session_archived(!open_archived, cx)
+                            });
+                        }
+                    }),
+            )
+            .child(
+                Button::new("session-context-menu-reveal")
+                    .icon(IconName::FolderOpen)
+                    .label("Reveal in filesystem")
+                    .ghost()
+                    .compact()
+                    .on_click({
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = reveal_owner.update(cx, |app, cx| app.reveal_workspace(cx));
+                        }
+                    }),
+            )
+    })
 }
 
 /// Sidebar row title: the name the user gave the session, then its opening
@@ -5509,7 +5719,7 @@ fn project_row(
         Some(is_current),
         Some(Rc::new(
             move |this: &mut TactApp, cx: &mut Context<TactApp>| {
-                this.open_workspace(target.clone(), cx);
+                this.open_project(target.clone(), cx);
             },
         )),
         radius,
@@ -6868,6 +7078,7 @@ fn prompt_composer(
     let add_owner = owner.clone();
     let model_owner = owner.clone();
     let permission_owner = owner.clone();
+    let project_owner = owner.clone();
     let current_model = session
         .model
         .as_ref()
@@ -6984,6 +7195,7 @@ fn prompt_composer(
                 .tooltip("Model and reasoning controls"),
         )
         .content(move |_state, _window, cx| {
+            let menu = cx.entity();
             let (model_options, model_options_loading, current_model, current_budget) =
                 model_owner
                     .upgrade()
@@ -7071,7 +7283,11 @@ fn prompt_composer(
                     // stay fixed, while a real provider's dozens of ids scroll
                     // inside this section instead of growing the popover past
                     // the window.
-                    .max_h(rems(16.))
+                    .max_h(if THINKING_BUDGET_UI_ENABLED {
+                        rems(16.)
+                    } else {
+                        rems(21.)
+                    })
                     .pr(rems(0.75))
                     .overflow_y_scrollbar();
                 if visible_models.is_empty() && !model_options_loading {
@@ -7086,6 +7302,7 @@ fn prompt_composer(
                 }
                 for model in visible_models {
                     let owner = model_owner.clone();
+                    let menu = menu.clone();
                     let selected = model == current_model;
                     list = list.child(
                         Button::new(SharedString::from(format!(
@@ -7096,39 +7313,43 @@ fn prompt_composer(
                         .ghost()
                         .compact()
                         .toggled(selected)
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
                             let _ = owner.update(cx, |app, cx| app.set_model(model.clone(), cx));
                         }),
                     );
                 }
                 panel = panel.child(list);
             }
-            panel = panel.child(
-                div()
-                    .pt_1()
-                    .text_xs()
-                    .text_color(muted_foreground)
-                    .child(SharedString::from("Thinking budget")),
-            );
-            for budget in [0_u32, 8_192, 16_384, 32_768, 65_536] {
-                let owner = model_owner.clone();
-                let selected = current_budget == Some(budget);
-                let label = if budget == 0 {
-                    "Off".to_string()
-                } else {
-                    format!("{}k", budget / 1_024)
-                };
+            if THINKING_BUDGET_UI_ENABLED {
                 panel = panel.child(
-                    Button::new(SharedString::from(format!("composer-budget-{budget}")))
-                        .label(label)
-                        .ghost()
-                        .compact()
-                        .toggled(selected)
-                        .on_click(move |_, _, cx| {
-                            let _ = owner
-                                .update(cx, |app, cx| app.set_thinking_budget(budget as usize, cx));
-                        }),
+                    div()
+                        .pt_1()
+                        .text_xs()
+                        .text_color(muted_foreground)
+                        .child(SharedString::from("Thinking budget")),
                 );
+                for budget in [0_u32, 8_192, 16_384, 32_768, 65_536] {
+                    let owner = model_owner.clone();
+                    let selected = current_budget == Some(budget);
+                    let label = if budget == 0 {
+                        "Off".to_string()
+                    } else {
+                        format!("{}k", budget / 1_024)
+                    };
+                    panel = panel.child(
+                        Button::new(SharedString::from(format!("composer-budget-{budget}")))
+                            .label(label)
+                            .ghost()
+                            .compact()
+                            .toggled(selected)
+                            .on_click(move |_, _, cx| {
+                                let _ = owner.update(cx, |app, cx| {
+                                    app.set_thinking_budget(budget as usize, cx)
+                                });
+                            }),
+                    );
+                }
             }
             panel
         });
@@ -7309,6 +7530,54 @@ fn prompt_composer(
         .test_support(),
     );
 
+    let project_name = project_label(session);
+    let project_path = session
+        .workdir
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "No project directory".to_string());
+    let project_footer = h_flex()
+        .id("composer-project")
+        .test_support()
+        .w_full()
+        .items_center()
+        .gap(rems(0.375))
+        .px(rems(0.4375))
+        .pb(rems(0.4375))
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .child(
+            Icon::new(IconName::FolderOpen)
+                .with_size(px(13.))
+                .text_color(crate::theme::ink3(cx)),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .font_semibold()
+                .text_color(cx.theme().foreground)
+                .child(SharedString::from(project_name)),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_xs()
+                .text_color(crate::theme::ink3(cx))
+                .child(SharedString::from(project_path)),
+        )
+        .child(
+            Button::new("composer-open-project")
+                .label("Open project…")
+                .ghost()
+                .compact()
+                .on_click(move |_, _, cx| {
+                    let _ = project_owner.update(cx, |app, cx| app.open_project_picker(cx));
+                }),
+        );
+
     // `.composer { border: 1px solid var(--line2); border-radius: 12px;
     // background: var(--surface); box-shadow: 0 1px 2px rgba(20,20,19,.04),
     // 0 8px 24px rgba(20,20,19,.035) }`, and `.composer:focus-within {
@@ -7439,7 +7708,8 @@ fn prompt_composer(
                         .aria_label("Message Tact"),
                 ),
         )
-        .child(controls.px(rems(0.4375)).pt(rems(0.3125)).pb(rems(0.4375)));
+        .child(controls.px(rems(0.4375)).pt(rems(0.3125)).pb(rems(0.4375)))
+        .child(project_footer);
 
     v_flex()
         .w_full()
@@ -9177,7 +9447,7 @@ mod tests {
     /// pinned too: a pending request is still one item past the rows, an
     /// answered one is only its own row.
     #[gpui_kit::test]
-    fn an_answered_approval_keeps_its_slot_instead_of_the_tail(cx: &mut gpui_kit::TestAppContext) {
+    fn an_answered_approval_disappears_instead_of_remaining(cx: &mut gpui_kit::TestAppContext) {
         use crate::session::Request;
         use crate::transcript::TranscriptRow;
         use gpui_kit::AppContext as _;
@@ -9223,35 +9493,29 @@ mod tests {
                 assert!(app.state.request.is_none(), "the pending slot is cleared");
 
                 let rows = app.conversation.rows();
-                assert_eq!(rows.len(), 1, "the answer files the card as one row");
                 assert!(
-                    matches!(
-                        rows[0],
-                        TranscriptRow::Approval { ref result, .. } if result == "Allow once"
-                    ),
-                    "the row is the answered card, phrased by its own label: {rows:?}"
+                    !rows
+                        .iter()
+                        .any(|row| matches!(row, TranscriptRow::Approval { .. })),
+                    "the answered card disappears: {rows:?}"
                 );
                 assert_eq!(
                     app.transcript_item_count(),
                     2,
-                    "and the answered card is the row, not a card beside it"
+                    "the empty transcript header replaces the pending slot"
                 );
 
-                // The turn resumes: a later row must land *below* the record.
+                // The turn resumes: later rows append normally.
                 app.push_system_row("the turn moved on".to_string(), cx);
                 let rows = app.conversation.rows();
                 assert!(
-                    matches!(rows[0], TranscriptRow::Approval { .. }),
-                    "the record keeps the slot it was asked in: {rows:?}"
-                );
-                assert!(
-                    matches!(rows[1], TranscriptRow::System { .. }),
-                    "the next row follows it instead of being pushed above it: {rows:?}"
+                    matches!(rows.last(), Some(TranscriptRow::System { .. })),
+                    "the next row is ordinary transcript content: {rows:?}"
                 );
                 assert_eq!(
                     app.transcript_item_count(),
-                    3,
-                    "two rows beside the header, and no card left at the tail"
+                    rows.len() + 1,
+                    "the header and ordinary rows remain"
                 );
             });
         })

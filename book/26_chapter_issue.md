@@ -29,6 +29,36 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-22 — Desktop interaction corrections: previews, menus, projects, and completion
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/session.rs`; `crates/tact-gui/src/transcript.rs`; `crates/tact-gui/src/shell.rs`; `crates/tact-gui/tests/shell.rs` |
+
+**Symptom / motivation:** Several desktop interactions still behaved like prototypes instead of tools: expanding a card could pull the viewport to the transcript tail; live Thinking and tool output could grow without a useful preview cap; Task complete repeated the assistant's answer instead of reporting stats; answered approvals stayed in the transcript; session actions were only reachable from the title-bar chip; and project switching had no guarded composer-level entry that rebound the session to the new directory.
+
+**Decision:** Treat explicit card expansion as reading, not new output, and turn off tail-follow before remeasuring. Live Thinking and running tool output render a 3-line preview and auto-collapse when finished; manual expansion is capped at 10 lines with an internal scrollbar. Task complete now reports turns, context percentage, and compact token totals. Answered approvals are removed from the transcript instead of archived as rows. Each session row owns a right-click menu with rename/duplicate/pin/archive/reveal, and the composer footer exposes the current project plus `Open project…`, which re-roots and resumes/starts that project's session.
+
+**Behavior after:** Expanding a card no longer jumps to the transcript end. Live Thinking/tool output stays compact and closes automatically, while expanded detail scrolls instead of growing without bound. Completion rows show task stats rather than the answer again. Permission cards disappear after a choice. Session rows open their actions on right-click, and the composer's project row is the visible path for binding the current session to a directory.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`toggle_row`, `open_project`, `session_context_menu`, `prompt_composer`, `answer`); `crates/tact-gui/src/session.rs` (`task_complete_text`, Thinking/tool lifecycle); `crates/tact-gui/src/transcript.rs` (live preview limits); `crates/tact-gui/tests/shell.rs` (`right_clicking_a_session_row_opens_its_context_menu`, `the_model_picker_filters_a_long_list`)
+
+## 1. 2026-09-22 — Thinking budget is parked while the model list takes the space
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/shell.rs` (`THINKING_BUDGET_UI_ENABLED`, model picker content); `crates/tact-gui/tests/shell.rs` |
+
+**Symptom / motivation:** The model picker had to carry both a long provider model list and five Thinking budget choices. On a real server list, the budget block competed for the popover's fixed height and made the scrollable model region unnecessarily short.
+
+**Decision:** Temporarily hide the Thinking budget row and give the model list a taller 21 rem scroll viewport. The budget command, persistence, and rendering branch remain in the source behind `THINKING_BUDGET_UI_ENABLED = false`, so restoring the controls later does not require reopening the protocol work.
+
+**Behavior after:** The Model popover shows search plus a tall scrollable model list and no Thinking budget controls. Long provider lists scroll in that dedicated region; the budget selector can be restored by flipping the constant.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`THINKING_BUDGET_UI_ENABLED`, model picker content); `crates/tact-gui/tests/shell.rs` (`the_model_picker_filters_a_long_list`, `every_entry_point_answers_a_click`)
+
 ## 1. 2026-09-22 — The model picker updates while open and searches the full list
 
 | Field | Value |
@@ -40,7 +70,7 @@ Newest entries first. Each entry should include:
 
 **Decision:** Read the picker's model list, loading flag, current model, and budget from the live `TactApp` inside the popover content instead of using a one-frame snapshot. Add a `model_filter` `InputState` to the shell, reset and focus it whenever the popover opens, and filter model ids case-insensitively as the user types. The current model is sorted first; the rest preserve the provider's order. The panel remains capped at 24 rem with a scrollbar.
 
-**Behavior after:** The first Model click immediately shows `Refreshing from provider…`; the list fills in while the popover stays open. Typing `deepseek` shows the DeepSeek family even when it is far below the fold. Clearing the search restores the full list, and the current model remains visible and selected.
+**Behavior after:** The first Model click immediately shows `Refreshing from provider…`; the list fills in while the popover stays open. Typing `deepseek` shows the DeepSeek family even when it is far below the fold. Clearing the search restores the full list, choosing a model closes the picker, Escape dismisses it, and the current model remains visible and selected.
 
 **Pointers:** `crates/tact-gui/src/shell.rs` (`model_filter`, `fetch_model_options`, `prompt_composer`); `crates/tact-gui/tests/shell.rs` (`the_model_picker_filters_a_long_list`)
 
@@ -412,7 +442,7 @@ The two dividers are 4 px bands painted *over* the column boundary rather than l
 
 **Behavior after:** Answering a permission or question card clears the prompt and appends the answered card in the slot it was asked in. Everything the turn writes next lands below it, and the card scrolls away with the rest of the conversation instead of hovering under it. The decision still reads as the option's own label (`Allow once`, `Deny`, `Always allow this tool`), the card still drops the option row it was answered with, and a pending request still renders as a card at the tail with no decision line.
 
-**Pointers:** `crates/tact-gui/src/session.rs` (`push_approval`, `to_markdown`); `crates/tact-gui/src/shell.rs` (`answer`, `answer_panel`, `transcript_item_count`); `crates/tact-gui/src/transcript.rs` (`RowActions`, the `Approval` arm); `crates/tact-gui/src/shell.rs` tests (`an_answered_approval_keeps_its_slot_instead_of_the_tail`); `crates/tact-gui/tests/shell.rs` (`the_permission_card_leads_with_deny`, `the_once_permission_option_answers_the_card`, `the_lasting_permission_option_answers_the_card`)
+**Pointers:** `crates/tact-gui/src/session.rs` (`push_approval`, `to_markdown`); `crates/tact-gui/src/shell.rs` (`answer`, `answer_panel`, `transcript_item_count`); `crates/tact-gui/src/transcript.rs` (`RowActions`, the `Approval` arm); `crates/tact-gui/src/shell.rs` tests (`an_answered_approval_disappears_instead_of_remaining`); `crates/tact-gui/tests/shell.rs` (`the_permission_card_leads_with_deny`, `the_once_permission_option_answers_the_card`, `the_lasting_permission_option_answers_the_card`)
 
 ## 1. 2026-09-21 — A reopened session redraws its stored transcript
 

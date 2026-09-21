@@ -29,6 +29,36 @@
 
 ---
 
+## 1. 2026-09-22 — 桌面交互修正：实时预览、菜单、项目与完成态
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/session.rs`；`crates/tact-gui/src/transcript.rs`；`crates/tact-gui/src/shell.rs`；`crates/tact-gui/tests/shell.rs` |
+
+**现象 / 动机：** 多处桌面交互仍像原型而不是工具：展开卡片会把视口拉到转录尾部；Thinking 和工具实时输出没有实用的预览上限；Task complete 重复显示助手回答而不是统计信息；已答复授权框继续留在转录里；session 操作只能从标题栏 chip 进入；项目切换也没有 composer 级别、会重新绑定 session 的入口。
+
+**决策：** 把用户主动展开卡片视为阅读，而不是新输出：重测前先关闭 tail-follow。Thinking 和运行中的工具输出显示 3 行实时预览，结束后自动收起；手动展开最多 10 行并可内部滚动。Task complete 改为显示轮次、context 百分比和紧凑 token 总数。已答复授权从转录中移除而不是补一行记录。每个 session 行自带右键菜单：重命名、复制、置顶、归档、在文件系统中显示；composer 底部新增当前项目行与 `Open project…`，切换后会恢复或新建该项目目录绑定的 session。
+
+**改后行为：** 展开卡片不再跳到转录末尾。Thinking/工具实时内容保持紧凑并自动收起；展开详情在内部滚动而非无限变高。完成行显示 task stats，不再重复回答。授权选择后卡片消失。session 行右键即可操作；composer 的项目行提供绑定当前 session 与目录的可见入口。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`toggle_row`、`open_project`、`session_context_menu`、`prompt_composer`、`answer`）；`crates/tact-gui/src/session.rs`（`task_complete_text`、Thinking/tool lifecycle）；`crates/tact-gui/src/transcript.rs`（实时预览上限）；`crates/tact-gui/tests/shell.rs`（`right_clicking_a_session_row_opens_its_context_menu`、`the_model_picker_filters_a_long_list`）
+
+## 1. 2026-09-22 — 暂时隐藏 Thinking budget，把空间让给模型列表
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/shell.rs`（`THINKING_BUDGET_UI_ENABLED`、model picker content）；`crates/tact-gui/tests/shell.rs` |
+
+**现象 / 动机：** model picker 同时承担很长的服务端模型列表和五档 Thinking budget。真实模型列表下，budget 区块占用 popover 的固定高度，使模型滚动区域变得过短。
+
+**决策：** 暂时隐藏 Thinking budget 行，把模型列表的滚动视口提高到 21 rem。budget 命令、持久化和渲染分支仍保留在源码中，由 `THINKING_BUDGET_UI_ENABLED = false` 控制；以后恢复控件不需要重新处理协议层。
+
+**改后行为：** Model popover 显示搜索框和更高的可滚动模型列表，不再显示 Thinking budget。长模型列表在专用区域内滚动；把常量打开即可恢复 budget 选择器。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`THINKING_BUDGET_UI_ENABLED`、model picker content）；`crates/tact-gui/tests/shell.rs`（`the_model_picker_filters_a_long_list`、`every_entry_point_answers_a_click`）
+
 ## 1. 2026-09-22 — Model picker 在打开期间实时更新，并可搜索完整列表
 
 | 字段 | 值 |
@@ -40,7 +70,7 @@
 
 **决策：** popover content 不再使用单帧快照，而是从 live `TactApp` 读取模型列表、loading 状态、当前模型和 budget。shell 新增 `model_filter` `InputState`；每次打开 popover 时清空并聚焦，输入时按 model id 大小写不敏感过滤。当前模型排在最前，其余保持服务端顺序；面板仍限制为 24 rem 并带滚动条。
 
-**改后行为：** 第一次点击 Model 就立即显示 `Refreshing from provider…`；服务端返回后列表会在已打开的面板内填充。输入 `deepseek` 即可显示位于列表后部的 DeepSeek 系列；清空搜索恢复完整列表，当前模型保持可见并选中。
+**改后行为：** 第一次点击 Model 就立即显示 `Refreshing from provider…`；服务端返回后列表会在已打开的面板内填充。输入 `deepseek` 即可显示位于列表后部的 DeepSeek 系列；清空搜索恢复完整列表；选择模型或按 Escape 会关闭 picker，当前模型保持可见并选中。
 
 **指针：** `crates/tact-gui/src/shell.rs`（`model_filter`、`fetch_model_options`、`prompt_composer`）；`crates/tact-gui/tests/shell.rs`（`the_model_picker_filters_a_long_list`）
 
@@ -413,7 +443,7 @@
 
 **Behavior after:**答复授权卡或提问卡会清掉待答提示，并把已答复卡片追加到它被问到的那个位置。这一轮之后写下的任何行都落在它下面，卡片随其余对话一起滚走，而不再悬在它们底下。决定仍然读作选项自己的标签（`Allow once` / `Deny` / `Always allow this tool`），卡片仍然丢掉被用来答复的那一行选项，待答请求也仍然渲染成末尾那张没有决定行的卡片。
 
-**Pointers:** `crates/tact-gui/src/session.rs`（`push_approval`、`to_markdown`）；`crates/tact-gui/src/shell.rs`（`answer`、`answer_panel`、`transcript_item_count`）；`crates/tact-gui/src/transcript.rs`（`RowActions`、`Approval` 分支）；`crates/tact-gui/src/shell.rs` 测试（`an_answered_approval_keeps_its_slot_instead_of_the_tail`）；`crates/tact-gui/tests/shell.rs`（`the_permission_card_leads_with_deny`、`the_once_permission_option_answers_the_card`、`the_lasting_permission_option_answers_the_card`）
+**Pointers:** `crates/tact-gui/src/session.rs`（`push_approval`、`to_markdown`）；`crates/tact-gui/src/shell.rs`（`answer`、`answer_panel`、`transcript_item_count`）；`crates/tact-gui/src/transcript.rs`（`RowActions`、`Approval` 分支）；`crates/tact-gui/src/shell.rs` 测试（`an_answered_approval_disappears_instead_of_remaining`）；`crates/tact-gui/tests/shell.rs`（`the_permission_card_leads_with_deny`、`the_once_permission_option_answers_the_card`、`the_lasting_permission_option_answers_the_card`）
 
 ## 1. 2026-09-21 — 重新打开的会话会重绘它自己存下来的对话
 

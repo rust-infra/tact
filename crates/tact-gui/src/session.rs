@@ -525,12 +525,8 @@ impl Conversation {
         self.rows.len()
     }
 
-    /// Append an answered permission or question card.
-    ///
-    /// The card is a row rather than a slot beside the list, so it keeps the
-    /// slot it was asked in: the prototype's `.approval.done` still reads as a
-    /// record, but the transcript keeps moving past it instead of leaving the
-    /// answered card as the last thing on screen for the rest of the session.
+    /// Append an answered permission or question card from legacy history.
+    #[allow(dead_code)]
     pub(crate) fn push_approval(&mut self, request: Request, result: String) -> usize {
         self.rows.push(TranscriptRow::Approval { request, result });
         self.rows.len()
@@ -778,16 +774,12 @@ impl Conversation {
                 state.model = Some(params);
                 Change::None
             }
-            AgentUpdate::TaskComplete(summary) => {
+            AgentUpdate::TaskComplete(_summary) => {
                 self.end_turn();
                 state.running = false;
                 let index = self.rows.len();
                 self.rows.push(TranscriptRow::System {
-                    text: if summary.trim().is_empty() {
-                        "Task complete.".to_string()
-                    } else {
-                        format!("Task complete — {}", first_line(&summary))
-                    },
+                    text: task_complete_text(state),
                 });
                 Change::Appended(self.rows.len() - index)
             }
@@ -891,7 +883,7 @@ impl Conversation {
                 self.rows.push(TranscriptRow::Thinking {
                     text: String::new(),
                     duration_seconds: None,
-                    expanded: true,
+                    expanded: false,
                 });
                 self.thinking_started_at = Some(std::time::Instant::now());
                 self.open_thinking = Some(index);
@@ -906,7 +898,7 @@ impl Conversation {
                         self.rows.push(TranscriptRow::Thinking {
                             text: String::new(),
                             duration_seconds: None,
-                            expanded: true,
+                            expanded: false,
                         });
                         self.thinking_started_at = Some(std::time::Instant::now());
                         self.open_thinking = Some(index);
@@ -929,10 +921,13 @@ impl Conversation {
                     .map(|started| started.elapsed().as_secs().max(1));
                 if let Some(index) = self.open_thinking
                     && let Some(TranscriptRow::Thinking {
-                        duration_seconds, ..
+                        duration_seconds,
+                        expanded,
+                        ..
                     }) = self.rows.get_mut(index)
                 {
                     *duration_seconds = elapsed;
+                    *expanded = false;
                 }
                 self.open_thinking = None;
                 Change::None
@@ -1017,15 +1012,20 @@ impl Conversation {
             detail: current,
             duration: current_duration,
             status: current_status,
+            expanded: current_expanded,
             visual_kind: current_kind,
             diff_stats: current_stats,
             ..
         }) = self.rows.get_mut(index)
         {
+            let was_running = *current_status == ToolStatus::Running;
             *display_name = name;
             *current = detail;
             *current_status = status;
             *current_duration = duration;
+            if was_running && status != ToolStatus::Running {
+                *current_expanded = false;
+            }
             if let Some(kind) = kind {
                 *current_kind = kind;
             }
@@ -1253,6 +1253,43 @@ fn display_name(display: &str, tool: &str) -> String {
         tool.to_string()
     } else {
         display.to_string()
+    }
+}
+
+fn compact_tokens(tokens: u32) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}m", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// The closing transcript row reports what the completed task cost, not the
+/// assistant's final answer again -- that answer is already the row above.
+fn task_complete_text(state: &SessionState) -> String {
+    let mut parts = Vec::new();
+    if let Some((turns_taken, max_turns)) = state.turns {
+        let turns = match max_turns {
+            Some(max) => format!("{turns_taken}/{max} turns"),
+            None if turns_taken == 1 => "1 turn".to_string(),
+            None => format!("{turns_taken} turns"),
+        };
+        parts.push(turns);
+    }
+    if let Some(usage) = state.usage.as_ref() {
+        let denominator = usage.prompt.saturating_add(usage.completion).max(1);
+        let context = (usage.prompt * 100 / denominator).min(100);
+        parts.push(format!("{context}% context"));
+        if usage.total > 0 {
+            parts.push(format!("{} tokens", compact_tokens(usage.total)));
+        }
+    }
+    if parts.is_empty() {
+        "Task complete.".to_string()
+    } else {
+        format!("Task complete · {}", parts.join(" · "))
     }
 }
 
@@ -1777,7 +1814,7 @@ mod tests {
             &conversation.rows()[0],
             TranscriptRow::Thinking {
                 duration_seconds: None,
-                expanded: true,
+                expanded: false,
                 ..
             }
         ));
@@ -1792,21 +1829,18 @@ mod tests {
             &conversation.rows()[0],
             TranscriptRow::Thinking {
                 duration_seconds: Some(1),
-                expanded: true,
+                expanded: false,
                 ..
             }
         ));
 
         assert!(
             conversation.toggle_expanded(0),
-            "the summary collapses the reasoning body"
+            "the summary opens the finished reasoning body"
         );
         assert!(matches!(
             &conversation.rows()[0],
-            TranscriptRow::Thinking {
-                expanded: false,
-                ..
-            }
+            TranscriptRow::Thinking { expanded: true, .. }
         ));
     }
 
@@ -1815,6 +1849,15 @@ mod tests {
         let mut conversation = Conversation::default();
         let mut state = SessionState {
             running: true,
+            turns: Some((2, None)),
+            usage: Some(tact_protocol::TokenUsageInfo {
+                prompt: 300,
+                completion: 100,
+                total: 400,
+                prompt_cache_hit_tokens: 0,
+                prompt_cache_miss_tokens: 300,
+                reasoning_tokens: 0,
+            }),
             ..SessionState::default()
         };
 
@@ -1830,6 +1873,11 @@ mod tests {
                 streaming: false,
                 ..
             }
+        ));
+        assert!(matches!(
+            &conversation.rows()[1],
+            TranscriptRow::System { text }
+                if text == "Task complete · 2 turns · 75% context · 400 tokens"
         ));
     }
 

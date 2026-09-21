@@ -148,13 +148,9 @@ pub(crate) enum TranscriptRow {
     Error {
         text: String,
     },
-    /// A permission or question card the user has already answered.
-    ///
-    /// The prototype's `.approval.done` keeps the question and swaps its
-    /// actions for the decision, so the transcript still reads as a record of
-    /// what was asked and granted. It is a row, not a slot beside the list:
-    /// an answered card must not stay the last thing on screen while the turn
-    /// it unblocked keeps writing rows underneath it.
+    /// A permission or question card from stored history produced by an older
+    /// build. Live answers remove the card instead of archiving a row.
+    #[allow(dead_code)]
     Approval {
         request: Request,
         result: String,
@@ -597,25 +593,34 @@ pub(crate) fn render_row(
                 Some(seconds) => format!("Thought for {seconds}s"),
                 None => "Thinking".to_string(),
             };
-            let state = if *expanded {
+            let live = duration_seconds.is_none();
+            let open = *expanded || live;
+            let state = if live {
+                "Streaming · live"
+            } else if *expanded {
                 "Expanded · detailed"
             } else {
                 "Normal · hidden"
             };
             let chevron_rotation = transition(
                 (index, "thinking-chevron"),
-                chevron_target(*expanded),
+                chevron_target(open),
                 chevron_rotation_policy(),
                 window,
                 cx,
             );
             let reveal = transition(
                 (index, "thinking-reveal"),
-                if *expanded { 1.0 } else { 0.0 },
+                if open { 1.0 } else { 0.0 },
                 card_reveal_policy(),
                 window,
                 cx,
             );
+            let body_max_h = if live && !*expanded {
+                rems(4.125)
+            } else {
+                rems(13.75)
+            };
             let toggle = toggle.clone();
             // `.thinking button:hover` uses the prototype's `--hover`, which the
             // theme exposes as `accent`.
@@ -657,7 +662,7 @@ pub(crate) fn render_row(
                         )
                         .test_support(),
                 )
-                .when(*expanded || reveal > 0.0, |card| {
+                .when(open || reveal > 0.0, |card| {
                     card.child(MotionReveal::new(
                         ("thinking-reveal-body", index),
                         reveal,
@@ -679,16 +684,24 @@ pub(crate) fn render_row(
                             // being shown as one run of literal asterisks
                             // and backticks.
                             .child(
-                                TextView::markdown(
-                                    SharedString::from(format!("thinking-{index}")),
-                                    SharedString::from(text.clone()),
-                                )
-                                .selectable(true)
-                                .font_family(SharedString::from(crate::theme::PROSE_FONT_FAMILY))
-                                .text_size(rems(0.84375))
-                                .line_height(relative(1.62))
-                                .markdown_block_parser(parse_code_block)
-                                .markdown_block_renderer(CODE_BLOCK, render_code_block),
+                                v_flex()
+                                    .max_h(body_max_h)
+                                    .pr(rems(0.75))
+                                    .overflow_y_scrollbar()
+                                    .child(
+                                        TextView::markdown(
+                                            SharedString::from(format!("thinking-{index}")),
+                                            SharedString::from(text.clone()),
+                                        )
+                                        .selectable(true)
+                                        .font_family(SharedString::from(
+                                            crate::theme::PROSE_FONT_FAMILY,
+                                        ))
+                                        .text_size(rems(0.84375))
+                                        .line_height(relative(1.62))
+                                        .markdown_block_parser(parse_code_block)
+                                        .markdown_block_renderer(CODE_BLOCK, render_code_block),
+                                    ),
                             )
                             .test_support()
                             .into_any_element(),
@@ -730,7 +743,8 @@ pub(crate) fn render_row(
                     cx.theme().danger,
                 ),
             };
-            let open = *expanded || verbose;
+            let live = *status == ToolStatus::Running;
+            let open = *expanded || verbose || live;
             let chevron_rotation = transition(
                 (index, "tool-chevron"),
                 chevron_target(open),
@@ -745,6 +759,11 @@ pub(crate) fn render_row(
                 window,
                 cx,
             );
+            let output_max_h = if live && !*expanded && !verbose {
+                rems(4.25)
+            } else {
+                rems(11.75)
+            };
             let summary_id = SharedString::from(format!("tool-summary-{index}"));
             // The scroller renders rows from a plain `App`, so the click travels
             // back through the app entity instead of this view's context.
@@ -904,7 +923,7 @@ pub(crate) fn render_row(
                                 .ml(rems(2.4375))
                                 .mr(rems(0.75))
                                 .mb(rems(0.75))
-                                .max_h(rems(9.375))
+                                .max_h(output_max_h)
                                 .rounded(rems(0.4375))
                                 .border_1()
                                 .border_color(cx.theme().border)
