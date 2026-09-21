@@ -29,8 +29,20 @@ Newest entries first. Each entry should include:
 
 ---
 
----
+## 1. 2026-09-21 — Assistant prose uses the bundled Lora editorial face
 
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/assets/fonts/`; `crates/tact-gui/src/theme.rs` (`PROSE_FONT_FAMILY`, `bundled_font_data`, `register_bundled_fonts`); `crates/tact-gui/src/main.rs`; `crates/tact-gui/src/transcript.rs`; `docs/design/tact-desktop-design-review.md` |
+
+**Symptom / motivation:** The approved spec and design review call for Lora on assistant prose, but the desktop client registered no fonts and rendered every answer in the UI sans. A bare `font_family("Lora")` would silently fall back to sans on machines without a system copy, so the design requirement could not be met reliably.
+
+**Decision:** Bundle Lora Roman and Italic variable faces in `crates/tact-gui/assets/fonts`, ship the OFL licence beside them, and register both with `App::text_system().add_fonts` at startup. Apply one `PROSE_FONT_FAMILY` constant to assistant Markdown and expanded reasoning text; chrome and controls stay on Inter, and code stays on JetBrains Mono.
+
+**Behavior after:** Assistant prose and expanded thinking render in Lora on every host, independent of installed fonts. If registration fails, startup logs the error and the application continues with GPUI's normal fallback rather than failing to open. The font files are covered by the bundled OFL licence.
+
+**Pointers:** `crates/tact-gui/assets/fonts/Lora-Regular-Variable.ttf`; `crates/tact-gui/assets/fonts/Lora-Italic-Variable.ttf`; `crates/tact-gui/assets/fonts/OFL.txt`; `crates/tact-gui/src/theme.rs`; `crates/tact-gui/src/transcript.rs` (`TranscriptRow::Assistant`, `TranscriptRow::Thinking`); `docs/design/tact-desktop-design-review.md` (assistant prose audit).
 
 ## 1. 2026-09-21 — Session menu actions persist the row instead of apologising
 

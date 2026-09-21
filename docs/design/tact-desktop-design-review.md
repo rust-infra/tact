@@ -467,21 +467,16 @@ The production shell now verifies the items that Phase 2 could only park:
   envelope where the previous `.auto_grow(1, 8)` started at 64 px and reached
   192 px with no ceiling at all. `the_prompt_grows_between_the_prototype_minimum_and_maximum`
   pins both ends.
-- Assistant prose still renders in the UI family. The prototype carries
-  document text in `--serif` (`:root` and `.body p`, 14.5px/1.65), the review
-  calls that deliberate, and the approved spec names Lora in its decision
-  summary, its transcript section, its typography table, and its approval
-  points (`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md:17-19,267,380,681`).
-  Ch 26 records "no Lora body serif" as a deliberate v1 deviation
-  (`book/26_chapter_issue.md`), and nothing in the app can express the
-  requirement today: `gpui-kit`'s theme schema exposes only `font.family` and
-  `mono_font.family` (both `Inter` / `JetBrains Mono`), the app registers no
-  fonts of its own, and GPUI resolves a missing primary family to its global
-  sans fallback rather than to Georgia, so a bare `.font_family("Lora")` would
-  silently render sans on any host without Lora. Closing this needs a decision
-  first: bundle Lora (regular + italic, plus licence metadata) and apply a
-  prose family to assistant and thinking text, or amend the spec and this
-  review to "platform serif, best effort" and keep the UI family.
+- Assistant prose now renders in bundled Lora. The prototype carries document
+  text in `--serif` (`:root` and `.body p`, 14.5px/1.65), the review calls
+  that deliberate, and the approved spec names Lora in its decision summary,
+  transcript section, typography table, and approval points
+  (`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md:17-19,267,380,681`).
+  `tact-gui` bundles Lora Roman/Italic variable faces under `assets/fonts`,
+  registers them with `App::text_system().add_fonts`, and applies the family to
+  assistant Markdown and expanded reasoning while leaving chrome on Inter and
+  code on JetBrains Mono. This avoids GPUI's silent sans fallback on hosts
+  without a system Lora; the OFL licence ships beside the fonts.
 - The session chip is the spec's dropdown, and its four rows now act. The
   prototype draws it as a real `<button class="session">` with a chevron
   (`docs/design/tact-desktop-prototype.html:37`) and the spec asks for rename,

@@ -20,6 +20,9 @@ fn main() {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx| {
             gpui_kit::init(cx);
+            if let Err(err) = theme::register_bundled_fonts(cx) {
+                tracing::error!("Cannot register the bundled Lora fonts: {err:#}");
+            }
             tact_gui::commands_init(cx);
 
             if let Err(err) = ThemeRegistry::watch_dir(theme::theme_dir(), cx, theme::reapply) {

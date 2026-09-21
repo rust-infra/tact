@@ -5,6 +5,7 @@
 //! source of truth; the copy this crate watches carries the same content so a
 //! running window and the reviewed reference cannot drift apart.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,6 +18,31 @@ pub const LIGHT_THEME_NAME: &str = "Tact Anthropic Light";
 
 /// Dark theme name declared in `themes/tact-anthropic.json`.
 pub const DARK_THEME_NAME: &str = "Tact Anthropic Dark";
+
+/// The editorial family used by assistant prose and expanded reasoning.
+///
+/// Lora is bundled with the application rather than assumed to exist on the
+/// host. Keeping the name in one place prevents the theme config and the
+/// transcript renderer from drifting onto different families.
+pub(crate) const PROSE_FONT_FAMILY: &str = "Lora";
+
+/// Font bytes registered with GPUI at startup.
+///
+/// The Roman and Italic variable faces cover both upright and emphasized
+/// assistant prose. The OFL licence ships beside the fonts in
+/// `assets/fonts/OFL.txt`.
+pub(crate) fn bundled_font_data() -> Vec<Cow<'static, [u8]>> {
+    vec![
+        Cow::Borrowed(include_bytes!("../assets/fonts/Lora-Regular-Variable.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Lora-Italic-Variable.ttf").as_slice()),
+    ]
+}
+
+/// Register the bundled editorial fonts with the application text system.
+pub fn register_bundled_fonts(cx: &App) -> anyhow::Result<()> {
+    cx.text_system().add_fonts(bundled_font_data())?;
+    Ok(())
+}
 
 /// Directory of theme files the registry watches.
 ///
@@ -194,8 +220,8 @@ mod tests {
     use gpui_kit::component::{ActiveTheme as _, ThemeMode, ThemeRegistry};
 
     use super::{
-        DARK_THEME_NAME, INK3_DARK, INK3_LIGHT, LIGHT_THEME_NAME, TINT_ALPHA_DARK,
-        TINT_ALPHA_LIGHT, theme_dir,
+        DARK_THEME_NAME, INK3_DARK, INK3_LIGHT, LIGHT_THEME_NAME, PROSE_FONT_FAMILY,
+        TINT_ALPHA_DARK, TINT_ALPHA_LIGHT, bundled_font_data, theme_dir,
     };
 
     /// The reviewed design source. `themes/tact-anthropic.json` is a copy of it
@@ -328,6 +354,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_bundled_prose_font_is_present() {
+        let fonts = bundled_font_data();
+        assert_eq!(fonts.len(), 2, "Roman and Italic Lora are both bundled");
+        assert!(
+            fonts.iter().all(|font| font.len() > 10_000),
+            "both bundled font files carry real glyph data"
+        );
+        assert_eq!(PROSE_FONT_FAMILY, "Lora");
     }
 
     #[test]

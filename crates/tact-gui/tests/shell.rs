@@ -39,6 +39,14 @@ fn shipped_theme_file_loads_into_the_registry(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn bundled_lora_fonts_load_without_error(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::register_bundled_fonts(cx).expect("bundled Lora fonts load");
+    });
+}
+
+#[gpui_kit::test]
 fn activate_adopts_the_tact_themes(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);

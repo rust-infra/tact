@@ -29,8 +29,20 @@
 
 ---
 
----
+## 1. 2026-09-21 — 助手正文改用随应用打包的 Lora editorial 字体
 
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/assets/fonts/`；`crates/tact-gui/src/theme.rs`（`PROSE_FONT_FAMILY`、`bundled_font_data`、`register_bundled_fonts`）；`crates/tact-gui/src/main.rs`；`crates/tact-gui/src/transcript.rs`；`docs/design/tact-desktop-design-review.md` |
+
+**现象 / 动机：** 已批准的 spec 与设计评审都要求助手正文使用 Lora，但桌面端没有注册任何自带字体，所有回答都落在 UI sans 上。直接写 `font_family("Lora")` 在未安装该字体的宿主机上会被 GPUI 静默回退到 sans，等于没有稳定满足这条设计要求。
+
+**决策：** 把 Lora Roman 与 Italic 的可变字体打包进 `crates/tact-gui/assets/fonts`，随文件附上 OFL 许可证，并在启动时通过 `App::text_system().add_fonts` 注册。用同一个 `PROSE_FONT_FAMILY` 常量应用到助手 Markdown 与展开的 reasoning 文本；界面控件继续用 Inter，代码继续用 JetBrains Mono。
+
+**改后行为：** 助手正文和展开的思考正文在任何宿主机上都用 Lora 渲染，不再依赖系统是否安装该字体。注册失败时会记录启动日志并继续用 GPUI 的正常回退，而不是让窗口打不开。字体文件由随包附带的 OFL 许可证覆盖。
+
+**指针：** `crates/tact-gui/assets/fonts/Lora-Regular-Variable.ttf`；`crates/tact-gui/assets/fonts/Lora-Italic-Variable.ttf`；`crates/tact-gui/assets/fonts/OFL.txt`；`crates/tact-gui/src/theme.rs`；`crates/tact-gui/src/transcript.rs`（`TranscriptRow::Assistant`、`TranscriptRow::Thinking`）；`docs/design/tact-desktop-design-review.md`（助手正文字体审计）。
 
 ## 1. 2026-09-21 — 会话菜单动作真正落到 store，而不是继续道歉
 

@@ -562,6 +562,7 @@ pub(crate) fn render_row(
                             SharedString::from(markdown.clone()),
                         )
                         .selectable(true)
+                        .font_family(SharedString::from(crate::theme::PROSE_FONT_FAMILY))
                         .text_size(rems(0.8125))
                         .line_height(relative(1.45))
                         .markdown_block_parser(parse_code_block)
@@ -644,6 +645,7 @@ pub(crate) fn render_row(
                             .pl(rems(2.1875))
                             .pr(rems(0.8125))
                             .pb(rems(0.75))
+                            .font_family(SharedString::from(crate::theme::PROSE_FONT_FAMILY))
                             .text_size(rems(0.84375))
                             .line_height(relative(1.62))
                             .text_color(cx.theme().muted_foreground)
