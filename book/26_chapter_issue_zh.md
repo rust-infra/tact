@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-09-21 — Projects 按目录切换 workspace
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/layout.rs`（`recent_workspaces`、`remember_workspace`）；`crates/tact-gui/src/shell.rs`（`SidebarInputs`、`project_row`、`open_folder_row`、`switch_workspace`、`open_workspace`、`open_project_picker`、`sidebar-scroll`）；`crates/tact-gui/tests/shell.rs`（`the_projects_group_switches_workspace_by_directory`、`the_open_folder_row_does_not_open_a_picker_offline`） |
+
+**现象 / 动机：** 侧栏切换 workspace 的唯一途径是 `Worktrees` 分组，而它执行 `git worktree list`，因此永远只能给出窗口**已经所在**仓库内的目录。完全没有办法打开另一个项目。
+
+**决策：** 把目录当作项目，因为存储本来就是这么做的——会话库位于 `<workspace>/.tact/tact.db`。侧栏在 `Worktrees` 之上新增 `Projects` 分组，按最新在前列出最近八个 workspace 目录，标出当前项，并带一行 `Open folder…`。`Open folder…` 使用 GPUI 自带的 `prompt_for_paths`（`directories: true, files: false`）——即 composer 附件已经在用的同一条平台缝——因此不引入新依赖，也不需要选 GTK 还是 portal。项目用**路径**而不是名称标识：两个 checkout 可能同名。选择器与已记住的行都走 `open_workspace`，它对非目录路径直接拒绝，而不是把窗口重根到空处。列表与布局共用同一个 `~/.tact/gui-layout.json` 文档，`connect` 会记住启动目录，因此首次运行不会是空分组。离线预览不开模态：它回答它本会打开什么。
+
+顺带解决了两件小事。侧栏滚动区必须变得可寻址（`sidebar-scroll`）——在 worktrees 之上新增分组后，那些行在默认 900 px 窗口下已落到折叠线以下，测试巡检无法点击一个它滚不到的行；这要求把该盒子从 gpui-component 的 `overflow_y_scrollbar`（其包装器会用调用点位置替换元素 id）换成 `overflow_y_scroll`。另外 `sidebar`/`sidebar_overlay` 改为接收一个 `SidebarInputs` 结构体而不是五个位置参数借用，这样以后再加分组不会持续突破 clippy 的参数上限。
+
+**改后行为：** 侧栏列出用户打开过的项目，当前项在前并带 `current` 徽标。按已记住的行即切换过去；按 `Open folder…` 会询问目录并切换到所选的那个。两种方式都会重根 workspace、其 git 分支、会话列表、文件树与 diff 面板，并把新目录记入列表（去重、上限八条、最新在前）。打开的是文件而不是目录时会被拒绝并给出提示。
+
+**指针：** `crates/tact-gui/src/layout.rs`（`recent_workspaces_round_trip_newest_first_and_bounded`）；`crates/tact-gui/tests/shell.rs`（`the_projects_group_switches_workspace_by_directory`、`the_open_folder_row_does_not_open_a_picker_offline`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.2
+
 ## 1. 2026-09-21 — Files 行整行可点，文件夹可被选中
 
 | 字段 | 值 |

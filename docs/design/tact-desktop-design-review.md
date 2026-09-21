@@ -183,6 +183,16 @@ The production shell now verifies the items that Phase 2 could only park:
   read. Adding it made the work-pane strip six chips wide, which is what settled
   the `Subagent` → `Agents` display rename: the strip clips its last chip, so the
   shorter label is a correctness fix, not a preference.
+- The sidebar's `Projects` group switches workspace by directory. A workspace
+  *is* a directory — the session store lives in `<workspace>/.tact/tact.db` — so
+  `Open folder…` asks the platform for a folder and both it and the remembered
+  rows re-root the window's workspace, branch, session list, file tree, and diff
+  pane. The last eight directories are stored by path, not name, in the same
+  `~/.tact/gui-layout.json` document as the rest of the shell's state. The
+  sidebar's scroll area is now an addressable element (`sidebar-scroll`) because
+  the group makes the worktree and background rows start below the fold at the
+  default window height, and a row that cannot be scrolled into view is a row
+  that cannot be pressed.
 - The work pane runs a real terminal. The `Terminal` tab spawns the user's
   `$SHELL` in a PTY (`portable-pty`) and draws the grid `vt100` parses out of
   its output, as styled runs rather than cells. It is a terminal, not a command

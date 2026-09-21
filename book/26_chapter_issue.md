@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Projects switch the workspace by directory
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/layout.rs` (`recent_workspaces`, `remember_workspace`); `crates/tact-gui/src/shell.rs` (`SidebarInputs`, `project_row`, `open_folder_row`, `switch_workspace`, `open_workspace`, `open_project_picker`, `sidebar-scroll`); `crates/tact-gui/tests/shell.rs` (`the_projects_group_switches_workspace_by_directory`, `the_open_folder_row_does_not_open_a_picker_offline`) |
+
+**Symptom / motivation:** The sidebar's only way to change workspace was the `Worktrees` group, which shells out to `git worktree list` and therefore only ever offers directories inside the repository the window is already in. There was no way to open a different project at all.
+
+**Decision:** Treat the directory as the project, because that is what the storage already does — the session store lives in `<workspace>/.tact/tact.db`. The sidebar gains a `Projects` group above `Worktrees` listing the last eight workspace directories, newest first, with the current one marked, plus an `Open folder…` row. `Open folder…` uses GPUI's own `prompt_for_paths` with `directories: true, files: false` — the same platform seam the composer's attachments already use — so no new dependency and no GTK/portal choice to make. Paths, not names, identify a project: two checkouts can share a directory name. Both the picker and the remembered rows go through `open_workspace`, which refuses a path that is not a directory instead of re-rooting at nothing. The list is stored in the same `~/.tact/gui-layout.json` document as the arrangement, and `connect` remembers the launch directory so the first run is never an empty group. The offline preview opens no modal: it answers with what it would open.
+
+Two smaller things fell out of this. The sidebar's scroll area had to become addressable (`sidebar-scroll`) — with a group added above the worktrees, those rows now start below the fold at the default 900 px window, and the test walk could not press a row it could not scroll to; that meant switching the box from gpui-component's `overflow_y_scrollbar`, whose wrapper replaces the element's id with a call-site location, to `overflow_y_scroll`. And `sidebar`/`sidebar_overlay` now take one `SidebarInputs` struct rather than five positional borrows, so adding a group does not keep pushing them past clippy's argument limit.
+
+**Behavior after:** The sidebar lists the projects the user has opened, current first with a `current` badge. Pressing a remembered row switches to it; pressing `Open folder…` asks for a directory and switches to the chosen one. Either move re-roots the workspace, its git branch, its session list, the file tree, and the diff pane, and the new directory is remembered (de-duplicated, capped at eight, newest first). Opening a file rather than a directory is refused with a notice.
+
+**Pointers:** `crates/tact-gui/src/layout.rs` (`recent_workspaces_round_trip_newest_first_and_bounded`); `crates/tact-gui/tests/shell.rs` (`the_projects_group_switches_workspace_by_directory`, `the_open_folder_row_does_not_open_a_picker_offline`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §6.2
+
 ## 1. 2026-09-21 — A Files row is the whole row, and a folder is selectable
 
 | Field | Value |

@@ -24,7 +24,6 @@ use gpui_kit::component::{
     notification::Notification,
     popover::Popover,
     progress::ProgressCircle,
-    scroll::ScrollableElement as _,
     setting::{SettingGroup, SettingItem, SettingPage, Settings},
     switch::Switch,
     tooltip::Tooltip,
@@ -314,6 +313,8 @@ pub struct TactApp {
     zoom_rem: f32,
     /// Which edge the work pane docks to.
     work_pane_side: WorkPaneSide,
+    /// Workspace directories the user has opened, newest first.
+    recent_workspaces: Vec<PathBuf>,
     /// The embedded shell, once the user has started one. `None` until then:
     /// opening the pane must not spawn a process.
     terminal: Option<TerminalPane>,
@@ -369,6 +370,12 @@ impl TactApp {
         let mut app = Self::build(window, cx, None, Vec::new());
         app.offline = true;
         app.state.branch = workdir.as_deref().and_then(git_branch);
+        // Remember the directory the shell opens on, the same way `connect`
+        // does, so the Projects group lists the workspace the window is in even
+        // for a preview or a test that never picks one.
+        if let Some(dir) = workdir.as_deref() {
+            app.remember_workspace(dir);
+        }
         app.state.workdir = workdir;
         app
     }
@@ -650,6 +657,11 @@ impl TactApp {
         // The real window restores the user's arrangement and starts saving
         // into it; the offline/test constructors stay on the disabled store.
         app.apply_layout(LayoutStore::user(), window);
+        // The directory the app was launched in is a workspace the user opened
+        // too, so it belongs in the list even on the very first run.
+        if let Some(dir) = workdir {
+            app.remember_workspace(&dir);
+        }
         app
     }
 
@@ -773,6 +785,7 @@ impl TactApp {
             work_pane_width: WORK_PANE_WIDTH,
             zoom_rem: layout::ZOOM_DEFAULT,
             work_pane_side: WorkPaneSide::default(),
+            recent_workspaces: Vec::new(),
             terminal: None,
             terminal_focus,
             terminal_epoch: 0,
@@ -798,6 +811,7 @@ impl TactApp {
             sidebar_width_rem: self.sidebar_width.0,
             work_pane_width_rem: self.work_pane_width.0,
             work_pane_side: self.work_pane_side,
+            recent_workspaces: self.recent_workspaces.clone(),
             zoom_rem: self.zoom_rem,
         };
         prefs.preset = prefs.matching_preset().unwrap_or(LayoutPreset::Split);
@@ -822,6 +836,7 @@ impl TactApp {
         // The shell is `rem`-based end to end, so restoring the base font size
         // is the whole of restoring the zoom.
         self.work_pane_side = prefs.work_pane_side;
+        self.recent_workspaces = prefs.recent_workspaces;
         self.zoom_rem = prefs.zoom_rem;
         window.set_rem_size(px(self.zoom_rem));
         self.layout_store = store;
@@ -1232,25 +1247,84 @@ impl TactApp {
     /// agent session keeps its own root: the window re-scopes what it shows
     /// without restarting the session, which also means the next new session
     /// starts in the worktree the user picked.
-    fn switch_worktree(&mut self, worktree: PathBuf, cx: &mut Context<Self>) {
-        if self.state.workdir.as_deref() == Some(worktree.as_path()) {
+    fn switch_workspace(&mut self, workspace: PathBuf, cx: &mut Context<Self>) {
+        if self.state.workdir.as_deref() == Some(workspace.as_path()) {
             return;
         }
-        self.state.branch = git_branch(&worktree);
-        self.state.workdir = Some(worktree.clone());
+        self.state.branch = git_branch(&workspace);
+        self.state.workdir = Some(workspace.clone());
+        self.remember_workspace(&workspace);
         // The list the window shows belongs to the workspace it just left, so a
         // connected window swaps in the new worktree's own sessions. An offline
         // shell owns no store: its rows are demo data handed to the
         // constructor, and re-rooting must not replace them with whatever the
         // filesystem happens to hold.
         if !self.offline {
-            self.recent = session::recent(&worktree);
+            self.recent = session::recent(&workspace);
             self.preview_current = self.recent.first().map(|session| session.id.clone());
         }
         // Both panes are read from the workspace, and both cache what they read.
         self.files.reset_workspace();
         self.diffs.invalidate();
         cx.notify();
+    }
+
+    /// Remember a workspace directory, newest first, and persist it.
+    fn remember_workspace(&mut self, path: &std::path::Path) {
+        let mut prefs = self.layout_prefs();
+        prefs.remember_workspace(path);
+        self.recent_workspaces = prefs.recent_workspaces.clone();
+        self.layout_store.persist(&prefs);
+    }
+
+    /// Open a directory as the workspace.
+    ///
+    /// The session store lives in `<workspace>/.tact/tact.db`, so the directory
+    /// *is* the project: switching it re-roots the workspace, its branch, its
+    /// session list, and both file-reading panes.
+    pub fn open_workspace(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.is_dir() {
+            self.push_system_row(
+                format!(
+                    "{} is not a directory; the workspace was not changed.",
+                    path.display()
+                ),
+                cx,
+            );
+            return;
+        }
+        self.switch_workspace(path, cx);
+    }
+
+    /// Ask the platform for a directory and open it as the workspace.
+    ///
+    /// The offline preview owns no store and must not put a modal file dialog
+    /// on screen, so it says what it would open instead of asking.
+    pub(crate) fn open_project_picker(&mut self, cx: &mut Context<Self>) {
+        if self.offline {
+            self.push_system_row(
+                "The offline preview does not open a folder picker; a chosen directory would become the workspace."
+                    .to_string(),
+                cx,
+            );
+            return;
+        }
+        let receiver = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open project folder".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |app, cx| app.open_workspace(path, cx));
+        })
+        .detach();
     }
 
     /// Reopen a session from the sidebar.
@@ -3182,10 +3256,13 @@ impl Render for TactApp {
         let mut workspace_row = h_flex().size_full().min_h_0().items_stretch();
         if sidebar_in_flow {
             workspace_row = workspace_row.child(sidebar(
-                &self.state,
-                &self.recent,
-                self.open_session_id(),
-                &self.session_search,
+                SidebarInputs {
+                    state: &self.state,
+                    recent: &self.recent,
+                    current: self.open_session_id(),
+                    search: &self.session_search,
+                    workspaces: &self.recent_workspaces,
+                },
                 columns.sidebar,
                 cx,
             ));
@@ -3364,15 +3441,19 @@ impl Render for TactApp {
                 .transition(overlay_slide())
                 .sample(window, cx);
             if slide.should_render() {
+                // The same `current` the column gets: an offline shell marks
+                // its open row through `preview_current`, so passing only
+                // `self.session` left the floating sidebar with no active row
+                // and a session press that looked like it did nothing.
+                let current = self.open_session_id();
                 workspace = workspace.child(sidebar_overlay(
-                    &self.state,
-                    &self.recent,
-                    // The same `current` the column gets: an offline shell marks
-                    // its open row through `preview_current`, so passing only
-                    // `self.session` left the floating sidebar with no active row
-                    // and a session press that looked like it did nothing.
-                    self.open_session_id(),
-                    &self.session_search,
+                    SidebarInputs {
+                        state: &self.state,
+                        recent: &self.recent,
+                        current,
+                        search: &self.session_search,
+                        workspaces: &self.recent_workspaces,
+                    },
                     self.sidebar_width,
                     slide.progress,
                     cx,
@@ -4206,14 +4287,22 @@ fn sidebar_row_fills(cx: &App) -> (gpui_kit::gpui::Hsla, gpui_kit::gpui::Hsla) {
     (cx.theme().accent, accent_tint(cx))
 }
 
-fn sidebar(
-    state: &SessionState,
-    recent: &[RecentSession],
-    current: Option<&str>,
-    search: &Entity<InputState>,
-    width: Rems,
-    cx: &mut Context<TactApp>,
-) -> impl IntoElement {
+struct SidebarInputs<'a> {
+    state: &'a SessionState,
+    recent: &'a [RecentSession],
+    current: Option<&'a str>,
+    search: &'a Entity<InputState>,
+    workspaces: &'a [PathBuf],
+}
+
+fn sidebar(inputs: SidebarInputs<'_>, width: Rems, cx: &mut Context<TactApp>) -> impl IntoElement {
+    let SidebarInputs {
+        state,
+        recent,
+        current,
+        search,
+        workspaces,
+    } = inputs;
     let session_line = session_activity_line(state);
     // Bound once: hover and highlight closures must not borrow the context.
     // `.row { border-radius: 7px }`: the prototype's own value, one pixel
@@ -4297,6 +4386,29 @@ fn sidebar(
     // worktree list`, background rows from keep-live tool cards that have not
     // finalized yet. An empty group is dropped rather than shown as a stub.
     if query.is_empty() {
+        // Projects come before worktrees because a project contains worktrees:
+        // the directory the user opened is the thing the session store hangs
+        // off, and a worktree is one branch of it. The group shows even with an
+        // empty history so the "Open folder…" entry always has a home.
+        let mut projects = v_flex().gap(rems(0.0625)).id("project-rows").test_support();
+        for path in workspaces {
+            projects = projects.child(project_row(
+                path,
+                state.workdir.as_deref() == Some(path.as_path()),
+                radius,
+                hover_bg,
+                primary,
+                cx,
+            ));
+        }
+        projects = projects.child(open_folder_row(radius, hover_bg, primary, cx));
+        list = list.child(
+            v_flex()
+                .gap_1()
+                .child(group_label("Projects", workspaces.len(), cx))
+                .child(projects),
+        );
+
         let worktrees = worktree_rows(state);
         if !worktrees.is_empty() {
             let mut rows = v_flex()
@@ -4338,7 +4450,23 @@ fn sidebar(
         .bg(cx.theme().sidebar)
         .text_color(cx.theme().sidebar_foreground)
         .child(sidebar_top(search, cx))
-        .child(div().flex_1().min_h_0().overflow_y_scrollbar().child(list))
+        // Named so a test (and a future scroll-into-view) can drive it: the
+        // sidebar now has three groups below the session list, and a row that
+        // is scrolled out of this box cannot be pressed.
+        .child(
+            div()
+                .id("sidebar-scroll")
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                // `overflow_y_scroll`, not `overflow_y_scrollbar`: the
+                // gpui-component scrollbar wrapper replaces the element's id
+                // with a call-site location, and this box now has to be
+                // addressable so a row below the fold can be reached. The
+                // wheel still scrolls it.
+                .overflow_y_scroll()
+                .child(list),
+        )
         .child(sidebar_footer(
             &project_label(state),
             state.branch.as_deref(),
@@ -4887,8 +5015,73 @@ fn worktree_row(
         Some(worktree.is_current),
         Some(Rc::new(
             move |this: &mut TactApp, cx: &mut Context<TactApp>| {
-                this.switch_worktree(path.clone(), cx);
+                this.switch_workspace(path.clone(), cx);
             },
+        )),
+        radius,
+        hover_bg,
+        primary,
+        cx,
+    )
+}
+
+/// One remembered workspace directory.
+///
+/// Named by its directory, detailed by its path: two projects can share a
+/// directory name, so the path is what actually identifies one.
+fn project_row(
+    path: &std::path::Path,
+    is_current: bool,
+    radius: gpui_kit::gpui::Pixels,
+    hover_bg: gpui_kit::gpui::Hsla,
+    primary: gpui_kit::gpui::Hsla,
+    cx: &mut Context<TactApp>,
+) -> impl IntoElement {
+    let name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("workspace")
+        .to_string();
+    let detail = path.display().to_string();
+    let badge = is_current.then_some(("current", cx.theme().accent_foreground, accent_tint(cx)));
+    let target = path.to_path_buf();
+    sidebar_meta_row(
+        SharedString::from(format!("project-row-{}", path.display())),
+        SharedString::from(name),
+        SharedString::from(detail),
+        badge,
+        false,
+        false,
+        Some(is_current),
+        Some(Rc::new(
+            move |this: &mut TactApp, cx: &mut Context<TactApp>| {
+                this.open_workspace(target.clone(), cx);
+            },
+        )),
+        radius,
+        hover_bg,
+        primary,
+        cx,
+    )
+}
+
+/// The sidebar's entry point for opening a directory as the workspace.
+fn open_folder_row(
+    radius: gpui_kit::gpui::Pixels,
+    hover_bg: gpui_kit::gpui::Hsla,
+    primary: gpui_kit::gpui::Hsla,
+    cx: &mut Context<TactApp>,
+) -> impl IntoElement {
+    sidebar_meta_row(
+        SharedString::from("project-open-folder"),
+        SharedString::from("Open folder…"),
+        SharedString::from("Use a directory as the workspace"),
+        None,
+        false,
+        false,
+        None,
+        Some(Rc::new(
+            move |this: &mut TactApp, cx: &mut Context<TactApp>| this.open_project_picker(cx),
         )),
         radius,
         hover_bg,
@@ -5197,10 +5390,7 @@ fn sidebar_footer(
 
 /// Sidebar as a focus-adjacent overlay below the minimum in-flow width.
 fn sidebar_overlay(
-    state: &SessionState,
-    recent: &[RecentSession],
-    current: Option<&str>,
-    search: &Entity<InputState>,
+    inputs: SidebarInputs<'_>,
     width: Rems,
     progress: f32,
     cx: &mut Context<TactApp>,
@@ -5219,7 +5409,7 @@ fn sidebar_overlay(
         // against its `25` -- so it keeps the presses aimed at it instead of
         // letting the scrim close the work pane behind the user's back.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(sidebar(state, recent, current, search, width, cx))
+        .child(sidebar(inputs, width, cx))
         .id("sidebar-overlay")
         .test_support()
 }

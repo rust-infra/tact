@@ -13,7 +13,7 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +38,9 @@ pub(crate) const WORK_PANE_MAX_REM: f32 = 36.0;
 
 /// Default base font size, in px: the value `rems(1.)` resolves to.
 pub(crate) const ZOOM_DEFAULT: f32 = 16.0;
+/// Workspace directories the shell remembers, newest first.
+pub(crate) const RECENT_WORKSPACES: usize = 8;
+
 /// Smallest zoom the shell allows. Below this the 10.5 px session metadata
 /// stops being legible.
 pub(crate) const ZOOM_MIN: f32 = 12.0;
@@ -138,6 +141,13 @@ pub(crate) struct LayoutPrefs {
     pub work_pane_width_rem: f32,
     /// Which edge the work pane docks to.
     pub work_pane_side: WorkPaneSide,
+    /// Workspace directories the user has opened, newest first.
+    ///
+    /// A workspace *is* a directory: the session store lives in
+    /// `<workspace>/.tact/tact.db`, so remembering the path is the whole of
+    /// remembering the project. Paths, not names, because two projects can
+    /// share a directory name.
+    pub recent_workspaces: Vec<PathBuf>,
     /// Base font size in px: the whole shell is `rem`-based, so this is the
     /// zoom control.
     pub zoom_rem: f32,
@@ -156,6 +166,7 @@ impl Default for LayoutPrefs {
             sidebar_width_rem: SIDEBAR_WIDTH_REM,
             work_pane_width_rem: WORK_PANE_WIDTH_REM,
             work_pane_side: WorkPaneSide::default(),
+            recent_workspaces: Vec::new(),
             zoom_rem: ZOOM_DEFAULT,
         }
     }
@@ -182,6 +193,13 @@ impl LayoutPrefs {
             WORK_PANE_WIDTH_REM,
         );
         self.zoom_rem = clamp_width(self.zoom_rem, ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT);
+    }
+
+    /// Remember a workspace directory, newest first and de-duplicated.
+    pub(crate) fn remember_workspace(&mut self, path: &Path) {
+        self.recent_workspaces.retain(|seen| seen != path);
+        self.recent_workspaces.insert(0, path.to_path_buf());
+        self.recent_workspaces.truncate(RECENT_WORKSPACES);
     }
 
     /// Apply a preset's arrangement, keeping the dragged widths.
@@ -347,6 +365,40 @@ mod tests {
         assert!(prefs.work_pane_open);
         assert_eq!(prefs.sidebar_width_rem, SIDEBAR_WIDTH_REM);
         assert_eq!(prefs.work_pane_width_rem, WORK_PANE_WIDTH_REM);
+    }
+
+    #[test]
+    fn recent_workspaces_round_trip_newest_first_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LayoutStore::at(dir.path().join("projects.json"));
+        let mut prefs = LayoutPrefs::default();
+        for index in 0..RECENT_WORKSPACES + 3 {
+            prefs.remember_workspace(Path::new(&format!("/tmp/project-{index}")));
+        }
+        assert_eq!(prefs.recent_workspaces.len(), RECENT_WORKSPACES);
+        assert_eq!(
+            prefs.recent_workspaces[0],
+            PathBuf::from(format!("/tmp/project-{}", RECENT_WORKSPACES + 2)),
+            "the newest workspace leads"
+        );
+
+        // Re-opening an old project moves it back to the front instead of
+        // appearing twice.
+        let revisited = prefs.recent_workspaces[3].clone();
+        prefs.remember_workspace(&revisited);
+        assert_eq!(prefs.recent_workspaces[0], revisited);
+        assert_eq!(
+            prefs
+                .recent_workspaces
+                .iter()
+                .filter(|path| **path == revisited)
+                .count(),
+            1,
+            "a workspace is listed once"
+        );
+
+        store.save(&prefs).unwrap();
+        assert_eq!(store.load().recent_workspaces, prefs.recent_workspaces);
     }
 
     #[test]

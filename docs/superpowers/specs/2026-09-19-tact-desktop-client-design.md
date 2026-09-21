@@ -266,10 +266,21 @@ Order from top to bottom:
 1. `New session` primary command.
 2. Search field.
 3. Pinned/current sessions.
-4. Grouped sessions by project or date.
-5. `Worktrees` section when the current repository uses them.
-6. `Background` tasks.
-7. Footer: account, model balance, settings.
+4. Grouped sessions by date.
+5. `Projects`: the workspace directories the user has opened, newest first, and
+   an `Open folder…` row.
+6. `Worktrees` section when the current repository uses them.
+7. `Background` tasks.
+8. Footer: account, model balance, settings.
+
+A workspace **is** a directory. The session store lives in
+`<workspace>/.tact/tact.db`, so switching project is switching directory:
+`Open folder…` asks the platform for a folder, `Projects` remembers the last
+eight by path (paths, not names — two projects can share a directory name),
+and either move re-roots the window's workspace, branch, session list, file
+tree, and diff pane. The last eight live in the same
+`~/.tact/gui-layout.json` document as the rest of the shell's per-user state.
+The offline preview opens no modal picker and says what it would open.
 
 Session rows show title, project/branch hint, status dot, and token or diff
 summary only when useful. Do not put a row of hover-only icons on every item;

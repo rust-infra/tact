@@ -2888,6 +2888,36 @@ fn repo_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// Scroll the sidebar until `id` sits inside its viewport, then leave it there.
+///
+/// The list holds sessions, projects, worktrees, and background rows. A row
+/// that is scrolled out of the box, or only half inside it, cannot be pressed:
+/// the click lands at the row's centre, which may be outside the scroll area.
+/// Every group is reachable, but a walk that visits groups in arbitrary order
+/// has to move the list to each row before pressing it.
+fn reveal_in_sidebar(window: &mut gpui_kit::Window, id: &SharedString, cx: &mut gpui_kit::App) {
+    for _ in 0..40 {
+        window.render_frame(cx);
+        let (Some(viewport), Some(row)) = (
+            window.try_find("sidebar-scroll").map(|el| el.bounds()),
+            window.try_find(id.clone()).map(|el| el.bounds()),
+        ) else {
+            return;
+        };
+        let (view_top, view_bottom) = (viewport.top().as_f32(), viewport.bottom().as_f32());
+        let (row_top, row_bottom) = (row.top().as_f32(), row.bottom().as_f32());
+        if row_top >= view_top && row_bottom <= view_bottom {
+            return;
+        }
+        let delta = if row_top < view_top { 120.0 } else { -120.0 };
+        window.scroll(
+            "sidebar-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(delta))),
+            cx,
+        );
+    }
+}
+
 /// A second worktree of this repository, alive for as long as the guard is.
 ///
 /// The walk's worktree section only proves something when the repository has
@@ -3196,6 +3226,18 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         let after = app.update(cx, |app, _| app.transcript_len());
         assert_eq!(after, notices + 1, "Reveal answers with one notice row");
 
+        // Projects: the Open folder entry, then the project row the window is
+        // already in. The offline shell opens no modal picker, so both presses
+        // land as notices or no-ops rather than as a dialog.
+        reveal_in_sidebar(window, &SharedString::from("project-open-folder"), cx);
+        click!("project-open-folder");
+        for id in ["project-open-folder", "project-rows"] {
+            assert!(
+                window.try_find(id).is_some(),
+                "{id} survives the Open folder press"
+            );
+        }
+
         // Sidebar sessions: every seeded row, then the new-session action. The
         // offline shell owns no runtime, so a row click moves the row the
         // sidebar has open instead of starting an agent -- and an agent that
@@ -3272,6 +3314,7 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
             .expect("the window opens on one of the repository's worktrees");
         for id in &worktrees {
             let row: SharedString = id.clone().into();
+            reveal_in_sidebar(window, &row, cx);
             click!(row.clone());
             assert_eq!(
                 window.find(row.clone()).selected(),
@@ -3291,6 +3334,7 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
             }
         }
         let home: SharedString = start.into();
+        reveal_in_sidebar(window, &home, cx);
         click!(home.clone());
         assert_eq!(
             window.find(home.clone()).selected(),
@@ -3971,6 +4015,111 @@ fn the_files_pane_previews_reveals_and_mentions_a_file(cx: &mut TestAppContext) 
     .unwrap();
 }
 
+/// The Projects group switches workspaces by directory.
+///
+/// A workspace *is* a directory — the session store lives in
+/// `<workspace>/.tact/tact.db` — so opening one re-roots the window, its
+/// session list, and both file-reading panes, and remembers it for next time.
+#[gpui_kit::test]
+fn the_projects_group_switches_workspace_by_directory(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let here = repo_root();
+    let other = repo_root().join("crates/tact-session");
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::with_workspace(window, cx, Some(here.clone())));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the shell is created with its window");
+    let handle = handle.into();
+
+    let here_row: SharedString = format!("project-row-{}", here.display()).into();
+    let other_row: SharedString = format!("project-row-{}", other.display()).into();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(here_row.clone()).is_some(),
+            "the directory the shell opened on is listed"
+        );
+        assert_eq!(
+            window.find(here_row.clone()).selected(),
+            Some(true),
+            "and it is the current project"
+        );
+        assert!(
+            window.try_find("project-open-folder").is_some(),
+            "the group carries the Open folder entry"
+        );
+
+        // Opening a second directory is the same move the picker makes once it
+        // has a path.
+        app.update(cx, |app, cx| app.open_workspace(other.clone(), cx));
+        window.render_frame(cx);
+
+        assert!(
+            window.try_find(other_row.clone()).is_some(),
+            "the opened directory joins the list"
+        );
+        assert_eq!(
+            window.find(other_row.clone()).selected(),
+            Some(true),
+            "and becomes the current project"
+        );
+        assert_eq!(
+            window.find(here_row.clone()).selected(),
+            Some(false),
+            "the project the window left gives up the marker"
+        );
+        let chip = window.find("status-project");
+        assert_eq!(
+            chip.label(),
+            Some("tact-session"),
+            "the status bar follows the workspace the window is in"
+        );
+
+        // A directory that is not one is refused rather than re-rooting the
+        // window at nothing.
+        let missing = repo_root().join("Cargo.toml");
+        let before = app.update(cx, |app, _| app.transcript_len());
+        app.update(cx, |app, cx| app.open_workspace(missing, cx));
+        window.render_frame(cx);
+        assert_eq!(
+            app.update(cx, |app, _| app.transcript_len()),
+            before + 1,
+            "opening a file as a workspace answers with one notice"
+        );
+    })
+    .unwrap();
+}
+
+/// The Open folder entry answers in an offline shell instead of opening a modal.
+#[gpui_kit::test]
+fn the_open_folder_row_does_not_open_a_picker_offline(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::with_workspace(window, cx, Some(repo_root())));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let before = app.update(cx, |app, _| app.transcript_len());
+        window.click("project-open-folder", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.update(cx, |app, _| app.transcript_len()),
+            before + 1,
+            "the offline shell says what it would open instead of asking the desktop"
+        );
+    })
+    .unwrap();
+}
+
 /// A worktree press re-roots the window without restarting its session.
 ///
 /// The worktree group doubles as the window's workspace picker, so a press has
@@ -4022,6 +4171,7 @@ fn a_worktree_press_re_roots_the_window_without_restarting_the_session(cx: &mut 
             .find(|id| window.find(SharedString::from(id.clone())).selected() == Some(false))
             .expect("the fixture worktree is the row that is not open")
             .into();
+        reveal_in_sidebar(window, &fixture_row, cx);
         window.click(fixture_row.clone(), cx);
         window.render_frame(cx);
 
@@ -5519,6 +5669,7 @@ fn clicking_between_sessions_and_worktrees_keeps_one_open_row(cx: &mut TestAppCo
         for round in 0..3usize {
             for id in sessions {
                 let row: SharedString = format!("session-row-{id}").into();
+                reveal_in_sidebar(window, &row, cx);
                 window.click(row.clone(), cx);
                 window.render_frame(cx);
 
@@ -5551,6 +5702,7 @@ fn clicking_between_sessions_and_worktrees_keeps_one_open_row(cx: &mut TestAppCo
 
                 for worktree in &worktrees {
                     let row: SharedString = worktree.clone().into();
+                    reveal_in_sidebar(window, &row, cx);
                     window.click(row.clone(), cx);
                     window.render_frame(cx);
 
