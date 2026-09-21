@@ -29,6 +29,9 @@ actions!([
     LayoutFocus,
     LayoutReview,
     LayoutZen,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
 ]);
 
 /// Register the global keyboard contract.
@@ -61,6 +64,9 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("secondary-alt-2", LayoutFocus, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-3", LayoutReview, Some(CONTEXT)),
         KeyBinding::new("secondary-alt-4", LayoutZen, Some(CONTEXT)),
+        KeyBinding::new("secondary-=", ZoomIn, Some(CONTEXT)),
+        KeyBinding::new("secondary--", ZoomOut, Some(CONTEXT)),
+        KeyBinding::new("secondary-0", ZoomReset, Some(CONTEXT)),
     ]);
 }
 
@@ -156,6 +162,22 @@ pub(crate) fn groups() -> Vec<CommandGroup> {
                 "model",
                 "reasoning",
             ]),
+            command("Zoom in", IconName::Plus, ZoomIn).keywords([
+                "larger",
+                "text",
+                "font",
+                "font size",
+                "accessibility",
+            ]),
+            command("Zoom out", IconName::Minus, ZoomOut).keywords([
+                "smaller",
+                "text",
+                "font",
+                "font size",
+                "accessibility",
+            ]),
+            command("Reset zoom", IconName::RotateCw, ZoomReset)
+                .keywords(["default", "text", "font", "100%"]),
             command("Toggle theme", IconName::Sun, ToggleTheme).keywords([
                 "light",
                 "dark",

@@ -218,6 +218,9 @@ enum PaletteCommand {
     LayoutFocus,
     LayoutReview,
     LayoutZen,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
 }
 
 /// The application shell view.
@@ -289,6 +292,9 @@ pub struct TactApp {
     sidebar_width: Rems,
     /// Work-pane column width, in rems. See [`Self::sidebar_width`].
     work_pane_width: Rems,
+    /// Base font size in px. Every dimension in the shell is `rem`-based, so
+    /// this one number is the zoom.
+    zoom_rem: f32,
     /// Where the post-v1 layout document is read and written.
     ///
     /// The offline constructors disable this so a test or preview never
@@ -616,7 +622,7 @@ impl TactApp {
         };
         // The real window restores the user's arrangement and starts saving
         // into it; the offline/test constructors stay on the disabled store.
-        app.apply_layout(LayoutStore::user());
+        app.apply_layout(LayoutStore::user(), window);
         app
     }
 
@@ -696,6 +702,7 @@ impl TactApp {
             follow_tail: true,
             sidebar_width: SIDEBAR_WIDTH,
             work_pane_width: WORK_PANE_WIDTH,
+            zoom_rem: layout::ZOOM_DEFAULT,
             layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
         }
@@ -717,6 +724,7 @@ impl TactApp {
             detail: self.detail,
             sidebar_width_rem: self.sidebar_width.0,
             work_pane_width_rem: self.work_pane_width.0,
+            zoom_rem: self.zoom_rem,
         };
         prefs.preset = prefs.matching_preset().unwrap_or(LayoutPreset::Split);
         prefs
@@ -728,7 +736,7 @@ impl TactApp {
     }
 
     /// Restore a stored arrangement and adopt its store for later saves.
-    fn apply_layout(&mut self, store: LayoutStore) {
+    fn apply_layout(&mut self, store: LayoutStore, window: &mut Window) {
         let prefs = store.load();
         self.sidebar_open = prefs.sidebar_open;
         self.work_pane_open = prefs.work_pane_open;
@@ -737,7 +745,39 @@ impl TactApp {
         self.detail = prefs.detail;
         self.sidebar_width = rems(prefs.sidebar_width_rem);
         self.work_pane_width = rems(prefs.work_pane_width_rem);
+        // The shell is `rem`-based end to end, so restoring the base font size
+        // is the whole of restoring the zoom.
+        self.zoom_rem = prefs.zoom_rem;
+        window.set_rem_size(px(self.zoom_rem));
         self.layout_store = store;
+    }
+
+    /// Step the base font size, which is the shell's zoom.
+    ///
+    /// Every dimension in the shell is in `rem`, so one number moves the whole
+    /// interface together -- including the breakpoints, which is why the
+    /// sidebar and work pane change shape as the text grows rather than
+    /// overflowing their columns.
+    fn set_zoom(&mut self, zoom_rem: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_rem = layout::clamp_zoom(zoom_rem);
+        window.set_rem_size(px(self.zoom_rem));
+        self.persist_layout();
+        cx.notify();
+    }
+
+    /// Zoom one step in from the current base font size.
+    fn zoom_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_zoom(self.zoom_rem + 1.0, window, cx);
+    }
+
+    /// Zoom one step out from the current base font size.
+    fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_zoom(self.zoom_rem - 1.0, window, cx);
+    }
+
+    /// Return to the prototype's 16 px base font size.
+    fn zoom_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_zoom(layout::ZOOM_DEFAULT, window, cx);
     }
 
     /// Apply one of the four pane arrangements, then persist it.
@@ -946,6 +986,9 @@ impl TactApp {
             PaletteCommand::LayoutFocus => self.apply_layout_preset(LayoutPreset::Focus, cx),
             PaletteCommand::LayoutReview => self.apply_layout_preset(LayoutPreset::Review, cx),
             PaletteCommand::LayoutZen => self.apply_layout_preset(LayoutPreset::Zen, cx),
+            PaletteCommand::ZoomIn => self.zoom_in(window, cx),
+            PaletteCommand::ZoomOut => self.zoom_out(window, cx),
+            PaletteCommand::ZoomReset => self.zoom_reset(window, cx),
             PaletteCommand::NewSession => self.new_session(cx),
             PaletteCommand::FocusComposer => {
                 // A palette row runs this while its palette is still open, and
@@ -1921,6 +1964,23 @@ impl TactApp {
         cx: &mut Context<Self>,
     ) {
         self.run_palette_command(PaletteCommand::LayoutReview, window, cx);
+    }
+
+    fn on_zoom_in(&mut self, _: &commands::ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_palette_command(PaletteCommand::ZoomIn, window, cx);
+    }
+
+    fn on_zoom_out(&mut self, _: &commands::ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_palette_command(PaletteCommand::ZoomOut, window, cx);
+    }
+
+    fn on_zoom_reset(
+        &mut self,
+        _: &commands::ZoomReset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_command(PaletteCommand::ZoomReset, window, cx);
     }
 
     fn on_layout_zen(
@@ -2934,6 +2994,9 @@ impl Render for TactApp {
             .on_action(cx.listener(Self::on_layout_focus))
             .on_action(cx.listener(Self::on_layout_review))
             .on_action(cx.listener(Self::on_layout_zen))
+            .on_action(cx.listener(Self::on_zoom_in))
+            .on_action(cx.listener(Self::on_zoom_out))
+            .on_action(cx.listener(Self::on_zoom_reset))
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_cycle_sessions))
             .on_action(cx.listener(Self::on_cycle_sessions_backward))
@@ -2967,6 +3030,7 @@ impl Render for TactApp {
                 layout_prefs
                     .matching_preset()
                     .unwrap_or(LayoutPreset::Split),
+                self.zoom_rem,
                 &self.state,
                 cx,
             ))
@@ -6457,6 +6521,7 @@ fn work_pane_drawer(
 fn status_bar(
     workspace: Workspace,
     layout: LayoutPreset,
+    zoom_rem: f32,
     state: &SessionState,
     cx: &App,
 ) -> impl IntoElement {
@@ -6579,6 +6644,19 @@ fn status_bar(
         crate::theme::ink3(cx),
         cx,
     ));
+
+    // The zoom chip only appears once it is off 100%: a chip that always reads
+    // "100%" is chrome, and this bar has no room for chrome.
+    if (zoom_rem - layout::ZOOM_DEFAULT).abs() > f32::EPSILON {
+        let percent = (zoom_rem / layout::ZOOM_DEFAULT * 100.0).round() as i32;
+        bar = bar.child(status_item(
+            "status-zoom",
+            None,
+            format!("{percent}%"),
+            crate::theme::ink3(cx),
+            cx,
+        ));
+    }
 
     bar = bar.child(div().flex_1());
 
@@ -7003,8 +7081,9 @@ mod tests {
         let store_path = path.clone();
         let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
             let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            let store = crate::layout::LayoutStore::at(store_path.clone());
             shell.update(cx, |app, _| {
-                app.apply_layout(crate::layout::LayoutStore::at(store_path.clone()));
+                app.apply_layout(store, window);
             });
             *captured.borrow_mut() = Some(shell.clone());
             Root::new(shell, window, cx)

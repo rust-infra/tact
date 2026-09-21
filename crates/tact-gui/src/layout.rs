@@ -36,6 +36,15 @@ pub(crate) const WORK_PANE_MIN_REM: f32 = 20.0;
 /// Widest work pane, so a drag cannot swallow the transcript.
 pub(crate) const WORK_PANE_MAX_REM: f32 = 36.0;
 
+/// Default base font size, in px: the value `rems(1.)` resolves to.
+pub(crate) const ZOOM_DEFAULT: f32 = 16.0;
+/// Smallest zoom the shell allows. Below this the 10.5 px session metadata
+/// stops being legible.
+pub(crate) const ZOOM_MIN: f32 = 12.0;
+/// Largest zoom. The shell's columns are `rem`-based, so past this the work
+/// pane and sidebar together exceed the minimum window width.
+pub(crate) const ZOOM_MAX: f32 = 24.0;
+
 /// A saved pane arrangement. Presets are a coarse shorthand over the four
 /// independent fields; the fields win when the two disagree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +102,9 @@ pub(crate) struct LayoutPrefs {
     pub detail: TranscriptDetail,
     pub sidebar_width_rem: f32,
     pub work_pane_width_rem: f32,
+    /// Base font size in px: the whole shell is `rem`-based, so this is the
+    /// zoom control.
+    pub zoom_rem: f32,
 }
 
 impl Default for LayoutPrefs {
@@ -107,6 +119,7 @@ impl Default for LayoutPrefs {
             detail: TranscriptDetail::default(),
             sidebar_width_rem: SIDEBAR_WIDTH_REM,
             work_pane_width_rem: WORK_PANE_WIDTH_REM,
+            zoom_rem: ZOOM_DEFAULT,
         }
     }
 }
@@ -131,6 +144,7 @@ impl LayoutPrefs {
             WORK_PANE_MAX_REM,
             WORK_PANE_WIDTH_REM,
         );
+        self.zoom_rem = clamp_width(self.zoom_rem, ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT);
     }
 
     /// Apply a preset's arrangement, keeping the dragged widths.
@@ -153,6 +167,11 @@ impl LayoutPrefs {
             .into_iter()
             .find(|preset| preset.arrangement() == (self.sidebar_open, self.work_pane_open))
     }
+}
+
+/// Clamp a zoom level into its supported range.
+pub(crate) fn clamp_zoom(value: f32) -> f32 {
+    clamp_width(value, ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT)
 }
 
 /// Clamp a dragged sidebar width into its supported range.
@@ -332,6 +351,23 @@ mod tests {
         let path = dir.path().join("gui-layout.json");
         fs::write(&path, b"{not json").unwrap();
         assert_eq!(LayoutStore::at(&path).load(), LayoutPrefs::default());
+    }
+
+    #[test]
+    fn zoom_is_clamped_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-layout.json");
+        fs::write(&path, br#"{"zoom_rem":99.0}"#).unwrap();
+        let prefs = LayoutStore::at(&path).load();
+        assert_eq!(prefs.zoom_rem, ZOOM_MAX);
+
+        let store = LayoutStore::at(dir.path().join("round.json"));
+        let prefs = LayoutPrefs {
+            zoom_rem: 20.0,
+            ..LayoutPrefs::default()
+        };
+        store.save(&prefs).unwrap();
+        assert_eq!(store.load().zoom_rem, 20.0);
     }
 
     #[test]

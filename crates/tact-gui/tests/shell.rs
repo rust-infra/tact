@@ -4335,7 +4335,7 @@ fn the_command_palette_search_filters_rows(cx: &mut TestAppContext) {
             "Toggle work pane survives the query"
         );
         assert!(
-            window.try_find("index-path(3,1,0)").is_some(),
+            window.try_find("index-path(3,4,0)").is_some(),
             "Toggle theme survives the query"
         );
         assert!(
@@ -4606,14 +4606,14 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     })
     .unwrap();
 
-    // (3,1) Toggle theme, read off the theme the app is actually running.
+    // (3,4) Toggle theme, read off the theme the app is actually running.
     let before = cx
         .update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             cx.theme().theme_name().clone()
         })
         .unwrap();
-    run_palette_row(cx, handle, 3, 1);
+    run_palette_row(cx, handle, 3, 4);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert_ne!(
@@ -4762,6 +4762,57 @@ fn the_command_palette_session_rows_answer_without_an_agent(cx: &mut TestAppCont
         })
         .unwrap();
     }
+}
+
+/// Zoom steps the base font size, and the shell reports the level.
+///
+/// The gpui test window rebuilds its `Window` for each `update_window` call, so
+/// a `set_rem_size` made inside an action dispatch is not observable from the
+/// next call. What *is* observable is the shell's own zoom state and the chip it
+/// renders from it, so this pins the step and the reset; the layout consequence
+/// follows from every dimension in the shell being `rem`-based.
+#[gpui_kit::test]
+fn zooming_changes_the_rem_size_and_reports_it(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+    let handle = handle.into();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("status-zoom").is_none(),
+            "100% is not worth a chip"
+        );
+    })
+    .unwrap();
+
+    // (3,1) Zoom in. The palette row is the user path the walk can drive.
+    run_palette_row(cx, handle, 3, 1);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let chip = window.find("status-zoom");
+        assert_eq!(
+            chip.label(),
+            Some("106%"),
+            "one step in reads as 106% of the prototype's base size"
+        );
+    })
+    .unwrap();
+
+    // (3,3) Reset zoom returns the prototype's base size, and the chip with it.
+    run_palette_row(cx, handle, 3, 3);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("status-zoom").is_none(),
+            "the chip disappears at 100%"
+        );
+    })
+    .unwrap();
 }
 
 /// Pinning moves a session to the head of the list and labels it.
