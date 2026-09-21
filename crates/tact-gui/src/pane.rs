@@ -32,6 +32,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::{SubagentStatusSnapshot, TaskStatusSnapshot};
 
+use crate::layout::WorkPaneSide;
 use crate::session::{SessionState, age_label, now_unix};
 use crate::shell::{TactApp, focus_visible_ring, prototype_button, prototype_icon_button};
 use crate::terminal::{TermColor, TerminalPane};
@@ -646,6 +647,8 @@ pub(crate) struct PaneState<'a> {
     pub(crate) terminal_focus: &'a FocusHandle,
     /// Grid the terminal should measure itself to, in cells.
     pub(crate) terminal_size: (u16, u16),
+    /// Edge the pane is currently docked to, so the header can say so.
+    pub(crate) side: WorkPaneSide,
 }
 
 pub(crate) fn view(
@@ -661,6 +664,7 @@ pub(crate) fn view(
         terminal,
         terminal_focus,
         terminal_size,
+        side,
     } = panes;
     let body = match selected {
         WorkPane::Plan => plan(state, cx).into_any_element(),
@@ -674,7 +678,7 @@ pub(crate) fn view(
         }
     };
     let body_id = SharedString::from(format!("work-pane-body-{}", selected.slug()));
-    let footer = work_footer(cx).into_any_element();
+    let footer = work_footer(side, cx).into_any_element();
     let tabs = work_tabs(selected, state, cx);
 
     v_flex()
@@ -839,7 +843,7 @@ const ADD_FILE_UNAVAILABLE: &str =
     "Adding a file is not available yet: the pane lists the files the session itself changed.";
 
 /// The pane's fixed footer action row.
-fn work_footer(cx: &mut Context<TactApp>) -> impl IntoElement {
+fn work_footer(side: WorkPaneSide, cx: &mut Context<TactApp>) -> impl IntoElement {
     h_flex()
         .w_full()
         .flex_shrink_0()
@@ -849,6 +853,21 @@ fn work_footer(cx: &mut Context<TactApp>) -> impl IntoElement {
         .border_color(cx.theme().border)
         .px(rems(0.625))
         .py(rems(0.5))
+        // The dock control lives in the footer rather than beside the tabs:
+        // seven tab chips already fill the pane's width, and a control in that
+        // row clipped the last one.
+        .child(
+            prototype_icon_button("work-pane-dock", IconName::PanelBottom, cx)
+                .tooltip(SharedString::from(format!(
+                    "Move work pane (docked {})",
+                    side.label()
+                )))
+                .accessibility_label(SharedString::from(format!(
+                    "Move work pane, currently docked {}",
+                    side.label()
+                )))
+                .on_click(cx.listener(|this, _, _, cx| this.cycle_work_pane_side(cx))),
+        )
         .child(
             prototype_button("work-pane-open-editor", false, cx)
                 .label("Open in editor")

@@ -4731,6 +4731,71 @@ fn the_command_palette_rows_past_the_fold_run_their_commands(cx: &mut TestAppCon
     .unwrap();
 }
 
+/// The dock control moves the work pane around the window, and says where.
+///
+/// Right and Left reorder the same flex row; Bottom nests the transcript in a
+/// column. The observable is the control's own label plus the fact that the
+/// pane, the transcript, and the sidebar all survive each placement — a
+/// reorder that dropped one of them would still render a plausible pane.
+#[gpui_kit::test]
+fn the_dock_control_moves_the_work_pane_around_the_window(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+    let handle = handle.into();
+
+    let assert_side = |cx: &mut TestAppContext, handle: gpui_kit::AnyWindowHandle, side: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let dock = window.find("work-pane-dock");
+            let label = dock.label().unwrap_or_default();
+            assert!(
+                label.contains(side),
+                "the dock control reports {side}: {label:?}"
+            );
+            assert!(
+                window.try_find("work-pane").is_some(),
+                "the work pane is still mounted docked {side}"
+            );
+            assert!(
+                window.try_find("sidebar").is_some(),
+                "the sidebar survives a {side} dock"
+            );
+        })
+        .unwrap();
+    };
+
+    assert_side(cx, handle, "Right");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("work-pane-dock", cx);
+    })
+    .unwrap();
+    assert_side(cx, handle, "Left");
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("work-pane-dock", cx);
+    })
+    .unwrap();
+    assert_side(cx, handle, "Bottom");
+
+    // And back around, so the cycle is closed.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("work-pane-dock", cx);
+    })
+    .unwrap();
+    assert_side(cx, handle, "Right");
+
+    // The same move is reachable from the palette's Layout group.
+    run_palette_row(cx, handle, 1, 4);
+    assert_side(cx, handle, "Left");
+}
+
 /// The Layout group's four rows move the shell between arrangements.
 ///
 /// The rows are the first thing that touches the post-v1 layout store, so the

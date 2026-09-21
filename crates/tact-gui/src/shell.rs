@@ -45,7 +45,7 @@ use tact_protocol::UiResponse;
 use crate::RecentSession;
 use crate::commands;
 use crate::composer::{self, Attachment};
-use crate::layout::{self, LayoutPrefs, LayoutPreset, LayoutStore};
+use crate::layout::{self, LayoutPrefs, LayoutPreset, LayoutStore, WorkPaneSide};
 use crate::pane::{self, FilesPane, TasksPane, WorkPane};
 use crate::session::{self, Change, Conversation, Request, SessionHandle, SessionState};
 use crate::terminal::TerminalPane;
@@ -115,6 +115,12 @@ impl Columns {
         }
     }
 }
+/// Height of the work pane when it docks to the bottom edge.
+///
+/// Fixed rather than draggable: a bottom dock's useful size is a fraction of
+/// the window, and the shell's one draggable edge is the column width.
+const WORK_PANE_BOTTOM_HEIGHT: Rems = rems(18.);
+
 /// Width from which the work pane sits in the layout (1280 px at the default
 /// rem). Below it the drawer form applies (Phase 6).
 const WORK_PANE_IN_FLOW_FROM: Rems = rems(80.);
@@ -219,6 +225,7 @@ enum PaletteCommand {
     LayoutFocus,
     LayoutReview,
     LayoutZen,
+    MoveWorkPane,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -296,6 +303,8 @@ pub struct TactApp {
     /// Base font size in px. Every dimension in the shell is `rem`-based, so
     /// this one number is the zoom.
     zoom_rem: f32,
+    /// Which edge the work pane docks to.
+    work_pane_side: WorkPaneSide,
     /// The embedded shell, once the user has started one. `None` until then:
     /// opening the pane must not spawn a process.
     terminal: Option<TerminalPane>,
@@ -712,6 +721,7 @@ impl TactApp {
             sidebar_width: SIDEBAR_WIDTH,
             work_pane_width: WORK_PANE_WIDTH,
             zoom_rem: layout::ZOOM_DEFAULT,
+            work_pane_side: WorkPaneSide::default(),
             terminal: None,
             terminal_focus: cx.focus_handle(),
             terminal_epoch: 0,
@@ -736,6 +746,7 @@ impl TactApp {
             detail: self.detail,
             sidebar_width_rem: self.sidebar_width.0,
             work_pane_width_rem: self.work_pane_width.0,
+            work_pane_side: self.work_pane_side,
             zoom_rem: self.zoom_rem,
         };
         prefs.preset = prefs.matching_preset().unwrap_or(LayoutPreset::Split);
@@ -759,6 +770,7 @@ impl TactApp {
         self.work_pane_width = rems(prefs.work_pane_width_rem);
         // The shell is `rem`-based end to end, so restoring the base font size
         // is the whole of restoring the zoom.
+        self.work_pane_side = prefs.work_pane_side;
         self.zoom_rem = prefs.zoom_rem;
         window.set_rem_size(px(self.zoom_rem));
         self.layout_store = store;
@@ -785,6 +797,13 @@ impl TactApp {
     /// Zoom one step out from the current base font size.
     fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.set_zoom(self.zoom_rem - 1.0, window, cx);
+    }
+
+    /// Move the work pane to its next edge.
+    pub(crate) fn cycle_work_pane_side(&mut self, cx: &mut Context<Self>) {
+        self.work_pane_side = self.work_pane_side.next();
+        self.persist_layout();
+        cx.notify();
     }
 
     /// Return to the prototype's 16 px base font size.
@@ -998,6 +1017,7 @@ impl TactApp {
             PaletteCommand::LayoutFocus => self.apply_layout_preset(LayoutPreset::Focus, cx),
             PaletteCommand::LayoutReview => self.apply_layout_preset(LayoutPreset::Review, cx),
             PaletteCommand::LayoutZen => self.apply_layout_preset(LayoutPreset::Zen, cx),
+            PaletteCommand::MoveWorkPane => self.cycle_work_pane_side(cx),
             PaletteCommand::ZoomIn => self.zoom_in(window, cx),
             PaletteCommand::ZoomOut => self.zoom_out(window, cx),
             PaletteCommand::ZoomReset => self.zoom_reset(window, cx),
@@ -2098,6 +2118,15 @@ impl TactApp {
         self.run_palette_command(PaletteCommand::LayoutReview, window, cx);
     }
 
+    fn on_move_work_pane(
+        &mut self,
+        _: &commands::CycleWorkPaneSide,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_palette_command(PaletteCommand::MoveWorkPane, window, cx);
+    }
+
     fn on_zoom_in(&mut self, _: &commands::ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
         self.run_palette_command(PaletteCommand::ZoomIn, window, cx);
     }
@@ -3014,7 +3043,10 @@ impl Render for TactApp {
                 cx,
             ));
         }
-        workspace_row = workspace_row.child(transcript(
+
+        // Boxed so the borrow of `cx` ends here: both work-pane placements and
+        // the bottom nest need `cx` again in the same expression.
+        let transcript_column = transcript(
             self.conversation.rows(),
             self.transcript_state.clone(),
             self.composer.clone(),
@@ -3022,23 +3054,82 @@ impl Render for TactApp {
             &self.attachments,
             transcript_frame,
             cx,
-        ));
+        )
+        .into_any_element();
 
-        if work_pane_in_flow {
-            workspace_row = workspace_row.child(work_pane(
-                self.work_pane,
-                &self.state,
-                pane::PaneState {
-                    files: &mut self.files,
-                    diffs: &mut self.diffs,
-                    tasks: &mut self.tasks_pane,
-                    terminal: &mut self.terminal,
-                    terminal_focus: &self.terminal_focus,
-                    terminal_size,
-                },
-                columns.work_pane,
-                cx,
-            ));
+        // The work pane is one pane with three possible edges. Right and Left
+        // are a reorder of the same flex row; Bottom nests the transcript in a
+        // column so the sidebar keeps its full height.
+        match (self.work_pane_side, work_pane_in_flow) {
+            (WorkPaneSide::Right, true) => {
+                workspace_row = workspace_row.child(transcript_column);
+                workspace_row = workspace_row.child(work_pane(
+                    self.work_pane,
+                    &self.state,
+                    pane::PaneState {
+                        files: &mut self.files,
+                        diffs: &mut self.diffs,
+                        tasks: &mut self.tasks_pane,
+                        terminal: &mut self.terminal,
+                        terminal_focus: &self.terminal_focus,
+                        terminal_size,
+                        side: self.work_pane_side,
+                    },
+                    WorkPaneSide::Right,
+                    columns.work_pane,
+                    cx,
+                ));
+            }
+            (WorkPaneSide::Left, true) => {
+                workspace_row = workspace_row.child(work_pane(
+                    self.work_pane,
+                    &self.state,
+                    pane::PaneState {
+                        files: &mut self.files,
+                        diffs: &mut self.diffs,
+                        tasks: &mut self.tasks_pane,
+                        terminal: &mut self.terminal,
+                        terminal_focus: &self.terminal_focus,
+                        terminal_size,
+                        side: self.work_pane_side,
+                    },
+                    WorkPaneSide::Left,
+                    columns.work_pane,
+                    cx,
+                ));
+                workspace_row = workspace_row.child(transcript_column);
+            }
+            (WorkPaneSide::Bottom, true) => {
+                let main = v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .items_stretch()
+                            .child(transcript_column),
+                    )
+                    .child(work_pane_bottom(
+                        self.work_pane,
+                        &self.state,
+                        pane::PaneState {
+                            files: &mut self.files,
+                            diffs: &mut self.diffs,
+                            tasks: &mut self.tasks_pane,
+                            terminal: &mut self.terminal,
+                            terminal_focus: &self.terminal_focus,
+                            terminal_size,
+                            side: self.work_pane_side,
+                        },
+                        WORK_PANE_BOTTOM_HEIGHT,
+                        cx,
+                    ));
+                workspace_row = workspace_row.child(main);
+            }
+            _ => {
+                workspace_row = workspace_row.child(transcript_column);
+            }
         }
 
         let mut workspace = div().relative().flex_1().min_h_0().child(workspace_row);
@@ -3050,9 +3141,23 @@ impl Render for TactApp {
         if sidebar_in_flow {
             workspace = workspace.child(resize_handle(ResizeTarget::Sidebar, columns.sidebar, cx));
         }
-        if work_pane_in_flow {
-            workspace =
-                workspace.child(resize_handle(ResizeTarget::WorkPane, columns.work_pane, cx));
+        // A bottom dock spans the width, so the vertical divider that drags the
+        // work pane's own width has nothing to sit on. Its height is fixed.
+        if work_pane_in_flow && self.work_pane_side == WorkPaneSide::Left {
+            workspace = workspace.child(resize_handle(
+                ResizeTarget::WorkPaneLeft {
+                    sidebar: columns.sidebar,
+                },
+                columns.work_pane,
+                cx,
+            ));
+        }
+        if work_pane_in_flow && self.work_pane_side == WorkPaneSide::Right {
+            workspace = workspace.child(resize_handle(
+                ResizeTarget::WorkPaneRight,
+                columns.work_pane,
+                cx,
+            ));
         }
         // The three floating surfaces are painted in the prototype's own
         // stacking order -- `.scrim` at `z-index:25`, `.work` at `30`, the
@@ -3088,6 +3193,7 @@ impl Render for TactApp {
                         terminal: &mut self.terminal,
                         terminal_focus: &self.terminal_focus,
                         terminal_size,
+                        side: self.work_pane_side,
                     },
                     self.work_pane_width,
                     slide.progress,
@@ -3137,6 +3243,7 @@ impl Render for TactApp {
             .on_action(cx.listener(Self::on_layout_focus))
             .on_action(cx.listener(Self::on_layout_review))
             .on_action(cx.listener(Self::on_layout_zen))
+            .on_action(cx.listener(Self::on_move_work_pane))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
@@ -6494,10 +6601,16 @@ fn git_branch(workdir: &std::path::Path) -> Option<String> {
 }
 
 /// Which divider a drag moves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum ResizeTarget {
     Sidebar,
-    WorkPane,
+    /// Work pane docked to the right: its divider sits at the pane's left edge.
+    WorkPaneRight,
+    /// Work pane docked to the left: its divider sits at the pane's right edge,
+    /// which is offset by the sidebar that now precedes it.
+    WorkPaneLeft {
+        sidebar: Rems,
+    },
 }
 
 /// The payload carried by a divider drag.
@@ -6529,7 +6642,9 @@ fn resize_handle(
 ) -> impl IntoElement {
     let id = match target {
         ResizeTarget::Sidebar => "sidebar-resize-handle",
-        ResizeTarget::WorkPane => "work-pane-resize-handle",
+        ResizeTarget::WorkPaneRight | ResizeTarget::WorkPaneLeft { .. } => {
+            "work-pane-resize-handle"
+        }
     };
     // Half the band sits on each side of the column's border, so the pointer
     // can be a couple of pixels off the boundary and still start the drag.
@@ -6544,7 +6659,8 @@ fn resize_handle(
         .cursor_col_resize();
     handle = match target {
         ResizeTarget::Sidebar => handle.left(rems(column.0 - half)),
-        ResizeTarget::WorkPane => handle.right(rems(column.0 - half)),
+        ResizeTarget::WorkPaneRight => handle.right(rems(column.0 - half)),
+        ResizeTarget::WorkPaneLeft { sidebar } => handle.left(rems(sidebar.0 + column.0 - half)),
     };
     handle
         .bg(cx.theme().border)
@@ -6563,15 +6679,17 @@ fn resize_handle(
                     return;
                 }
                 let position = event.event.position.x.as_f32();
-                let width = match target {
-                    ResizeTarget::Sidebar => position / rem,
-                    ResizeTarget::WorkPane => {
-                        (window.bounds().size.width.as_f32() - position) / rem
-                    }
-                };
                 match target {
-                    ResizeTarget::Sidebar => this.set_sidebar_width(width, cx),
-                    ResizeTarget::WorkPane => this.set_work_pane_width(width, cx),
+                    ResizeTarget::Sidebar => this.set_sidebar_width(position / rem, cx),
+                    ResizeTarget::WorkPaneRight => {
+                        let width = (window.bounds().size.width.as_f32() - position) / rem;
+                        this.set_work_pane_width(width, cx);
+                    }
+                    ResizeTarget::WorkPaneLeft { sidebar } => {
+                        // The divider is the pane's right edge, so the width is
+                        // what sits between the sidebar and the pointer.
+                        this.set_work_pane_width((position / rem) - sidebar.0, cx);
+                    }
                 }
             }),
         )
@@ -6581,6 +6699,7 @@ fn work_pane(
     selected: WorkPane,
     state: &SessionState,
     panes: pane::PaneState<'_>,
+    side: WorkPaneSide,
     width: Rems,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
@@ -6588,7 +6707,28 @@ fn work_pane(
         .flex_shrink_0()
         .w(width)
         .h_full()
-        .border_l_1()
+        .when(side == WorkPaneSide::Right, |this| this.border_l_1())
+        .when(side == WorkPaneSide::Left, |this| this.border_r_1())
+        .border_color(cx.theme().border)
+        .bg(cx.theme().sidebar)
+        .child(pane::view(selected, state, panes, cx))
+        .id("work-pane")
+        .test_support()
+}
+
+/// The work pane docked to the bottom edge: full width, fixed height.
+fn work_pane_bottom(
+    selected: WorkPane,
+    state: &SessionState,
+    panes: pane::PaneState<'_>,
+    height: Rems,
+    cx: &mut Context<TactApp>,
+) -> impl IntoElement {
+    v_flex()
+        .flex_shrink_0()
+        .w_full()
+        .h(height)
+        .border_t_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().sidebar)
         .child(pane::view(selected, state, panes, cx))

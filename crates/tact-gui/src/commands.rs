@@ -32,6 +32,7 @@ actions!([
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    CycleWorkPaneSide,
 ]);
 
 /// Register the global keyboard contract.
@@ -118,6 +119,8 @@ pub(crate) fn groups() -> Vec<CommandGroup> {
                 "no work pane",
                 "preset",
             ]),
+            command("Move work pane", IconName::PanelBottom, CycleWorkPaneSide)
+                .keywords(["dock", "side", "bottom", "left", "right"]),
         ]),
         CommandGroup::new().label("Session").items([
             command("New session", IconName::Plus, NewSession).keywords([

@@ -45,6 +45,40 @@ pub(crate) const ZOOM_MIN: f32 = 12.0;
 /// pane and sidebar together exceed the minimum window width.
 pub(crate) const ZOOM_MAX: f32 = 24.0;
 
+/// Which edge the work pane docks to.
+///
+/// The prototype fixes the pane to the right. `Left` and `Bottom` are the
+/// shell's own extension: they move the same pane without introducing a
+/// free-form splitter tree, so the layout stays something the app can describe
+/// in one small document.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum WorkPaneSide {
+    #[default]
+    Right,
+    Left,
+    Bottom,
+}
+
+impl WorkPaneSide {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Right => "Right",
+            Self::Left => "Left",
+            Self::Bottom => "Bottom",
+        }
+    }
+
+    /// The next placement in the cycle the header button walks.
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Right => Self::Left,
+            Self::Left => Self::Bottom,
+            Self::Bottom => Self::Right,
+        }
+    }
+}
+
 /// A saved pane arrangement. Presets are a coarse shorthand over the four
 /// independent fields; the fields win when the two disagree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +136,8 @@ pub(crate) struct LayoutPrefs {
     pub detail: TranscriptDetail,
     pub sidebar_width_rem: f32,
     pub work_pane_width_rem: f32,
+    /// Which edge the work pane docks to.
+    pub work_pane_side: WorkPaneSide,
     /// Base font size in px: the whole shell is `rem`-based, so this is the
     /// zoom control.
     pub zoom_rem: f32,
@@ -119,6 +155,7 @@ impl Default for LayoutPrefs {
             detail: TranscriptDetail::default(),
             sidebar_width_rem: SIDEBAR_WIDTH_REM,
             work_pane_width_rem: WORK_PANE_WIDTH_REM,
+            work_pane_side: WorkPaneSide::default(),
             zoom_rem: ZOOM_DEFAULT,
         }
     }
@@ -310,6 +347,26 @@ mod tests {
         assert!(prefs.work_pane_open);
         assert_eq!(prefs.sidebar_width_rem, SIDEBAR_WIDTH_REM);
         assert_eq!(prefs.work_pane_width_rem, WORK_PANE_WIDTH_REM);
+    }
+
+    #[test]
+    fn the_work_pane_side_round_trips_and_cycles() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LayoutStore::at(dir.path().join("side.json"));
+        let prefs = LayoutPrefs {
+            work_pane_side: WorkPaneSide::Bottom,
+            ..LayoutPrefs::default()
+        };
+        store.save(&prefs).unwrap();
+        assert_eq!(store.load().work_pane_side, WorkPaneSide::Bottom);
+
+        assert_eq!(WorkPaneSide::Right.next(), WorkPaneSide::Left);
+        assert_eq!(WorkPaneSide::Left.next(), WorkPaneSide::Bottom);
+        assert_eq!(
+            WorkPaneSide::Bottom.next(),
+            WorkPaneSide::Right,
+            "the cycle returns to where it started"
+        );
     }
 
     #[test]
