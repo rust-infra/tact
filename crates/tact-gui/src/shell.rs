@@ -210,6 +210,63 @@ impl Workspace {
     }
 }
 
+/// What one agent update changed, before the shell reacts to it.
+struct Folded {
+    change: Change,
+    cancelled: bool,
+    ends_turn: bool,
+    diff_changed: bool,
+}
+
+/// Fold one agent update into a conversation and its session state.
+///
+/// Free of the shell so it can act on a parked session's state as well as the
+/// one on screen. The view-coupled follow-ups — invalidating the Diff pane,
+/// nudging the scroller, flushing the composer queue — stay with the caller,
+/// because those belong to whatever the window is showing rather than to the
+/// session the update arrived for.
+fn fold_update(
+    conversation: &mut Conversation,
+    state: &mut SessionState,
+    update: tact_protocol::AgentUpdate,
+) -> Folded {
+    let cancelled = matches!(update, tact_protocol::AgentUpdate::TaskCancelled);
+    let ends_turn = matches!(
+        update,
+        tact_protocol::AgentUpdate::TaskComplete(_)
+            | tact_protocol::AgentUpdate::TaskCancelled
+            | tact_protocol::AgentUpdate::Error(_)
+    );
+    let before = state.diff.len();
+    let change = conversation.apply(update, state);
+    Folded {
+        change,
+        cancelled,
+        ends_turn,
+        diff_changed: state.diff.len() != before,
+    }
+}
+
+/// A session whose turn is still running while another one is on screen.
+///
+/// Switching sessions used to replace `session` and `_pump` outright, which
+/// dropped the previous `SessionHandle` — closing the driver's command channel
+/// and cancelling the turn — and dropped its pump, losing whatever the stream
+/// had not delivered yet. A session with a turn in flight is therefore parked
+/// instead: its runtime, its pump, and the transcript and state it has
+/// accumulated, restored verbatim when the user comes back.
+struct ParkedSession {
+    id: String,
+    handle: SessionHandle,
+    pump: session::Pump,
+    conversation: Conversation,
+    state: SessionState,
+    /// Prompts typed while the turn was in flight, and the attachments staged
+    /// with them: both belong to the session, not to the window.
+    queued: VecDeque<String>,
+    attachments: Vec<Attachment>,
+}
+
 /// One command the shell can run, reachable from both the keyboard contract
 /// and the matching palette row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,6 +357,8 @@ pub struct TactApp {
     offline: bool,
     /// Keeps the event pump alive for as long as the window is open.
     _pump: Option<session::Pump>,
+    /// Sessions with a turn in flight whose window is showing something else.
+    parked: Vec<ParkedSession>,
     /// Command palette interaction state, retained while its dialog is open,
     /// plus whether that dialog is still on the window's stack. A palette row
     /// dispatches its action while the palette is open, and the palette's own
@@ -750,7 +809,7 @@ impl TactApp {
 
         let (session, pump) = match live {
             Some((handle, streams)) => {
-                let pump = Self::spawn_pump(streams, cx);
+                let pump = Self::spawn_pump(handle.session_id().to_string(), streams, cx);
                 (Some(handle), Some(pump))
             }
             None => (None, None),
@@ -789,6 +848,7 @@ impl TactApp {
             preview_current: None,
             offline: false,
             _pump: pump,
+            parked: Vec::new(),
             palette: None,
             palette_live: false,
             root_focus,
@@ -1035,7 +1095,11 @@ impl TactApp {
     /// Tokio channels are executor-agnostic, so GPUI polls them directly and
     /// the shell needs no runtime of its own. The task ends when either stream
     /// closes or the window is gone.
-    fn spawn_pump(streams: session::SessionStreams, cx: &mut Context<Self>) -> session::Pump {
+    fn spawn_pump(
+        session_id: String,
+        streams: session::SessionStreams,
+        cx: &mut Context<Self>,
+    ) -> session::Pump {
         let session::SessionStreams {
             mut events,
             account,
@@ -1048,14 +1112,23 @@ impl TactApp {
                 tokio::select! {
                     update = events.recv() => {
                         let Some(update) = update else { break };
-                        let applied = this.update(cx, |app, cx| app.apply_agent_update(update, cx));
-                        if applied.is_err() {
+                        let applied = this.update(cx, |app, cx| {
+                            app.route_agent_update(&session_id, update, cx)
+                        });
+                        if !matches!(applied, Ok(true)) {
                             break;
                         }
                     }
                     update = next_account => {
                         let Some(update) = update else { continue };
-                        let applied = this.update(cx, |app, cx| app.apply_account_update(update, cx));
+                        // Account state is window-level (one balance, one model
+                        // list), so only the session on screen reports it.
+                        let applied = this.update(cx, |app, cx| {
+                            if app.session_id() == Some(session_id.as_str()) {
+                                app.apply_account_update(update, cx);
+                            }
+                            true
+                        });
                         if applied.is_err() {
                             break;
                         }
@@ -1296,6 +1369,7 @@ impl TactApp {
             return;
         };
 
+        self.park_running_session();
         match session::start(workdir.clone()) {
             Ok((handle, streams)) => self.adopt(workdir, handle, streams, cx),
             Err(err) => self.push_system_row(format!("Could not start a session: {err:#}"), cx),
@@ -1409,11 +1483,18 @@ impl TactApp {
             }
             return;
         }
+        // A session this window already runs is restored rather than resumed:
+        // starting a second runtime for the same id would drop the first — and
+        // with it the turn that is still streaming.
+        if self.unpark(&session_id, cx) {
+            return;
+        }
         let Some(workdir) = self.workspace_dir() else {
             self.push_system_row("Cannot determine the workspace directory.".into(), cx);
             return;
         };
 
+        self.park_running_session();
         match session::resume(workdir.clone(), session_id.clone()) {
             Ok((handle, streams)) => {
                 let short = session::short_id(&session_id).to_string();
@@ -2072,8 +2153,10 @@ impl TactApp {
         streams: session::SessionStreams,
         cx: &mut Context<Self>,
     ) {
+        self.park_running_session();
+        let session_id = handle.session_id().to_string();
         self.session = Some(handle);
-        self._pump = Some(Self::spawn_pump(streams, cx));
+        self._pump = Some(Self::spawn_pump(session_id, streams, cx));
         self.conversation = Conversation::default();
         self.files.reset_workspace();
         self.diffs.invalidate();
@@ -2089,6 +2172,74 @@ impl TactApp {
             .update(cx, |state, cx| state.reset(2, cx));
         self.recent = session::recent(&workdir);
         cx.notify();
+    }
+
+    /// Park the session on screen if it has a turn in flight.
+    ///
+    /// Called before the window adopts another session. An idle session is not
+    /// parked: its transcript is already in the store, so re-resuming it costs
+    /// one history read and nothing is lost, while a runtime kept alive for
+    /// every session the user ever clicked would be a leak.
+    fn park_running_session(&mut self) {
+        if !self.state.running {
+            return;
+        }
+        let Some(handle) = self.session.take() else {
+            return;
+        };
+        let Some(pump) = self._pump.take() else {
+            // Without a pump there is nothing draining the stream; putting the
+            // handle back keeps the caller's replacement in charge of it.
+            self.session = Some(handle);
+            return;
+        };
+        let id = handle.session_id().to_string();
+        // Bounded: a user who switches across many running turns would
+        // otherwise accumulate one live runtime per session.
+        const MAX_PARKED: usize = 4;
+        if self.parked.len() >= MAX_PARKED {
+            self.parked.remove(0);
+        }
+        self.parked.push(ParkedSession {
+            id,
+            handle,
+            pump,
+            conversation: std::mem::take(&mut self.conversation),
+            state: std::mem::take(&mut self.state),
+            queued: std::mem::take(&mut self.queued),
+            attachments: std::mem::take(&mut self.attachments),
+        });
+    }
+
+    /// Bring a parked session back, if it is one.
+    ///
+    /// Returns whether it was parked, so the caller can take the cheap path
+    /// instead of starting a second runtime for a session this window already
+    /// owns.
+    fn unpark(&mut self, session_id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self
+            .parked
+            .iter()
+            .position(|parked| parked.id == session_id)
+        else {
+            return false;
+        };
+        let parked = self.parked.remove(index);
+        self.park_running_session();
+        self.session = Some(parked.handle);
+        self._pump = Some(parked.pump);
+        self.conversation = parked.conversation;
+        self.state = parked.state;
+        self.queued = parked.queued;
+        self.attachments = parked.attachments;
+        // The panes read the workspace, and the transcript scroller indexes the
+        // rows it just got back, so both are re-pointed at what was restored.
+        self.files.reset_workspace();
+        self.diffs.invalidate();
+        self.transcript_state
+            .update(cx, |state, cx| state.reset(2, cx));
+        cx.notify();
+        true
     }
 
     /// Advance the transcript through Normal → Thinking → Verbose.
@@ -3044,19 +3195,46 @@ impl TactApp {
     }
 
     /// Fold one agent update into the transcript and session state.
+    /// Fold one update from a session this window owns.
+    ///
+    /// The update belongs to whichever session sent it, not to whichever one is
+    /// on screen, so it is routed by id: the session on screen goes through the
+    /// full path (scroller, diff cache, composer queue), and a parked one is
+    /// folded into its own state so nothing it streamed is lost while the user
+    /// is looking elsewhere.
+    ///
+    /// Returns whether the window still owns the session; `false` ends the pump.
+    fn route_agent_update(
+        &mut self,
+        session_id: &str,
+        update: tact_protocol::AgentUpdate,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.session_id() == Some(session_id) {
+            self.apply_agent_update(update, cx);
+            return true;
+        }
+        let Some(parked) = self
+            .parked
+            .iter_mut()
+            .find(|parked| parked.id == session_id)
+        else {
+            return false;
+        };
+        fold_update(&mut parked.conversation, &mut parked.state, update);
+        true
+    }
+
     fn apply_agent_update(&mut self, update: tact_protocol::AgentUpdate, cx: &mut Context<Self>) {
-        let cancelled = matches!(update, tact_protocol::AgentUpdate::TaskCancelled);
-        let ends_turn = matches!(
-            update,
-            tact_protocol::AgentUpdate::TaskComplete(_)
-                | tact_protocol::AgentUpdate::TaskCancelled
-                | tact_protocol::AgentUpdate::Error(_)
-        );
-        let before = self.state.diff.len();
-        let change = self.conversation.apply(update, &mut self.state);
+        let Folded {
+            change,
+            cancelled,
+            ends_turn,
+            diff_changed,
+        } = fold_update(&mut self.conversation, &mut self.state, update);
         // A newly recorded file change moves the working tree on from whatever
         // the Diff pane cached, so its bodies are re-read on the next frame.
-        if self.state.diff.len() != before {
+        if diff_changed {
             self.diffs.invalidate();
         }
         self.record_change(change, cx);
@@ -8013,6 +8191,75 @@ mod tests {
             crate::layout::LayoutStore::at(&path).load().ui_font,
             None,
             "going back to the theme family is saved too"
+        );
+    }
+
+    /// Switching away from a running session parks it instead of dropping it.
+    ///
+    /// The bug this pins: dropping the `SessionHandle` closes the driver's
+    /// command channel, which cancels the turn in flight, and dropping the pump
+    /// discards whatever the stream had not delivered. The channel staying open
+    /// is the observable: `is_closed` flips the moment the last sender — the
+    /// parked handle — goes away.
+    #[gpui_kit::test]
+    fn switching_away_keeps_a_running_session_alive(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let mut shell = None;
+        let _handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let app = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let shell = shell.expect("the window built a shell");
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let running = SessionHandle::new("running-session".to_string(), commands);
+
+        shell.update(cx, |app, cx| {
+            app.session = Some(running);
+            app.state.running = true;
+            // A real session always has a pump draining its stream; parking
+            // refuses a handle without one, because nobody would read it.
+            app._pump = Some(cx.spawn(async move |_this, _cx| {}));
+
+            // The window moves to another session: `adopt` parks what is on
+            // screen before it installs the replacement.
+            app.park_running_session();
+
+            assert!(
+                app.parked
+                    .iter()
+                    .any(|parked| parked.id == "running-session"),
+                "the running session is parked"
+            );
+            assert!(
+                !dispatched.is_closed(),
+                "the parked session's command channel stays open, so its turn is not cancelled"
+            );
+
+            // Coming back restores the same runtime rather than starting a
+            // second one for the same id.
+            assert!(
+                app.unpark("running-session", cx),
+                "the session is still parked"
+            );
+            assert_eq!(app.session_id(), Some("running-session"));
+            assert!(app.state.running, "and it is still running");
+            assert!(!dispatched.is_closed(), "with its channel intact");
+        });
+
+        shell.update(cx, |app, cx| {
+            app.send_command(UserCommand::Cancel, cx);
+        });
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::Cancel)),
+            "the restored handle can still command the session it parked"
         );
     }
 

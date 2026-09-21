@@ -29,6 +29,25 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Switching sessions stops cancelling the running turn
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`ParkedSession`, `park_running_session`, `unpark`, `route_agent_update`, `fold_update`, `spawn_pump`) |
+
+**Symptom / motivation:** Selecting another session in the sidebar while a turn was running interrupted that turn and lost part of its stream. The cause was structural: `adopt` replaced `self.session` and `self._pump` outright, so the old `SessionHandle` was dropped — closing the driver's command channel and cancelling the turn — and the old pump was dropped with it, discarding whatever the stream had not yet delivered. Coming back then started a *second* runtime for the same id and replayed only what the store had persisted, so anything streamed mid-turn was simply gone.
+
+**Decision:** Park what is still running instead of dropping it. A session with `state.running` set moves into a `ParkedSession` — its handle, its pump, its transcript, its session state, and the queued prompts and attachments that belong to it — and is restored verbatim when the user returns, rather than resumed. Only running sessions are parked: an idle session's transcript is already in the store, so re-resuming it costs one history read, while keeping a runtime alive for every row the user ever clicked would be a leak. The parked set is capped at four for the same reason.
+
+Routing is by session id, because an update belongs to the session that sent it rather than to the one on screen. `fold_update` is the update-folding core lifted out of `apply_agent_update` so it can act on a parked session's `(Conversation, SessionState)` pair; the view-coupled follow-ups — invalidating the Diff pane, nudging the scroller, flushing the composer queue — stay with the caller, since they belong to whatever the window is showing.
+
+**Behavior after:** Switching away from a running turn leaves it running: its command channel stays open, its stream keeps being folded into its own transcript, and switching back shows the live session rather than a rebuilt one. A parked session keeps its queued prompts and staged attachments.
+
+**Known limits, deliberately:** a parked session can only be stopped by switching back to it; the composer's draft text is window-level and is not parked with the session; and parking across a *workspace* switch keeps the old workspace's runtime alive until the four-session cap evicts it.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`switching_away_keeps_a_running_session_alive`); `book/05_chapter_compact.md` is unaffected — this is UI session ownership, not agent-loop state
+
 ## 1. 2026-09-21 — The conversation gets more of the window
 
 | Field | Value |

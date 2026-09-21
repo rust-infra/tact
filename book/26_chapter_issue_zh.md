@@ -29,6 +29,25 @@
 
 ---
 
+## 1. 2026-09-21 — 切换会话不再中断正在运行的任务
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`ParkedSession`、`park_running_session`、`unpark`、`route_agent_update`、`fold_update`、`spawn_pump`） |
+
+**现象 / 动机：** 在一轮任务运行中选择侧栏里的另一个会话，会中断那一轮并丢失部分 stream。根因是结构性的：`adopt` 直接替换 `self.session` 与 `self._pump`，于是旧的 `SessionHandle` 被 drop——driver 的命令通道关闭、任务被取消——旧 pump 也一起被 drop，尚未送达的 stream 数据随之丢失。切回来时又会为同一个 id **再起一个 runtime**，只能重放 store 里已持久化的内容，运行中 stream 出来的部分就永久没了。
+
+**决策：** 把仍在运行的会话**寄存**而不是丢弃。`state.running` 为真的会话会移入 `ParkedSession`——它的 handle、pump、转录、会话状态，以及属于它的排队提示与已选附件——用户切回时原样还原，而不是重新 resume。只寄存运行中的会话：空闲会话的转录已经在 store 里，重新 resume 只是一次历史读取；而给用户点过的每一行都常驻一个 runtime 就是泄漏。基于同样理由，寄存上限为 4 个。
+
+更新按 session id 路由，因为一条更新属于**发出它的**会话，而不是当前显示的那个。`fold_update` 是从 `apply_agent_update` 里抽出的折叠核心，因此也能作用于寄存会话的 `(Conversation, SessionState)`；与视图耦合的后续动作——失效 Diff 缓存、通知滚动器、冲刷 composer 队列——留在调用方，因为它们属于窗口当前显示的内容。
+
+**改后行为：** 从运行中的任务切走，任务继续运行：命令通道保持打开、stream 继续折叠进它自己的转录，切回来看到的是实时会话而不是重建的。寄存的会话保留其排队提示与已选附件。
+
+**已知限制（有意保留）：** 寄存中的会话只有切回去才能 Stop；composer 的草稿文本是窗口级的，不随会话寄存；跨 **workspace** 切换时，旧 workspace 的 runtime 会一直活到四个上限把它淘汰。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`switching_away_keeps_a_running_session_alive`）；`book/05_chapter_compact.md` 不受影响——这是 UI 层的会话归属，不是 agent loop 状态
+
 ## 1. 2026-09-21 — 对话区占更大的窗口比例
 
 | 字段 | 值 |
