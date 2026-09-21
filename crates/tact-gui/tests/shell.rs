@@ -1293,12 +1293,13 @@ fn every_work_pane_renders_content_not_just_a_container(cx: &mut TestAppContext)
             "the default plan pane renders"
         );
 
-        // Tab order is Plan, Diff, Tasks, Subagent, Files.
+        // Tab order is Plan, Diff, Tasks, Subagent, Files, Stats.
         for (index, body) in [
             (0usize, "work-pane-body-plan"),
             (1, "work-pane-body-diff"),
             (3, "work-pane-body-subagent"),
             (4, "work-pane-body-files"),
+            (5, "work-pane-body-stats"),
         ] {
             window.within("work-pane-tabs").click(index, cx);
             window.render_frame(cx);
@@ -3290,7 +3291,7 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         );
 
         // Work pane: every tab, then the control each tab owns.
-        for index in 0..5usize {
+        for index in 0..6usize {
             window.within("work-pane-tabs").click(index, cx);
             window.render_frame(cx);
         }
@@ -3432,6 +3433,58 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         assert!(
             window.try_find("transcript").is_some(),
             "the shell survives the full walk"
+        );
+    })
+    .unwrap();
+}
+
+/// The Stats pane draws the session's own numbers.
+///
+/// The pane is the chart-heavy dashboard the design deferred past v1, so the
+/// contract that matters is that each chart is fed by session state rather than
+/// by its own copy: switching panes must not empty it, and the seeded preview
+/// must produce all three charts.
+#[gpui_kit::test]
+fn the_stats_pane_charts_the_session_state(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(5usize, cx);
+        window.render_frame(cx);
+
+        assert!(
+            window.try_find("work-pane-body-stats").is_some(),
+            "the Stats tab renders its own body id"
+        );
+        for chart in [
+            "stats-tile-tokens",
+            "stats-tile-tasks",
+            "stats-tile-plan",
+            "stats-tile-diff",
+            "stats-chart-tokens",
+            "stats-chart-tasks",
+            "stats-chart-diff",
+        ] {
+            assert!(
+                window.try_find(chart).is_some(),
+                "{chart} is rendered from the seeded session state"
+            );
+        }
+
+        // Leave and come back: the pane reads SessionState at render time, so a
+        // round trip through another tab must not empty it.
+        window.within("work-pane-tabs").click(0usize, cx);
+        window.render_frame(cx);
+        window.within("work-pane-tabs").click(5usize, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("stats-chart-tasks").is_some(),
+            "returning to the Stats tab re-renders its charts"
         );
     })
     .unwrap();

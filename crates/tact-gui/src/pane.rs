@@ -60,16 +60,19 @@ pub enum WorkPane {
     Subagents,
     /// The workspace tree.
     Files,
+    /// Charts over the session's recorded activity.
+    Stats,
 }
 
 impl WorkPane {
     /// Every pane in tab order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Plan,
         Self::Diff,
         Self::Tasks,
         Self::Subagents,
         Self::Files,
+        Self::Stats,
     ];
 
     /// Tab label.
@@ -78,8 +81,28 @@ impl WorkPane {
             Self::Plan => "Plan",
             Self::Diff => "Diff",
             Self::Tasks => "Tasks",
-            Self::Subagents => "Subagent",
+            // "Agents" rather than "Subagent": six chips have to fit inside
+            // the work pane's 420 px column, and the longer word pushed the
+            // last chip past the strip's clipped edge.
+            Self::Subagents => "Agents",
             Self::Files => "Files",
+            Self::Stats => "Stats",
+        }
+    }
+
+    /// Stable id slug, independent of the display label.
+    ///
+    /// The body's element id is what tests and the accessibility surface name;
+    /// tying it to [`Self::label`] meant renaming "Subagent" to "Agents" would
+    /// silently rename every id that pane owns.
+    pub(crate) fn slug(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Diff => "diff",
+            Self::Tasks => "tasks",
+            Self::Subagents => "subagent",
+            Self::Files => "files",
+            Self::Stats => "stats",
         }
     }
 
@@ -107,6 +130,7 @@ impl WorkPane {
             Self::Tasks => Some(state.tasks.len()),
             Self::Subagents => Some(state.subagents.len()),
             Self::Files => None,
+            Self::Stats => None,
         }
     }
 }
@@ -618,11 +642,9 @@ pub(crate) fn view(
         WorkPane::Tasks => tasks(state, tasks_pane, cx).into_any_element(),
         WorkPane::Subagents => subagents(state, cx).into_any_element(),
         WorkPane::Files => files_tree(state, files, cx).into_any_element(),
+        WorkPane::Stats => stats(state, cx).into_any_element(),
     };
-    let body_id = SharedString::from(format!(
-        "work-pane-body-{}",
-        selected.label().to_ascii_lowercase()
-    ));
+    let body_id = SharedString::from(format!("work-pane-body-{}", selected.slug()));
     let footer = work_footer(cx).into_any_element();
     let tabs = work_tabs(selected, state, cx);
 
@@ -2397,6 +2419,427 @@ fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement
 fn rems_for_depth(depth: usize) -> gpui_kit::Rems {
     // `.row2 { padding: 0 7px }` plus the prototype's 12px depth step.
     gpui_kit::rems(depth as f32 * 0.75 + 0.4375)
+}
+
+/// The Stats pane: the session's own numbers, drawn rather than listed.
+///
+/// The prototype parks chart-heavy dashboards past v1, and this is the honest
+/// version of one: everything it draws already exists in [`SessionState`], so
+/// the pane adds a reading of the session rather than a second source of
+/// truth. Three charts answer the three questions a work pane can actually
+/// answer mid-session -- how much context has been spent, how far the tasks
+/// have moved, and which files the change is concentrated in.
+fn stats(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
+    let usage = state.usage.as_ref();
+    let prompt = usage.map(|u| u.prompt).unwrap_or(0);
+    let completion = usage.map(|u| u.completion).unwrap_or(0);
+    let cache_hit = usage.map(|u| u.prompt_cache_hit_tokens).unwrap_or(0);
+    let cache_miss = usage.map(|u| u.prompt_cache_miss_tokens).unwrap_or(0);
+    let reasoning = usage.map(|u| u.reasoning_tokens).unwrap_or(0);
+    let total = usage
+        .map(|u| u.total)
+        .unwrap_or_else(|| prompt.saturating_add(completion));
+
+    let tasks_total = state.tasks.len();
+    let task_buckets = [
+        (
+            "Pending",
+            state
+                .tasks
+                .iter()
+                .filter(|task| task.status == TaskStatusSnapshot::Pending)
+                .count(),
+        ),
+        (
+            "In progress",
+            state
+                .tasks
+                .iter()
+                .filter(|task| task.status == TaskStatusSnapshot::InProgress)
+                .count(),
+        ),
+        (
+            "Completed",
+            state
+                .tasks
+                .iter()
+                .filter(|task| task.status == TaskStatusSnapshot::Completed)
+                .count(),
+        ),
+    ];
+
+    let plan_total = state.plan.len();
+    let plan_done = state.plan_done_at.len().min(plan_total);
+    let plan_failed = state.plan_failed.len();
+
+    let added: u32 = state.diff.iter().filter_map(|entry| entry.added).sum();
+    let removed: u32 = state.diff.iter().filter_map(|entry| entry.removed).sum();
+
+    let running_subagents = state
+        .subagents
+        .iter()
+        .filter(|run| run.status == SubagentStatusSnapshot::Running)
+        .count();
+
+    let context_percent = if total > 0 {
+        ((prompt as u64 * 100) / total as u64).min(100) as u32
+    } else {
+        0
+    };
+
+    let mut body = v_flex().gap_3().child(panel_head(
+        "Session statistics",
+        "Tokens, tasks, and recorded changes for this session",
+        None,
+        cx,
+    ));
+
+    if usage.is_none() && tasks_total == 0 && plan_total == 0 && state.diff.is_empty() {
+        return body
+            .child(empty(
+                "work-pane-empty-stats",
+                "No session activity yet. Statistics appear after the first turn.",
+                cx,
+            ))
+            .into_any_element();
+    }
+
+    body = body.child(
+        h_flex()
+            .w_full()
+            .flex_wrap()
+            .gap_2()
+            .child(stat_tile(
+                "stats-tile-tokens",
+                "Tokens",
+                format_thousands(total),
+                format!("{context_percent}% context"),
+                cx,
+            ))
+            .child(stat_tile(
+                "stats-tile-tasks",
+                "Tasks",
+                format!(
+                    "{} / {}",
+                    tasks_total.saturating_sub(task_buckets[0].1 + task_buckets[1].1),
+                    tasks_total
+                ),
+                format!(
+                    "{} pending · {} running",
+                    task_buckets[0].1, task_buckets[1].1
+                ),
+                cx,
+            ))
+            .child(stat_tile(
+                "stats-tile-plan",
+                "Plan",
+                format!("{plan_done} / {plan_total}"),
+                if plan_failed > 0 {
+                    format!("{plan_failed} failed")
+                } else {
+                    "no failures".to_string()
+                },
+                cx,
+            ))
+            .child(stat_tile(
+                "stats-tile-diff",
+                "Diff",
+                format!("+{added} \u{2212}{removed}"),
+                format!("{} files", state.diff.len()),
+                cx,
+            )),
+    );
+
+    // Token split: one stacked bar plus a legend, so the pane answers "where
+    // did the context go" without a table of six numbers.
+    let token_split = prompt.saturating_add(completion).max(1);
+    let prompt_share = prompt as f32 / token_split as f32;
+    body = body.child(chart_card(
+        "stats-chart-tokens",
+        "Token usage",
+        "Prompt is the context sent; completion is what the model wrote back.",
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(rems(0.75))
+                    .rounded(rems(0.25))
+                    .overflow_hidden()
+                    .bg(cx.theme().muted)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(prompt_share))
+                            .bg(cx.theme().accent),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .text_size(rems(0.6875))
+                    .text_color(crate::theme::ink3(cx))
+                    .child(legend_swatch("Prompt", prompt, cx.theme().accent, cx))
+                    .child(legend_swatch("Completion", completion, cx.theme().info, cx))
+                    .child(legend_swatch(
+                        "Cache hit",
+                        cache_hit,
+                        cx.theme().success,
+                        cx,
+                    ))
+                    .child(legend_swatch(
+                        "Cache miss",
+                        cache_miss,
+                        cx.theme().danger,
+                        cx,
+                    ))
+                    .child(legend_swatch(
+                        "Reasoning",
+                        reasoning,
+                        cx.theme().muted_foreground,
+                        cx,
+                    )),
+            )
+            .into_any_element(),
+        cx,
+    ));
+
+    // Tasks by status: three vertical bars, scaled to the tallest bucket so a
+    // session with one task still reads as a chart rather than a sliver.
+    let tallest = task_buckets
+        .iter()
+        .map(|(_, count)| *count)
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    body = body.child(chart_card(
+        "stats-chart-tasks",
+        "Tasks by status",
+        "The same snapshot the Tasks pane lists, counted.",
+        h_flex()
+            .w_full()
+            .items_end()
+            .gap_3()
+            .h(rems(6.))
+            .children(task_buckets.into_iter().map(|(label, count)| {
+                let share = count as f32 / tallest as f32;
+                v_flex()
+                    .flex_1()
+                    .items_center()
+                    .gap_1()
+                    .child(SharedString::from(count.to_string()))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(rems(4.0 * share))
+                            .min_h(px(2.))
+                            .rounded(rems(0.25))
+                            .bg(cx.theme().accent),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(0.625))
+                            .text_color(crate::theme::ink3(cx))
+                            .child(SharedString::from(label)),
+                    )
+            }))
+            .into_any_element(),
+        cx,
+    ));
+
+    // Changes by file: the top five changed paths by line count, additions over
+    // removals, so a wide change is visible without opening Diff.
+    let mut by_file: Vec<(String, u32, u32)> = state
+        .diff
+        .iter()
+        .map(|entry| {
+            (
+                entry.path.clone(),
+                entry.added.unwrap_or(0),
+                entry.removed.unwrap_or(0),
+            )
+        })
+        .filter(|(_, added, removed)| added + removed > 0)
+        .collect();
+    by_file.sort_by_key(|(_, added, removed)| std::cmp::Reverse(added + removed));
+    by_file.truncate(5);
+
+    if !by_file.is_empty() {
+        let widest = by_file
+            .iter()
+            .map(|(_, added, removed)| added + removed)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        body = body.child(chart_card(
+            "stats-chart-diff",
+            "Changes by file",
+            "The five largest recorded changes, additions over removals.",
+            v_flex()
+                .w_full()
+                .gap_2()
+                .children(by_file.into_iter().map(|(path, added, removed)| {
+                    let share = (added + removed) as f32 / widest as f32;
+                    v_flex()
+                        .w_full()
+                        .gap(rems(0.25))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .text_size(rems(0.6875))
+                                .text_color(crate::theme::ink3(cx))
+                                .child(div().truncate().child(SharedString::from(path)))
+                                .child(SharedString::from(format!("+{added} \u{2212}{removed}"))),
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .h(rems(0.375))
+                                .rounded(rems(0.1875))
+                                .overflow_hidden()
+                                .bg(cx.theme().muted)
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(
+                                            share * added as f32 / (added + removed).max(1) as f32,
+                                        ))
+                                        .bg(cx.theme().success),
+                                )
+                                .child(div().h_full().flex_1().bg(cx.theme().danger.opacity(0.55))),
+                        )
+                }))
+                .into_any_element(),
+            cx,
+        ));
+    }
+
+    if running_subagents > 0 {
+        body = body.child(
+            div()
+                .id("stats-running-subagents")
+                .test_support()
+                .text_sm()
+                .text_color(crate::theme::ink3(cx))
+                .child(SharedString::from(format!(
+                    "{running_subagents} subagent{} running",
+                    if running_subagents == 1 { "" } else { "s" }
+                ))),
+        );
+    }
+
+    body.into_any_element()
+}
+
+/// One number with its label and a subordinate hint.
+fn stat_tile(
+    id: &'static str,
+    label: &'static str,
+    value: String,
+    hint: String,
+    cx: &App,
+) -> impl IntoElement {
+    v_flex()
+        .id(id)
+        .test_support()
+        .aria_label(SharedString::from(format!("{label}: {value}")))
+        .min_w(rems(7.5))
+        .flex_1()
+        .gap(rems(0.25))
+        .rounded(rems(0.5))
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().muted)
+        .px_2()
+        .py(rems(0.5))
+        .child(
+            div()
+                .text_size(rems(0.625))
+                .text_color(crate::theme::ink3(cx))
+                .child(SharedString::from(label)),
+        )
+        .child(
+            div()
+                .text_color(cx.theme().foreground)
+                .child(SharedString::from(value)),
+        )
+        .child(
+            div()
+                .text_size(rems(0.625))
+                .text_color(crate::theme::ink3(cx))
+                .child(SharedString::from(hint)),
+        )
+}
+
+/// A bordered card with a heading, a subtitle, and one chart body.
+fn chart_card(
+    id: &'static str,
+    title: &'static str,
+    subtitle: &'static str,
+    body: AnyElement,
+    cx: &App,
+) -> impl IntoElement {
+    v_flex()
+        .id(id)
+        .test_support()
+        .w_full()
+        .gap_2()
+        .rounded(rems(0.5))
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().popover)
+        .p_2()
+        .child(
+            v_flex()
+                .gap(rems(0.125))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(SharedString::from(title)),
+                )
+                .child(
+                    div()
+                        .text_size(rems(0.625))
+                        .text_color(crate::theme::ink3(cx))
+                        .child(SharedString::from(subtitle)),
+                ),
+        )
+        .child(body)
+}
+
+/// A colored square, a name, and a count in one legend entry.
+fn legend_swatch(
+    label: &'static str,
+    count: u32,
+    color: gpui_kit::Hsla,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .items_center()
+        .gap(rems(0.25))
+        .child(div().size(rems(0.5)).rounded(rems(0.125)).bg(color))
+        .child(SharedString::from(label))
+        .child(
+            div()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_color(cx.theme().foreground)
+                .child(SharedString::from(format_thousands(count))),
+        )
+}
+
+/// Group thousands so a six-figure token count stays readable.
+fn format_thousands(value: u32) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Muted placeholder used by every empty pane.
