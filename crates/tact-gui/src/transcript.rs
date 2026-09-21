@@ -651,7 +651,23 @@ pub(crate) fn render_row(
                             .text_size(rems(0.84375))
                             .line_height(relative(1.62))
                             .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(text.clone())),
+                            // Reasoning is written as Markdown by every
+                            // provider that emits it, so it goes through the
+                            // same renderer as the answer rather than being
+                            // shown as one run of literal asterisks and
+                            // backticks.
+                            .child(
+                                TextView::markdown(
+                                    SharedString::from(format!("thinking-{index}")),
+                                    SharedString::from(text.clone()),
+                                )
+                                .selectable(true)
+                                .font_family(SharedString::from(crate::theme::PROSE_FONT_FAMILY))
+                                .text_size(rems(0.84375))
+                                .line_height(relative(1.62))
+                                .markdown_block_parser(parse_code_block)
+                                .markdown_block_renderer(CODE_BLOCK, render_code_block),
+                            ),
                     )
                 })
                 .test_support()
