@@ -183,6 +183,14 @@ The production shell now verifies the items that Phase 2 could only park:
   read. Adding it made the work-pane strip six chips wide, which is what settled
   the `Subagent` → `Agents` display rename: the strip clips its last chip, so the
   shorter label is a correctness fix, not a preference.
+- **Focus rings are not drawn.** The prototype specifies
+  `:focus-visible{outline:2px solid var(--accent)}`, and the shell drew the same
+  ring on every focusable row, tab, and button. It is off now: in a desktop
+  window the pointer and the window chrome already say what has attention, and
+  a ring on a pressed control reads as a second selection. The *tab stops* are
+  untouched — Tab/arrow traversal and the command palette still move focus, so
+  this removes the drawing, not the navigation. `focus_visible_ring` returns an
+  empty shadow list, which is the one place the ring was defined.
 - The conversation is wider than the prototype's board. Two deliberate
   deviations, both from the product owner: the work pane opens at 384 px instead
   of the prototype's 420 px, and `.thread`'s measure cap moved from 720 px to

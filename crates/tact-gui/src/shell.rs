@@ -4946,11 +4946,18 @@ impl SessionBadge {
 /// the background and before the children, so it stays a 2 px ring whatever the
 /// background is.
 pub(crate) fn focus_visible_ring(cx: &App) -> Vec<gpui_kit::gpui::BoxShadow> {
-    vec![
-        gpui_kit::gpui::BoxShadow::new(px(0.), px(0.), cx.theme().primary)
-            .spread_radius(px(2.))
-            .inset(),
-    ]
+    // No ring: this is a desktop window, where the pointer and the window
+    // chrome already say what has the user's attention, and a ring drawn on a
+    // pressed control reads as a second selection rather than as keyboard
+    // affordance. The tab stops stay — arrow/Tab traversal and the command
+    // palette still move focus — so this removes the *drawing*, not the
+    // navigation.
+    //
+    // The prototype still specifies `:focus-visible{outline:2px solid
+    // var(--accent)}`; this is a deliberate deviation, recorded in
+    // `docs/design/tact-desktop-design-review.md`.
+    let _ = cx;
+    Vec::new()
 }
 
 /// One sidebar session row: status dot, title, and a metadata badge.
