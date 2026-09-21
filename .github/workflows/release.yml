@@ -15,6 +15,11 @@ env:
   CRATE_PACKAGE: tact-ui
   GUI_BINARY_NAME: tact-gui
   GUI_CRATE_PACKAGE: tact-gui
+  # The updater's public key is compiled into the app (`option_env!`), so it has
+  # to be set for every binary build, not only for the packaging step — the
+  # tarball path ships a binary built earlier in the job. A repository variable,
+  # not a secret: it is the public half.
+  TACT_UPDATE_PUBKEY: ${{ vars.TACT_UPDATE_PUBKEY }}
 
 jobs:
   build:
@@ -101,7 +106,6 @@ jobs:
         # manifest when the artifacts carry signatures.
         env:
           CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY }}
-          TACT_UPDATE_PUBKEY: ${{ vars.TACT_UPDATE_PUBKEY }}
         run: |
           set -euo pipefail
           case "${RUNNER_OS}" in
