@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 gpui-kit = "0.6.4"
+libc = { workspace = true }
 portable-pty = "0.9"
 vt100 = "0.16"
 tact-session = { path = "../tact-session" }

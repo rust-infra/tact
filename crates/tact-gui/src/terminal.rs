@@ -269,7 +269,20 @@ impl TerminalPane {
 impl Drop for TerminalPane {
     fn drop(&mut self) {
         // The shell is this pane's child; closing the window must not leave it
-        // running. `kill` on an already-exited child is harmless.
+        // running, and neither must anything the shell started in the
+        // background. `portable-pty` spawns the child as a session leader, so
+        // its pid is also its process-group id: signalling the group reaches
+        // jobs the shell left running, which a signal to the shell alone would
+        // miss. Both calls are harmless once the child has already exited.
+        #[cfg(unix)]
+        if let Some(pid) = self.child.process_id() {
+            // SAFETY: `killpg` is a plain libc call; the pid came from the child
+            // this pane spawned, and a group that no longer exists returns an
+            // error we ignore.
+            unsafe {
+                libc::killpg(pid as libc::pid_t, libc::SIGHUP);
+            }
+        }
         let _ = self.child.kill();
     }
 }

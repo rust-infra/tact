@@ -9119,6 +9119,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "gpui-kit",
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",
