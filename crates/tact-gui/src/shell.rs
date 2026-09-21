@@ -889,12 +889,35 @@ impl TactApp {
     }
 
     /// Ask the provider for its model ids and publish them to the picker.
+    ///
+    /// The query is HTTP, and the HTTP client is built on Tokio: driving that
+    /// future from GPUI's background executor panics with "there is no reactor
+    /// running", because GPUI's executor is not a Tokio runtime. So the request
+    /// gets a runtime of its own on a plain thread — the same shape
+    /// `tact_session` uses for its own blocking calls — and the result comes
+    /// back over a channel the window can await.
     fn fetch_model_options(&self, cx: &mut Context<Self>) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("tact-gui-models".to_string())
+            .spawn(move || {
+                let models = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime.block_on(tact_llm::models::ensure_api_model_ids()),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not start a runtime for the model query");
+                        Vec::new()
+                    }
+                };
+                let _ = sender.send(models);
+            })
+            .ok();
         cx.spawn(async move |this, cx| {
-            let models = cx
-                .background_executor()
-                .spawn(async { tact_llm::models::ensure_api_model_ids().await })
-                .await;
+            let Ok(models) = receiver.await else {
+                return;
+            };
             let _ = this.update(cx, |app, cx| {
                 app.state.model_options = models;
                 cx.notify();

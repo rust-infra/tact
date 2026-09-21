@@ -57,7 +57,7 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-tokio = { workspace = true, features = ["sync", "macros"] }
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time", "net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
