@@ -274,6 +274,15 @@ pub(crate) struct SessionState {
     pub(crate) turns: Option<(u32, Option<u32>)>,
     /// Model parameters from the last request.
     pub(crate) model: Option<ModelCallParams>,
+    /// Model ids the provider advertises, newest fetch wins.
+    ///
+    /// The picker used to offer a hardcoded list of five slugs, which is a
+    /// guess about someone else's account: it named models the provider may not
+    /// serve and could not name the ones it did. This is what the provider
+    /// actually reports (`GET {base_url}/models` where the API supports it),
+    /// and an empty list means "unknown", which the picker says out loud
+    /// instead of inventing options.
+    pub(crate) model_options: Vec<String>,
     /// The agent has a turn in flight.
     pub(crate) running: bool,
     /// A blocking choice the agent is waiting on. Answering it appends a

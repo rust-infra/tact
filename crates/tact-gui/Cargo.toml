@@ -51,6 +51,7 @@ url = "2"
 portable-pty = "0.9"
 vt100 = "0.16"
 tact-session = { path = "../tact-session" }
+tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }
 anyhow = { workspace = true }
 serde = { workspace = true }

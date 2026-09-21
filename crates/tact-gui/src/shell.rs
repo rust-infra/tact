@@ -549,6 +549,16 @@ impl TactApp {
 
     /// Fill the panes with the prototype's demo task.
     fn seed_preview(&mut self, cx: &mut Context<Self>) {
+        // Demo models for the design preview. A connected window asks the
+        // provider instead (see `fetch_model_options`); this list exists so the
+        // preview and the click walks have a populated picker to exercise.
+        self.state.model_options = vec![
+            "claude-sonnet-4-5".to_string(),
+            "claude-opus-4-1".to_string(),
+            "gpt-5".to_string(),
+            "deepseek-chat".to_string(),
+            "kimi-k2-0905-preview".to_string(),
+        ];
         self.state.plan = preview_plan();
         self.state.tasks = preview_tasks();
         self.state.subagents = preview_subagents();
@@ -816,10 +826,11 @@ impl TactApp {
             }
             None => (None, None),
         };
+        let live_connected = session.is_some();
         let workdir = std::env::current_dir().ok();
         let branch = workdir.as_deref().and_then(git_branch);
 
-        Self {
+        let app = Self {
             workspace: Workspace::Chat,
             sidebar_open: true,
             work_pane_open: true,
@@ -868,7 +879,28 @@ impl TactApp {
             terminal_epoch: 0,
             layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
+        };
+        // A connected window asks the provider what it serves, once, off the UI
+        // thread. An offline shell has no provider to ask.
+        if live_connected {
+            app.fetch_model_options(cx);
         }
+        app
+    }
+
+    /// Ask the provider for its model ids and publish them to the picker.
+    fn fetch_model_options(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let models = cx
+                .background_executor()
+                .spawn(async { tact_llm::models::ensure_api_model_ids().await })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.state.model_options = models;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Snapshot the shell's arrangement in the persisted shape.
@@ -6717,18 +6749,14 @@ fn prompt_composer(
     let add_owner = owner.clone();
     let model_owner = owner.clone();
     let permission_owner = owner.clone();
-    let model_options = [
-        "claude-sonnet-4-5",
-        "claude-opus-4-1",
-        "gpt-5",
-        "deepseek-chat",
-        "kimi-k2-0905-preview",
-    ];
     let current_model = session
         .model
         .as_ref()
         .map(|model| model.model.clone())
         .unwrap_or_else(|| "Tact".to_string());
+    // Cloned for the popover's `'static` content closure, which is rebuilt on
+    // every open rather than borrowing the session.
+    let model_options = session.model_options.clone();
     let current_effort = session
         .model
         .as_ref()
@@ -6833,6 +6861,22 @@ fn prompt_composer(
                         .text_color(muted_foreground)
                         .child(SharedString::from("Model")),
                 );
+            if model_options.is_empty() {
+                // Honest empty state: the provider did not report a list, so
+                // the picker shows the model in use and says why it has nothing
+                // else to offer rather than guessing at slugs.
+                panel = panel.child(
+                    div()
+                        .id("composer-model-unknown")
+                        .test_support()
+                        .max_w(rems(18.))
+                        .text_xs()
+                        .text_color(muted_foreground)
+                        .child(SharedString::from(
+                            "The provider has not reported a model list; this session uses the model above.",
+                        )),
+                );
+            }
             for model in model_options.iter() {
                 let owner = model_owner.clone();
                 let model = model.to_string();
