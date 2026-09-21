@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-21 — Plan steps expand, fail visibly, jump to the transcript, and retry through the agent
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/session.rs` (`SessionState::plan_expanded`, `plan_failed`, `Conversation::reveal_tool`, `mark_plan_step`); `crates/tact-gui/src/pane.rs` (`plan_step_row`); `crates/tact-gui/src/shell.rs` (`toggle_plan_step`, `retry_plan_step`, `open_plan_step_transcript`, `submit_pane_prompt`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` |
+
+**Symptom / motivation:** The Plan pane rendered the prototype's rows and progress bar, but the spec's row actions were still decorative. A user could not expand a step to inspect its input or result, tell a failed tool from a successful one, jump to the tool card that produced the step, or retry a failed step. The row also stored the first terminal result without distinguishing status, so a later success could not clear a prior failure.
+
+**Decision:** Keep plan state in `SessionState`: `plan_expanded` remembers which rows the user opened, and `plan_failed` records terminal failures by step index. `StepFinished` uses `result.status` and records `result.message`; `StepFailed` records the error string, and either terminal success clears the failed bit. A row click toggles its detail block. Failed rows render the danger state and add Retry. Retry submits a new `SubmitTask` containing the recorded tool and arguments, leaving execution, history, permissions, and provider state with the driver rather than reaching around the protocol. Open transcript uses `Conversation::reveal_tool` to expand the owning tool card, remeasures it, and scrolls it into view; a missing card reports that no transcript row exists yet.
+
+**Behavior after:** Plan rows expand to show input, result/error, and available actions. A failed step is visibly failed and can be retried; retrying sends the agent a new instruction for the recorded tool and arguments. Open transcript expands and scrolls to the existing tool card. An offline shell with no attached session refuses retry with a system notice instead of pretending it sent work.
+
+**Pointers:** `crates/tact-gui/src/session.rs` (`plan_step_tracks_failure_and_clears_it_when_the_tool_succeeds`, `step_failed_records_the_error_on_the_plan_step`, `reveal_tool_opens_the_tool_card_and_returns_its_row`); `crates/tact-gui/src/shell.rs` (`failed_plan_step_expands_to_retry_and_transcript_controls`, `opening_a_plan_step_transcript_expands_the_tool_card`, `retrying_a_failed_plan_step_submits_the_recorded_tool_and_args`); `crates/tact-gui/src/pane.rs` (`PlanStepRowState`, `plan_step_row`); `docs/design/tact-desktop-design-review.md`
+
 ## 1. 2026-09-21 — Assistant prose uses the bundled Lora editorial face
 
 | Field | Value |

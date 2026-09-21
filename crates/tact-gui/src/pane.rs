@@ -14,7 +14,7 @@ use std::{
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
-    ActiveTheme as _,
+    ActiveTheme as _, Icon,
     button::{Button, ButtonVariants as _},
     h_flex,
     scroll::ScrollableElement as _,
@@ -23,7 +23,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
-    relative, rems,
+    radians, relative, rems,
 };
 
 use gpui_kit::assets::IconName;
@@ -710,7 +710,8 @@ fn plan(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
                 .into_any_element(),
         ),
         cx,
-    );
+    )
+    .into_any_element();
 
     if total == 0 {
         return v_flex().w_full().child(head).child(empty(
@@ -749,7 +750,23 @@ fn plan(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
     let plan_len = state.plan.len();
     for (index, step) in state.plan.iter().enumerate() {
         let done_at = state.plan_done_at.get(&index).copied();
-        work.push(plan_step_row(index, plan_len, current, step, done_at, cx).into_any_element());
+        let expanded = state.plan_expanded.contains(&index);
+        let failed = state.plan_failed.contains(&index);
+        work.push(
+            plan_step_row(
+                index,
+                step,
+                PlanStepRowState {
+                    len: plan_len,
+                    current,
+                    done_at,
+                    expanded,
+                    failed,
+                },
+                cx,
+            )
+            .into_any_element(),
+        );
     }
 
     let mut body = v_flex()
@@ -842,20 +859,41 @@ fn plan_bar_width(percent: usize) -> f32 {
 }
 
 /// One plan row: status glyph, description, detail, and a trailing state.
-fn plan_step_row(
-    index: usize,
+#[derive(Clone, Copy)]
+struct PlanStepRowState {
     len: usize,
     current: Option<usize>,
-    step: &tact_protocol::PlanStep,
     done_at: Option<i64>,
-    cx: &App,
+    expanded: bool,
+    failed: bool,
+}
+
+fn plan_step_row(
+    index: usize,
+    step: &tact_protocol::PlanStep,
+    state: PlanStepRowState,
+    cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
+    let PlanStepRowState {
+        len,
+        current,
+        done_at,
+        expanded,
+        failed,
+    } = state;
     let executed = step.output.is_some();
     let is_current = current == Some(index);
     let is_last = index + 1 == len;
     let line = cx.theme().border;
     let hover_bg = cx.theme().muted;
-    let (icon, fg, bg, trailing) = if executed {
+    let (icon, fg, bg, trailing) = if failed {
+        (
+            IconName::X,
+            cx.theme().danger,
+            cx.theme().danger.opacity(crate::theme::tint_alpha(cx)),
+            "failed".to_string(),
+        )
+    } else if executed {
         (
             IconName::Check,
             cx.theme().success,
@@ -884,56 +922,182 @@ fn plan_step_row(
         )
     };
 
-    h_flex()
-        .id(SharedString::from(format!("plan-step-{index}")))
+    let row =
+        h_flex()
+            .id(SharedString::from(format!("plan-step-{index}")))
+            .test_support()
+            .w_full()
+            .min_h(rems(2.625))
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .when(!is_last || expanded, |row| {
+                row.border_b_1().border_color(line)
+            })
+            .when(is_current, |row| row.bg(crate::theme::accent_tint(cx)))
+            .hover(move |row| row.bg(hover_bg))
+            .px(rems(0.625))
+            .py(rems(0.4375))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_plan_step(index, cx)))
+            .child(
+                div()
+                    .size(rems(1.125))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(bg)
+                    .text_color(fg)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon),
+            )
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .flex_1()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(rems(0.71875))
+                            .font_semibold()
+                            .child(SharedString::from(step.description.clone())),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(rems(0.65625))
+                            .text_color(crate::theme::ink3(cx))
+                            .child(SharedString::from(step.tool.clone())),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_size(rems(0.59375))
+                    .text_color(if failed {
+                        cx.theme().danger
+                    } else {
+                        crate::theme::ink3(cx)
+                    })
+                    .child(SharedString::from(trailing)),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(div().size(rems(0.875)).child(
+                        Icon::new(IconName::ChevronRight).rotate(radians(if expanded {
+                            std::f32::consts::FRAC_PI_2
+                        } else {
+                            0.0
+                        })),
+                    )),
+            );
+
+    let mut detail = v_flex()
         .w_full()
-        .min_h(rems(2.625))
-        .items_center()
-        .gap_2()
-        .when(!is_last, |row| row.border_b_1().border_color(line))
-        .when(is_current, |row| row.bg(crate::theme::accent_tint(cx)))
-        .hover(move |row| row.bg(hover_bg))
-        .px(rems(0.625))
-        .py(rems(0.4375))
-        .child(
-            div()
-                .size(rems(1.125))
-                .flex_shrink_0()
-                .rounded_full()
-                .bg(bg)
-                .text_color(fg)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon),
-        )
-        .child(
+        .gap(rems(0.5))
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().popover)
+        .px(rems(2.375))
+        .py(rems(0.625));
+
+    if !step.args.is_empty() {
+        let args = step
+            .args
+            .iter()
+            .map(|(key, value)| format!("{key}: {value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        detail = detail.child(
             v_flex()
-                .min_w_0()
-                .flex_1()
+                .w_full()
+                .gap(rems(0.1875))
                 .child(
                     div()
-                        .truncate()
-                        .text_size(rems(0.71875))
+                        .text_size(rems(0.59375))
                         .font_semibold()
-                        .child(SharedString::from(step.description.clone())),
+                        .text_color(crate::theme::ink3(cx))
+                        .child(SharedString::from("INPUT")),
                 )
                 .child(
                     div()
-                        .truncate()
-                        .text_size(rems(0.65625))
-                        .text_color(crate::theme::ink3(cx))
-                        .child(SharedString::from(step.tool.clone())),
+                        .w_full()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_size(rems(0.640625))
+                        .line_height(relative(1.5))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(args)),
                 ),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .font_family(cx.theme().mono_font_family.clone())
-                .text_size(rems(0.59375))
-                .text_color(crate::theme::ink3(cx))
-                .child(SharedString::from(trailing)),
-        )
+        );
+    }
+
+    detail = detail.child(
+        v_flex()
+            .w_full()
+            .gap(rems(0.1875))
+            .child(
+                div()
+                    .text_size(rems(0.59375))
+                    .font_semibold()
+                    .text_color(crate::theme::ink3(cx))
+                    .child(SharedString::from(if failed { "ERROR" } else { "RESULT" })),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_size(rems(0.640625))
+                    .line_height(relative(1.5))
+                    .text_color(if failed {
+                        cx.theme().danger
+                    } else {
+                        cx.theme().muted_foreground
+                    })
+                    .child(SharedString::from(
+                        step.output
+                            .clone()
+                            .unwrap_or_else(|| "Waiting to run.".to_string()),
+                    )),
+            ),
+    );
+
+    let mut actions = h_flex().items_center().gap(rems(0.375));
+    if !step.tool_id.is_empty() {
+        let tool_id = step.tool_id.clone();
+        actions = actions.child(
+            prototype_button(
+                SharedString::from(format!("plan-step-open-{index}")),
+                false,
+                cx,
+            )
+            .label("Open transcript")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_plan_step_transcript(&tool_id, cx);
+            })),
+        );
+    }
+    if failed {
+        actions = actions.child(
+            prototype_button(
+                SharedString::from(format!("plan-step-retry-{index}")),
+                false,
+                cx,
+            )
+            .label("Retry")
+            .on_click(cx.listener(move |this, _, _, cx| this.retry_plan_step(index, cx))),
+        );
+    }
+    if !step.tool_id.is_empty() || failed {
+        detail = detail.child(actions);
+    }
+
+    v_flex()
+        .w_full()
+        .child(row)
+        .when(expanded, |container| container.child(detail))
 }
 
 /// File changes recorded from write and edit tool results.

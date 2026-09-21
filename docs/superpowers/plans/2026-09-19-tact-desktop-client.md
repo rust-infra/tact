@@ -155,9 +155,11 @@ Exit criteria:
 
 Verified: Plan, Diff, Tasks, Subagent, and Files render from protocol
 snapshots; the Files pane sorts directories first and hides dotfiles by
-default; narrow windows use the work-pane drawer and sidebar overlay. Session
-adoption resets transcript, request, diff, task, and subagent state with the
-session's `SessionState`; Files expansion is an app-level navigation preference.
+default; Plan rows expand to their input/result, failed steps can retry through
+the agent, and Open transcript reveals the matching tool card; narrow windows
+use the work-pane drawer and sidebar overlay. Session adoption resets
+transcript, request, diff, task, and subagent state with the session's
+`SessionState`; Files expansion is an app-level navigation preference.
 
 ## Phase 7 — Commands, settings, and polish
 

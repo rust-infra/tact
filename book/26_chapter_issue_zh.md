@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-21 — Plan 步骤可展开、失败可见、跳转转录，并通过 agent 重试
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/session.rs`（`SessionState::plan_expanded`、`plan_failed`、`Conversation::reveal_tool`、`mark_plan_step`）；`crates/tact-gui/src/pane.rs`（`plan_step_row`）；`crates/tact-gui/src/shell.rs`（`toggle_plan_step`、`retry_plan_step`、`open_plan_step_transcript`、`submit_pane_prompt`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` |
+
+**现象 / 动机：** Plan 面板虽然画出了原型里的步骤行和进度条，但规格里为行定义的动作仍然只是装饰。用户不能展开步骤查看输入和结果，不能区分失败工具与成功工具，不能跳到产生该步骤的工具卡，也不能重试失败步骤。步骤只保存第一次终态结果、却不记录状态，所以后续成功也无法清掉先前的失败。
+
+**决策：** 把计划状态留在 `SessionState`：`plan_expanded` 记住用户展开过哪些行，`plan_failed` 按步骤下标记录终态失败。`StepFinished` 依据 `result.status` 记录 `result.message`；`StepFailed` 记录错误字符串；任一终态成功都会清掉 failed 位。点击行切换详情块。失败行使用 danger 状态并显示 Retry。Retry 会提交一条新的 `SubmitTask`，其中带上已记录的工具和参数，把执行、历史、权限和 provider 状态继续留给 driver，而不是绕过协议直接调用工具。Open transcript 通过 `Conversation::reveal_tool` 展开拥有该步骤的工具卡、重新测量并滚动到它；如果卡片尚不存在，则明确提示没有可跳转的转录行。
+
+**改后行为：** Plan 行可以展开查看输入、结果/错误和可用动作。失败步骤会明确显示失败并可重试；重试会向 agent 发送一次带记录工具与参数的新指令。Open transcript 会展开并滚动到已有的工具卡。离线且未附着 session 的壳层会拒绝重试并写入系统提示，而不是假装已经发送工作。
+
+**指针：** `crates/tact-gui/src/session.rs`（`plan_step_tracks_failure_and_clears_it_when_the_tool_succeeds`、`step_failed_records_the_error_on_the_plan_step`、`reveal_tool_opens_the_tool_card_and_returns_its_row`）；`crates/tact-gui/src/shell.rs`（`failed_plan_step_expands_to_retry_and_transcript_controls`、`opening_a_plan_step_transcript_expands_the_tool_card`、`retrying_a_failed_plan_step_submits_the_recorded_tool_and_args`）；`crates/tact-gui/src/pane.rs`（`PlanStepRowState`、`plan_step_row`）；`docs/design/tact-desktop-design-review.md`
+
 ## 1. 2026-09-21 — 助手正文改用随应用打包的 Lora editorial 字体
 
 | 字段 | 值 |

@@ -1830,6 +1830,88 @@ impl TactApp {
         self.files.on_toggle(path);
     }
 
+    /// Expand or collapse one Plan step.
+    pub(crate) fn toggle_plan_step(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.state.plan_expanded.remove(&index) {
+            self.state.plan_expanded.insert(index);
+        }
+        cx.notify();
+    }
+
+    /// Ask the agent to retry the tool behind a failed Plan step.
+    ///
+    /// Retry is a new instruction, not a replayed tool call: the agent owns the
+    /// session history and provider state, so the GUI asks it to repeat the
+    /// failed step with the recorded tool and arguments rather than reaching
+    /// around the protocol to execute a tool itself.
+    pub(crate) fn retry_plan_step(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(step) = self.state.plan.get(index).cloned() else {
+            return;
+        };
+        let arguments = step
+            .args
+            .iter()
+            .map(|(key, value)| format!("{key}: {value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = if arguments.is_empty() {
+            format!(
+                "Retry failed plan step {}: {}\nUse the tool `{}` with the same intent.",
+                index + 1,
+                step.description,
+                step.tool
+            )
+        } else {
+            format!(
+                "Retry failed plan step {}: {}\nUse the tool `{}` with these arguments:\n{}",
+                index + 1,
+                step.description,
+                step.tool,
+                arguments
+            )
+        };
+        self.submit_pane_prompt(prompt, cx);
+    }
+
+    /// Jump from a Plan step to its tool card in the transcript.
+    pub(crate) fn open_plan_step_transcript(&mut self, tool_id: &str, cx: &mut Context<Self>) {
+        match self.conversation.reveal_tool(tool_id) {
+            Some(index) => {
+                self.record_change(Change::Resized(index), cx);
+                self.scroll_transcript_to(index, cx);
+            }
+            None => self.push_system_row(
+                "No transcript row is available for this plan step yet.".to_string(),
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    /// Submit text produced by a work-pane action through the same queue as a
+    /// composer draft.
+    pub(crate) fn submit_pane_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
+        if self.session.is_none() {
+            self.push_system_row(
+                "No agent session is attached; the pane action was not sent.".to_string(),
+                cx,
+            );
+            return;
+        }
+        self.conversation.push_user(prompt.clone());
+        self.record_change(Change::Appended(1), cx);
+        if self.state.running {
+            self.queued.push_back(prompt);
+            self.push_system_row(
+                "Queued — sends when the current turn finishes.".to_string(),
+                cx,
+            );
+        } else {
+            self.dispatch(prompt, cx);
+        }
+        cx.notify();
+    }
+
     /// Append a local notice to the transcript without an agent session.
     ///
     /// The offline shell uses this for startup messages, and tests use it to
@@ -6256,6 +6338,163 @@ mod tests {
             matches!(dispatched.try_recv(), Ok(UserCommand::SubmitTask(task)) if task == "Ship the diff"),
             "an idle shell hands the draft to the session"
         );
+    }
+
+    #[gpui_kit::test]
+    fn failed_plan_step_expands_to_retry_and_transcript_controls(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let shell = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, None);
+                let mut step = tact_protocol::PlanStep::new(
+                    "Run the focused test",
+                    "bash",
+                    "tool_1",
+                    [("command", "cargo test -p tact-gui")],
+                );
+                step.output = Some("test failed".to_string());
+                app.state.plan.push(step);
+                app.state.plan_failed.insert(0);
+                app
+            });
+            Root::new(shell, window, cx)
+        });
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("plan-step-retry-0").is_none(),
+                "retry stays behind the collapsed step row"
+            );
+
+            window.click("plan-step-0", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("plan-step-open-0").is_some(),
+                "an expanded step exposes its transcript jump"
+            );
+            assert!(
+                window.try_find("plan-step-retry-0").is_some(),
+                "a failed step exposes retry"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn opening_a_plan_step_transcript_expands_the_tool_card(cx: &mut gpui_kit::TestAppContext) {
+        use crate::transcript::TranscriptRow;
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let mut shell = None;
+        let handle = cx
+            .open_window(size(px(1440.), px(900.)), |window, cx| {
+                let app = cx.new(|cx| {
+                    let mut app = super::TactApp::with_workspace(window, cx, None);
+                    app.state.plan.push(tact_protocol::PlanStep::new(
+                        "Read the protocol",
+                        "read_file",
+                        "tool_1",
+                        [("path", "crates/protocol/src/agent.rs")],
+                    ));
+                    app.state.plan_expanded.insert(0);
+                    app.conversation.apply(
+                        tact_protocol::AgentUpdate::StepStarted {
+                            idx: 0,
+                            tool_id: "tool_1".into(),
+                            tool_name: "read_file".into(),
+                            arg_summary: "crates/protocol/src/agent.rs".into(),
+                            arg_full: String::new(),
+                            presentation: tact_protocol::ToolPresentationInfo::generic("Read"),
+                        },
+                        &mut app.state,
+                    );
+                    app
+                });
+                shell = Some(app.clone());
+                Root::new(app, window, cx)
+            })
+            .into();
+
+        let shell = shell.expect("the window built a shell");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("plan-step-open-0", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        assert!(
+            matches!(
+                &shell.update(cx, |app, _| app.conversation.rows()[0].clone()),
+                TranscriptRow::Tool { expanded: true, .. }
+            ),
+            "opening the transcript expands the card the plan step points at"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn retrying_a_failed_plan_step_submits_the_recorded_tool_and_args(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| {
+                let mut app = super::TactApp::with_workspace(window, cx, None);
+                app.session = Some(session);
+                app.state.plan.push(tact_protocol::PlanStep::new(
+                    "Run the focused test",
+                    "bash",
+                    "tool_1",
+                    [("command", "cargo test -p tact-gui")],
+                ));
+                app.state.plan_failed.insert(0);
+                app.state.plan_expanded.insert(0);
+                app
+            });
+            Root::new(shell, window, cx)
+        });
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("plan-step-retry-0", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        assert!(
+            matches!(
+                dispatched.try_recv(),
+                Ok(UserCommand::SubmitTask(prompt))
+                    if prompt.contains("Retry failed plan step 1")
+                        && prompt.contains("bash")
+                        && prompt.contains("cargo test -p tact-gui")
+            ),
+            "retry asks the agent to rerun the recorded step"
+        );
+        assert!(dispatched.try_recv().is_err(), "retry dispatches once");
     }
 
     /// The palette-only commands reach the session as protocol commands.

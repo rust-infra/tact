@@ -225,6 +225,14 @@ pub(crate) struct SessionState {
     /// wholesale (the design preview) simply has no stamps, instead of leaving
     /// a parallel vector to fall out of step with the list.
     pub(crate) plan_done_at: HashMap<usize, i64>,
+    /// Plan steps the user expanded in the work pane.
+    pub(crate) plan_expanded: HashSet<usize>,
+    /// Plan steps whose tool reported a failure.
+    ///
+    /// `PlanStep::output` records that a step ran but not whether it succeeded;
+    /// retry needs that distinction, so the fold records failed step indices
+    /// separately from the human-readable output.
+    pub(crate) plan_failed: HashSet<usize>,
     /// Latest persistent task snapshot.
     pub(crate) tasks: Vec<TaskSnapshot>,
     /// Latest subagent run snapshot.
@@ -566,7 +574,17 @@ impl Conversation {
                 }
                 // The plan pane only ever pushed steps; without this it would
                 // claim every step is still pending after the tool ran.
-                mark_plan_step(state, &tool_id, detail.clone());
+                let plan_output = if result.message.trim().is_empty() {
+                    detail.clone()
+                } else {
+                    result.message.clone()
+                };
+                mark_plan_step(
+                    state,
+                    &tool_id,
+                    plan_output,
+                    result.status == StepStatus::Failed,
+                );
                 self.set_tool(
                     &tool_id,
                     display_name(&result.presentation.display_name, &result.tool),
@@ -588,7 +606,7 @@ impl Conversation {
                 } else {
                     format!("{} — {}", first_line(&arg_summary), first_line(&error))
                 };
-                mark_plan_step(state, &tool_id, detail.clone());
+                mark_plan_step(state, &tool_id, error.clone(), true);
                 self.set_tool(
                     &tool_id,
                     self.tool_name(&tool_id).unwrap_or_else(|| "Tool".into()),
@@ -994,6 +1012,19 @@ impl Conversation {
         }
     }
 
+    /// Open a tool row and return its transcript index.
+    ///
+    /// Plan rows link back to the tool card that ran them. The card may have
+    /// been collapsed automatically when it finished, so the jump also opens
+    /// it rather than merely scrolling to a summary.
+    pub(crate) fn reveal_tool(&mut self, tool_id: &str) -> Option<usize> {
+        let index = *self.open_tools.get(tool_id)?;
+        if let Some(TranscriptRow::Tool { expanded, .. }) = self.rows.get_mut(index) {
+            *expanded = true;
+        }
+        Some(index)
+    }
+
     /// Detail line of a tool row, if it exists.
     fn tool_detail(&self, tool_id: &str) -> Option<String> {
         let index = *self.open_tools.get(tool_id)?;
@@ -1113,9 +1144,9 @@ fn tool_markdown(
 /// Record that the tool behind a plan step finished.
 ///
 /// The GUI only ever appended plan steps, so the pane claimed every step was
-/// still pending after its tool had already run. The step keeps the first
-/// result it is given, and the pane times the step from the stamp.
-fn mark_plan_step(state: &mut SessionState, tool_id: &str, output: String) {
+/// still pending after its tool had already run. The latest terminal event
+/// owns the visible result, and the pane times the step from the first stamp.
+fn mark_plan_step(state: &mut SessionState, tool_id: &str, output: String, failed: bool) {
     let Some((index, step)) = state
         .plan
         .iter_mut()
@@ -1124,9 +1155,12 @@ fn mark_plan_step(state: &mut SessionState, tool_id: &str, output: String) {
     else {
         return;
     };
-    if step.output.is_none() {
-        step.output = Some(output);
-        state.plan_done_at.entry(index).or_insert_with(now_unix);
+    step.output = Some(output);
+    state.plan_done_at.entry(index).or_insert_with(now_unix);
+    if failed {
+        state.plan_failed.insert(index);
+    } else {
+        state.plan_failed.remove(&index);
     }
 }
 
@@ -1422,6 +1456,111 @@ mod tests {
             }
             other => panic!("expected a tool row, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn plan_step_tracks_failure_and_clears_it_when_the_tool_succeeds() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+        state.plan.push(PlanStep::new(
+            "Run the focused test",
+            "bash",
+            "tool_1",
+            Vec::<(String, String)>::new(),
+        ));
+
+        conversation.apply(
+            AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                result: tact_protocol::StepResult {
+                    tool: "bash".into(),
+                    arg_summary: "cargo test -p tact-gui".into(),
+                    arg_full: None,
+                    status: StepStatus::Failed,
+                    message: "test failed".into(),
+                    detail: None,
+                    duration_us: Some(10_000),
+                    permission_label: None,
+                    presentation: presentation("Bash"),
+                },
+            },
+            &mut state,
+        );
+
+        assert!(state.plan_failed.contains(&0));
+        assert_eq!(state.plan[0].output.as_deref(), Some("test failed"));
+
+        conversation.apply(
+            AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                result: tact_protocol::StepResult {
+                    tool: "bash".into(),
+                    arg_summary: "cargo test -p tact-gui".into(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "test passed".into(),
+                    detail: None,
+                    duration_us: Some(20_000),
+                    permission_label: None,
+                    presentation: presentation("Bash"),
+                },
+            },
+            &mut state,
+        );
+
+        assert!(!state.plan_failed.contains(&0));
+        assert_eq!(state.plan[0].output.as_deref(), Some("test passed"));
+    }
+
+    #[test]
+    fn step_failed_records_the_error_on_the_plan_step() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+        state.plan.push(PlanStep::new(
+            "Read the file",
+            "read_file",
+            "tool_1",
+            Vec::<(String, String)>::new(),
+        ));
+
+        conversation.apply(
+            AgentUpdate::StepFailed {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                arg_summary: "src/main.rs".into(),
+                error: "permission denied".into(),
+            },
+            &mut state,
+        );
+
+        assert!(state.plan_failed.contains(&0));
+        assert_eq!(state.plan[0].output.as_deref(), Some("permission denied"));
+    }
+
+    #[test]
+    fn reveal_tool_opens_the_tool_card_and_returns_its_row() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+        conversation.apply(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                tool_name: "read_file".into(),
+                arg_summary: "src/main.rs".into(),
+                arg_full: String::new(),
+                presentation: presentation("Read"),
+            },
+            &mut state,
+        );
+
+        assert_eq!(conversation.reveal_tool("tool_1"), Some(0));
+        assert!(matches!(
+            &conversation.rows()[0],
+            TranscriptRow::Tool { expanded: true, .. }
+        ));
+        assert_eq!(conversation.reveal_tool("missing"), None);
     }
 
     #[test]

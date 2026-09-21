@@ -206,6 +206,14 @@ The production shell now verifies the items that Phase 2 could only park:
   in `crates/tact-gui/src/shell.rs` presses all five and reads back five
   distinct system rows, so the broad walk's liveness-only gap is closed for
   these five.
+- Plan step rows now act like the prototype they came from: clicking a row
+  expands its input/result block, terminal failures carry the danger state and
+  expose Retry, and Open transcript expands and scrolls to the tool card that
+  owns the step. Retry goes through `SubmitTask` with the recorded tool and
+  arguments instead of invoking a tool behind the driver's back. The focused
+  tests are `failed_plan_step_expands_to_retry_and_transcript_controls`,
+  `opening_a_plan_step_transcript_expands_the_tool_card`, and
+  `retrying_a_failed_plan_step_submits_the_recorded_tool_and_args`.
 - Every control the shell renders is pressed by a test, including the title
   bar's three preset tabs, which
   `the_workspace_tabs_pair_each_preset_with_its_pane` presses in turn and reads

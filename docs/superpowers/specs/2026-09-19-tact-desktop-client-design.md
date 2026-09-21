@@ -324,6 +324,13 @@ Initial tabs:
 | `Subagent` | run list + selected transcript | cancel, inspect transcript |
 | `Files` | project tree + preview | open, reveal, mention in composer |
 
+The Plan row actions are live, not prototype chrome. Clicking a step expands
+its input, result, and actions; a failed step shows the error state and offers
+Retry; Open transcript expands the tool card that owns the step and scrolls to
+it. Retry is submitted as a new agent instruction containing the recorded tool
+and arguments, so the driver remains the only executor and can account for the
+retry in the session history.
+
 Deferred tabs: `Browser`, `Terminal`, `Chart`, and free-form `Dock`.
 
 ### 6.6 Status bar
