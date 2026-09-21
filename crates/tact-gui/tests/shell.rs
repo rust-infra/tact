@@ -2893,18 +2893,6 @@ fn repo_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
-/// Scroll the sidebar back to the top of its list.
-fn scroll_sidebar_to_top(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
-    for _ in 0..20 {
-        window.scroll(
-            "sidebar-scroll",
-            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(240.))),
-            cx,
-        );
-        window.render_frame(cx);
-    }
-}
-
 /// Scroll the sidebar until `id` sits inside its viewport, then leave it there.
 ///
 /// The list holds sessions, projects, worktrees, and background rows. A row
