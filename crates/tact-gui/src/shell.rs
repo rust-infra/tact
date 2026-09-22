@@ -3474,6 +3474,7 @@ impl TactApp {
         let extra = usize::from(transcript_trailing_request(
             self.state.request.as_ref(),
             &items,
+            self.conversation.rows(),
         ));
         let empty = usize::from(items.is_empty() && extra == 0);
         1 + items.len() + extra + empty
@@ -6146,13 +6147,32 @@ fn transcript_render_index(rows: &[transcript::TranscriptRow], row: usize) -> Op
         })
 }
 
-fn transcript_request_nested(request: Option<&Request>, items: &[TranscriptRenderItem]) -> bool {
-    request.is_some_and(is_permission_request)
-        && matches!(items.last(), Some(TranscriptRenderItem::ToolRun { .. }))
+fn transcript_request_nested(
+    request: Option<&Request>,
+    items: &[TranscriptRenderItem],
+    rows: &[transcript::TranscriptRow],
+) -> bool {
+    if request.is_none() {
+        return false;
+    }
+    match items.last() {
+        Some(TranscriptRenderItem::ToolRun { .. }) => true,
+        Some(TranscriptRenderItem::Row(index)) => {
+            matches!(
+                rows.get(*index),
+                Some(transcript::TranscriptRow::Tool { .. })
+            )
+        }
+        None => false,
+    }
 }
 
-fn transcript_trailing_request(request: Option<&Request>, items: &[TranscriptRenderItem]) -> bool {
-    request.is_some() && !transcript_request_nested(request, items)
+fn transcript_trailing_request(
+    request: Option<&Request>,
+    items: &[TranscriptRenderItem],
+    rows: &[transcript::TranscriptRow],
+) -> bool {
+    request.is_some() && !transcript_request_nested(request, items, rows)
 }
 
 fn transcript(
@@ -6270,8 +6290,10 @@ fn transcript(
     let cycle = cycle;
     let heading_for_render = heading;
     let subtitle_for_render = subtitle;
-    let request_nested = transcript_request_nested(request_for_render.as_ref(), &render_items);
-    let trailing_request = transcript_trailing_request(request_for_render.as_ref(), &render_items);
+    let request_nested =
+        transcript_request_nested(request_for_render.as_ref(), &render_items, &row_items);
+    let trailing_request =
+        transcript_trailing_request(request_for_render.as_ref(), &render_items, &row_items);
     let item_count = render_items.len() + usize::from(trailing_request);
 
     let scroller = MessageScroller::new("transcript-list", state, move |index, window, cx| {
@@ -6293,14 +6315,32 @@ fn transcript(
                 approval: &approval,
             };
             match render_items[index - 1] {
-                TranscriptRenderItem::Row(row_index) => transcript::render_row(
-                    &row_items[row_index],
-                    row_index,
-                    detail,
-                    actions(),
-                    window,
-                    cx,
-                ),
+                TranscriptRenderItem::Row(row_index) => v_flex()
+                    .w_full()
+                    .child(transcript::render_row(
+                        &row_items[row_index],
+                        row_index,
+                        detail,
+                        actions(),
+                        window,
+                        cx,
+                    ))
+                    .when(request_nested && index == item_count, |this| {
+                        this.child(
+                            v_flex().w_full().pl(rems(1.75)).child(request_panel(
+                                request_for_render
+                                    .as_ref()
+                                    .expect("nested request is present"),
+                                &choose_for_render,
+                                &approval_actions_for_render,
+                                cancel_action_for_render.as_ref(),
+                                confirm_for_render.as_ref(),
+                                cancel_for_render.as_ref(),
+                                cx,
+                            )),
+                        )
+                    })
+                    .into_any_element(),
                 TranscriptRenderItem::ToolRun { start, end } => v_flex()
                     .w_full()
                     .child(transcript::render_tool_group(
