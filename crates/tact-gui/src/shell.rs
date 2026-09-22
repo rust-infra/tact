@@ -2347,11 +2347,13 @@ impl TactApp {
     /// Park the session on screen if it has a turn in flight.
     ///
     /// Called before the window adopts another session. An idle session is not
-    /// parked: its transcript is already in the store, so re-resuming it costs
-    /// one history read and nothing is lost, while a runtime kept alive for
-    /// every session the user ever clicked would be a leak.
+    /// parked unless it has a pending request: a plain idle transcript is
+    /// already in the store, so re-resuming it costs one history read and
+    /// nothing is lost, while a runtime kept alive for every session the user
+    /// ever clicked would be a leak. A pending Ask/permission must survive, so
+    /// those sessions are parked even after the turn stops running.
     fn park_running_session(&mut self) {
-        if !self.state.running {
+        if !self.state.running && self.state.request.is_none() {
             return;
         }
         let Some(handle) = self.session.take() else {
@@ -9230,6 +9232,49 @@ mod tests {
             matches!(dispatched.try_recv(), Ok(UserCommand::Cancel)),
             "the restored handle can still command the session it parked"
         );
+    }
+
+    /// A pending Ask keeps its session parked even though the turn is idle.
+    #[gpui_kit::test]
+    fn switching_away_keeps_a_pending_request(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let mut shell = None;
+        let _handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+            let app = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let shell = shell.expect("the window built a shell");
+
+        let (commands, _dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("ask-session".to_string(), commands);
+        shell.update(cx, |app, cx| {
+            app.session = Some(session);
+            app.state.running = false;
+            app.state.request = Some(crate::session::Request {
+                id: 42,
+                prompt: "Pick one".to_string(),
+                options: vec!["a".to_string(), "b".to_string()],
+                multi: true,
+                selected: Vec::new(),
+            });
+            app._pump = Some(cx.spawn(async move |_this, _cx| {}));
+
+            app.park_running_session();
+            assert!(
+                app.parked.iter().any(|parked| parked.id == "ask-session"),
+                "the pending request parks the idle session"
+            );
+            assert!(app.unpark("ask-session", cx), "the session is still parked");
+            let request = app.state.request.as_ref().expect("the request survives");
+            assert_eq!(request.prompt, "Pick one");
+            assert!(request.multi);
+        });
     }
 
     /// The layout store restores a saved arrangement and writes back drags.
