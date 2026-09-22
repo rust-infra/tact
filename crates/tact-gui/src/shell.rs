@@ -3470,10 +3470,13 @@ impl TactApp {
     /// a request the agent is still waiting on sits outside the list, at the
     /// tail where the answer has to be given.
     fn transcript_item_count(&self) -> usize {
-        let rows = transcript_render_items(self.conversation.rows()).len();
-        let extra = usize::from(self.state.request.is_some());
-        let empty = usize::from(rows == 0 && extra == 0);
-        1 + rows + extra + empty
+        let items = transcript_render_items(self.conversation.rows());
+        let extra = usize::from(transcript_trailing_request(
+            self.state.request.as_ref(),
+            &items,
+        ));
+        let empty = usize::from(items.is_empty() && extra == 0);
+        1 + items.len() + extra + empty
     }
 
     /// Keep the virtual list's item count aligned with the transcript chrome.
@@ -4303,82 +4306,77 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
                 .test_support()
                 .gap_1()
                 .min_w(rems(13.))
-                .child(
-                    Button::new("session-menu-rename")
-                        .icon(IconName::PencilLine)
-                        .label("Rename")
-                        .ghost()
-                        .compact()
-                        .on_click({
-                            let menu = menu.clone();
-                            move |_, window, cx| {
-                                menu.update(cx, |state, cx| state.dismiss(window, cx));
-                                let _ = rename_owner
-                                    .update(cx, |app, cx| app.open_rename_dialog(window, cx));
-                            }
-                        }),
-                )
-                .child(
-                    Button::new("session-menu-duplicate")
-                        .icon(IconName::Copy)
-                        .label("Duplicate")
-                        .ghost()
-                        .compact()
-                        .on_click({
-                            let menu = menu.clone();
-                            move |_, window, cx| {
-                                menu.update(cx, |state, cx| state.dismiss(window, cx));
-                                let _ = duplicate_owner
-                                    .update(cx, |app, cx| app.duplicate_open_session(cx));
-                            }
-                        }),
-                )
-                .child(
-                    Button::new("session-menu-pin")
-                        .icon(IconName::Pin)
-                        .label(pin_label)
-                        .ghost()
-                        .compact()
-                        .on_click({
-                            let menu = menu.clone();
-                            move |_, window, cx| {
-                                menu.update(cx, |state, cx| state.dismiss(window, cx));
-                                let _ = pin_owner.update(cx, |app, cx| {
-                                    app.set_open_session_pinned(!open_pinned, cx)
-                                });
-                            }
-                        }),
-                )
-                .child(
-                    Button::new("session-menu-archive")
-                        .icon(IconName::Archive)
-                        .label(archive_label)
-                        .ghost()
-                        .compact()
-                        .on_click({
-                            let menu = menu.clone();
-                            move |_, window, cx| {
-                                menu.update(cx, |state, cx| state.dismiss(window, cx));
-                                let _ = archive_owner.update(cx, |app, cx| {
-                                    app.set_open_session_archived(!open_archived, cx)
-                                });
-                            }
-                        }),
-                )
-                .child(
-                    Button::new("session-menu-reveal")
-                        .icon(IconName::FolderOpen)
-                        .label("Reveal in filesystem")
-                        .ghost()
-                        .compact()
-                        .on_click({
-                            let menu = menu.clone();
-                            move |_, window, cx| {
-                                menu.update(cx, |state, cx| state.dismiss(window, cx));
-                                let _ = reveal_owner.update(cx, |app, cx| app.reveal_workspace(cx));
-                            }
-                        }),
-                )
+                .child(menu_action_row(
+                    "session-menu-rename",
+                    IconName::PencilLine,
+                    "Rename",
+                    popover_cx,
+                    {
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = rename_owner
+                                .update(cx, |app, cx| app.open_rename_dialog(window, cx));
+                        }
+                    },
+                ))
+                .child(menu_action_row(
+                    "session-menu-duplicate",
+                    IconName::Copy,
+                    "Duplicate",
+                    popover_cx,
+                    {
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = duplicate_owner
+                                .update(cx, |app, cx| app.duplicate_open_session(cx));
+                        }
+                    },
+                ))
+                .child(menu_action_row(
+                    "session-menu-pin",
+                    IconName::Pin,
+                    pin_label,
+                    popover_cx,
+                    {
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = pin_owner.update(cx, |app, cx| {
+                                app.set_open_session_pinned(!open_pinned, cx)
+                            });
+                        }
+                    },
+                ))
+                .child(menu_action_row(
+                    "session-menu-archive",
+                    IconName::Archive,
+                    archive_label,
+                    popover_cx,
+                    {
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = archive_owner.update(cx, |app, cx| {
+                                app.set_open_session_archived(!open_archived, cx)
+                            });
+                        }
+                    },
+                ))
+                .child(menu_action_row(
+                    "session-menu-reveal",
+                    IconName::FolderOpen,
+                    "Reveal in filesystem",
+                    popover_cx,
+                    {
+                        let menu = menu.clone();
+                        move |_, window, cx| {
+                            menu.update(cx, |state, cx| state.dismiss(window, cx));
+                            let _ = reveal_owner.update(cx, |app, cx| app.reveal_workspace(cx));
+                        }
+                    },
+                ))
         });
 
     // The prototype's `.cmd`: a bordered search field with the palette chord
@@ -5387,82 +5385,76 @@ fn session_context_menu(
             .test_support()
             .gap_1()
             .min_w(rems(13.))
-            .child(
-                Button::new("session-context-menu-rename")
-                    .icon(IconName::PencilLine)
-                    .label("Rename")
-                    .ghost()
-                    .compact()
-                    .on_click({
-                        let menu = menu.clone();
-                        move |_, window, cx| {
-                            menu.update(cx, |state, cx| state.dismiss(window, cx));
-                            let _ = rename_owner
-                                .update(cx, |app, cx| app.open_rename_dialog(window, cx));
-                        }
-                    }),
-            )
-            .child(
-                Button::new("session-context-menu-duplicate")
-                    .icon(IconName::Copy)
-                    .label("Duplicate")
-                    .ghost()
-                    .compact()
-                    .on_click({
-                        let menu = menu.clone();
-                        move |_, window, cx| {
-                            menu.update(cx, |state, cx| state.dismiss(window, cx));
-                            let _ = duplicate_owner
-                                .update(cx, |app, cx| app.duplicate_open_session(cx));
-                        }
-                    }),
-            )
-            .child(
-                Button::new("session-context-menu-pin")
-                    .icon(IconName::Pin)
-                    .label(pin_label)
-                    .ghost()
-                    .compact()
-                    .on_click({
-                        let menu = menu.clone();
-                        move |_, window, cx| {
-                            menu.update(cx, |state, cx| state.dismiss(window, cx));
-                            let _ = pin_owner.update(cx, |app, cx| {
-                                app.set_open_session_pinned(!open_pinned, cx)
-                            });
-                        }
-                    }),
-            )
-            .child(
-                Button::new("session-context-menu-archive")
-                    .icon(IconName::Archive)
-                    .label(archive_label)
-                    .ghost()
-                    .compact()
-                    .on_click({
-                        let menu = menu.clone();
-                        move |_, window, cx| {
-                            menu.update(cx, |state, cx| state.dismiss(window, cx));
-                            let _ = archive_owner.update(cx, |app, cx| {
-                                app.set_open_session_archived(!open_archived, cx)
-                            });
-                        }
-                    }),
-            )
-            .child(
-                Button::new("session-context-menu-reveal")
-                    .icon(IconName::FolderOpen)
-                    .label("Reveal in filesystem")
-                    .ghost()
-                    .compact()
-                    .on_click({
-                        let menu = menu.clone();
-                        move |_, window, cx| {
-                            menu.update(cx, |state, cx| state.dismiss(window, cx));
-                            let _ = reveal_owner.update(cx, |app, cx| app.reveal_workspace(cx));
-                        }
-                    }),
-            )
+            .child(menu_action_row(
+                "session-context-menu-rename",
+                IconName::PencilLine,
+                "Rename",
+                popover_cx,
+                {
+                    let menu = menu.clone();
+                    move |_, window, cx| {
+                        menu.update(cx, |state, cx| state.dismiss(window, cx));
+                        let _ =
+                            rename_owner.update(cx, |app, cx| app.open_rename_dialog(window, cx));
+                    }
+                },
+            ))
+            .child(menu_action_row(
+                "session-context-menu-duplicate",
+                IconName::Copy,
+                "Duplicate",
+                popover_cx,
+                {
+                    let menu = menu.clone();
+                    move |_, window, cx| {
+                        menu.update(cx, |state, cx| state.dismiss(window, cx));
+                        let _ =
+                            duplicate_owner.update(cx, |app, cx| app.duplicate_open_session(cx));
+                    }
+                },
+            ))
+            .child(menu_action_row(
+                "session-context-menu-pin",
+                IconName::Pin,
+                pin_label,
+                popover_cx,
+                {
+                    let menu = menu.clone();
+                    move |_, window, cx| {
+                        menu.update(cx, |state, cx| state.dismiss(window, cx));
+                        let _ = pin_owner
+                            .update(cx, |app, cx| app.set_open_session_pinned(!open_pinned, cx));
+                    }
+                },
+            ))
+            .child(menu_action_row(
+                "session-context-menu-archive",
+                IconName::Archive,
+                archive_label,
+                popover_cx,
+                {
+                    let menu = menu.clone();
+                    move |_, window, cx| {
+                        menu.update(cx, |state, cx| state.dismiss(window, cx));
+                        let _ = archive_owner.update(cx, |app, cx| {
+                            app.set_open_session_archived(!open_archived, cx)
+                        });
+                    }
+                },
+            ))
+            .child(menu_action_row(
+                "session-context-menu-reveal",
+                IconName::FolderOpen,
+                "Reveal in filesystem",
+                popover_cx,
+                {
+                    let menu = menu.clone();
+                    move |_, window, cx| {
+                        menu.update(cx, |state, cx| state.dismiss(window, cx));
+                        let _ = reveal_owner.update(cx, |app, cx| app.reveal_workspace(cx));
+                    }
+                },
+            ))
     })
 }
 
@@ -6154,6 +6146,15 @@ fn transcript_render_index(rows: &[transcript::TranscriptRow], row: usize) -> Op
         })
 }
 
+fn transcript_permission_nested(request: Option<&Request>, items: &[TranscriptRenderItem]) -> bool {
+    request.is_some_and(is_permission_request)
+        && matches!(items.last(), Some(TranscriptRenderItem::ToolRun { .. }))
+}
+
+fn transcript_trailing_request(request: Option<&Request>, items: &[TranscriptRenderItem]) -> bool {
+    request.is_some() && !transcript_permission_nested(request, items)
+}
+
 fn transcript(
     rows: &[transcript::TranscriptRow],
     state: Entity<MessageScrollerState>,
@@ -6269,14 +6270,9 @@ fn transcript(
     let cycle = cycle;
     let heading_for_render = heading;
     let subtitle_for_render = subtitle;
-    let permission_nested = request_for_render
-        .as_ref()
-        .is_some_and(is_permission_request)
-        && matches!(
-            render_items.last(),
-            Some(TranscriptRenderItem::ToolRun { .. })
-        );
-    let trailing_request = request_for_render.is_some() && !permission_nested;
+    let permission_nested =
+        transcript_permission_nested(request_for_render.as_ref(), &render_items);
+    let trailing_request = transcript_trailing_request(request_for_render.as_ref(), &render_items);
     let item_count = render_items.len() + usize::from(trailing_request);
 
     let scroller = MessageScroller::new("transcript-list", state, move |index, window, cx| {
@@ -7250,6 +7246,35 @@ fn mini_chip(
     chip
 }
 
+fn menu_action_row(
+    id: &'static str,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    cx: &App,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let label = label.into();
+    let hover = cx.theme().accent;
+    h_flex()
+        .id(id)
+        .test_support()
+        .w_full()
+        .justify_start()
+        .items_center()
+        .h(rems(1.75))
+        .gap(rems(0.5))
+        .px(rems(0.5))
+        .rounded(rems(0.375))
+        .text_size(rems(0.6875))
+        .text_color(cx.theme().foreground)
+        .hover(move |style| style.bg(hover))
+        .cursor_pointer()
+        .aria_label(label.clone())
+        .child(Icon::from(icon).with_size(px(15.)))
+        .child(label)
+        .on_click(on_click)
+}
+
 /// The prototype's `.send`: a 28 px square primary action that dims to 38 %
 /// while there is nothing to send and flips to `--ink` while a turn runs.
 fn send_button(
@@ -7357,7 +7382,7 @@ fn prompt_composer(
                 .leading(IconName::Plus)
                 .tooltip("Add attachment, skill, connector, or plugin"),
         )
-        .content(move |_state, _window, _cx| {
+        .content(move |_state, _window, cx| {
             let file_owner = add_owner.clone();
             let skill_owner = add_owner.clone();
             let connector_owner = add_owner.clone();
@@ -7368,46 +7393,41 @@ fn prompt_composer(
                 .gap_1()
                 .min_w(rems(13.))
                 .child(
-                    Button::new("composer-add-file")
-                        .icon(IconName::File)
-                        .label("Attach file")
-                        .ghost()
-                        .compact()
-                        .on_click(move |_, window, cx| {
+                    menu_action_row("composer-add-file", IconName::File, "Attach file", cx, {
+                        move |_, window, cx| {
                             let _ = file_owner
                                 .update(cx, |app, cx| app.attach_files(window, cx));
-                        }),
+                        }
+                    }),
                 )
                 .child(
-                    Button::new("composer-add-skill")
-                        .icon(IconName::Asterisk)
-                        .label("Skills")
-                        .ghost()
-                        .compact()
-                        .on_click(move |_, window, cx| {
+                    menu_action_row("composer-add-skill", IconName::Asterisk, "Skills", cx, {
+                        move |_, window, cx| {
                             let _ = skill_owner
                                 .update(cx, |app, cx| app.open_skill_completion(window, cx));
-                        }),
+                        }
+                    }),
                 )
                 .child(
-                    Button::new("composer-add-connector")
-                        .icon(IconName::Network)
-                        .label("Connectors")
-                        .ghost()
-                        .compact()
-                        .on_click(move |_, _, cx| {
+                    menu_action_row(
+                        "composer-add-connector",
+                        IconName::Network,
+                        "Connectors",
+                        cx,
+                        move |_, _, cx| {
                             let _ = connector_owner.update(cx, |app, cx| {
                                 app.send_command(tact_protocol::UserCommand::McpList, cx)
                             });
-                        }),
+                        },
+                    ),
                 )
                 .child(
-                    Button::new("composer-add-plugin")
-                        .icon(IconName::Settings)
-                        .label("Plugins")
-                        .ghost()
-                        .compact()
-                        .on_click(move |_, _, cx| {
+                    menu_action_row(
+                        "composer-add-plugin",
+                        IconName::Settings,
+                        "Plugins",
+                        cx,
+                        move |_, _, cx| {
                             let _ = plugin_owner.update(cx, |app, cx| {
                                 app.push_system_row(
                                     "Plugin discovery is not configured in v1; use installed skills or MCP connectors."
@@ -7415,7 +7435,8 @@ fn prompt_composer(
                                     cx,
                                 )
                             });
-                        }),
+                        },
+                    ),
                 )
         });
 
@@ -8665,34 +8686,66 @@ fn settings_panel(
                                 .ghost()
                                 .compact(),
                         )
-                        .content(move |_, _, _| {
+                        .content(move |_, window, cx| {
                             // Built per render: the popover's content closure
                             // is `Fn`, so anything it shows has to be
                             // constructible more than once. The families come
                             // from a cache, so this is not a font scan.
-                            let mut list = v_flex()
-                                .id("settings-font-list")
-                                .test_support()
-                                .gap(rems(0.125))
-                                .max_h(rems(14.))
-                                .overflow_y_scroll();
+                            let scroll_handle = window
+                                .use_keyed_state("settings-font-list-scroll", cx, |_, _| {
+                                    ScrollHandle::new()
+                                })
+                                .read(cx)
+                                .clone();
+                            let mut rows = Vec::new();
                             for family in crate::fonts::system_families().iter().take(400) {
                                 let owner = picker_owner.clone();
                                 let family = family.clone();
-                                list = list.child(
-                                    Button::new(SharedString::from(format!(
-                                        "settings-font-{family}"
-                                    )))
-                                    .label(SharedString::from(family.clone()))
-                                    .ghost()
-                                    .compact()
-                                    .on_click(move |_, _, cx| {
-                                        let _ = owner.update(cx, |app, cx| {
-                                            app.set_ui_font(Some(family.clone()), cx);
-                                        });
-                                    }),
+                                let accent = cx.theme().accent;
+                                rows.push(
+                                    h_flex()
+                                        .id(SharedString::from(format!("settings-font-{family}")))
+                                        .test_support()
+                                        .w_full()
+                                        .justify_start()
+                                        .items_center()
+                                        .h(rems(1.625))
+                                        .px(rems(0.5))
+                                        .rounded(rems(0.375))
+                                        .text_size(rems(0.6875))
+                                        .text_color(cx.theme().foreground)
+                                        .hover(move |style| style.bg(accent))
+                                        .cursor_pointer()
+                                        .aria_label(family.clone())
+                                        .child(family.clone())
+                                        .on_click(move |_, _, cx| {
+                                            let _ = owner.update(cx, |app, cx| {
+                                                app.set_ui_font(Some(family.clone()), cx);
+                                            });
+                                        })
+                                        .into_any_element(),
                                 );
                             }
+                            let list = div()
+                                .id("settings-font-list")
+                                .test_support()
+                                .w_full()
+                                .max_h(rems(14.))
+                                .track_scroll(&scroll_handle)
+                                .overflow_y_scroll()
+                                .child(v_flex().gap(rems(0.125)).children(rows));
+                            let list = div()
+                                .relative()
+                                .w_full()
+                                .max_h(rems(14.))
+                                .child(list)
+                                .child(
+                                    div().absolute().inset_0().child(
+                                        Scrollbar::vertical(&scroll_handle)
+                                            .mode(ScrollbarMode::Always)
+                                            .viewport_from_layout(),
+                                    ),
+                                );
 
                             let owner = reset_owner.clone();
                             v_flex()

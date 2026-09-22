@@ -204,7 +204,8 @@ impl TerminalPane {
     pub(crate) fn resize(&mut self, cols: u16, rows: u16) {
         let cols = cols.max(20);
         let rows = rows.max(5);
-        if (cols, rows) == self.parser.screen().size() {
+        let (screen_rows, screen_cols) = self.parser.screen().size();
+        if cols == screen_cols && rows == screen_rows {
             return;
         }
         let _ = self.master.resize(PtySize {
