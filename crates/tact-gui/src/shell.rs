@@ -6146,13 +6146,13 @@ fn transcript_render_index(rows: &[transcript::TranscriptRow], row: usize) -> Op
         })
 }
 
-fn transcript_permission_nested(request: Option<&Request>, items: &[TranscriptRenderItem]) -> bool {
+fn transcript_request_nested(request: Option<&Request>, items: &[TranscriptRenderItem]) -> bool {
     request.is_some_and(is_permission_request)
         && matches!(items.last(), Some(TranscriptRenderItem::ToolRun { .. }))
 }
 
 fn transcript_trailing_request(request: Option<&Request>, items: &[TranscriptRenderItem]) -> bool {
-    request.is_some() && !transcript_permission_nested(request, items)
+    request.is_some() && !transcript_request_nested(request, items)
 }
 
 fn transcript(
@@ -6270,8 +6270,7 @@ fn transcript(
     let cycle = cycle;
     let heading_for_render = heading;
     let subtitle_for_render = subtitle;
-    let permission_nested =
-        transcript_permission_nested(request_for_render.as_ref(), &render_items);
+    let request_nested = transcript_request_nested(request_for_render.as_ref(), &render_items);
     let trailing_request = transcript_trailing_request(request_for_render.as_ref(), &render_items);
     let item_count = render_items.len() + usize::from(trailing_request);
 
@@ -6311,7 +6310,7 @@ fn transcript(
                         actions(),
                         cx,
                     ))
-                    .when(permission_nested && index == item_count, |this| {
+                    .when(request_nested && index == item_count, |this| {
                         this.child(
                             v_flex().w_full().pl(rems(1.75)).child(request_panel(
                                 request_for_render
@@ -6810,6 +6809,9 @@ fn request_panel(
             lasting,
             cx,
         )
+        .h(rems(1.625))
+        .px(rems(0.5))
+        .text_size(rems(0.6875))
         .label(option.clone())
         .toggled(selected)
         .on_click(move |event, window, cx| choose(event, window, cx));
