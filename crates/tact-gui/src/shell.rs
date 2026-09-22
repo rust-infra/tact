@@ -6327,7 +6327,7 @@ fn transcript(
                     ))
                     .when(request_nested && index == item_count, |this| {
                         this.child(
-                            v_flex().w_full().pl(rems(1.75)).child(request_panel(
+                            v_flex().w_full().child(request_panel(
                                 request_for_render
                                     .as_ref()
                                     .expect("nested request is present"),
@@ -6336,6 +6336,7 @@ fn transcript(
                                 cancel_action_for_render.as_ref(),
                                 confirm_for_render.as_ref(),
                                 cancel_for_render.as_ref(),
+                                true,
                                 cx,
                             )),
                         )
@@ -6352,7 +6353,7 @@ fn transcript(
                     ))
                     .when(request_nested && index == item_count, |this| {
                         this.child(
-                            v_flex().w_full().pl(rems(1.75)).child(request_panel(
+                            v_flex().w_full().child(request_panel(
                                 request_for_render
                                     .as_ref()
                                     .expect("nested permission request is present"),
@@ -6361,6 +6362,7 @@ fn transcript(
                                 cancel_action_for_render.as_ref(),
                                 confirm_for_render.as_ref(),
                                 cancel_for_render.as_ref(),
+                                true,
                                 cx,
                             )),
                         )
@@ -6376,6 +6378,7 @@ fn transcript(
                     cancel_action_for_render.as_ref(),
                     confirm_for_render.as_ref(),
                     cancel_for_render.as_ref(),
+                    false,
                     cx,
                 )
                 .into_any_element()
@@ -6820,6 +6823,7 @@ fn empty_transcript(focus: &ShellClick, cx: &App) -> impl IntoElement {
 /// The prototype's `.approval` card is the permission shape: a warning chip and
 /// headline, the question, the command it wants to run, and its choices. A
 /// question from `ask_user` reuses the same card with its own prompt.
+#[allow(clippy::too_many_arguments)]
 fn request_panel(
     request: &Request,
     choose: &[ShellClick],
@@ -6827,6 +6831,7 @@ fn request_panel(
     cancel_action: Option<&ShellAction>,
     confirm: Option<&ShellClick>,
     cancel: Option<&ShellClick>,
+    nested: bool,
     cx: &App,
 ) -> AnyElement {
     let permission = is_permission_request(request);
@@ -6885,6 +6890,7 @@ fn request_panel(
             approval_details(request, cx).into_any_element(),
             actions.into_any_element(),
         ],
+        nested,
     )
     .into_any_element()
 }
@@ -7031,14 +7037,16 @@ fn answer_panel(request: &Request, result: &str, cx: &App) -> impl IntoElement {
                 .test_support()
                 .into_any_element(),
         ],
+        false,
     )
 }
 
 /// The `.approval` surface: 12px padding, a `--line2` border, and r10 corners.
-fn approval_card(cx: &App, children: Vec<AnyElement>) -> impl IntoElement {
+fn approval_card(cx: &App, children: Vec<AnyElement>, nested: bool) -> impl IntoElement {
     v_flex()
         .w_full()
-        .rounded(rems(0.625))
+        .when(nested, |this| this.rounded_t(px(0.)).border_t_0())
+        .when(!nested, |this| this.rounded(rems(0.625)))
         .border_1()
         .border_color(cx.theme().input)
         .bg(cx.theme().muted)

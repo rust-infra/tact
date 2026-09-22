@@ -604,12 +604,14 @@ fn tool_call_element(
         display_name.clone(),
     )
     .summary(detail.clone())
-    .output(output.clone())
     .icon(match visual_kind {
         ToolVisualKind::FileRead => IconName::File,
         ToolVisualKind::FileWrite | ToolVisualKind::FileEdit => IconName::FilePenLine,
         _ => IconName::SquareTerminal,
     });
+    if !output.trim().is_empty() {
+        invocation = invocation.output(output.clone());
+    }
     if let Some(elapsed) = parse_duration_label(duration) {
         invocation = invocation.elapsed(elapsed);
     }
