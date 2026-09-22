@@ -6,26 +6,20 @@
 
 use std::{rc::Rc, time::Duration};
 
-use gpui_ai::stream::{ProgressState, StreamedContent};
+use gpui_ai::{stream::StreamedContent, streaming_text::StreamingText};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::motion::{MotionReveal, Presence, Transition, transition};
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
-use gpui_kit::component::{
-    ActiveTheme as _, Icon, h_flex,
-    scroll::ScrollableElement as _,
-    text::{MarkdownNode, MarkdownParseContext, TextView, markdown_ast},
-    v_flex,
-};
+use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, scroll::ScrollableElement as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::ToolVisualKind;
 
 use crate::session::Request;
 
 use gpui_kit::{
-    AnyElement, App, ClipboardItem, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px, radians, relative,
-    rems,
+    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, radians, relative, rems,
 };
 
 /// Opens or closes one collapsible transcript row.
@@ -205,134 +199,6 @@ fn diff_badge(visual_kind: ToolVisualKind, diff_stats: Option<(u32, u32)>) -> Op
     }
 }
 
-/// Custom Markdown block name for the prototype's `.code` card.
-const CODE_BLOCK: &str = "tact-code";
-
-/// What a fenced block carries from parsing into rendering.
-#[derive(Clone)]
-struct CodeBlockData {
-    /// The fence's info string, such as `toml`; empty for a bare fence.
-    language: String,
-    /// The fence's body.
-    code: String,
-}
-
-/// Render a Mermaid fence to a monospace diagram.
-///
-/// The GUI has no web view or SVG surface, so it uses `mermaid-text` to turn
-/// the diagram into Unicode box drawing that the existing code card can display
-/// and scroll. The renderer supports the HTML `<br/>` labels and edge labels
-/// that real assistant output commonly uses. Invalid Mermaid returns `None`,
-/// and the renderer falls back to the original source.
-fn mermaid_plain_text(source: &str, width: usize) -> Option<String> {
-    mermaid_text::render_with_width(source, Some(width.max(1))).ok()
-}
-
-/// Turn every fenced code block into a `.code` card node.
-///
-/// The stock renderer owns only a corner slot for block actions, so the
-/// prototype's `.codeHead` band — the language on the left, `Copy` on the right
-/// — has nowhere to live inside it. A custom block owns the whole card instead.
-fn parse_code_block(
-    node: &markdown_ast::Node,
-    _context: &MarkdownParseContext<'_>,
-) -> Option<MarkdownNode> {
-    let markdown_ast::Node::Code(code) = node else {
-        return None;
-    };
-    Some(
-        MarkdownNode::new(
-            CODE_BLOCK,
-            CodeBlockData {
-                language: code.lang.clone().unwrap_or_default(),
-                code: code.value.clone(),
-            },
-        )
-        .text(code.value.clone()),
-    )
-}
-
-/// The prototype's `.code`: a bordered card with a `.codeHead` band over the
-/// fence body.
-///
-/// `Copy` needs an id that is unique among a message's blocks, and a custom
-/// block has none of its own. The framework stamps every custom block with its
-/// byte range in the message, so the range's start is the anchor that stays
-/// unique and stable across re-renders.
-fn render_code_block(node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> AnyElement {
-    let data = node.data::<CodeBlockData>();
-    let language = data
-        .map(|data| data.language.trim())
-        .filter(|language| !language.is_empty())
-        .unwrap_or("code");
-    let code = data.map(|data| data.code.clone()).unwrap_or_default();
-    let mermaid = (language.eq_ignore_ascii_case("mermaid"))
-        .then(|| mermaid_plain_text(&code, 100))
-        .flatten();
-    let body = mermaid.as_deref().unwrap_or(code.as_str());
-    let anchor = node
-        .source_range()
-        .map(|range| range.start)
-        .unwrap_or_default();
-    let copy_id = SharedString::from(format!("code-block-copy-{anchor}"));
-    let clipboard = code.clone();
-    let band_ink = crate::theme::ink3(cx);
-    let hover_ink = cx.theme().foreground;
-
-    v_flex()
-        .w_full()
-        .rounded(rems(0.625))
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().muted)
-        .overflow_hidden()
-        .child(
-            h_flex()
-                .w_full()
-                .items_center()
-                .gap_2()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .px(rems(0.625))
-                .py(rems(0.4375))
-                .font_family(cx.theme().mono_font_family.clone())
-                .text_size(rems(0.65625))
-                .text_color(band_ink)
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .child(SharedString::from(language.to_string())),
-                )
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .cursor_pointer()
-                        .hover(move |style| style.text_color(hover_ink))
-                        .id(copy_id)
-                        .aria_label(SharedString::from("Copy code"))
-                        .test_support()
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(clipboard.clone()));
-                        })
-                        .child(SharedString::from("Copy")),
-                ),
-        )
-        .child(
-            div()
-                .w_full()
-                .px(rems(0.75))
-                .py(rems(0.6875))
-                .font_family(cx.theme().mono_font_family.clone())
-                .text_size(rems(0.71875))
-                .line_height(relative(1.6))
-                .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from(body.to_string())),
-        )
-        .into_any_element()
-}
-
 /// The prototype's `.msgMeta`: the author, the clock, and an optional suffix.
 ///
 /// `.msgMeta` is 10.5px in the muted ink with an 11px semibold author, so the
@@ -445,14 +311,6 @@ fn streamed_markdown(markdown: &str, streaming: bool) -> (StreamedContent, bool)
     (content, streaming)
 }
 
-fn decorated_streamed_markdown(content: &StreamedContent) -> SharedString {
-    let mut source = content.text().to_string();
-    if content.state() == &ProgressState::Running {
-        source.push('▌');
-    }
-    SharedString::from(source)
-}
-
 fn chevron_target(open: bool) -> f32 {
     if open {
         std::f32::consts::FRAC_PI_2
@@ -557,8 +415,7 @@ pub(crate) fn render_row(
             sent_at,
             model,
         } => {
-            let (streamed, streaming) = streamed_markdown(markdown, *streaming);
-            let markdown = decorated_streamed_markdown(&streamed);
+            let (streamed, _) = streamed_markdown(markdown, *streaming);
             h_flex()
                 .id(row_id)
                 .w_full()
@@ -605,17 +462,11 @@ pub(crate) fn render_row(
                             model.as_deref(),
                         ))
                         .child(
-                            TextView::markdown(
+                            StreamingText::new(
                                 SharedString::from(format!("assistant-{index}")),
-                                markdown,
+                                &streamed,
                             )
-                            .selectable(true)
-                            .font_family(SharedString::from(crate::theme::PROSE_FONT_FAMILY))
-                            .text_size(rems(0.8125))
-                            .line_height(relative(1.45))
-                            .markdown_block_parser(parse_code_block)
-                            .markdown_block_renderer(CODE_BLOCK, render_code_block)
-                            .stream_fade(streaming),
+                            .w_full(),
                         )
                         .test_support(),
                 )
@@ -662,6 +513,11 @@ pub(crate) fn render_row(
                 rems(4.125)
             } else {
                 rems(13.75)
+            };
+            let thinking_stream = if live {
+                StreamedContent::running(text.clone())
+            } else {
+                StreamedContent::done(text.clone())
             };
             let toggle = toggle.clone();
             // `.thinking button:hover` uses the prototype's `--hover`, which the
@@ -731,18 +587,11 @@ pub(crate) fn render_row(
                                     .pr(rems(0.75))
                                     .overflow_y_scrollbar()
                                     .child(
-                                        TextView::markdown(
+                                        StreamingText::new(
                                             SharedString::from(format!("thinking-{index}")),
-                                            SharedString::from(text.clone()),
+                                            &thinking_stream,
                                         )
-                                        .selectable(true)
-                                        .font_family(SharedString::from(
-                                            crate::theme::PROSE_FONT_FAMILY,
-                                        ))
-                                        .text_size(rems(0.84375))
-                                        .line_height(relative(1.62))
-                                        .markdown_block_parser(parse_code_block)
-                                        .markdown_block_renderer(CODE_BLOCK, render_code_block),
+                                        .w_full(),
                                     ),
                             )
                             .test_support()
@@ -1196,64 +1045,6 @@ mod tests {
         // A read's file contents are not a diff, so there is nothing to badge.
         assert_eq!(diff_line_counts("fn main() {}\n"), None);
         assert_eq!(diff_line_counts(""), None);
-    }
-
-    #[test]
-    fn mermaid_fences_render_as_unboxed_diagram_text() {
-        let diagram = mermaid_plain_text("flowchart TD\n  A[Start] --> B[End]", 60)
-            .expect("valid Mermaid renders");
-        assert!(diagram.contains("Start"), "node label missing: {diagram}");
-        assert!(
-            !diagram.contains("flowchart TD"),
-            "the Mermaid declaration leaked into the rendered diagram: {diagram}"
-        );
-        assert!(
-            mermaid_plain_text("not a valid mermaid diagram", 60).is_none(),
-            "invalid Mermaid falls back to the source card"
-        );
-        let sequence = mermaid_plain_text(
-            "sequenceDiagram\n  participant A as 我\n  participant B as 妈妈\n  A->>B: 包饺子",
-            80,
-        )
-        .expect("sequence diagrams use Tact's alias-aware renderer");
-        assert!(
-            sequence.contains('我') && sequence.contains('妈'),
-            "sequence aliases missing: {sequence}"
-        );
-        assert!(
-            !sequence.contains("participant A as"),
-            "participant alias syntax leaked into the sequence diagram: {sequence}"
-        );
-        let flowchart = mermaid_plain_text(
-            "flowchart TD\n  START([拿起一张饺子皮]) --> S1[放一勺馅]\n  Q1 -->|捏不上 / 合不拢| A1[馅放太多<br/>皮被撑开]\n  DONE([✅ 放进案板排队])",
-            80,
-        )
-        .expect("flowcharts with HTML line breaks and emoji render");
-        assert!(
-            flowchart.contains('放') && flowchart.contains('馅'),
-            "node label missing: {flowchart}"
-        );
-        assert!(
-            !flowchart.contains("flowchart TD"),
-            "the Mermaid declaration leaked into the flowchart: {flowchart}"
-        );
-    }
-
-    #[test]
-    fn gpui_ai_streaming_text_is_api_compatible() {
-        let content = gpui_ai::stream::StreamedContent::done("# Hello");
-        let _view = gpui_ai::streaming_text::StreamingText::new("gpui-ai-spike", &content);
-    }
-
-    #[test]
-    fn gpui_ai_stream_decoration_adds_only_the_live_cursor() {
-        let (running, is_streaming) = streamed_markdown("hello", true);
-        assert!(is_streaming);
-        assert_eq!(decorated_streamed_markdown(&running).as_ref(), "hello▌");
-
-        let (done, is_streaming) = streamed_markdown("hello", false);
-        assert!(!is_streaming);
-        assert_eq!(decorated_streamed_markdown(&done).as_ref(), "hello");
     }
 
     #[test]

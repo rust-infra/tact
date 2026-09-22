@@ -2375,69 +2375,6 @@ fn the_assistant_message_carries_a_gutter_badge(cx: &mut TestAppContext) {
 /// the block's byte range in the message. This is the one interactive control
 /// the click walk could not reach, so it gets a contract of its own.
 #[gpui_kit::test]
-fn the_code_block_copy_chip_writes_its_fence_to_the_clipboard(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
-        let shell = cx.new(|cx| TactApp::preview(window, cx));
-        Root::new(shell, window, cx)
-    });
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-
-        let copy = code_block_copy_id(window);
-        let row = window.find("transcript-row-1").bounds();
-        let chip = window.find(copy.clone()).bounds();
-        assert!(
-            chip.origin.y >= row.origin.y && chip.origin.y < row.bottom(),
-            "the chip rides the code block's own row: {chip:?} against {row:?}"
-        );
-
-        assert!(
-            cx.read_from_clipboard().is_none(),
-            "the test window starts with an empty clipboard"
-        );
-        window.click(copy, cx);
-
-        let copied = cx
-            .read_from_clipboard()
-            .and_then(|item| item.text())
-            .expect("pressing Copy writes the fence to the clipboard");
-        assert_eq!(
-            copied,
-            "theme = \"tact-anthropic\"\nshell = \"sidebar-transcript-workpane\"\ntranscript_measure = 720",
-            "Copy lifts the fence body and nothing around it"
-        );
-    })
-    .unwrap();
-}
-
-/// The id of the transcript's `Copy` chip, discovered the way the click walk
-/// reaches it: it is the only registered path carrying the renderer's anchor
-/// for the preview's single fence.
-fn code_block_copy_id(window: &Window) -> SharedString {
-    const PREFIX: &str = "code-block-copy-";
-
-    let paths = gpui_kit::base::test_support::registered_paths(window);
-    let mut anchors = paths.match_indices(PREFIX).map(|(at, _)| at);
-    let at = anchors
-        .next()
-        .expect("the preview's fence renders a Copy chip");
-    assert!(
-        anchors.next().is_none(),
-        "one fence registers one chip, so the anchor is unique"
-    );
-
-    let anchor: String = paths[at + PREFIX.len()..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    assert!(!anchor.is_empty(), "the chip's id carries the block anchor");
-
-    SharedString::from(format!("{PREFIX}{anchor}"))
-}
-
-#[gpui_kit::test]
 fn the_transcript_toolbar_carries_the_prototype_copy_button(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
