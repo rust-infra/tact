@@ -1833,12 +1833,7 @@ fn the_permission_card_reports_the_choice_it_was_given(cx: &mut TestAppContext) 
         app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
         window.render_frame(cx);
 
-        let panel = window.find("request-panel").bounds();
-        window.click_at(
-            "request-panel",
-            gpui_kit::point(panel.size.width * 0.32, panel.size.height - px(18.)),
-            cx,
-        );
+        window.click("permission-1-reject", cx);
         window.render_frame(cx);
 
         assert!(
@@ -1869,12 +1864,7 @@ fn the_once_permission_option_answers_the_card(cx: &mut TestAppContext) {
         app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
         window.render_frame(cx);
 
-        let panel = window.find("request-panel").bounds();
-        window.click_at(
-            "request-panel",
-            gpui_kit::point(panel.size.width * 0.16, panel.size.height - px(18.)),
-            cx,
-        );
+        window.click("permission-1-approve", cx);
         window.render_frame(cx);
 
         assert!(
@@ -1907,12 +1897,7 @@ fn the_lasting_permission_option_answers_the_card(cx: &mut TestAppContext) {
         app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
         window.render_frame(cx);
 
-        let panel = window.find("request-panel").bounds();
-        window.click_at(
-            "request-panel",
-            gpui_kit::point(panel.size.width * 0.16, panel.size.height - px(18.)),
-            cx,
-        );
+        window.click("permission-1-always", cx);
         window.render_frame(cx);
 
         assert!(
