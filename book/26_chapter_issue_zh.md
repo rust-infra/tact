@@ -40,7 +40,7 @@
 
 **决策：** 助手正文改用 `gpui_ai::streaming_text::StreamingText`，reasoning 改用 `gpui_ai::thinking::Thinking`，工具卡片改用 `gpui_ai::tool_call::ToolCall`，模型列表与 subagent transcript 加载改用 `gpui_ai::loading::LoadingState`。Tact 只保留产品级组合：write row 的可点击 diff badge，并使用 gpui-ai 的 `ToolCall::output_max_height` hook，只把展开后的 output body 限制在 190px 滚动窗口内。
 
-**改后行为：** 助手输出、reasoning 和工具活动都由 gpui-ai 的 streaming / disclosure 生命周期驱动。工具 header 保持固定，output body 在自己的 190px 窗口内滚动，write row 仍显示可点击 diff badge。Provider 与 subagent 加载态使用 gpui-ai 像素网格 loader。该分支不再保留 Tact 自带的 Markdown block renderer 或 Mermaid fence renderer。
+**改后行为：** 助手输出、reasoning 和工具活动都由 gpui-ai 的 streaming / disclosure 生命周期驱动。连续工具调用合并为一个 gpui-ai `ToolGroup`，等待中的 permission approval 直接嵌套在该工具块下方，不再作为独立的尾部卡片漂浮。工具 header 保持固定，output body 在自己的 190px 窗口内滚动，write row 仍显示可点击 diff badge。Provider 与 subagent 加载态使用 gpui-ai 像素网格 loader。该分支不再保留 Tact 自带的 Markdown block renderer 或 Mermaid fence renderer。
 
 **指针：** `crates/tact-gui/src/transcript.rs`（`StreamingText`、`Thinking`、`ToolCall::output_max_height`、diff badge overlay）；`crates/tact-gui/src/shell.rs`（model picker 中的 `LoadingState`）；`crates/tact-gui/src/pane.rs`（subagent transcript 的 `LoadingState`）；`laohanlinux/gpui-ai` commit `011b585`
 

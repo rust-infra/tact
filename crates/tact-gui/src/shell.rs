@@ -6226,7 +6226,6 @@ fn transcript(
         .map(|_| Rc::new(cx.listener(|this, _, _, cx| this.cancel_request(cx))) as ShellClick);
 
     let render_items = transcript_render_items(&rows);
-    let item_count = render_items.len();
     let row_items = rows;
     let request_for_render = request;
     let choose_for_render = choose;
@@ -6236,6 +6235,15 @@ fn transcript(
     let cycle = cycle;
     let heading_for_render = heading;
     let subtitle_for_render = subtitle;
+    let permission_nested = request_for_render
+        .as_ref()
+        .is_some_and(is_permission_request)
+        && matches!(
+            render_items.last(),
+            Some(TranscriptRenderItem::ToolRun { .. })
+        );
+    let trailing_request = request_for_render.is_some() && !permission_nested;
+    let item_count = render_items.len() + usize::from(trailing_request);
 
     let scroller = MessageScroller::new("transcript-list", state, move |index, window, cx| {
         if index == 0 {
@@ -6249,7 +6257,7 @@ fn transcript(
             .into_any_element()
         } else if empty {
             empty_transcript(&empty_focus, cx).into_any_element()
-        } else if index <= item_count {
+        } else if index <= render_items.len() {
             let actions = || transcript::RowActions {
                 toggle: &toggle,
                 open_diff: &open_diff,
@@ -6264,23 +6272,43 @@ fn transcript(
                     window,
                     cx,
                 ),
-                TranscriptRenderItem::ToolRun { start, end } => transcript::render_tool_group(
-                    &row_items[start..end],
-                    start,
-                    detail,
-                    actions(),
-                    cx,
-                ),
+                TranscriptRenderItem::ToolRun { start, end } => v_flex()
+                    .w_full()
+                    .child(transcript::render_tool_group(
+                        &row_items[start..end],
+                        start,
+                        detail,
+                        actions(),
+                        cx,
+                    ))
+                    .when(permission_nested && index == item_count, |this| {
+                        this.child(
+                            v_flex().w_full().pl(rems(1.75)).child(request_panel(
+                                request_for_render
+                                    .as_ref()
+                                    .expect("nested permission request is present"),
+                                &choose_for_render,
+                                confirm_for_render.as_ref(),
+                                cancel_for_render.as_ref(),
+                                cx,
+                            )),
+                        )
+                    })
+                    .into_any_element(),
             }
         } else if let Some(request) = &request_for_render {
-            request_panel(
-                request,
-                &choose_for_render,
-                confirm_for_render.as_ref(),
-                cancel_for_render.as_ref(),
-                cx,
-            )
-            .into_any_element()
+            if trailing_request {
+                request_panel(
+                    request,
+                    &choose_for_render,
+                    confirm_for_render.as_ref(),
+                    cancel_for_render.as_ref(),
+                    cx,
+                )
+                .into_any_element()
+            } else {
+                div().into_any_element()
+            }
         } else {
             div().into_any_element()
         }
