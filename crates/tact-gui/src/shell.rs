@@ -3467,7 +3467,7 @@ impl TactApp {
     /// a request the agent is still waiting on sits outside the list, at the
     /// tail where the answer has to be given.
     fn transcript_item_count(&self) -> usize {
-        let rows = self.conversation.len();
+        let rows = transcript_render_items(self.conversation.rows()).len();
         let extra = usize::from(self.state.request.is_some());
         let empty = usize::from(rows == 0 && extra == 0);
         1 + rows + extra + empty
@@ -3495,10 +3495,13 @@ impl TactApp {
                     .update(cx, |state, cx| state.append(count, cx));
             }
             Change::Resized(index) => {
-                self.transcript_state.update(cx, |state, cx| {
-                    let index = index + 1;
-                    state.remeasure_items(index..index + 1, cx)
-                });
+                if let Some(render_index) = transcript_render_index(self.conversation.rows(), index)
+                {
+                    self.transcript_state.update(cx, |state, cx| {
+                        let index = render_index + 1;
+                        state.remeasure_items(index..index + 1, cx)
+                    });
+                }
             }
         }
         self.sync_transcript_count(cx);
@@ -6106,6 +6109,45 @@ struct ComposerInputs<'a> {
     attachments: &'a [Attachment],
 }
 
+#[derive(Clone, Copy)]
+enum TranscriptRenderItem {
+    Row(usize),
+    ToolRun { start: usize, end: usize },
+}
+
+fn transcript_render_items(rows: &[transcript::TranscriptRow]) -> Vec<TranscriptRenderItem> {
+    let mut items = Vec::new();
+    let mut index = 0;
+    while index < rows.len() {
+        if matches!(rows[index], transcript::TranscriptRow::Tool { .. }) {
+            let start = index;
+            while index < rows.len()
+                && matches!(rows[index], transcript::TranscriptRow::Tool { .. })
+            {
+                index += 1;
+            }
+            if index - start > 1 {
+                items.push(TranscriptRenderItem::ToolRun { start, end: index });
+            } else {
+                items.push(TranscriptRenderItem::Row(start));
+            }
+        } else {
+            items.push(TranscriptRenderItem::Row(index));
+            index += 1;
+        }
+    }
+    items
+}
+
+fn transcript_render_index(rows: &[transcript::TranscriptRow], row: usize) -> Option<usize> {
+    transcript_render_items(rows)
+        .iter()
+        .position(|item| match item {
+            TranscriptRenderItem::Row(index) => *index == row,
+            TranscriptRenderItem::ToolRun { start, end } => (*start..*end).contains(&row),
+        })
+}
+
 fn transcript(
     rows: &[transcript::TranscriptRow],
     state: Entity<MessageScrollerState>,
@@ -6183,7 +6225,8 @@ fn transcript(
         .filter(|request| !is_permission_request(request))
         .map(|_| Rc::new(cx.listener(|this, _, _, cx| this.cancel_request(cx))) as ShellClick);
 
-    let row_count = rows.len();
+    let render_items = transcript_render_items(&rows);
+    let item_count = render_items.len();
     let row_items = rows;
     let request_for_render = request;
     let choose_for_render = choose;
@@ -6206,19 +6249,29 @@ fn transcript(
             .into_any_element()
         } else if empty {
             empty_transcript(&empty_focus, cx).into_any_element()
-        } else if index <= row_count {
-            transcript::render_row(
-                &row_items[index - 1],
-                index - 1,
-                detail,
-                transcript::RowActions {
-                    toggle: &toggle,
-                    open_diff: &open_diff,
-                    approval: &approval,
-                },
-                window,
-                cx,
-            )
+        } else if index <= item_count {
+            let actions = || transcript::RowActions {
+                toggle: &toggle,
+                open_diff: &open_diff,
+                approval: &approval,
+            };
+            match render_items[index - 1] {
+                TranscriptRenderItem::Row(row_index) => transcript::render_row(
+                    &row_items[row_index],
+                    row_index,
+                    detail,
+                    actions(),
+                    window,
+                    cx,
+                ),
+                TranscriptRenderItem::ToolRun { start, end } => transcript::render_tool_group(
+                    &row_items[start..end],
+                    start,
+                    detail,
+                    actions(),
+                    cx,
+                ),
+            }
         } else if let Some(request) = &request_for_render {
             request_panel(
                 request,

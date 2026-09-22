@@ -10,7 +10,7 @@ use gpui_ai::{
     stream::{Progressive, StreamedContent},
     streaming_text::StreamingText,
     thinking::{Thinking, ThinkingEvent, ThinkingTrace},
-    tool_call::{ToolCall, ToolCallEvent, ToolInvocation},
+    tool_call::{ToolCall, ToolCallEvent, ToolGroup, ToolInvocation},
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::cubic_bezier;
@@ -520,103 +520,14 @@ pub(crate) fn render_row(
                 )
                 .into_any_element()
         }
-        TranscriptRow::Tool {
-            display_name,
-            detail,
-            output,
-            duration,
-            status,
-            expanded,
-            visual_kind,
-            diff_stats,
-            ..
-        } => {
-            let live = *status == ToolStatus::Running;
-            let open = *expanded || verbose || live;
-            let mut invocation = ToolInvocation::new(
-                SharedString::from(format!("tool-{index}")),
-                display_name.clone(),
-            )
-            .summary(detail.clone())
-            .output(output.clone())
-            .icon(match visual_kind {
-                ToolVisualKind::FileRead => IconName::File,
-                ToolVisualKind::FileWrite | ToolVisualKind::FileEdit => IconName::FilePenLine,
-                _ => IconName::SquareTerminal,
-            });
-            if let Some(elapsed) = parse_duration_label(duration) {
-                invocation = invocation.elapsed(elapsed);
-            }
-            let invocation = match status {
-                ToolStatus::Running => Progressive::running(invocation),
-                ToolStatus::Succeeded => Progressive::complete(invocation),
-                ToolStatus::Failed => Progressive::failed(invocation, "Tool failed"),
-            };
-            let toggle = toggle.clone();
-            let open_diff = open_diff.clone();
-            let diff_stats = *diff_stats;
-            v_flex()
-                .id(row_id)
-                .test_support()
-                .w_full()
-                .child(
-                    div()
-                        .id(SharedString::from(format!("tool-summary-{index}")))
-                        .test_support()
-                        .w_full()
-                        .child(
-                            div()
-                                .relative()
-                                .child(
-                                    ToolCall::new(&invocation)
-                                        .open(open)
-                                        .output_max_height(px(190.))
-                                        .on_event(move |event, _, cx| {
-                                            if let ToolCallEvent::Toggled { .. } = event {
-                                                toggle(index, cx);
-                                            }
-                                        })
-                                        .w_full()
-                                        .rounded(rems(0.625))
-                                        .border_1()
-                                        .border_color(cx.theme().border)
-                                        .bg(cx.theme().muted),
-                                )
-                                .when_some(diff_stats, |this, (added, removed)| {
-                                    this.child(
-                                        h_flex()
-                                            .id(SharedString::from(format!("tool-diff-{index}")))
-                                            .test_support()
-                                            .absolute()
-                                            .right(px(86.))
-                                            .top(px(8.))
-                                            .h(px(22.))
-                                            .items_center()
-                                            .gap(px(4.))
-                                            .rounded(px(6.))
-                                            .border_1()
-                                            .border_color(cx.theme().border)
-                                            .bg(cx.theme().popover)
-                                            .px(px(6.))
-                                            .font_family(cx.theme().mono_font_family.clone())
-                                            .text_size(rems(0.625))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .cursor_pointer()
-                                            .on_click(move |_, _, cx| open_diff(cx))
-                                            .child(
-                                                div()
-                                                    .text_color(cx.theme().success)
-                                                    .child(SharedString::from(format!("+{added}"))),
-                                            )
-                                            .child(div().text_color(cx.theme().danger).child(
-                                                SharedString::from(format!("\u{2212}{removed}")),
-                                            )),
-                                    )
-                                }),
-                        ),
-                )
-                .into_any_element()
-        }
+        TranscriptRow::Tool { .. } => v_flex()
+            .id(row_id)
+            .test_support()
+            .w_full()
+            .child(tool_call_element(
+                row, index, verbose, toggle, open_diff, cx,
+            ))
+            .into_any_element(),
         TranscriptRow::Approval { request, result } => div()
             .id(row_id)
             .w_full()
@@ -661,6 +572,163 @@ pub(crate) fn render_row(
             .test_support()
             .into_any_element(),
     }
+}
+
+fn tool_call_element(
+    row: &TranscriptRow,
+    index: usize,
+    verbose: bool,
+    toggle: &RowToggle,
+    open_diff: &OpenDiff,
+    cx: &App,
+) -> AnyElement {
+    let TranscriptRow::Tool {
+        display_name,
+        detail,
+        output,
+        duration,
+        status,
+        expanded,
+        visual_kind,
+        diff_stats,
+        ..
+    } = row
+    else {
+        return div().into_any_element();
+    };
+    let live = *status == ToolStatus::Running;
+    let open = *expanded || verbose || live;
+    let mut invocation = ToolInvocation::new(
+        SharedString::from(format!("tool-{index}")),
+        display_name.clone(),
+    )
+    .summary(detail.clone())
+    .output(output.clone())
+    .icon(match visual_kind {
+        ToolVisualKind::FileRead => IconName::File,
+        ToolVisualKind::FileWrite | ToolVisualKind::FileEdit => IconName::FilePenLine,
+        _ => IconName::SquareTerminal,
+    });
+    if let Some(elapsed) = parse_duration_label(duration) {
+        invocation = invocation.elapsed(elapsed);
+    }
+    let invocation = match status {
+        ToolStatus::Running => Progressive::running(invocation),
+        ToolStatus::Succeeded => Progressive::complete(invocation),
+        ToolStatus::Failed => Progressive::failed(invocation, "Tool failed"),
+    };
+    let toggle = toggle.clone();
+    let open_diff = open_diff.clone();
+    let diff_stats = *diff_stats;
+
+    div()
+        .id(SharedString::from(format!("tool-summary-{index}")))
+        .test_support()
+        .w_full()
+        .child(
+            div()
+                .relative()
+                .child(
+                    ToolCall::new(&invocation)
+                        .open(open)
+                        .output_max_height(px(190.))
+                        .on_event(move |event, _, cx| {
+                            if let ToolCallEvent::Toggled { .. } = event {
+                                toggle(index, cx);
+                            }
+                        })
+                        .w_full()
+                        .rounded(rems(0.625))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted),
+                )
+                .when_some(diff_stats, |this, (added, removed)| {
+                    this.child(
+                        h_flex()
+                            .id(SharedString::from(format!("tool-diff-{index}")))
+                            .test_support()
+                            .absolute()
+                            .right(px(86.))
+                            .top(px(8.))
+                            .h(px(22.))
+                            .items_center()
+                            .gap(px(4.))
+                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().popover)
+                            .px(px(6.))
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_size(rems(0.625))
+                            .text_color(cx.theme().muted_foreground)
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| open_diff(cx))
+                            .child(
+                                div()
+                                    .text_color(cx.theme().success)
+                                    .child(SharedString::from(format!("+{added}"))),
+                            )
+                            .child(
+                                div()
+                                    .text_color(cx.theme().danger)
+                                    .child(SharedString::from(format!("\u{2212}{removed}"))),
+                            ),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
+/// Render a run of consecutive tool calls as one gpui-ai `ToolGroup`.
+///
+/// The transcript scroller still keeps the first row's identity, so existing
+/// scroll anchors stay stable while the tools inside the run share one block
+/// and one row gap instead of reading as separate paragraphs.
+pub(crate) fn render_tool_group(
+    rows: &[TranscriptRow],
+    start: usize,
+    detail: TranscriptDetail,
+    actions: RowActions<'_>,
+    cx: &App,
+) -> AnyElement {
+    let RowActions {
+        toggle,
+        open_diff,
+        approval: _,
+    } = actions;
+    let verbose = detail == TranscriptDetail::Verbose;
+    let live = rows.iter().any(|row| {
+        matches!(
+            row,
+            TranscriptRow::Tool {
+                status: ToolStatus::Running,
+                ..
+            }
+        )
+    });
+    let children = rows.iter().enumerate().map(|(offset, row)| {
+        tool_call_element(row, start + offset, verbose, toggle, open_diff, cx)
+    });
+
+    div()
+        .id(SharedString::from(format!("transcript-row-{start}")))
+        .test_support()
+        .w_full()
+        .child(
+            div()
+                .id(SharedString::from(format!("tool-group-{start}")))
+                .test_support()
+                .w_full()
+                .child(
+                    ToolGroup::new(SharedString::from(format!("tool-group-{start}")))
+                        .count(rows.len())
+                        .active(live)
+                        .open(true)
+                        .children(children),
+                ),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]

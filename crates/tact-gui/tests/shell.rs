@@ -1735,7 +1735,7 @@ fn clicking_a_thinking_summary_reveals_it_softly(cx: &mut TestAppContext) {
     };
 
     cx.update_window(handle.into(), |_, window, cx| {
-        app.update(cx, |app, cx| app.scroll_transcript_to(3, cx));
+        app.update(cx, |app, cx| app.scroll_transcript_to(2, cx));
         window.render_frame(cx);
     })
     .unwrap();
@@ -2121,9 +2121,9 @@ fn clicking_a_write_rows_diff_badge_opens_the_diff_pane(cx: &mut TestAppContext)
     let app = app.expect("the preview shell is created with its window");
 
     cx.update_window(handle.into(), |_, window, cx| {
-        app.update(cx, |app, cx| app.scroll_transcript_to(5, cx));
+        app.update(cx, |app, cx| app.scroll_transcript_to(3, cx));
         window.render_frame(cx);
-        // Preview row 4 is the edit card; row 3 is its read sibling.
+        // Preview row 3 starts the read/edit tool run; row 5 is the edit card.
         assert!(
             window.try_find("work-pane-body-plan").is_some(),
             "the preview opens on the plan pane"
@@ -3184,6 +3184,7 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
         // Flush the field's own edit before the footer reads it; the click
         // walk runs beside other integration tests, so the input event cannot
         // be assumed to have landed by the time the next press starts.
+        window.render_frame(cx);
         window.render_frame(cx);
         window.click("session-rename-ok", cx);
         window.render_frame(cx);
