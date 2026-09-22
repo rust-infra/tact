@@ -60,7 +60,7 @@ chrono = { workspace = true }
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time", "net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-gpui-ai = { git = "https://github.com/laohanlinux/gpui-ai", rev = "011b585e77725ad0f60c62423c04632da05f723b" }
+gpui-ai = { git = "https://github.com/laohanlinux/gpui-ai", rev = "54deebf" }
 
 [dev-dependencies]
 gpui-kit = { version = "0.6.4", features = ["test-support"] }

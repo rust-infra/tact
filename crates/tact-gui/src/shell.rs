@@ -10,7 +10,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gpui_ai::approval::{ApprovalCard, ApprovalEvent, ApprovalTone};
+use gpui_ai::form::ChoiceOption;
 use gpui_ai::loading::LoadingState;
+use gpui_ai::question_flow::{Question, QuestionFlow, QuestionFlowEvent};
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::motion::{Presence, Transition};
 use gpui_kit::base::{Disableable as _, Selectable, StyledExt as _, TestSupportExt as _};
@@ -6102,6 +6105,9 @@ struct TranscriptFrame {
 /// `&mut App` after the owning view has finished its render pass.
 type ShellClick = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
+/// A click-free action used by gpui-ai's typed component events.
+type ShellAction = Rc<dyn Fn(&mut App)>;
+
 struct ComposerInputs<'a> {
     composer: &'a Entity<TextareaState>,
     model_filter: &'a Entity<InputState>,
@@ -6216,6 +6222,32 @@ fn transcript(
                 .collect()
         })
         .unwrap_or_default();
+    let approval_actions: Vec<ShellAction> = request
+        .as_ref()
+        .map(|request| {
+            (0..request.options.len())
+                .map(|index| {
+                    let app = cx.entity().downgrade();
+                    Rc::new(move |cx: &mut App| {
+                        if let Some(app) = app.upgrade() {
+                            app.update(cx, |app, cx| app.choose(index, cx));
+                        }
+                    }) as ShellAction
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let cancel_action: Option<ShellAction> = request
+        .as_ref()
+        .filter(|request| !request.multi && !is_permission_request(request))
+        .map(|_| {
+            let app = cx.entity().downgrade();
+            Rc::new(move |cx: &mut App| {
+                if let Some(app) = app.upgrade() {
+                    app.update(cx, |app, cx| app.cancel_request(cx));
+                }
+            }) as ShellAction
+        });
     let confirm: Option<ShellClick> = request
         .as_ref()
         .filter(|request| request.multi)
@@ -6229,6 +6261,8 @@ fn transcript(
     let row_items = rows;
     let request_for_render = request;
     let choose_for_render = choose;
+    let approval_actions_for_render = approval_actions;
+    let cancel_action_for_render = cancel_action;
     let confirm_for_render = confirm;
     let cancel_for_render = cancel;
     let empty_focus = focus_composer;
@@ -6288,6 +6322,8 @@ fn transcript(
                                     .as_ref()
                                     .expect("nested permission request is present"),
                                 &choose_for_render,
+                                &approval_actions_for_render,
+                                cancel_action_for_render.as_ref(),
                                 confirm_for_render.as_ref(),
                                 cancel_for_render.as_ref(),
                                 cx,
@@ -6301,6 +6337,8 @@ fn transcript(
                 request_panel(
                     request,
                     &choose_for_render,
+                    &approval_actions_for_render,
+                    cancel_action_for_render.as_ref(),
                     confirm_for_render.as_ref(),
                     cancel_for_render.as_ref(),
                     cx,
@@ -6750,11 +6788,19 @@ fn empty_transcript(focus: &ShellClick, cx: &App) -> impl IntoElement {
 fn request_panel(
     request: &Request,
     choose: &[ShellClick],
+    approval_actions: &[ShellAction],
+    cancel_action: Option<&ShellAction>,
     confirm: Option<&ShellClick>,
     cancel: Option<&ShellClick>,
     cx: &App,
-) -> impl IntoElement {
+) -> AnyElement {
     let permission = is_permission_request(request);
+    if permission {
+        return permission_approval_card(request, approval_actions, cx).into_any_element();
+    }
+    if !request.multi {
+        return question_flow_card(request, approval_actions, cancel_action, cx).into_any_element();
+    }
     let mut actions = h_flex().w_full().flex_wrap().gap(rems(0.4375));
     for index in permission_action_order(&request.options, permission) {
         let option = &request.options[index];
@@ -6802,6 +6848,125 @@ fn request_panel(
             actions.into_any_element(),
         ],
     )
+    .into_any_element()
+}
+
+/// The special Ask path: a single-choice question is a gpui-ai question flow,
+/// not a permission approval and not the multi-select Confirm/Cancel form.
+fn question_flow_card(
+    request: &Request,
+    actions: &[ShellAction],
+    cancel_action: Option<&ShellAction>,
+    cx: &App,
+) -> impl IntoElement {
+    let options = request
+        .options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| ChoiceOption::new(index.to_string(), option.clone()));
+    let question =
+        Question::new(format!("ask-{}", request.id), request.prompt.clone()).options(options);
+    let flow_id = SharedString::from(format!("ask-{}", request.id));
+    let actions = actions.to_vec();
+    let cancel_action = cancel_action.cloned();
+    let flow = QuestionFlow::new(flow_id, "Input needed")
+        .questions([question])
+        .skip_label("Cancel")
+        .finish_label("Answer")
+        .on_event(move |event, _, cx| match event {
+            QuestionFlowEvent::Answered { option, .. } => {
+                if let Ok(index) = option.parse::<usize>()
+                    && let Some(action) = actions.get(index)
+                {
+                    action(cx);
+                }
+            }
+            QuestionFlowEvent::Skipped { .. } => {
+                if let Some(action) = &cancel_action {
+                    action(cx);
+                }
+            }
+            QuestionFlowEvent::Advanced { .. } | QuestionFlowEvent::Completed { .. } => {}
+        });
+    div()
+        .id("request-panel")
+        .test_support()
+        .w_full()
+        .child(flow)
+        .child(
+            div()
+                .text_size(rems(0.6875))
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from("Ask")),
+        )
+}
+
+/// A permission prompt is a tool approval, so gpui-ai owns the card and its
+/// typed decisions. The shell only maps the three labels back to the protocol
+/// option indices and keeps the Ask flow on its own path.
+fn permission_approval_card(
+    request: &Request,
+    actions: &[ShellAction],
+    cx: &App,
+) -> impl IntoElement {
+    let deny = option_index(request, "deny").unwrap_or(0);
+    let allow_once = option_index(request, "allow once").unwrap_or(0);
+    let allow_always = option_index_contains(request, "always");
+    let deny_action = actions.get(deny).cloned();
+    let allow_action = actions.get(allow_once).cloned();
+    let always_action = allow_always.and_then(|index| actions.get(index).cloned());
+    let command = permission_command(&request.prompt);
+    let mut card = ApprovalCard::new(
+        SharedString::from(format!("permission-{}", request.id)),
+        "Permission needed",
+    )
+    .description(match command {
+        Some(_) => "Tact wants to run this command:".to_string(),
+        None => request.prompt.clone(),
+    })
+    .tone(ApprovalTone::Destructive)
+    .approve_label("Allow once")
+    .reject_label("Deny")
+    .allow_always(always_action.is_some())
+    .on_event(move |event, _, cx| match event {
+        ApprovalEvent::Approved { .. } => {
+            if let Some(action) = &allow_action {
+                action(cx);
+            }
+        }
+        ApprovalEvent::ApprovedAlways { .. } => {
+            if let Some(action) = &always_action {
+                action(cx);
+            }
+        }
+        ApprovalEvent::Rejected { .. } => {
+            if let Some(action) = &deny_action {
+                action(cx);
+            }
+        }
+    });
+    if let Some(command) = command {
+        card = card.child(command_block(command, cx));
+    }
+    div()
+        .id("request-panel")
+        .test_support()
+        .w_full()
+        .child(card)
+}
+
+fn option_index(request: &Request, needle: &str) -> Option<usize> {
+    request
+        .options
+        .iter()
+        .position(|option| option.eq_ignore_ascii_case(needle))
+}
+
+fn option_index_contains(request: &Request, needle: &str) -> Option<usize> {
+    request
+        .options
+        .iter()
+        .position(|option| option.to_ascii_lowercase().contains(needle))
 }
 
 /// An answered request: the same card with its decision in place of the actions.

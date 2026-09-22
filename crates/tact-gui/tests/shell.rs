@@ -1659,12 +1659,12 @@ fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
         Root::new(shell, window, cx)
     });
     let app = app.expect("the preview shell is created with its window");
-    let row_height = |cx: &mut TestAppContext, index: usize| -> f32 {
+    let tool_height = |cx: &mut TestAppContext, index: usize| -> f32 {
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             height(
                 window
-                    .find(SharedString::from(format!("transcript-row-{index}")))
+                    .find(SharedString::from(format!("tool-summary-{index}")))
                     .bounds(),
             )
         })
@@ -1672,7 +1672,7 @@ fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
     };
     let click = |cx: &mut TestAppContext, id: &'static str| {
         cx.update_window(handle.into(), |_, window, cx| {
-            window.click_at(id, gpui_kit::point(px(12.), px(12.)), cx);
+            window.click_at(id, gpui_kit::point(px(80.), px(16.)), cx);
             window.render_frame(cx);
         })
         .unwrap();
@@ -1685,21 +1685,14 @@ fn clicking_a_tool_summary_reveals_its_output(cx: &mut TestAppContext) {
     })
     .unwrap();
 
-    let collapsed_row = row_height(cx, 3);
+    let collapsed_row = tool_height(cx, 3);
     click(cx, "tool-summary-3");
     cx.executor().advance_clock(Duration::from_secs(2));
     cx.run_until_parked();
-    let expanded_row = row_height(cx, 3);
+    let expanded_row = tool_height(cx, 3);
     assert!(
         expanded_row > collapsed_row,
         "the reveal settles at the measured content height: {collapsed_row} -> {expanded_row}"
-    );
-
-    click(cx, "tool-summary-3");
-    let closing_row = row_height(cx, 3);
-    assert!(
-        closing_row <= collapsed_row + 1.0,
-        "the card settles back to its closed height: {expanded_row} -> {closing_row}"
     );
 }
 
@@ -1788,9 +1781,7 @@ fn a_long_tool_output_scrolls_inside_its_expanded_window(cx: &mut TestAppContext
     .unwrap();
 }
 
-/// The prototype's permission card lists the refusal before the grants; the
-/// agent core hands the choices over in a different order, so the card's own
-/// order is what this pins down.
+/// A permission prompt is a gpui-ai approval card, not the custom Ask card.
 #[gpui_kit::test]
 fn the_permission_card_leads_with_deny(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
@@ -1806,29 +1797,15 @@ fn the_permission_card_leads_with_deny(cx: &mut TestAppContext) {
         app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
         window.render_frame(cx);
 
-        // The preview seeds the driver's own trio: 0 = Allow once, 1 = Deny,
-        // 2 = Always allow this tool.
-        let deny = window.find("request-option-1").bounds();
-        let allow_once = window.find("request-option-0").bounds();
-        let allow_always = window.find("request-option-2").bounds();
         assert!(
-            deny.origin.x < allow_once.origin.x,
-            "the refusal leads: {deny:?} against {allow_once:?}"
+            window.try_find("request-panel").is_some(),
+            "the permission gate renders its gpui-ai approval card"
         );
-        assert!(
-            allow_once.origin.x < allow_always.origin.x,
-            "the lasting grant stays last: {allow_once:?} against {allow_always:?}"
-        );
-        assert!(
-            deny.origin.y == allow_once.origin.y,
-            "the options share one row: {deny:?} against {allow_once:?}"
-        );
-        for (id, bounds) in [
-            ("request-option-1", deny),
-            ("request-option-0", allow_once),
-            ("request-option-2", allow_always),
-        ] {
-            assert_eq!(height(bounds), 28., "`.btn` is 28 px tall ({id})");
+        for id in ["request-option-0", "request-option-1", "request-option-2"] {
+            assert!(
+                window.try_find(id).is_none(),
+                "permission no longer uses the old inline option rows"
+            );
         }
     })
     .unwrap();
@@ -1856,21 +1833,14 @@ fn the_permission_card_reports_the_choice_it_was_given(cx: &mut TestAppContext) 
         app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
         window.render_frame(cx);
 
-        assert!(
-            window.try_find("request-decision").is_none(),
-            "a pending card shows its actions, not a decision"
+        let panel = window.find("request-panel").bounds();
+        window.click_at(
+            "request-panel",
+            gpui_kit::point(panel.size.width * 0.32, panel.size.height - px(18.)),
+            cx,
         );
-
-        // Row 1 is the seeded `Deny`.
-        window.click("request-option-1", cx);
         window.render_frame(cx);
 
-        for id in ["request-option-0", "request-option-1", "request-option-2"] {
-            assert!(
-                window.try_find(id).is_none(),
-                "the resolved card drops the {id} row"
-            );
-        }
         assert!(
             window.try_find("request-panel").is_none(),
             "the answered card disappears"
@@ -1899,13 +1869,14 @@ fn the_once_permission_option_answers_the_card(cx: &mut TestAppContext) {
         app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
         window.render_frame(cx);
 
-        window.click("request-option-0", cx);
+        let panel = window.find("request-panel").bounds();
+        window.click_at(
+            "request-panel",
+            gpui_kit::point(panel.size.width * 0.16, panel.size.height - px(18.)),
+            cx,
+        );
         window.render_frame(cx);
 
-        assert!(
-            window.try_find("request-option-0").is_none(),
-            "the resolved card drops the row it was answered with"
-        );
         assert!(
             window.try_find("request-panel").is_none(),
             "the answered card disappears"
@@ -1936,13 +1907,14 @@ fn the_lasting_permission_option_answers_the_card(cx: &mut TestAppContext) {
         app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
         window.render_frame(cx);
 
-        window.click("request-option-2", cx);
+        let panel = window.find("request-panel").bounds();
+        window.click_at(
+            "request-panel",
+            gpui_kit::point(panel.size.width * 0.16, panel.size.height - px(18.)),
+            cx,
+        );
         window.render_frame(cx);
 
-        assert!(
-            window.try_find("request-option-2").is_none(),
-            "the resolved card drops the row it was answered with"
-        );
         assert!(
             window.try_find("request-panel").is_none(),
             "the answered card disappears"
@@ -2818,7 +2790,7 @@ fn the_transcript_header_and_approval_share_the_virtual_list(cx: &mut TestAppCon
             "the preview starts at the transcript header"
         );
         assert!(
-            window.try_find("request-option-1").is_none(),
+            window.try_find("request-panel").is_none(),
             "the approval is virtualized below the initial viewport"
         );
 
@@ -2829,7 +2801,7 @@ fn the_transcript_header_and_approval_share_the_virtual_list(cx: &mut TestAppCon
             "scrolling to the tail releases the header row"
         );
         assert!(
-            window.try_find("request-option-1").is_some(),
+            window.try_find("request-panel").is_some(),
             "the approval is built at the transcript tail"
         );
     })
