@@ -2520,6 +2520,24 @@ fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement
                         cx.listener(|this, _, window, cx| this.mention_selected_file(window, cx)),
                     ),
             )
+            .child(
+                prototype_button("work-pane-file-neovim", false, cx)
+                    .label("Neovim")
+                    .tooltip("Open the selected file in embedded Neovim")
+                    .accessibility_label("Open the selected file in Neovim")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_selected_file_in_neovim(window, cx)
+                    })),
+            )
+            .child(
+                prototype_button("work-pane-file-neovim-selection", false, cx)
+                    .label("Nvim selection")
+                    .tooltip("Insert Neovim's last visual selection into the composer")
+                    .accessibility_label("Reference Neovim selection")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.reference_neovim_selection(window, cx)
+                    })),
+            )
             .into_any_element(),
     );
 

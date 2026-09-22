@@ -406,6 +406,9 @@ pub struct TactApp {
     /// The embedded shell, once the user has started one. `None` until then:
     /// opening the pane must not spawn a process.
     terminal: Option<TerminalPane>,
+    /// Neovim's `--listen` socket when the embedded terminal was opened for a
+    /// file. Used to pull the last visual selection back into the composer.
+    nvim_socket: Option<PathBuf>,
     /// Focus target for the terminal grid.
     terminal_focus: FocusHandle,
     /// Bumped whenever the terminal starts or stops, so the pump task for a
@@ -922,6 +925,7 @@ impl TactApp {
             work_pane_side: WorkPaneSide::default(),
             recent_workspaces: Vec::new(),
             terminal: None,
+            nvim_socket: None,
             terminal_focus,
             terminal_epoch: 0,
             model_fetch_epoch: 0,
@@ -2927,6 +2931,97 @@ impl TactApp {
             });
         })
         .detach();
+    }
+
+    /// Open the selected Files row in an embedded Neovim.
+    pub(crate) fn open_selected_file_in_neovim(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.selected_file_path() else {
+            self.push_system_row(
+                "Select a file in the Files pane before opening it in Neovim.".to_string(),
+                cx,
+            );
+            return;
+        };
+        let workdir = self.workspace_dir();
+        let label = path.display().to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let socket =
+            std::env::temp_dir().join(format!("tact-nvim-{}-{now}.sock", std::process::id()));
+        let socket_arg = socket.to_string_lossy().into_owned();
+        let path_arg = path.to_string_lossy().into_owned();
+        match TerminalPane::spawn_program(
+            "nvim",
+            &["--listen", socket_arg.as_str(), path_arg.as_str()],
+            workdir.as_deref(),
+        ) {
+            Ok(pane) => {
+                self.terminal = Some(pane);
+                self.nvim_socket = Some(socket);
+                self.terminal_epoch += 1;
+                self.work_pane = WorkPane::Terminal;
+                self.work_pane_open = true;
+                self.persist_layout();
+                self.spawn_terminal_pump(self.terminal_epoch, cx);
+                self.terminal_focus.focus(window, cx);
+                self.push_system_row(format!("Opened {label} in embedded Neovim."), cx);
+                cx.notify();
+            }
+            Err(error) => {
+                self.push_system_row(format!("Could not open {label} in Neovim: {error:#}"), cx)
+            }
+        }
+    }
+
+    /// Pull Neovim's last visual selection into the composer as a quote.
+    pub(crate) fn reference_neovim_selection(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(socket) = self.nvim_socket.clone() else {
+            self.push_system_row(
+                "Open a file in embedded Neovim before referencing a selection.".to_string(),
+                cx,
+            );
+            return;
+        };
+        let expression = "join(getline(getpos(\"'<\")[1], getpos(\"'>\")[1]), \"\\n\")";
+        match std::process::Command::new("nvim")
+            .arg("--server")
+            .arg(&socket)
+            .arg("--remote-expr")
+            .arg(expression)
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let selection = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if selection.is_empty() {
+                    self.push_system_row(
+                        "Neovim has no visual selection to reference.".to_string(),
+                        cx,
+                    );
+                } else {
+                    self.insert_composer_text(&format!("```text\n{selection}\n```\n"), window, cx);
+                }
+            }
+            Ok(output) => self.push_system_row(
+                format!(
+                    "Could not read Neovim selection: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                cx,
+            ),
+            Err(error) => {
+                self.push_system_row(format!("Could not read Neovim selection: {error:#}"), cx)
+            }
+        }
     }
 
     /// Reveal the selected Files row in the desktop's file manager.
