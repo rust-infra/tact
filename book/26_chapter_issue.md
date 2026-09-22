@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-22 — Desktop transcript rendering moves to gpui-ai components
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/transcript.rs`; `crates/tact-gui/src/shell.rs`; `crates/tact-gui/src/pane.rs`; `crates/tact-gui/tests/shell.rs` |
+
+**Symptom / motivation:** The desktop transcript carried hand-written Markdown, thinking, tool, disclosure, and loading surfaces. They duplicated motion and state conventions already owned by `gpui-ai`, making card expansion, streaming, and loading states drift from the upstream component behavior.
+
+**Decision:** Use `gpui_ai::streaming_text::StreamingText` for assistant prose, `gpui_ai::thinking::Thinking` for reasoning, `gpui_ai::tool_call::ToolCall` for tool cards, and `gpui_ai::loading::LoadingState` for model-list and subagent transcript loading. Tact keeps only product-specific composition around those components: the write-row diff badge remains a clickable overlay, and expanded tool cards stay bounded to a 190px scroll window.
+
+**Behavior after:** Assistant output, reasoning, and tool activity now run through gpui-ai's streaming and disclosure lifecycles. Tool cards keep their compact bounded height and write diff badge. Provider/subagent loading states use the gpui-ai pixel-grid loader. The branch no longer carries Tact's custom Markdown block renderer or Mermaid fence renderer.
+
+**Pointers:** `crates/tact-gui/src/transcript.rs` (`StreamingText`, `Thinking`, `ToolCall`, diff badge overlay); `crates/tact-gui/src/shell.rs` (`LoadingState` in the model picker); `crates/tact-gui/src/pane.rs` (`LoadingState` for subagent transcripts)
+
 ## 1. 2026-09-22 — Mermaid fences render as diagrams in the desktop transcript
 
 | Field | Value |

@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+use gpui_ai::loading::LoadingState;
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::input::{Input, InputState};
@@ -2190,12 +2191,7 @@ fn subagent_transcript_card(
                 ))),
         );
     } else if transcript.loading {
-        body = body.child(
-            div()
-                .text_size(rems(0.6875))
-                .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from("Loading the stored transcript…")),
-        );
+        body = body.child(div().child(LoadingState::new().label("Loading the stored transcript…")));
     } else if transcript.messages.is_empty() {
         body = body.child(
             div()

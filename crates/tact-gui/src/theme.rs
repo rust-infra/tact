@@ -24,6 +24,7 @@ pub const DARK_THEME_NAME: &str = "Tact Anthropic Dark";
 /// Lora is bundled with the application rather than assumed to exist on the
 /// host. Keeping the name in one place prevents the theme config and the
 /// transcript renderer from drifting onto different families.
+#[allow(dead_code)]
 pub(crate) const PROSE_FONT_FAMILY: &str = "Lora";
 
 /// Font bytes registered with GPUI at startup.

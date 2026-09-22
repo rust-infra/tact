@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gpui_ai::loading::LoadingState;
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::motion::{Presence, Transition};
 use gpui_kit::base::{Disableable as _, Selectable, StyledExt as _, TestSupportExt as _};
@@ -7249,9 +7250,7 @@ fn prompt_composer(
                     div()
                         .id("composer-model-loading")
                         .test_support()
-                        .text_xs()
-                        .text_color(muted_foreground)
-                        .child(SharedString::from("Refreshing from provider…")),
+                        .child(LoadingState::new().label("Refreshing from provider…")),
                 );
             }
             let mut visible_models: Vec<String> = model_options
