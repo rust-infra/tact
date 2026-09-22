@@ -508,6 +508,7 @@ pub(crate) fn render_row(
                                 &trace,
                             )
                             .open(open)
+                            .body_max_height(px(220.))
                             .on_event(move |event, _, cx| match event {
                                 ThinkingEvent::Toggled { .. } => toggle(index, cx),
                             })
