@@ -21,6 +21,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon,
     button::{Button, ButtonVariants as _},
     h_flex,
+    popover::Popover,
     scroll::ScrollableElement as _,
     v_flex,
 };
@@ -2454,6 +2455,7 @@ fn files_tree(
 /// The content below the tree for the file selected in it.
 fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement {
     let mut children: Vec<AnyElement> = Vec::new();
+    let owner = cx.entity().downgrade();
     let Some(preview) = files.selected_preview() else {
         return card_with_id(
             "work-pane-file-preview",
@@ -2529,15 +2531,46 @@ fn file_preview_card(files: &FilesPane, cx: &mut Context<TactApp>) -> AnyElement
                         this.open_selected_file_in_neovim(window, cx)
                     })),
             )
-            .child(
-                prototype_button("work-pane-file-neovim-selection", false, cx)
-                    .label("Nvim selection")
-                    .tooltip("Insert Neovim's last visual selection into the composer")
-                    .accessibility_label("Reference Neovim selection")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.reference_neovim_selection(window, cx)
-                    })),
-            )
+            .child({
+                let selection_owner = owner.clone();
+                Popover::new("work-pane-file-neovim-selection-popover")
+                    .anchor(gpui_kit::Anchor::TopLeft)
+                    .trigger(
+                        prototype_button("work-pane-file-neovim-selection", false, cx)
+                            .label("Nvim selection")
+                            .tooltip("Reference Neovim's last visual selection")
+                            .accessibility_label("Reference Neovim selection"),
+                    )
+                    .content(move |_state, _window, cx| {
+                        let owner = selection_owner.clone();
+                        v_flex()
+                            .id("work-pane-file-neovim-selection-panel")
+                            .test_support()
+                            .gap_2()
+                            .min_w(rems(13.))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(
+                                        "Insert Neovim's last visual selection into the composer.",
+                                    )),
+                            )
+                            .child(
+                                prototype_button(
+                                    "work-pane-file-neovim-selection-confirm",
+                                    true,
+                                    cx,
+                                )
+                                .label("Reference selection")
+                                .on_click(move |_, window, cx| {
+                                    let _ = owner.update(cx, |app, cx| {
+                                        app.reference_neovim_selection(window, cx)
+                                    });
+                                }),
+                            )
+                    })
+            })
             .into_any_element(),
     );
 
