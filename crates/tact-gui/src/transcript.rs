@@ -16,7 +16,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::motion::{Presence, Transition};
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
-use gpui_kit::component::{ActiveTheme as _, h_flex, scroll::ScrollableElement as _, v_flex};
+use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::ToolVisualKind;
 
@@ -567,11 +567,10 @@ pub(crate) fn render_row(
                         .child(
                             div()
                                 .relative()
-                                .max_h(px(190.))
-                                .overflow_y_scrollbar()
                                 .child(
                                     ToolCall::new(&invocation)
                                         .open(open)
+                                        .output_max_height(px(190.))
                                         .on_event(move |event, _, cx| {
                                             if let ToolCallEvent::Toggled { .. } = event {
                                                 toggle(index, cx);
