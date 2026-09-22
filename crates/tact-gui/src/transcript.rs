@@ -10,7 +10,7 @@ use gpui_ai::{
     stream::{Progressive, StreamedContent},
     streaming_text::StreamingText,
     thinking::{Thinking, ThinkingEvent, ThinkingTrace},
-    tool_call::{ToolCall, ToolCallEvent, ToolGroup, ToolInvocation},
+    tool_call::{ToolCall, ToolCallEvent, ToolGroup, ToolInvocation, ToolOutputFormat},
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::cubic_bezier;
@@ -632,6 +632,7 @@ fn tool_call_element(
                     ToolCall::new(&invocation)
                         .open(open)
                         .output_max_height(px(190.))
+                        .output_format(ToolOutputFormat::Plain)
                         .on_event(move |event, _, cx| {
                             if let ToolCallEvent::Toggled { .. } = event {
                                 toggle(index, cx);

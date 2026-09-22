@@ -3229,7 +3229,7 @@ dependencies = [
 [[package]]
 name = "gpui-ai"
 version = "0.8.0"
-source = "git+https://github.com/laohanlinux/gpui-ai?rev=2edc68d#2edc68de2d6a4c6eb53f360d19a4d10ee72215bd"
+source = "git+https://github.com/laohanlinux/gpui-ai?rev=8765553#8765553ba42cfe9c0ccc016efcf78ba6f00d8f93"
 dependencies = [
  "gpui-base",
  "gpui-component",
