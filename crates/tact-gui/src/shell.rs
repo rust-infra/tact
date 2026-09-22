@@ -28,7 +28,7 @@ use gpui_kit::component::{
     notification::Notification,
     popover::Popover,
     progress::ProgressCircle,
-    scroll::ScrollableElement as _,
+    scroll::{Scrollbar, ScrollbarMode},
     setting::{SettingGroup, SettingItem, SettingPage, Settings},
     switch::Switch,
     tooltip::Tooltip,
@@ -37,7 +37,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, DragMoveEvent,
     Empty, Entity, FocusHandle, Focusable as _, InteractiveElement, IntoElement, MouseButton,
-    ParentElement as _, Pixels, Rems, Render, RenderOnce, SharedString, Stateful,
+    ParentElement as _, Pixels, Rems, Render, RenderOnce, ScrollHandle, SharedString, Stateful,
     StatefulInteractiveElement, StyleRefinement, Styled as _, Subscription, Window, div, px,
     relative, rems,
 };
@@ -7442,7 +7442,7 @@ fn prompt_composer(
                 .strong()
                 .tooltip("Model and reasoning controls"),
         )
-        .content(move |_state, _window, cx| {
+        .content(move |_state, window, cx| {
             let menu = cx.entity();
             let (model_options, model_options_loading, current_model, current_budget) =
                 model_owner
@@ -7523,49 +7523,87 @@ fn prompt_composer(
                 );
             }
             if !model_options.is_empty() {
-                let mut list = v_flex()
-                    .gap_1()
-                    // Cap only the model list. Search and reasoning controls
-                    // stay fixed, while a real provider's dozens of ids scroll
-                    // inside this section instead of growing the popover past
-                    // the window.
-                    .max_h(if THINKING_BUDGET_UI_ENABLED {
-                        rems(16.)
-                    } else {
-                        rems(21.)
+                let list_max_height = if THINKING_BUDGET_UI_ENABLED {
+                    rems(16.)
+                } else {
+                    rems(21.)
+                };
+                let scroll_handle = window
+                    .use_keyed_state("composer-model-list-scroll", cx, |_, _| {
+                        ScrollHandle::new()
                     })
-                    .pr(rems(0.75))
-                    .overflow_y_scrollbar();
+                    .read(cx)
+                    .clone();
+                let mut rows = Vec::new();
                 if visible_models.is_empty() && !model_options_loading {
-                    list = list.child(
+                    rows.push(
                         div()
                             .id("composer-model-no-match")
                             .test_support()
                             .text_xs()
                             .text_color(muted_foreground)
-                            .child(SharedString::from("No models match this search.")),
+                            .child(SharedString::from("No models match this search."))
+                            .into_any_element(),
                     );
                 }
                 for model in visible_models {
                     let owner = model_owner.clone();
                     let menu = menu.clone();
                     let selected = model == current_model;
-                    list = list.child(
-                        Button::new(SharedString::from(format!(
+                    let accent = cx.theme().accent;
+                    let foreground = cx.theme().foreground;
+                    let row = h_flex()
+                        .id(SharedString::from(format!(
                             "composer-model-{}",
                             model.replace(['/', ':', ' '], "-")
                         )))
-                        .label(model.clone())
-                        .ghost()
-                        .compact()
-                        .toggled(selected)
+                        .test_support()
+                        .w_full()
+                        .justify_start()
+                        .items_center()
+                        .h(rems(1.625))
+                        .px(rems(0.5))
+                        .rounded(rems(0.375))
+                        .text_size(rems(0.6875))
+                        .aria_label(model.clone())
+                        .aria_selected(selected)
+                        .text_color(if selected {
+                            foreground
+                        } else {
+                            muted_foreground
+                        })
+                        .when(selected, |this| this.bg(accent))
+                        .hover(move |style| style.bg(accent))
+                        .cursor_pointer()
+                        .child(model.clone())
                         .on_click(move |_, window, cx| {
                             menu.update(cx, |state, cx| state.dismiss(window, cx));
                             let _ = owner.update(cx, |app, cx| app.set_model(model.clone(), cx));
-                        }),
-                    );
+                        });
+                    rows.push(row.into_any_element());
                 }
-                panel = panel.child(list);
+                let list = div()
+                    .id("composer-model-list-scroll-area")
+                    .test_support()
+                    .w_full()
+                    .max_h(list_max_height)
+                    .track_scroll(&scroll_handle)
+                    .overflow_y_scroll()
+                    .child(v_flex().gap_1().pr(rems(0.75)).children(rows));
+                panel = panel.child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .max_h(list_max_height)
+                        .child(list)
+                        .child(
+                            div().absolute().inset_0().child(
+                                Scrollbar::vertical(&scroll_handle)
+                                    .mode(ScrollbarMode::Always)
+                                    .viewport_from_layout(),
+                            ),
+                        ),
+                );
             }
             if THINKING_BUDGET_UI_ENABLED {
                 panel = panel.child(

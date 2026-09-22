@@ -2407,12 +2407,12 @@ fn the_composer_option_rows_keep_the_choice_they_set(cx: &mut TestAppContext) {
         window.click("composer-model", cx);
         window.render_frame(cx);
         assert_eq!(
-            window.find("composer-model-gpt-5").checked(),
+            window.find("composer-model-gpt-5").selected(),
             Some(true),
             "the model row keeps its check after the popover reopens"
         );
         assert_eq!(
-            window.find("composer-model-claude-sonnet-4-5").checked(),
+            window.find("composer-model-claude-sonnet-4-5").selected(),
             Some(false),
             "the previous model row is unchecked"
         );
@@ -2485,6 +2485,20 @@ fn the_model_picker_filters_a_long_list(cx: &mut TestAppContext) {
         assert!(
             window.try_find("composer-model-gpt-5").is_some(),
             "the unfiltered list starts with server order"
+        );
+        assert!(
+            window.try_find("composer-model-list-scroll-area").is_some(),
+            "the model list owns a scroll viewport"
+        );
+        let panel = window.find("composer-model-panel").bounds();
+        let row = window.find("composer-model-gpt-5").bounds();
+        assert!(
+            row.left() - panel.left() < px(20.),
+            "model rows start at the panel's left edge: row {row:?} panel {panel:?}"
+        );
+        assert!(
+            height(row) <= 28.0,
+            "model rows use the compact list height: {row:?}"
         );
 
         window.input("deepseek", cx);
