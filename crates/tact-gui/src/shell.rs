@@ -2784,7 +2784,7 @@ impl TactApp {
                 // The list closes on a space, so a row taken from it has no
                 // arguments yet; a command line typed in full reaches the same
                 // path through `submit`.
-                let args = composer::skill_args(&draft, &skill.name);
+                let args = tact::skill::slash_args(&draft, &skill.name);
                 self.invoke_skill(skill, args, window, cx);
             }
             return;
@@ -3661,7 +3661,7 @@ impl TactApp {
         // terminal's Enter runs one: the body goes to the agent, the command
         // line stays in the transcript.
         if let Some(skill) = name.as_deref().and_then(|name| self.skill_named(name)) {
-            let args = composer::skill_args(&draft, &skill.name);
+            let args = tact::skill::slash_args(&draft, &skill.name);
             self.invoke_skill(skill, args, window, cx);
             return;
         }
@@ -3691,8 +3691,9 @@ impl TactApp {
     ///
     /// The transcript keeps the command line the reader typed; the agent
     /// receives the skill body wrapped in `<skill>` with its arguments applied
-    /// (`composer::skill_task`). The draft is consumed either way, since the
-    /// invocation is what the reader asked for.
+    /// (`tact::skill::slash_task`, the same framing the terminal sends). The
+    /// draft is consumed either way, since the invocation is what the reader
+    /// asked for.
     fn invoke_skill(
         &mut self,
         skill: composer::Skill,
@@ -3705,8 +3706,10 @@ impl TactApp {
         } else {
             format!("/{} {args}", skill.name)
         };
-        let task =
-            composer::with_attachments(&composer::skill_task(&skill, &args), &self.attachments);
+        // The framing — `<skill>` around the body, `$ARGUMENTS` applied — is the
+        // agent's protocol, so it lives in one place for both clients.
+        let invocation = tact::skill::slash_task(&skill.name, &skill.body, &args);
+        let task = composer::with_attachments(&invocation, &self.attachments);
         self.attachments.clear();
         self.composer
             .update(cx, |state, cx| state.set_value("", window, cx));

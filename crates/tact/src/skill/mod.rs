@@ -393,6 +393,112 @@ impl SkillRegistry {
     }
 }
 
+/// The argument text after `/{name}` in a slash command line.
+///
+/// Empty when the line does not name that skill, stops at the name, or when the
+/// token is merely a prefix of a longer name (`/demo` must not take the
+/// arguments of `/demo-test`).
+///
+/// Both front ends read their command line through here, so a reader who types
+/// the same thing in either client sends the same task.
+pub fn slash_args(line: &str, name: &str) -> String {
+    let trimmed = line.trim();
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return String::new();
+    };
+    let Some(after_name) = rest.strip_prefix(name) else {
+        return String::new();
+    };
+    if after_name.is_empty() {
+        return String::new();
+    }
+    if !after_name.starts_with(char::is_whitespace) {
+        return String::new();
+    }
+    after_name.trim().to_string()
+}
+
+/// The agent-facing task for a slash invocation of a skill.
+///
+/// The body wrapped in `<skill name="…">`, Claude Code–style bare `$ARGUMENTS`
+/// substituted (indexed `$ARGUMENTS[N]` and longer tokens like `$ARGUMENTS2`
+/// are left for the skill to interpret), and `ARGUMENTS: …` appended when the
+/// body has no placeholder and arguments were given.
+///
+/// This shape is protocol, not prose: the system prompt treats a `<skill>`
+/// block in a user message as a slash invocation and reads a trailing
+/// `ARGUMENTS:` line as that invocation's arguments (see
+/// `prompt/system_prompt_template.md`). Every front end assembles it here
+/// rather than keeping a copy, so the two clients cannot drift apart.
+pub fn slash_task(name: &str, body: &str, args: &str) -> String {
+    format!(
+        "<skill name=\"{}\">\n{}\n</skill>",
+        escape_xml_attr(name),
+        render_slash_body(body, args)
+    )
+}
+
+/// Render a skill body for the agent, Claude Code style.
+fn render_slash_body(body: &str, args: &str) -> String {
+    let body = body.trim();
+    if has_bare_arguments_placeholder(body) {
+        substitute_arguments(body, args)
+    } else if args.is_empty() {
+        body.to_string()
+    } else {
+        format!("{body}\n\nARGUMENTS: {args}")
+    }
+}
+
+/// True when `$ARGUMENTS` is a bare placeholder here (not indexed, not a longer
+/// token like `$ARGUMENTS2`).
+fn is_bare_arguments_placeholder(after: &str) -> bool {
+    match after.chars().next() {
+        None => true,
+        Some('[') => false,
+        Some(c) if c.is_ascii_alphanumeric() || c == '_' => false,
+        Some(_) => true,
+    }
+}
+
+/// True when the body carries a bare `$ARGUMENTS` placeholder.
+fn has_bare_arguments_placeholder(body: &str) -> bool {
+    let mut rest = body;
+    while let Some(index) = rest.find("$ARGUMENTS") {
+        let after = &rest[index + "$ARGUMENTS".len()..];
+        if is_bare_arguments_placeholder(after) {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+/// Substitute bare `$ARGUMENTS` only.
+fn substitute_arguments(body: &str, args: &str) -> String {
+    let mut out = String::with_capacity(body.len() + args.len());
+    let mut rest = body;
+    while let Some(index) = rest.find("$ARGUMENTS") {
+        out.push_str(&rest[..index]);
+        let after = &rest[index + "$ARGUMENTS".len()..];
+        if is_bare_arguments_placeholder(after) {
+            out.push_str(args);
+        } else {
+            out.push_str("$ARGUMENTS");
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Escape attribute text for the name in `<skill name="…">`.
+fn escape_xml_attr(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct SkillFrontmatter {
     name: Option<String>,
@@ -442,6 +548,70 @@ mod tests {
         assert_eq!(meta.name.as_deref(), Some("test"));
         assert_eq!(meta.description.as_deref(), Some("hello"));
         assert_eq!(body, "body");
+    }
+
+    /// The command line a reader types is read the same way by every front end;
+    /// these cases were the terminal's and the desktop's, now in one place.
+    #[test]
+    fn slash_arguments_come_from_after_the_name() {
+        assert_eq!(
+            slash_args("/code-reviewer fix auth", "code-reviewer"),
+            "fix auth"
+        );
+        assert_eq!(slash_args("/demo refactor foo", "demo"), "refactor foo");
+        assert_eq!(slash_args("/demo", "demo"), "");
+        assert_eq!(slash_args("  /demo  ", "demo"), "");
+        assert_eq!(slash_args("demo x", "demo"), "");
+        // A prefix must not steal a longer skill's arguments.
+        assert_eq!(slash_args("/demo-test x", "demo"), "");
+        assert_eq!(slash_args("/cod", "code-reviewer"), "");
+    }
+
+    #[test]
+    fn slash_task_wraps_the_body() {
+        let out = slash_task("demo", "Use Result.", "refactor foo");
+        assert!(out.contains("<skill name=\"demo\">"), "{out}");
+        assert!(out.contains("Use Result."));
+        assert!(out.contains("ARGUMENTS: refactor foo"));
+    }
+
+    #[test]
+    fn slash_task_substitutes_the_bare_arguments_placeholder() {
+        let out = slash_task("deploy", "Deploy $ARGUMENTS to prod.", "v2");
+        assert!(out.contains("Deploy v2 to prod."));
+        assert!(!out.contains("$ARGUMENTS"));
+        assert!(!out.contains("ARGUMENTS:"));
+    }
+
+    #[test]
+    fn slash_task_leaves_indexed_and_longer_arguments_tokens() {
+        let out = slash_task("deploy", "First $ARGUMENTS[0]; all $ARGUMENTS.", "v2");
+        assert!(out.contains("First $ARGUMENTS[0]; all v2."));
+
+        let out = slash_task("deploy", "See $ARGUMENTS2 and use $ARGUMENTS.", "v2");
+        assert!(out.contains("See $ARGUMENTS2 and use v2."));
+
+        let out = slash_task("deploy", "Ship $ARGUMENTS2 now", "v2");
+        assert!(out.contains("Ship $ARGUMENTS2 now"), "{out}");
+        assert!(
+            out.contains("ARGUMENTS: v2"),
+            "an indexed token is not the bare one, so the arguments are appended"
+        );
+    }
+
+    #[test]
+    fn slash_task_without_arguments_is_the_body_alone() {
+        let out = slash_task("demo", "Just run.", "");
+        assert_eq!(out, "<skill name=\"demo\">\nJust run.\n</skill>");
+    }
+
+    #[test]
+    fn slash_task_escapes_the_name() {
+        let out = slash_task("a\"b&c<d", "body", "");
+        assert!(
+            out.contains("<skill name=\"a&quot;b&amp;c&lt;d\">"),
+            "{out}"
+        );
     }
 
     #[test]

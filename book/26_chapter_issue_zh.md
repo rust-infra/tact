@@ -42,9 +42,9 @@
 
 **改后行为：** 输入 `/` 会在 "Commands" 下列出 `/compact`、在 "Skills" 下列出已安装的 skill，各带描述；Enter 或点击都会执行，只有 `@` 行插入文本。`/am-checkpoint fix auth` 会提交 skill 正文并把参数应用上去，转录显示 `/am-checkpoint fix auth`。项目根自带的 skill 与全局的一起列出；根在某目录的 shell 就给出那个目录的文件与 skill。一轮进行中的 `/compact` 不动上下文，并说明原因。
 
-**关于重复的策略：** 调用框架现在存在两份 —— 终端的 `format_skill_agent_task` 与桌面端的 `composer::skill_task` —— 因为终端逻辑被冻结。两边都移植了同样的用例做钉子，但真正干净的做法是把它收进 `tact::skill` 的一个共享 helper；那属于终端侧改动，因此留作独立决策。
+**只有一份实现，不是两份：** 命令行解析与框架文案（`tact::skill::slash_args` / `tact::skill::slash_task`）是共享的，因为这个形状属于 agent 的协议，而不是某个前端的拷贝 —— system prompt 就是按 `<skill name="…">` 与结尾的 `ARGUMENTS:` 行来判断的。在终端逻辑被冻结的那一版里，桌面端曾保留一份逐字拷贝；现在那份拷贝已删除（净 −135 行），终端的 `skill_args_from_input` / `format_skill_agent_task` 改为委托给这对共享函数，而原先归终端所有的框架用例，现在钉在代码所在之处。
 
-**指针：** `crates/tact-gui/src/composer.rs`（`Skill::load`、`skill_rows`、`skill_args`、`skill_task`）；`crates/tact-gui/src/shell.rs`（`invoke_skill`、`submit_task`、`accept_suggestion`、`suggestion_section`）；单测 `a_skill_row_sends_the_body_and_keeps_the_command_line`、`a_typed_skill_command_carries_its_arguments`、`compact_is_refused_while_a_turn_is_in_flight`、`skills_load_through_the_agent_loader_with_their_bodies`、`a_skill_invocation_is_framed_the_way_the_terminal_frames_it`；`crates/tact-gui/tests/shell.rs`（`the_slash_list_groups_commands_and_skills`）；`crates/tact/src/skill/mod.rs`（`get_skill_registry`）；`crates/tui/src/handlers/skills.rs`
+**指针：** `crates/tact/src/skill/mod.rs`（`slash_args`、`slash_task`、`get_skill_registry`）；`crates/tact-gui/src/composer.rs`（`Skill::load`、`skill_rows`）；`crates/tact-gui/src/shell.rs`（`invoke_skill`、`submit_task`、`accept_suggestion`、`suggestion_section`）；单测 `a_skill_row_sends_the_body_and_keeps_the_command_line`、`a_typed_skill_command_carries_its_arguments`、`compact_is_refused_while_a_turn_is_in_flight`、`skills_load_through_the_agent_loader_with_their_bodies`，以及 `tact::skill` 里的 `slash_arguments_come_from_after_the_name`、`slash_task_wraps_the_body`、`slash_task_substitutes_the_bare_arguments_placeholder`、`slash_task_leaves_indexed_and_longer_arguments_tokens`；`crates/tact-gui/tests/shell.rs`（`the_slash_list_groups_commands_and_skills`）；`crates/tui/src/handlers/skills.rs`（终端侧改为委托的调用点）
 
 ## 1. 2026-09-24 — 桌面端 composer 里输入 `/compact` 会对会话生效
 
