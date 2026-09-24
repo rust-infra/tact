@@ -15,6 +15,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use gpui_kit::component::ThemeMode;
 use serde::{Deserialize, Serialize};
 
 use crate::pane::WorkPane;
@@ -163,6 +164,16 @@ pub(crate) struct LayoutPrefs {
     /// so a font that is later uninstalled simply falls back instead of
     /// pointing at a file that is gone.
     pub ui_font: Option<String>,
+    /// The light/dark mode the shell last showed.
+    ///
+    /// `None` means the user has never chosen: the shell keeps the prototype's
+    /// dark opening rather than the UI framework's light default. Storing the
+    /// absence is what keeps an old document from flipping a dark shell to
+    /// light on the first launch after this field exists.
+    pub theme_mode: Option<ThemeMode>,
+    /// Whether the transcript keeps the newest output in view while a turn
+    /// runs.
+    pub follow_tail: bool,
 }
 
 impl Default for LayoutPrefs {
@@ -182,6 +193,8 @@ impl Default for LayoutPrefs {
             zoom_rem: ZOOM_DEFAULT,
             ui_font: None,
             show_archived: false,
+            theme_mode: None,
+            follow_tail: true,
         }
     }
 }

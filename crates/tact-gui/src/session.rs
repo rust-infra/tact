@@ -270,6 +270,12 @@ pub(crate) struct SessionState {
     pub(crate) subagent_transcript: Option<SubagentTranscriptState>,
     /// Most recent token usage for the usage ring.
     pub(crate) usage: Option<TokenUsageInfo>,
+    /// Context window the active model runs with, in tokens.
+    ///
+    /// The usage ring and every `% context` readout divide the last request's
+    /// `total` by this. `0` is the config's own "unknown / disabled" value and
+    /// reads as `0%` rather than dividing by it.
+    pub(crate) context_window: usize,
     /// Turns taken in the current task, and the loop cap when one exists.
     pub(crate) turns: Option<(u32, Option<u32>)>,
     /// Wall-clock start of the current task, used for the completion summary.
@@ -312,6 +318,21 @@ pub(crate) struct SessionState {
     /// the "background command" shape the sidebar lists; the entry is removed
     /// when `BackgroundTaskFinished` or a final `StepFinished` seals the card.
     pub(crate) background: Vec<String>,
+}
+
+/// How much of the model's context window the last request occupied.
+///
+/// `used` is the request's own `total` (prompt plus completion), not the prompt
+/// alone: the window holds both, and the prompt's share of one request says
+/// nothing about how close auto-compaction is. This is the same numerator the
+/// TUI's `ctx 4% 45K/1M` meter reads, so the two front ends agree frame for
+/// frame. Truncates rather than rounds, so a ring only reaches 100 when the
+/// context really has.
+pub(crate) fn context_percent(used: u32, window: usize) -> u32 {
+    if window == 0 {
+        return 0;
+    }
+    ((used as u64 * 100) / window as u64).min(100) as u32
 }
 
 /// One subagent's stored transcript, loaded on demand for the work pane.
@@ -412,6 +433,7 @@ impl Conversation {
                         self.push_row(TranscriptRow::Thinking {
                             text: text.to_string(),
                             duration_seconds: None,
+                            live: false,
                             expanded: true,
                         });
                     }
@@ -637,7 +659,7 @@ impl Conversation {
                     plan_output,
                     result.status == StepStatus::Failed,
                 );
-                self.set_tool(
+                let change = self.set_tool(
                     &tool_id,
                     display_name(&result.presentation.display_name, &result.tool),
                     detail,
@@ -645,7 +667,25 @@ impl Conversation {
                     duration,
                     Some(result.presentation.visual_kind),
                     diff_stats,
-                )
+                );
+                // A finished step carries the body its card should show — the
+                // text a write or edit applied, the output a command produced.
+                // A slow tool already streamed it through `ToolProgress`; one
+                // that finishes in a single shot (`edit_file`, `write_file`)
+                // never emits progress, which left those cards openable but
+                // empty. `StepResult::detail` is the field the TUI has always
+                // rendered, so the desktop card fills from the same one.
+                match result
+                    .detail
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    Some(body) => match self.set_tool_output(&tool_id, body.to_string()) {
+                        Some(index) => Change::Resized(index),
+                        None => change,
+                    },
+                    None => change,
+                }
             }
             AgentUpdate::StepFailed {
                 tool_id,
@@ -792,6 +832,9 @@ impl Conversation {
             AgentUpdate::TaskCancelled => {
                 self.end_turn();
                 state.running = false;
+                // The turn clock reads this: a finished turn must not leave a
+                // start stamp behind for the next one to inherit.
+                state.task_started_at = None;
                 let index = self.rows.len();
                 self.rows.push(TranscriptRow::System {
                     text: "Cancelled the active turn.".to_string(),
@@ -801,6 +844,7 @@ impl Conversation {
             AgentUpdate::Error(error) => {
                 self.end_turn();
                 state.running = false;
+                state.task_started_at = None;
                 let index = self.rows.len();
                 self.rows.push(TranscriptRow::Error {
                     text: error.to_string(),
@@ -889,6 +933,7 @@ impl Conversation {
                 self.rows.push(TranscriptRow::Thinking {
                     text: String::new(),
                     duration_seconds: None,
+                    live: true,
                     expanded: false,
                 });
                 self.thinking_started_at = Some(std::time::Instant::now());
@@ -904,6 +949,7 @@ impl Conversation {
                         self.rows.push(TranscriptRow::Thinking {
                             text: String::new(),
                             duration_seconds: None,
+                            live: true,
                             expanded: false,
                         });
                         self.thinking_started_at = Some(std::time::Instant::now());
@@ -928,11 +974,13 @@ impl Conversation {
                 if let Some(index) = self.open_thinking
                     && let Some(TranscriptRow::Thinking {
                         duration_seconds,
+                        live,
                         expanded,
                         ..
                     }) = self.rows.get_mut(index)
                 {
                     *duration_seconds = elapsed;
+                    *live = false;
                     *expanded = false;
                 }
                 self.open_thinking = None;
@@ -1040,6 +1088,24 @@ impl Conversation {
             }
         }
         Change::Resized(index)
+    }
+
+    /// Fill a tool card's body once its step reports one.
+    ///
+    /// Returns the row that changed when the body was empty, so the scroller
+    /// remeasures it. A card that already streamed output through
+    /// `ToolProgress` keeps what it has: the stream is the body the reader was
+    /// watching, and the summary `detail` is not a second copy of it.
+    fn set_tool_output(&mut self, tool_id: &str, output: String) -> Option<usize> {
+        let index = *self.open_tools.get(tool_id)?;
+        let TranscriptRow::Tool { output: body, .. } = self.rows.get_mut(index)? else {
+            return None;
+        };
+        if !body.trim().is_empty() {
+            return None;
+        }
+        *body = output;
+        Some(index)
     }
 
     /// Display name of a tool row, if it exists.
@@ -1285,6 +1351,25 @@ fn format_task_duration(duration: std::time::Duration) -> String {
     }
 }
 
+/// A running turn's clock: `mm:ss`, or `h:mm:ss` past the hour.
+///
+/// Fixed width, because this one advances once a second in the status bar while
+/// a turn is in flight — [`format_task_duration`] reads better inside the
+/// finished sentence, but it changes shape every 60 seconds.
+pub(crate) fn format_elapsed_clock(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds >= 3_600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3_600,
+            (seconds % 3_600) / 60,
+            seconds % 60
+        )
+    } else {
+        format!("{:02}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
 fn task_complete_text(state: &SessionState, elapsed: Option<std::time::Duration>) -> String {
     let mut parts = Vec::new();
     if let Some((turns_taken, max_turns)) = state.turns {
@@ -1299,8 +1384,7 @@ fn task_complete_text(state: &SessionState, elapsed: Option<std::time::Duration>
         parts.push(format_task_duration(elapsed));
     }
     if let Some(usage) = state.usage.as_ref() {
-        let denominator = usage.prompt.saturating_add(usage.completion).max(1);
-        let context = (usage.prompt * 100 / denominator).min(100);
+        let context = context_percent(usage.total, state.context_window);
         parts.push(format!("{context}% context"));
         if usage.total > 0 {
             parts.push(format!("{} tokens", compact_tokens(usage.total)));
@@ -1506,9 +1590,16 @@ mod tests {
             &conversation.rows()[0],
             TranscriptRow::Assistant { markdown, streaming: false, .. } if markdown == "before"
         ));
+        // A block that is still arriving has no duration yet and says so
+        // through `live`; `Finished` fills the duration in and clears it.
         assert!(matches!(
             &conversation.rows()[1],
-            TranscriptRow::Thinking { text, .. } if text == "weighing"
+            TranscriptRow::Thinking {
+                text,
+                live: true,
+                duration_seconds: None,
+                ..
+            } if text == "weighing"
         ));
         assert!(matches!(
             &conversation.rows()[2],
@@ -1565,6 +1656,108 @@ mod tests {
                 assert_eq!(duration, "12 ms");
                 assert_eq!(*status, ToolStatus::Succeeded);
             }
+            other => panic!("expected a tool row, got {other:?}"),
+        }
+    }
+
+    /// A tool that finishes in one shot never emits `ToolProgress`, so the body
+    /// its card opens onto has to come from `StepResult::detail` — the text an
+    /// edit applied, the content a write stored. Without it those cards opened
+    /// onto nothing.
+    #[test]
+    fn a_finished_step_fills_the_card_body_from_its_detail() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+        let mut edit = presentation("Edit");
+        edit.visual_kind = ToolVisualKind::FileEdit;
+
+        conversation.apply(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                tool_name: "edit_file".into(),
+                arg_summary: "src/main.rs".into(),
+                arg_full: String::new(),
+                presentation: edit.clone(),
+            },
+            &mut state,
+        );
+        conversation.apply(
+            AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                result: tact_protocol::StepResult {
+                    tool: "edit_file".into(),
+                    arg_summary: "src/main.rs".into(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "ok".into(),
+                    detail: Some("fn main() {\n    run()\n}".into()),
+                    duration_us: Some(9_000),
+                    permission_label: None,
+                    presentation: edit,
+                },
+            },
+            &mut state,
+        );
+
+        match &conversation.rows()[0] {
+            TranscriptRow::Tool { output, .. } => {
+                assert_eq!(output, "fn main() {\n    run()\n}");
+            }
+            other => panic!("expected a tool row, got {other:?}"),
+        }
+    }
+
+    /// The streamed body outranks the summary `detail`: a command that already
+    /// wrote its output through `ToolProgress` keeps exactly that text.
+    #[test]
+    fn a_streamed_tool_card_keeps_its_output() {
+        let mut conversation = Conversation::default();
+        let mut state = SessionState::default();
+
+        conversation.apply(
+            AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                tool_name: "bash".into(),
+                arg_summary: "cargo test".into(),
+                arg_full: String::new(),
+                presentation: presentation("Bash"),
+            },
+            &mut state,
+        );
+        conversation.apply(
+            AgentUpdate::ToolProgress {
+                tool_id: "tool_1".into(),
+                chunks: vec![tact_protocol::ToolOutputChunk {
+                    stream: tact_protocol::ToolOutputStream::Stdout,
+                    text: "streamed line\n".into(),
+                }],
+            },
+            &mut state,
+        );
+        conversation.apply(
+            AgentUpdate::StepFinished {
+                idx: 0,
+                tool_id: "tool_1".into(),
+                result: tact_protocol::StepResult {
+                    tool: "bash".into(),
+                    arg_summary: "cargo test".into(),
+                    arg_full: None,
+                    status: StepStatus::Success,
+                    message: "ok".into(),
+                    detail: Some("summary detail".into()),
+                    duration_us: Some(9_000),
+                    permission_label: None,
+                    presentation: presentation("Bash"),
+                },
+            },
+            &mut state,
+        );
+
+        match &conversation.rows()[0] {
+            TranscriptRow::Tool { output, .. } => assert_eq!(output, "streamed line\n"),
             other => panic!("expected a tool row, got {other:?}"),
         }
     }
@@ -1865,6 +2058,17 @@ mod tests {
     }
 
     #[test]
+    fn the_turn_clock_keeps_a_fixed_width() {
+        use std::time::Duration;
+        assert_eq!(format_elapsed_clock(Duration::from_secs(0)), "00:00");
+        assert_eq!(format_elapsed_clock(Duration::from_secs(59)), "00:59");
+        assert_eq!(format_elapsed_clock(Duration::from_secs(60)), "01:00");
+        assert_eq!(format_elapsed_clock(Duration::from_secs(3_599)), "59:59");
+        assert_eq!(format_elapsed_clock(Duration::from_secs(3_600)), "1:00:00");
+        assert_eq!(format_elapsed_clock(Duration::from_secs(3_661)), "1:01:01");
+    }
+
+    #[test]
     fn task_complete_stops_the_turn_and_summarises() {
         let mut conversation = Conversation::default();
         let mut state = SessionState {
@@ -1879,6 +2083,7 @@ mod tests {
                 prompt_cache_miss_tokens: 300,
                 reasoning_tokens: 0,
             }),
+            context_window: 500,
             ..SessionState::default()
         };
 
@@ -1895,10 +2100,12 @@ mod tests {
                 ..
             }
         ));
+        // 400 of the 500-token window is 80%: the readout follows the window,
+        // not the prompt's share of the request.
         assert!(matches!(
             &conversation.rows()[1],
             TranscriptRow::System { text }
-                if text == "Task complete · 2 turns · 1s · 75% context · 400 tokens"
+                if text == "Task complete · 2 turns · 1s · 80% context · 400 tokens"
         ));
     }
 
@@ -1915,6 +2122,7 @@ mod tests {
         conversation.push_row(TranscriptRow::Thinking {
             text: "The prototype has two buttons.".to_string(),
             duration_seconds: Some(8),
+            live: false,
             expanded: true,
         });
         conversation.push_row(TranscriptRow::Tool {
@@ -1995,9 +2203,17 @@ mod tests {
             &conversation.rows()[0],
             TranscriptRow::User { text, sent_at } if text == "check the build" && *sent_at == NO_TIMESTAMP
         ));
+        // Restored reasoning is *finished*, not merely untimed. Reading
+        // liveness off the missing duration made every reopened session render
+        // its reasoning as a still-arriving "Thinking…" card.
         assert!(matches!(
             &conversation.rows()[1],
-            TranscriptRow::Thinking { text, .. } if text == "weighing"
+            TranscriptRow::Thinking {
+                text,
+                live: false,
+                duration_seconds: None,
+                ..
+            } if text == "weighing"
         ));
         assert!(matches!(
             &conversation.rows()[2],

@@ -117,10 +117,17 @@ pub(crate) enum TranscriptRow {
     Thinking {
         text: String,
         /// How long the model spent on this block, once its stream finished.
-        /// `None` while it is still arriving, and for rows restored without
-        /// timing information — the summary then reads "Thinking" rather than
-        /// inventing a duration.
+        /// `None` for a row restored from history, which has no timing to
+        /// show — the summary then reads "Thoughts" rather than inventing a
+        /// duration.
         duration_seconds: Option<u64>,
+        /// Whether the block is still arriving.
+        ///
+        /// Deliberately not derived from `duration_seconds`: a restored row
+        /// has no duration *and* is not live, and reading liveness off the
+        /// duration made every reopened session's reasoning render as a
+        /// still-streaming "Thinking…" card.
+        live: bool,
         /// Whether the reasoning body is open. The prototype's `.thinking` is
         /// a `<details>` the reader can collapse from its summary row.
         expanded: bool,
@@ -339,6 +346,11 @@ pub(crate) fn render_row(
     index: usize,
     detail: TranscriptDetail,
     actions: RowActions<'_>,
+    // Content that belongs *inside* this row's own card, when the row owns
+    // one. A pending approval or question raised by a tool invocation reads as
+    // part of that invocation, so it is handed to the card rather than stacked
+    // underneath it.
+    tail: Option<AnyElement>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -479,9 +491,10 @@ pub(crate) fn render_row(
         TranscriptRow::Thinking {
             text,
             duration_seconds,
+            live,
             expanded,
         } => {
-            let live = duration_seconds.is_none();
+            let live = *live;
             let open = *expanded || live;
             let mut trace = ThinkingTrace::new().prose(text.clone());
             if let Some(seconds) = duration_seconds {
@@ -526,7 +539,7 @@ pub(crate) fn render_row(
             .test_support()
             .w_full()
             .child(tool_call_element(
-                row, index, verbose, toggle, open_diff, cx,
+                row, index, verbose, toggle, open_diff, tail, cx,
             ))
             .into_any_element(),
         TranscriptRow::Approval { request, result } => div()
@@ -575,12 +588,14 @@ pub(crate) fn render_row(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tool_call_element(
     row: &TranscriptRow,
     index: usize,
     verbose: bool,
     toggle: &RowToggle,
     open_diff: &OpenDiff,
+    tail: Option<AnyElement>,
     cx: &App,
 ) -> AnyElement {
     let TranscriptRow::Tool {
@@ -641,6 +656,7 @@ fn tool_call_element(
                                 toggle(index, cx);
                             }
                         })
+                        .children(tail)
                         .w_full()
                         .rounded(rems(0.625))
                         .border_1()
@@ -694,6 +710,8 @@ pub(crate) fn render_tool_group(
     start: usize,
     detail: TranscriptDetail,
     actions: RowActions<'_>,
+    // See `render_row`: content that belongs inside the group's card.
+    tail: Option<AnyElement>,
     cx: &App,
 ) -> AnyElement {
     let RowActions {
@@ -711,9 +729,13 @@ pub(crate) fn render_tool_group(
             }
         )
     });
-    let children = rows.iter().enumerate().map(|(offset, row)| {
-        tool_call_element(row, start + offset, verbose, toggle, open_diff, cx)
-    });
+    let children = rows
+        .iter()
+        .enumerate()
+        .map(|(offset, row)| {
+            tool_call_element(row, start + offset, verbose, toggle, open_diff, None, cx)
+        })
+        .chain(tail);
 
     div()
         .id(SharedString::from(format!("transcript-row-{start}")))

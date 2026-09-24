@@ -159,19 +159,6 @@ pub fn activate_default(window: &mut Window, cx: &mut App) {
     }
 }
 
-/// Switch between the Tact light and dark themes.
-pub fn toggle(window: &mut Window, cx: &mut App) {
-    let mode = if Theme::global(cx).mode.is_dark() {
-        ThemeMode::Light
-    } else {
-        ThemeMode::Dark
-    };
-
-    if let Err(err) = activate(mode, Some(window), cx) {
-        tracing::warn!("Cannot switch the Tact theme: {err:#}");
-    }
-}
-
 /// Alpha shared by the prototype's `--accentTint`, `--greenTint`, and
 /// `--redTint` washes: `.10` in light and `.12` in dark. Callers tint the hue
 /// they want at this alpha so light mode does not get the heavier dark wash.

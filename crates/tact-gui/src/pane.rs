@@ -37,7 +37,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use tact_protocol::{SubagentStatusSnapshot, TaskStatusSnapshot};
 
 use crate::layout::WorkPaneSide;
-use crate::session::{SessionState, age_label, now_unix};
+use crate::session::{SessionState, age_label, context_percent, now_unix};
 use crate::shell::{TactApp, focus_visible_ring, prototype_button, prototype_icon_button};
 use crate::terminal::{TermColor, TerminalPane};
 
@@ -3092,11 +3092,7 @@ fn stats(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
         .filter(|run| run.status == SubagentStatusSnapshot::Running)
         .count();
 
-    let context_percent = if total > 0 {
-        ((prompt as u64 * 100) / total as u64).min(100) as u32
-    } else {
-        0
-    };
+    let context_pct = context_percent(total, state.context_window);
 
     let mut body = v_flex().gap_3().child(panel_head(
         "Session statistics",
@@ -3124,7 +3120,7 @@ fn stats(state: &SessionState, cx: &mut Context<TactApp>) -> impl IntoElement {
                 "stats-tile-tokens",
                 "Tokens",
                 format_thousands(total),
-                format!("{context_percent}% context"),
+                format!("{context_pct}% context"),
                 cx,
             ))
             .child(stat_tile(

@@ -50,6 +50,17 @@ pub fn permission_mode_from_config() -> PermissionMode {
     }
 }
 
+/// Context window the active model is configured for, in tokens.
+///
+/// The TUI's `ctx 4% 45K/1M` meter and the desktop client's usage ring both
+/// answer "how close am I to auto-compact", so they share this denominator.
+/// A configured `0` keeps its "unknown / disabled" meaning and is passed
+/// through unchanged; the readers render it as an empty meter rather than
+/// dividing by it.
+pub fn configured_context_window() -> usize {
+    tact::config::settings().agent.model_context_window
+}
+
 /// Model and reasoning parameters from the loaded config.
 ///
 /// The desktop client shows these before the running agent emits its first

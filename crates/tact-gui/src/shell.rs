@@ -18,7 +18,7 @@ use gpui_kit::base::animation::cubic_bezier;
 use gpui_kit::base::motion::{Presence, Transition};
 use gpui_kit::base::{Disableable as _, Selectable, StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Root, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+    ActiveTheme as _, Icon, Root, Sizable as _, Size, Theme, ThemeMode, TitleBar, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     command::{Command, CommandState},
     dialog::DialogFooter,
@@ -51,7 +51,10 @@ use crate::commands;
 use crate::composer::{self, Attachment};
 use crate::layout::{self, LayoutPrefs, LayoutPreset, LayoutStore, WorkPaneSide};
 use crate::pane::{self, FilesPane, TasksPane, WorkPane};
-use crate::session::{self, Change, Conversation, Request, SessionHandle, SessionState};
+use crate::session::{
+    self, Change, Conversation, Request, SessionHandle, SessionState, context_percent,
+    format_elapsed_clock,
+};
 use crate::terminal::TerminalPane;
 use crate::theme;
 use crate::theme::accent_tint;
@@ -389,6 +392,12 @@ pub struct TactApp {
     detail: transcript::TranscriptDetail,
     /// Whether the transcript follows new output by default.
     follow_tail: bool,
+    /// The light/dark mode the shell is showing.
+    ///
+    /// Mirrored here rather than read back from the window's theme so
+    /// `layout_prefs` can persist it; `apply_layout` restores it on the next
+    /// launch.
+    theme_mode: ThemeMode,
     /// Sidebar column width, in rems. The prototype default until the user
     /// drags the divider; persisted through [`Self::layout_store`].
     sidebar_width: Rems,
@@ -417,6 +426,12 @@ pub struct TactApp {
     /// Bumped for each model-list request so a slow older response cannot
     /// overwrite a newer list.
     model_fetch_epoch: u64,
+    /// Whether the turn-clock tick loop is armed.
+    ///
+    /// One loop per window, started by the first prompt of a turn and ended by
+    /// the loop itself once the turn stops: an idle window must not hold a
+    /// timer that wakes it once a second forever.
+    elapsed_ticking: bool,
     /// Where the post-v1 layout document is read and written.
     ///
     /// The offline constructors disable this so a test or preview never
@@ -618,17 +633,17 @@ impl TactApp {
         // `auto` — and would leave the chip on its fallback label.
         self.state.permission_mode = "default".to_string();
         self.state.running = true;
-        // `.ring` and the status bar's `42% context` chip read the same usage
-        // snapshot, so the preview seeds one that draws 42 in both: the ring
-        // measures the prompt against `total`, and the chip measures it against
-        // the two counts together.
+        // `.ring` and the status bar's `42% context` chip read the same pair:
+        // the last request's total against the configured window. The preview
+        // seeds 84_000 of 200_000 so both draw 42, the prototype's figure.
+        self.state.context_window = 200_000;
         self.state.usage = Some(tact_protocol::TokenUsageInfo {
-            prompt: 4_200,
-            completion: 5_800,
-            total: 10_000,
-            prompt_cache_hit_tokens: 3_200,
-            prompt_cache_miss_tokens: 1_000,
-            reasoning_tokens: 1_800,
+            prompt: 78_000,
+            completion: 6_000,
+            total: 84_000,
+            prompt_cache_hit_tokens: 60_000,
+            prompt_cache_miss_tokens: 18_000,
+            reasoning_tokens: 4_000,
         });
         // The prototype's transcript carries a live permission request. Only a
         // pending request sits past the rows, so the preview seeds one;
@@ -702,6 +717,7 @@ impl TactApp {
                     .to_string(),
                 // The prototype's demo card reads "Thought for 8s".
                 duration_seconds: Some(8),
+                live: false,
                 expanded: true,
             });
         self.conversation
@@ -780,7 +796,7 @@ impl TactApp {
         };
         // The real window restores the user's arrangement and starts saving
         // into it; the offline/test constructors stay on the disabled store.
-        app.apply_layout(LayoutStore::user(), window);
+        app.apply_layout(LayoutStore::user(), window, cx);
         // The directory the app was launched in is a workspace the user opened
         // too, so it belongs in the list even on the very first run.
         if let Some(dir) = workdir {
@@ -871,11 +887,7 @@ impl TactApp {
             }
             None => (None, None),
         };
-        let configured_model = session
-            .as_ref()
-            .map(|_| tact_session::builder::configured_model_params());
         let workdir = std::env::current_dir().ok();
-        let branch = workdir.as_deref().and_then(git_branch);
 
         Self {
             workspace: Workspace::Chat,
@@ -887,13 +899,7 @@ impl TactApp {
             files_listed: false,
             diffs: pane::DiffPane::new(),
             conversation: Conversation::default(),
-            state: SessionState {
-                workdir,
-                branch,
-                model: configured_model,
-                permission_mode: "auto".to_string(),
-                ..SessionState::default()
-            },
+            state: opening_state(workdir, session.is_some()),
             queued: VecDeque::new(),
             toasts: Vec::new(),
             attachments: Vec::new(),
@@ -918,6 +924,7 @@ impl TactApp {
             root_focus,
             detail: transcript::TranscriptDetail::Normal,
             follow_tail: true,
+            theme_mode: theme::default_mode(),
             sidebar_width: SIDEBAR_WIDTH,
             work_pane_width: WORK_PANE_WIDTH,
             zoom_rem: layout::ZOOM_DEFAULT,
@@ -929,6 +936,7 @@ impl TactApp {
             terminal_focus,
             terminal_epoch: 0,
             model_fetch_epoch: 0,
+            elapsed_ticking: false,
             layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
         }
@@ -1015,6 +1023,8 @@ impl TactApp {
             zoom_rem: self.zoom_rem,
             ui_font: self.ui_font.clone(),
             show_archived: self.show_archived,
+            theme_mode: Some(self.theme_mode),
+            follow_tail: self.follow_tail,
         };
         prefs.preset = prefs.matching_preset().unwrap_or(LayoutPreset::Split);
         prefs
@@ -1025,8 +1035,25 @@ impl TactApp {
         self.layout_store.persist(&self.layout_prefs());
     }
 
+    /// Switch the shell's light/dark mode and remember the choice.
+    ///
+    /// The palette/theme global holds the mode, but the *choice* is layout
+    /// state: without persisting it here a restart came back on the prototype
+    /// default every time. `window` is not threaded through because the
+    /// control paths that call this hold a `Context`, not a `Window`, and the
+    /// next frame repaints anyway — `activate` only refreshes eagerly.
+    pub(crate) fn set_theme_mode(&mut self, mode: ThemeMode, cx: &mut Context<Self>) {
+        self.theme_mode = mode;
+        if let Err(err) = theme::activate(mode, None, cx) {
+            tracing::warn!("Cannot switch the Tact theme: {err:#}");
+            return;
+        }
+        self.persist_layout();
+        cx.notify();
+    }
+
     /// Restore a stored arrangement and adopt its store for later saves.
-    fn apply_layout(&mut self, store: LayoutStore, window: &mut Window) {
+    fn apply_layout(&mut self, store: LayoutStore, window: &mut Window, cx: &mut Context<Self>) {
         let prefs = store.load();
         self.sidebar_open = prefs.sidebar_open;
         self.work_pane_open = prefs.work_pane_open;
@@ -1042,6 +1069,14 @@ impl TactApp {
         self.zoom_rem = prefs.zoom_rem;
         self.ui_font = prefs.ui_font;
         self.show_archived = prefs.show_archived;
+        self.follow_tail = prefs.follow_tail;
+        // A stored choice wins over the dark default the window opened on; no
+        // stored choice keeps that default rather than flipping to the
+        // framework's light one.
+        self.theme_mode = prefs.theme_mode.unwrap_or_else(theme::default_mode);
+        if let Err(err) = theme::activate(self.theme_mode, Some(window), cx) {
+            tracing::warn!("Cannot restore the stored theme: {err:#}");
+        }
         window.set_rem_size(px(self.zoom_rem));
         self.layout_store = store;
     }
@@ -1270,6 +1305,16 @@ impl TactApp {
                     }
                 }
             }
+            // The stream closed: no turn-ending update is coming, so the shell
+            // must not keep showing a running turn — or its clock — for a
+            // session that is gone.
+            let _ = this.update(cx, |app, cx| {
+                if app.session_id() == Some(session_id.as_str()) {
+                    app.state.running = false;
+                    app.state.task_started_at = None;
+                    cx.notify();
+                }
+            });
         })
     }
 
@@ -1480,7 +1525,15 @@ impl TactApp {
                 self.open_settings(window, cx);
             }
             PaletteCommand::ToggleTheme => {
-                theme::toggle(window, cx);
+                // The toggle reads the *live* theme, not the mirror: a switch
+                // that arrived any other way still has to flip the mode the
+                // reader is looking at.
+                let mode = if Theme::global(cx).mode.is_dark() {
+                    ThemeMode::Light
+                } else {
+                    ThemeMode::Dark
+                };
+                self.set_theme_mode(mode, cx);
                 let note = theme_toast(cx);
                 push_toast(window, cx, note);
             }
@@ -2334,12 +2387,7 @@ impl TactApp {
         self.conversation = Conversation::default();
         self.files.reset_workspace();
         self.diffs.invalidate();
-        self.state = SessionState {
-            workdir: Some(workdir.clone()),
-            branch: git_branch(&workdir),
-            permission_mode: "auto".to_string(),
-            ..SessionState::default()
-        };
+        self.state = opening_state(Some(workdir.clone()), true);
         self.queued.clear();
         self.attachments.clear();
         self.transcript_state
@@ -3445,6 +3493,39 @@ impl TactApp {
         }
         self.state.task_started_at = Some(std::time::Instant::now());
         self.state.running = true;
+        // The status bar's clock only moves if something redraws the window: a
+        // turn can sit silent for minutes between stream chunks, so the second
+        // that shows `00:12` would otherwise wait for the next update.
+        self.start_elapsed_tick(cx);
+    }
+
+    /// Repaint once a second while a turn is in flight.
+    ///
+    /// The loop ends itself when the turn stops, so an idle window arms no
+    /// timer — the same shape the notification list uses for its advance timer.
+    fn start_elapsed_tick(&mut self, cx: &mut Context<Self>) {
+        if self.elapsed_ticking {
+            return;
+        }
+        self.elapsed_ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let ticking = this.update(cx, |app, cx| {
+                    app.elapsed_ticking = app.state.running && app.state.task_started_at.is_some();
+                    if app.elapsed_ticking {
+                        cx.notify();
+                    }
+                    app.elapsed_ticking
+                });
+                if !matches!(ticking, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Stop the active turn without discarding the draft.
@@ -4538,8 +4619,14 @@ fn title_bar(state: TitleBarState, cx: &mut Context<TactApp>) -> impl IntoElemen
                 theme_action,
             )
             .aria_label(SharedString::from(theme_action))
-            .on_click(cx.listener(|_, _, window, cx| {
-                theme::toggle(window, cx);
+            .on_click(cx.listener(|this, _, window, cx| {
+                // As in the palette: flip what is on screen, then remember it.
+                let mode = if Theme::global(cx).mode.is_dark() {
+                    ThemeMode::Light
+                } else {
+                    ThemeMode::Dark
+                };
+                this.set_theme_mode(mode, cx);
                 let note = theme_toast(cx);
                 push_toast(window, cx, note);
             }))
@@ -6411,6 +6498,25 @@ fn transcript(
                 open_diff: &open_diff,
                 approval: &approval,
             };
+            // A pending request belongs *inside* the card of the invocation
+            // that raised it, so the last item hands it to its renderer as a
+            // tail rather than stacking a second card underneath.
+            let nested_panel = || {
+                (request_nested && index == item_count).then(|| {
+                    request_panel(
+                        request_for_render
+                            .as_ref()
+                            .expect("nested request is present"),
+                        &choose_for_render,
+                        &approval_actions_for_render,
+                        cancel_action_for_render.as_ref(),
+                        confirm_for_render.as_ref(),
+                        cancel_for_render.as_ref(),
+                        true,
+                        cx,
+                    )
+                })
+            };
             match render_items[index - 1] {
                 TranscriptRenderItem::Row(row_index) => v_flex()
                     .w_full()
@@ -6419,25 +6525,10 @@ fn transcript(
                         row_index,
                         detail,
                         actions(),
+                        nested_panel(),
                         window,
                         cx,
                     ))
-                    .when(request_nested && index == item_count, |this| {
-                        this.child(
-                            v_flex().w_full().child(request_panel(
-                                request_for_render
-                                    .as_ref()
-                                    .expect("nested request is present"),
-                                &choose_for_render,
-                                &approval_actions_for_render,
-                                cancel_action_for_render.as_ref(),
-                                confirm_for_render.as_ref(),
-                                cancel_for_render.as_ref(),
-                                true,
-                                cx,
-                            )),
-                        )
-                    })
                     .into_any_element(),
                 TranscriptRenderItem::ToolRun { start, end } => v_flex()
                     .w_full()
@@ -6446,24 +6537,9 @@ fn transcript(
                         start,
                         detail,
                         actions(),
+                        nested_panel(),
                         cx,
                     ))
-                    .when(request_nested && index == item_count, |this| {
-                        this.child(
-                            v_flex().w_full().child(request_panel(
-                                request_for_render
-                                    .as_ref()
-                                    .expect("nested permission request is present"),
-                                &choose_for_render,
-                                &approval_actions_for_render,
-                                cancel_action_for_render.as_ref(),
-                                confirm_for_render.as_ref(),
-                                cancel_for_render.as_ref(),
-                                true,
-                                cx,
-                            )),
-                        )
-                    })
                     .into_any_element(),
             }
         } else if let Some(request) = &request_for_render {
@@ -6933,7 +7009,7 @@ fn request_panel(
 ) -> AnyElement {
     let permission = is_permission_request(request);
     if permission {
-        return permission_approval_card(request, approval_actions, cx).into_any_element();
+        return permission_approval_card(request, approval_actions, nested, cx).into_any_element();
     }
     if !request.multi {
         return question_flow_card(request, approval_actions, cancel_action, cx).into_any_element();
@@ -7048,6 +7124,7 @@ fn question_flow_card(
 fn permission_approval_card(
     request: &Request,
     actions: &[ShellAction],
+    nested: bool,
     cx: &App,
 ) -> impl IntoElement {
     let deny = option_index(request, "deny").unwrap_or(0);
@@ -7088,6 +7165,12 @@ fn permission_approval_card(
     });
     if let Some(command) = command {
         card = card.child(command_block(command, cx));
+    }
+    if nested {
+        // Hosted by the call's own card this *is* that card's body, not a card
+        // inside a card: drop the top frame the way an answered approval row
+        // and the multi-select ask form do. The host clips the bottom corners.
+        card = card.rounded_t(px(0.)).border_t_0();
     }
     div()
         .id("request-panel")
@@ -7900,12 +7983,8 @@ fn prompt_composer(
     // `.ring`: a 24px circle whose centre is the percentage alone; the counts
     // stay in the popover and the accessible name.
     let usage_ring = usage_snapshot.as_ref().map(|usage| {
-        let percentage = if usage.total == 0 {
-            0.0
-        } else {
-            usage.prompt as f32 / usage.total as f32 * 100.0
-        };
-        let label = format_usage(usage.prompt, usage.total);
+        let percentage = context_percent(usage.total, session.context_window);
+        let label = format_usage(usage.total, session.context_window);
         Popover::new("composer-usage-popover")
             .anchor(gpui_kit::Anchor::TopLeft)
             .trigger(
@@ -7922,7 +8001,7 @@ fn prompt_composer(
                     .px(px(0.))
                     .child(
                         ProgressCircle::new("composer-usage-ring")
-                            .value(percentage)
+                            .value(percentage as f32)
                             .small()
                             .size(rems(1.5))
                             .accessibility_label(label.clone())
@@ -7931,10 +8010,7 @@ fn prompt_composer(
                                     .font_family(mono_font.clone())
                                     .text_size(rems(0.53125))
                                     .text_color(muted_ink)
-                                    .child(SharedString::from(format!(
-                                        "{}",
-                                        percentage.round() as i64
-                                    ))),
+                                    .child(SharedString::from(format!("{percentage}"))),
                             ),
                     ),
             )
@@ -8024,7 +8100,11 @@ fn prompt_composer(
             Button::new("composer-open-project")
                 .label("Open project…")
                 .ghost()
-                .compact()
+                // `compact()` only shrinks padding: the button kept
+                // `Size::Medium`, whose `text_base()` label (16 px) towered over
+                // the `text_xs` project name beside it. `Size::XSmall` is the
+                // component's own small button — `text_xs` in a 20 px box.
+                .with_size(Size::XSmall)
                 .on_click(move |_, _, cx| {
                     let _ = project_owner.update(cx, |app, cx| app.open_project_picker(cx));
                 }),
@@ -8252,12 +8332,15 @@ fn effort_chip_label(effort: Option<&str>) -> String {
     }
 }
 
-/// Compact usage label: context consumed against the completion budget.
-fn format_usage(prompt: u32, total: u32) -> String {
-    if total == 0 {
+/// Compact usage label: context tokens against the model's window.
+///
+/// `"84000 / 200000 tok"` — the two counts behind the ring's percentage, for
+/// the ring's accessible name and the settings row.
+fn format_usage(used: u32, window: usize) -> String {
+    if window == 0 {
         return String::new();
     }
-    format!("{prompt} / {total} tok")
+    format!("{used} / {window} tok")
 }
 
 /// Resolve the workspace branch once when a session is adopted. The status bar
@@ -8498,8 +8581,10 @@ fn status_bar(
         .count();
 
     let context = state.usage.as_ref().map(|usage| {
-        let denominator = usage.prompt.saturating_add(usage.completion).max(1);
-        format!("{}% context", (usage.prompt * 100 / denominator).min(100))
+        format!(
+            "{}% context",
+            context_percent(usage.total, state.context_window)
+        )
     });
 
     let mut bar = h_flex()
@@ -8586,6 +8671,20 @@ fn status_bar(
         ));
     }
 
+    // The turn clock, right where the turn counter is: how long this turn has
+    // been running. Armed by `dispatch`, cleared by every turn-ending update,
+    // so a finished session keeps no frozen `00:00` chip. The value is read per
+    // frame; the shell's one-second tick is what redraws a silent turn.
+    if let Some(elapsed) = turn_clock_label(state) {
+        bar = bar.child(status_item(
+            "status-elapsed",
+            None,
+            elapsed,
+            crate::theme::ink3(cx),
+            cx,
+        ));
+    }
+
     // The post-v1 layout store is invisible unless the shell says which
     // arrangement it restored; the chip is the user-visible end of that
     // feature and the only place the preset name is rendered.
@@ -8647,6 +8746,47 @@ fn status_bar(
     bar.id("status-bar").test_support()
 }
 
+/// How long the in-flight turn has been running, as the status bar's clock.
+///
+/// `None` unless a turn is in flight *and* [`TactApp::dispatch`] stamped its
+/// start: a finished turn clears the stamp, so the chip cannot outlive the work
+/// it was measuring.
+fn turn_clock_label(state: &SessionState) -> Option<String> {
+    if !state.running {
+        return None;
+    }
+    let started = state.task_started_at?;
+    Some(format_elapsed_clock(started.elapsed()))
+}
+
+/// The session state a shell starts from, whether it opened at launch or is
+/// being adopted later.
+///
+/// `model` and `context_window` are configuration, not transcript: a state that
+/// is rebuilt when the user switches sessions has to carry them again, or the
+/// status bar falls back to "Provider default" and a zero window that renders
+/// as `0% context` for the rest of the run. `live` gates the config read —
+/// an offline shell (preview, tests) never installs the process config, and
+/// asking for it there would panic.
+fn opening_state(workdir: Option<PathBuf>, live: bool) -> SessionState {
+    let (model, context_window) = if live {
+        (
+            Some(tact_session::builder::configured_model_params()),
+            tact_session::builder::configured_context_window(),
+        )
+    } else {
+        (None, 0)
+    };
+    SessionState {
+        branch: workdir.as_deref().and_then(git_branch),
+        model,
+        context_window,
+        permission_mode: "auto".to_string(),
+        workdir,
+        ..SessionState::default()
+    }
+}
+
 /// The account balance chip, when the provider reports one.
 ///
 /// Providers that surface a balance send per-currency entries; the bar shows
@@ -8694,8 +8834,11 @@ fn settings_panel(
     _window: &mut Window,
     _cx: &mut App,
 ) -> impl IntoElement {
+    let theme_owner = owner.clone();
     let theme_row = SettingItem::render(move |_, _window, cx| {
         let dark = Theme::global(cx).mode.is_dark();
+        let light_owner = theme_owner.clone();
+        let dark_owner = theme_owner.clone();
         setting_copy(
             "Theme",
             "Switch the shell between Tact's Anthropic light and dark palettes.",
@@ -8710,10 +8853,10 @@ fn settings_panel(
                         .toggled(!dark)
                         .ghost()
                         .compact()
-                        .on_click(|_, window, cx| {
-                            if let Err(err) = theme::activate(ThemeMode::Light, Some(window), cx) {
-                                tracing::warn!("Cannot switch the Tact theme: {err:#}");
-                            }
+                        .on_click(move |_, window, cx| {
+                            let _ = light_owner.update(cx, |app, cx| {
+                                app.set_theme_mode(ThemeMode::Light, cx);
+                            });
                             push_toast(window, cx, Notification::success("Light theme"));
                         }),
                 )
@@ -8723,10 +8866,10 @@ fn settings_panel(
                         .toggled(dark)
                         .ghost()
                         .compact()
-                        .on_click(|_, window, cx| {
-                            if let Err(err) = theme::activate(ThemeMode::Dark, Some(window), cx) {
-                                tracing::warn!("Cannot switch the Tact theme: {err:#}");
-                            }
+                        .on_click(move |_, window, cx| {
+                            let _ = dark_owner.update(cx, |app, cx| {
+                                app.set_theme_mode(ThemeMode::Dark, cx);
+                            });
                             push_toast(window, cx, Notification::success("Dark theme"));
                         }),
                 ),
@@ -8790,6 +8933,7 @@ fn settings_panel(
                             app.transcript_state
                                 .update(cx, |state, cx| state.scroll_to_end(cx));
                         }
+                        app.persist_layout();
                         cx.notify();
                     });
                 }),
@@ -8991,7 +9135,7 @@ fn settings_panel(
                     .state
                     .usage
                     .as_ref()
-                    .map(|usage| format_usage(usage.prompt, usage.total))
+                    .map(|usage| format_usage(usage.total, app.state.context_window))
                     .filter(|usage| !usage.is_empty())
                     .unwrap_or_else(|| "No usage reported yet".to_string());
                 let turns = app
@@ -9136,7 +9280,8 @@ mod tests {
     use super::{
         SessionBucket, Workspace, background_rows, balance_label, next_session_index,
         normalize_url, permission_action_order, permission_mode_label, previous_session_index,
-        session_buckets, session_name, session_row_title, startup_resume_id, worktree_rows,
+        session_buckets, session_name, session_row_title, startup_resume_id, turn_clock_label,
+        worktree_rows,
     };
     use crate::pane::WorkPane;
     use crate::session::SessionHandle;
@@ -9187,6 +9332,61 @@ mod tests {
         );
     }
 
+    /// The turn clock's tick loop repaints while the turn runs and ends itself
+    /// when the turn does — an idle window must not keep waking on a timer.
+    #[gpui_kit::test]
+    fn the_elapsed_tick_ends_with_the_turn(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::time::{Duration, Instant};
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let shell = slot.borrow().clone().expect("the window built the shell");
+
+        shell.update(cx, |app, cx| {
+            app.state.running = true;
+            app.state.task_started_at = Some(Instant::now());
+            app.start_elapsed_tick(cx);
+            assert!(app.elapsed_ticking, "the first prompt arms the clock");
+        });
+
+        cx.background_executor.advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        // Cleared by hand first: the loop sets it back, which is what proves a
+        // tick actually ran rather than the flag simply never changing.
+        shell.update(cx, |app, _| app.elapsed_ticking = false);
+        cx.background_executor.advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(
+            shell.read_with(cx, |app, _| app.elapsed_ticking),
+            "a running turn keeps ticking"
+        );
+
+        shell.update(cx, |app, _| {
+            app.state.running = false;
+            app.state.task_started_at = None;
+        });
+        cx.background_executor.advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(
+            !shell.read_with(cx, |app, _| app.elapsed_ticking),
+            "the loop stops itself once the turn ends"
+        );
+    }
+
     /// An address bar adds a scheme only when the user did not type one.
     #[test]
     fn a_typed_address_keeps_its_own_scheme() {
@@ -9203,6 +9403,122 @@ mod tests {
             "https://localhost:3000",
             "a bare host with a port is a host, not a scheme"
         );
+    }
+
+    /// Both pane switches are layout state: hiding the sidebar and opening the
+    /// work pane survive a restart.
+    #[gpui_kit::test]
+    fn the_pane_visibility_round_trips_through_the_layout(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-layout.json");
+
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let store_path = path.clone();
+        let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            let store = crate::layout::LayoutStore::at(store_path.clone());
+            shell.update(cx, |app, cx| app.apply_layout(store, window, cx));
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+
+        let shell = slot.borrow().clone().expect("the window built the shell");
+        shell.update(cx, |app, _| {
+            app.sidebar_open = false;
+            app.work_pane_open = true;
+            app.persist_layout();
+        });
+
+        let stored = crate::layout::LayoutStore::at(&path).load();
+        assert!(!stored.sidebar_open, "the hidden sidebar is written");
+        assert!(stored.work_pane_open, "the open work pane is written");
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            shell.update(cx, |app, cx| {
+                app.sidebar_open = true;
+                app.work_pane_open = false;
+                app.apply_layout(crate::layout::LayoutStore::at(&path), window, cx);
+                assert!(!app.sidebar_open, "the sidebar comes back hidden");
+                assert!(app.work_pane_open, "the work pane comes back open");
+            });
+        })
+        .unwrap();
+    }
+
+    /// Appearance state is layout state: the light/dark choice and the
+    /// follow-the-stream switch survive a restart the way the font and the
+    /// widths do.
+    #[gpui_kit::test]
+    fn the_appearance_switches_round_trip_through_the_layout(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::{Root, ThemeMode};
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gui-layout.json");
+
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let store_path = path.clone();
+        let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            let store = crate::layout::LayoutStore::at(store_path.clone());
+            shell.update(cx, |app, cx| app.apply_layout(store, window, cx));
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+
+        let shell = slot.borrow().clone().expect("the window built the shell");
+        shell.update(cx, |app, cx| {
+            assert_eq!(
+                app.theme_mode,
+                crate::theme::default_mode(),
+                "a document with no stored choice keeps the prototype's dark opening"
+            );
+            app.set_theme_mode(ThemeMode::Light, cx);
+            app.follow_tail = false;
+            app.persist_layout();
+        });
+
+        let stored = crate::layout::LayoutStore::at(&path).load();
+        assert_eq!(
+            stored.theme_mode,
+            Some(ThemeMode::Light),
+            "the chosen mode is written to the layout document"
+        );
+        assert!(
+            !stored.follow_tail,
+            "the follow-the-stream switch is written too"
+        );
+
+        // Reopening the same document restores both.
+        cx.update_window(handle.into(), |_, window, cx| {
+            shell.update(cx, |app, cx| {
+                app.theme_mode = ThemeMode::Dark;
+                app.follow_tail = true;
+                app.apply_layout(crate::layout::LayoutStore::at(&path), window, cx);
+                assert_eq!(app.theme_mode, ThemeMode::Light);
+                assert!(!app.follow_tail);
+            });
+        })
+        .unwrap();
     }
 
     /// The interface font is part of the persisted layout, and clearing it
@@ -9228,7 +9544,7 @@ mod tests {
         let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
             let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
             let store = crate::layout::LayoutStore::at(store_path.clone());
-            shell.update(cx, |app, _| app.apply_layout(store, window));
+            shell.update(cx, |app, cx| app.apply_layout(store, window, cx));
             *captured.borrow_mut() = Some(shell.clone());
             Root::new(shell, window, cx)
         });
@@ -9407,8 +9723,8 @@ mod tests {
         let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
             let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
             let store = crate::layout::LayoutStore::at(store_path.clone());
-            shell.update(cx, |app, _| {
-                app.apply_layout(store, window);
+            shell.update(cx, |app, cx| {
+                app.apply_layout(store, window, cx);
             });
             *captured.borrow_mut() = Some(shell.clone());
             Root::new(shell, window, cx)
@@ -10344,6 +10660,29 @@ mod tests {
             rows.iter().any(|row| row.path.is_absolute()),
             "the worktree list reports absolute paths"
         );
+    }
+
+    /// The turn clock exists only while a turn is in flight, and it measures
+    /// wall time from the stamp `dispatch` left behind.
+    #[test]
+    fn the_turn_clock_runs_only_while_a_turn_is_in_flight() {
+        let mut state = SessionState::default();
+        assert!(turn_clock_label(&state).is_none(), "no turn, no clock");
+
+        state.task_started_at = Some(std::time::Instant::now());
+        assert!(
+            turn_clock_label(&state).is_none(),
+            "a stamp without a running turn is not a clock to draw"
+        );
+
+        state.running = true;
+        assert_eq!(turn_clock_label(&state).as_deref(), Some("00:00"));
+
+        // Every turn-ending update clears the stamp, so the chip cannot
+        // outlive the work it was measuring.
+        state.task_started_at = None;
+        state.running = false;
+        assert!(turn_clock_label(&state).is_none());
     }
 
     /// Background rows mirror the recorded running commands.

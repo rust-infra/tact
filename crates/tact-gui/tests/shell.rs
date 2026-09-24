@@ -1596,8 +1596,9 @@ fn the_status_bar_renders_its_segmented_chips(cx: &mut TestAppContext) {
         );
         // The preview seeds three diff cards: 412+188+76 added, 96+24+32 removed.
         assert_eq!(chip("status-diff"), "+676 \u{2212}152");
-        // `.ring` and this chip read one usage snapshot, so 4200 of 10000 has to
-        // read 42 in both.
+        // `.ring` and this chip read the same pair — the last request's total
+        // against the configured window — so 84_000 of 200_000 has to read 42
+        // in both.
         assert_eq!(chip("status-context"), "42% context");
         assert_eq!(chip("status-balance"), "$18.42");
         // The preview seeds one running subagent against one completed one.
@@ -2358,6 +2359,17 @@ fn the_composer_controls_use_the_prototype_boxes(cx: &mut TestAppContext) {
         assert!(
             height(prompt) >= 48.,
             "the prompt field keeps `.prompt`'s 48 px minimum: {prompt:?}"
+        );
+
+        // The project footer's action is `Size::XSmall` (20 px, `text_xs`),
+        // which is what keeps it in scale with the `text_xs` project name it
+        // sits beside. `compact()` alone only shrank padding: the button stayed
+        // `Size::Medium`, so its label rendered at `text_base` in a 32 px box.
+        let open_project = window.find("composer-open-project").bounds();
+        assert_eq!(
+            height(open_project),
+            20.,
+            "the project footer button is `Size::XSmall`: {open_project:?}"
         );
     })
     .unwrap();
