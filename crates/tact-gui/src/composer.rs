@@ -123,9 +123,23 @@ pub(crate) fn rank_files(index: &[PathBuf], query: &str) -> Vec<Suggestion> {
         .map(|(_, path)| Suggestion {
             kind: SuggestionKind::File,
             label: path.to_string_lossy().to_string(),
-            insertion: format!("@{}", path.to_string_lossy()),
+            insertion: mention(path),
         })
         .collect()
+}
+
+/// What a chosen file inserts: `@src/lib.rs`, or `@"my notes.md"` when the
+/// path holds a space.
+///
+/// The terminal client's rule, kept identical so a draft from either front end
+/// reads the same way.
+fn mention(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if text.chars().any(char::is_whitespace) {
+        format!("@\"{text}\"")
+    } else {
+        format!("@{text}")
+    }
 }
 
 /// How well `path` matches `query`; lower is better, `None` is no match.
@@ -322,6 +336,22 @@ mod tests {
         std::fs::write(root.join("my-skill/SKILL.md"), "# my skill\n").unwrap();
         assert_eq!(skill_names_from_root(&root), ["my-skill"]);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_path_with_a_space_is_quoted_the_way_the_terminal_quotes_it() {
+        let index = vec![
+            PathBuf::from("docs/my notes.md"),
+            PathBuf::from("src/lib.rs"),
+        ];
+
+        let insertions: Vec<_> = rank_files(&index, "")
+            .into_iter()
+            .map(|suggestion| suggestion.insertion)
+            .collect();
+
+        // No query: everything ranks equal and the paths decide the order.
+        assert_eq!(insertions, ["@\"docs/my notes.md\"", "@src/lib.rs"]);
     }
 
     #[test]

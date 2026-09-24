@@ -541,6 +541,25 @@ impl TactApp {
         app
     }
 
+    /// An offline shell with files already attached to the composer.
+    ///
+    /// Staging an attachment goes through a native file dialog, which a test
+    /// cannot drive. The chip's own removal paths still deserve coverage, so
+    /// this is the seam those tests use instead of borrowing the mention
+    /// completion — a mention is a reference, not an attachment.
+    pub fn with_attachments(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        let mut app = Self::build(window, cx, None, Vec::new());
+        app.offline = true;
+        for path in paths {
+            app.add_attachment(path);
+        }
+        app
+    }
+
     /// An offline shell whose thread is one expanded tool card carrying
     /// `output`.
     ///
@@ -2560,24 +2579,11 @@ impl TactApp {
         else {
             return;
         };
-        if suggestion.kind == composer::SuggestionKind::File {
-            let path = suggestion
-                .insertion
-                .strip_prefix('@')
-                .map(PathBuf::from)
-                .map(|path| {
-                    if path.is_relative() {
-                        self.workspace_dir()
-                            .map(|root| root.join(&path))
-                            .unwrap_or(path)
-                    } else {
-                        path
-                    }
-                });
-            if let Some(path) = path {
-                self.add_attachment(path);
-            }
-        }
+        // A mention is a reference, not an attachment. The terminal client
+        // inserts `@path` and nothing else, and chips have their own entry
+        // (`attach_files`); doing both listed the same file twice in the
+        // submitted body — once as `@src/lib.rs`, once as an absolute path
+        // under "Attached context".
         let next = composer::apply_suggestion(&draft, &trigger, &suggestion.insertion);
         self.composer
             .update(cx, |state, cx| state.set_value(next, window, cx));

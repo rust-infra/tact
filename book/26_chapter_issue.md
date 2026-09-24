@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-24 — A file mention is a reference, not an attachment
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`accept_suggestion`, `with_attachments`); `crates/tact-gui/src/composer.rs` (`mention`); `crates/tact-gui/tests/shell.rs` |
+
+**Symptom / motivation:** Taking a file from the `@` completion did two things: it inserted `@src/lib.rs` into the draft *and* staged an attachment chip. The submitted body then carried the same file twice — once as a relative mention, once as an absolute path under "Attached context". The terminal client has always done only the first, so the two front ends disagreed about what `@` means.
+
+**Decision:** A mention is a reference. `@` inserts `@path` and nothing else, matching the terminal; chips keep their own entry (`attach_files`, the native dialog) and the submitted body only lists what that staged. The path is quoted when it holds a space (`@"my notes.md"`), which is also the terminal's rule — a draft from either front end reads the same way. The two chip-removal tests stopped borrowing the mention completion to fabricate an attachment and now stage one through a new `TactApp::with_attachments` seam, the way the other offline constructors stage a request or a tool card.
+
+**Behavior after:** Submitting a draft with `@src/lib.rs` mentions that file once. Attaching the same file through the dialog adds one chip and one "Attached context" line. `@` still completes against the cached workspace index and still does nothing but edit the draft.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`accept_suggestion`, `attach_files`, `with_attachments`); `crates/tact-gui/src/composer.rs` (`mention`); `crates/tui/src/handlers/file_picker.rs` (the terminal's `@path` insertion the desktop now matches)
+
 ## 1. 2026-09-24 — The `@` mention list covers the workspace and costs nothing per frame
 
 | Field | Value |

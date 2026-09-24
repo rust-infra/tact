@@ -1,5 +1,6 @@
 //! UI integration tests for the Tact desktop shell.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::component::{ActiveTheme as _, Root, ThemeMode, ThemeRegistry};
@@ -4529,26 +4530,16 @@ fn the_empty_transcript_focuses_the_composer(cx: &mut TestAppContext) {
 fn the_composer_drops_an_attachment_through_its_chip(cx: &mut TestAppContext) {
     activate_shipped_theme(cx);
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
-        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        let shell =
+            cx.new(|cx| TactApp::with_attachments(window, cx, [PathBuf::from("src/main.rs")]));
         Root::new(shell, window, cx)
     });
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(
-            window.try_find("composer-attachment-0").is_none(),
-            "nothing is attached before the composer asks for a file"
-        );
-
-        // The mention chip opens file completion; the first entry is a file, so
-        // taking it attaches that path as a chip.
-        window.click("composer-mention", cx);
-        window.render_frame(cx);
-        window.click("composer-suggestion-0", cx);
-        window.render_frame(cx);
-        assert!(
             window.try_find("composer-attachment-0").is_some(),
-            "a file suggestion becomes an attachment chip"
+            "the staged file has a chip"
         );
 
         window.click("composer-attachment-remove-0", cx);
@@ -4577,24 +4568,16 @@ fn the_composer_removes_the_last_attachment_with_the_keyboard(cx: &mut TestAppCo
     activate_shipped_theme(cx);
     cx.update(tact_gui::commands_init);
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
-        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        let shell =
+            cx.new(|cx| TactApp::with_attachments(window, cx, [PathBuf::from("src/main.rs")]));
         Root::new(shell, window, cx)
     });
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(
-            window.try_find("composer-attachment-0").is_none(),
-            "nothing is attached before the composer asks for a file"
-        );
-
-        window.click("composer-mention", cx);
-        window.render_frame(cx);
-        window.click("composer-suggestion-0", cx);
-        window.render_frame(cx);
-        assert!(
             window.try_find("composer-attachment-0").is_some(),
-            "the completion supplies an attachment for the chord to remove"
+            "the staged file has a chip for the chord to remove"
         );
 
         window.press("ctrl-shift-backspace", cx);

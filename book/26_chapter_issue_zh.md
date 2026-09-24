@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-24 — 文件提及是"引用"，不是"附件"
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`accept_suggestion`、`with_attachments`）；`crates/tact-gui/src/composer.rs`（`mention`）；`crates/tact-gui/tests/shell.rs` |
+
+**现象 / 动机：** 从 `@` 补全里选中一个文件会做两件事：把 `@src/lib.rs` 插进草稿，**并且**挂上一个附件 chip。于是提交体里同一个文件出现两次 —— 一次是相对路径的提及，一次是 "Attached context" 下的绝对路径。终端端一直只做第一件，因此两个前端对 `@` 的含义并不一致。
+
+**决策：** 提及就是引用。`@` 只插入 `@path`，与终端一致；chip 保留自己的入口（`attach_files` 的原生对话框），提交体只列出那里真正挂上的内容。路径含空格时加引号（`@"my notes.md"`）—— 这也是终端的规则，所以两个前端产出的草稿读起来一样。两个"删除 chip"的测试不再借 mention 补全来伪造附件，改用新增的 `TactApp::with_attachments` 测试缝，与其他 offline 构造器（造一个请求、造一张工具卡）的做法一致。
+
+**改后行为：** 提交含 `@src/lib.rs` 的草稿只会提及该文件一次。通过对话框附加同一个文件则产生一个 chip 与一行 "Attached context"。`@` 仍然对着缓存的工作区索引补全，并且除了编辑草稿之外什么都不做。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`accept_suggestion`、`attach_files`、`with_attachments`）；`crates/tact-gui/src/composer.rs`（`mention`）；`crates/tui/src/handlers/file_picker.rs`（桌面端现在对齐的终端 `@path` 插入逻辑）
+
 ## 1. 2026-09-24 — `@` 提及列表覆盖整个工作区，且绘制时不花代价
 
 | 字段 | 值 |
