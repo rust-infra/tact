@@ -230,6 +230,11 @@ fn tool_detail_content(
         DetailPolicy::None => None,
         DetailPolicy::Result => Some(exec_output.to_string()),
         DetailPolicy::InputField(field) => str_field(input, field).to_string().into(),
+        DetailPolicy::UnifiedDiff { old, new } => {
+            let old = old.map(|field| str_field(input, field)).unwrap_or("");
+            let rendered = crate::tool::diff::fragment(old, str_field(input, new));
+            (!rendered.is_empty()).then_some(rendered)
+        }
     }
 }
 
@@ -347,6 +352,10 @@ fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
             DetailPolicy::InputField(field) => {
                 tact_protocol::ToolDetailKind::InputField(field.to_string())
             }
+            DetailPolicy::UnifiedDiff { old, new } => tact_protocol::ToolDetailKind::UnifiedDiff {
+                old: old.map(str::to_string),
+                new: new.to_string(),
+            },
         },
         popup: match meta.presentation.popup {
             crate::tool::PopupPolicy::None => tact_protocol::ToolPopupKind::None,
@@ -1016,10 +1025,31 @@ mod tests {
     use tact_protocol::StepStatus;
 
     #[test]
-    fn tool_detail_content_edit_file_returns_new_text() {
+    fn tool_detail_content_edit_file_returns_a_diff() {
         let input = serde_json::json!({"path": "src/lib.rs", "old_text": "fn old() {}", "new_text": "fn new() {}"});
-        let out = tool_detail_content(DetailPolicy::InputField("new_text"), &input, "wrote");
-        assert_eq!(out.as_deref(), Some("fn new() {}"));
+        let out = tool_detail_content(
+            DetailPolicy::UnifiedDiff {
+                old: Some("old_text"),
+                new: "new_text",
+            },
+            &input,
+            "wrote",
+        );
+        assert_eq!(out.as_deref(), Some("-fn old() {}\n+fn new() {}"));
+    }
+
+    #[test]
+    fn tool_detail_content_write_file_is_all_additions() {
+        let input = serde_json::json!({"path": "a.rs", "content": "fn main() {}\n"});
+        let out = tool_detail_content(
+            DetailPolicy::UnifiedDiff {
+                old: None,
+                new: "content",
+            },
+            &input,
+            "wrote",
+        );
+        assert_eq!(out.as_deref(), Some("+fn main() {}"));
     }
 
     #[test]

@@ -218,6 +218,16 @@ pub enum DetailPolicy {
     None,
     Result,
     InputField(&'static str),
+    /// A line diff between two of the tool's input fields.
+    ///
+    /// `old` names the field holding the text being replaced; `None` means the
+    /// tool builds the content from nothing (`write_file`), so every line of
+    /// `new` is an addition. The rendering is
+    /// [`crate::tool::diff::fragment`].
+    UnifiedDiff {
+        old: Option<&'static str>,
+        new: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +256,10 @@ impl ToolPresentation {
                 DetailPolicy::None => ToolDetailKind::None,
                 DetailPolicy::Result => ToolDetailKind::Result,
                 DetailPolicy::InputField(field) => ToolDetailKind::InputField(field.to_string()),
+                DetailPolicy::UnifiedDiff { old, new } => ToolDetailKind::UnifiedDiff {
+                    old: old.map(str::to_string),
+                    new: new.to_string(),
+                },
             },
             popup: match self.popup {
                 PopupPolicy::None => ToolPopupKind::None,

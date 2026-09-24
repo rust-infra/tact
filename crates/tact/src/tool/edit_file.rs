@@ -39,7 +39,10 @@ pub const EDIT_FILE_METADATA: ToolMetadata = ToolMetadata {
         visual_kind: ToolVisualKind::FileEdit,
         display_name: "✏️ Edit",
         live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::InputField("new_text"),
+        detail: DetailPolicy::UnifiedDiff {
+            old: Some("old_text"),
+            new: "new_text",
+        },
         popup: PopupPolicy::None,
         compact_result_to_meta: false,
     },

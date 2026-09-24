@@ -44,7 +44,10 @@ pub const WRITE_FILE_METADATA: ToolMetadata = ToolMetadata {
         visual_kind: ToolVisualKind::FileWrite,
         display_name: "📝 Write",
         live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::InputField("content"),
+        detail: DetailPolicy::UnifiedDiff {
+            old: None,
+            new: "content",
+        },
         popup: PopupPolicy::None,
         compact_result_to_meta: false,
     },

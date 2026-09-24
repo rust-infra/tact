@@ -38,6 +38,12 @@ pub enum ToolDetailKind {
     None,
     Result,
     InputField(String),
+    /// The detail is a fragment-level line diff of two of the tool's input
+    /// fields: `-` removed, `+` added, a leading space for unchanged context.
+    UnifiedDiff {
+        old: Option<String>,
+        new: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

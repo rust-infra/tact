@@ -48,6 +48,7 @@ mod ask_user;
 mod background_run;
 mod bash;
 mod compact;
+pub(crate) mod diff;
 mod edit_file;
 mod load_skill;
 mod memory;
