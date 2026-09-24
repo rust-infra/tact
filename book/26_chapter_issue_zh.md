@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-24 — `@` 提及列表覆盖整个工作区，且绘制时不花代价
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact-gui/src/composer.rs`（`file_index`、`rank_files`、`rank`）；`crates/tact-gui/src/session.rs`（`SessionState::file_index`）；`crates/tact-gui/src/shell.rs`（`opening_state`、`switch_workspace`、`prompt_composer`） |
+
+**现象 / 动机：** 同一次调用里有两个毛病。列表**不完整**：`file_suggestions` 一边遍历目录一边把结果卡在 512 个上限，而本仓库在跳过构建目录之后就有 517 个文件 —— 排在切点之后的文件永远不会出现在补全里。而这次遍历发生在 composer **每一次绘制**中，实测对工作区根为 19ms，输入一个触发字符就产生卡顿。
+
+**决策：** 把"有哪些文件"与"这次按键匹配哪八个"分开。`file_index(root)` 每个工作区只构建一次 —— 会话打开或接入时、以及工作区切换时 —— 上限 20 000 个文件、深度 8，并沿用 Files 面板相同的跳过规则。`rank_files(index, query)` 在内存中排序取前八，按查询命中的位置排序：文件名以它开头 > 文件名包含它 > 仅目录部分包含。原来扁平化的 `contains` 把 `src/alpha.rs` 与 `src/notes/alpha.rs` 一视同仁，八行里因此常塞进错的那八行。
+
+**改后行为：** 输入 `@` 读的是缓存索引 —— 绘制期间没有任何文件系统访问 —— 且工作区里每个文件都可被提及，不再只是遍历顺序里的前 512 个。排序偏好"文件名字面匹配所输入内容"；查 `alph` 不会再被 `admission.rs` 应答。索引在工作区切换时重建，因此提及永远不会指向读者已经离开的那个项目里的文件。
+
+**指针：** `crates/tact-gui/src/composer.rs`（`file_index`、`rank_files`、`collect_files`）；`crates/tact-gui/src/session.rs`（`SessionState::file_index`）；`crates/tact-gui/src/shell.rs`（`opening_state`、`switch_workspace`、`prompt_composer`、`accept_suggestion`）
+
 ## 1. 2026-09-24 — 恢复出来的思考读起来是"已完成"，而不是"仍在到达"
 
 | 字段 | 值 |

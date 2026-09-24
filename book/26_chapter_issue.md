@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-24 — The `@` mention list covers the workspace and costs nothing per frame
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact-gui/src/composer.rs` (`file_index`, `rank_files`, `rank`); `crates/tact-gui/src/session.rs` (`SessionState::file_index`); `crates/tact-gui/src/shell.rs` (`opening_state`, `switch_workspace`, `prompt_composer`) |
+
+**Symptom / motivation:** Two faults in one call. The list was **incomplete**: `file_suggestions` walked the tree into a 512-file ceiling, and this repository holds 517 files outside the skipped trees — anything past the cut could never be mentioned. And that walk ran on **every frame** the composer drew, measured at 19 ms against the workspace root, so typing a trigger character stuttered.
+
+**Decision:** Separate "which files exist" from "which eight match this keystroke". `file_index(root)` is built once per workspace — when a session is opened or adopted, and again when the workspace changes — with a 20 000-file guard, depth 8, and the same skips the Files pane uses. `rank_files(index, query)` ranks in memory and takes eight, best first, by where the query lands: a file name that starts with it, then one that contains it, then the directory part. The old flat `contains` put `src/alpha.rs` and `src/notes/alpha.rs` on equal footing, which is how eight rows fill with the wrong eight.
+
+**Behavior after:** Typing `@` reads a cached index — no filesystem traffic while drawing — and every file in the workspace is reachable, not just the first 512 in walk order. Ranking prefers a file named for what was typed; `admission.rs` no longer answers a query for `alph`. The index is rebuilt on workspace switches, so a mention never names a file from the project the reader left.
+
+**Pointers:** `crates/tact-gui/src/composer.rs` (`file_index`, `rank_files`, `collect_files`); `crates/tact-gui/src/session.rs` (`SessionState::file_index`); `crates/tact-gui/src/shell.rs` (`opening_state`, `switch_workspace`, `prompt_composer`, `accept_suggestion`)
+
 ## 1. 2026-09-24 — Restored reasoning reads as finished, not still arriving
 
 | Field | Value |

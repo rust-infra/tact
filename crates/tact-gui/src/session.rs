@@ -9,6 +9,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
+    rc::Rc,
 };
 
 use gpui_kit::Task;
@@ -276,6 +277,12 @@ pub(crate) struct SessionState {
     /// `total` by this. `0` is the config's own "unknown / disabled" value and
     /// reads as `0%` rather than dividing by it.
     pub(crate) context_window: usize,
+    /// Every file below `workdir` a `@` mention can name, relative to it.
+    ///
+    /// Built when the session is opened or adopted rather than on demand: the
+    /// composer reads this while drawing, and drawing must not walk a
+    /// filesystem.
+    pub(crate) file_index: Rc<Vec<PathBuf>>,
     /// Turns taken in the current task, and the loop cap when one exists.
     pub(crate) turns: Option<(u32, Option<u32>)>,
     /// Wall-clock start of the current task, used for the completion summary.

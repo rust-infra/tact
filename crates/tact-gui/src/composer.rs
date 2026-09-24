@@ -77,41 +77,50 @@ pub(crate) fn apply_suggestion(draft: &str, trigger: &Trigger, insertion: &str) 
 }
 
 /// Suggestions for the active trigger, bounded for a responsive popover.
-pub(crate) fn suggestions(draft: &str, workdir: Option<&Path>) -> Vec<Suggestion> {
+pub(crate) fn suggestions(draft: &str, files: &[PathBuf]) -> Vec<Suggestion> {
     let Some(trigger) = parse_trigger(draft) else {
         return Vec::new();
     };
     match trigger.kind {
-        SuggestionKind::File => workdir
-            .map(|root| file_suggestions(root, &trigger.query))
-            .unwrap_or_default(),
+        SuggestionKind::File => rank_files(files, &trigger.query),
         SuggestionKind::Skill => skill_suggestions(&trigger.query),
     }
 }
 
-/// Find up to eight files below `root` whose relative path matches `query`.
+/// How many rows the completion popover shows.
+const SUGGESTION_LIMIT: usize = 8;
+
+/// Every file below `root` a mention can name, relative to `root`.
 ///
-/// The walk is intentionally shallow and skips hidden directories. The
-/// composer is a mention surface, not a repository indexer.
-pub(crate) fn file_suggestions(root: &Path, query: &str) -> Vec<Suggestion> {
+/// The shell builds this once per workspace and keeps it on the session. A walk
+/// is cheap as a one-off and ruinous per frame — the composer asks for
+/// suggestions every time it draws — and the ceiling this used to carry
+/// (512 files, first depth-first) silently dropped the file the reader was
+/// after. This repository holds 517 files outside the trees the walk skips, so
+/// the list was both incomplete and arbitrary.
+pub(crate) fn file_index(root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     collect_files(root, root, 0, &mut paths);
-    let query = query.to_ascii_lowercase();
-    paths.sort_by(|left, right| {
-        let left_match = left.to_string_lossy().to_ascii_lowercase().contains(&query);
-        let right_match = right
-            .to_string_lossy()
-            .to_ascii_lowercase()
-            .contains(&query);
-        (!left_match, right_match, left).cmp(&(!right_match, left_match, right))
-    });
+    paths.sort();
     paths
+}
+
+/// Up to [`SUGGESTION_LIMIT`] files matching `query`, best match first.
+///
+/// Ranked by where the query lands in the path, then by path. A flat `contains`
+/// treated `src/alpha.rs` and `src/notes/alpha.rs` as equals, which is how a
+/// list of eight fills with the wrong eight.
+pub(crate) fn rank_files(index: &[PathBuf], query: &str) -> Vec<Suggestion> {
+    let query = query.to_ascii_lowercase();
+    let mut ranked: Vec<(u8, &PathBuf)> = index
+        .iter()
+        .filter_map(|path| rank(path, &query).map(|rank| (rank, path)))
+        .collect();
+    ranked.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
+    ranked
         .into_iter()
-        .filter(|path| {
-            query.is_empty() || path.to_string_lossy().to_ascii_lowercase().contains(&query)
-        })
-        .take(8)
-        .map(|path| Suggestion {
+        .take(SUGGESTION_LIMIT)
+        .map(|(_, path)| Suggestion {
             kind: SuggestionKind::File,
             label: path.to_string_lossy().to_string(),
             insertion: format!("@{}", path.to_string_lossy()),
@@ -119,9 +128,39 @@ pub(crate) fn file_suggestions(root: &Path, query: &str) -> Vec<Suggestion> {
         .collect()
 }
 
+/// How well `path` matches `query`; lower is better, `None` is no match.
+///
+/// 0 — the file name starts with the query (what a reader typing a name means).
+/// 1 — the file name contains it.
+/// 2 — only the directory part does.
+fn rank(path: &Path, query: &str) -> Option<u8> {
+    if query.is_empty() {
+        return Some(3);
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if name.starts_with(query) {
+        return Some(0);
+    }
+    if name.contains(query) {
+        return Some(1);
+    }
+    path.to_string_lossy()
+        .to_ascii_lowercase()
+        .contains(query)
+        .then_some(2)
+}
+
 fn collect_files(root: &Path, path: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    const MAX_DEPTH: usize = 5;
-    if depth > MAX_DEPTH || out.len() > 512 {
+    /// Deep enough for a workspace nested a few crates down, shallow enough
+    /// that a symlink loop cannot run away.
+    const MAX_DEPTH: usize = 8;
+    /// A guard against a pathological tree, not a display budget: the popover
+    /// shows eight, and everything else is what the ranking picks from.
+    const MAX_INDEX_FILES: usize = 20_000;
+    if depth > MAX_DEPTH || out.len() > MAX_INDEX_FILES {
         return;
     }
     let Ok(entries) = std::fs::read_dir(path) else {
@@ -286,6 +325,50 @@ mod tests {
     }
 
     #[test]
+    fn a_name_that_starts_with_the_query_outranks_one_that_merely_contains_it() {
+        let index = vec![
+            PathBuf::from("src/notes/alpha.rs"),
+            PathBuf::from("src/admission.rs"),
+            PathBuf::from("src/alpha.rs"),
+        ];
+
+        let labels: Vec<_> = rank_files(&index, "alph")
+            .into_iter()
+            .map(|suggestion| suggestion.label)
+            .collect();
+
+        assert_eq!(
+            labels,
+            ["src/alpha.rs", "src/notes/alpha.rs"],
+            "the file named for the query comes first; `admission.rs` is not a match"
+        );
+    }
+
+    #[test]
+    fn the_index_is_not_capped_below_a_working_repository() {
+        // The old ceiling was 512 files, which this repository already exceeds
+        // outside the skipped trees — the file a reader wanted could simply be
+        // missing from every list.
+        let root = std::env::temp_dir().join(format!("tact-gui-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for index in 0..600 {
+            std::fs::write(root.join(format!("file-{index:03}.rs")), "").unwrap();
+        }
+
+        let index = file_index(&root);
+        assert_eq!(index.len(), 600);
+        assert!(
+            rank_files(&index, "file-599")
+                .iter()
+                .any(|suggestion| suggestion.label.ends_with("file-599.rs")),
+            "the last file is reachable"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn file_suggestions_skip_build_output_directories() {
         // The mention walk is a `read_dir` over the workdir on every keystroke
         // that carries a trigger. `target/` alone holds thousands of entries in
@@ -301,7 +384,7 @@ mod tests {
         std::fs::write(root.join("target/debug/out"), "artifact\n").unwrap();
         std::fs::write(root.join("node_modules/pkg/index.js"), "module\n").unwrap();
 
-        let labels: Vec<_> = file_suggestions(&root, "")
+        let labels: Vec<_> = rank_files(&file_index(&root), "")
             .into_iter()
             .map(|suggestion| suggestion.label)
             .collect();

@@ -1578,6 +1578,8 @@ impl TactApp {
         }
         self.state.branch = git_branch(&workspace);
         self.state.workdir = Some(workspace.clone());
+        // The mention list belongs to the workspace too.
+        self.state.file_index = Rc::new(composer::file_index(&workspace));
         self.remember_workspace(&workspace);
         // The list the window shows belongs to the workspace it just left, so a
         // connected window swaps in the new worktree's own sessions. An offline
@@ -2552,7 +2554,7 @@ impl TactApp {
         let Some(trigger) = composer::parse_trigger(&draft) else {
             return;
         };
-        let Some(suggestion) = composer::suggestions(&draft, self.workspace_dir().as_deref())
+        let Some(suggestion) = composer::suggestions(&draft, &self.state.file_index)
             .get(index)
             .cloned()
         else {
@@ -7576,7 +7578,7 @@ fn prompt_composer(
         (IconName::ArrowUp, "Send message")
     };
     let draft = composer.read(cx).value().to_string();
-    let suggestions = composer::suggestions(&draft, session.workdir.as_deref());
+    let suggestions = composer::suggestions(&draft, &session.file_index);
     let owner = cx.weak_entity();
     let add_owner = owner.clone();
     let model_owner = owner.clone();
@@ -8777,10 +8779,17 @@ fn opening_state(workdir: Option<PathBuf>, live: bool) -> SessionState {
     } else {
         (None, 0)
     };
+    // One walk per session open. The composer consults this while drawing, so
+    // it cannot be built on demand from there.
+    let file_index = workdir
+        .as_deref()
+        .map(composer::file_index)
+        .unwrap_or_default();
     SessionState {
         branch: workdir.as_deref().and_then(git_branch),
         model,
         context_window,
+        file_index: Rc::new(file_index),
         permission_mode: "auto".to_string(),
         workdir,
         ..SessionState::default()
