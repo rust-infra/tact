@@ -7939,6 +7939,7 @@ fn prompt_composer(
     let permission_modes = ["auto", "default", "plan"];
     let current_permission = session.permission_mode.clone();
     let muted_foreground = cx.theme().muted_foreground;
+    let accent_ink = cx.theme().primary;
     let permission_label = permission_mode_label(&current_permission);
 
     let add_popover = Popover::new("composer-add-popover")
@@ -8572,16 +8573,45 @@ fn prompt_composer(
             // The keyboard's row is drawn as the chosen one, so Up/Down and
             // the pointer agree about what Enter would take.
             let highlighted = index == suggestion_index.min(suggestions.len().saturating_sub(1));
+            // The terminal popup's row, drawn the same way: everything hangs off
+            // the left edge — marker, name, then the description taking what is
+            // left and truncating, so a long one cannot push the row wider than
+            // the list. A `Button` centres its content, which is why this is a
+            // row of its own; it wears the shell's chosen-row fill instead.
+            let (hover_bg, chosen_bg) = sidebar_row_fills(cx);
             list = list.child(
-                Button::new(SharedString::from(format!("composer-suggestion-{index}")))
-                    .icon(icon)
-                    .label(label)
-                    .ghost()
-                    .compact()
-                    .toggled(highlighted)
+                h_flex()
+                    .id(SharedString::from(format!("composer-suggestion-{index}")))
+                    .test_support()
+                    // A drawn row has no text of its own to fall back on, so the
+                    // accessible name carries what it shows.
+                    .aria_label(SharedString::from(label.clone()))
+                    .aria_selected(highlighted)
+                    .items_center()
+                    .gap(rems(0.375))
+                    .px(rems(0.4375))
+                    .py(rems(0.25))
+                    .rounded(rems(0.3125))
+                    .when(highlighted, |row| row.bg(chosen_bg))
+                    .hover(move |style| style.bg(hover_bg))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.accept_suggestion(index, window, cx);
+                    }))
+                    .child(Icon::from(icon).with_size(px(14.)))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "composer-suggestion-name-{index}"
+                            )))
+                            .test_support()
+                            .flex_shrink_0()
+                            .text_size(rems(0.8125))
+                            .when(highlighted, |name| name.text_color(accent_ink))
+                            .child(SharedString::from(label)),
+                    )
                     // The description sits beside the name in the muted tone,
-                    // the way the terminal popup's row reads: what the command
-                    // does, without leaving the list to find out.
+                    // the way the terminal popup's row reads: what the row does,
+                    // without leaving the list to find out.
                     .when_some(suggestion.description.clone(), |row, description| {
                         row.child(
                             div()
@@ -8589,14 +8619,14 @@ fn prompt_composer(
                                     "composer-suggestion-note-{index}"
                                 )))
                                 .test_support()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
                                 .text_xs()
                                 .text_color(muted_foreground)
                                 .child(SharedString::from(description)),
                         )
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.accept_suggestion(index, window, cx);
-                    })),
+                    }),
             );
         }
         // `max_h`, not a fixed height: a short list keeps its own size, a long

@@ -4768,6 +4768,106 @@ fn the_slash_list_groups_commands_and_skills(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// The `/` list reads like the terminal's popup: every row hangs off the left
+/// edge — marker, name, then the description taking the rest of the line — and
+/// a description too long for the window is cut rather than wrapped, without
+/// widening the row.
+#[gpui_kit::test]
+fn a_long_description_is_cut_instead_of_widening_the_row(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+
+    // Two skills in the workspace, so each query below matches exactly one row
+    // and the test does not depend on what the machine has installed.
+    let root = std::env::temp_dir().join(format!("tact-gui-long-desc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let long = "a very long description ".repeat(20);
+    write_skill(&root, "gui-zz-long", &long);
+    write_skill(&root, "gui-zz-short", "Short.");
+
+    // The row with the long description: one line, nothing outside the row.
+    open_skill_list(cx, &root, "/gui-zz-long", |window| {
+        let list = window.find("composer-suggestions").bounds();
+        let row = window.find("composer-suggestion-0").bounds();
+        let name = window.find("composer-suggestion-name-0").bounds();
+        let note = window.find("composer-suggestion-note-0").bounds();
+
+        assert!(
+            row.size.width >= list.size.width - px(24.),
+            "the row spans the list instead of sizing to its content: {row:?} in {list:?}"
+        );
+        assert!(
+            note.origin.x + note.size.width <= row.origin.x + row.size.width + px(0.5),
+            "the description is cut at the row's edge instead of overflowing: {note:?} in {row:?}"
+        );
+        assert!(
+            row.size.height < name.size.height * 2.,
+            "a long description is cut, not wrapped onto another line: {row:?} vs {name:?}"
+        );
+    });
+
+    // The row with the short one: the description has to take the rest of the
+    // line, which is what keeps everything hanging off the left edge. A
+    // content-sized description would drift under any centring, and that is
+    // exactly what the row used to be (a `Button` centres its content).
+    open_skill_list(cx, &root, "/gui-zz-short", |window| {
+        let row = window.find("composer-suggestion-0").bounds();
+        let name = window.find("composer-suggestion-name-0").bounds();
+        let note = window.find("composer-suggestion-note-0").bounds();
+
+        assert!(
+            name.origin.x - row.origin.x < px(40.),
+            "the name hangs off the left edge rather than sitting centred: {name:?} in {row:?}"
+        );
+        assert!(
+            note.origin.x >= name.origin.x + name.size.width,
+            "the description follows the name: {note:?} after {name:?}"
+        );
+        assert!(
+            note.origin.x + note.size.width >= row.origin.x + row.size.width - px(16.),
+            "the description takes the rest of the line: {note:?} in {row:?}"
+        );
+    });
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A workspace skill the composer can offer, written the way the agent reads it.
+fn write_skill(root: &std::path::Path, name: &str, description: &str) {
+    let dir = root.join(".tact/skills").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {description}\n---\n\nApply it.\n"),
+    )
+    .unwrap();
+}
+
+/// Type `query` in a fresh window rooted at `workdir` and hand the rendered
+/// frame to `check`.
+fn open_skill_list(
+    cx: &mut TestAppContext,
+    workdir: &std::path::Path,
+    query: &str,
+    check: impl FnOnce(&Window),
+) {
+    let workdir = workdir.to_path_buf();
+    let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+        let shell = cx.new(|cx| TactApp::with_workspace(window, cx, Some(workdir)));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("prompt-composer-input", cx);
+        window.render_frame(cx);
+        window.input(query, cx);
+        window.render_frame(cx);
+        check(window);
+    })
+    .unwrap();
+}
+
 /// An attachment chip's remove button drops that chip.
 ///
 /// The chip only exists once a file is attached, so the click walk reaches the
