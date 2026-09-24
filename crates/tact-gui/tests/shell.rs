@@ -2648,6 +2648,52 @@ fn the_prompt_grows_between_the_prototype_minimum_and_maximum(cx: &mut TestAppCo
     .unwrap();
 }
 
+/// A typed `/name` the shell owns runs as a command, not as a message.
+///
+/// The offline shell has no session, so the command reports exactly that rather
+/// than running — and that report is itself the proof it took the command path.
+/// The user bubble is the other half: the send path draws one for every draft,
+/// and there is none here, so the command never reached the agent as prose.
+#[gpui_kit::test]
+fn a_typed_slash_command_is_not_sent_as_a_message(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::new(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("transcript-empty").is_some(),
+            "a shell with no turns starts on the empty transcript"
+        );
+
+        // Type the command, then send it: the same two steps a reader takes.
+        window.click("prompt-composer-input", cx);
+        window.render_frame(cx);
+        window.input("/compact", cx);
+        window.render_frame(cx);
+        window.click("composer-primary", cx);
+        window.render_frame(cx);
+
+        assert!(
+            window.try_find("transcript-row-0").is_some(),
+            "the shell says what became of the command"
+        );
+        assert!(
+            window.try_find("user-bubble-0").is_none(),
+            "a slash command is not a user message"
+        );
+        assert!(
+            window.try_find("transcript-empty").is_none(),
+            "the report replaced the empty-transcript state"
+        );
+    })
+    .unwrap();
+}
+
 /// The prompt box and the Send button are the composer's own entry points.
 ///
 /// The preview opens on a live turn, so its `composer-primary` press is the
@@ -4612,6 +4658,40 @@ fn escape_puts_the_completion_list_away(cx: &mut TestAppContext) {
         assert!(
             window.try_find("composer-suggestions").is_some(),
             "typing asks for the list again"
+        );
+    })
+    .unwrap();
+}
+
+/// The `/` list leads with the shell's own command, spelled out.
+///
+/// The terminal popup puts built-ins ahead of skills and prints what each one
+/// does. The desktop list reads the same way, so a reader who types `/` sees the
+/// command it can run instead of having to remember the name.
+#[gpui_kit::test]
+fn the_slash_list_leads_with_the_shells_command(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::new(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("prompt-composer-input", cx);
+        window.render_frame(cx);
+        window.input("/", cx);
+        window.render_frame(cx);
+
+        assert_eq!(
+            window.find("composer-suggestion-0").label(),
+            Some("/compact"),
+            "the shell's own command leads the `/` list"
+        );
+        assert!(
+            window.try_find("composer-suggestion-note-0").is_some(),
+            "the row says what the command does"
         );
     })
     .unwrap();

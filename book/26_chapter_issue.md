@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-24 — A `/compact` typed in the desktop composer acts on the session
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/shell.rs` (`SlashCommand`, `SLASH_COMMANDS`, `slash_command`, `submit`, `suggestions`, `accept_suggestion`); `crates/tact-gui/src/composer.rs` (`slash_suggestions`, `without_shadowed_skills`, `SuggestionKind::Command`); `crates/tact-gui/tests/shell.rs`; `crates/tui/src/handlers/mod.rs` (`execute_palette_command`, `command_needs_args`); `crates/tui/src/render/popups/slash_command.rs` (the terminal popup's row and ordering) |
+
+**Symptom / motivation:** Compacting was reachable in the desktop client only through the palette row ("Compact session"). The name a reader actually types for it — `/compact`, the one the terminal answers — was unknown to the composer, so it went out as prose: the agent received the literal text `/compact` as the next user message. The `/` trigger belonged to the skill catalogue, so a built-in name had nowhere to be declared *and* nothing to render it.
+
+**Decision:** An explicit table of the names the composer owns (`SlashCommand`: name, the one-line description the list draws, and the `PaletteCommand` that already implements the behavior), so the palette row, its keyboard chord and its `/name` land on the same `run_palette_command` arm and cannot drift apart. `submit` resolves the table before the send path: a leading `/name` that matches runs the command, empties the composer, and appends nothing to the transcript. Everything else falls through unchanged, which is what a `/skill-name` mention needs. The `/` list itself is now the terminal popup's list: the shell's commands first — name, a command glyph, and the description in the muted tone — then the skills; a command matches on its name *or* its description (`/history` reaching `/compact` is deliberate, as it is in the terminal), and taking a command row **runs** it rather than inserting its name, which is the terminal's Enter semantics. Two consequences of the command rows: a skill spelled like a command is dropped, because Enter would run the command and the skill row could not be honoured (the terminal skips the same collisions), and a name the shell does not own is not an error — `/am-checkpoint` still travels as prompt text. No busy guard: the driver serializes commands behind the running turn (`SubmitTask` is spawned; every other command awaits it first), so `/compact` pressed mid-turn is answered when that turn ends — which is what the palette row already did. Staged attachments are left alone, since the command did not send them.
+
+**Behavior after:** `/compact` in the composer compacts the session; `[compacting]` and `Compaction complete.` arrive as system rows and the command itself never becomes a message. Typing `/` lists `/compact` first with "Compact conversation history" beside it, ahead of the skills; Enter (or a click) on that row runs the command and empties the draft. Skill and file rows keep their older meaning — a mention is inserted, not run: the desktop holds skill *names*, not skill bodies, so the mention is left for the agent to resolve. Adding an entry to `SLASH_COMMANDS` is what makes another palette command reachable from the composer, in the list and on submit alike.
+
+**Pointers:** `crates/tact-gui/src/composer.rs` (`slash_suggestions`, `without_shadowed_skills`); `crates/tact-gui/src/shell.rs` (`SlashCommand`, `slash_command`, `submit`, `accept_suggestion`, the `composer-suggestion-note-*` rows); unit tests `a_slash_command_runs_instead_of_being_sent`, `taking_a_command_row_runs_it`, `an_unknown_slash_name_is_still_a_message`, `the_slash_list_leads_with_the_shells_commands`, `a_skill_a_command_already_owns_is_not_offered`; `crates/tact-gui/tests/shell.rs` (`a_typed_slash_command_is_not_sent_as_a_message`, `the_slash_list_leads_with_the_shells_command`); `crates/tui/src/widgets/state/mod.rs` (`PALETTE_COMMANDS`, the terminal's name list)
+
 ## 1. 2026-09-24 — The desktop `@` list is a keyboard surface, and Escape belongs to it
 
 | Field | Value |

@@ -20,7 +20,10 @@ pub(crate) struct Attachment {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SuggestionKind {
     File,
+    /// A skill from the installed catalogue, reached as `/name`.
     Skill,
+    /// A command the shell itself answers, offered ahead of the skills.
+    Command,
 }
 
 /// One selectable completion candidate.
@@ -32,6 +35,9 @@ pub(crate) struct Suggestion {
     /// A directory to step into rather than a file to name. Taking it extends
     /// the query instead of ending it, which is how the tree is walked.
     pub(crate) is_dir: bool,
+    /// One line drawn beside the name. Commands have one; skills and files are
+    /// their own description in the list.
+    pub(crate) description: Option<String>,
 }
 
 /// The active `@` or `/` token in the draft, if any.
@@ -105,14 +111,69 @@ impl FileIndex {
 }
 
 /// Suggestions for the active trigger, bounded for a responsive popover.
-pub(crate) fn suggestions(draft: &str, index: &FileIndex) -> Vec<Suggestion> {
+///
+/// `commands` is the shell's own `/name` table as `(name, description)`: the
+/// composer draws the rows but does not own which commands exist.
+pub(crate) fn suggestions(
+    draft: &str,
+    index: &FileIndex,
+    commands: &[(&str, &str)],
+) -> Vec<Suggestion> {
     let Some(trigger) = parse_trigger(draft) else {
         return Vec::new();
     };
     match trigger.kind {
         SuggestionKind::File => rank_entries(index, &trigger.query),
-        SuggestionKind::Skill => skill_suggestions(&trigger.query),
+        SuggestionKind::Skill => slash_suggestions(&trigger.query, commands),
+        // A trigger is never a command: `@` and `/` are the only two, and the
+        // command rows are drawn inside the `/` list above.
+        SuggestionKind::Command => Vec::new(),
     }
+}
+
+/// The `/` list: the shell's commands first, then the skills.
+///
+/// The order and the rules are the terminal popup's. Commands come first, so a
+/// name the shell owns is reached before any skill. A skill spelled like a
+/// command is dropped rather than listed: Enter runs the command, so the skill
+/// row could not be honoured. A command matches on its name *or* its
+/// description — `/history` reaching `/compact` is deliberate, the same as the
+/// terminal — but the row always inserts the name.
+fn slash_suggestions(query: &str, commands: &[(&str, &str)]) -> Vec<Suggestion> {
+    let needle = query.to_ascii_lowercase();
+    let mut rows: Vec<Suggestion> = commands
+        .iter()
+        .filter(|(name, description)| {
+            needle.is_empty()
+                || name.contains(&needle)
+                || description.to_ascii_lowercase().contains(&needle)
+        })
+        .map(|(name, description)| Suggestion {
+            kind: SuggestionKind::Command,
+            label: format!("/{name}"),
+            insertion: format!("/{name}"),
+            is_dir: false,
+            description: Some((*description).to_string()),
+        })
+        .collect();
+    rows.extend(skill_suggestions(&needle));
+    without_shadowed_skills(rows, commands)
+}
+
+/// Drop the skill rows a command already owns.
+///
+/// Enter runs a command row, so a skill listed under the same name would be a
+/// row the list cannot honour; the terminal popup skips the same collisions. A
+/// file row is left alone — it is an `@path`, never a `/name`.
+fn without_shadowed_skills(rows: Vec<Suggestion>, commands: &[(&str, &str)]) -> Vec<Suggestion> {
+    rows.into_iter()
+        .filter(|row| {
+            row.kind != SuggestionKind::Skill
+                || !commands
+                    .iter()
+                    .any(|(name, _)| row.insertion.strip_prefix('/') == Some(*name))
+        })
+        .collect()
 }
 
 /// How many rows the completion popup can hold.
@@ -168,6 +229,7 @@ pub(crate) fn rank_entries(index: &FileIndex, query: &str) -> Vec<Suggestion> {
                 mention(path)
             },
             is_dir,
+            description: None,
         })
         .collect()
 }
@@ -276,6 +338,7 @@ pub(crate) fn skill_suggestions(query: &str) -> Vec<Suggestion> {
             label: format!("/{name}"),
             insertion: format!("/{name}"),
             is_dir: false,
+            description: None,
         })
         .collect()
 }
@@ -406,6 +469,68 @@ mod tests {
 
         // The directory leads, then the files by name.
         assert_eq!(insertions, ["@docs/", "@lib.rs", "@\"my notes.md\""]);
+    }
+
+    #[test]
+    fn the_slash_list_leads_with_the_shells_commands() {
+        const COMMANDS: &[(&str, &str)] = &[("compact", "Compact conversation history")];
+
+        let rows = slash_suggestions("", COMMANDS);
+        let first = rows.first().expect("the command row leads the list");
+        assert_eq!(first.kind, SuggestionKind::Command);
+        assert_eq!(first.label, "/compact");
+        assert_eq!(
+            first.insertion, "/compact",
+            "the row carries the name Enter runs, with no trailing space"
+        );
+        assert_eq!(
+            first.description.as_deref(),
+            Some("Compact conversation history")
+        );
+
+        // Matching the description reaches the command, which is what makes a
+        // half-remembered word useful; the row still inserts the name.
+        let matched = slash_suggestions("history", COMMANDS);
+        assert_eq!(
+            matched.first().map(|row| row.insertion.as_str()),
+            Some("/compact")
+        );
+        assert!(
+            !slash_suggestions("zzz", COMMANDS)
+                .iter()
+                .any(|row| row.kind == SuggestionKind::Command),
+            "an unmatched command is not offered"
+        );
+    }
+
+    /// A command row is the whole affordance: taking it runs the command, so a
+    /// skill of the same name could never be reached.
+    #[test]
+    fn a_skill_a_command_already_owns_is_not_offered() {
+        let row = |kind, insertion: &str| Suggestion {
+            kind,
+            label: insertion.to_string(),
+            insertion: insertion.to_string(),
+            is_dir: false,
+            description: None,
+        };
+        let rows = vec![
+            row(SuggestionKind::Command, "/compact"),
+            row(SuggestionKind::Skill, "/compact"),
+            row(SuggestionKind::Skill, "/am-checkpoint"),
+            row(SuggestionKind::File, "@src/lib.rs"),
+        ];
+
+        let kept: Vec<_> = without_shadowed_skills(rows, &[("compact", "…")])
+            .into_iter()
+            .map(|row| row.insertion)
+            .collect();
+
+        assert_eq!(
+            kept,
+            ["/compact", "/am-checkpoint", "@src/lib.rs"],
+            "the shadowed skill goes, the other rows stay in order"
+        );
     }
 
     #[test]

@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-24 — 桌面端 composer 里输入 `/compact` 会对会话生效
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/shell.rs`（`SlashCommand`、`SLASH_COMMANDS`、`slash_command`、`submit`、`suggestions`、`accept_suggestion`）；`crates/tact-gui/src/composer.rs`（`slash_suggestions`、`without_shadowed_skills`、`SuggestionKind::Command`）；`crates/tact-gui/tests/shell.rs`；`crates/tui/src/handlers/mod.rs`（`execute_palette_command`、`command_needs_args`）；`crates/tui/src/render/popups/slash_command.rs`（终端弹窗的行与排序） |
+
+**现象 / 动机：** 桌面端想压缩上下文，只能走命令面板里的 "Compact session" 那一行。而读者真正会打的名字 —— `/compact`，也就是终端应答的那个 —— composer 并不认识，于是它被当成正文发了出去：agent 收到的下一条用户消息就是字面量 `/compact`。`/` 触发符属于 skill 目录，内置名既没有可声明的地方，也没有可渲染它的行。
+
+**决策：** 用一张显式的表列出 composer 自己拥有的名字（`SlashCommand`：名字、列表里那一行描述、以及已经实现该行为的 `PaletteCommand`），于是命令面板那行、它的快捷键与它的 `/name` 落在同一个 `run_palette_command` 分支上，不可能各自漂移。`submit` 在发送路径之前先查这张表：以 `/name` 开头且命中时执行该命令、清空 composer、并且不往转录里追加任何东西；其余情况原样落到发送路径，这正是 `/skill-name` 提及所需要的。`/` 列表本身现在就是终端弹窗的那张列表：先列 shell 自己的命令（名字 + 命令图标 + 弱色描述），再列 skill；命令按**名字或描述**匹配（`/history` 能命中 `/compact`，与终端一致），而**取用命令行是直接执行**而不是把名字插进草稿 —— 这就是终端的 Enter 语义。由此带来两条副作用：名字与命令重合的 skill 会被剔除（按 Enter 执行的是命令，那条 skill 行无法兑现；终端跳过同样的冲突）；shell 不认识的名字不算错误 —— `/am-checkpoint` 照旧作为正文发给 agent。不加忙碌守卫：driver 本来就把命令串行化在正在跑的那轮之后（`SubmitTask` 是 spawn 出去的，其他命令先 await 它），所以一轮进行中按下的 `/compact` 会在该轮结束时被应答 —— 命令面板那一行一直就是这个行为。已挂上的附件保持原样，因为这条命令并没有把它们发出去。
+
+**改后行为：** 在 composer 里输入 `/compact` 会压缩会话；`[compacting]` 与 `Compaction complete.` 以 system 行出现，而命令本身永远不会变成消息。输入 `/` 时 `/compact` 排在最前，右侧是 "Compact conversation history"，其后才是 skill；在这一行上按 Enter（或点击）会执行命令并清空草稿。skill 行与文件行维持原义 —— 只插入提及、不执行：桌面端持有的是 skill **名字**而不是 skill 正文，提及留给 agent 去解析。往 `SLASH_COMMANDS` 里加一条，就是让另一条命令面板命令可以从 composer 触达 —— 列表与提交两条路径同时生效。
+
+**指针：** `crates/tact-gui/src/composer.rs`（`slash_suggestions`、`without_shadowed_skills`）；`crates/tact-gui/src/shell.rs`（`SlashCommand`、`slash_command`、`submit`、`accept_suggestion`、`composer-suggestion-note-*` 行）；单测 `a_slash_command_runs_instead_of_being_sent`、`taking_a_command_row_runs_it`、`an_unknown_slash_name_is_still_a_message`、`the_slash_list_leads_with_the_shells_commands`、`a_skill_a_command_already_owns_is_not_offered`；`crates/tact-gui/tests/shell.rs`（`a_typed_slash_command_is_not_sent_as_a_message`、`the_slash_list_leads_with_the_shells_command`）；`crates/tui/src/widgets/state/mod.rs`（`PALETTE_COMMANDS`，终端的名字表）
+
 ## 1. 2026-09-24 — 桌面端 `@` 列表是一个键盘面板，Escape 也归它
 
 | 字段 | 值 |

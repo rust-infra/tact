@@ -280,8 +280,8 @@ struct ParkedSession {
     attachments: Vec<Attachment>,
 }
 
-/// One command the shell can run, reachable from both the keyboard contract
-/// and the matching palette row.
+/// One command the shell can run, reachable from the keyboard contract, the
+/// matching palette row, and the `/name` the composer answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PaletteCommand {
     OpenPalette,
@@ -309,6 +309,52 @@ enum PaletteCommand {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+}
+
+/// One `/name` the composer answers itself.
+struct SlashCommand {
+    /// The name typed after the `/`.
+    name: &'static str,
+    /// One line drawn beside the name in the completion list, worded like the
+    /// terminal's entry for the same command so the two surfaces read alike.
+    description: &'static str,
+    /// What the name runs. Keeping it here — beside the description the list
+    /// draws and the arm that implements it — is what stops the name, the row
+    /// and the behavior from drifting apart.
+    command: PaletteCommand,
+}
+
+/// The `/name`s the composer answers itself.
+///
+/// A leading `/` is otherwise a skill mention — prompt text the agent reads —
+/// so this list is deliberately explicit: a name belongs here only when it acts
+/// on the session rather than asking the model for anything. Adding an entry is
+/// what makes a palette command reachable from the composer; the row, the
+/// chord, and the `/name` all land on the same
+/// [`TactApp::run_palette_command`] arm.
+const SLASH_COMMANDS: &[SlashCommand] = &[SlashCommand {
+    name: "compact",
+    description: "Compact conversation history",
+    command: PaletteCommand::CompactSession,
+}];
+
+/// The command a `/name` runs, `None` when the composer does not own the name.
+///
+/// An unknown name is not an error: it falls through to the send path, which is
+/// what a `/skill-name` mention needs.
+fn slash_command(name: &str) -> Option<PaletteCommand> {
+    SLASH_COMMANDS
+        .iter()
+        .find(|slash| slash.name == name)
+        .map(|slash| slash.command)
+}
+
+/// The command table as the completion list draws it.
+fn slash_command_rows() -> Vec<(&'static str, &'static str)> {
+    SLASH_COMMANDS
+        .iter()
+        .map(|slash| (slash.name, slash.description))
+        .collect()
 }
 
 /// The application shell view.
@@ -1504,7 +1550,10 @@ impl TactApp {
     ///
     /// Every action handler below funnels through here, so a palette row and
     /// its keyboard chord cannot drift apart: both dispatch the same GPUI
-    /// action, and that action lands on exactly one arm of this table.
+    /// action, and that action lands on exactly one arm of this table. A
+    /// built-in `/name` reaches the same arm through
+    /// [`TactApp::submit`] rather than the keymap — one spelling of the command
+    /// more, still one arm. See [`SLASH_COMMANDS`].
     fn run_palette_command(
         &mut self,
         command: PaletteCommand,
@@ -2641,7 +2690,7 @@ impl TactApp {
         if self.suggestions_dismissed {
             return Vec::new();
         }
-        composer::suggestions(&draft, &self.state.file_index)
+        composer::suggestions(&draft, &self.state.file_index, &slash_command_rows())
     }
 
     /// Move the completion highlight, or hide the list on Escape.
@@ -2675,18 +2724,33 @@ impl TactApp {
         true
     }
 
-    /// Apply a file or skill completion selected from the inline suggestion list.
+    /// Apply a completion row selected from the inline suggestion list.
+    ///
+    /// A command row runs on the spot — the terminal's popup executes a built-in
+    /// on Enter — while a mention (a file, or a skill) is inserted, because that
+    /// is text the agent has to read.
     fn accept_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.composer.read(cx).value().to_string();
         let Some(trigger) = composer::parse_trigger(&draft) else {
             return;
         };
-        let Some(suggestion) = composer::suggestions(&draft, &self.state.file_index)
-            .get(index)
-            .cloned()
+        let Some(suggestion) =
+            composer::suggestions(&draft, &self.state.file_index, &slash_command_rows())
+                .get(index)
+                .cloned()
         else {
             return;
         };
+        if suggestion.kind == composer::SuggestionKind::Command {
+            // `insertion` is `/name`, so the row carries the name to run. The
+            // draft the query was typed into goes with it.
+            if let Some(command) = slash_command(suggestion.insertion.trim_start_matches('/')) {
+                self.composer
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                self.run_palette_command(command, window, cx);
+            }
+            return;
+        }
         // A mention is a reference, not an attachment. The terminal client
         // inserts `@path` and nothing else, and chips have their own entry
         // (`attach_files`); doing both listed the same file twice in the
@@ -3533,6 +3597,22 @@ impl TactApp {
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.composer.read(cx).value().trim().to_string();
         if draft.is_empty() {
+            return;
+        }
+
+        // A draft that opens with a built-in `/name` is a command, not a
+        // message: it acts on this session, so it runs here and never leaves the
+        // window. Anything else — a `/skill-name` mention, or prose with a slash
+        // in it — is prompt text and falls through to the send path below.
+        if let Some(rest) = draft.strip_prefix('/')
+            && let Some(command) = slash_command(rest.split_whitespace().next().unwrap_or_default())
+        {
+            // The command consumed the draft. Attachments stay staged: they were
+            // gathered for a message the command did not send, and dropping them
+            // here would throw away work the reader can still submit.
+            self.composer
+                .update(cx, |state, cx| state.set_value("", window, cx));
+            self.run_palette_command(command, window, cx);
             return;
         }
 
@@ -8345,11 +8425,14 @@ fn prompt_composer(
                 (composer::SuggestionKind::File, true) => format!("@{}/", suggestion.label),
                 (composer::SuggestionKind::File, false) => format!("@{}", suggestion.label),
                 (composer::SuggestionKind::Skill, _) => suggestion.label.clone(),
+                (composer::SuggestionKind::Command, _) => suggestion.label.clone(),
             };
             let icon = match (suggestion.kind, suggestion.is_dir) {
                 (composer::SuggestionKind::File, true) => IconName::FolderOpen,
                 (composer::SuggestionKind::File, false) => IconName::File,
                 (composer::SuggestionKind::Skill, _) => IconName::Asterisk,
+                // The shell's own command, as the terminal's popup marks one.
+                (composer::SuggestionKind::Command, _) => IconName::Command,
             };
             // The keyboard's row is drawn as the chosen one, so Up/Down and
             // the pointer agree about what Enter would take.
@@ -8361,6 +8444,21 @@ fn prompt_composer(
                     .ghost()
                     .compact()
                     .toggled(highlighted)
+                    // The description sits beside the name in the muted tone,
+                    // the way the terminal popup's row reads: what the command
+                    // does, without leaving the list to find out.
+                    .when_some(suggestion.description.clone(), |row, description| {
+                        row.child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "composer-suggestion-note-{index}"
+                                )))
+                                .test_support()
+                                .text_xs()
+                                .text_color(muted_foreground)
+                                .child(SharedString::from(description)),
+                        )
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.accept_suggestion(index, window, cx);
                     })),
@@ -10439,6 +10537,164 @@ mod tests {
         assert!(
             dispatched.try_recv().is_err(),
             "and the three rows dispatch exactly one command each"
+        );
+    }
+
+    /// A built-in `/name` acts on the session instead of being sent.
+    ///
+    /// The draft is the whole request: the command runs, the composer is
+    /// emptied, and nothing lands in the transcript — a slash command is not a
+    /// message, so the agent must never read one.
+    #[gpui_kit::test]
+    fn a_slash_command_runs_instead_of_being_sent(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, _| app.session = Some(session));
+            shell.update(cx, |app, cx| {
+                app.composer
+                    .update(cx, |state, cx| state.set_value("/compact", window, cx));
+                app.submit(window, cx);
+            });
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let shell = slot.borrow().clone().expect("the window built the shell");
+
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::Compact)),
+            "`/compact` asks the session to compact"
+        );
+        assert!(
+            dispatched.try_recv().is_err(),
+            "the command is not also sent as a prompt"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, cx| app.composer_draft(cx)),
+            "",
+            "the command consumed the draft"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, _| app.transcript_len()),
+            0,
+            "a slash command leaves no user row behind"
+        );
+    }
+
+    /// A command row runs on the spot, the way the terminal's popup runs a
+    /// built-in on Enter: the row is the whole affordance, so taking it must
+    /// not just rewrite the draft into something that needs a second Enter.
+    #[gpui_kit::test]
+    fn taking_a_command_row_runs_it(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, _| app.session = Some(session));
+            shell.update(cx, |app, cx| {
+                // A half-typed command: the list is up with `/compact` first.
+                app.composer
+                    .update(cx, |state, cx| state.set_value("/com", window, cx));
+                assert!(
+                    app.take_highlighted_suggestion(window, cx),
+                    "the command row is the one on the keyboard"
+                );
+            });
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let shell = slot.borrow().clone().expect("the window built the shell");
+
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::Compact)),
+            "taking the row ran the command"
+        );
+        assert!(
+            dispatched.try_recv().is_err(),
+            "and nothing was sent as a prompt"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, cx| app.composer_draft(cx)),
+            "",
+            "the draft the query was typed into goes with it"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, _| app.transcript_len()),
+            0,
+            "running a command leaves no transcript row"
+        );
+    }
+
+    /// An unrecognized `/name` is prompt text, not an error.
+    ///
+    /// Skills are reached the same way (`/am-checkpoint` names one), so a name
+    /// the shell does not own has to fall through to the send path untouched.
+    #[gpui_kit::test]
+    fn an_unknown_slash_name_is_still_a_message(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, _| app.session = Some(session));
+            shell.update(cx, |app, cx| {
+                app.composer.update(cx, |state, cx| {
+                    state.set_value("/am-checkpoint", window, cx)
+                });
+                app.submit(window, cx);
+            });
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let shell = slot.borrow().clone().expect("the window built the shell");
+
+        assert!(
+            matches!(dispatched.try_recv(), Ok(UserCommand::SubmitTask(_))),
+            "a name the shell does not own is sent as a prompt"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, _| app.transcript_len()),
+            1,
+            "the mention stays in the transcript as a user row"
         );
     }
 
