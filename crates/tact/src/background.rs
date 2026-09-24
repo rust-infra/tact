@@ -212,6 +212,10 @@ impl BackgroundManager {
     ///
     /// Fails when the command is rejected by validation or the record cannot be
     /// persisted.
+    ///
+    /// `nice` is the session's `[tools] bash_nice`: it is applied to the task's
+    /// whole process group, the same way the `bash` tool applies it, so a long
+    /// build started in the background yields to the interface that started it.
     pub async fn start(
         &self,
         command: String,
@@ -219,6 +223,7 @@ impl BackgroundManager {
         session_id: String,
         progress: Option<BackgroundProgressSink>,
         cancel: Arc<AtomicBool>,
+        nice: i32,
     ) -> Result<String> {
         crate::shell::validate_shell_command(&command)?;
 
@@ -250,6 +255,7 @@ impl BackgroundManager {
                 &progress,
                 Some(&log_path),
                 cancel,
+                nice,
             )
             .await;
             let mut record = record;
@@ -282,9 +288,17 @@ impl BackgroundManager {
         session_id: String,
         progress: Option<BackgroundProgressSink>,
         cancel: Arc<AtomicBool>,
+        nice: i32,
     ) -> Result<String> {
         let id = self
-            .start(command.clone(), work_dir, session_id, progress, cancel)
+            .start(
+                command.clone(),
+                work_dir,
+                session_id,
+                progress,
+                cancel,
+                nice,
+            )
             .await?;
         Ok(format!("Background task {id} started: {command}"))
     }
@@ -433,12 +447,14 @@ impl SharedBackgroundManager {
         session_id: String,
         progress: Option<BackgroundProgressSink>,
         cancel: Arc<AtomicBool>,
+        nice: i32,
     ) -> Result<String> {
         self.inner
-            .run(command, work_dir, session_id, progress, cancel)
+            .run(command, work_dir, session_id, progress, cancel, nice)
             .await
     }
 
+    /// See [`BackgroundManager::start`]: `nice` rides along with the command.
     pub async fn start(
         &self,
         command: String,
@@ -446,9 +462,10 @@ impl SharedBackgroundManager {
         session_id: String,
         progress: Option<BackgroundProgressSink>,
         cancel: Arc<AtomicBool>,
+        nice: i32,
     ) -> Result<String> {
         self.inner
-            .start(command, work_dir, session_id, progress, cancel)
+            .start(command, work_dir, session_id, progress, cancel, nice)
             .await
     }
 
@@ -657,6 +674,7 @@ async fn run_background_process(
     progress: &Option<BackgroundProgressSink>,
     log_path: Option<&Path>,
     cancel: Arc<AtomicBool>,
+    nice: i32,
 ) -> (BackgroundTaskStatus, String) {
     let mut log_file = match log_path {
         Some(path) => open_log_file(path).await,
@@ -688,6 +706,12 @@ async fn run_background_process(
     // exits while a backgrounded grandchild holds the pipes is exactly the case
     // cancellation must still be able to signal. Same order as `tool::bash`.
     let process_group_id = child.id();
+    // The same scheduling hint the `bash` tool applies, for the same reason:
+    // a background `cargo test` shares the machine with the window that asked
+    // for it. Best-effort — see `utils::process`.
+    if let Some(pgid) = process_group_id {
+        crate::utils::set_process_group_priority(pgid, nice);
+    }
     let Some(stdout) = child.stdout.take() else {
         return (
             BackgroundTaskStatus::Error,
@@ -900,6 +924,7 @@ mod tests {
                 session_id.to_string(),
                 None,
                 no_cancel(),
+                0,
             )
             .await
             .unwrap()
@@ -922,6 +947,65 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    /// This process's scheduling priority, for a test that has to name one.
+    #[cfg(unix)]
+    fn current_nice() -> i32 {
+        // SAFETY: `getpriority` with `PRIO_PROCESS` and pid 0 reads the calling
+        // process. It is not a memory-safety operation, and the value is used
+        // only to pick a target the test is allowed to set.
+        unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) }
+    }
+
+    /// The configured `[tools] bash_nice` reaches a background task's process
+    /// group, the same way the `bash` tool applies it — a long build started in
+    /// the background must not outrank the window that started it.
+    ///
+    /// The target is relative to this process's own priority: an unprivileged
+    /// process may only *raise* its nice value, so a test that hardcoded `10`
+    /// would fail whenever the runner started it below that.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_background_task_runs_at_the_configured_priority() {
+        let (manager, tmp) = temp_manager("nice_applied");
+        let target = (current_nice().clamp(0, 19) + 5).min(19);
+        // `sleep` first: the priority is applied to the group just after the
+        // spawn, and a shell that prints its nice immediately can beat it.
+        let id = manager
+            .start(
+                "sleep 0.2; nice".to_string(),
+                tmp.path(),
+                "sess-nice".to_string(),
+                None,
+                no_cancel(),
+                target,
+            )
+            .await
+            .unwrap();
+
+        let outcome = manager
+            .wait(
+                Some(&id),
+                "sess-nice",
+                Duration::from_secs(20),
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, WaitOutcome::Finished);
+
+        let record = manager
+            .record(&id)
+            .await
+            .unwrap()
+            .expect("the task is recorded");
+        assert_eq!(
+            record.output.trim(),
+            target.to_string(),
+            "the group runs at the configured nice: {:?}",
+            record.output
+        );
     }
 
     #[test]
@@ -1150,6 +1234,7 @@ mod tests {
                 "sess-1".to_string(),
                 None,
                 cancel.clone(),
+                0,
             )
             .await
             .unwrap();
@@ -1224,6 +1309,7 @@ mod tests {
                 "sess-1".to_string(),
                 None,
                 cancel.clone(),
+                0,
             )
             .await
             .unwrap();
@@ -1360,6 +1446,7 @@ mod tests {
                 "sess-1".to_string(),
                 Some(progress),
                 no_cancel(),
+                0,
             )
             .await
             .unwrap();
@@ -1421,6 +1508,7 @@ mod tests {
                 String::new(),
                 Some(progress),
                 no_cancel(),
+                0,
             )
             .await
             .unwrap();
@@ -1464,6 +1552,7 @@ mod tests {
                 String::new(),
                 None,
                 no_cancel(),
+                0,
             )
             .await
             .unwrap();
@@ -1493,6 +1582,7 @@ mod tests {
                 String::new(),
                 None,
                 no_cancel(),
+                0,
             )
             .await
             .unwrap();
@@ -1531,6 +1621,7 @@ mod tests {
                 "sess-42".to_string(),
                 None,
                 no_cancel(),
+                0,
             )
             .await
             .unwrap();

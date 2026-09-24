@@ -104,6 +104,9 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
             ctx.session_id.clone().unwrap_or_default(),
             Some(progress),
             ctx.cancel_flag.clone(),
+            // The scheduling hint the `bash` tool applies, so a background
+            // build yields to the window that started it.
+            ctx.bash_nice,
         )
         .await?;
     let started = format!("Background task {id} started: {command}");
@@ -425,6 +428,7 @@ mod tests {
                 "sess-other".to_string(),
                 None,
                 no_cancel(),
+                0,
             )
             .await
             .unwrap();
@@ -468,6 +472,7 @@ mod tests {
                 String::new(),
                 None,
                 no_cancel(),
+                0,
             )
             .await
             .unwrap()

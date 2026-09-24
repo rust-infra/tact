@@ -5,10 +5,12 @@
 
 pub mod lock;
 pub mod output_truncation;
+pub mod process;
 pub mod truncate;
 
 pub use lock::{LockExt, RwLockExt};
 pub use output_truncation::{TruncationPolicy, formatted_truncate_text, truncate_text};
+pub use process::set_process_group_priority;
 pub use truncate::{
     approx_bytes_for_tokens, approx_token_count, approx_tokens_from_byte_count,
     truncate_middle_chars, truncate_middle_with_token_budget,

@@ -24,6 +24,7 @@ use crate::{
     },
     shell::validate_shell_command,
     tool::ToolContext,
+    utils::set_process_group_priority,
 };
 
 const OUTPUT_LIMIT_CHARS: usize = 50_000;
@@ -60,25 +61,8 @@ fn configure_process_group(command: &mut Command) {
     command.process_group(0);
 }
 
-/// Lower the scheduling priority of the child's entire process group so
-/// TUI stays responsive during CPU-heavy commands like `cargo test`.
-#[cfg(unix)]
-fn set_process_group_priority(process_group_id: u32, nice: i32) {
-    if nice > 0 {
-        // SAFETY: process_group_id comes from Child::id() which always
-        // returns a valid OS PID. PRIO_PGRP with our own PGRP is safe;
-        // setpriority is not a memory-safety operation.
-        unsafe {
-            libc::setpriority(libc::PRIO_PGRP, process_group_id, nice);
-        }
-    }
-}
-
 #[cfg(not(unix))]
 fn configure_process_group(_command: &mut Command) {}
-
-#[cfg(not(unix))]
-fn set_process_group_priority(_process_group_id: u32, _nice: i32) {}
 
 async fn terminate_child(child: &mut Child, process_group_id: Option<u32>) {
     #[cfg(unix)]
