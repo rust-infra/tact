@@ -29,6 +29,9 @@ pub(crate) struct Suggestion {
     pub(crate) kind: SuggestionKind,
     pub(crate) label: String,
     pub(crate) insertion: String,
+    /// A directory to step into rather than a file to name. Taking it extends
+    /// the query instead of ending it, which is how the tree is walked.
+    pub(crate) is_dir: bool,
 }
 
 /// The active `@` or `/` token in the draft, if any.
@@ -76,13 +79,38 @@ pub(crate) fn apply_suggestion(draft: &str, trigger: &Trigger, insertion: &str) 
     next
 }
 
+/// A workspace's files and directories, relative to its root.
+///
+/// Built once per workspace and kept on the session. The composer reads it on
+/// every frame it draws, so it cannot be assembled from the filesystem there —
+/// and a flat file list cannot answer "what is in `src/`", which is how a
+/// reader walks a tree they do not have memorised.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct FileIndex {
+    /// Every file below the root, sorted.
+    pub(crate) files: Vec<PathBuf>,
+    /// Every directory below the root, sorted. The root itself is not listed.
+    pub(crate) dirs: Vec<PathBuf>,
+}
+
+impl FileIndex {
+    /// Walk `root` once and keep everything a mention can name.
+    pub(crate) fn build(root: &Path) -> Self {
+        let mut index = Self::default();
+        collect_files(root, root, 0, &mut index);
+        index.files.sort();
+        index.dirs.sort();
+        index
+    }
+}
+
 /// Suggestions for the active trigger, bounded for a responsive popover.
-pub(crate) fn suggestions(draft: &str, files: &[PathBuf]) -> Vec<Suggestion> {
+pub(crate) fn suggestions(draft: &str, index: &FileIndex) -> Vec<Suggestion> {
     let Some(trigger) = parse_trigger(draft) else {
         return Vec::new();
     };
     match trigger.kind {
-        SuggestionKind::File => rank_files(files, &trigger.query),
+        SuggestionKind::File => rank_entries(index, &trigger.query),
         SuggestionKind::Skill => skill_suggestions(&trigger.query),
     }
 }
@@ -90,42 +118,81 @@ pub(crate) fn suggestions(draft: &str, files: &[PathBuf]) -> Vec<Suggestion> {
 /// How many rows the completion popover shows.
 const SUGGESTION_LIMIT: usize = 8;
 
-/// Every file below `root` a mention can name, relative to `root`.
+/// Up to [`SUGGESTION_LIMIT`] entries below the directory the query names.
 ///
-/// The shell builds this once per workspace and keeps it on the session. A walk
-/// is cheap as a one-off and ruinous per frame — the composer asks for
-/// suggestions every time it draws — and the ceiling this used to carry
-/// (512 files, first depth-first) silently dropped the file the reader was
-/// after. This repository holds 517 files outside the trees the walk skips, so
-/// the list was both incomplete and arbitrary.
-pub(crate) fn file_index(root: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    collect_files(root, root, 0, &mut paths);
-    paths.sort();
-    paths
-}
+/// The query is a path, not a search string: `@src/ta` lists what `src/` holds
+/// that matches `ta`, and taking a directory writes it back as `@src/` — so a
+/// reader walks into the tree the way the terminal's picker lets them, without
+/// the composer needing a mode of its own. Directories are listed before files,
+/// since a directory is what the reader is usually aiming at mid-path.
+pub(crate) fn rank_entries(index: &FileIndex, query: &str) -> Vec<Suggestion> {
+    let (dir, prefix) = split_query(query);
+    let prefix = prefix.to_ascii_lowercase();
 
-/// Up to [`SUGGESTION_LIMIT`] files matching `query`, best match first.
-///
-/// Ranked by where the query lands in the path, then by path. A flat `contains`
-/// treated `src/alpha.rs` and `src/notes/alpha.rs` as equals, which is how a
-/// list of eight fills with the wrong eight.
-pub(crate) fn rank_files(index: &[PathBuf], query: &str) -> Vec<Suggestion> {
-    let query = query.to_ascii_lowercase();
-    let mut ranked: Vec<(u8, &PathBuf)> = index
-        .iter()
-        .filter_map(|path| rank(path, &query).map(|rank| (rank, path)))
-        .collect();
-    ranked.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
+    let mut ranked: Vec<(u8, u8, &PathBuf, bool)> = Vec::new();
+    for (candidates, is_dir) in [(&index.dirs, true), (&index.files, false)] {
+        for candidate in candidates {
+            if candidate.parent().unwrap_or(Path::new("")) != dir {
+                continue;
+            }
+            let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(rank) = rank(name, &prefix) else {
+                continue;
+            };
+            ranked.push((rank, u8::from(!is_dir), candidate, is_dir));
+        }
+    }
+    ranked.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(right.2))
+    });
+
     ranked
         .into_iter()
         .take(SUGGESTION_LIMIT)
-        .map(|(_, path)| Suggestion {
+        .map(|(_, _, path, is_dir)| Suggestion {
             kind: SuggestionKind::File,
             label: path.to_string_lossy().to_string(),
-            insertion: mention(path),
+            insertion: if is_dir {
+                format!("@{}/", path.display())
+            } else {
+                mention(path)
+            },
+            is_dir,
         })
         .collect()
+}
+
+/// Split a mention query into the directory it names and the prefix inside it.
+///
+/// `"src/ta"` → `("src", "ta")`, `"src/"` → `("src", "")`, `"ta"` → `("", "ta")`.
+fn split_query(query: &str) -> (&Path, &str) {
+    match query.rfind('/') {
+        Some(index) => (Path::new(&query[..index]), &query[index + 1..]),
+        None => (Path::new(""), query),
+    }
+}
+
+/// How well one name matches; lower is better, `None` is no match.
+///
+/// 0 — the name starts with the query (what a reader typing a name means).
+/// 1 — it contains the query somewhere.
+fn rank(name: &str, query: &str) -> Option<u8> {
+    if query.is_empty() {
+        return Some(1);
+    }
+    let name = name.to_ascii_lowercase();
+    if name.starts_with(query) {
+        Some(0)
+    } else if name.contains(query) {
+        Some(1)
+    } else {
+        None
+    }
 }
 
 /// What a chosen file inserts: `@src/lib.rs`, or `@"my notes.md"` when the
@@ -142,39 +209,14 @@ fn mention(path: &Path) -> String {
     }
 }
 
-/// How well `path` matches `query`; lower is better, `None` is no match.
-///
-/// 0 — the file name starts with the query (what a reader typing a name means).
-/// 1 — the file name contains it.
-/// 2 — only the directory part does.
-fn rank(path: &Path, query: &str) -> Option<u8> {
-    if query.is_empty() {
-        return Some(3);
-    }
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    if name.starts_with(query) {
-        return Some(0);
-    }
-    if name.contains(query) {
-        return Some(1);
-    }
-    path.to_string_lossy()
-        .to_ascii_lowercase()
-        .contains(query)
-        .then_some(2)
-}
-
-fn collect_files(root: &Path, path: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+fn collect_files(root: &Path, path: &Path, depth: usize, index: &mut FileIndex) {
     /// Deep enough for a workspace nested a few crates down, shallow enough
     /// that a symlink loop cannot run away.
     const MAX_DEPTH: usize = 8;
     /// A guard against a pathological tree, not a display budget: the popover
     /// shows eight, and everything else is what the ranking picks from.
     const MAX_INDEX_FILES: usize = 20_000;
-    if depth > MAX_DEPTH || out.len() > MAX_INDEX_FILES {
+    if depth > MAX_DEPTH || index.files.len() > MAX_INDEX_FILES {
         return;
     }
     let Ok(entries) = std::fs::read_dir(path) else {
@@ -200,11 +242,14 @@ fn collect_files(root: &Path, path: &Path, depth: usize, out: &mut Vec<PathBuf>)
             continue;
         }
         if kind.is_dir() {
-            collect_files(root, &child, depth + 1, out);
+            if let Ok(relative) = child.strip_prefix(root) {
+                index.dirs.push(relative.to_path_buf());
+            }
+            collect_files(root, &child, depth + 1, index);
         } else if kind.is_file()
             && let Ok(relative) = child.strip_prefix(root)
         {
-            out.push(relative.to_path_buf());
+            index.files.push(relative.to_path_buf());
         }
     }
 }
@@ -225,6 +270,7 @@ pub(crate) fn skill_suggestions(query: &str) -> Vec<Suggestion> {
             kind: SuggestionKind::Skill,
             label: format!("/{name}"),
             insertion: format!("/{name}"),
+            is_dir: false,
         })
         .collect()
 }
@@ -338,40 +384,98 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Two files and a directory in the workspace root.
+    fn root_index() -> FileIndex {
+        FileIndex {
+            files: vec![PathBuf::from("my notes.md"), PathBuf::from("lib.rs")],
+            dirs: vec![PathBuf::from("docs")],
+        }
+    }
+
     #[test]
     fn a_path_with_a_space_is_quoted_the_way_the_terminal_quotes_it() {
-        let index = vec![
-            PathBuf::from("docs/my notes.md"),
-            PathBuf::from("src/lib.rs"),
-        ];
-
-        let insertions: Vec<_> = rank_files(&index, "")
+        let insertions: Vec<_> = rank_entries(&root_index(), "")
             .into_iter()
             .map(|suggestion| suggestion.insertion)
             .collect();
 
-        // No query: everything ranks equal and the paths decide the order.
-        assert_eq!(insertions, ["@\"docs/my notes.md\"", "@src/lib.rs"]);
+        // The directory leads, then the files by name.
+        assert_eq!(insertions, ["@docs/", "@lib.rs", "@\"my notes.md\""]);
     }
 
     #[test]
     fn a_name_that_starts_with_the_query_outranks_one_that_merely_contains_it() {
-        let index = vec![
-            PathBuf::from("src/notes/alpha.rs"),
-            PathBuf::from("src/admission.rs"),
-            PathBuf::from("src/alpha.rs"),
-        ];
+        let index = FileIndex {
+            files: vec![PathBuf::from("alpha.rs"), PathBuf::from("admission.rs")],
+            dirs: Vec::new(),
+        };
 
-        let labels: Vec<_> = rank_files(&index, "alph")
+        let labels: Vec<_> = rank_entries(&index, "alph")
             .into_iter()
             .map(|suggestion| suggestion.label)
             .collect();
 
         assert_eq!(
             labels,
-            ["src/alpha.rs", "src/notes/alpha.rs"],
-            "the file named for the query comes first; `admission.rs` is not a match"
+            ["alpha.rs"],
+            "a prefix beats a hit in the middle, and `admission.rs` is neither"
         );
+
+        let labels: Vec<_> = rank_entries(&index, "mission")
+            .into_iter()
+            .map(|suggestion| suggestion.label)
+            .collect();
+        assert_eq!(labels, ["admission.rs"]);
+    }
+
+    /// Walking a tree is a longer query, not a mode: the root lists its own
+    /// children, and taking a directory writes `@src/` back into the draft.
+    #[test]
+    fn a_directory_is_stepped_into_by_extending_the_query() {
+        let root = std::env::temp_dir().join(format!("tact-gui-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/gui")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "").unwrap();
+        std::fs::write(root.join("src/gui/main.rs"), "").unwrap();
+        std::fs::write(root.join("README.md"), "").unwrap();
+
+        let index = FileIndex::build(&root);
+        let entries = |query: &str| -> Vec<(String, bool)> {
+            rank_entries(&index, query)
+                .into_iter()
+                .map(|suggestion| (suggestion.label, suggestion.is_dir))
+                .collect()
+        };
+
+        assert_eq!(
+            entries(""),
+            [("src".to_string(), true), ("README.md".to_string(), false)],
+            "the root lists what it holds, directories first"
+        );
+        assert_eq!(
+            entries("src/"),
+            [
+                ("src/gui".to_string(), true),
+                ("src/lib.rs".to_string(), false)
+            ],
+            "stepping in is just a longer query"
+        );
+        assert_eq!(
+            entries("src/gui/"),
+            [("src/gui/main.rs".to_string(), false)],
+            "only that directory's own children are listed"
+        );
+
+        let directory = rank_entries(&index, "")
+            .into_iter()
+            .next()
+            .expect("a directory");
+        assert_eq!(
+            directory.insertion, "@src/",
+            "taking it writes the query that opens it"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -386,10 +490,10 @@ mod tests {
             std::fs::write(root.join(format!("file-{index:03}.rs")), "").unwrap();
         }
 
-        let index = file_index(&root);
-        assert_eq!(index.len(), 600);
+        let index = FileIndex::build(&root);
+        assert_eq!(index.files.len(), 600);
         assert!(
-            rank_files(&index, "file-599")
+            rank_entries(&index, "file-599")
                 .iter()
                 .any(|suggestion| suggestion.label.ends_with("file-599.rs")),
             "the last file is reachable"
@@ -414,7 +518,7 @@ mod tests {
         std::fs::write(root.join("target/debug/out"), "artifact\n").unwrap();
         std::fs::write(root.join("node_modules/pkg/index.js"), "module\n").unwrap();
 
-        let labels: Vec<_> = rank_files(&file_index(&root), "")
+        let labels: Vec<_> = rank_entries(&FileIndex::build(&root), "src/")
             .into_iter()
             .map(|suggestion| suggestion.label)
             .collect();

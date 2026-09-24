@@ -29,6 +29,21 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-24 — The desktop `@` completion walks directories
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/composer.rs` (`FileIndex`, `rank_entries`, `split_query`); `crates/tact-gui/src/shell.rs` (the suggestion list, `accept_suggestion`) |
+
+**Symptom / motivation:** `@` offered one flat, ranked list of files. Reaching `crates/tact-gui/src/composer.rs` meant guessing at the name and typing until it filtered down — the terminal's picker lets a reader walk the tree instead, and the desktop client had no equivalent.
+
+**Decision:** Read the query as a **path**, not a search string. `FileIndex` now indexes directories alongside files, and `rank_entries` splits the query at its last `/`: `@src/ta` lists what `src/` holds matching `ta`, with directories before files. Taking a directory writes `@src/` back into the draft (`is_dir` gives it a trailing slash and a folder glyph in the list), so stepping into a level is just a longer query — the composer needs no mode of its own, and `accept_suggestion` keeps a single path for both kinds of row.
+
+**Behavior after:** `@` opens on the workspace root's own children; typing narrows them, and picking a folder descends instead of inserting. Picking a file inserts `@relative/path` exactly as before. The index is the same one built per workspace, which now carries directories too.
+
+**Pointers:** `crates/tact-gui/src/composer.rs` (`FileIndex::build`, `rank_entries`, `split_query`); `crates/tact-gui/src/shell.rs` (`prompt_composer` suggestion rows, `accept_suggestion`); `crates/tui/src/handlers/file_picker.rs` (the terminal's directory walk the desktop now matches)
+
 ## 1. 2026-09-24 — A file mention is a reference, not an attachment
 
 | Field | Value |

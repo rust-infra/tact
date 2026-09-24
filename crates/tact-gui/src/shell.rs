@@ -1598,7 +1598,7 @@ impl TactApp {
         self.state.branch = git_branch(&workspace);
         self.state.workdir = Some(workspace.clone());
         // The mention list belongs to the workspace too.
-        self.state.file_index = Rc::new(composer::file_index(&workspace));
+        self.state.file_index = Rc::new(composer::FileIndex::build(&workspace));
         self.remember_workspace(&workspace);
         // The list the window shows belongs to the workspace it just left, so a
         // connected window swaps in the new worktree's own sessions. An offline
@@ -8207,13 +8207,17 @@ fn prompt_composer(
             .id("composer-suggestions")
             .test_support();
         for (index, suggestion) in suggestions.iter().enumerate() {
-            let label = match suggestion.kind {
-                composer::SuggestionKind::File => format!("@{}", suggestion.label),
-                composer::SuggestionKind::Skill => suggestion.label.clone(),
+            // A directory reads as one — trailing slash, folder glyph — so the
+            // list says whether taking the row names a file or opens a level.
+            let label = match (suggestion.kind, suggestion.is_dir) {
+                (composer::SuggestionKind::File, true) => format!("@{}/", suggestion.label),
+                (composer::SuggestionKind::File, false) => format!("@{}", suggestion.label),
+                (composer::SuggestionKind::Skill, _) => suggestion.label.clone(),
             };
-            let icon = match suggestion.kind {
-                composer::SuggestionKind::File => IconName::File,
-                composer::SuggestionKind::Skill => IconName::Asterisk,
+            let icon = match (suggestion.kind, suggestion.is_dir) {
+                (composer::SuggestionKind::File, true) => IconName::FolderOpen,
+                (composer::SuggestionKind::File, false) => IconName::File,
+                (composer::SuggestionKind::Skill, _) => IconName::Asterisk,
             };
             list = list.child(
                 Button::new(SharedString::from(format!("composer-suggestion-{index}")))
@@ -8789,7 +8793,7 @@ fn opening_state(workdir: Option<PathBuf>, live: bool) -> SessionState {
     // it cannot be built on demand from there.
     let file_index = workdir
         .as_deref()
-        .map(composer::file_index)
+        .map(composer::FileIndex::build)
         .unwrap_or_default();
     SessionState {
         branch: workdir.as_deref().and_then(git_branch),

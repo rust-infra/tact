@@ -29,6 +29,21 @@
 
 ---
 
+## 1. 2026-09-24 — 桌面端 `@` 支持逐层浏览目录
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/composer.rs`（`FileIndex`、`rank_entries`、`split_query`）；`crates/tact-gui/src/shell.rs`（suggestion 列表、`accept_suggestion`） |
+
+**现象 / 动机：** `@` 只给出一张扁平的相关文件列表。想够到 `crates/tact-gui/src/composer.rs` 只能靠猜名字、不断打字过滤 —— 终端端的选择器可以逐层走进目录，桌面端没有对等能力。
+
+**决策：** 把查询按**路径**解释，而不是搜索词。`FileIndex` 现在同时索引目录与文件；`rank_entries` 以最后一个 `/` 切分查询：`@src/ta` 列出 `src/` 下匹配 `ta` 的条目，目录排在文件之前。选中目录会把 `@src/` 写回草稿（`is_dir` 让列表给条目加上尾斜杠与文件夹图标），于是"进入下一层"只是查询变长 —— composer 不需要自己的模式，`accept_suggestion` 对两种行也共用同一条路径。
+
+**改后行为：** `@` 打开时列出工作区根目录自身的子项；继续输入即收窄；选中文件夹是**下探**而非插入。选中文件仍按原样插入 `@relative/path`。索引仍是每个工作区构建一次的那一份，只是现在也带上目录。
+
+**指针：** `crates/tact-gui/src/composer.rs`（`FileIndex::build`、`rank_entries`、`split_query`）；`crates/tact-gui/src/shell.rs`（`prompt_composer` 的 suggestion 行、`accept_suggestion`）；`crates/tui/src/handlers/file_picker.rs`（桌面端现在对齐的终端目录浏览）
+
 ## 1. 2026-09-24 — 文件提及是"引用"，不是"附件"
 
 | 字段 | 值 |
