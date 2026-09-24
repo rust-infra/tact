@@ -985,15 +985,19 @@ impl TactApp {
                 return;
             }
             let key = event.keystroke.key.as_str();
-            if !matches!(key, "up" | "down" | "escape" | "enter") {
+            if !matches!(key, "up" | "down" | "escape" | "enter" | "tab") {
                 return;
             }
             let (window, cx) = (window, cx);
             let consumed = completion_owner
                 .update(cx, |app, cx| match key {
                     // Enter is the list's while it is up: the reader is
-                    // choosing a row, not asking for a new line.
+                    // choosing a row, not asking for a new line. Tab only
+                    // completes the name — the terminal's split — and lets go
+                    // of the key when the list has nothing to give, so a
+                    // composer without a list keeps Tab as a focus move.
                     "enter" => app.take_highlighted_suggestion(window, cx),
+                    "tab" => app.fill_highlighted_suggestion(window, cx),
                     key => app.move_suggestion(key, cx),
                 })
                 .unwrap_or(false);
@@ -2744,6 +2748,40 @@ impl TactApp {
         }
         let index = self.suggestion_index.min(count - 1);
         self.accept_suggestion(index, window, cx);
+        true
+    }
+
+    /// Complete the highlighted row into the draft without running it.
+    ///
+    /// The terminal's Tab: the reader wants the name in place — to read it, or
+    /// to type arguments after it — and keeps Enter for running it. The list
+    /// closes by itself, because a completed name with the space after it is no
+    /// longer a trigger.
+    fn fill_highlighted_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let count = self.suggestions(cx).len();
+        if count == 0 {
+            return false;
+        }
+        let index = self.suggestion_index.min(count - 1);
+        let draft = self.composer.read(cx).value().to_string();
+        let Some(trigger) = composer::parse_trigger(&draft) else {
+            return false;
+        };
+        let Some(suggestion) = composer::suggestions(
+            &draft,
+            &self.state.file_index,
+            &slash_command_rows(),
+            &self.state.skills,
+        )
+        .get(index)
+        .cloned() else {
+            return false;
+        };
+        let next = composer::apply_suggestion(&draft, &trigger, &suggestion.insertion);
+        self.composer
+            .update(cx, |state, cx| state.set_value(next, window, cx));
+        self.focus_composer(window, cx);
+        cx.notify();
         true
     }
 
@@ -11019,6 +11057,57 @@ mod tests {
         )
         .unwrap();
         root
+    }
+
+    /// Tab completes the row; Enter runs it. The terminal splits the two so a
+    /// reader can read the name — or type arguments after it — without setting
+    /// the invocation off.
+    #[gpui_kit::test]
+    fn tab_fills_the_command_row_without_running_it(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, _| app.session = Some(session));
+            shell.update(cx, |app, cx| {
+                app.composer
+                    .update(cx, |state, cx| state.set_value("/com", window, cx));
+                assert!(
+                    app.fill_highlighted_suggestion(window, cx),
+                    "the command row is the one on the keyboard"
+                );
+            });
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let shell = slot.borrow().clone().expect("the window built the shell");
+
+        assert!(
+            dispatched.try_recv().is_err(),
+            "Tab completes, it does not run the command"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, cx| app.composer_draft(cx)),
+            "/compact ",
+            "the name lands in the draft, spaced for arguments"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, _| app.transcript_len()),
+            0,
+            "nothing ran and nothing was sent"
+        );
     }
 
     /// An unrecognized `/name` is prompt text, not an error.

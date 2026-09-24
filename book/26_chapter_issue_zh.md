@@ -40,7 +40,7 @@
 
 **决策：** 目录表用 agent 自己那份 —— `tact::skill::get_skill_registry`，与终端加载的是同一批根目录、插件 skill 与 `[agent].skill_dirs` —— 每个工作区随文件索引一起扫描一次，列表带上每个 skill 的描述。行按 "Commands" 与 "Skills" 分组，而**组标题刻意不是行**：没有 id、不可点击、不占键盘计数的索引空间。取用一行是执行它 —— 命令走 `run_palette_command`，skill 走 `invoke_skill` —— 而不是插入文本。skill 调用发送终端那套框架文案：正文包在 `<skill name="…">` 里，裸 `$ARGUMENTS` 做替换，正文没有占位符时追加 `ARGUMENTS: …`。转录保留读者敲下的那条命令行，因此发送路径带两个字符串（`submit_task(display, task)`）；队列里放的是 task，因为队列入队时那一行已经画出来了。完整敲入的 `/name args` 是同一次调用，参数取名字之后的部分。顺带对齐两处：一轮进行中 `/compact` 会被拒绝，用终端自己的措辞；`with_workspace` 现在把它收到的根目录同时用于两份索引 —— 之前是从进程目录构建的，所以被告知在别处的 shell 仍然会给出错误的文件与 skill。
 
-**改后行为：** 输入 `/` 会在 "Commands" 下列出 `/compact`、在 "Skills" 下列出已安装的 skill，各带描述；Enter 或点击都会执行，只有 `@` 行插入文本。行的排布与终端一致：左侧是标记与名字，描述占据该行剩余宽度，放不下时以省略号截断。这行是自绘的，没有沿用 `Button` —— 后者会把内容居中，而正是那个居中让名字一直悬在行的中间。`/am-checkpoint fix auth` 会提交 skill 正文并把参数应用上去，转录显示 `/am-checkpoint fix auth`。项目根自带的 skill 与全局的一起列出；根在某目录的 shell 就给出那个目录的文件与 skill。一轮进行中的 `/compact` 不动上下文，并说明原因。
+**改后行为：** 输入 `/` 会在 "Commands" 下列出 `/compact`、在 "Skills" 下列出已安装的 skill，各带描述；Enter 或点击都会执行，只有 `@` 行插入文本。行的排布与终端一致：左侧是标记与名字，描述占据该行剩余宽度，放不下时以省略号截断；**Tab** 只补全不执行（终端对 Tab 与 Enter 的分工），只有列表无可选项时才把该键放行。这行是自绘的，没有沿用 `Button` —— 后者会把内容居中，而正是那个居中让名字一直悬在行的中间。`/am-checkpoint fix auth` 会提交 skill 正文并把参数应用上去，转录显示 `/am-checkpoint fix auth`。项目根自带的 skill 与全局的一起列出；根在某目录的 shell 就给出那个目录的文件与 skill。一轮进行中的 `/compact` 不动上下文，并说明原因。
 
 **只有一份实现，不是两份：** 命令行解析与框架文案（`tact::skill::slash_args` / `tact::skill::slash_task`）是共享的，因为这个形状属于 agent 的协议，而不是某个前端的拷贝 —— system prompt 就是按 `<skill name="…">` 与结尾的 `ARGUMENTS:` 行来判断的。在终端逻辑被冻结的那一版里，桌面端曾保留一份逐字拷贝；现在那份拷贝已删除（净 −135 行），终端的 `skill_args_from_input` / `format_skill_agent_task` 改为委托给这对共享函数，而原先归终端所有的框架用例，现在钉在代码所在之处。
 

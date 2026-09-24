@@ -4868,6 +4868,47 @@ fn open_skill_list(
     .unwrap();
 }
 
+/// Tab completes the row the keyboard is on instead of moving focus out of the
+/// composer — the terminal popup's Tab, which fills `/name ` and leaves Enter to
+/// run it.
+#[gpui_kit::test]
+fn tab_completes_the_row_instead_of_moving_focus(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::new(window, cx));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("prompt-composer-input", cx);
+        window.render_frame(cx);
+        window.input("/com", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-suggestions").is_some(),
+            "the half-typed name offers the command"
+        );
+
+        window.press("tab", cx);
+        window.render_frame(cx);
+
+        // The completed name carries a space, so it is no longer a trigger: the
+        // list going away is the reader's proof the row was filled in.
+        assert!(
+            window.try_find("composer-suggestions").is_none(),
+            "Tab filled the name in"
+        );
+        assert!(
+            window.try_find("transcript-empty").is_some()
+                && window.try_find("user-bubble-0").is_none(),
+            "and nothing was sent"
+        );
+    })
+    .unwrap();
+}
+
 /// An attachment chip's remove button drops that chip.
 ///
 /// The chip only exists once a file is attached, so the click walk reaches the
