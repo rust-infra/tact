@@ -113,18 +113,20 @@ impl FileIndex {
 /// Suggestions for the active trigger, bounded for a responsive popover.
 ///
 /// `commands` is the shell's own `/name` table as `(name, description)`: the
-/// composer draws the rows but does not own which commands exist.
+/// composer draws the rows but does not own which commands exist. `skills` is
+/// the workspace's skill catalogue, for the same reason.
 pub(crate) fn suggestions(
     draft: &str,
     index: &FileIndex,
     commands: &[(&str, &str)],
+    skills: &[Skill],
 ) -> Vec<Suggestion> {
     let Some(trigger) = parse_trigger(draft) else {
         return Vec::new();
     };
     match trigger.kind {
         SuggestionKind::File => rank_entries(index, &trigger.query),
-        SuggestionKind::Skill => slash_suggestions(&trigger.query, commands),
+        SuggestionKind::Skill => slash_suggestions(&trigger.query, commands, skills),
         // A trigger is never a command: `@` and `/` are the only two, and the
         // command rows are drawn inside the `/` list above.
         SuggestionKind::Command => Vec::new(),
@@ -139,7 +141,7 @@ pub(crate) fn suggestions(
 /// row could not be honoured. A command matches on its name *or* its
 /// description — `/history` reaching `/compact` is deliberate, the same as the
 /// terminal — but the row always inserts the name.
-fn slash_suggestions(query: &str, commands: &[(&str, &str)]) -> Vec<Suggestion> {
+fn slash_suggestions(query: &str, commands: &[(&str, &str)], skills: &[Skill]) -> Vec<Suggestion> {
     let needle = query.to_ascii_lowercase();
     let mut rows: Vec<Suggestion> = commands
         .iter()
@@ -156,7 +158,7 @@ fn slash_suggestions(query: &str, commands: &[(&str, &str)]) -> Vec<Suggestion> 
             description: Some((*description).to_string()),
         })
         .collect();
-    rows.extend(skill_suggestions(&needle));
+    rows.extend(skill_rows(&needle, skills));
     without_shadowed_skills(rows, commands)
 }
 
@@ -321,69 +323,170 @@ fn collect_files(root: &Path, path: &Path, depth: usize, index: &mut FileIndex) 
     }
 }
 
-/// Skill names from the installed Codex/agents skill roots.
+/// One installed skill: what the `/` list shows, and what an invocation sends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Skill {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) body: String,
+}
+
+impl Skill {
+    /// Every skill the agent can see, from the roots the terminal loads.
+    ///
+    /// The agent's own loader (`tact::skill`) does the scanning, so the desktop
+    /// offers exactly what the agent can be asked for — the global, user and
+    /// project roots, `[agent].skill_dirs`, and installed plugin skills — rather
+    /// than a second, narrower idea of where skills live.
+    ///
+    /// One scan per workspace: the completion list reads this while drawing, so
+    /// it cannot be assembled from the filesystem there. Sorted by name, unlike
+    /// the terminal's map order, so the keyboard walks a list that holds still.
+    pub(crate) fn load(workdir: &Path) -> Vec<Skill> {
+        let Ok(registry) = tact::skill::get_skill_registry(workdir) else {
+            return Vec::new();
+        };
+        let mut skills: Vec<Skill> = registry
+            .skills()
+            .values()
+            .map(|document| Skill {
+                name: document.manifest.name.clone(),
+                description: document.manifest.description.clone(),
+                body: document.body.clone(),
+            })
+            .collect();
+        skills.sort_by(|left, right| left.name.cmp(&right.name));
+        skills
+    }
+}
+
+/// The argument text after `/{name}` in the draft.
 ///
-/// The fallback keeps completion useful in a freshly installed app where the
-/// process has not yet been given a user skill directory. It is deliberately
-/// small and only contains names that are safe to show as slash-command hints;
-/// the real catalogue is discovered from disk when available.
-pub(crate) fn skill_suggestions(query: &str) -> Vec<Suggestion> {
-    let query = query.to_ascii_lowercase();
-    skill_names()
-        .into_iter()
-        .filter(|name| query.is_empty() || name.to_ascii_lowercase().contains(&query))
-        .take(8)
-        .map(|name| Suggestion {
-            kind: SuggestionKind::Skill,
-            label: format!("/{name}"),
-            insertion: format!("/{name}"),
-            is_dir: false,
-            description: None,
-        })
-        .collect()
-}
-
-fn skill_names() -> Vec<String> {
-    let mut roots = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        roots.push(PathBuf::from(&home).join(".agents/skills"));
-        roots.push(PathBuf::from(&home).join(".codex/skills"));
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.join(".agents/skills"));
-        roots.push(cwd.join(".codex/skills"));
-    }
-
-    let mut names: Vec<String> = roots
-        .iter()
-        .flat_map(|root| skill_names_from_root(root))
-        .collect();
-    if names.is_empty() {
-        names.extend(
-            [
-                "frontend-design",
-                "ui-ux-pro-max",
-                "gpui-kit",
-                "gpui-kit-design-guides",
-                "emil-design-eng",
-            ]
-            .into_iter()
-            .map(str::to_string),
-        );
-    }
-    names.sort();
-    names.dedup();
-    names
-}
-
-fn skill_names_from_root(root: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
+/// Empty when the draft does not name that skill or stops at the name, and when
+/// the token is merely a prefix of a longer name (`/demo` must not take the args
+/// of `/demo-test`). Lifted from the terminal's `skill_args_from_input` so both
+/// front ends read the same command line the same way.
+pub(crate) fn skill_args(draft: &str, name: &str) -> String {
+    let trimmed = draft.trim();
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return String::new();
     };
-    entries
-        .flatten()
-        .filter(|entry| entry.path().join("SKILL.md").is_file())
-        .filter_map(|entry| entry.file_name().into_string().ok())
+    let Some(after_name) = rest.strip_prefix(name) else {
+        return String::new();
+    };
+    if after_name.is_empty() {
+        return String::new();
+    }
+    if !after_name.starts_with(char::is_whitespace) {
+        return String::new();
+    }
+    after_name.trim().to_string()
+}
+
+/// The agent-facing task for a slash-invoked skill.
+///
+/// Byte-for-byte the terminal's framing (`crates/tui/src/handlers/skills.rs`):
+/// the body wrapped in `<skill name="…">`, Claude Code's bare `$ARGUMENTS`
+/// substituted, and `ARGUMENTS: …` appended when the body has no placeholder and
+/// arguments were given. The system prompt explains that a `<skill>` block in a
+/// user message is a slash invocation, not `load_skill` metadata — so this text
+/// has to stay the same shape wherever it is assembled, and the two copies of
+/// this policy move together.
+pub(crate) fn skill_task(skill: &Skill, args: &str) -> String {
+    format!(
+        "<skill name=\"{}\">\n{}\n</skill>",
+        escape_xml_attr(&skill.name),
+        render_skill_body(skill, args)
+    )
+}
+
+/// Render the skill body for the agent, Claude Code style.
+fn render_skill_body(skill: &Skill, args: &str) -> String {
+    let body = skill.body.trim();
+    if has_bare_arguments_placeholder(body) {
+        substitute_arguments(body, args)
+    } else if args.is_empty() {
+        body.to_string()
+    } else {
+        format!("{body}\n\nARGUMENTS: {args}")
+    }
+}
+
+/// True when `$ARGUMENTS` is a bare placeholder here (not indexed, not a longer
+/// token like `$ARGUMENTS2`).
+fn is_bare_arguments_placeholder(after: &str) -> bool {
+    match after.chars().next() {
+        None => true,
+        Some('[') => false,
+        Some(c) if c.is_ascii_alphanumeric() || c == '_' => false,
+        Some(_) => true,
+    }
+}
+
+/// True when the body carries a bare `$ARGUMENTS` placeholder.
+fn has_bare_arguments_placeholder(body: &str) -> bool {
+    let mut rest = body;
+    while let Some(index) = rest.find("$ARGUMENTS") {
+        let after = &rest[index + "$ARGUMENTS".len()..];
+        if is_bare_arguments_placeholder(after) {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+/// Substitute bare `$ARGUMENTS` only; `$ARGUMENTS[N]` and `$ARGUMENTS2` are left
+/// for the skill to interpret.
+fn substitute_arguments(body: &str, args: &str) -> String {
+    let mut out = String::with_capacity(body.len() + args.len());
+    let mut rest = body;
+    while let Some(index) = rest.find("$ARGUMENTS") {
+        out.push_str(&rest[..index]);
+        let after = &rest[index + "$ARGUMENTS".len()..];
+        if is_bare_arguments_placeholder(after) {
+            out.push_str(args);
+        } else {
+            out.push_str("$ARGUMENTS");
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Escape attribute text for the name in `<skill name="…">`.
+fn escape_xml_attr(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+}
+
+/// How many skill rows the `/` list offers.
+const SKILL_LIMIT: usize = 8;
+
+/// The skill rows for a `/` query, from the workspace's own catalogue.
+///
+/// A skill matches on its name or on its description — the same two things the
+/// terminal popup searches — and the description travels with the row so the
+/// list says what the skill is for.
+fn skill_rows(query: &str, skills: &[Skill]) -> Vec<Suggestion> {
+    let needle = query.to_ascii_lowercase();
+    skills
+        .iter()
+        .filter(|skill| {
+            needle.is_empty()
+                || skill.name.to_ascii_lowercase().contains(&needle)
+                || skill.description.to_ascii_lowercase().contains(&needle)
+        })
+        .take(SKILL_LIMIT)
+        .map(|skill| Suggestion {
+            kind: SuggestionKind::Skill,
+            label: format!("/{}", skill.name),
+            insertion: format!("/{}", skill.name),
+            is_dir: false,
+            description: (!skill.description.is_empty()).then(|| skill.description.clone()),
+        })
         .collect()
 }
 
@@ -438,18 +541,90 @@ mod tests {
         );
     }
 
+    /// The catalogue comes from the agent's own loader, so a project's skills
+    /// are the ones the desktop lists — with their descriptions and bodies.
     #[test]
-    fn skill_names_are_discovered_from_a_skill_root() {
+    fn skills_load_through_the_agent_loader_with_their_bodies() {
         let root = std::env::temp_dir().join(format!(
             "tact-gui-skills-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("my-skill")).unwrap();
-        std::fs::write(root.join("my-skill/SKILL.md"), "# my skill\n").unwrap();
-        assert_eq!(skill_names_from_root(&root), ["my-skill"]);
+        std::fs::create_dir_all(root.join(".tact/skills/my-skill")).unwrap();
+        std::fs::write(
+            root.join(".tact/skills/my-skill/SKILL.md"),
+            "---\nname: my-skill\ndescription: Does the thing\n---\n\nUse Result.\n",
+        )
+        .unwrap();
+
+        let skills = Skill::load(&root);
+        let mine = skills
+            .iter()
+            .find(|skill| skill.name == "my-skill")
+            .expect("the project root's own skill is listed");
+        assert_eq!(mine.description, "Does the thing");
+        assert_eq!(mine.body.trim(), "Use Result.");
+        assert!(
+            skills.windows(2).all(|pair| pair[0].name <= pair[1].name),
+            "the list is sorted so the keyboard walks a stable order"
+        );
+
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The task text is the terminal's, byte for byte: the body wrapped in
+    /// `<skill>`, bare `$ARGUMENTS` substituted, `ARGUMENTS:` appended when the
+    /// body has no placeholder. Ported from the terminal's own tests.
+    #[test]
+    fn a_skill_invocation_is_framed_the_way_the_terminal_frames_it() {
+        let skill = |name: &str, body: &str| Skill {
+            name: name.to_string(),
+            description: String::new(),
+            body: body.to_string(),
+        };
+
+        let out = skill_task(&skill("demo", "Use Result."), "refactor foo");
+        assert!(out.contains("<skill name=\"demo\">"), "{out}");
+        assert!(out.contains("Use Result."));
+        assert!(out.contains("ARGUMENTS: refactor foo"));
+
+        let out = skill_task(&skill("deploy", "Deploy $ARGUMENTS to prod."), "v2");
+        assert!(out.contains("Deploy v2 to prod."));
+        assert!(!out.contains("$ARGUMENTS"));
+        assert!(!out.contains("ARGUMENTS:"));
+
+        let out = skill_task(
+            &skill("deploy", "First $ARGUMENTS[0]; all $ARGUMENTS."),
+            "v2",
+        );
+        assert!(out.contains("First $ARGUMENTS[0]; all v2."));
+
+        let out = skill_task(&skill("deploy", "Ship $ARGUMENTS2 now"), "v2");
+        assert!(out.contains("Ship $ARGUMENTS2 now"), "{out}");
+        assert!(
+            out.contains("ARGUMENTS: v2"),
+            "an indexed placeholder is not the bare one, so args are appended"
+        );
+
+        let out = skill_task(&skill("deploy", "Deploy it."), "");
+        assert_eq!(
+            out, "<skill name=\"deploy\">\nDeploy it.\n</skill>",
+            "no arguments, no ARGUMENTS line"
+        );
+    }
+
+    #[test]
+    fn skill_arguments_come_from_after_the_name() {
+        assert_eq!(skill_args("/demo refactor foo", "demo"), "refactor foo");
+        assert_eq!(skill_args("/demo", "demo"), "");
+        assert_eq!(skill_args("  /demo  ", "demo"), "");
+        assert_eq!(
+            skill_args("/demo-test x", "demo"),
+            "",
+            "a prefix must not take a longer skill's arguments"
+        );
+        assert_eq!(skill_args("demo x", "demo"), "");
     }
 
     /// Two files and a directory in the workspace root.
@@ -475,7 +650,7 @@ mod tests {
     fn the_slash_list_leads_with_the_shells_commands() {
         const COMMANDS: &[(&str, &str)] = &[("compact", "Compact conversation history")];
 
-        let rows = slash_suggestions("", COMMANDS);
+        let rows = slash_suggestions("", COMMANDS, &[]);
         let first = rows.first().expect("the command row leads the list");
         assert_eq!(first.kind, SuggestionKind::Command);
         assert_eq!(first.label, "/compact");
@@ -490,13 +665,13 @@ mod tests {
 
         // Matching the description reaches the command, which is what makes a
         // half-remembered word useful; the row still inserts the name.
-        let matched = slash_suggestions("history", COMMANDS);
+        let matched = slash_suggestions("history", COMMANDS, &[]);
         assert_eq!(
             matched.first().map(|row| row.insertion.as_str()),
             Some("/compact")
         );
         assert!(
-            !slash_suggestions("zzz", COMMANDS)
+            !slash_suggestions("zzz", COMMANDS, &[])
                 .iter()
                 .any(|row| row.kind == SuggestionKind::Command),
             "an unmatched command is not offered"

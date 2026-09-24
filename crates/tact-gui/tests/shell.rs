@@ -4697,6 +4697,77 @@ fn the_slash_list_leads_with_the_shells_command(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// The `/` list groups its rows the way the terminal popup does: the shell's
+/// own commands under one heading, the skills under another. A `@` list is one
+/// group, so it carries no heading at all.
+#[gpui_kit::test]
+fn the_slash_list_groups_commands_and_skills(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+
+    // A workspace with one skill and one file, so both lists have something to
+    // group without depending on what the machine happens to have installed.
+    let root = std::env::temp_dir().join(format!("tact-gui-sections-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join(".tact/skills/gui-demo")).unwrap();
+    std::fs::write(
+        root.join(".tact/skills/gui-demo/SKILL.md"),
+        "---\nname: gui-demo\ndescription: A demo skill\n---\n\nApply it.\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("README.md"), "# readme\n").unwrap();
+
+    let workdir = root.clone();
+    let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+        let shell = cx.new(|cx| TactApp::with_workspace(window, cx, Some(workdir)));
+        Root::new(shell, window, cx)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("prompt-composer-input", cx);
+        window.render_frame(cx);
+        window.input("/", cx);
+        window.render_frame(cx);
+
+        assert_eq!(
+            window.find("composer-suggestion-0").label(),
+            Some("/compact"),
+            "the shell's command is still the first row"
+        );
+        assert!(
+            window.try_find("composer-section-commands").is_some(),
+            "the command group is headed"
+        );
+        assert!(
+            window.try_find("composer-section-skills").is_some(),
+            "and so is the skill group"
+        );
+    })
+    .unwrap();
+
+    // The `@` list is one group, so it has no heading to draw.
+    let handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+        let shell = cx.new(|cx| TactApp::with_workspace(window, cx, Some(root)));
+        Root::new(shell, window, cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-mention", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-suggestion-0").is_some(),
+            "the workspace's own file is offered"
+        );
+        assert!(
+            window.try_find("composer-section-commands").is_none()
+                && window.try_find("composer-section-skills").is_none(),
+            "a mention list is not grouped"
+        );
+    })
+    .unwrap();
+}
+
 /// An attachment chip's remove button drops that chip.
 ///
 /// The chip only exists once a file is attached, so the click walk reaches the

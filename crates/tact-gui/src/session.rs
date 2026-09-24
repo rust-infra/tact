@@ -284,6 +284,11 @@ pub(crate) struct SessionState {
     /// composer reads this while drawing, and drawing must not walk a
     /// filesystem.
     pub(crate) file_index: Rc<crate::composer::FileIndex>,
+    /// The skills the agent can be asked for, from the same roots it loads.
+    ///
+    /// Built with the file index, for the same reason and once per workspace:
+    /// the `/` list reads it while drawing.
+    pub(crate) skills: Rc<Vec<crate::composer::Skill>>,
     /// Turns taken in the current task, and the loop cap when one exists.
     pub(crate) turns: Option<(u32, Option<u32>)>,
     /// Wall-clock start of the current task, used for the completion summary.

@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-09-24 — 桌面端 `/` 面板就是终端那一个
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/shell.rs`（`submit`、`invoke_skill`、`submit_task`、`accept_suggestion`、`suggestion_section`、`opening_state` / `with_workspace` / `switch_workspace`、`CompactSession` 分支）；`crates/tact-gui/src/composer.rs`（`Skill`、`Skill::load`、`skill_rows`、`skill_args`、`skill_task`）；`crates/tact-gui/src/session.rs`（`SessionState::skills`）；`crates/tui/src/handlers/skills.rs`（被对齐的框架文案）；`crates/tui/src/render/popups/slash_command.rs`（被对齐的弹窗） |
+
+**现象 / 动机：** 桌面端的 `/` 列表只是若干 skill **名字**，选中后插入一个提及。终端端的是一个命令面板：内置命令在 skill 之前，分组为 "Commands" / "Skills"，每行打印它的用途，而 Enter 是**执行**该行 —— skill 会被展开成正文。同一件事在两个前端得到两种结果，而 `/am-checkpoint` 只有在 agent 自己愿意解析那个提及时才有意义。
+
+**决策：** 目录表用 agent 自己那份 —— `tact::skill::get_skill_registry`，与终端加载的是同一批根目录、插件 skill 与 `[agent].skill_dirs` —— 每个工作区随文件索引一起扫描一次，列表带上每个 skill 的描述。行按 "Commands" 与 "Skills" 分组，而**组标题刻意不是行**：没有 id、不可点击、不占键盘计数的索引空间。取用一行是执行它 —— 命令走 `run_palette_command`，skill 走 `invoke_skill` —— 而不是插入文本。skill 调用发送终端那套框架文案：正文包在 `<skill name="…">` 里，裸 `$ARGUMENTS` 做替换，正文没有占位符时追加 `ARGUMENTS: …`。转录保留读者敲下的那条命令行，因此发送路径带两个字符串（`submit_task(display, task)`）；队列里放的是 task，因为队列入队时那一行已经画出来了。完整敲入的 `/name args` 是同一次调用，参数取名字之后的部分。顺带对齐两处：一轮进行中 `/compact` 会被拒绝，用终端自己的措辞；`with_workspace` 现在把它收到的根目录同时用于两份索引 —— 之前是从进程目录构建的，所以被告知在别处的 shell 仍然会给出错误的文件与 skill。
+
+**改后行为：** 输入 `/` 会在 "Commands" 下列出 `/compact`、在 "Skills" 下列出已安装的 skill，各带描述；Enter 或点击都会执行，只有 `@` 行插入文本。`/am-checkpoint fix auth` 会提交 skill 正文并把参数应用上去，转录显示 `/am-checkpoint fix auth`。项目根自带的 skill 与全局的一起列出；根在某目录的 shell 就给出那个目录的文件与 skill。一轮进行中的 `/compact` 不动上下文，并说明原因。
+
+**关于重复的策略：** 调用框架现在存在两份 —— 终端的 `format_skill_agent_task` 与桌面端的 `composer::skill_task` —— 因为终端逻辑被冻结。两边都移植了同样的用例做钉子，但真正干净的做法是把它收进 `tact::skill` 的一个共享 helper；那属于终端侧改动，因此留作独立决策。
+
+**指针：** `crates/tact-gui/src/composer.rs`（`Skill::load`、`skill_rows`、`skill_args`、`skill_task`）；`crates/tact-gui/src/shell.rs`（`invoke_skill`、`submit_task`、`accept_suggestion`、`suggestion_section`）；单测 `a_skill_row_sends_the_body_and_keeps_the_command_line`、`a_typed_skill_command_carries_its_arguments`、`compact_is_refused_while_a_turn_is_in_flight`、`skills_load_through_the_agent_loader_with_their_bodies`、`a_skill_invocation_is_framed_the_way_the_terminal_frames_it`；`crates/tact-gui/tests/shell.rs`（`the_slash_list_groups_commands_and_skills`）；`crates/tact/src/skill/mod.rs`（`get_skill_registry`）；`crates/tui/src/handlers/skills.rs`
+
 ## 1. 2026-09-24 — 桌面端 composer 里输入 `/compact` 会对会话生效
 
 | 字段 | 值 |
@@ -40,7 +57,7 @@
 
 **决策：** 用一张显式的表列出 composer 自己拥有的名字（`SlashCommand`：名字、列表里那一行描述、以及已经实现该行为的 `PaletteCommand`），于是命令面板那行、它的快捷键与它的 `/name` 落在同一个 `run_palette_command` 分支上，不可能各自漂移。`submit` 在发送路径之前先查这张表：以 `/name` 开头且命中时执行该命令、清空 composer、并且不往转录里追加任何东西；其余情况原样落到发送路径，这正是 `/skill-name` 提及所需要的。`/` 列表本身现在就是终端弹窗的那张列表：先列 shell 自己的命令（名字 + 命令图标 + 弱色描述），再列 skill；命令按**名字或描述**匹配（`/history` 能命中 `/compact`，与终端一致），而**取用命令行是直接执行**而不是把名字插进草稿 —— 这就是终端的 Enter 语义。由此带来两条副作用：名字与命令重合的 skill 会被剔除（按 Enter 执行的是命令，那条 skill 行无法兑现；终端跳过同样的冲突）；shell 不认识的名字不算错误 —— `/am-checkpoint` 照旧作为正文发给 agent。不加忙碌守卫：driver 本来就把命令串行化在正在跑的那轮之后（`SubmitTask` 是 spawn 出去的，其他命令先 await 它），所以一轮进行中按下的 `/compact` 会在该轮结束时被应答 —— 命令面板那一行一直就是这个行为。已挂上的附件保持原样，因为这条命令并没有把它们发出去。
 
-**改后行为：** 在 composer 里输入 `/compact` 会压缩会话；`[compacting]` 与 `Compaction complete.` 以 system 行出现，而命令本身永远不会变成消息。输入 `/` 时 `/compact` 排在最前，右侧是 "Compact conversation history"，其后才是 skill；在这一行上按 Enter（或点击）会执行命令并清空草稿。skill 行与文件行维持原义 —— 只插入提及、不执行：桌面端持有的是 skill **名字**而不是 skill 正文，提及留给 agent 去解析。往 `SLASH_COMMANDS` 里加一条，就是让另一条命令面板命令可以从 composer 触达 —— 列表与提交两条路径同时生效。
+**改后行为：** 在 composer 里输入 `/compact` 会压缩会话；`[compacting]` 与 `Compaction complete.` 以 system 行出现，而命令本身永远不会变成消息。输入 `/` 时 `/compact` 排在最前，右侧是 "Compact conversation history"，其后才是 skill；在这一行上按 Enter（或点击）会执行命令并清空草稿。文件行维持原义 —— 只插入提及、不执行。（此时 skill 行仍是插入；上面那条条目把它换成了终端自己的调用方式。）往 `SLASH_COMMANDS` 里加一条，就是让另一条命令面板命令可以从 composer 触达 —— 列表与提交两条路径同时生效。
 
 **指针：** `crates/tact-gui/src/composer.rs`（`slash_suggestions`、`without_shadowed_skills`）；`crates/tact-gui/src/shell.rs`（`SlashCommand`、`slash_command`、`submit`、`accept_suggestion`、`composer-suggestion-note-*` 行）；单测 `a_slash_command_runs_instead_of_being_sent`、`taking_a_command_row_runs_it`、`an_unknown_slash_name_is_still_a_message`、`the_slash_list_leads_with_the_shells_commands`、`a_skill_a_command_already_owns_is_not_offered`；`crates/tact-gui/tests/shell.rs`（`a_typed_slash_command_is_not_sent_as_a_message`、`the_slash_list_leads_with_the_shells_command`）；`crates/tui/src/widgets/state/mod.rs`（`PALETTE_COMMANDS`，终端的名字表）
 

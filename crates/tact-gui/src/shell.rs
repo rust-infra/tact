@@ -562,6 +562,11 @@ impl TactApp {
         // for a preview or a test that never picks one.
         if let Some(dir) = workdir.as_deref() {
             app.remember_workspace(dir);
+            // Both indices — the `@` file tree and the skill catalogue — belong
+            // to the root the shell was told it is in, or a shell rooted
+            // somewhere else would offer the process's own directory.
+            app.state.file_index = Rc::new(composer::FileIndex::build(dir));
+            app.state.skills = Rc::new(composer::Skill::load(dir));
         }
         app.state.workdir = workdir;
         app
@@ -1626,6 +1631,17 @@ impl TactApp {
                 ),
             },
             PaletteCommand::CompactSession => {
+                // The terminal refuses this while a turn is in flight, and for
+                // the same reason here: compaction rewrites the context that
+                // turn is reading. Same words as the terminal's busy notice, so
+                // the two clients answer the same way.
+                if self.state.running {
+                    self.push_system_row(
+                        "⏳ Still processing previous prompt, please wait...".to_string(),
+                        cx,
+                    );
+                    return;
+                }
                 self.send_command(tact_protocol::UserCommand::Compact, cx)
             }
             PaletteCommand::SessionStats => {
@@ -1702,8 +1718,10 @@ impl TactApp {
         }
         self.state.branch = git_branch(&workspace);
         self.state.workdir = Some(workspace.clone());
-        // The mention list belongs to the workspace too.
+        // The mention list belongs to the workspace too, and so does the skill
+        // catalogue: a project root can carry its own skills.
         self.state.file_index = Rc::new(composer::FileIndex::build(&workspace));
+        self.state.skills = Rc::new(composer::Skill::load(&workspace));
         self.remember_workspace(&workspace);
         // The list the window shows belongs to the workspace it just left, so a
         // connected window swaps in the new worktree's own sessions. An offline
@@ -2690,7 +2708,12 @@ impl TactApp {
         if self.suggestions_dismissed {
             return Vec::new();
         }
-        composer::suggestions(&draft, &self.state.file_index, &slash_command_rows())
+        composer::suggestions(
+            &draft,
+            &self.state.file_index,
+            &slash_command_rows(),
+            &self.state.skills,
+        )
     }
 
     /// Move the completion highlight, or hide the list on Escape.
@@ -2726,32 +2749,47 @@ impl TactApp {
 
     /// Apply a completion row selected from the inline suggestion list.
     ///
-    /// A command row runs on the spot — the terminal's popup executes a built-in
-    /// on Enter — while a mention (a file, or a skill) is inserted, because that
-    /// is text the agent has to read.
+    /// A `/` row runs on the spot, which is the terminal's Enter: a command acts
+    /// on the session, and a skill is expanded into the task it names. Only a
+    /// `@` row is inserted — a file mention is text the agent has to read.
     fn accept_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.composer.read(cx).value().to_string();
         let Some(trigger) = composer::parse_trigger(&draft) else {
             return;
         };
-        let Some(suggestion) =
-            composer::suggestions(&draft, &self.state.file_index, &slash_command_rows())
-                .get(index)
-                .cloned()
-        else {
+        let Some(suggestion) = composer::suggestions(
+            &draft,
+            &self.state.file_index,
+            &slash_command_rows(),
+            &self.state.skills,
+        )
+        .get(index)
+        .cloned() else {
             return;
         };
+        // A `/` row is something to run, not text to read: the terminal's popup
+        // runs the highlighted item on Enter, and only a mention is inserted.
+        // `insertion` is `/name`, so the row carries the name to run.
+        let invoked = suggestion.insertion.trim_start_matches('/');
         if suggestion.kind == composer::SuggestionKind::Command {
-            // `insertion` is `/name`, so the row carries the name to run. The
-            // draft the query was typed into goes with it.
-            if let Some(command) = slash_command(suggestion.insertion.trim_start_matches('/')) {
+            if let Some(command) = slash_command(invoked) {
                 self.composer
                     .update(cx, |state, cx| state.set_value("", window, cx));
                 self.run_palette_command(command, window, cx);
             }
             return;
         }
-        // A mention is a reference, not an attachment. The terminal client
+        if suggestion.kind == composer::SuggestionKind::Skill {
+            if let Some(skill) = self.skill_named(invoked) {
+                // The list closes on a space, so a row taken from it has no
+                // arguments yet; a command line typed in full reaches the same
+                // path through `submit`.
+                let args = composer::skill_args(&draft, &skill.name);
+                self.invoke_skill(skill, args, window, cx);
+            }
+            return;
+        }
+        // A file mention is a reference, not an attachment. The terminal client
         // inserts `@path` and nothing else, and chips have their own entry
         // (`attach_files`); doing both listed the same file twice in the
         // submitted body — once as `@src/lib.rs`, once as an absolute path
@@ -3600,19 +3638,31 @@ impl TactApp {
             return;
         }
 
+        let name = draft.strip_prefix('/').map(|rest| {
+            rest.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        });
+
         // A draft that opens with a built-in `/name` is a command, not a
         // message: it acts on this session, so it runs here and never leaves the
-        // window. Anything else — a `/skill-name` mention, or prose with a slash
-        // in it — is prompt text and falls through to the send path below.
-        if let Some(rest) = draft.strip_prefix('/')
-            && let Some(command) = slash_command(rest.split_whitespace().next().unwrap_or_default())
-        {
-            // The command consumed the draft. Attachments stay staged: they were
-            // gathered for a message the command did not send, and dropping them
-            // here would throw away work the reader can still submit.
+        // window. Attachments stay staged — they were gathered for a message the
+        // command did not send, and dropping them would throw away work the
+        // reader can still submit.
+        if let Some(command) = name.as_deref().and_then(slash_command) {
             self.composer
                 .update(cx, |state, cx| state.set_value("", window, cx));
             self.run_palette_command(command, window, cx);
+            return;
+        }
+
+        // A `/name` the catalogue knows is a skill invocation, the way the
+        // terminal's Enter runs one: the body goes to the agent, the command
+        // line stays in the transcript.
+        if let Some(skill) = name.as_deref().and_then(|name| self.skill_named(name)) {
+            let args = composer::skill_args(&draft, &skill.name);
+            self.invoke_skill(skill, args, window, cx);
             return;
         }
 
@@ -3622,17 +3672,61 @@ impl TactApp {
         } else {
             format!("{}\n\nAttached: {}", draft, self.attachments.len())
         };
-        self.conversation.push_user(display);
-        self.record_change(Change::Appended(1), cx);
         self.composer
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.attachments.clear();
+        self.submit_task(display, submitted, cx);
+    }
+
+    /// The skill of that name from the workspace's catalogue, if it has one.
+    fn skill_named(&self, name: &str) -> Option<composer::Skill> {
+        self.state
+            .skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .cloned()
+    }
+
+    /// Invoke a skill the way the terminal's `/name` does.
+    ///
+    /// The transcript keeps the command line the reader typed; the agent
+    /// receives the skill body wrapped in `<skill>` with its arguments applied
+    /// (`composer::skill_task`). The draft is consumed either way, since the
+    /// invocation is what the reader asked for.
+    fn invoke_skill(
+        &mut self,
+        skill: composer::Skill,
+        args: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let display = if args.is_empty() {
+            format!("/{}", skill.name)
+        } else {
+            format!("/{} {args}", skill.name)
+        };
+        let task =
+            composer::with_attachments(&composer::skill_task(&skill, &args), &self.attachments);
+        self.attachments.clear();
+        self.composer
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.submit_task(display, task, cx);
+    }
+
+    /// Send one prompt: `display` is what the transcript keeps, `task` is what
+    /// the agent reads.
+    ///
+    /// The two differ for a skill invocation, where the reader typed a command
+    /// line and the agent is owed the skill's body.
+    fn submit_task(&mut self, display: String, task: String, cx: &mut Context<Self>) {
+        self.conversation.push_user(display);
+        self.record_change(Change::Appended(1), cx);
 
         // `SubmitTask` blocks the driver until the in-flight turn finishes, so
         // queueing here keeps Stop responsive instead of stalling the command
         // loop. The queue drains as soon as the turn ends.
         if self.state.running {
-            self.queued.push_back(submitted);
+            self.queued.push_back(task);
             self.push_system_row(
                 "Queued — sends when the current turn finishes.".to_string(),
                 cx,
@@ -3641,7 +3735,7 @@ impl TactApp {
             return;
         }
 
-        self.dispatch(submitted, cx);
+        self.dispatch(task, cx);
         cx.notify();
     }
 
@@ -7779,6 +7873,27 @@ fn send_button(
         .child(Icon::from(icon).with_size(px(16.)))
 }
 
+/// One group heading in the completion list.
+///
+/// Not a row: it has no id the tests reach rows by and nothing to click, which is
+/// what keeps it out of the keyboard's index space (`suggestion_index` counts
+/// rows, and a heading is not one).
+fn suggestion_section(
+    label: &'static str,
+    id: &'static str,
+    muted: gpui_kit::gpui::Hsla,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .test_support()
+        .w_full()
+        .px(rems(0.5625))
+        .pt(rems(0.25))
+        .text_xs()
+        .text_color(muted)
+        .child(SharedString::from(label))
+}
+
 fn prompt_composer(
     composer: &Entity<TextareaState>,
     model_filter: &Entity<InputState>,
@@ -8418,7 +8533,24 @@ fn prompt_composer(
             .pt(rems(0.5))
             .id("composer-suggestions")
             .test_support();
+        // The terminal's popup heads each group and keeps the heading out of
+        // the keyboard's way: it carries no id and cannot be taken.
+        let mut section: Option<(&'static str, &'static str)> = None;
         for (index, suggestion) in suggestions.iter().enumerate() {
+            let next = match suggestion.kind {
+                composer::SuggestionKind::Command => {
+                    Some(("Commands", "composer-section-commands"))
+                }
+                composer::SuggestionKind::Skill => Some(("Skills", "composer-section-skills")),
+                // One group, nothing to tell apart.
+                composer::SuggestionKind::File => None,
+            };
+            if next != section {
+                if let Some((label, id)) = next {
+                    list = list.child(suggestion_section(label, id, muted_foreground));
+                }
+                section = next;
+            }
             // A directory reads as one — trailing slash, folder glyph — so the
             // list says whether taking the row names a file or opens a level.
             let label = match (suggestion.kind, suggestion.is_dir) {
@@ -9039,11 +9171,18 @@ fn opening_state(workdir: Option<PathBuf>, live: bool) -> SessionState {
         .as_deref()
         .map(composer::FileIndex::build)
         .unwrap_or_default();
+    // Same reasoning for the skill catalogue: it is read from the roots the
+    // agent loads, so it is scanned when the workspace is, not while drawing.
+    let skills = workdir
+        .as_deref()
+        .map(composer::Skill::load)
+        .unwrap_or_default();
     SessionState {
         branch: workdir.as_deref().and_then(git_branch),
         model,
         context_window,
         file_index: Rc::new(file_index),
+        skills: Rc::new(skills),
         permission_mode: "auto".to_string(),
         workdir,
         ..SessionState::default()
@@ -10650,6 +10789,203 @@ mod tests {
             0,
             "running a command leaves no transcript row"
         );
+    }
+
+    /// A command row taken mid-turn is refused, the way the terminal refuses it.
+    ///
+    /// Compaction rewrites the context the running turn is reading, so the
+    /// command must not reach the session at all; the shell says why instead.
+    #[gpui_kit::test]
+    fn compact_is_refused_while_a_turn_is_in_flight(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+
+        cx.update(gpui_kit::init);
+
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, None));
+            shell.update(cx, |app, _| {
+                app.session = Some(session);
+                app.state.running = true;
+            });
+            shell.update(cx, |app, cx| {
+                app.run_palette_command(super::PaletteCommand::CompactSession, window, cx);
+            });
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let shell = slot.borrow().clone().expect("the window built the shell");
+
+        assert!(
+            dispatched.try_recv().is_err(),
+            "a running turn must not be compacted underneath"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, _| app.transcript_len()),
+            1,
+            "the refusal is the one row the command left"
+        );
+    }
+
+    /// A skill row is an invocation, not a mention: the terminal's Enter runs
+    /// it, so the agent gets the skill's body while the transcript keeps the
+    /// command line the reader typed.
+    #[gpui_kit::test]
+    fn a_skill_row_sends_the_body_and_keeps_the_command_line(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let root = demo_workspace("skill-row");
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let workdir = root.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, Some(workdir)));
+            shell.update(cx, |app, _| app.session = Some(session));
+            shell.update(cx, |app, cx| {
+                app.composer
+                    .update(cx, |state, cx| state.set_value("/gui-demo", window, cx));
+                assert!(
+                    app.take_highlighted_suggestion(window, cx),
+                    "the catalogue's own row is the one on the keyboard"
+                );
+            });
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let shell = slot.borrow().clone().expect("the window built the shell");
+
+        match dispatched.try_recv() {
+            Ok(UserCommand::SubmitTask(task)) => {
+                assert!(task.contains("<skill name=\"gui-demo\">"), "{task}");
+                assert!(
+                    task.contains("Apply") && task.contains("it."),
+                    "the body reaches the agent: {task}"
+                );
+                assert!(
+                    !task.contains("$ARGUMENTS"),
+                    "a bare placeholder is substituted even when it is empty: {task}"
+                );
+            }
+            other => panic!("expected the skill's task, got {other:?}"),
+        }
+        assert!(
+            dispatched.try_recv().is_err(),
+            "the invocation is the whole request"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, cx| app.composer_draft(cx)),
+            "",
+            "the command line is consumed"
+        );
+        assert_eq!(
+            shell.read_with(cx, |app, _| user_rows(app)),
+            vec!["/gui-demo".to_string()],
+            "the transcript keeps what the reader typed, not the skill body"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A command line typed in full — arguments and all — is the same
+    /// invocation as taking the row, which is how the terminal's Enter reads it.
+    #[gpui_kit::test]
+    fn a_typed_skill_command_carries_its_arguments(cx: &mut gpui_kit::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui_kit::AppContext as _;
+        use gpui_kit::component::Root;
+        use gpui_kit::{px, size};
+        use tact_protocol::UserCommand;
+
+        cx.update(gpui_kit::init);
+
+        let root = demo_workspace("skill-args");
+        let (commands, mut dispatched) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionHandle::new("test-session".to_string(), commands);
+        let slot: Rc<RefCell<Option<gpui_kit::Entity<super::TactApp>>>> =
+            Rc::new(RefCell::new(None));
+        let captured = slot.clone();
+        let workdir = root.clone();
+        let _handle = cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
+            let shell = cx.new(|cx| super::TactApp::with_workspace(window, cx, Some(workdir)));
+            shell.update(cx, |app, _| app.session = Some(session));
+            shell.update(cx, |app, cx| {
+                app.composer.update(cx, |state, cx| {
+                    state.set_value("/gui-demo fix auth", window, cx)
+                });
+                app.submit(window, cx);
+            });
+            *captured.borrow_mut() = Some(shell.clone());
+            Root::new(shell, window, cx)
+        });
+        let shell = slot.borrow().clone().expect("the window built the shell");
+
+        match dispatched.try_recv() {
+            Ok(UserCommand::SubmitTask(task)) => {
+                assert!(
+                    task.contains("Apply fix auth it."),
+                    "the command line's arguments reach the agent: {task}"
+                );
+                assert!(
+                    !task.contains("$ARGUMENTS"),
+                    "the placeholder is consumed, not passed on: {task}"
+                );
+            }
+            other => panic!("expected the skill's task, got {other:?}"),
+        }
+        assert_eq!(
+            shell.read_with(cx, |app, _| user_rows(app)),
+            vec!["/gui-demo fix auth".to_string()],
+            "the transcript keeps the whole command line"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The user rows a shell has drawn, in order.
+    fn user_rows(app: &super::TactApp) -> Vec<String> {
+        app.conversation
+            .rows()
+            .iter()
+            .filter_map(|row| match row {
+                transcript::TranscriptRow::User { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A workspace holding one skill, written the way the agent reads it.
+    fn demo_workspace(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("tact-gui-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".tact/skills/gui-demo")).unwrap();
+        std::fs::write(
+            root.join(".tact/skills/gui-demo/SKILL.md"),
+            "---\nname: gui-demo\ndescription: A demo skill\n---\n\nApply $ARGUMENTS it.\n",
+        )
+        .unwrap();
+        root
     }
 
     /// An unrecognized `/name` is prompt text, not an error.

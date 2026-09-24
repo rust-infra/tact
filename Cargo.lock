@@ -9204,6 +9204,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tact",
  "tact-session",
  "tact_llm",
  "tact_protocol",
