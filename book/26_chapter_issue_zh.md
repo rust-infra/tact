@@ -29,6 +29,23 @@
 
 ---
 
+## 1. 2026-09-24 — 桌面端 `@` 列表是一个键盘面板，Escape 也归它
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/shell.rs`（`completion_draft`、`suggestions`、`move_suggestion`、`take_highlighted_suggestion`、completion 拦截器、`insert_composer_text`、`prompt_composer`）；`crates/tact-gui/tests/shell.rs` |
+
+**现象 / 动机：** 补全列表只能用鼠标操作。上/下键移动的是草稿里的光标而不是列表行；Enter 往消息里插换行，而不是选中读者正看着的那一行；而读者本能用来关掉弹层的 Escape，在这里变成了停止正在跑的一轮。`@` 按钮另有自己的毛病：`set_value` 会把光标留在原处，所以在空草稿上插入 `@` 后光标停在偏移 0，下一个按键落在 `@` **前面** —— 那就不是触发符了。
+
+**决策：** 列表打开期间，上/下/Escape/Enter 归列表所有。composer 的拦截器先于 keymap 运行（`cx.intercept_keystrokes`，因此文本区根本收不到这个键、光标也不会动），并且**只在真的消费了该键时**才 `stop_propagation` —— 草稿里没有触发符时这些键原样穿过，Enter 照旧发送。键盘所在的行用 `toggled` 绘制，于是上/下键与鼠标对"Enter 会取哪一行"的看法一致；Enter 同时在文本区自己的 `InputEvent::PressEnter` 上处理，所以行的优先级高于发送。`insert_composer_text` 现在把光标放到它所追加内容的末尾。
+
+列表的两份状态 —— 高亮行与 Escape 的关闭 —— 都以它们被决定时的**草稿**为键（`completion_draft`），而不是挂在编辑事件上：文本区通过 IME 路径（`replace_and_mark_text_in_range`）上报输入，而那条路径**不 emit `InputEvent::Change`**，所以"靠事件复位"实际上永远不会触发。`suggestions()` 因此改为 `&mut self`，在这个所有消费方本来都会经过的地方比对草稿。
+
+**改后行为：** 输入 `@` 后按上/下键会移动高亮；Enter 插入该行的 `@path`，且不会送到会话；Escape 关掉列表但不动草稿，下一个按键就会把它叫回来，高亮从第一行开始。列表最多容纳 64 行、可见八行，其余靠滚动，且它的 id 仍能被测试取到（用 `overflow_y_scroll`，而不是会替换掉整个元素的 scrollbar 包装）。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`suggestions`、`move_suggestion`、`take_highlighted_suggestion`、`insert_composer_text`、`prompt_composer`）；`crates/tact-gui/tests/shell.rs`（`the_completion_list_is_driven_from_the_keyboard`、`escape_puts_the_completion_list_away`）；`crates/tui/src/handlers/file_picker.rs`（桌面端对齐的终端选择器）
+
 ## 1. 2026-09-24 — 桌面端 `@` 支持逐层浏览目录
 
 | 字段 | 值 |

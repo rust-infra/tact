@@ -4521,6 +4521,102 @@ fn the_empty_transcript_focuses_the_composer(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// The completion list is a keyboard surface, not only a pointer one: Up/Down
+/// move the highlight and Enter takes the row it is on, the way the terminal's
+/// picker works.
+#[gpui_kit::test]
+fn the_completion_list_is_driven_from_the_keyboard(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the preview shell is created with its window");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-mention", cx);
+        window.render_frame(cx);
+
+        let first = window
+            .find("composer-suggestion-0")
+            .label()
+            .expect("the first row has a label")
+            .to_string();
+        let second = window
+            .find("composer-suggestion-1")
+            .label()
+            .expect("the second row has a label")
+            .to_string();
+        assert_ne!(
+            first, second,
+            "the preview workspace holds more than one entry"
+        );
+
+        window.press("down", cx);
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+
+        let draft = app.update(cx, |app, cx| app.composer_draft(cx));
+        assert!(
+            draft.contains(second.trim_start_matches('@')),
+            "Enter took the row the keyboard was on ({second:?}), got {draft:?}"
+        );
+    })
+    .unwrap();
+}
+
+/// Escape puts the list away without touching the draft, and the next keystroke
+/// asks for it back.
+#[gpui_kit::test]
+fn escape_puts_the_completion_list_away(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    cx.update(tact_gui::commands_init);
+    let mut app: Option<Entity<TactApp>> = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the shell entity is captured");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("composer-mention", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("composer-suggestions").is_some());
+
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-suggestions").is_none(),
+            "Escape hides the list"
+        );
+        // Escape belongs to the list, not to the field: the trigger it was
+        // opened for is still in the draft, waiting to be typed on.
+        assert_eq!(
+            app.update(cx, |app, cx| app.composer_draft(cx)),
+            "@",
+            "Escape leaves the draft alone"
+        );
+
+        // Back to the field, then type: the list is a function of the draft,
+        // so the next keystroke is what asks for it again.
+        window.click("prompt-composer-input", cx);
+        window.input("s", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("composer-suggestions").is_some(),
+            "typing asks for the list again"
+        );
+    })
+    .unwrap();
+}
+
 /// An attachment chip's remove button drops that chip.
 ///
 /// The chip only exists once a file is attached, so the click walk reaches the

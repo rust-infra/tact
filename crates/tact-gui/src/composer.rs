@@ -115,8 +115,13 @@ pub(crate) fn suggestions(draft: &str, index: &FileIndex) -> Vec<Suggestion> {
     }
 }
 
-/// How many rows the completion popover shows.
-const SUGGESTION_LIMIT: usize = 8;
+/// How many rows the completion popup can hold.
+///
+/// The popup shows eight at a time and scrolls the rest; the ceiling is only
+/// here so a directory with thousands of children cannot build a list of
+/// thousands of elements. The terminal's picker scrolls a whole tree, so this
+/// is deliberately well above one screen.
+const SUGGESTION_LIMIT: usize = 64;
 
 /// Up to [`SUGGESTION_LIMIT`] entries below the directory the query names.
 ///

@@ -29,6 +29,23 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-24 — The desktop `@` list is a keyboard surface, and Escape belongs to it
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/shell.rs` (`completion_draft`, `suggestions`, `move_suggestion`, `take_highlighted_suggestion`, the completion interceptor, `insert_composer_text`, `prompt_composer`); `crates/tact-gui/tests/shell.rs` |
+
+**Symptom / motivation:** The completion list was pointer-only. Up/Down moved the caret inside the draft instead of walking rows, Enter inserted a newline into the message instead of taking the row the reader was looking at, and Escape — the key a reader reaches for to put a popup away — stopped the running turn. The `@` button had its own defect: `set_value` leaves the caret where it was, so on the empty draft the inserted `@` left the caret at offset 0 and the next keystroke landed *before* it, which is not a trigger.
+
+**Decision:** While the list is up it owns Up/Down/Escape/Enter. A composer interceptor runs before the keymap (`cx.intercept_keystrokes`, so the text area never sees the key and the caret does not move) and calls `stop_propagation` only for a key it actually consumed — with no trigger in the draft the same keys fall through untouched, so Enter still submits. The row the keyboard is on is drawn with `toggled`, so Up/Down and the pointer agree about what Enter would take; Enter is also handled on the text area's own `InputEvent::PressEnter`, so a row takes precedence over sending. `insert_composer_text` now puts the caret at the end of the draft it appended to.
+
+Both pieces of list state — the highlighted row and Escape's dismissal — are keyed to the **draft** they were decided on (`completion_draft`), not to an edit event: the text area reports typing through its IME path (`replace_and_mark_text_in_range`), which emits no `InputEvent::Change`, so an event-driven reset silently never fired. `suggestions()` is now `&mut self` and compares the draft there, which is the one place every consumer already goes through.
+
+**Behavior after:** Typing `@` and pressing Up/Down moves the highlight; Enter inserts that row's `@path` and nothing reaches the session; Escape puts the list away and leaves the draft alone, and the next keystroke asks for it back with the highlight at the top. The list holds up to 64 rows with eight visible and the rest reached by scroll, and its id stays reachable from tests (`overflow_y_scroll`, not the scrollbar wrapper that replaces the element).
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`suggestions`, `move_suggestion`, `take_highlighted_suggestion`, `insert_composer_text`, `prompt_composer`); `crates/tact-gui/tests/shell.rs` (`the_completion_list_is_driven_from_the_keyboard`, `escape_puts_the_completion_list_away`); `crates/tui/src/handlers/file_picker.rs` (the terminal picker the desktop matches)
+
 ## 1. 2026-09-24 — The desktop `@` completion walks directories
 
 | Field | Value |

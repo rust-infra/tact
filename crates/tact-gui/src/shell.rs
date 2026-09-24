@@ -23,7 +23,7 @@ use gpui_kit::component::{
     command::{Command, CommandState},
     dialog::DialogFooter,
     h_flex,
-    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState, RopeExt as _, Textarea, TextareaState},
     message_scroller::{MessageScroller, MessageScrollerState},
     notification::Notification,
     popover::Popover,
@@ -398,6 +398,24 @@ pub struct TactApp {
     /// `layout_prefs` can persist it; `apply_layout` restores it on the next
     /// launch.
     theme_mode: ThemeMode,
+    /// The completion row the keyboard is on: an index into the list
+    /// [`TactApp::suggestions`] returns for the current draft.
+    suggestion_index: usize,
+    /// Whether Escape hid the completion list for the current trigger.
+    ///
+    /// A draft edit clears it: the reader asked the list away once, not for
+    /// good, and typing again is a new request for it.
+    suggestions_dismissed: bool,
+    /// The draft [`TactApp::suggestion_index`] and
+    /// [`TactApp::suggestions_dismissed`] were decided against.
+    ///
+    /// The list is a function of the draft, and so are the two decisions that
+    /// travel with it, so both belong to the draft they were made on: a
+    /// different draft starts over at the top with the list back. Comparing
+    /// the draft is deliberate — the text area reports typing through its IME
+    /// path, which emits no `InputEvent::Change`, so an edit event is not a
+    /// signal this can rely on.
+    completion_draft: Option<String>,
     /// Sidebar column width, in rems. The prototype default until the user
     /// drags the divider; persisted through [`Self::layout_store`].
     sidebar_width: Rems,
@@ -438,6 +456,7 @@ pub struct TactApp {
     /// rewrites the developer's real window arrangement.
     layout_store: LayoutStore,
     _composer_subscription: Subscription,
+    _completion_subscription: Subscription,
 }
 
 /// Session id the desktop shell should reopen on launch.
@@ -895,9 +914,42 @@ impl TactApp {
                     secondary: false,
                 } = event
                 {
-                    this.submit(window, cx);
+                    // A completion row takes the Enter: the reader is choosing
+                    // from the list, not sending the draft.
+                    if !this.take_highlighted_suggestion(window, cx) {
+                        this.submit(window, cx);
+                    }
                 }
             });
+
+        // The completion list is a keyboard surface too: the terminal drives
+        // its picker entirely from the keyboard, and a reader who just typed a
+        // trigger should not have to reach for the pointer. Like the terminal
+        // interceptor above, this runs before the keymap so Up/Down reach the
+        // list instead of moving the caret.
+        let completion_focus = composer.read(cx).focus_handle(cx);
+        let completion_owner = cx.weak_entity();
+        let completion_subscription = cx.intercept_keystrokes(move |event, window, cx| {
+            if !completion_focus.is_focused(window) {
+                return;
+            }
+            let key = event.keystroke.key.as_str();
+            if !matches!(key, "up" | "down" | "escape" | "enter") {
+                return;
+            }
+            let (window, cx) = (window, cx);
+            let consumed = completion_owner
+                .update(cx, |app, cx| match key {
+                    // Enter is the list's while it is up: the reader is
+                    // choosing a row, not asking for a new line.
+                    "enter" => app.take_highlighted_suggestion(window, cx),
+                    key => app.move_suggestion(key, cx),
+                })
+                .unwrap_or(false);
+            if consumed {
+                cx.stop_propagation();
+            }
+        });
 
         let (session, pump) = match live {
             Some((handle, streams)) => {
@@ -944,6 +996,9 @@ impl TactApp {
             detail: transcript::TranscriptDetail::Normal,
             follow_tail: true,
             theme_mode: theme::default_mode(),
+            suggestion_index: 0,
+            suggestions_dismissed: false,
+            completion_draft: None,
             sidebar_width: SIDEBAR_WIDTH,
             work_pane_width: WORK_PANE_WIDTH,
             zoom_rem: layout::ZOOM_DEFAULT,
@@ -958,6 +1013,7 @@ impl TactApp {
             elapsed_ticking: false,
             layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
+            _completion_subscription: completion_subscription,
         }
     }
 
@@ -2567,6 +2623,58 @@ impl TactApp {
         }
     }
 
+    /// The completion rows for the current draft, empty once Escape hid them.
+    ///
+    /// Also the one place that notices the draft moved on: the keyboard's row
+    /// and Escape's dismissal are put back for a draft they were not decided
+    /// on (see [`TactApp::completion_draft`]). Every path that reads the list —
+    /// drawing it, walking it with Up/Down, taking a row with Enter — comes
+    /// through here first, so the caller never sees the previous draft's
+    /// decisions.
+    fn suggestions(&mut self, cx: &App) -> Vec<composer::Suggestion> {
+        let draft = self.composer.read(cx).value().to_string();
+        if self.completion_draft.as_deref() != Some(draft.as_str()) {
+            self.completion_draft = Some(draft.clone());
+            self.suggestion_index = 0;
+            self.suggestions_dismissed = false;
+        }
+        if self.suggestions_dismissed {
+            return Vec::new();
+        }
+        composer::suggestions(&draft, &self.state.file_index)
+    }
+
+    /// Move the completion highlight, or hide the list on Escape.
+    ///
+    /// Returns whether the key belonged to the list, so the caller can stop it
+    /// from reaching the text area: a reader stepping through completions is
+    /// not moving the caret.
+    fn move_suggestion(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let count = self.suggestions(cx).len();
+        if count == 0 {
+            return false;
+        }
+        match key {
+            "escape" => self.suggestions_dismissed = true,
+            "down" => self.suggestion_index = (self.suggestion_index + 1) % count,
+            "up" => self.suggestion_index = (self.suggestion_index + count - 1) % count,
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// Take the highlighted row. `false` when the list has nothing to give.
+    fn take_highlighted_suggestion(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let count = self.suggestions(cx).len();
+        if count == 0 {
+            return false;
+        }
+        let index = self.suggestion_index.min(count - 1);
+        self.accept_suggestion(index, window, cx);
+        true
+    }
+
     /// Apply a file or skill completion selected from the inline suggestion list.
     fn accept_suggestion(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.composer.read(cx).value().to_string();
@@ -3480,8 +3588,18 @@ impl TactApp {
         } else {
             format!("{draft} {text}")
         };
-        self.composer
-            .update(cx, |state, cx| state.set_value(value, window, cx));
+        self.composer.update(cx, |state, cx| {
+            state.set_value(value, window, cx);
+            // `set_value` leaves the caret where it was — the start, for the
+            // empty draft a mention button starts from — so the next keystroke
+            // landed *before* the `@` and stopped it being a trigger. An
+            // insertion that appends belongs at the end.
+            let end = {
+                let text = state.text();
+                text.offset_to_position(text.len_chars())
+            };
+            state.set_cursor_position(end, window, cx);
+        });
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -3907,11 +4025,14 @@ impl Render for TactApp {
 
         // Boxed so the borrow of `cx` ends here: both work-pane placements and
         // the bottom nest need `cx` again in the same expression.
+        let suggestions = self.suggestions(cx);
         let composer_inputs = ComposerInputs {
             composer: &self.composer,
             model_filter: &self.model_filter,
             session: &self.state,
             attachments: &self.attachments,
+            suggestions: &suggestions,
+            suggestion_index: self.suggestion_index,
         };
         let transcript_column = transcript(
             self.conversation.rows(),
@@ -6298,6 +6419,10 @@ struct ComposerInputs<'a> {
     model_filter: &'a Entity<InputState>,
     session: &'a SessionState,
     attachments: &'a [Attachment],
+    /// Completion rows for the current draft, already filtered by Escape.
+    suggestions: &'a [composer::Suggestion],
+    /// Which of them the keyboard is on.
+    suggestion_index: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -6376,6 +6501,8 @@ fn transcript(
 ) -> impl IntoElement {
     let ComposerInputs {
         composer,
+        suggestions,
+        suggestion_index,
         model_filter,
         session,
         attachments,
@@ -6597,6 +6724,8 @@ fn transcript(
             model_filter,
             session,
             attachments,
+            suggestions,
+            suggestion_index,
             cx,
         ));
 
@@ -7575,6 +7704,8 @@ fn prompt_composer(
     model_filter: &Entity<InputState>,
     session: &SessionState,
     attachments: &[Attachment],
+    suggestions: &[composer::Suggestion],
+    suggestion_index: usize,
     cx: &mut Context<TactApp>,
 ) -> impl IntoElement {
     let running = session.running;
@@ -7584,7 +7715,6 @@ fn prompt_composer(
         (IconName::ArrowUp, "Send message")
     };
     let draft = composer.read(cx).value().to_string();
-    let suggestions = composer::suggestions(&draft, &session.file_index);
     let owner = cx.weak_entity();
     let add_owner = owner.clone();
     let model_owner = owner.clone();
@@ -8199,6 +8329,8 @@ fn prompt_composer(
     }
 
     if !suggestions.is_empty() {
+        /// Rows shown before the list starts scrolling instead of growing.
+        const VISIBLE_ROWS: usize = 8;
         let mut list = v_flex()
             .w_full()
             .gap_0p5()
@@ -8219,18 +8351,32 @@ fn prompt_composer(
                 (composer::SuggestionKind::File, false) => IconName::File,
                 (composer::SuggestionKind::Skill, _) => IconName::Asterisk,
             };
+            // The keyboard's row is drawn as the chosen one, so Up/Down and
+            // the pointer agree about what Enter would take.
+            let highlighted = index == suggestion_index.min(suggestions.len().saturating_sub(1));
             list = list.child(
                 Button::new(SharedString::from(format!("composer-suggestion-{index}")))
                     .icon(icon)
                     .label(label)
                     .ghost()
                     .compact()
+                    .toggled(highlighted)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.accept_suggestion(index, window, cx);
                     })),
             );
         }
-        body = body.child(list);
+        // `max_h`, not a fixed height: a short list keeps its own size, a long
+        // one stops at eight rows and scrolls instead of covering the
+        // transcript. A directory can hold far more rows than that.
+        // `overflow_y_scroll`, not `…scrollbar`: the scrollbar wrapper replaces
+        // the element, and with it the id the completion list is reached by
+        // (tests, and anything else that looks it up). The list still scrolls
+        // under the wheel.
+        body = body.child(
+            list.max_h(rems(VISIBLE_ROWS as f32 * 1.75))
+                .overflow_y_scroll(),
+        );
     }
 
     body = body
