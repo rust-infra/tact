@@ -29,6 +29,156 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-24 — Restored reasoning reads as finished, not still arriving
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/transcript.rs` (`TranscriptRow::Thinking`); `crates/tact-gui/src/session.rs` (`ThinkingChunk::Started` / `Delta` / `Finished`, `load_history`) |
+
+**Symptom / motivation:** After a restart, a session's reasoning cards came back titled **"Thinking…"** with the live shimmer — they looked like they were still streaming and never settled. `TranscriptRow::Thinking` used one field, `duration_seconds: None`, for two different states ("still arriving" and "restored, and there is no timing to show"), and the renderer read liveness off it: `let live = duration_seconds.is_none()`. Every restored row was therefore handed to `Progressive::running`, and gpui-ai's title picks `(Running, _) => "Thinking…"` before it ever looks at the duration.
+
+**Decision:** Give the row an explicit `live` flag. The live path sets it on `Started` and on the delta that opens a row, and `Finished` clears it as it writes the duration; `load_history` says `false` outright. `duration_seconds` goes back to meaning only "how long", so a restored row renders as `Progressive::complete` and lands on gpui-ai's `"Thoughts"` title instead of claiming to be in flight.
+
+**Behavior after:** Reopening a session shows settled reasoning cards — no shimmer, no "Thinking…", and the body stays as the reader left it (restored rows are still expanded). A live turn is unchanged. Regression: the restored-row test asserts `live: false` while the streaming test asserts `live: true`.
+
+**Pointers:** `crates/tact-gui/src/transcript.rs` (`TranscriptRow::Thinking::live`); `crates/tact-gui/src/session.rs` (`apply` for `ThinkingChunk`, `load_history`); gpui-ai `crates/gpui-ai/src/thinking.rs` (the title match that reads `ProgressState`)
+
+## 1. 2026-09-24 — A pending approval lives inside the call that raised it
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | gpui-ai `crates/gpui-ai/src/tool_call.rs` (`ToolCall::children`, header padding); `crates/tact-gui/src/transcript.rs` (`render_row`, `render_tool_group`, `tool_call_element`); `crates/tact-gui/src/shell.rs` (`permission_approval_card`) |
+
+**Symptom / motivation:** A pending permission gate rendered *outside* the invocation card — as a sibling below it, in the same block — so it read as a card parked next to the tool rather than as part of it. The ask form reads differently only because `ask_user` is itself a tool: its prompt is the invocation's own content. Separately, every card's header carried 8px above and below, so a column of tool rows looked like a stack of boxes.
+
+**Decision:** `ToolCall` gained the hook `ToolGroup` already had — `children`, rendered inside the card below its own body and visible while it is collapsed, because that content is usually why the card is on screen. Tact's `render_row` and `render_tool_group` now take an optional tail, and the shell hands the pending panel to the card instead of stacking it underneath. Hosted that way, the permission card drops its top frame (border and top radius) exactly as an answered approval row and the multi-select ask form already do; the host's `overflow_hidden` clips the bottom corners. The header's vertical padding drops one step (`spacing.sm` → `spacing.xs`), re-measured into the catalog (`tool-calls` 650 → 618, hero 726 → 710).
+
+**Behavior after:** A pending approval or question appears inside the card of the call that raised it, with the card's own frame around both. Tool rows are 8px shorter each, and gpui-ai's catalog carries the new heights. A request whose tool is no longer the last item (or a transcript with no card to host it) still renders as a trailing panel, unchanged.
+
+**Pointers:** gpui-ai `crates/gpui-ai/src/tool_call.rs` (`ToolCall::children`, the `tool-call-toggle` header); `crates/tact-gui/src/transcript.rs` (`render_row` tail, `render_tool_group` tail, `tool_call_element`); `crates/tact-gui/src/shell.rs` (`nested_panel`, `request_panel`, `permission_approval_card`); `crates/tact-gui/Cargo.toml` (gpui-ai rev `5a63a69`)
+
+## 1. 2026-09-24 — Switching sessions keeps the model and its window
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`opening_state`, `TactApp::adopt`, `TactApp::build`) |
+
+**Symptom / motivation:** After switching to another session, the status bar's `% context` read `0%` for the rest of the run and the model chip fell back to "Provider default". `adopt` rebuilt `SessionState` from scratch with only the workdir, branch and permission mode set, so everything else landed on `SessionState::default()`: `context_window` is `0` there — and a zero window renders as `0%` by construction — and `model` is `None`.
+
+**Decision:** Extract the state a session starts from into `opening_state(workdir, live)`, used by both the launch path (`build`) and the adopt path. `live` gates the config read because only a live shell installs the process config: `tact::config::settings()` panics otherwise, which is why the offline constructors must not reach for it.
+
+**Behavior after:** A shell that opens a session at launch and one that adopts a session later start from the same state, so `% context` and the model chip stay correct across switches. An offline shell (preview, tests) still starts with no model and a zero window, as before.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`opening_state`, `TactApp::build`, `TactApp::adopt`); `crates/tact-gui/src/session.rs` (`context_percent`)
+
+## 1. 2026-09-24 — The desktop client remembers its appearance
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/layout.rs` (`LayoutPrefs`); `crates/tact-gui/src/shell.rs` (`TactApp::set_theme_mode`, `layout_prefs`, `apply_layout`, the Appearance rows); `crates/tact-gui/src/theme.rs` |
+
+**Symptom / motivation:** The light/dark mode was never written anywhere: all three switches (title bar, command palette, Settings) called `theme::activate` / `theme::toggle` and nothing else, so every launch came back on `default_mode()` — dark. The Appearance page's other control, "Follow streaming output", only touched memory too; it did not even call `persist_layout`. `Show reasoning` and the interface font were the only appearance items that survived a restart.
+
+**Decision:** Appearance choices belong to the layout document. `LayoutPrefs` gains `theme_mode: Option<ThemeMode>` and `follow_tail: bool`. The mode is an `Option` so "never chosen" stays distinct from "chose dark": without that, an existing document would flip a dark shell to the framework's light default the first time it is read. Every switch now goes through `TactApp::set_theme_mode` (mirror the mode, activate it, `persist_layout`), and the two toggles decide their target from the **live** theme rather than the mirror — otherwise a mode changed by any other path would flip the wrong way. `theme::toggle` is gone: it had no callers left.
+
+**Behavior after:** Switching light/dark, and the follow-the-stream switch, survive a restart alongside the font, zoom, pane widths and preset. A document written before these keys existed keeps the dark opening and following enabled, exactly as it behaved then.
+
+**Pointers:** `crates/tact-gui/src/layout.rs` (`LayoutPrefs::theme_mode`, `LayoutPrefs::follow_tail`); `crates/tact-gui/src/shell.rs` (`set_theme_mode`, `layout_prefs`, `apply_layout`, the `show-thinking` / `follow-tail` rows); `crates/tact-gui/tests/shell.rs` (`the_appearance_switches_round_trip_through_the_layout`)
+
+## 1. 2026-09-24 — Reopened sessions keep their reasoning
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact_llm/src/openai/responses/history.rs` (`visible_text`, `reasoning_text`); `crates/tact_llm/src/openai/responses/normalize.rs`; `crates/tact-session/src/history.rs` |
+
+**Symptom / motivation:** Restarting the desktop client and reopening a session showed no reasoning cards, while the live turn had streamed them fine. A Responses reasoning item carries its text in two places: OpenAI's models fill `summary`, and a compatible endpoint (DeepSeek's responses mode) fills `content[].reasoning_text` and leaves `summary` empty. The streaming path folds either delta into one trace, but normalization — which builds the block that gets **persisted** — read only `summary`. For a DeepSeek-shaped item that stored `ContentBlock::Thinking { thinking: "", signature: "<state>" }`, and the redraw then skipped it: a transcript drops an empty reasoning block as "nothing to draw".
+
+**Decision:** Extract the item's text once, as `history::visible_text`, and use it for the persisted block; add `history::reasoning_text(signature)` so a redraw can recover text that only exists inside a signature, and call it from `tact_session::history` when a stored block's `thinking` is empty. Existing sessions therefore redraw correctly without being re-run.
+
+**Behavior after:** A reasoning card survives a restart for both provider shapes. Sessions written by an older build — where the text lives only in the signature — recover it on reopen instead of dropping the card, and the reasoning replayed back to a chat-completions provider is no longer empty.
+
+**Pointers:** `crates/tact_llm/src/openai/responses/history.rs` (`visible_text`, `reasoning_text`); `crates/tact_llm/src/openai/responses/normalize.rs` (`OutputItem::Reasoning`); `crates/tact_llm/src/openai/responses/stream.rs` (the two reasoning delta events the live path already folded); `crates/tact-session/src/history.rs` (`block`)
+
+## 1. 2026-09-24 — `bash_nice` reaches background tasks
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/utils/process.rs`; `crates/tact/src/background.rs` (`start`, `run`, `run_background_process`); `crates/tact/src/tool/bash.rs`; `crates/tact/src/tool/background_run.rs`; `config.example.toml` |
+
+**Symptom / motivation:** `[tools] bash_nice` was documented as keeping the interface responsive during CPU-heavy commands, but only the `bash` tool applied it. `background_run` put its shell in a fresh process group — for cancellation — and did nothing else, so the commands that actually run long (a `cargo test`, a build) ran at the inherited priority and made the window that started them unresponsive.
+
+**Decision:** Apply the same scheduling hint to both. `set_process_group_priority` moved out of `tool::bash` into `utils::process`; `background_run` threads `ctx.bash_nice` through `BackgroundManager::start` / `run` down to the spawn, where it is applied right after the process-group id is captured — the same point, for the same reason, as the bash tool. The hint stays best-effort: a group that cannot be reniced still runs, because a scheduling preference is not worth failing a tool call over.
+
+**Behavior after:** A background task's whole process group runs at the configured `bash_nice` (default `10`, `0` leaves it at the inherited priority), so a background compile yields to the interface that started it. The bash tool is unchanged. `config.example.toml` now says the key covers both, and a test asserts the priority on a real spawned task by running `sleep 0.2; nice` and reading the reported value back.
+
+**Pointers:** `crates/tact/src/utils/process.rs` (`set_process_group_priority`); `crates/tact/src/background.rs` (`BackgroundManager::start`, `run_background_process`, `a_background_task_runs_at_the_configured_priority`); `crates/tact/src/tool/background_run.rs`; `config.example.toml` (`[tools] bash_nice`)
+
+## 1. 2026-09-24 — The desktop status bar carries a turn clock
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/shell.rs` (`status_bar`, `turn_clock_label`, `start_elapsed_tick`, `spawn_pump`); `crates/tact-gui/src/session.rs` (`format_elapsed_clock`, `task_started_at`) |
+
+**Symptom / motivation:** A running turn had no elapsed readout anywhere in the desktop client — its duration appeared once, inside the finished `Task complete …` line. The terminal has always shown `⏱ mm:ss` in its bottom bar, so the same turn was visibly running in one front end and silently running in the other. The gap was not only cosmetic: GPUI draws on demand, so a clock also needs something to redraw a turn that is sitting silent between stream chunks.
+
+**Decision:** A `status-elapsed` chip, placed after the turn counter (`status-turns`, the terminal's own order) and rendered only while a turn is in flight. `dispatch` stamps `SessionState::task_started_at`; every turn-ending update (`TaskComplete`, `TaskCancelled`, `Error`) clears it, so the chip cannot outlive the work it measures. The label is `mm:ss` — `h:mm:ss` past the hour — because it advances once a second, unlike the frozen `format_task_duration`, which reads better inside the completion sentence but changes shape every minute. A one-second tick loop repaints the window while the turn runs; it arms itself on the first prompt and ends itself the moment `running` clears, so an idle window holds no timer. A session whose event stream closes also clears `running` and the stamp, since no turn-ending update is coming for it.
+
+**Behavior after:** Submitting a prompt shows `turn N · 00:00` in the status bar, counting up once a second until `TaskComplete`, `TaskCancelled`, or `Error` removes the chip. The terminal's `⏱ mm:ss` and the desktop `mm:ss` now measure the same span. A window with no turn in flight arms no timer, and the clock cannot survive into the next turn.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`status_bar`, `turn_clock_label`, `start_elapsed_tick`, `spawn_pump` teardown); `crates/tact-gui/src/session.rs` (`format_elapsed_clock`, `AgentUpdate::TaskComplete` / `TaskCancelled` / `Error`); `crates/agent_tui_kit/src/render/bar.rs` (the terminal's `format_turn_timing`)
+
+## 1. 2026-09-24 — Edit and Write cards show their change
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/tool/diff.rs`; `crates/tact/src/tool/metadata.rs` (`DetailPolicy`); `crates/tact/src/agent/tool_dispatch.rs` (`tool_detail_content`); `crates/tact/src/tool/edit_file.rs` / `write_file.rs`; `crates/protocol/src/agent.rs` (`ToolDetailKind`); `crates/tact-gui/src/session.rs` (`StepFinished`, `set_tool_output`) |
+
+**Symptom / motivation:** Two halves of one gap. Expanding an `Edit` (or `Write`) card in the desktop client opened onto an empty body, because a card's body is fed by `ToolProgress` — which a slow tool streams while it runs, and which a tool that finishes in one shot never emits. And the `StepResult::detail` those tools *did* report was the raw input field (`new_text`, `content`), not a diff: the write badge counts `+`/`-` lines, so it had nothing to count, and the Diff pane's fallback for an untracked or non-repository file printed plain text under a header that promised a diff.
+
+**Decision:** Give a file-changing tool's detail a diff shape, and let the card read it. `DetailPolicy::UnifiedDiff { old, new }` names the two input fields; `crate::tool::diff::fragment` renders them with an LCS walk into `git diff`'s line grammar (`-` removed, `+` added, a space for unchanged context) minus the `@@` header, which a fragment of an input field cannot name. `edit_file` diffs `old_text` → `new_text`; `write_file` passes `old: None`, so its content is all additions. The protocol carries the same shape as `ToolDetailKind::UnifiedDiff`. The desktop client then fills a card's body from `result.detail` on `StepFinished` when the body is still empty — a card that streamed its output keeps the stream, which is what the reader was watching.
+
+**Behavior after:** An `Edit` card opens onto the lines it replaced and the lines it wrote, with unchanged context between them, and carries a real `+N −M` badge; a `Write` card lists its content as additions. The Diff pane's non-git fallback shows the same diff instead of the raw field. The TUI reads the same `StepResult::detail`, so it gained the diff body too. Fields that are absent from the tool input render as an empty fragment, which the detail drops rather than showing as an empty card.
+
+**Pointers:** `crates/tact/src/tool/diff.rs` (`fragment`); `crates/tact/src/tool/metadata.rs` (`DetailPolicy::UnifiedDiff`); `crates/tact/src/agent/tool_dispatch.rs` (`tool_detail_content`); `crates/tact-gui/src/session.rs` (`Conversation::set_tool_output`); `crates/tact-gui/src/transcript.rs` (`diff_line_counts`, `tool_call_element`); `crates/protocol/src/agent.rs` (`ToolDetailKind::UnifiedDiff`)
+
+## 1. 2026-09-24 — The project footer's action renders at button size
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`prompt_composer`); `crates/tact-gui/tests/shell.rs` |
+
+**Symptom / motivation:** The composer's `Open project…` button drew its label at `text_base` (16 px) in a 32 px box — several steps larger than the `text_xs` project name and path beside it in the same footer row. The intent was the small control, and it already called `.compact()`; in gpui-component `compact()` only shrinks padding (`self.compact = true`), while the label's size comes from `button_text_size(self.size)` with `Size::Medium` → `text_base()`. A `.text_size(...)` on the button cannot win that either: the label container sets its own size, so the outer style never reaches it.
+
+**Decision:** Use `Size::XSmall` — the component's own small button, `text_xs` (12 px) in a 20 px box — rather than `compact()`, which under `XSmall` would only add a minimum width.
+
+**Behavior after:** The footer's action matches the `text_xs` line it belongs to, and a component button's label size is only ever set through `with_size`, never through a style override.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`prompt_composer`, `composer-open-project`); `crates/tact-gui/tests/shell.rs` (`the_composer_controls_use_the_prototype_boxes`); `gpui-component` `src/button/button.rs` (`compact`, `button_text_size`), `src/sizing.rs` (`Size::XSmall`)
+
+## 1. 2026-09-24 — The desktop usage ring reports context-window consumption
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs`; `crates/tact-gui/src/pane.rs`; `crates/tact-gui/src/session.rs`; `crates/tact-session/src/builder.rs` |
+
+**Symptom / motivation:** The composer's usage ring, the status bar's `% context` chip, the Stats pane, and the task-complete summary all computed `prompt / (prompt + completion)`. That is the prompt's share of one request, not how much of the context window is spent: a turn that emitted few tokens (or only a tool call) pushed the figure to 99%, and the next longer answer dropped it again, so the number moved between requests with no user input at all. The prototype's own ring is titled `42% of context window used`.
+
+**Decision:** Divide the last request's `total` (prompt plus completion — what the window actually holds) by the configured `agent.model_context_window`, truncating toward zero; a window of `0` keeps its "unknown" meaning and reads `0%`. That is the same pair the TUI's `ctx 4% 45K/1M` meter reads, so the two front ends agree. The window reaches the desktop client through a new `tact_session::builder::configured_context_window()`, shaped like `configured_model_params`, and `session::context_percent` is the one computation the four readouts share.
+
+**Behavior after:** The ring, the status-bar chip, the Stats pane, and the task-complete line all show `last request total / model_context_window`. `100` appears only once the context really has filled the window, and the percentage no longer tracks how long the model's last answer happened to be. The ring's accessible name and the Settings "Usage" row read `used / window tok`, and the preview seeds 84,000 of 200,000 so the prototype's `42%` still renders.
+
+**Pointers:** `crates/tact-gui/src/session.rs` (`SessionState::context_window`, `context_percent`, `TaskComplete` summary); `crates/tact-gui/src/shell.rs` (`prompt_composer`, `format_usage`, status bar); `crates/tact-gui/src/pane.rs` (`stats`); `crates/tact-session/src/builder.rs` (`configured_context_window`); `docs/design/tact-desktop-prototype.html` (`.ring`)
+
 ## 1. 2026-09-22 — Desktop transcript rendering moves to gpui-ai components
 
 | Field | Value |

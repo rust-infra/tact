@@ -29,6 +29,156 @@
 
 ---
 
+## 1. 2026-09-24 — 恢复出来的思考读起来是"已完成"，而不是"仍在到达"
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/transcript.rs`（`TranscriptRow::Thinking`）；`crates/tact-gui/src/session.rs`（`ThinkingChunk::Started` / `Delta` / `Finished`、`load_history`） |
+
+**现象 / 动机：** 重启后重新打开的会话里，思考卡片的标题变成 **"Thinking…"** 并带着运行中的流光 —— 看起来像还在流式接收、永不落定。根因是 `TranscriptRow::Thinking` 用一个字段 `duration_seconds: None` 同时表示两种状态（"仍在到达"与"恢复自历史、没有时长可显示"），而渲染层直接从它推断是否在运行：`let live = duration_seconds.is_none()`。于是每一行恢复出来的思考都交给了 `Progressive::running`，而 gpui-ai 的标题在 `(Running, _) => "Thinking…"` 这一支就先命中了，根本轮不到看时长。
+
+**决策：** 给该行一个明确的 `live` 标志。实时路径在 `Started` 与"开启该行的 delta"时置位，`Finished` 在写入时长的同时清零；`load_history` 直接给 `false`。`duration_seconds` 退回只表示"时长"，因此恢复的行渲染为 `Progressive::complete`，标题落到 gpui-ai 的 `"Thoughts"` 分支，不会再声称自己还在进行中。
+
+**改后行为：** 重开会话看到的是已落定的思考卡片 —— 没有流光、没有 "Thinking…"，正文保持读者离开时的样子（恢复的行仍然展开）。实时回合行为不变。回归保护：恢复行的测试断言 `live: false`，流式路径的测试断言 `live: true`。
+
+**指针：** `crates/tact-gui/src/transcript.rs`（`TranscriptRow::Thinking::live`）；`crates/tact-gui/src/session.rs`（`ThinkingChunk` 的 `apply`、`load_history`）；gpui-ai `crates/gpui-ai/src/thinking.rs`（读取 `ProgressState` 的标题匹配）
+
+## 1. 2026-09-24 — 待决策的授权框回到发起它的那次调用内部
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | gpui-ai `crates/gpui-ai/src/tool_call.rs`（`ToolCall::children`、header padding）；`crates/tact-gui/src/transcript.rs`（`render_row`、`render_tool_group`、`tool_call_element`）；`crates/tact-gui/src/shell.rs`（`permission_approval_card`） |
+
+**现象 / 动机：** 待决策的 permission 授权框渲染在工具卡**外面** —— 同一块里、卡片下方 —— 读起来像"工具旁边另外停了一张卡"。ask 表单看起来不同，只是因为 `ask_user` 本身就是工具：它的提问就是那次调用的内容。另外每张卡的标题行上下各留 8px，一列工具卡看着像一摞盒子。
+
+**决策：** `ToolCall` 获得了 `ToolGroup` 早已有的钩子 —— `children`，渲染在卡片自身正文之下，且在卡片收起时依然可见（那通常正是卡片出现在屏幕上的原因）。tact 的 `render_row` 与 `render_tool_group` 因此接受一个可选的 tail，由 shell 把待处理面板交给卡片，而不是叠在它下面。以这种方式被宿主时，permission 卡片去掉顶部边框与顶圆角 —— 与已回答的 approval 行、多选 ask 表单完全一致；宿主卡片的 `overflow_hidden` 会裁掉底部圆角。标题行的纵向留白同步降一档（`spacing.sm` → `spacing.xs`），并重新写回 catalog（`tool-calls` 650 → 618，hero 726 → 710）。
+
+**改后行为：** 待决策的授权或提问出现在发起它的那张调用的卡片内部，外框是卡片自己的框。工具行每行矮 8px，gpui-ai 的 catalog 带着新的高度。如果请求所属的工具已不是最后一项（或转录里没有可承载它的卡片），仍按原来的尾部面板渲染，行为不变。
+
+**指针：** gpui-ai `crates/gpui-ai/src/tool_call.rs`（`ToolCall::children`、`tool-call-toggle` 标题行）；`crates/tact-gui/src/transcript.rs`（`render_row` 的 tail、`render_tool_group` 的 tail、`tool_call_element`）；`crates/tact-gui/src/shell.rs`（`nested_panel`、`request_panel`、`permission_approval_card`）；`crates/tact-gui/Cargo.toml`（gpui-ai rev `5a63a69`）
+
+## 1. 2026-09-24 — 切换会话不再丢模型与上下文窗口
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`opening_state`、`TactApp::adopt`、`TactApp::build`） |
+
+**现象 / 动机：** 切换到另一个会话后，底栏的 `% context` 在本次运行剩余时间里恒为 `0%`，模型 chip 退回 "Provider default"。`adopt` 是**从零重建** `SessionState` 的，只填了 workdir、branch 和 permission mode，其余全部落到 `SessionState::default()` —— 其中 `context_window` 是 `0`（零窗口按定义就渲染成 `0%`），`model` 是 `None`。
+
+**决策：** 把"会话起始状态"抽成 `opening_state(workdir, live)`，启动路径（`build`）与切换路径（`adopt`）共用。`live` 用来门控配置读取：只有 live 外壳才会安装进程配置，否则 `tact::config::settings()` 会 panic —— 这正是 offline 构造器不能去读它的原因。
+
+**改后行为：** 启动时打开会话的外壳，与之后切换会话的外壳，从同一个状态出发，因此 `% context` 与模型 chip 在切换前后都正确。offline 外壳（preview、测试）仍和以前一样从"无模型、零窗口"开始。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`opening_state`、`TactApp::build`、`TactApp::adopt`）；`crates/tact-gui/src/session.rs`（`context_percent`）
+
+## 1. 2026-09-24 — 桌面端记住自己的外观设置
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/layout.rs`（`LayoutPrefs`）；`crates/tact-gui/src/shell.rs`（`TactApp::set_theme_mode`、`layout_prefs`、`apply_layout`、Appearance 各设置行）；`crates/tact-gui/src/theme.rs` |
+
+**现象 / 动机：** 明暗模式从来没有写进任何地方：三个入口（标题栏、命令面板、设置页）都只调 `theme::activate` / `theme::toggle`，于是每次启动都回到 `default_mode()` —— 暗色。Appearance 页的另一个控件 "Follow streaming output" 同样只改内存，连 `persist_layout()` 都没调。当时只有 `Show reasoning` 和界面字体两项能跨重启保留。
+
+**决策：** 外观选择属于 layout 文档。`LayoutPrefs` 新增 `theme_mode: Option<ThemeMode>` 和 `follow_tail: bool`。模式用 `Option`，是为了让"从未选过"区别于"选了 dark"：否则旧文档在被读取的第一次就会把一个暗色外壳翻成框架默认的亮色。所有切换收敛到 `TactApp::set_theme_mode`（写镜像 + 激活 + `persist_layout`），而两个开关判定目标模式时读**实时**主题而不是镜像 —— 否则经其他路径改过的模式会被翻向反方向。`theme::toggle` 已删除（不再有调用者）。
+
+**改后行为：** 明暗切换与 follow-the-stream 开关，和字体、缩放、面板宽度、预设一样跨重启保留。在这两个键存在之前写下的文档，仍保持暗色开局与跟随开启，与当时的行为一致。
+
+**指针：** `crates/tact-gui/src/layout.rs`（`LayoutPrefs::theme_mode`、`LayoutPrefs::follow_tail`）；`crates/tact-gui/src/shell.rs`（`set_theme_mode`、`layout_prefs`、`apply_layout`、`show-thinking` / `follow-tail` 两行）；`crates/tact-gui/tests/shell.rs`（`the_appearance_switches_round_trip_through_the_layout`）
+
+## 1. 2026-09-24 — 重开会话不再丢思考内容
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact_llm/src/openai/responses/history.rs`（`visible_text`、`reasoning_text`）；`crates/tact_llm/src/openai/responses/normalize.rs`；`crates/tact-session/src/history.rs` |
+
+**现象 / 动机：** 重启桌面端并重新打开会话后，thinking 卡片全部消失，而实时的那一轮显示正常。Responses 的 reasoning item 有两个文本载体：OpenAI 的模型填 `summary`，兼容端点（DeepSeek 的 responses 模式）填 `content[].reasoning_text` 而让 `summary` 为空。流式路径把两种 delta 都折进同一条 trace，但**归一化**（也就是真正落库的那一步）只读 `summary`。于是 DeepSeek 形状的 item 存下来的是 `ContentBlock::Thinking { thinking: "", signature: "<state>" }`，重放时被当作"无可绘制内容"跳过 —— 转录会丢弃空的 reasoning 块。
+
+**决策：** 把 item 的文本提取抽成 `history::visible_text`，持久化的块用它；再加 `history::reasoning_text(signature)`，让重放能从旧的、只存在 signature 里的文本中恢复，并在 `tact_session::history` 里于存储块的 `thinking` 为空时调用它。于是**已存在的会话无需重跑**就能正确重绘。
+
+**改后行为：** 两种 provider 形状的思考卡片都能在重启后保留。旧版本写入的会话（文本只存在于 signature 中）在重开时会被恢复而不是丢弃卡片；回传给 chat-completions 类 provider 的 reasoning 也不再为空。
+
+**指针：** `crates/tact_llm/src/openai/responses/history.rs`（`visible_text`、`reasoning_text`）；`crates/tact_llm/src/openai/responses/normalize.rs`（`OutputItem::Reasoning`）；`crates/tact_llm/src/openai/responses/stream.rs`（实时路径已折叠的两个 reasoning delta 事件）；`crates/tact-session/src/history.rs`（`block`）
+
+## 1. 2026-09-24 — `bash_nice` 现在也作用于后台任务
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/utils/process.rs`；`crates/tact/src/background.rs`（`start`、`run`、`run_background_process`）；`crates/tact/src/tool/bash.rs`；`crates/tact/src/tool/background_run.rs`；`config.example.toml` |
+
+**现象 / 动机：** `[tools] bash_nice` 的定位是"CPU 密集命令运行时让界面保持响应"，但只有 `bash` 工具真正应用了它。`background_run` 只是把 shell 放进新的进程组（为了取消），别的什么都没做，于是真正耗时的命令（`cargo test`、构建）以继承的优先级满速运行，把启动它们的窗口卡住。
+
+**决策：** 两者用同一个调度提示。`set_process_group_priority` 从 `tool::bash` 移到 `utils::process`；`background_run` 把 `ctx.bash_nice` 经 `BackgroundManager::start` / `run` 透传到 spawn，在捕获进程组 id 之后立即应用 —— 与 bash 工具同一位置、同一理由。该提示保持 best-effort：设置失败的命令照常运行，调度偏好不值得让一次工具调用失败。
+
+**改后行为：** 后台任务的整个进程组按配置的 `bash_nice` 运行（默认 `10`；`0` 表示保持继承的优先级），后台编译会让位给启动它的界面。bash 工具行为不变。`config.example.toml` 已注明该键同时覆盖两者；另有一个测试通过真实任务运行 `sleep 0.2; nice` 并读回打印值来断言优先级。
+
+**指针：** `crates/tact/src/utils/process.rs`（`set_process_group_priority`）；`crates/tact/src/background.rs`（`BackgroundManager::start`、`run_background_process`、`a_background_task_runs_at_the_configured_priority`）；`crates/tact/src/tool/background_run.rs`；`config.example.toml`（`[tools] bash_nice`）
+
+## 1. 2026-09-24 — 桌面端状态栏加上回合计时器
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/shell.rs`（`status_bar`、`turn_clock_label`、`start_elapsed_tick`、`spawn_pump`）；`crates/tact-gui/src/session.rs`（`format_elapsed_clock`、`task_started_at`） |
+
+**现象 / 动机：** 运行中的回合在桌面端没有任何耗时读数 —— 时长只在结束后的 `Task complete …` 一行里出现过一次。终端端一直在底栏显示 `⏱ mm:ss`，于是同一个回合在一个前端看得见在跑、在另一个前端却在无声运行。这不只是观感问题：GPUI 是按需重绘的，所以要让时钟走字，还得有东西在"流式输出沉默"期间重绘窗口。
+
+**决策：** 新增 `status-elapsed` chip，放在回合计数器（`status-turns`，与终端同样的顺序）之后，且只在回合进行中渲染。`dispatch` 写下 `SessionState::task_started_at`；每个结束回合的更新（`TaskComplete`、`TaskCancelled`、`Error`）都会清掉它，所以这个 chip 不会比它度量的工作活得更久。文案用 `mm:ss`（超过一小时为 `h:mm:ss`），因为它是每秒推进的；写死的 `format_task_duration` 更适合放进完成语句里，但它每分钟变一次形状。一个 1 秒的 tick 循环在回合运行期间重绘窗口，它由第一条 prompt 武装、在 `running` 清除的瞬间自我结束，所以空闲窗口不持有定时器。事件流关闭的会话也会清掉 `running` 与起始时间戳 —— 因为它永远等不到结束回合的更新。
+
+**改后行为：** 提交 prompt 后状态栏出现 `turn N · 00:00`，每秒 +1，直到 `TaskComplete`、`TaskCancelled` 或 `Error` 把 chip 移除。终端端的 `⏱ mm:ss` 与桌面端的 `mm:ss` 度量的是同一段时间。没有回合在跑的窗口不武装任何定时器，时钟也不会存活到下一个回合。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`status_bar`、`turn_clock_label`、`start_elapsed_tick`、`spawn_pump` 的收尾）；`crates/tact-gui/src/session.rs`（`format_elapsed_clock`、`AgentUpdate::TaskComplete` / `TaskCancelled` / `Error`）；`crates/agent_tui_kit/src/render/bar.rs`（终端的 `format_turn_timing`）
+
+## 1. 2026-09-24 — Edit 与 Write 卡片显示实际改动
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/tool/diff.rs`；`crates/tact/src/tool/metadata.rs`（`DetailPolicy`）；`crates/tact/src/agent/tool_dispatch.rs`（`tool_detail_content`）；`crates/tact/src/tool/edit_file.rs` / `write_file.rs`；`crates/protocol/src/agent.rs`（`ToolDetailKind`）；`crates/tact-gui/src/session.rs`（`StepFinished`、`set_tool_output`） |
+
+**现象 / 动机：** 同一个缺口的两半。桌面端展开 `Edit`（或 `Write`）卡片时正文是空的，因为卡片的正文由 `ToolProgress` 喂入 —— 那是慢工具运行时流式发出的，而一次就结束的工具从不发 progress。同时这些工具报告的 `StepResult::detail` 是原始输入字段（`new_text`、`content`）而不是 diff：write badge 数的是 `+`/`-` 行，于是没东西可数；Diff pane 对未跟踪文件或非 git 仓库的回退路径，则在"diff"标题下打印纯文本。
+
+**决策：** 让改文件类工具的 detail 具备 diff 形态，并让卡片读它。`DetailPolicy::UnifiedDiff { old, new }` 指定两个输入字段；`crate::tool::diff::fragment` 用 LCS 把它们渲染成 `git diff` 的行语法（`-` 删除、`+` 新增、空格前缀表示未变上下文），但不带 `@@` 头 —— 输入字段的片段没有文件位置可命名。`edit_file` 对 `old_text` → `new_text` 求 diff；`write_file` 传 `old: None`，于是它的内容是整段新增。协议侧对应的形状是 `ToolDetailKind::UnifiedDiff`。桌面端随后在 `StepFinished` 时，若卡片正文仍为空，就用 `result.detail` 填充 —— 已经流式输出过的卡片保留原有内容，那才是用户当时在看的文本。
+
+**改后行为：** `Edit` 卡片展开后显示被替换的行和写入的行，中间是未变的上下文行，并带上真实的 `+N −M` badge；`Write` 卡片把内容列为新增行。Diff pane 的非 git 回退路径显示同样的 diff，而不再是原始字段。TUI 读同一个 `StepResult::detail`，因此也获得了 diff 正文。工具输入里缺失的字段会渲染成空片段，detail 会直接丢弃它，而不是显示一张空卡片。
+
+**指针：** `crates/tact/src/tool/diff.rs`（`fragment`）；`crates/tact/src/tool/metadata.rs`（`DetailPolicy::UnifiedDiff`）；`crates/tact/src/agent/tool_dispatch.rs`（`tool_detail_content`）；`crates/tact-gui/src/session.rs`（`Conversation::set_tool_output`）；`crates/tact-gui/src/transcript.rs`（`diff_line_counts`、`tool_call_element`）；`crates/protocol/src/agent.rs`（`ToolDetailKind::UnifiedDiff`）
+
+## 1. 2026-09-24 — 项目 footer 的按钮按按钮尺寸渲染
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`prompt_composer`）；`crates/tact-gui/tests/shell.rs` |
+
+**现象 / 动机：** composer 的 `Open project…` 按钮用 `text_base`（16 px）画 label，盒子高 32 px —— 比同一 footer 行里 `text_xs` 的项目名和路径大了好几级。它的本意是小号控件，也确实调了 `.compact()`；但在 gpui-component 里 `compact()` 只缩小 padding（`self.compact = true`），label 的字号来自 `button_text_size(self.size)`，`Size::Medium` → `text_base()`。在按钮上写 `.text_size(...)` 也压不住：label 容器自己设了字号，外层的样式根本传不进去。
+
+**决策：** 改用 `Size::XSmall` —— 组件自带的小号按钮：`text_xs`（12 px）、20 px 高的盒子 —— 而不是 `compact()`；在 `XSmall` 下 `compact()` 只会再加一个最小宽度。
+
+**改后行为：** footer 的动作按钮与它所属的 `text_xs` 那一行同号；组件按钮的 label 字号只能通过 `with_size` 设置，不能用样式覆盖。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`prompt_composer`、`composer-open-project`）；`crates/tact-gui/tests/shell.rs`（`the_composer_controls_use_the_prototype_boxes`）；`gpui-component` `src/button/button.rs`（`compact`、`button_text_size`）、`src/sizing.rs`（`Size::XSmall`）
+
+## 1. 2026-09-24 — 桌面端 usage ring 显示的是上下文窗口占用
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`；`crates/tact-gui/src/pane.rs`；`crates/tact-gui/src/session.rs`；`crates/tact-session/src/builder.rs` |
+
+**现象 / 动机：** composer 的 usage ring、状态栏的 `% context` chip、Stats 面板和任务完成摘要都用 `prompt / (prompt + completion)` 计算。那是"本轮请求里输入占的比例"，不是上下文窗口的占用：模型某一轮只输出很少 token（甚至只发一个工具调用）时这个数字会冲到 99%，下一轮回答长一点又掉回来，于是用户什么都没输入，数字也在请求之间自己变。原型里的 ring 标题写的就是 `42% of context window used`。
+
+**决策：** 用最后一次请求的 `total`（prompt 加 completion —— 窗口真正装着的东西）除以配置的 `agent.model_context_window`，向零截断；窗口为 `0` 时保留其"未知"语义并显示 `0%`。这与 TUI 的 `ctx 4% 45K/1M` 用的是同一对分子分母，两个前端从此一致。窗口值通过新增的 `tact_session::builder::configured_context_window()` 传给桌面端（形状与 `configured_model_params` 相同），四处读数共用 `session::context_percent` 这一个计算。
+
+**改后行为：** ring、状态栏 chip、Stats 面板和任务完成行都显示 `最后一次请求 total / model_context_window`。只有上下文真的占满窗口时才会出现 `100`，百分比不再随模型上一轮回答的长短跳动。ring 的 accessible name 与 Settings 的 "Usage" 行显示 `used / window tok`；preview 播种 84,000 / 200,000，原型里的 `42%` 照旧渲染。
+
+**指针：** `crates/tact-gui/src/session.rs`（`SessionState::context_window`、`context_percent`、`TaskComplete` 摘要）；`crates/tact-gui/src/shell.rs`（`prompt_composer`、`format_usage`、状态栏）；`crates/tact-gui/src/pane.rs`（`stats`）；`crates/tact-session/src/builder.rs`（`configured_context_window`）；`docs/design/tact-desktop-prototype.html`（`.ring`）
+
 ## 1. 2026-09-22 — 桌面转录渲染切换到 gpui-ai 组件
 
 | 字段 | 值 |
