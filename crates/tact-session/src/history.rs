@@ -97,7 +97,21 @@ fn convert(message: Message) -> HistoryMessage {
 fn block(block: ContentBlock) -> Option<HistoryBlock> {
     match block {
         ContentBlock::Text { text } => Some(HistoryBlock::Text(text)),
-        ContentBlock::Thinking { thinking, .. } => Some(HistoryBlock::Thinking(thinking)),
+        ContentBlock::Thinking {
+            thinking,
+            signature,
+        } => {
+            // A session stored before the reasoning text reached this block
+            // keeps it only inside the provider signature. Recovering it is the
+            // difference between redrawing the card and dropping it: an empty
+            // `Thinking` is skipped below as "nothing to draw".
+            let text = if thinking.trim().is_empty() {
+                tact_llm::openai::responses::reasoning_text(&signature).unwrap_or_default()
+            } else {
+                thinking
+            };
+            Some(HistoryBlock::Thinking(text))
+        }
         ContentBlock::ToolUse { id, name, input } => Some(HistoryBlock::ToolUse {
             id,
             name,
@@ -198,6 +212,45 @@ mod tests {
                         .expect("append");
                 }
             });
+    }
+
+    /// A session persisted before reasoning item text reached the visible
+    /// block keeps it only inside the provider signature. Recovering it is the
+    /// difference between redrawing the card and dropping it, because a
+    /// transcript skips an empty `Thinking` as "nothing to draw".
+    #[test]
+    fn a_reopened_session_recovers_reasoning_held_in_the_signature() {
+        let workspace = temp_workspace();
+        let session = "44444444-dddd";
+        let signature = format!(
+            "openai-responses-v1:{}",
+            serde_json::json!({
+                "reasoning": {
+                    "id": "rs_1",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "item text"}],
+                    "status": "completed"
+                },
+                "function_call_item_ids": {}
+            })
+        );
+        write(
+            &workspace,
+            session,
+            vec![Message::new_blocks(
+                Role::Assistant,
+                vec![ContentBlock::Thinking {
+                    thinking: String::new(),
+                    signature,
+                }],
+            )],
+        );
+
+        let messages = history(&workspace, session).expect("history");
+        assert_eq!(
+            messages[0].blocks,
+            vec![HistoryBlock::Thinking("item text".into())]
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use async_openai_responses::types::responses::{
-    OutputItem, OutputMessageContent, OutputStatus, Response, Status, SummaryPart,
+    OutputItem, OutputMessageContent, OutputStatus, Response, Status,
 };
 use tact_protocol::TokenUsageInfo;
 
@@ -115,14 +115,10 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
     for output in &response.output {
         match output {
             OutputItem::Reasoning(reasoning) => {
-                let thinking = reasoning
-                    .summary
-                    .iter()
-                    .map(|part| match part {
-                        SummaryPart::SummaryText(summary) => summary.text.as_str(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
+                // Reading only `summary` stored an empty `Thinking` for a
+                // provider that streams its reasoning as item text, and a
+                // reopened session then drew a card with nothing in it.
+                let thinking = history::visible_text(reasoning);
                 let signature = if reasoning
                     .encrypted_content
                     .as_ref()
@@ -522,6 +518,51 @@ pub(crate) mod tests {
                 "total_tokens": 125
             }
         })
+    }
+
+    /// A compatible endpoint streams reasoning as item `content` and leaves
+    /// `summary` empty. The persisted block still has to carry the text:
+    /// reopening a session redraws from it, and a transcript drops an empty
+    /// reasoning block rather than drawing a card with nothing in it.
+    #[test]
+    fn reasoning_item_text_without_a_summary_is_persisted() {
+        let mut value = completed_response_json();
+        value["output"] = serde_json::json!([{
+            "type": "reasoning",
+            "id": "rs_2",
+            "summary": [],
+            "content": [{"type": "reasoning_text", "text": "item text"}],
+            "encrypted_content": "encrypted-plan",
+            "status": "completed"
+        }]);
+        let response: Response = serde_json::from_value(value).unwrap();
+        let normalized = normalize_response(response).unwrap();
+
+        assert!(matches!(
+            &normalized.blocks[0],
+            ContentBlock::Thinking { thinking, .. } if thinking == "item text"
+        ));
+    }
+
+    /// Both shapes at once: the summary leads, the item text follows.
+    #[test]
+    fn a_summary_and_item_text_are_both_kept() {
+        let mut value = completed_response_json();
+        value["output"] = serde_json::json!([{
+            "type": "reasoning",
+            "id": "rs_3",
+            "summary": [{"type": "summary_text", "text": "summary"}],
+            "content": [{"type": "reasoning_text", "text": "item"}],
+            "encrypted_content": "encrypted-plan",
+            "status": "completed"
+        }]);
+        let response: Response = serde_json::from_value(value).unwrap();
+        let normalized = normalize_response(response).unwrap();
+
+        assert!(matches!(
+            &normalized.blocks[0],
+            ContentBlock::Thinking { thinking, .. } if thinking == "summary\n\nitem"
+        ));
     }
 
     fn response_with_status(status: &str, reason: Option<&str>) -> Response {

@@ -7,6 +7,7 @@ mod stream;
 mod wire;
 
 pub use capabilities::{ResponsesCapabilities, ResponsesToolKind};
+pub use history::reasoning_text;
 pub use request_options::ResponsesRequestOptions;
 
 use std::sync::Arc;
