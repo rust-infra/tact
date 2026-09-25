@@ -2429,6 +2429,10 @@ fn the_composer_option_rows_keep_the_choice_they_set(cx: &mut TestAppContext) {
             Some(false),
             "the previous model row is unchecked"
         );
+        // The row grammar the two single-choice lists below have to match. A
+        // component `Button` centres its label and sizes it from the component
+        // scale, which is what made those panels look unlike this one.
+        let model_row_height = height(window.find("composer-model-gpt-5").bounds());
         dismiss(window, cx);
 
         // Effort.
@@ -2444,8 +2448,25 @@ fn the_composer_option_rows_keep_the_choice_they_set(cx: &mut TestAppContext) {
 
         window.click("composer-effort", cx);
         window.render_frame(cx);
-        assert_eq!(window.find("composer-effort-high").checked(), Some(true));
-        assert_eq!(window.find("composer-effort-auto").checked(), Some(false));
+        assert_eq!(window.find("composer-effort-high").selected(), Some(true));
+        assert_eq!(window.find("composer-effort-auto").selected(), Some(false));
+        assert_eq!(
+            height(window.find("composer-effort-high").bounds()),
+            model_row_height,
+            "an effort row is the same row the model picker draws"
+        );
+        // The list is a keyboard surface: the highlight opens on the value in
+        // force, the arrows move it, and Enter takes the row it lands on.
+        window.press("down", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        notices += 1;
+        assert_eq!(app.update(cx, |app, _| app.transcript_len()), notices);
+        assert_eq!(
+            window.find("composer-effort-xhigh").selected(),
+            Some(true),
+            "the arrow moved the highlight off `high` before Enter took it"
+        );
         dismiss(window, cx);
 
         // Permission.
@@ -2465,12 +2486,29 @@ fn the_composer_option_rows_keep_the_choice_they_set(cx: &mut TestAppContext) {
         window.click("composer-permission", cx);
         window.render_frame(cx);
         assert_eq!(
-            window.find("composer-permission-plan").checked(),
+            window.find("composer-permission-plan").selected(),
             Some(true)
         );
         assert_eq!(
-            window.find("composer-permission-auto").checked(),
+            window.find("composer-permission-auto").selected(),
             Some(false)
+        );
+        assert_eq!(
+            height(window.find("composer-permission-plan").bounds()),
+            model_row_height,
+            "a permission row is the same row the model picker draws"
+        );
+        // The same keyboard contract as the effort list: the highlight opens on
+        // the mode in force, the arrow moves it, and Enter takes the row.
+        window.press("up", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        notices += 1;
+        assert_eq!(app.update(cx, |app, _| app.transcript_len()), notices);
+        assert_eq!(
+            window.find("composer-permission-default").selected(),
+            Some(true),
+            "the arrow moved the highlight off `plan` before Enter took it"
         );
     })
     .unwrap();
@@ -3533,6 +3571,21 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
             window.try_find("composer-usage-panel").is_some(),
             "the context ring opens its own panel"
         );
+        // The panel states its metrics as labelled rows, so the walk can check
+        // what it claims and not only that it opened.
+        for (id, label) in [
+            ("composer-usage-prompt", "Prompt"),
+            ("composer-usage-completion", "Completion"),
+            ("composer-usage-total", "Total"),
+            ("composer-usage-cache", "Cache"),
+            ("composer-usage-reasoning", "Reasoning"),
+        ] {
+            let named = label_of!(id);
+            assert!(
+                named.starts_with(label),
+                "the usage panel lists {label}: {named}"
+            );
+        }
         dismiss_popover(window, cx, "composer-usage-panel");
 
         // The preview opens on a live turn, so this control is the turn's Stop

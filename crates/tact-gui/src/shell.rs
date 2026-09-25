@@ -462,6 +462,14 @@ pub struct TactApp {
     /// path, which emits no `InputEvent::Change`, so an edit event is not a
     /// signal this can rely on.
     completion_draft: Option<String>,
+    /// Which composer popover's list the keyboard is on, if any.
+    ///
+    /// Set while that popover is open. The rows are drawn rather than borrowed
+    /// from `Button`, so the list has no Tab stop and no key handling of its
+    /// own; one highlight on the shell gives it the grammar a menu wants.
+    composer_menu: Option<ComposerMenu>,
+    /// The row that highlight is on: an index into the open menu's rows.
+    composer_menu_index: usize,
     /// Sidebar column width, in rems. The prototype default until the user
     /// drags the divider; persisted through [`Self::layout_store`].
     sidebar_width: Rems,
@@ -503,6 +511,7 @@ pub struct TactApp {
     layout_store: LayoutStore,
     _composer_subscription: Subscription,
     _completion_subscription: Subscription,
+    _menu_subscription: Subscription,
 }
 
 /// Session id the desktop shell should reopen on launch.
@@ -1006,6 +1015,24 @@ impl TactApp {
             }
         });
 
+        // The composer's popovers are keyboard surfaces too, for the same
+        // reason: their rows are drawn, so the component layer gives them no Tab
+        // stop and no key handling. One highlight on the shell serves whichever
+        // list is open, and the list owns the arrows and Enter while it is.
+        let menu_owner = cx.weak_entity();
+        let menu_subscription = cx.intercept_keystrokes(move |event, _window, cx| {
+            let key = event.keystroke.key.as_str();
+            if !matches!(key, "up" | "down" | "home" | "end" | "enter") {
+                return;
+            }
+            let consumed = menu_owner
+                .update(cx, |app, cx| app.move_composer_menu(key, cx))
+                .unwrap_or(false);
+            if consumed {
+                cx.stop_propagation();
+            }
+        });
+
         let (session, pump) = match live {
             Some((handle, streams)) => {
                 let pump = Self::spawn_pump(handle.session_id().to_string(), streams, cx);
@@ -1054,6 +1081,8 @@ impl TactApp {
             suggestion_index: 0,
             suggestions_dismissed: false,
             completion_draft: None,
+            composer_menu: None,
+            composer_menu_index: 0,
             sidebar_width: SIDEBAR_WIDTH,
             work_pane_width: WORK_PANE_WIDTH,
             zoom_rem: layout::ZOOM_DEFAULT,
@@ -1069,6 +1098,7 @@ impl TactApp {
             layout_store: LayoutStore::disabled(),
             _composer_subscription: composer_subscription,
             _completion_subscription: completion_subscription,
+            _menu_subscription: menu_subscription,
         }
     }
 
@@ -2718,6 +2748,33 @@ impl TactApp {
             &slash_command_rows(),
             &self.state.skills,
         )
+    }
+
+    /// Move the open composer popover's highlight, or commit the row it is on.
+    ///
+    /// Returns whether the key belonged to the list, so the interceptor can stop
+    /// it before the keymap sees it. The rows are drawn, so this is the only
+    /// thing that gives them a keyboard identity at all.
+    fn move_composer_menu(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let Some(menu) = self.composer_menu else {
+            return false;
+        };
+        let Some(last) = menu.rows().len().checked_sub(1) else {
+            return false;
+        };
+        match key {
+            "down" => self.composer_menu_index = (self.composer_menu_index + 1).min(last),
+            "up" => self.composer_menu_index = self.composer_menu_index.saturating_sub(1),
+            "home" => self.composer_menu_index = 0,
+            "end" => self.composer_menu_index = last,
+            "enter" => {
+                let row = menu.rows()[self.composer_menu_index.min(last)];
+                menu.commit(row, self, cx);
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
     }
 
     /// Move the completion highlight, or hide the list on Escape.
@@ -7828,6 +7885,72 @@ fn mini_chip(
     chip
 }
 
+/// The composer popovers whose rows the keyboard moves through.
+///
+/// Each one is a list of values to pick from, which is what makes an arrow key
+/// mean "next row" rather than "move the caret". The shell keeps the highlight
+/// for whichever is open, the way [`TactApp::suggestion_index`] serves the
+/// completion popup; the popovers draw their own rows, so nothing in the
+/// component layer would move one for them.
+///
+/// A menu owns its rows here — the value, the words it reads, the id it carries
+/// and what it commits — so its popover draws from the same list the keyboard
+/// walks. Otherwise the row Enter takes could drift from the row that was drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposerMenu {
+    /// The reasoning-effort list.
+    Effort,
+    /// The permission-mode list.
+    Permission,
+}
+
+impl ComposerMenu {
+    /// The values the menu lists, in the order its popover draws them.
+    fn rows(self) -> &'static [&'static str] {
+        match self {
+            Self::Effort => &["auto", "low", "medium", "high", "xhigh", "max"],
+            Self::Permission => &["auto", "default", "plan"],
+        }
+    }
+
+    /// The words a row reads.
+    fn label(self, row: &str) -> String {
+        match self {
+            // The list names the resting state rather than a level.
+            Self::Effort if row == "auto" => "Auto".to_string(),
+            Self::Effort => row.to_string(),
+            // The chip and the status bar name a mode with the same mapping, so
+            // the list asks it rather than carrying its own copy of the words.
+            Self::Permission => permission_mode_label(row).to_string(),
+        }
+    }
+
+    /// The id a row carries, unchanged from when these lists were buttons.
+    fn id(self, row: &str) -> String {
+        match self {
+            Self::Effort => format!("composer-effort-{row}"),
+            Self::Permission => format!("composer-permission-{row}"),
+        }
+    }
+
+    /// Where `value` sits, so the highlight opens on the value in force.
+    fn index_of(self, value: &str) -> Option<usize> {
+        self.rows().iter().position(|row| *row == value)
+    }
+
+    /// Commit a row. Both the pointer and the keyboard come through here.
+    fn commit(self, row: &str, app: &mut TactApp, cx: &mut Context<TactApp>) {
+        match self {
+            // The resting state sends no effort at all.
+            Self::Effort => {
+                let effort = (row != "auto").then(|| row.to_string());
+                app.set_reasoning_effort(effort, cx);
+            }
+            Self::Permission => app.set_permission_mode(row.to_string(), cx),
+        }
+    }
+}
+
 fn menu_action_row(
     id: &'static str,
     icon: IconName,
@@ -7853,6 +7976,50 @@ fn menu_action_row(
         .cursor_pointer()
         .aria_label(label.clone())
         .child(Icon::from(icon).with_size(px(15.)))
+        .child(label)
+        .on_click(on_click)
+}
+
+/// A single-choice row: the grammar the model picker and the font picker use.
+///
+/// The chosen row is marked twice — `aria_selected` for the accessibility tree
+/// and the accent wash plus full-strength ink for the eye — because saying which
+/// value is in force is the list's whole job. The row is drawn rather than
+/// borrowed from `Button`: `Button` centres its content and sizes its label from
+/// the component scale, which is what left these lists looking unlike the rest
+/// of the composer's popovers.
+///
+/// `highlighted` is the keyboard's own mark, worn by the row the arrows are on;
+/// it is deliberately the same wash as the chosen one, because it is where the
+/// reader is, not a second value.
+fn menu_choice_row(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    highlighted: bool,
+    cx: &App,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let label = label.into();
+    let accent = cx.theme().accent;
+    let foreground = cx.theme().foreground;
+    let muted = cx.theme().muted_foreground;
+    h_flex()
+        .id(id.into())
+        .test_support()
+        .w_full()
+        .justify_start()
+        .items_center()
+        .h(rems(1.625))
+        .px(rems(0.5))
+        .rounded(rems(0.375))
+        .text_size(rems(0.6875))
+        .aria_label(label.clone())
+        .aria_selected(selected)
+        .text_color(if selected { foreground } else { muted })
+        .when(selected || highlighted, |this| this.bg(accent))
+        .hover(move |style| style.bg(accent))
+        .cursor_pointer()
         .child(label)
         .on_click(on_click)
 }
@@ -7955,6 +8122,7 @@ fn prompt_composer(
     let add_owner = owner.clone();
     let model_owner = owner.clone();
     let permission_owner = owner.clone();
+    let permission_menu_owner = owner.clone();
     let project_owner = owner.clone();
     let current_model = session
         .model
@@ -7974,7 +8142,6 @@ fn prompt_composer(
         .model
         .as_ref()
         .and_then(|model| model.thinking_budget);
-    let permission_modes = ["auto", "default", "plan"];
     let current_permission = session.permission_mode.clone();
     let muted_foreground = cx.theme().muted_foreground;
     let accent_ink = cx.theme().primary;
@@ -8176,36 +8343,11 @@ fn prompt_composer(
                     let owner = model_owner.clone();
                     let menu = menu.clone();
                     let selected = model == current_model;
-                    let accent = cx.theme().accent;
-                    let foreground = cx.theme().foreground;
-                    let row = h_flex()
-                        .id(SharedString::from(format!(
-                            "composer-model-{}",
-                            model.replace(['/', ':', ' '], "-")
-                        )))
-                        .test_support()
-                        .w_full()
-                        .justify_start()
-                        .items_center()
-                        .h(rems(1.625))
-                        .px(rems(0.5))
-                        .rounded(rems(0.375))
-                        .text_size(rems(0.6875))
-                        .aria_label(model.clone())
-                        .aria_selected(selected)
-                        .text_color(if selected {
-                            foreground
-                        } else {
-                            muted_foreground
-                        })
-                        .when(selected, |this| this.bg(accent))
-                        .hover(move |style| style.bg(accent))
-                        .cursor_pointer()
-                        .child(model.clone())
-                        .on_click(move |_, window, cx| {
-                            menu.update(cx, |state, cx| state.dismiss(window, cx));
-                            let _ = owner.update(cx, |app, cx| app.set_model(model.clone(), cx));
-                        });
+                    let id = format!("composer-model-{}", model.replace(['/', ':', ' '], "-"));
+                    let row = menu_choice_row(id, model.clone(), selected, false, cx, move |_, window, cx| {
+                        menu.update(cx, |state, cx| state.dismiss(window, cx));
+                        let _ = owner.update(cx, |app, cx| app.set_model(model.clone(), cx));
+                    });
                     rows.push(row.into_any_element());
                 }
                 let list = div()
@@ -8265,42 +8407,54 @@ fn prompt_composer(
         });
 
     let effort_owner = owner.clone();
+    let effort_menu_owner = owner.clone();
     let effort_popover = Popover::new("composer-effort-popover")
         .anchor(gpui_kit::Anchor::TopLeft)
+        .on_open_change({
+            let owner = effort_menu_owner;
+            // The highlight opens on the value in force, so Enter without a
+            // move re-commits what the session already runs instead of taking
+            // whatever happens to be at the top.
+            let opening = ComposerMenu::Effort
+                .index_of(current_effort.as_deref().unwrap_or("auto"))
+                .unwrap_or(0);
+            move |open, _, cx| {
+                let _ = owner.update(cx, |app, cx| {
+                    app.composer_menu = open.then_some(ComposerMenu::Effort);
+                    app.composer_menu_index = opening;
+                    cx.notify();
+                });
+            }
+        })
         .trigger(
             MiniTrigger::new("composer-effort")
                 .label(effort_chip_label(current_effort.as_deref()))
                 .tooltip("Reasoning effort"),
         )
-        .content(move |_state, _window, _cx| {
+        .content(move |_state, _window, cx| {
+            let highlighted = effort_owner
+                .upgrade()
+                .map(|app| app.read(cx).composer_menu_index)
+                .unwrap_or(0);
             let mut panel = v_flex()
                 .id("composer-effort-panel")
                 .test_support()
                 .gap_1()
                 .min_w(rems(11.));
-            for effort in [
-                None,
-                Some("low"),
-                Some("medium"),
-                Some("high"),
-                Some("xhigh"),
-                Some("max"),
-            ] {
+            let menu = ComposerMenu::Effort;
+            let current = current_effort.as_deref().unwrap_or("auto");
+            for (index, row) in menu.rows().iter().copied().enumerate() {
                 let owner = effort_owner.clone();
-                let value = effort.map(str::to_string);
-                let label = value.clone().unwrap_or_else(|| "Auto".to_string());
-                let id = format!("composer-effort-{}", label.to_ascii_lowercase());
-                panel = panel.child(
-                    Button::new(id)
-                        .label(label)
-                        .ghost()
-                        .compact()
-                        .toggled(value == current_effort)
-                        .on_click(move |_, _, cx| {
-                            let _ = owner
-                                .update(cx, |app, cx| app.set_reasoning_effort(value.clone(), cx));
-                        }),
-                );
+                panel = panel.child(menu_choice_row(
+                    menu.id(row),
+                    menu.label(row),
+                    current == row,
+                    index == highlighted,
+                    cx,
+                    move |_, _, cx| {
+                        let _ = owner.update(cx, |app, cx| menu.commit(row, app, cx));
+                    },
+                ));
             }
             panel
         });
@@ -8322,31 +8476,47 @@ fn prompt_composer(
 
     let permission_popover = Popover::new("composer-permission-popover")
         .anchor(gpui_kit::Anchor::TopLeft)
+        .on_open_change({
+            let owner = permission_menu_owner;
+            let opening = ComposerMenu::Permission
+                .index_of(&current_permission)
+                .unwrap_or(0);
+            move |open, _, cx| {
+                let _ = owner.update(cx, |app, cx| {
+                    app.composer_menu = open.then_some(ComposerMenu::Permission);
+                    app.composer_menu_index = opening;
+                    cx.notify();
+                });
+            }
+        })
         .trigger(
             MiniTrigger::new("composer-permission")
                 .label(permission_label)
                 .trailing(IconName::ChevronDown)
                 .tooltip("Permission mode"),
         )
-        .content(move |_state, _window, _cx| {
+        .content(move |_state, _window, cx| {
+            let highlighted = permission_owner
+                .upgrade()
+                .map(|app| app.read(cx).composer_menu_index)
+                .unwrap_or(0);
+            let menu = ComposerMenu::Permission;
             let mut panel = v_flex()
                 .id("composer-permission-panel")
                 .test_support()
                 .gap_1();
-            for mode in permission_modes.iter().copied() {
+            for (index, row) in menu.rows().iter().copied().enumerate() {
                 let owner = permission_owner.clone();
-                let value = mode.to_string();
-                panel = panel.child(
-                    Button::new(SharedString::from(format!("composer-permission-{mode}")))
-                        .label(permission_mode_label(mode))
-                        .ghost()
-                        .compact()
-                        .toggled(value == current_permission)
-                        .on_click(move |_, _, cx| {
-                            let _ = owner
-                                .update(cx, |app, cx| app.set_permission_mode(value.clone(), cx));
-                        }),
-                );
+                panel = panel.child(menu_choice_row(
+                    menu.id(row),
+                    menu.label(row),
+                    current_permission == row,
+                    index == highlighted,
+                    cx,
+                    move |_, _, cx| {
+                        let _ = owner.update(cx, |app, cx| menu.commit(row, app, cx));
+                    },
+                ));
             }
             panel
         });
@@ -8389,7 +8559,11 @@ fn prompt_composer(
                             ),
                     ),
             )
-            .content(move |_state, _window, _cx| usage_panel(usage_for_panel.clone()))
+            .content(move |_state, _window, cx| {
+                let muted = cx.theme().muted_foreground;
+                let ink = cx.theme().foreground;
+                usage_panel(usage_for_panel.clone(), muted, ink)
+            })
     });
 
     let mut controls = h_flex()
@@ -8715,30 +8889,100 @@ fn prompt_composer(
         .test_support()
 }
 
-fn usage_panel(usage: Option<tact_protocol::TokenUsageInfo>) -> impl IntoElement {
+/// One metric in the usage popover.
+///
+/// The panel sits beside the composer's pickers, so it borrows their row: 11 px,
+/// full width, and left-aligned, with a fixed muted label column and the value
+/// in the full ink beside it. Left to itself the panel took the default body
+/// size and sized each line to its text, which is what made it read larger and
+/// less ordered than the four popovers next to it.
+///
+/// The two inks are passed in rather than read from `App`: the popover's content
+/// closure cannot return an element that borrows the app it was handed.
+fn usage_value_row(
+    id: &'static str,
+    label: &str,
+    value: String,
+    muted: gpui_kit::Hsla,
+    ink: gpui_kit::Hsla,
+) -> impl IntoElement {
+    let named = SharedString::from(format!("{label}: {value}"));
+    h_flex()
+        .id(id)
+        .test_support()
+        .w_full()
+        .min_w_0()
+        .items_center()
+        .justify_start()
+        .h(rems(1.625))
+        .gap_2()
+        .text_size(rems(0.6875))
+        .aria_label(named)
+        .child(
+            div()
+                .w(rems(4.5))
+                .flex_shrink_0()
+                .text_color(muted)
+                .child(SharedString::from(label.to_string())),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .text_color(ink)
+                .child(SharedString::from(value)),
+        )
+}
+
+fn usage_panel(
+    usage: Option<tact_protocol::TokenUsageInfo>,
+    muted: gpui_kit::Hsla,
+    ink: gpui_kit::Hsla,
+) -> impl IntoElement {
     let usage = usage.unwrap_or_default();
     v_flex()
         .id("composer-usage-panel")
         .test_support()
         .gap_1()
         .min_w(rems(16.))
-        .child(SharedString::from(format!(
-            "Prompt: {} tokens",
-            usage.prompt
-        )))
-        .child(SharedString::from(format!(
-            "Completion: {} tokens",
-            usage.completion
-        )))
-        .child(SharedString::from(format!("Total: {} tokens", usage.total)))
-        .child(SharedString::from(format!(
-            "Cache: {} hit / {} miss",
-            usage.prompt_cache_hit_tokens, usage.prompt_cache_miss_tokens
-        )))
-        .child(SharedString::from(format!(
-            "Reasoning: {} tokens",
-            usage.reasoning_tokens
-        )))
+        .child(usage_value_row(
+            "composer-usage-prompt",
+            "Prompt",
+            format!("{} tokens", usage.prompt),
+            muted,
+            ink,
+        ))
+        .child(usage_value_row(
+            "composer-usage-completion",
+            "Completion",
+            format!("{} tokens", usage.completion),
+            muted,
+            ink,
+        ))
+        .child(usage_value_row(
+            "composer-usage-total",
+            "Total",
+            format!("{} tokens", usage.total),
+            muted,
+            ink,
+        ))
+        .child(usage_value_row(
+            "composer-usage-cache",
+            "Cache",
+            format!(
+                "{} hit / {} miss",
+                usage.prompt_cache_hit_tokens, usage.prompt_cache_miss_tokens
+            ),
+            muted,
+            ink,
+        ))
+        .child(usage_value_row(
+            "composer-usage-reasoning",
+            "Reasoning",
+            format!("{} tokens", usage.reasoning_tokens),
+            muted,
+            ink,
+        ))
 }
 
 /// The prototype's theme toast: the palette that just became active.
@@ -9461,33 +9705,28 @@ fn settings_panel(
                                 })
                                 .read(cx)
                                 .clone();
+                            let current_ui_font = picker_owner
+                                .upgrade()
+                                .and_then(|app| app.read(cx).ui_font.clone());
                             let mut rows = Vec::new();
                             for family in crate::fonts::system_families().iter().take(400) {
                                 let owner = picker_owner.clone();
                                 let family = family.clone();
-                                let accent = cx.theme().accent;
+                                let selected = current_ui_font.as_deref() == Some(family.as_str());
                                 rows.push(
-                                    h_flex()
-                                        .id(SharedString::from(format!("settings-font-{family}")))
-                                        .test_support()
-                                        .w_full()
-                                        .justify_start()
-                                        .items_center()
-                                        .h(rems(1.625))
-                                        .px(rems(0.5))
-                                        .rounded(rems(0.375))
-                                        .text_size(rems(0.6875))
-                                        .text_color(cx.theme().foreground)
-                                        .hover(move |style| style.bg(accent))
-                                        .cursor_pointer()
-                                        .aria_label(family.clone())
-                                        .child(family.clone())
-                                        .on_click(move |_, _, cx| {
+                                    menu_choice_row(
+                                        format!("settings-font-{family}"),
+                                        family.clone(),
+                                        selected,
+                                        false,
+                                        cx,
+                                        move |_, _, cx| {
                                             let _ = owner.update(cx, |app, cx| {
                                                 app.set_ui_font(Some(family.clone()), cx);
                                             });
-                                        })
-                                        .into_any_element(),
+                                        },
+                                    )
+                                    .into_any_element(),
                                 );
                             }
                             let list = div()
