@@ -2863,22 +2863,18 @@ fn a_press_in_the_prompt_box_sends_the_draft(cx: &mut TestAppContext) {
 
 /// Plain Enter in the prompt box takes the same path as the `.send` press.
 ///
-/// The transcript is a virtualized scroller, so the rows a submit appends are
-/// only built once the tail is in view: the assertions scroll to the end first.
-/// Reading `transcript-row-*` without that step reports "missing" for a row the
-/// submit really appended, which is how an earlier probe concluded Enter never
-/// reached the composer at all.
+/// The transcript is a virtualized scroller, so a row is only built once it is
+/// in view — which makes the assertion that the sent row exists also a check
+/// the shell has to earn: a submit has to bring the transcript back to its tail.
+/// An earlier probe that read `transcript-row-*` after Enter, without that,
+/// concluded the draft had never been sent at all.
 #[gpui_kit::test]
 fn the_enter_key_sends_the_draft_like_the_button(cx: &mut TestAppContext) {
     activate_shipped_theme(cx);
-    let mut app = None;
     let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
         let shell = cx.new(|cx| TactApp::new(window, cx));
-        app = Some(shell.clone());
         Root::new(shell, window, cx)
     });
-    let app = app.expect("the shell is created with its window");
-
     let handle = handle.into();
     let mut at_rest = px(0.);
 
@@ -2907,8 +2903,9 @@ fn the_enter_key_sends_the_draft_like_the_button(cx: &mut TestAppContext) {
     })
     .unwrap();
 
-    // The appended rows are below the fold of the virtualized scroller.
-    app.update(cx, |app, cx| app.scroll_transcript_to_end(cx));
+    // The rows a submit appends should be in view without a scroll of our own:
+    // sending is the reader's own action, and the newest prompt is what they
+    // expect to see.
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(
@@ -2927,6 +2924,94 @@ fn the_enter_key_sends_the_draft_like_the_button(cx: &mut TestAppContext) {
             window.find("prompt-composer-input").bounds().size.height,
             at_rest,
             "the submitted draft leaves the prompt box empty behind it"
+        );
+    })
+    .unwrap();
+}
+
+/// Sending a prompt brings the tail back into view even when the reader had
+/// stopped following.
+///
+/// A card expansion stops tail-following — deliberately, so the viewport stays
+/// put while the card grows — and nothing used to put it back: from then on a
+/// submitted prompt landed below the fold and the reader had to pull the
+/// transcript down themselves. The transcript is a virtual list, so the deepest
+/// row it has built is the bottom of what is on screen.
+#[gpui_kit::test]
+fn sending_a_prompt_brings_the_tail_back_into_view(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    let mut app = None;
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::new(window, cx));
+        app = Some(shell.clone());
+        Root::new(shell, window, cx)
+    });
+    let app = app.expect("the shell is created with its window");
+    let handle = handle.into();
+
+    let deepest_row = |cx: &mut TestAppContext| -> usize {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (0..64)
+                .rfind(|index| {
+                    window
+                        .try_find(SharedString::from(format!("transcript-row-{index}")))
+                        .is_some()
+                })
+                .unwrap_or(0)
+        })
+        .unwrap()
+    };
+    let send = |cx: &mut TestAppContext, prompt: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.click("prompt-composer-input", cx);
+            window.render_frame(cx);
+            window.input(prompt, cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+
+    // Enough turns that the transcript is taller than its viewport, so the
+    // list builds a window of rows rather than all of them.
+    for index in 0..20 {
+        send(cx, &format!("Prompt {index}"));
+    }
+    let at_tail = deepest_row(cx);
+    assert!(
+        at_tail > 6,
+        "the thread is taller than the transcript's viewport: {at_tail} rows deep"
+    );
+
+    // The reader goes back to the top of the thread and stops following there,
+    // which is the state a card expansion leaves behind.
+    app.update(cx, |app, cx| app.scroll_transcript_to_top(cx));
+    let at_top = deepest_row(cx);
+    assert!(
+        at_top < at_tail,
+        "the top of the thread is a different window of rows than the tail"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("transcript-row-0").is_some(),
+            "the reader is looking at the top of the thread"
+        );
+    })
+    .unwrap();
+
+    // Sending is not reading: the prompt they just sent comes back into view.
+    send(cx, "Prompt 20");
+    assert!(
+        deepest_row(cx) > at_top,
+        "the send brought the tail back into view"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("transcript-row-0").is_none(),
+            "and let go of the top of the thread"
         );
     })
     .unwrap();

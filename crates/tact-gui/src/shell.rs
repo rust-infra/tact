@@ -3835,6 +3835,13 @@ impl TactApp {
     fn submit_task(&mut self, display: String, task: String, cx: &mut Context<Self>) {
         self.conversation.push_user(display);
         self.record_change(Change::Appended(1), cx);
+        // Sending is the reader's own action, and the prompt they just sent is
+        // what they expect to see, so the transcript comes back to its tail
+        // whatever the follow-streaming setting says. Expanding a card stops
+        // following — deliberately, so the viewport stays put while the card
+        // grows — and nothing used to put it back: from then on a submitted
+        // prompt landed below the fold and the reader had to pull it down.
+        self.scroll_transcript_to_end(cx);
 
         // `SubmitTask` blocks the driver until the in-flight turn finishes, so
         // queueing here keeps Stop responsive instead of stalling the command
