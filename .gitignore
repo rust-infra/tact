@@ -1,5 +1,7 @@
 /target/
 /videos/
+# Packaged build output (deb/rpm/appimage from cargo-packager).
+/dist/
 # Local runtime state (state_store / stream_store), not source.
 /data/
 *.log
