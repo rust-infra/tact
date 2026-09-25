@@ -1920,11 +1920,11 @@ mod lifecycle_tests {
             .lines()
             .find(|l| l.contains("Task stats:"))
             .expect("stats block missing");
-        assert_eq!(stats_line, "[copy]  Task stats:⏱ 00:05");
+        assert_eq!(stats_line, "⎘  Task stats:⏱ 00:05");
     }
 
     #[test]
-    fn task_stats_block_localizes_prefix_and_copy_button() {
+    fn task_stats_block_localizes_the_prefix_and_keeps_the_icon_copy_button() {
         let mut app = make_app();
         app.language = crate::i18n::Language::Chinese;
         app.last_prompt_elapsed_secs = Some(5);
@@ -1942,17 +1942,20 @@ mod lifecycle_tests {
             .lines()
             .find(|l| l.contains("任务统计："))
             .expect("stats block missing");
-        assert_eq!(stats_line, "[复制]  任务统计：⏱ 00:05");
+        // The copy button is an icon, so it does not change with the language.
+        assert_eq!(stats_line, "⎘  任务统计：⏱ 00:05");
     }
 
     #[test]
     fn task_stats_line_detection_covers_all_languages_and_legacy_rows() {
         use crate::widgets::state::is_task_stats_line;
 
+        assert!(is_task_stats_line("⎘  Task stats:⏱ 01:05"));
+        assert!(is_task_stats_line("⎘  任务统计：⏱ 01:05"));
+        // Rows persisted before the icon replaced the label still need their
+        // `[copy]` / `[复制]` affordance (legacy rows keep it at the end).
         assert!(is_task_stats_line("[copy]  Task stats:⏱ 01:05"));
         assert!(is_task_stats_line("[复制]  任务统计：⏱ 01:05"));
-        // Rows persisted before the icon was removed still need `[copy]` support
-        // (legacy rows keep the button at the end).
         assert!(is_task_stats_line("📊 任务统计：⏱ 01:05  [copy]"));
         assert!(!is_task_stats_line("plain answer text"));
     }

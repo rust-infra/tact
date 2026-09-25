@@ -297,7 +297,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         return;
     }
 
-    // Task-stats `[copy]` button: copy this turn's log text. Only clicks that
+    // Task-stats copy button (`⎘`): copy this turn's log text. Only clicks that
     // land inside the button glyphs count — the rest of the row selects text.
     if let Some(item) = app.log.items.get(phys_idx)
         && crate::widgets::state::is_task_stats_line(&item.raw)
@@ -1898,13 +1898,21 @@ mod tests {
         app.log_scroll.visual_start = vec![0, 1, 2, 3];
 
         // Stats row is logical 2 (visual row 2 → mouse row 3). Raw row is
-        // `[copy]  Task stats:⏱ 00:05`; column 3 maps to byte 2, inside the
-        // button glyphs (bytes 0..6). A successful copy appends a notice row.
+        // `⎘  Task stats:⏱ 00:05`, drawn with this kind's 3-column indent, so
+        // the icon glyph itself is mouse column 4 and the button's byte range is
+        // the icon alone (bytes 0..3). A successful copy appends a notice row.
         let before = app.log.items.len();
-        handle_mouse_event(&mut app, mouse_down(3, 3));
+        // One column past the glyph is the separator gap, outside the range.
+        handle_mouse_event(&mut app, mouse_down(5, 3));
+        assert_eq!(
+            app.log.items.len(),
+            before,
+            "the gap after the icon is not the button"
+        );
+        handle_mouse_event(&mut app, mouse_down(4, 3));
         assert!(
             app.log.items.len() > before,
-            "clicking the [copy] button should copy this turn"
+            "clicking the copy icon should copy this turn"
         );
         let last = app.log.items.last().expect("copy notice");
         assert!(
@@ -1923,8 +1931,8 @@ mod tests {
         app.add_task_stats_block();
         app.log_scroll.visual_start = vec![0, 1, 2, 3];
 
-        // Column 15 maps into the "Task stats:" body (byte 11) — outside the
-        // button range (0..6), so no copy notice may be appended.
+        // Column 15 maps into the "Task stats:" body — outside the button
+        // range (bytes 0..3), so no copy notice may be appended.
         let before = app.log.items.len();
         handle_mouse_event(&mut app, mouse_down(15, 3));
         assert_eq!(

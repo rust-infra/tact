@@ -11,20 +11,28 @@ use crate::{
     widgets::state::*,
 };
 
+/// Copy affordances written by older versions (`[copy]` / `[复制]`). Rows they
+/// persisted are re-rendered from `raw`, so they must stay both recognizable
+/// ([`is_task_stats_line`]) and clickable ([`find_task_stats_copy_button`]).
+const LEGACY_TASK_STATS_COPY_BTNS: [&str; 2] = ["[copy]", "[复制]"];
+
+/// Every copy affordance a task-stats row can carry: the current icon, then the
+/// legacy labels. The icon is locale-independent, hence `Language::English` —
+/// one entry, not one per language.
+fn task_stats_copy_buttons() -> impl Iterator<Item = &'static str> {
+    std::iter::once(Messages::by_language(Language::English).task_stats_copy_btn)
+        .chain(LEGACY_TASK_STATS_COPY_BTNS)
+}
+
 /// Returns true for a per-turn stats row in any supported language, including
 /// the legacy `📊 任务统计：` rows persisted before the icon was removed (old
-/// sessions still need the `[copy]` affordance to keep working).
+/// sessions still need the copy affordance to keep working).
 pub(crate) fn is_task_stats_line(raw: &str) -> bool {
     // The copy affordance renders before the stats body; strip it (any
-    // language) before matching the prefix. Rows without a leading button
+    // version) before matching the prefix. Rows without a leading button
     // (the legacy format) are matched as-is.
-    let body = Language::all()
-        .iter()
-        .filter_map(|lang| {
-            raw.strip_prefix(Messages::by_language(*lang).task_stats_copy_btn)
-                .map(str::trim_start)
-        })
-        .next()
+    let body = task_stats_copy_buttons()
+        .find_map(|btn| raw.strip_prefix(btn).map(str::trim_start))
         .unwrap_or(raw);
     Language::all()
         .iter()
@@ -33,13 +41,14 @@ pub(crate) fn is_task_stats_line(raw: &str) -> bool {
 }
 
 /// Byte range `(start, end)` of the clickable copy affordance in a task-stats
-/// raw row, or `None` when no localized button label is present.
+/// raw row, or `None` when no button glyph is present.
+///
+/// The earliest match wins: the affordance leads the row today, while rows
+/// persisted before the icon carried their label at the end.
 pub(crate) fn find_task_stats_copy_button(raw: &str) -> Option<(usize, usize)> {
-    Language::all().iter().find_map(|lang| {
-        let btn = Messages::by_language(*lang).task_stats_copy_btn;
-        let start = raw.find(btn)?;
-        Some((start, start + btn.len()))
-    })
+    task_stats_copy_buttons()
+        .filter_map(|btn| raw.find(btn).map(|start| (start, start + btn.len())))
+        .min_by_key(|(start, _)| *start)
 }
 
 impl App {
@@ -234,9 +243,9 @@ impl App {
     /// Reads the already-frozen `last_prompt_elapsed_secs` and the status-bar
     /// token/model snapshots; deliberately adds no new state (YAGNI — the data
     /// is already collected by `add_task_end_separator` / `TokenUsage` /
-    /// `ModelInfo` updates). A trailing `[copy]` button copies this turn's
-    /// log text (from the previous stats row, or session start, up to but not
-    /// including this stats row).
+    /// `ModelInfo` updates). The leading copy affordance (`⎘`, an icon so it
+    /// needs no translation) copies this turn's log text — from the previous
+    /// stats row, or session start, up to but not including this stats row.
     pub(crate) fn add_task_stats_block(&mut self) {
         let secs = self.last_prompt_elapsed_secs.unwrap_or(0).max(0);
         let mm_ss = format!("{:02}:{:02}", secs / 60, secs % 60);

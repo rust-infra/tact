@@ -32,6 +32,22 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-25 — The task-stats copy button is an icon, not a translated word
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`task_stats_copy_btn`); `crates/tui/src/widgets/state/app/messages.rs` (`is_task_stats_line`, `find_task_stats_copy_button`, `LEGACY_TASK_STATS_COPY_BTNS`); `crates/tui/src/handlers/mouse.rs` (the task-stats click target) |
+
+**Symptom / motivation:** The per-turn stats row led with a translated word — `[copy]` in English, `[复制]` in Chinese — i.e. the only affordance on the row was six columns of prose, and it changed size with the UI language (a two-character CJK label where the English one is six ASCII columns). It is an action, not text: the row's own wording already comes from the prefix (`Task stats:` / `任务统计：`), so the button only needed to say "click me to copy".
+
+**Decision:** `Messages::task_stats_copy_btn` becomes `⎘` (U+2398) in both languages. It is one column wide (the row is drawn with `SystemPlain`'s three-column indent, so the glyph sits at mouse column 4), which keeps the stats block compact, and it is locale-independent — one value instead of two. The legacy `[copy]` / `[复制]` labels stay supported: rows persisted by older versions are re-rendered from `raw`, so both matching (`is_task_stats_line`) and clicking (`find_task_stats_copy_button`) still recognize them. `find_task_stats_copy_button` now scans the current icon plus the two legacy labels and takes the **earliest** match — the affordance leads the row today, whereas old rows carried their label at the end. Rejected: keeping the bracketed word (it buys nothing over the icon and widens with translation) and dropping legacy support (old stats rows would silently lose the copy affordance).
+
+**Behavior after:** A finished turn ends with `⎘  Task stats:⏱ mm:ss · model · N tokens …` in both languages; clicking the glyph copies that turn's log text, and every other column — including the gap right after the glyph — still starts a text selection. Rows written before this change keep their `[copy]` / `[复制]` button and remain clickable. Tests: `tui::widgets::state::app::agent::tests::{task_stats_block_skips_empty_parts,task_stats_block_localizes_the_prefix_and_keeps_the_icon_copy_button,task_stats_line_detection_covers_all_languages_and_legacy_rows}`, `tui::handlers::mouse::tests::{task_stats_copy_only_triggers_inside_button,task_stats_body_click_does_not_copy}`.
+
+---
+
+
 ## 1. 2026-09-25 — A background task's id lives on the card that started it
 
 | Field | Value |

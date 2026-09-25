@@ -32,6 +32,22 @@
 ---
 
 
+## 1. 2026-09-25 — 任务统计行的复制按钮改用图标，不再是需要翻译的词
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`task_stats_copy_btn`）；`crates/tui/src/widgets/state/app/messages.rs`（`is_task_stats_line`、`find_task_stats_copy_button`、`LEGACY_TASK_STATS_COPY_BTNS`）；`crates/tui/src/handlers/mouse.rs`（任务统计行的点击区域） |
+
+**现象 / 动机：** 每轮结束的统计行以一个被翻译过的词开头——英文 `[copy]`、中文 `[复制]`——这行唯一的可点区域是六列散文，而且宽度随界面语言变化（中文两字，英文六列 ASCII）。它表达的是动作而不是文本：行本身的措辞已经由前缀（`Task stats:` / `任务统计：`）承担，按钮只需要说明"点我复制"。
+
+**决策：** `Messages::task_stats_copy_btn` 两种语言统一改为 `⎘`（U+2398）。它只占一列（该行按 `SystemPlain` 的三列缩进绘制，所以字形落在鼠标第 4 列），统计块因此更紧凑，而且与语言无关——一个值取代两个。旧的 `[copy]` / `[复制]` 仍然受支持：老版本写进会话的行会按 `raw` 重新渲染，因此识别（`is_task_stats_line`）与点击（`find_task_stats_copy_button`）都必须认得它们。`find_task_stats_copy_button` 现在扫描当前图标加两个旧标签并取**最靠前**的匹配——按钮今天在行首，而旧行把标签放在行尾。否决的方案：保留带方括号的词（相比图标没有任何收益，还会随翻译变宽）、放弃旧格式兼容（旧统计行会悄悄失去复制入口）。
+
+**变更后行为：** 一轮结束后统计行在两种语言下都渲染为 `⎘  Task stats:⏱ mm:ss · model · N tokens …`；点击字形复制该轮的日志文本，其余任何一列——包括字形后面那个空格——仍然照常开始文本选择。本次改动之前写入的行保留 `[copy]` / `[复制]` 按钮且仍可点击。测试：`tui::widgets::state::app::agent::tests::{task_stats_block_skips_empty_parts,task_stats_block_localizes_the_prefix_and_keeps_the_icon_copy_button,task_stats_line_detection_covers_all_languages_and_legacy_rows}`、`tui::handlers::mouse::tests::{task_stats_copy_only_triggers_inside_button,task_stats_body_click_does_not_copy}`。
+
+---
+
+
 ## 1. 2026-09-25 — 后台任务的 id 就钉在启动它的那张卡片上
 
 | 字段 | 值 |
