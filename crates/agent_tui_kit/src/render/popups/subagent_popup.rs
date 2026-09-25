@@ -239,8 +239,15 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
             label: " scroll ",
         },
     ];
-    let inner =
-        super::render_popup_chrome(frame, popup_area, ctx.theme, &header, None, Some(footer));
+    let inner = super::render_popup_chrome(
+        frame,
+        popup_area,
+        ctx.theme,
+        &header,
+        None,
+        Some(footer),
+        ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
+    );
     let body_area = inner;
 
     let selection_range = selection.and_then(|sel| sel.normalized_non_empty(raw_text));

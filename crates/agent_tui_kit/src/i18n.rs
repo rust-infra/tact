@@ -128,6 +128,8 @@ pub struct Messages {
 
     // ---- 弹窗通用 ----
     pub popup_copy_hint: &'static str,
+    /// Shown in place of the copy hint for a moment after a copy lands.
+    pub popup_copy_done: &'static str,
     pub popup_close_hint: &'static str,
     pub popup_scroll_hint: &'static str,
     pub palette_empty: &'static str,
@@ -424,6 +426,7 @@ impl Messages {
             bottom_permission_auto: "auto",
 
             popup_copy_hint: " [y] Copy ",
+            popup_copy_done: " ✓ Copied ",
             popup_close_hint: " [Esc] Close ",
             popup_scroll_hint: " [j/k] Scroll ",
             palette_empty: "No matching commands",
@@ -703,6 +706,7 @@ impl Messages {
             bottom_permission_auto: "自动",
 
             popup_copy_hint: " [y] 复制 ",
+            popup_copy_done: " ✓ 已复制 ",
             popup_close_hint: " [Esc] 关闭 ",
             popup_scroll_hint: " [j/k] 滚动 ",
             palette_empty: "没有匹配的命令",

@@ -53,6 +53,9 @@ pub struct RenderCtx<'a> {
     pub task_start_time: Option<&'a chrono::DateTime<chrono::Local>>,
     /// Transient flash message text (the expiry `Instant` lives in the app).
     pub flash_msg: Option<&'a str>,
+    /// A copy just landed: popup footers show the confirmation in place of the
+    /// copy hint until the app's expiry passes.
+    pub copy_flash: bool,
     /// Account balance/quota surface; `None` when the host has no account
     /// channel (renders no `¤` segment on the bottom bar).
     pub account: Option<&'a AccountState>,

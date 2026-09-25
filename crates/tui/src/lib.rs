@@ -83,6 +83,7 @@ pub fn parse_voice_keybind(raw: &str) -> Option<(KeyModifiers, KeyCode)> {
 /// Whether the main loop should repaint this frame (mirrors `run_tui` gate).
 pub(crate) fn should_repaint(app: &App) -> bool {
     app.dirty
+        || app.copy_flash_at.is_some()
         || matches!(app.status, Status::Done)
         || !app.tools().active.is_empty()
         || app.voice.is_active()
@@ -359,13 +360,17 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         app.maybe_expire_done_status();
 
         app.maybe_clear_flash_msg();
+        app.maybe_clear_copy_flash();
 
         // Adaptive idle polling interval: adjust the event wait timeout based on state.
         // - Done state: 200ms, frequently check the 2s → Idle transition
         // - Dirty flag set: 10ms, quickly trigger a rerender
         // - Active (Planning/Executing): 150ms to animate spinner
         // - Fully idle: 1000ms, reduce CPU wake frequency
-        let idle_ms = if matches!(app.status, Status::Done) || app.flash_msg.is_some() {
+        let idle_ms = if matches!(app.status, Status::Done)
+            || app.flash_msg.is_some()
+            || app.copy_flash_at.is_some()
+        {
             200u64
         } else if app.dirty {
             10u64

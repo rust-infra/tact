@@ -97,6 +97,7 @@ impl App {
             process_start_time: &self.process_start_time,
             task_start_time: self.task_start_time.as_ref(),
             flash_msg: self.flash_msg.as_ref().map(|(m, _)| m.as_str()),
+            copy_flash: self.copy_flash_at.is_some(),
             account: self.account_rx.as_ref().map(|_| &self.account),
             plan: self.plan().state(),
             input: &self.input,

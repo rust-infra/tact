@@ -32,7 +32,10 @@ use crate::{
     },
     state::{LogItemKind, find_thinking_at_logical, log_indent_at},
     theme::Theme,
-    widgets::tool_widget::TOOL_RUNNING_SPINNER,
+    widgets::{
+        button::{Button, ButtonChrome, ButtonTheme, ButtonVariant},
+        tool_widget::TOOL_RUNNING_SPINNER,
+    },
 };
 
 /// A rendered cancel button for a live async subagent tool card.
@@ -229,19 +232,23 @@ pub fn render_log_panel_pure(
                 if let Some(active) = ctx.tools.active.iter().find(|a| a.phys_idx == phys_idx)
                     && let Some(child_id) = &active.subagent_child_id
                 {
-                    let label = format!("[{}]", msgs.subagent_cancel_btn);
-                    let label_width = label.chars().count() as u16;
+                    // The affordance is drawn by the shared button component, so
+                    // its width is the glyphs — which is exactly what the host
+                    // may click (the rect is recorded below).
+                    let cancel_button =
+                        Button::new(msgs.subagent_cancel_btn, ButtonTheme::from_theme(ctx.theme))
+                            .variant(ButtonVariant::Danger)
+                            .chrome(ButtonChrome::Brackets)
+                            .modifier(Modifier::BOLD);
+                    let button_width = cancel_button.preferred_size().0;
                     let btn_x = area
                         .right()
                         .saturating_sub(right)
-                        .saturating_sub(label_width + 1);
+                        .saturating_sub(button_width + 1);
                     let btn_y = area.y + top + vis_start.saturating_sub(visual_scroll) as u16;
-                    let btn_area = Rect::new(btn_x, btn_y, label_width + 1, 1);
+                    let btn_area = Rect::new(btn_x, btn_y, button_width, 1);
                     if btn_area.bottom() <= area.bottom() {
-                        let style = Style::default()
-                            .fg(ctx.theme.error)
-                            .add_modifier(Modifier::BOLD);
-                        frame.render_widget(Paragraph::new(Span::styled(label, style)), btn_area);
+                        frame.render_widget(cancel_button, btn_area);
                         cancel_buttons.push(SubagentCancelButton {
                             child_id: child_id.clone(),
                             rect: btn_area,

@@ -268,6 +268,7 @@ impl MockShell {
                     model_context_window: 200_000,
                     process_start_time: &chrono::Local::now(),
                     task_start_time: None,
+                    copy_flash: false,
                     flash_msg: None,
                     account: None,
                     plan: &self.plan,

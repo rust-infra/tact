@@ -17,6 +17,8 @@ use crate::{
     widgets::state::*,
 };
 
+/// How long the popup footer shows `✓ Copied` in place of the copy hint.
+const COPY_FLASH_MS: u128 = 1_500;
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
 const STREAMING_INDICATOR: &str = " ▌";
@@ -877,6 +879,18 @@ impl App {
             .is_some_and(|(_, t)| t.elapsed().as_secs() >= 3)
         {
             self.flash_msg = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Clear the copy confirmation after [`COPY_FLASH_MS`] (shared with the
+    /// `run_tui` main loop, which repaints while it is set).
+    pub(crate) fn maybe_clear_copy_flash(&mut self) {
+        if self
+            .copy_flash_at
+            .is_some_and(|t| t.elapsed().as_millis() >= COPY_FLASH_MS)
+        {
+            self.copy_flash_at = None;
             self.dirty = true;
         }
     }
@@ -1947,6 +1961,21 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn task_stats_row_draws_exactly_what_it_stores_as_raw() {
+        // The row is clickable and selectable through `raw` byte offsets, so the
+        // drawn glyphs must stay column-for-column identical to `raw`. The copy
+        // affordance comes from the shared button component — this pins the
+        // coupling that its padding and the row's gap have to keep.
+        let mut app = make_app();
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_stats_block();
+
+        let item = app.log.items.last().expect("stats row");
+        let drawn: String = item.line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(drawn, item.raw);
+    }
+
+    #[test]
     fn task_stats_line_detection_covers_all_languages_and_legacy_rows() {
         use crate::widgets::state::is_task_stats_line;
 
@@ -1982,6 +2011,10 @@ mod lifecycle_tests {
             .rposition(|item| item.raw.contains("Task stats:"))
             .expect("stats");
         app.copy_turn_ending_at_stats(stats_idx);
+        assert!(
+            app.copy_flash_at.is_some(),
+            "the preview-free copy path must also raise the confirmation"
+        );
         let copy_notice = app.log.items.last().expect("copy notice");
         assert!(copy_notice.raw.contains("已复制") || copy_notice.raw.contains("Copied"));
         assert!(!copy_notice.raw.contains("second question"));

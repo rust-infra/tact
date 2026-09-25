@@ -13,6 +13,7 @@ use super::test_harness::{
 };
 use crate::widgets::state::{App, LogItemKind, LogSelection, Status};
 use crate::widgets::tool_widget::TOOL_HEADER_ROWS;
+use agent_tui_kit::widgets::button::Button;
 
 fn seed_many_numbered_lines(app: &mut App, count: usize) {
     for i in 0..count {
@@ -878,4 +879,58 @@ fn heading_rows_carry_no_highlight_band() {
         text.contains("item one") && text.contains("item two"),
         "{text}"
     );
+}
+
+#[test]
+fn subagent_cancel_button_rect_matches_the_drawn_glyphs() {
+    let mut app = make_app();
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "audit the repo",
+        "spawn_subagent",
+        "sub-live",
+        HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
+    )));
+    let mut presentation = ToolPresentationInfo::generic("spawn_subagent");
+    presentation.keep_live = true;
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "sub-live".into(),
+        tool_name: "spawn_subagent".into(),
+        arg_summary: "audit the repo".into(),
+        arg_full: "audit the repo".into(),
+        presentation: presentation.clone(),
+    });
+    // What the async branch sends back while the child keeps running.
+    app.handle_agent_update(AgentUpdate::StepFinished {
+        idx: 0,
+        tool_id: "sub-live".into(),
+        result: StepResult {
+            tool: "spawn_subagent".into(),
+            arg_summary: "audit the repo".into(),
+            arg_full: Some("audit the repo".into()),
+            status: StepStatus::Success,
+            message: "async_launched { child-123 }".into(),
+            detail: None,
+            duration_us: Some(1),
+            permission_label: None,
+            presentation,
+        },
+    });
+
+    let terminal = render_log_panel_terminal(&mut app, 100, 20);
+    let buffer = terminal.backend().buffer();
+    let (col, row) =
+        buffer_cell_of(buffer, "[Cancel]").expect("the live card must draw a [Cancel] button");
+    let areas = &app.mouse.subagent_cancel_btn_areas;
+    assert_eq!(areas.len(), 1, "exactly one live subagent card");
+    let (child_id, rect) = &areas[0];
+    assert_eq!(child_id, "child-123");
+    assert_eq!(rect.y, row, "hit row must be the drawn row");
+    assert_eq!(rect.x, col, "hit area must start at the drawn glyphs");
+    assert_eq!(
+        rect.width,
+        "[Cancel]".chars().count() as u16,
+        "hit area must be exactly the glyphs, not a column wider"
+    );
+    assert!(Button::hit_test(*rect, col, row));
 }

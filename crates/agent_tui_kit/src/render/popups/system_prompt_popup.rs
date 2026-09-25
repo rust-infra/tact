@@ -31,6 +31,7 @@ pub fn render_system_prompt_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx
         &format!(" {} ", popup.title),
         None,
         Some(footer),
+        ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
     );
     // Plain ratatui-markdown render at the popup's content width; the popup
     // scrolls internally so lines wrap at the renderer's max width.

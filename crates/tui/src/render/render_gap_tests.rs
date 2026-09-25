@@ -1069,6 +1069,32 @@ fn flash_msg_persists_within_three_seconds() {
 }
 
 #[test]
+fn copy_flash_expires_after_its_window() {
+    let mut app = make_app();
+    app.copy_flash_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(2_000));
+
+    app.maybe_clear_copy_flash();
+
+    assert!(
+        app.copy_flash_at.is_none(),
+        "a stale confirmation must clear"
+    );
+}
+
+#[test]
+fn copy_flash_persists_within_its_window() {
+    let mut app = make_app();
+    app.copy_flash_at = Some(std::time::Instant::now());
+
+    app.maybe_clear_copy_flash();
+
+    assert!(
+        app.copy_flash_at.is_some(),
+        "a fresh confirmation must stay on screen"
+    );
+}
+
+#[test]
 fn startup_logo_renders_in_full_frame() {
     let mut app = make_app();
     app.add_startup_logo();

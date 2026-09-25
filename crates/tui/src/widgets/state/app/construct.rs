@@ -151,6 +151,7 @@ impl App {
             loading_idx: None,
             language: Language::English,
             flash_msg: None,
+            copy_flash_at: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }

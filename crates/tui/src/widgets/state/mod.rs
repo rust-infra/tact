@@ -286,6 +286,9 @@ pub struct App {
     pub(crate) language: Language,
     /// Brief status bar notification (auto-clears after 3s).
     pub(crate) flash_msg: Option<(String, std::time::Instant)>,
+    /// When the last copy landed; drives the popup footer's `✓ Copied` flash
+    /// (cleared after `COPY_FLASH_MS`).
+    pub(crate) copy_flash_at: Option<std::time::Instant>,
     /// Input box undo stack (max 100, snapshot saved before each change).
     pub(crate) undo_stack: Vec<(String, usize)>,
     /// Input box redo stack.

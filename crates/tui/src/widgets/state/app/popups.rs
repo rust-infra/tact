@@ -27,6 +27,11 @@ impl App {
     }
 
     fn copy_text_inner(&mut self, text: &str, include_preview: bool) {
+        // The copy affordances themselves flash their confirmation (popup
+        // footers render it while this is fresh) — the system-message notice
+        // still lands in the log for the record.
+        self.copy_flash_at = Some(std::time::Instant::now());
+        self.dirty = true;
         let preview: String = text.chars().take(40).collect();
         let copied = |template: &str| {
             if include_preview {
