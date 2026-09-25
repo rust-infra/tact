@@ -442,7 +442,7 @@ pub(crate) trait Renderable {
 | Code detail | double-click code card | `popups/code_popup.rs` |
 | Mermaid diagram / source | double-click rendered Mermaid diagram; opens on the rendered diagram, `Tab` toggles to source | `popups/mermaid_popup.rs` |
 
-Popups typically occupy ~80%×80% of the terminal, record `app.mouse.*_popup_area` for click-outside-to-close, and show `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` hints. `diff_popup` lazy-loads full content via `cached_content` — no file I/O inside hot `render()` paths.
+Popups typically occupy ~80%×80% of the terminal, record `app.mouse.*_popup_area` for click-outside-to-close, and show `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` hints — the tool detail popup prints the raw tool id in front of them (`read_image | y copy | Esc close | j/k scroll`), since its title is a path or a command rather than a tool name. `diff_popup` lazy-loads full content via `cached_content` — no file I/O inside hot `render()` paths.
 
 The tool/file and Thinking detail popups support left-button text selection. Mouse hits map each rendered extended grapheme cluster to byte offsets, so combining and emoji sequences remain indivisible while line numbers, diff gutters, borders, titles, footers, metadata, and other display-only prefixes are excluded. The selection survives popup scrolling; dragging above or below the body clamps to the first or last visible source boundary without auto-scrolling. `y` copies selected original text in tool popups and selected visible text in Thinking popups; without a non-empty selection it copies the popup's complete original content. Code detail popups keep their existing mouse behavior.
 

@@ -825,6 +825,7 @@ mod tests {
             popup_hit_row(7, 10, 6, "omega"),
         ];
         app.tools_mut().popup = Some(DiffPopup {
+            tool_name: None,
             title: "tool output".into(),
             file_path: None,
             git_diff_path: None,
@@ -1162,6 +1163,7 @@ mod tests {
     fn scroll_in_diff_popup_increments_popup_scroll() {
         let mut app = make_app();
         app.tools_mut().popup = Some(DiffPopup {
+            tool_name: None,
             title: "t".into(),
             file_path: None,
             git_diff_path: None,

@@ -62,6 +62,10 @@ impl DiffPopup {
 #[derive(Debug, Clone)]
 pub struct DiffPopup {
     pub title: String,
+    /// Raw tool id (`read_image`, `bash`, …) printed at the front of the bottom
+    /// border, so the popup names the tool it came from even when the title is
+    /// a path or an argument. `None` for popups not opened from a tool block.
+    pub tool_name: Option<String>,
     /// Read content from disk when set.
     pub file_path: Option<String>,
     /// Run `git diff -- <path>` when set (lazy-loaded into cached_content).

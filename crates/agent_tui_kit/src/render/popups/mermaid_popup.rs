@@ -75,7 +75,8 @@ pub fn render_mermaid_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> P
     } else {
         " mermaid (source) ".to_string()
     };
-    let inner = super::render_popup_chrome(frame, popup_area, ctx.theme, &title, Some(footer));
+    let inner =
+        super::render_popup_chrome(frame, popup_area, ctx.theme, &title, None, Some(footer));
 
     let content_height = inner.height as usize;
 

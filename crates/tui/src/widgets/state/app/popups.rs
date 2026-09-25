@@ -325,6 +325,21 @@ impl App {
         self.append_markdown_with_kind(content, LogItemKind::SystemMarkdown);
     }
 
+    /// Show pre-rendered Markdown in the shared read-out popup (`/stats`,
+    /// `/background`).
+    ///
+    /// `InputMode::Normal` because the popup is opened by a command that has
+    /// already consumed the input line: leaving a select/insert mode active
+    /// would put keystrokes into the popup's shadow.
+    pub(crate) fn open_markdown_popup(&mut self, title: String, source: String) {
+        self.system_prompt_popup = Some(SystemPromptPopup {
+            title,
+            source,
+            scroll: 0,
+        });
+        self.input_mode = InputMode::Normal;
+    }
+
     pub(crate) fn append_markdown_with_kind(
         &mut self,
         content: impl Into<String>,
@@ -571,7 +586,20 @@ impl App {
             })
     }
 
+    /// Detail popup for a tool block, with the raw tool id stamped on it so
+    /// every branch below names its source in the bottom border.
     fn popup_from_tool_output(
+        &self,
+        output: &crate::widgets::tool_widget::ToolRenderOutput,
+    ) -> Option<DiffPopup> {
+        let mut popup = self.popup_from_tool_output_inner(output)?;
+        popup.tool_name = Some(output.tool_name.clone());
+        Some(popup)
+    }
+
+    /// Branches of [`Self::popup_from_tool_output`]; `tool_name` here is a
+    /// placeholder that the caller stamps with `output.tool_name`.
+    fn popup_from_tool_output_inner(
         &self,
         output: &crate::widgets::tool_widget::ToolRenderOutput,
     ) -> Option<DiffPopup> {
@@ -586,6 +614,7 @@ impl App {
         if output.phase == ToolPhase::Failed {
             let content = output.detail_full.clone()?;
             return Some(DiffPopup {
+                tool_name: None,
                 title: card_title.unwrap_or_else(|| output.tool_name.clone()),
                 file_path: None,
                 git_diff_path: None,
@@ -603,6 +632,7 @@ impl App {
         match output.visual_kind {
             tact_protocol::ToolVisualKind::FileWrite | tact_protocol::ToolVisualKind::FileRead => {
                 Some(DiffPopup {
+                    tool_name: None,
                     title: if output.arg_full.is_empty() {
                         output.arg_summary.clone()
                     } else {
@@ -638,6 +668,7 @@ impl App {
                     output.arg_full.clone()
                 };
                 Some(DiffPopup {
+                    tool_name: None,
                     title: path.clone(),
                     file_path: None,
                     git_diff_path: Some(path.clone()),
@@ -660,6 +691,7 @@ impl App {
                     output.arg_full.clone()
                 };
                 Some(DiffPopup {
+                    tool_name: None,
                     title: if full_arg.is_empty() {
                         card_title.unwrap_or_else(|| "Command output".to_string())
                     } else {
@@ -681,6 +713,7 @@ impl App {
             _ => {
                 let content = output.detail_full.clone()?;
                 Some(DiffPopup {
+                    tool_name: None,
                     title: card_title.unwrap_or_else(|| output.tool_name.clone()),
                     file_path: None,
                     git_diff_path: None,
@@ -929,6 +962,7 @@ mod tests {
 
     fn inline_popup(content: &str) -> DiffPopup {
         DiffPopup {
+            tool_name: None,
             title: "test".into(),
             file_path: None,
             git_diff_path: None,

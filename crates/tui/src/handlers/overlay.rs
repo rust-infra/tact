@@ -113,6 +113,7 @@ mod tests {
     fn esc_closes_diff_popup() {
         let mut app = make_app();
         app.tools_mut().popup = Some(DiffPopup {
+            tool_name: None,
             title: "t".into(),
             file_path: None,
             git_diff_path: None,

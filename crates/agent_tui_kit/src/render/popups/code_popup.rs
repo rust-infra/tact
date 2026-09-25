@@ -64,6 +64,7 @@ pub fn render_code_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
         popup_area,
         ctx.theme,
         &format!(" {} ", lang),
+        None,
         Some(footer),
     );
 

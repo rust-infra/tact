@@ -2,6 +2,7 @@
 
 use std::{path::Path, sync::atomic::Ordering};
 
+use tact::background::SharedBackgroundManager;
 use tact::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
 use tact_llm::{Message, Role};
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
@@ -49,6 +50,11 @@ pub async fn run_command_loop_with_account(
     // Shared subagent manager: lets CancelSubagent flip a running child's
     // cooperative cancel flag without owning the parent Agent.
     let subagent_manager = agent.tool_context.subagent_manager.clone();
+    // Shared background manager + session id: `/background` answers from the
+    // manager directly instead of waiting for the in-flight turn to hand the
+    // Agent back, so a listing opens the moment it is asked for.
+    let background_manager = agent.tool_context.background_manager.clone();
+    let background_session_id = agent.runtime.session_id.clone();
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
@@ -110,11 +116,28 @@ pub async fn run_command_loop_with_account(
             UserCommand::QueryStats => {
                 // Immediate snapshot: does NOT wait for the running task —
                 // stats live in an Arc<RwLock<SessionStats>> shared with the
-                // agent, so /stats responds instantly even mid-run.
+                // agent, so /stats responds instantly even mid-run. Shown in the
+                // read-out popup, like /background: a snapshot is not
+                // conversation.
                 let stats_text = stats.read_recover().summary();
                 if let Some(tx) = &ui_tx {
-                    let _ = tx.send(AgentUpdate::SessionStats(stats_text));
+                    let _ = tx.send(AgentUpdate::PopupMarkdown {
+                        title: "Session Statistics".to_string(),
+                        source: stats_text,
+                    });
                 }
+            }
+            UserCommand::QueryBackground(task_id) => {
+                // `/background` and `/background <id>`. Answered here, from the
+                // shared manager, so the popup opens immediately even while a
+                // turn is running (the Agent is owned by that task).
+                query_background(
+                    &background_manager,
+                    background_session_id.as_deref(),
+                    task_id,
+                    &ui_tx,
+                )
+                .await;
             }
             UserCommand::SubagentFinishedNotification { .. } => {
                 // If a turn is active, retain the wake-up until that turn's
@@ -184,6 +207,40 @@ pub async fn run_command_loop_with_account(
     agent
 }
 
+/// Emit the `/background` read-out: the whole session's task listing
+/// (`task_id = None`) or one task's pretty JSON.
+///
+/// Takes the shared manager instead of the `Agent` so the command loop can
+/// answer while a turn owns the Agent — the same reason `QueryStats` is handled
+/// at the loop level.
+async fn query_background(
+    manager: &SharedBackgroundManager,
+    session_id: Option<&str>,
+    task_id: Option<String>,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+) {
+    let Some(tx) = ui_tx else {
+        return;
+    };
+    match manager.check(task_id.as_deref(), session_id).await {
+        Ok(output) => {
+            // Fenced code block keeps the one-line-per-task listing (and the
+            // single-task pretty JSON) aligned and copyable. Shown in the popup
+            // rather than the log: this is a read-out, not part of the
+            // conversation.
+            let _ = tx.send(AgentUpdate::PopupMarkdown {
+                title: "⚙️ Background Tasks".to_string(),
+                source: format!("```text\n{output}\n```"),
+            });
+        }
+        Err(err) => {
+            let _ = tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                "Background check failed: {err}"
+            ))));
+        }
+    }
+}
+
 fn spawn_wakeup_task(
     agent: &mut Option<Agent>,
     active: &mut Option<JoinHandle<Agent>>,
@@ -240,7 +297,9 @@ async fn handle_user_command_with_account(
 
             // DeepSeek V4 and other text-only models reject `image_url` parts.
             // Reject images early rather than sending a broken request to the API.
-            if task_message.has_images() && !tact_llm::supports_vision() {
+            // `tact::config::supports_vision` honours a per-model override on top
+            // of the endpoint heuristic.
+            if task_message.has_images() && !tact::config::supports_vision() {
                 let model = tact_llm::get_provider().model;
                 agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
                     "Image attachments are not supported by {model}. \
@@ -337,24 +396,16 @@ async fn handle_user_command_with_account(
             // reaching this arm means the caller bypassed the command loop.
         }
         UserCommand::QueryBackground(task_id) => {
-            match agent
-                .tool_context
-                .background_manager
-                .check(task_id.as_deref(), agent.runtime.session_id.as_deref())
-                .await
-            {
-                Ok(output) => {
-                    // Fenced code block keeps the one-line-per-task listing (and
-                    // the single-task pretty JSON) aligned and copyable.
-                    let md = format!("## ⚙️ Background Tasks\n\n```text\n{output}\n```");
-                    agent.emit_update(AgentUpdate::MdInfo(md));
-                }
-                Err(err) => {
-                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                        "Background check failed: {err}"
-                    ))));
-                }
-            }
+            // Handled at the loop level (answering from the shared manager, so
+            // it never awaits the in-flight turn); reaching this arm means the
+            // caller bypassed the command loop. Answer anyway.
+            query_background(
+                &agent.tool_context.background_manager,
+                agent.runtime.session_id.as_deref(),
+                task_id,
+                &agent.runtime.ui_tx,
+            )
+            .await;
         }
         UserCommand::SetPermissionMode(mode) => {
             let parsed = match mode.as_str() {
@@ -604,25 +655,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_background_emits_mdinfo_listing_when_no_tasks() {
+    async fn query_background_emits_a_popup_listing_when_no_tasks() {
         install_test_config();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
         super::handle_user_command(&mut agent, UserCommand::QueryBackground(None), &work_dir).await;
 
-        let mut saw_md = false;
+        let mut popup = None;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::MdInfo(md) = update {
-                assert!(md.contains("Background Tasks"), "md: {md}");
-                assert!(md.contains("No background tasks."), "md: {md}");
-                saw_md = true;
+            match update {
+                AgentUpdate::PopupMarkdown { title, source } => popup = Some((title, source)),
+                // The listing is a read-out: it must not land in the transcript.
+                AgentUpdate::MdInfo(md) => panic!("background listing must not be MdInfo: {md}"),
+                _ => {}
             }
         }
-        assert!(
-            saw_md,
-            "QueryBackground must emit MdInfo with the task listing"
-        );
+        let (title, source) = popup.expect("QueryBackground must emit PopupMarkdown");
+        assert_eq!(title, "⚙️ Background Tasks");
+        assert!(source.contains("No background tasks."), "source: {source}");
     }
 
     #[tokio::test]
@@ -848,7 +899,7 @@ mod tests {
         let mut saw_stats = false;
         loop {
             match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
-                Ok(Some(AgentUpdate::SessionStats(_))) => {
+                Ok(Some(AgentUpdate::PopupMarkdown { .. })) => {
                     saw_stats = true;
                     break;
                 }
@@ -858,7 +909,7 @@ mod tests {
         }
         assert!(
             saw_stats,
-            "expected SessionStats while the task is still running"
+            "expected the stats popup while the task is still running"
         );
         assert!(
             start.elapsed() < Duration::from_millis(450),
@@ -866,6 +917,72 @@ mod tests {
         );
 
         // Release the blocked task and let the loop drain.
+        release.store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(user_cmd_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(5), loop_handle)
+            .await
+            .expect("command loop must finish");
+    }
+
+    /// `/background` is answered from the shared manager, so the popup opens
+    /// while a turn still owns the Agent — the same guarantee `/stats` has.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_background_responds_immediately_while_task_runs() {
+        use std::time::Duration;
+
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Deterministic "long running LLM call": the responder spins until the
+        // test releases it, but never longer than `spin_cap` — a failed
+        // assertion below must not leave a blocked worker behind.
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_rx = release.clone();
+        let mock = MockClient::with_responder(move |_request, _| {
+            let spin_cap = Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + spin_cap;
+            while !release_rx.load(std::sync::atomic::Ordering::Relaxed)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok((vec![text_block("done")], Some(StopReason::EndTurn), None))
+        });
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
+
+        user_cmd_tx
+            .send(UserCommand::SubmitTask("long task".into()))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let start = std::time::Instant::now();
+        user_cmd_tx
+            .send(UserCommand::QueryBackground(None))
+            .unwrap();
+
+        let mut saw_popup = false;
+        loop {
+            match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
+                Ok(Some(AgentUpdate::PopupMarkdown { title, source })) => {
+                    assert_eq!(title, "⚙️ Background Tasks");
+                    assert!(source.contains("No background tasks."), "source: {source}");
+                    saw_popup = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(
+            saw_popup,
+            "expected the background popup while the task is still running"
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(450),
+            "QueryBackground must NOT await the in-flight task"
+        );
+
         release.store(true, std::sync::atomic::Ordering::Relaxed);
         drop(user_cmd_tx);
         let _ = tokio::time::timeout(Duration::from_secs(5), loop_handle)

@@ -89,8 +89,14 @@ pub fn render_thinking_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
             label: " scroll ",
         },
     ];
-    let inner =
-        super::render_popup_chrome(frame, popup_area, ctx.theme, &popup.title, Some(footer));
+    let inner = super::render_popup_chrome(
+        frame,
+        popup_area,
+        ctx.theme,
+        &popup.title,
+        None,
+        Some(footer),
+    );
     let body_area = inner;
     let selection_text = styled_lines
         .iter()

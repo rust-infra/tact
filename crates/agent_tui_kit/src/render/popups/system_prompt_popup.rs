@@ -29,6 +29,7 @@ pub fn render_system_prompt_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx
         popup_area,
         ctx.theme,
         &format!(" {} ", popup.title),
+        None,
         Some(footer),
     );
     // Plain ratatui-markdown render at the popup's content width; the popup

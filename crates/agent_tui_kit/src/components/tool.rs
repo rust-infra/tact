@@ -370,6 +370,10 @@ impl ToolComponent {
                 ToolPhase::Failed
             })
             .with_duration_us(elapsed_us)
+            // The card stayed live across the whole run, so the id it showed
+            // while running stays on the finished row (that is what a reader
+            // copies to find the task again).
+            .with_task_id(active.output.task_id.clone())
             .with_command_detail(output_text.to_string());
         if !success {
             widget = widget.with_message(message.to_string());
@@ -553,6 +557,7 @@ impl Component for ToolComponent {
                 tool_id,
                 model,
                 token_usage,
+                task_id,
             } => {
                 let Some(pos) = self.state.active.iter().position(|a| a.tool_id == *tool_id) else {
                     return false;
@@ -563,6 +568,9 @@ impl Component for ToolComponent {
                 }
                 if let Some(t) = token_usage {
                     active.output.subagent_tokens = Some(t.clone());
+                }
+                if let Some(id) = task_id {
+                    active.output.task_id = Some(id.clone());
                 }
                 true
             }
@@ -1121,6 +1129,7 @@ mod tests {
                     prompt_cache_miss_tokens: 0,
                     reasoning_tokens: 0,
                 }),
+                task_id: None,
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
         );

@@ -291,6 +291,17 @@ File: `widgets/state/tool_state.rs` + `render/popups/diff_popup.rs`
 | `inline_content` | Bash output or other in-memory text (avoids treating command output as a path) |
 | `use_diff_gutter` | Green `+` prefix for file writes |
 | `title` | Modal header — for bash, `bash (<full command>)` even when the log title was truncated |
+| `tool_name` | Raw tool id (`read_image`, `bash`, …) — the source block's `ToolRenderOutput.tool_name`, stamped by `popup_from_tool_output` on every branch |
+
+The **bottom border** is the identity row: it starts with the raw `tool_name` and
+then lists the keys this popup actually honours (`y copy | Esc close | j/k
+scroll` — the set `handle_overlay_key` routes here; `g`/`G` belong to the code /
+mermaid / dag / subagent popups instead). The tool id belongs there rather than
+in the title because the title is content-shaped — a file path, `bash (<cmd>)`,
+or a card title — and would otherwise be the only thing the modal says about
+which tool produced it. `render_popup_chrome` takes the note separately from the
+`&'static str` `FooterHint`s (the id is dynamic) and joins them with the same
+` | ` separator; a note alone, or hints alone, render either side of it.
 
 For `bash` / `run_command` / `shell`, the cached detail contains `$ <full command>` followed by the captured output. The card's preview/total counter, popup, and copy operation therefore share one content source; the popup is the primary place to read untruncated arguments.
 

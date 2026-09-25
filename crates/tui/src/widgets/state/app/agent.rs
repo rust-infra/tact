@@ -398,13 +398,11 @@ impl App {
             AgentUpdate::MdInfo(msg) => {
                 self.append_system_markdown(msg);
             }
-            AgentUpdate::SessionStats(stats_text) => {
-                self.system_prompt_popup = Some(SystemPromptPopup {
-                    title: "Session Statistics".to_string(),
-                    source: stats_text,
-                    scroll: 0,
-                });
-                self.input_mode = InputMode::Normal;
+            // Pre-rendered Markdown for a modal read-out (`/stats`,
+            // `/background`): unlike `MdInfo` it does not join the log, so
+            // opening a listing does not push the conversation off screen.
+            AgentUpdate::PopupMarkdown { title, source } => {
+                self.open_markdown_popup(title, source);
             }
             AgentUpdate::RequestSelect {
                 prompt,
@@ -2200,7 +2198,10 @@ mod lifecycle_tests {
 
         // An unrelated update resets the mode (the historical "missed popup"
         // hang). The pending request must force the popup back on screen.
-        app.handle_agent_update(AgentUpdate::SessionStats("tokens: 42".into()));
+        app.handle_agent_update(AgentUpdate::PopupMarkdown {
+            title: "Session Statistics".to_string(),
+            source: "tokens: 42".to_string(),
+        });
         assert!(
             matches!(app.input_mode, InputMode::Select),
             "a pending select must stay rendered so it can still be answered"
