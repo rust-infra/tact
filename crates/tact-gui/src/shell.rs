@@ -2003,14 +2003,30 @@ impl TactApp {
                             },
                         )),
                 )
-                .content(move |content, _window, _cx| {
+                .content(move |content, _window, cx| {
                     // The field carries the id through a wrapper: `Input` is a
                     // render-once element without a test-support id of its own.
+                    // The wrapper also tracks the field's handle and hands it the
+                    // press, for the same reason the session search well does:
+                    // GPUI does not move focus on a press the way a browser does,
+                    // and this dialog's own focus arrives through a deferred
+                    // callback, so a press on the row is what reliably focuses
+                    // the field.
+                    let field_focus = content_input.focus_handle(cx);
                     content.child(
                         div()
                             .id("session-rename-input")
                             .test_support()
                             .w_full()
+                            .track_focus(&field_focus)
+                            .on_mouse_down(MouseButton::Left, {
+                                let press_input = content_input.clone();
+                                move |_, window, cx| {
+                                    press_input.update(cx, |input, cx| {
+                                        input.focus_handle(cx).focus(window, cx);
+                                    });
+                                }
+                            })
                             .child(Input::new(&content_input)),
                     )
                 })

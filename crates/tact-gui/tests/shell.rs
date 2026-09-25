@@ -3312,15 +3312,23 @@ fn every_entry_point_answers_a_click(cx: &mut TestAppContext) {
             "Rename asks for a name instead of answering with a notice"
         );
         // The field only seeds a stored name, so the walk replaces whatever it
-        // contains rather than appending to it.
+        // contains rather than appending to it. The press has to be the one that
+        // focuses the field, and the keys go in through the field's own scope so
+        // that a keystroke which would land nowhere fails loudly instead of
+        // silently leaving the seeded name in place: the dialog's own focus
+        // arrives through a deferred callback, which beside other integration
+        // tests is not guaranteed to have run before the next key.
         window.click("session-rename-input", cx);
-        window.press("ctrl-a", cx);
-        window.input("Renamed by the walk", cx);
-        // Flush the field's own edit before the footer reads it; the click
-        // walk runs beside other integration tests, so the input event cannot
-        // be assumed to have landed by the time the next press starts.
         window.render_frame(cx);
-        window.render_frame(cx);
+        assert_eq!(
+            window.find("session-rename-input").focused(),
+            Some(true),
+            "the press hands focus to the rename field"
+        );
+        window.within("session-rename-input").press("ctrl-a", cx);
+        window
+            .within("session-rename-input")
+            .input("Renamed by the walk", cx);
         window.click("session-rename-ok", cx);
         window.render_frame(cx);
         assert!(
