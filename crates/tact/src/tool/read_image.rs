@@ -85,8 +85,9 @@ fn encode_jpeg(
 pub async fn read_image(ctx: ToolContext, input: ReadImageInput) -> Result<ToolCallResult> {
     // Align with DeepSeek Harness `read_image`: gate on the current model
     // declaring image support before doing any I/O; a text-only target cannot
-    // consume the returned image block.
-    if !tact_llm::supports_vision() {
+    // consume the returned image block. `config` (not `tact_llm`) is the gate:
+    // a per-model `supports_vision` override outranks the endpoint heuristic.
+    if !crate::config::supports_vision() {
         return Err(anyhow!(
             "read_image: the current model does not accept image input; switch to an image-capable model to read images"
         ));

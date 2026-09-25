@@ -146,6 +146,8 @@ thinking_budget = 32000    # optional global default (max_tokens is NOT settable
 
 # Optional per-model thinking parameter options (model id → selectable tiers).
 # The /model second step shows only these tiers for the picked model.
+# `supports_vision = true|false` in the same table overrides the image-input
+# gate for that exact model id (unset = endpoint heuristic; see §4).
 # [llm.model_profiles."gpt-5.6"]
 # reasoning_efforts = ["low", "medium", "high"]
 # [llm.model_profiles."claude-sonnet-4-20250514"]
@@ -271,6 +273,18 @@ provider defaults. TOML entries override the built-in defaults per model /
 per field (see `tact::config::builtin_model_profiles`). Cross-dimension
 entries (e.g. `thinking_budgets` on an effort-semantic model) are ignored,
 not errors.
+
+The same table carries one non-tier key: `supports_vision` (bool) overrides
+the **image-input gate** for that exact model id. Unset means the endpoint
+heuristic in `tact_llm::supports_vision`, which keys off the model id and base
+URL — a DeepSeek-ish target counts as text-only unless the id also contains
+`vision`, everything else counts as image-capable. The override exists because
+that heuristic cannot describe an OpenAI-compatible proxy whose entry serves a
+mixed pool (an image-capable `deepseek-flash` next to a text-only
+`deepseek-v4-flash`). `tact::config::supports_vision` — the gate `read_image`
+and the UI image-attachment check call — consults the override first and falls
+back to the heuristic. `true` lets image parts reach the API (a text-only
+target then answers 400), `false` refuses them locally.
 
 Resolved runtime still exposes a flat `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, model_profiles, … }`
 for the hot path. See `types.rs` for serde structs and unit tests.

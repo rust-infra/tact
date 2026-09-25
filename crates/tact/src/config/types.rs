@@ -58,7 +58,8 @@ pub struct LlmTomlConfig {
     pub model_profiles: HashMap<String, ModelProfileToml>,
 }
 
-/// Per-model thinking parameter options (TOML / runtime shape).
+/// Per-model overrides: thinking parameter options and image capability
+/// (TOML / runtime shape).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ModelProfileToml {
@@ -71,6 +72,14 @@ pub struct ModelProfileToml {
     /// (openai 全系 / deepseek 全系 / kimi k3、k3-256k).
     #[serde(default)]
     pub reasoning_efforts: Vec<OpenAiReasoningEffort>,
+    /// Override the image-input gate for this exact model id.
+    ///
+    /// `None` (default) = endpoint heuristic; `Some(true)` / `Some(false)`
+    /// force it on / off. Needed because the heuristic keys off the model id
+    /// and cannot describe a proxy entry that serves a mixed pool (e.g. one
+    /// that hosts both an image-capable and a text-only `deepseek-*` id).
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

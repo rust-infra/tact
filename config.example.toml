@@ -44,12 +44,23 @@ provider = "deepseek"
 # `reasoning_efforts` applies to effort-semantic models (openai / deepseek /
 # kimi k3/k3-256k); `thinking_budgets` to budget-semantic models (anthropic /
 # kimi-for-coding*). Cross-dimension entries are ignored, not errors.
+#
+# `supports_vision` overrides the image-input gate for that exact model id
+# (None/unset = endpoint heuristic: a DeepSeek-ish id counts as text-only
+# unless it contains "vision"). Set it when the heuristic is wrong for your
+# endpoint — typically an OpenAI-compatible proxy whose entry serves a mixed
+# pool, e.g. one proxy hosting an image-capable `deepseek-flash` next to a
+# text-only `deepseek-v4-flash`. `true` lets image parts through to the API
+# (a text-only target then answers 400), `false` refuses them locally.
 # [llm.model_profiles."gpt-5.6"]
 # reasoning_efforts = ["low", "medium", "high"]
 # [llm.model_profiles."deepseek-v4-flash"]
 # reasoning_efforts = ["low", "high", "max"]
+# supports_vision = false
 # [llm.model_profiles."claude-sonnet-4-20250514"]
 # thinking_budgets = [0, 8000, 32000]
+# [llm.model_profiles."deepseek-flash"]
+# supports_vision = true
 
 [llm.providers.anthropic]
 # Not active by default — switch [llm] provider to "anthropic" to use it.

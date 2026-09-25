@@ -50,6 +50,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::Low, E::Medium, E::High],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -57,6 +58,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -64,6 +66,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::Low, E::Medium],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -71,6 +74,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::Medium, E::High, E::Max],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -78,6 +82,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::Low, E::Medium, E::High],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -85,6 +90,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::Low, E::High, E::Max],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -92,6 +98,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::High, E::Max],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -99,6 +106,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::High, E::Max],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -106,6 +114,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::Low, E::High, E::Max],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -113,6 +122,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![],
                 reasoning_efforts: vec![E::Low, E::High, E::Max],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -120,6 +130,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![0, 8_000, 32_000],
                 reasoning_efforts: vec![],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -127,6 +138,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![0, 8_000, 32_000],
                 reasoning_efforts: vec![],
+                supports_vision: None,
             },
         );
         m.insert(
@@ -134,6 +146,7 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             ModelProfileToml {
                 thinking_budgets: vec![0, 8_000, 32_000],
                 reasoning_efforts: vec![],
+                supports_vision: None,
             },
         );
         m
@@ -191,6 +204,32 @@ pub fn install_or_override(config: types::ResolvedConfig) {
 /// Access installed settings if present (TUI unit tests may run without `install`).
 pub fn try_settings() -> Option<types::ResolvedConfig> {
     SETTINGS.read().ok()?.as_ref().cloned()
+}
+
+/// The image-input gate for the current model.
+///
+/// A per-model `[llm.model_profiles."<id>"].supports_vision` wins; otherwise the
+/// endpoint heuristic in [`tact_llm::supports_vision`] applies. This is the
+/// gate the product uses (`read_image` and the image-attachment check in the UI
+/// driver); [`tact_llm::supports_vision`] alone is only the heuristic.
+///
+/// The override exists because the heuristic keys off the model id: an
+/// OpenAI-compatible proxy entry can serve a mixed pool, where one `deepseek-*`
+/// id accepts `image_url` parts and another rejects them with a 400.
+pub fn supports_vision() -> bool {
+    try_settings()
+        .and_then(|cfg| vision_override(&cfg.llm.model_profiles, &cfg.llm.model))
+        .unwrap_or_else(tact_llm::supports_vision)
+}
+
+/// Per-model override lookup: exact model id match, `None` = no override.
+fn vision_override(
+    profiles: &std::collections::HashMap<String, types::ModelProfileToml>,
+    model: &str,
+) -> Option<bool> {
+    profiles
+        .get(model)
+        .and_then(|profile| profile.supports_vision)
 }
 
 /// Update the in-memory active model (keeps status/help in sync; the running
@@ -377,6 +416,8 @@ pub fn init() -> anyhow::Result<CliArgs> {
 #[cfg(test)]
 mod tests {
     use super::builtin_model_profiles;
+    use super::types::ModelProfileToml;
+    use super::vision_override;
     use tact_llm::OpenAiReasoningEffort as E;
 
     #[test]
@@ -389,5 +430,32 @@ mod tests {
             profile.reasoning_efforts,
             vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max]
         );
+    }
+
+    #[test]
+    fn vision_override_lookup_is_exact_and_tri_state() {
+        let mut profiles = std::collections::HashMap::new();
+        profiles.insert(
+            "deepseek-flash".to_string(),
+            ModelProfileToml {
+                supports_vision: Some(true),
+                ..Default::default()
+            },
+        );
+        profiles.insert(
+            "deepseek-v4-flash".to_string(),
+            ModelProfileToml {
+                supports_vision: Some(false),
+                ..Default::default()
+            },
+        );
+        profiles.insert("gpt-5.6".to_string(), ModelProfileToml::default());
+
+        // Exact id match only: siblings in a mixed pool keep their own value.
+        assert_eq!(vision_override(&profiles, "deepseek-flash"), Some(true));
+        assert_eq!(vision_override(&profiles, "deepseek-v4-flash"), Some(false));
+        assert_eq!(vision_override(&profiles, "deepseek"), None);
+        // A profile without the field means "no override", not "false".
+        assert_eq!(vision_override(&profiles, "gpt-5.6"), None);
     }
 }

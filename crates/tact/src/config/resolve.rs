@@ -799,6 +799,11 @@ pub(super) fn resolve_config(
         if !profile.reasoning_efforts.is_empty() {
             merged.reasoning_efforts = profile.reasoning_efforts.clone();
         }
+        // `Option` cannot use the "non-empty wins" rule, so an explicit value
+        // always overrides (built-in profiles never set it).
+        if let Some(explicit) = profile.supports_vision {
+            merged.supports_vision = Some(explicit);
+        }
     }
 
     let agent_model = llm.model.clone();
@@ -1587,6 +1592,72 @@ model = "kimi-k2.5"
         assert_eq!(resolved.llm.base_url, "https://api.moonshot.cn/v1");
         // No `max_tokens` anywhere → the Kimi K2.x default.
         assert_eq!(resolved.agent.max_tokens, 32_000);
+    }
+
+    #[test]
+    fn resolve_copies_model_profile_supports_vision() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+base_url = "https://opencode.ai/zen/go/v1"
+model = "deepseek-flash"
+
+[llm.model_profiles."deepseek-flash"]
+supports_vision = true
+
+[llm.model_profiles."deepseek-v4-flash"]
+supports_vision = false
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            resolved.llm.model_profiles["deepseek-flash"].supports_vision,
+            Some(true)
+        );
+        assert_eq!(
+            resolved.llm.model_profiles["deepseek-v4-flash"].supports_vision,
+            Some(false)
+        );
+        // No TOML entry for this model → no override; the endpoint heuristic
+        // keeps deciding.
+        assert_eq!(
+            resolved.llm.model_profiles["deepseek-v4-pro"].supports_vision,
+            None
+        );
+    }
+
+    #[test]
+    fn model_profile_vision_override_keeps_builtin_tiers() {
+        use tact_llm::OpenAiReasoningEffort as E;
+
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "deepseek-v4-flash"
+
+[llm.model_profiles."deepseek-v4-flash"]
+supports_vision = false
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let profile = &resolved.llm.model_profiles["deepseek-v4-flash"];
+        // The override lands, and the built-in effort tiers survive the merge.
+        assert_eq!(profile.supports_vision, Some(false));
+        assert_eq!(
+            profile.reasoning_efforts,
+            vec![E::Low, E::High, E::Max],
+            "a vision-only TOML entry must not wipe the built-in tiers"
+        );
     }
 
     #[test]
