@@ -642,6 +642,72 @@ fn settings_dialog_exposes_live_controls(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// The settings row steps the same base font size the palette's zoom moves.
+///
+/// A `set_rem_size` inside a dispatch is not observable from the next
+/// `update_window` (see `zooming_changes_the_rem_size_and_reports_it`), so this
+/// pins the level the row reports — in the percentage the status chip uses, so
+/// the two surfaces cannot disagree about what the shell is showing.
+///
+/// The Appearance page renders its groups through a virtualized list, so the
+/// row is reached the way a user reaches it: by picking the Typography entry
+/// from the settings sidebar. How many frames that reveal takes is not fixed,
+/// so the test settles until the group is built rather than assuming a count.
+#[gpui_kit::test]
+fn the_settings_font_size_row_steps_the_base_size(cx: &mut TestAppContext) {
+    activate_shipped_theme(cx);
+    settle_motion(cx);
+
+    let handle = cx.open_window(size(px(1440.), px(900.)), |window, cx| {
+        let shell = cx.new(|cx| TactApp::preview(window, cx));
+        Root::new(shell, window, cx)
+    });
+    let handle = handle.into();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.render_frame(cx);
+
+        // The third entry under Appearance is Typography.
+        window.click("0-0-2", cx);
+        let mut revealed = false;
+        for _ in 0..40 {
+            window.render_frame(cx);
+            if window.try_find("settings-font-size-value").is_some() {
+                revealed = true;
+                break;
+            }
+        }
+        assert!(
+            revealed,
+            "picking Typography has to bring its group into the rendered range"
+        );
+        assert_eq!(
+            window.find("settings-font-size-value").label(),
+            Some("100%"),
+            "the row opens at the prototype's base size"
+        );
+
+        window.click("settings-font-larger", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("settings-font-size-value").label(),
+            Some("106%"),
+            "one step in is the step the palette's zoom takes"
+        );
+
+        window.click("settings-font-smaller", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("settings-font-size-value").label(),
+            Some("100%"),
+            "and one step back returns to the base size"
+        );
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn theme_toggle_button_switches_to_dark(cx: &mut TestAppContext) {
     cx.update(|cx| {

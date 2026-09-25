@@ -9402,7 +9402,7 @@ fn status_bar(
     // The zoom chip only appears once it is off 100%: a chip that always reads
     // "100%" is chrome, and this bar has no room for chrome.
     if (zoom_rem - layout::ZOOM_DEFAULT).abs() > f32::EPSILON {
-        let percent = (zoom_rem / layout::ZOOM_DEFAULT * 100.0).round() as i32;
+        let percent = layout::zoom_percent(zoom_rem);
         bar = bar.child(status_item(
             "status-zoom",
             None,
@@ -9773,6 +9773,65 @@ fn settings_panel(
         )
     });
 
+    // Font size is the one number the palette's zoom commands and the status
+    // chip already move; the row only exposes it where a user looks for it. It
+    // calls the same `zoom_in`/`zoom_out` the palette does, so the two entry
+    // points cannot drift a step apart.
+    let size_owner = owner.clone();
+    let font_size_row = SettingItem::render(move |_, _window, cx| {
+        let current = size_owner
+            .upgrade()
+            .map(|app| app.read(cx).zoom_rem)
+            .unwrap_or(layout::ZOOM_DEFAULT);
+        let percent = format!("{}%", layout::zoom_percent(current));
+        let smaller_owner = size_owner.clone();
+        let larger_owner = size_owner.clone();
+        setting_copy(
+            "Font size",
+            "Scales the whole shell; every dimension is text-relative, so the layout reflows with the text.",
+            cx,
+        )
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    Button::new("settings-font-smaller")
+                        .icon(IconName::Minus)
+                        .ghost()
+                        .compact()
+                        .disabled(current <= layout::ZOOM_MIN)
+                        .tooltip("Smaller font")
+                        .accessibility_label("Smaller font")
+                        .on_click(move |_, window, cx| {
+                            let _ = smaller_owner.update(cx, |app, cx| app.zoom_out(window, cx));
+                        }),
+                )
+                .child(
+                    div()
+                        .id("settings-font-size-value")
+                        .test_support()
+                        .min_w(rems(3.))
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .aria_label(SharedString::from(percent.clone()))
+                        .child(SharedString::from(percent)),
+                )
+                .child(
+                    Button::new("settings-font-larger")
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .compact()
+                        .disabled(current >= layout::ZOOM_MAX)
+                        .tooltip("Larger font")
+                        .accessibility_label("Larger font")
+                        .on_click(move |_, window, cx| {
+                            let _ = larger_owner.update(cx, |app, cx| app.zoom_in(window, cx));
+                        }),
+                ),
+        )
+    });
+
     // The updates row is the visible half of the updater: the palette has the
     // same command, but a user looking for "check for updates" opens settings.
     let updates_owner = owner.clone();
@@ -9899,8 +9958,9 @@ fn settings_panel(
                 .group(
                     SettingGroup::new()
                         .title("Typography")
-                        .description("The shell inherits the chosen family.")
-                        .item(font_row),
+                        .description("Family and size apply to the whole shell.")
+                        .item(font_row)
+                        .item(font_size_row),
                 ),
             SettingPage::new("Application")
                 .default_open(true)

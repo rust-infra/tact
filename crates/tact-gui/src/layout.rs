@@ -256,6 +256,15 @@ pub(crate) fn clamp_zoom(value: f32) -> f32 {
     clamp_width(value, ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT)
 }
 
+/// A base font size as a whole-number percentage of the default one.
+///
+/// The settings row and the status chip both report the level, so the rounding
+/// lives in one place: two renderers computing "106%" independently is the kind
+/// of pair that drifts a step apart and reads as a bug.
+pub(crate) fn zoom_percent(zoom_rem: f32) -> i32 {
+    (zoom_rem / ZOOM_DEFAULT * 100.0).round() as i32
+}
+
 /// Clamp a dragged sidebar width into its supported range.
 pub(crate) fn clamp_sidebar_width(value: f32) -> f32 {
     clamp_width(value, SIDEBAR_MIN_REM, SIDEBAR_MAX_REM, SIDEBAR_WIDTH_REM)
@@ -504,6 +513,18 @@ mod tests {
         };
         store.save(&prefs).unwrap();
         assert_eq!(store.load().zoom_rem, 20.0);
+    }
+
+    #[test]
+    fn the_zoom_percentage_reads_the_base_size() {
+        assert_eq!(zoom_percent(ZOOM_DEFAULT), 100);
+        assert_eq!(zoom_percent(ZOOM_MIN), 75, "the smallest base size");
+        assert_eq!(zoom_percent(ZOOM_MAX), 150, "the largest base size");
+        assert_eq!(
+            zoom_percent(ZOOM_DEFAULT + 1.0),
+            106,
+            "one step in is the level the status chip reports"
+        );
     }
 
     #[test]
