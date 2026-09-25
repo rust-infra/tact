@@ -29,6 +29,83 @@
 
 ---
 
+## 1. 2026-09-24 — 状态栏不再重复 composer 已经给出的读数
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | removal |
+| **相关** | `crates/tact-gui/src/shell.rs`（`status_bar`）；`crates/tact-gui/tests/shell.rs`（`the_status_bar_renders_its_segmented_chips`） |
+
+**现象 / 动机：** 底栏带着一个写着 `Ask permission` 的权限 chip 和一条 `42% context` 读数，而它们的位置就在 composer 下方几厘米处 —— 那里本来就已经分别给出了同样的状态：prompt 旁边的权限 chip 与它上方的环形进度。同一屏里把同一状态读两遍属于多余装饰，而且这两处恰恰最容易漂移：两边的字符串是各自独立拼出来的。
+
+**决策：** 两个 chip 一并去掉。zoom chip 保留：设置字号的入口现在藏在设置对话框里，除它之外没有别的界面报告基准字号。会话、分支/worktree、diff、running、balance 几个 chip 同理保留 —— 没有别的界面承载它们。
+
+**改后行为：** 底栏只渲染会话、分支/worktree、diff、running、balance 与 zoom 这几个 chip，别无其他。`status-permission` 与 `status-context` 元素根本不会被构建，所以底栏测试断言的是它们**不存在**而不是它们的文案；上下文百分比也从此只有一个家（composer 的环形进度），而不是两个。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`status_bar`）；`crates/tact-gui/tests/shell.rs`（`the_status_bar_renders_its_segmented_chips`）
+
+## 1. 2026-09-24 — 重命名对话框的输入框接过那次"聚焦"的按下
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（重命名对话框的 content 闭包）；`crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`） |
+
+**现象 / 动机：** `session-rename-input` 外层的 wrapper 既不跟踪输入框的 focus handle，也不把按下转交给它；而 GPUI 不像浏览器那样"按下即聚焦"，这个对话框自己的聚焦又是通过一个 deferred 回调到达的。于是"打字是否落进输入框"取决于那个回调是否已经跑过 —— 在与其它集成测试并行时它常常还没跑，重命名会话的那条 walk 因此大约一半的运行会失败，且失败时输入框里还是原来那个名字。
+
+**决策：** wrapper 跟踪 focus handle 并把按下转交给输入框 —— 这正是 session search 那个"聚焦容器"出于同样理由已经用过的写法。walk 断言输入框报告自己获得了焦点，并通过 `within("session-rename-input")` 输入，于是"按键落空"会**响亮失败**，而不是默默留下旧名字。
+
+**改后行为：** 在重命名这一行的任意位置按下都会让输入框获得焦点，随后的按键落进其中，与 deferred 聚焦的时机无关。这条 wrapper 同时也是这一行带 test-support id 的地方，所以"不转交按下"的 wrapper 现在是**测试里用不了**，而不是悄悄不稳定。
+
+**指针：** `crates/tact-gui/src/shell.rs`（重命名对话框）；`crates/tact-gui/tests/shell.rs`（`every_entry_point_answers_a_click`）
+
+## 1. 2026-09-24 — 发出的 prompt 会重新出现在视野里
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`submit_task`、`scroll_transcript_to_end`、`record_change`、会把 `follow_tail` 置假的展开卡片路径）；`crates/tact-gui/tests/shell.rs`（`sending_a_prompt_brings_the_tail_back_into_view`、`the_enter_key_sends_the_draft_like_the_button`） |
+
+**现象 / 动机：** 提交的 prompt 落在折叠线以下，读者得自己把转录往下拉才能看见刚发出去的内容。转录只在 `follow_tail` 为真时跟随尾部，而有两处会把它清掉："Follow streaming output" 开关，以及**展开卡片** —— 后者是刻意为之，为的是卡片增长时视口别跳。可没有任何地方把它恢复，于是**展开过一次卡片**就足以让这个会话此后不再跟随，之后再怎么发送都像是石沉大海。
+
+**决策：** 让 `submit_task` 通过 `scroll_transcript_to_end` 回到尾部 —— 这个接缝 shell 早就为测试与将来的搜索跳转暴露过了。发送是读者自己的动作，刚发出的 prompt 正是他预期要看到的；展开卡片是"读"。这个区分恰恰是一个布尔值承载不了的，而让 shell 的标志位与滚动器自身的跟随模式各说各话，正是这个 bug 的成因。这个调用会把标志位重新置真——这也是对开关文案最诚实的解读：既然要了一轮对话，它的输出就是读者在等的东西。
+
+**改后行为：** 发送 prompt —— 无论是 composer 的 Enter、`.send` 按钮、skill 调用，还是工作区的 prompt —— 都会把转录带回尾部，所以最新的 prompt 无需手动下拉就在屏幕上，与 follow-streaming 设置无关。其后流式到达的输出会继续跟随，因为这次发送把跟随重新武装了。展开卡片仍然让视口留在原处。那条既有的 Enter 测试**删掉了**它原本用来"看见自己刚发送的行"的显式滚动，于是它的断言现在必须自己挣得结论：随它新增的那条测试已验证——把修复撤掉后，它恰好在该断言处失败。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`submit_task`、`scroll_transcript_to_end`、`record_change`）；`crates/tact-gui/tests/shell.rs`（`sending_a_prompt_brings_the_tail_back_into_view`）；`book/26_chapter_issue.md` §1 2026-09-21（shell 持久化的布局与缩放）
+
+## 1. 2026-09-24 — composer 的弹窗共用一套行语法，其中的列表也接上了键盘
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact-gui/src/shell.rs`（`menu_choice_row`、`usage_value_row`、`usage_panel`、`ComposerMenu`、`move_composer_menu`，以及 `composer-effort-popover` / `composer-permission-popover` / `composer-model-popover` / `composer-usage-popover` 的内容）；`crates/tact-gui/tests/shell.rs`（`the_composer_option_rows_keep_the_choice_they_set`、`every_entry_point_answers_a_click`） |
+
+**现象 / 动机：** 两个抱怨、同一处界面。composer 的弹窗彼此不像：reasoning-effort 列表与 permission 列表是**仅有的两个**仍在用 `Button` 构建条目的弹窗 —— 按钮会把标签居中、并按组件字号表取字号 —— 而 Context usage 面板**完全没设字号**，于是各行取默认正文字号、并按自身文本宽度收缩。而这些列表改自绘之后，就没有任何东西给它们键盘身份了：Tab 停靠原本来自 `Button`，而补全弹窗早已证明 shell 知道怎么给自绘列表一个。
+
+**决策：** `menu_choice_row` 是唯一的"选择行"语法，模型选择器与设置字体选择器也折了进来，于是那些彼此漂移的拷贝（带前置图标 28 px、不带 26 px）消失；`menu_action_row` 保留给带图标的动作菜单。语法是满宽、`justify_start`、高 1.625 rem、标签 11 px，当前生效项加 accent 底色并给足亮度；选中态以 `aria_selected` 上报（模型选择器各行本来就如此）。字体选择器现在会标记**正在使用**的字体族 —— 它以前从不标记。usage 面板新增 `usage_value_row`，同样是 11 px，标签列固定宽且用弱化墨色，使数字成列对齐；它接收两个墨色参数而不是 `&App`，因为 popover 的 content 闭包不能返回一个借用它所收到的 app 的元素 —— 这个约束表现为闭包处的生命周期错误，而不是渲染问题。
+
+键盘方面：`ComposerMenu` 持有每个列表 —— 各行的值、标签、id 与提交动作 —— 因此弹窗画的行与键盘走的是同一份列表，Enter 取的那一行不可能与画出来的那一行漂移。shell 保留一个高亮（`composer_menu`、`composer_menu_index`）与一个 `intercept_keystrokes`，就挨着补全弹窗那一个：列表打开期间由它接管方向键、Home/End 与 Enter，并且高亮**落在当前值上**，所以不动就按 Enter 等于重申会话正在跑的设置。指针与键盘都经由同一个 `ComposerMenu::commit` 提交。
+
+**改后行为：** effort 与 permission 的条目是 11 px、居左的行；当前生效值带 accent 底色与足亮文字，方向键把高亮在同一层底色上移动，Enter 提交高亮所在行 —— 有一条测试用按键驱动这两个列表，并把两个列表的行高钉在模型选择器行上，所以退回组件按钮会**失败**，而不只是"看起来不同"。usage 面板读起来是五条带标签的度量行 —— `Prompt`、`Completion`、`Total`、`Cache`、`Reasoning` —— 每条在无障碍树里都有名字，因此 walk 测试检查的是面板**声称了什么**，而不只是它打开了。点击选项仍然设置该值并**保持弹窗打开**，与之前一致。字号与对齐无法从语义树读出，所以这里它们是**结构性**保证：各处共用同一组常量，只有行高被断言。add 菜单与模型选择器仍只能指针操作 —— 这是既有状态；而模型选择器的行还压在一个搜索框后面，需要单独决定方向键归谁。
+
+**指针：** `crates/tact-gui/src/shell.rs`（`menu_choice_row`、`menu_action_row`、`usage_value_row`、`usage_panel`、`ComposerMenu`、`move_composer_menu`、各弹窗内容）；`crates/tact-gui/tests/shell.rs`（`the_composer_option_rows_keep_the_choice_they_set`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`
+
+## 1. 2026-09-24 — Appearance 页多了 Font size 一行
+
+| 字段 | 值 |
+|-------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact-gui/src/shell.rs`（`settings_panel`、`set_zoom`、`zoom_in`、`zoom_out`、状态栏 chip）；`crates/tact-gui/src/layout.rs`（`zoom_percent`、`ZOOM_DEFAULT`、`ZOOM_MIN`、`ZOOM_MAX`）；`crates/tact-gui/tests/shell.rs`（`the_settings_font_size_row_steps_the_base_size`） |
+
+**现象 / 动机：** 基准字号（也就是 shell 的 zoom）此前只能通过 `Ctrl`+`=` / `Ctrl`+`-` / `Ctrl`+`0` 和命令面板的三条 Zoom 行触达。想调大字号的读者会先打开 Settings，而 Appearance 页列的是 Theme、Show reasoning、Follow streaming output 与 Interface font，唯独没有字号 —— 恰恰是那里最可能被找的一项。
+
+**决策：** 这一行并入已有的 Typography 分组，而不是新开一组，因为该组本来就管 shell 的字体；它的描述改为 "Family and size apply to the whole shell."。控件是围绕当前值的步进器 —— 变小、当前档位、变大 —— 并且保持**受控**：它读 `TactApp::zoom_rem`，调用的是命令面板与快捷键调用的同一对 `zoom_in` / `zoom_out`。没有新增持久化字段、也没有第二条路径，所以键盘、命令面板与设置不可能各差一档。两个按钮是纯图标（`IconName::Minus` / `Plus`，即命令面板 Zoom 行已在用的图标），因此各自带 tooltip 与无障碍名称，并且在 12–24 px 区间的两端各自置灰。百分比来自唯一一个 helper `layout::zoom_percent`，状态栏 chip 现在也用它：chip 与这一行报的是同一个数，而两处各自取整，正是它们会开始对不上的原因。
+
+**改后行为：** 设置 → Appearance → Typography 下同时有 "Interface font" 与 "Font size"。该行报出的百分比与状态栏 chip 一致 —— 原型基准字号是 `100%`，进一档是 `106%` —— `−` / `+` 的作用与 `Ctrl`+`-` / `Ctrl`+`=` 完全相同，每按一次一动 1 px 基准字号，到达区间某一端后该方向的按钮变暗。该选择能跨重启保留，因为它就是 `~/.tact/gui-layout.json` 早已保存的那个 `zoom_rem`。Appearance 页的分组是虚拟化列表渲染的，所以在侧栏选中其条目后 Typography 分组才会实体化 —— 这条测试走的就是该路径。
+
+**指针：** `crates/tact-gui/src/layout.rs`（`zoom_percent`、`the_zoom_percentage_reads_the_base_size`）；`crates/tact-gui/src/shell.rs`（`settings_panel` 的 `font_size_row`、`set_zoom`、`zoom_in`、`zoom_out`）；`crates/tact-gui/tests/shell.rs`（`the_settings_font_size_row_steps_the_base_size`、`zooming_changes_the_rem_size_and_reports_it`）；`docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §14
+
 ## 1. 2026-09-24 — 桌面端 `/` 面板就是终端那一个
 
 | 字段 | 值 |

@@ -29,6 +29,83 @@ Newest entries first. Each entry should include:
 
 ---
 
+## 1. 2026-09-24 — The status bar stops repeating the composer's readouts
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact-gui/src/shell.rs` (`status_bar`); `crates/tact-gui/tests/shell.rs` (`the_status_bar_renders_its_segmented_chips`) |
+
+**Symptom / motivation:** The footer carried a permission chip reading `Ask permission` and a `42% context` readout a few centimetres below the composer, which already reports both — the permission chip beside the prompt and the ring above it. Reading the same state twice in one screenful is chrome, and it is the pair most likely to drift, because the two surfaces build their strings independently.
+
+**Decision:** Both chips go. The zoom chip stays: nothing else reports the base font size now that the row that sets it lives behind the settings dialog. The session, branch/worktree, diff, running and balance chips stay for the same reason — no other surface carries them.
+
+**Behavior after:** The bar renders the session, branch/worktree, diff, running, balance and zoom chips and nothing else. No `status-permission` or `status-context` element is built at all, so the bar test asserts their absence rather than their text, and the context percentage has one home (the composer's ring) instead of two.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`status_bar`); `crates/tact-gui/tests/shell.rs` (`the_status_bar_renders_its_segmented_chips`)
+
+## 1. 2026-09-24 — The rename dialog's field takes the press that focuses it
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (the rename dialog's content closure); `crates/tact-gui/tests/shell.rs` (`every_entry_point_answers_a_click`) |
+
+**Symptom / motivation:** The wrapper around `session-rename-input` neither tracked the field's focus handle nor forwarded a press to it, and GPUI does not move focus on a press the way a browser does; the dialog's own focus arrived through a deferred callback. So whether typing landed in the field depended on that callback having already run — beside other integration tests it often had not, and the walk that renames a session failed roughly half the time with the seeded name still in place.
+
+**Decision:** The wrapper tracks the focus handle and hands the press to the field, the idiom the session search well already uses for the same reason. The walk asserts that the field reports focus and types through `within("session-rename-input")`, so a keystroke that would land nowhere fails loudly instead of silently leaving the old name.
+
+**Behavior after:** A press anywhere on the rename row focuses the field and the keys that follow land in it, whatever the timing of the deferred focus. The wrapper is also what carries the row's test-support id, so a wrapper that does not forward the press is now unusable from a test rather than quietly flaky.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (the rename dialog); `crates/tact-gui/tests/shell.rs` (`every_entry_point_answers_a_click`)
+
+## 1. 2026-09-24 — A sent prompt comes back into view
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`submit_task`, `scroll_transcript_to_end`, `record_change`, the card-expansion path that clears `follow_tail`); `crates/tact-gui/tests/shell.rs` (`sending_a_prompt_brings_the_tail_back_into_view`, `the_enter_key_sends_the_draft_like_the_button`) |
+
+**Symptom / motivation:** A submitted prompt landed below the fold, so the reader had to pull the transcript down to see what they had just sent. The transcript only followed its tail while `follow_tail` was set, and two things cleared it: the "Follow streaming output" switch, and expanding a card — deliberately, so the viewport stays put while the card grows. Nothing put it back, so one card expansion was enough to stop the transcript following for the rest of the session, and every later send looked like it had gone nowhere.
+
+**Decision:** `submit_task` returns to the tail through `scroll_transcript_to_end`, the seam the shell already exposed for tests and future search jumps. Sending is the reader's own action and the prompt they just sent is what they expect to see; expanding a card is a read. That distinction is what one boolean could not carry, and leaving the shell's flag disagreeing with the scroller's own follow mode is what produced the bug. The call re-arms the flag, which is the honest reading of the switch's label: after asking for a turn, its output is what the reader is waiting for.
+
+**Behavior after:** Sending a prompt — from the composer's Enter, the `.send` press, a skill invocation, or the work pane's prompt — brings the transcript to its tail, so the newest prompt is on screen without a manual scroll, whatever the follow-streaming setting says. Output that streams in afterwards follows, because the send re-armed it. Expanding a card still leaves the viewport where it was. The existing Enter test lost the explicit scroll it had been using to see the rows it had just sent, so its assertion now has to earn what it checks: the test added beside it was verified to fail at exactly that assertion with the fix removed.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`submit_task`, `scroll_transcript_to_end`, `record_change`); `crates/tact-gui/tests/shell.rs` (`sending_a_prompt_brings_the_tail_back_into_view`); `book/26_chapter_issue.md` §1 2026-09-21 (the layout store and the zoom the shell persists)
+
+## 1. 2026-09-24 — The composer's popovers share one row grammar, and their lists take the keyboard
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact-gui/src/shell.rs` (`menu_choice_row`, `usage_value_row`, `usage_panel`, `ComposerMenu`, `move_composer_menu`, the `composer-effort-popover`, `composer-permission-popover`, `composer-model-popover` and `composer-usage-popover` contents); `crates/tact-gui/tests/shell.rs` (`the_composer_option_rows_keep_the_choice_they_set`, `every_entry_point_answers_a_click`) |
+
+**Symptom / motivation:** Two complaints, one surface. The composer's popovers did not look like each other: the reasoning-effort list and the permission list were the only ones still building their entries from `Button` — which centres its label and sizes it from the component scale — and the Context usage panel set no text size at all, so its lines took the default body size and sized themselves to their text. And once those lists were drawn rather than borrowed, nothing gave them a keyboard identity: `Button` had supplied the Tab stop, and the completion popup already showed that the shell knows how to give a drawn list one.
+
+**Decision:** `menu_choice_row` is the one choice grammar, and the model picker and the settings font picker were folded into it, so the copies that had drifted apart in height (28 px where a leading icon is drawn, 26 px where it is not) are gone; `menu_action_row` stays for the icon-bearing action menus. The grammar is full width, `justify_start`, 1.625 rem tall, an 11 px label, and the accent wash plus full-strength ink on the entry in force; selection is reported as `aria_selected`, which the model picker's rows already did. The font picker now marks the family in use, which it never did. The usage panel gets `usage_value_row` at the same 11 px with a fixed muted label column so the numbers line up; it takes its two inks as arguments rather than a `&App`, because a popover's content closure cannot return an element that borrows the app it was handed — the failure is a lifetime error at the closure, not a rendering one.
+
+For the keyboard, `ComposerMenu` owns each list — its rows' values, labels, ids and the commit — so the popover draws from the same list the keyboard walks and the row Enter takes cannot drift from the row that was drawn. The shell keeps one highlight (`composer_menu`, `composer_menu_index`) and one `intercept_keystrokes` beside the completion popup's: while a list is open it owns the arrows, Home/End and Enter, and opens the highlight on the value in force so Enter without a move re-commits what the session already runs. The pointer and the keyboard commit through the same `ComposerMenu::commit`.
+
+**Behavior after:** Effort and permission entries are 11 px, left-aligned rows; the value in force wears the accent wash and full-strength ink, the arrows move the highlight over the same wash, and Enter commits the row it is on — a test drives both lists from the keys and pins each list's row height against the model picker's, so going back to a component button fails rather than merely looking different. The usage panel reads as five labelled metric rows — `Prompt`, `Completion`, `Total`, `Cache`, `Reasoning` — each named in the accessibility tree, so the walk checks what the panel claims and not only that it opened. Clicking an option still sets the value and leaves the popover open, exactly as before. Font size and alignment are not readable from the semantic tree, so those are structural here: the surfaces share one set of constants, and only the row heights are asserted. The add menu and the model picker are still pointer-only — pre-existing, and the model picker's rows move behind a search field, so it needs its own decision about who owns the arrows.
+
+**Pointers:** `crates/tact-gui/src/shell.rs` (`menu_choice_row`, `menu_action_row`, `usage_value_row`, `usage_panel`, `ComposerMenu`, `move_composer_menu`, the composer popover contents); `crates/tact-gui/tests/shell.rs` (`the_composer_option_rows_keep_the_choice_they_set`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md`
+
+## 1. 2026-09-24 — The Appearance page grows a Font size row
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact-gui/src/shell.rs` (`settings_panel`, `set_zoom`, `zoom_in`, `zoom_out`, the status chip); `crates/tact-gui/src/layout.rs` (`zoom_percent`, `ZOOM_DEFAULT`, `ZOOM_MIN`, `ZOOM_MAX`); `crates/tact-gui/tests/shell.rs` (`the_settings_font_size_row_steps_the_base_size`) |
+
+**Symptom / motivation:** The base font size — the shell's zoom — was reachable only from `Ctrl`+`=` / `Ctrl`+`-` / `Ctrl`+`0` and the palette's three Zoom rows. A reader who wants smaller or larger text opens Settings first, and Appearance listed Theme, Show reasoning, Follow streaming output and Interface font, but not the text size — the one Appearance control they were most likely looking for.
+
+**Decision:** The row joins the existing Typography group rather than opening a new one, since that group already owns the shell's type; its description now reads "Family and size apply to the whole shell." The control steps around the current value — smaller, the level, larger — and it stays *controlled*: it reads `TactApp::zoom_rem` and calls the same `zoom_in` / `zoom_out` the palette and the keybindings call. Nothing new is stored and no second path exists, so keyboard, palette and settings cannot drift a step apart. The two buttons are icon-only (`IconName::Minus` / `Plus`, the icons the palette's Zoom rows already use), so each carries a tooltip and an accessible name, and each is disabled at its end of the 12–24 px range. The percentage comes from one helper, `layout::zoom_percent`, which the status chip now uses too: the chip and the row report one number, and two independent roundings is exactly how they would come to disagree.
+
+**Behavior after:** Settings → Appearance → Typography carries "Interface font" and "Font size". The row reports the level in the same percentage the status chip shows — `100%` at the prototype's base size, `106%` one step in — and `−` / `+` move it exactly as `Ctrl`+`-` / `Ctrl`+`=` do, one pixel of base size per press, with a direction's button going dark once that end of the range is reached. The choice survives a restart, because it is the same `zoom_rem` that `~/.tact/gui-layout.json` already held. The Appearance page renders its groups through a virtualized list, so the Typography group materializes once its sidebar entry is picked — the path the row's test takes.
+
+**Pointers:** `crates/tact-gui/src/layout.rs` (`zoom_percent`, `the_zoom_percentage_reads_the_base_size`); `crates/tact-gui/src/shell.rs` (`settings_panel`'s `font_size_row`, `set_zoom`, `zoom_in`, `zoom_out`); `crates/tact-gui/tests/shell.rs` (`the_settings_font_size_row_steps_the_base_size`, `zooming_changes_the_rem_size_and_reports_it`); `docs/superpowers/specs/2026-09-19-tact-desktop-client-design.md` §14
+
 ## 1. 2026-09-24 — The desktop `/` surface is the terminal's
 
 | Field | Value |
