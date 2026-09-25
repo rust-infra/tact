@@ -55,7 +55,16 @@ enum PreparedState {
     Resolved(String),
 }
 
-const TOOL_CANCELLED_MSG: &str = "Cancelled by user";
+/// A `ToolResult` written for a `ToolUse` that was never executed. Each reason
+/// is spelled out, because the result is persisted: a later reader (human or
+/// model) has to be able to tell a user cancel from a turn that died on a
+/// refusal / an unrecognized stop reason / a truncated response.
+pub(super) const TOOL_CANCELLED_MSG: &str = "Cancelled by user";
+pub(super) const TOOL_REFUSED_MSG: &str = "Not executed: the model refused this request";
+pub(super) const TOOL_UNKNOWN_STOP_MSG: &str = "Not executed: unrecognized stop reason";
+pub(super) const TOOL_TRUNCATED_MSG: &str =
+    "Not executed: output was truncated before this tool ran";
+pub(super) const TOOL_TURN_ENDED_MSG: &str = "Not executed: the turn ended before this tool ran";
 const MAX_TOOL_ARG_SUMMARY_CHARS: usize = 120;
 
 fn build_tool_results(
@@ -466,7 +475,7 @@ impl Agent {
                 .or_insert(0) += 1;
             if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                self.append_cancelled_tool_uses(&mut prepared, content);
+                self.append_unexecuted_tool_uses(&mut prepared, content, TOOL_CANCELLED_MSG);
                 return Ok(Preflight {
                     prepared,
                     cancelled: true,
@@ -980,10 +989,11 @@ impl Agent {
         Ok((outputs, manual_compact))
     }
 
-    fn append_cancelled_tool_uses(
+    fn append_unexecuted_tool_uses(
         &mut self,
         prepared: &mut Vec<PreparedTool>,
         content: &[ContentBlock],
+        reason: &str,
     ) {
         for block in content.iter().skip(prepared.len()) {
             let ContentBlock::ToolUse { id, name, input } = block else {
@@ -994,7 +1004,7 @@ impl Agent {
                 idx: step_idx,
                 tool_id: id.clone(),
                 arg_summary: String::new(),
-                error: TOOL_CANCELLED_MSG.to_string(),
+                error: reason.to_string(),
             });
             prepared.push(PreparedTool {
                 id: id.clone(),
@@ -1002,11 +1012,30 @@ impl Agent {
                 input: input.clone(),
                 step_idx,
                 permission_label: None,
-                state: PreparedState::Resolved(TOOL_CANCELLED_MSG.to_string()),
+                state: PreparedState::Resolved(reason.to_string()),
                 resolved: ResolvedTool::Unknown { name: name.clone() },
                 task_before: None,
             });
         }
+    }
+
+    /// Results for every `ToolUse` in `content`, all carrying `reason`, plus the
+    /// matching `StepFailed` UI events.
+    ///
+    /// Used when a turn ends *after* its assistant message has been persisted but
+    /// *without* executing the tools it asked for. Every `ToolUse` needs a
+    /// matching `ToolResult` or the stored history is invalid for providers that
+    /// enforce pairing (Anthropic 400s on `tool_use` without `tool_result`; a
+    /// Responses baseline keeps a `function_call` with no output), and the shape
+    /// survives a resume. A cancel during execution already produces these stubs.
+    pub(super) fn unexecuted_tool_results(
+        &mut self,
+        content: &[ContentBlock],
+        reason: &str,
+    ) -> Vec<ContentBlock> {
+        let mut prepared: Vec<PreparedTool> = Vec::new();
+        self.append_unexecuted_tool_uses(&mut prepared, content, reason);
+        build_tool_results(prepared, Vec::new())
     }
 }
 

@@ -73,12 +73,17 @@ pub fn popup_inner(area: Rect) -> Rect {
 }
 
 /// RN-style popup chrome: Clear + styled border block + title row + optional footer.
+///
+/// `footer_note` is free-form text drawn at the *front* of the bottom border,
+/// before the key hints — used by the tool popups to print the raw tool id
+/// (dynamic text, so it cannot live in the `&'static str` [`FooterHint`]s).
 /// Returns the inner content Rect.
 pub fn render_popup_chrome(
     frame: &mut Frame,
     popup_area: Rect,
     theme: &Theme,
     title: &str,
+    footer_note: Option<&str>,
     footer: Option<&[FooterHint]>,
 ) -> Rect {
     frame.render_widget(Clear, popup_area);
@@ -99,11 +104,16 @@ pub fn render_popup_chrome(
         .title(Line::from(title_spans))
         .style(Style::default().bg(theme.bg));
 
-    if let Some(hints) = footer {
-        let mut footer_spans: Vec<Span<'static>> = Vec::new();
-        for (i, hint) in hints.iter().enumerate() {
-            if i > 0 {
-                footer_spans.push(Span::styled(" | ", Style::default().fg(theme.muted)));
+    let hints = footer.unwrap_or(&[]);
+    if footer_note.is_some() || !hints.is_empty() {
+        let separator = || Span::styled(" | ", Style::default().fg(theme.muted));
+        let mut footer_spans: Vec<Span<'_>> = Vec::new();
+        if let Some(note) = footer_note {
+            footer_spans.push(Span::styled(note, Style::default().fg(theme.muted)));
+        }
+        for hint in hints {
+            if !footer_spans.is_empty() {
+                footer_spans.push(separator());
             }
             footer_spans.push(Span::styled(hint.key, Style::default().fg(theme.accent)));
             footer_spans.push(Span::styled(hint.label, Style::default().fg(theme.muted)));

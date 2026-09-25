@@ -672,6 +672,36 @@ impl Agent {
         }
     }
 
+    /// Persist a matching `ToolResult` for every `ToolUse` in `content`, then
+    /// return.
+    ///
+    /// Called on every path that leaves a turn without executing its tools. The
+    /// assistant message is already durable by then (and, for Responses, so is
+    /// the provider-state commit that covers it), so leaving it unanswered would
+    /// store a `ToolUse` with no `ToolResult`. Providers that enforce pairing
+    /// reject that on the next request — Anthropic serializes the request body
+    /// verbatim and answers `tool_use ids were found without tool_result
+    /// blocks`, and a Responses baseline keeps a `function_call` with no output
+    /// — and because the shape is persisted it outlives the process, so a resume
+    /// inherits it. The wire-level repair in `tact_llm::convert` covers chat
+    /// completions only, which is why this is fixed at the source.
+    ///
+    /// `reason` is written into each result, so a later reader can tell a user
+    /// cancel from a refusal / an unrecognized stop reason / a truncated
+    /// response. No-op when the turn contains no tool call.
+    async fn abandon_pending_tools(
+        &mut self,
+        content: &[ContentBlock],
+        reason: &str,
+    ) -> Result<()> {
+        let unexecuted = self.unexecuted_tool_results(content, reason);
+        if unexecuted.is_empty() {
+            return Ok(());
+        }
+        self.push_message(Message::new_blocks(Role::User, unexecuted))
+            .await
+    }
+
     async fn persist_message(&mut self, role: Role, content: &MessageContent) -> Result<()> {
         let Some(store) = self.runtime.session_store.as_ref() else {
             return Ok(());
@@ -1137,6 +1167,8 @@ impl Agent {
                          or switch to another model with different safety filters."
                             .to_string();
                     self.emit_update(AgentUpdate::Info(info_msg));
+                    self.abandon_pending_tools(&content, tool_dispatch::TOOL_REFUSED_MSG)
+                        .await?;
                     return Err(anyhow::anyhow!(
                         "model refused to process this request (stop_reason=refusal)"
                     ));
@@ -1145,22 +1177,35 @@ impl Agent {
                     self.emit_update(AgentUpdate::Info(format!(
                         "Unrecognized stop_reason={raw:?}; treating as end of turn"
                     )));
+                    self.abandon_pending_tools(&content, tool_dispatch::TOOL_UNKNOWN_STOP_MSG)
+                        .await?;
+                    return Ok(());
+                }
+                // The recovery branch above returns early while continuation
+                // attempts remain, so reaching here with `MaxTokens` means the
+                // response was truncated and we are giving up: any tool call in
+                // it stays unexecuted.
+                Some(StopReason::MaxTokens) => {
+                    self.abandon_pending_tools(&content, tool_dispatch::TOOL_TRUNCATED_MSG)
+                        .await?;
                     return Ok(());
                 }
                 // PauseTurn: Tact does not use Anthropic server tools; finish like EndTurn.
-                Some(
-                    StopReason::EndTurn
-                    | StopReason::StopSequence
-                    | StopReason::MaxTokens
-                    | StopReason::PauseTurn,
-                )
+                Some(StopReason::EndTurn | StopReason::StopSequence | StopReason::PauseTurn)
                 | None => {
+                    // No `tool_use` stop reason means no tool is executed from
+                    // this turn; a provider that sent calls anyway still gets
+                    // them answered.
+                    self.abandon_pending_tools(&content, tool_dispatch::TOOL_TURN_ENDED_MSG)
+                        .await?;
                     return Ok(());
                 }
             }
 
             if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                self.abandon_pending_tools(&content, tool_dispatch::TOOL_CANCELLED_MSG)
+                    .await?;
                 return Ok(());
             }
             let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
@@ -2335,6 +2380,43 @@ mod tests {
         ContentBlock::Text {
             text: content.to_string(),
         }
+    }
+
+    /// Blocks of a message (`MessageContent::Text` carries none).
+    fn message_blocks(message: &Message) -> &[ContentBlock] {
+        match &message.content {
+            MessageContent::Blocks { content } => content,
+            MessageContent::Text { .. } => &[],
+        }
+    }
+
+    /// `(tool_use ids, ids answered by a tool_result)` in message order.
+    fn tool_pairing(messages: &[Message]) -> (Vec<String>, Vec<String>) {
+        let mut uses = Vec::new();
+        let mut results = Vec::new();
+        for block in messages.iter().flat_map(message_blocks) {
+            match block {
+                ContentBlock::ToolUse { id, .. } => uses.push(id.clone()),
+                ContentBlock::ToolResult { tool_use_id, .. } => results.push(tool_use_id.clone()),
+                _ => {}
+            }
+        }
+        (uses, results)
+    }
+
+    /// Content of the `ToolResult` answering `tool_use_id`.
+    fn tool_result_for(messages: &[Message], tool_use_id: &str) -> Option<String> {
+        messages
+            .iter()
+            .flat_map(message_blocks)
+            .find_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id: id,
+                    content,
+                    ..
+                } if id == tool_use_id => Some(content.clone()),
+                _ => None,
+            })
     }
 
     #[test]
@@ -4465,6 +4547,239 @@ mod tests {
         assert_eq!(finished.len(), 2);
         assert!(finished.contains(&"r1"));
         assert!(finished.contains(&"r2"));
+    }
+
+    /// A cancel that lands after the assistant message was persisted but before
+    /// tool execution must still answer every `ToolUse` with a `ToolResult`.
+    /// Otherwise the stored history has a dangling tool call, which providers
+    /// that enforce pairing reject on the next request (and which a resume or a
+    /// later fork would inherit).
+    #[tokio::test]
+    async fn cancel_before_tool_execution_pairs_every_tool_use() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = test_context("cancel_before_tools");
+        tool_context.ui_tx = Some(tx.clone());
+
+        // The responder sets the agent's cancel flag while producing the
+        // tool-call turn, so the flag is guaranteed to be set when the loop
+        // reaches its pre-execution cancel check. `Agent::new` allocates the
+        // real flag, so it is installed into the slot after construction.
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+        let flag_slot: Arc<Mutex<Option<Arc<AtomicBool>>>> = Arc::new(Mutex::new(None));
+        let slot = flag_slot.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            if idx > 0 {
+                // Bound the loop if the cancel path regresses: answer later
+                // calls with a plain end-of-turn.
+                return Ok((
+                    vec![make_text_block("done")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ));
+            }
+            if let Some(flag) = slot.lock().unwrap().as_ref() {
+                flag.store(true, Ordering::SeqCst);
+            }
+            Ok((
+                vec![ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({ "path": "a.txt" }),
+                }],
+                Some(StopReason::ToolUse),
+                None,
+            ))
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session("session-1".to_string(), store.clone());
+        *flag_slot.lock().unwrap() = Some(agent.tool_context.cancel_flag.clone());
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "read a.txt")))
+            .await
+            .expect("cancelled loop returns Ok");
+
+        // The tool must not have run.
+        let mut updates = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            updates.push(u);
+        }
+        assert!(
+            !updates
+                .iter()
+                .any(|u| matches!(u, AgentUpdate::StepFinished { .. })),
+            "a cancelled-before-execution tool must not report a finished step"
+        );
+
+        // Every persisted `ToolUse` has a matching `ToolResult`, carrying the
+        // cancel reason.
+        let messages = store.load_session("session-1").await.unwrap();
+        assert_eq!(
+            tool_pairing(&messages),
+            (vec!["t1".to_string()], vec!["t1".to_string()]),
+            "the persisted history must pair the cancelled tool call with a result"
+        );
+        assert_eq!(
+            tool_result_for(&messages, "t1").as_deref(),
+            Some("Cancelled by user")
+        );
+    }
+
+    /// A refusal is surfaced as an error, but the assistant message that asked
+    /// for a tool is already persisted: it still has to be answered.
+    #[tokio::test]
+    async fn refusal_pairs_every_tool_use() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = test_context("refusal_pairs_tools");
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::new(vec![(
+            vec![
+                make_text_block("I will not do that"),
+                ContentBlock::ToolUse {
+                    id: "t1".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({ "path": "a.txt" }),
+                },
+            ],
+            Some(StopReason::Refusal),
+        )]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session("session-1".to_string(), store.clone());
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "read a.txt")))
+            .await
+            .expect_err("a refusal is surfaced as an error");
+
+        let messages = store.load_session("session-1").await.unwrap();
+        assert_eq!(
+            tool_pairing(&messages),
+            (vec!["t1".to_string()], vec!["t1".to_string()]),
+            "a refused turn must still answer the tool call it asked for"
+        );
+        assert_eq!(
+            tool_result_for(&messages, "t1").as_deref(),
+            Some("Not executed: the model refused this request")
+        );
+    }
+
+    /// Once the continuation budget is exhausted, a truncated response finishes
+    /// the turn — including the tool call it may have emitted mid-truncation,
+    /// which the recovery branch above would otherwise have executed.
+    #[tokio::test]
+    async fn truncated_turn_pairs_every_tool_use() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = test_context("truncated_pairs_tools");
+        tool_context.ui_tx = Some(tx.clone());
+
+        // Every call is truncated with a fresh tool call, so the continuation
+        // path runs the tool for the first `MAX_CONTINUATION_ATTEMPTS` turns and
+        // the last one is left for the give-up arm.
+        let mock = MockClient::with_responder(move |_request, idx| {
+            Ok((
+                vec![ContentBlock::ToolUse {
+                    id: format!("t{idx}"),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({ "path": "missing.txt" }),
+                }],
+                Some(StopReason::MaxTokens),
+                None,
+            ))
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session("session-1".to_string(), store.clone());
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "read a.txt")))
+            .await
+            .expect("an exhausted continuation finishes the turn");
+
+        let messages = store.load_session("session-1").await.unwrap();
+        let (uses, results) = tool_pairing(&messages);
+        assert!(
+            uses.len() > 1,
+            "the continuation path must have executed at least one turn: {uses:?}"
+        );
+        assert_eq!(
+            uses, results,
+            "every truncated turn's tool call needs a matching result"
+        );
+        let last = uses.last().expect("at least one tool call");
+        assert_eq!(
+            tool_result_for(&messages, last).as_deref(),
+            Some("Not executed: output was truncated before this tool ran"),
+            "the call the agent gave up on is answered, not executed"
+        );
     }
 
     #[tokio::test]

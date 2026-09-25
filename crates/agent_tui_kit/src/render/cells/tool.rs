@@ -29,6 +29,8 @@ pub struct ToolCell {
     /// Title row text (tool name + arguments); styled here with the live theme.
     title_raw: String,
     phase: ToolPhase,
+    /// Background task id, drawn right after the phase label.
+    task_id: Option<String>,
     permission_label: Option<String>,
     error_message: Option<String>,
     duration_us: Option<u64>,
@@ -95,6 +97,7 @@ impl ToolCell {
         Self {
             title_raw: output.title_raw,
             phase: output.phase,
+            task_id: output.task_id,
             permission_label: output.permission_label,
             error_message: output.error_message,
             duration_us: output.duration_us,
@@ -144,6 +147,7 @@ impl ToolCell {
         };
         let mut text = build_meta_text(
             self.phase,
+            self.task_id.as_deref(),
             self.permission_label.as_deref(),
             self.size_bytes,
             duration_us,
@@ -515,6 +519,7 @@ mod tests {
         ToolRenderOutput {
             title_raw: "Write  src/main.rs".into(),
             phase: ToolPhase::Success,
+            task_id: None,
             permission_label: None,
             error_message: None,
             duration_us: Some(12_000),

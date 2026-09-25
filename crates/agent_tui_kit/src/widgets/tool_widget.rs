@@ -179,6 +179,7 @@ pub use tact_protocol::format_bytes;
 #[allow(clippy::too_many_arguments)]
 pub fn build_meta_text(
     phase: ToolPhase,
+    task_id: Option<&str>,
     permission_label: Option<&str>,
     size_bytes: Option<usize>,
     duration_us: Option<u64>,
@@ -198,6 +199,12 @@ pub fn build_meta_text(
     };
 
     let mut parts = vec![phase_label];
+    // The background task id sits directly after the phase: the card outlives
+    // the invocation, so this is where a reader looks for "what is still
+    // running" (`/background <id>`).
+    if let Some(id) = task_id.filter(|s| !s.is_empty()) {
+        parts.push(id.to_string());
+    }
     if matches!(phase, ToolPhase::Failed)
         && let Some(err) = error_message.filter(|s| !s.is_empty())
     {
@@ -411,6 +418,9 @@ pub struct ToolRenderOutput {
     pub subagent_model: Option<String>,
     /// Subagent token usage for tool-card header display.
     pub subagent_tokens: Option<TokenUsageInfo>,
+    /// Background task started by this call, shown right after the phase label
+    /// of a live card (`background_run` returns before its task finishes).
+    pub task_id: Option<String>,
     /// Tool visual kind from presentation metadata.
     pub visual_kind: tact_protocol::ToolVisualKind,
 }
@@ -495,6 +505,7 @@ impl ToolRenderOutput {
             .then(|| collapsed_output_hint(msgs, self.detail_total_lines));
         let mut text = build_meta_text(
             self.phase,
+            self.task_id.as_deref(),
             self.permission_label.as_deref(),
             self.size_bytes,
             self.duration_us,
@@ -570,6 +581,7 @@ pub struct ToolWidget {
     live_detail: bool,
     subagent_model: Option<String>,
     subagent_tokens: Option<TokenUsageInfo>,
+    task_id: Option<String>,
     presentation: ToolPresentationInfo,
 }
 
@@ -598,6 +610,7 @@ impl ToolWidget {
             live_detail: false,
             subagent_model: None,
             subagent_tokens: None,
+            task_id: None,
             presentation: ToolPresentationInfo::generic(""),
         }
     }
@@ -615,6 +628,13 @@ impl ToolWidget {
 
     pub fn with_subagent_tokens(mut self, tokens: Option<TokenUsageInfo>) -> Self {
         self.subagent_tokens = tokens;
+        self
+    }
+
+    /// Background task started by this call (`background_run`). Rendered right
+    /// after the phase label so the id is readable while the task runs.
+    pub fn with_task_id(mut self, task_id: Option<String>) -> Self {
+        self.task_id = task_id;
         self
     }
 
@@ -778,6 +798,7 @@ impl ToolWidget {
             live_detail: false,
             subagent_model: None,
             subagent_tokens: None,
+            task_id: None,
             presentation: result.presentation.clone(),
         }
     }
@@ -982,6 +1003,7 @@ impl ToolWidget {
             },
             subagent_model: self.subagent_model.clone(),
             subagent_tokens: self.subagent_tokens.clone(),
+            task_id: self.task_id.clone(),
             visual_kind: kind_from_presentation(&self.presentation, &self.tool_name),
         }
     }
@@ -1465,6 +1487,7 @@ mod tests {
             ToolPhase::Running,
             None,
             None,
+            None,
             Some(0),
             None,
             '⠋',
@@ -1486,6 +1509,7 @@ mod tests {
             ToolPhase::Failed,
             None,
             None,
+            None,
             Some(42),
             Some("Permission denied by user for bash"),
             '⠋',
@@ -1499,6 +1523,82 @@ mod tests {
         assert!(text.contains("Failed"));
         assert!(text.contains("Permission denied"));
         assert!(text.contains("42us"));
+    }
+
+    /// A background task's id sits directly after the phase word, so it is
+    /// readable while the task still runs (the card outlives the call that
+    /// started it).
+    #[test]
+    fn meta_puts_the_background_task_id_right_after_the_phase() {
+        let msgs = test_msgs();
+
+        // The running row is produced by the cell (its elapsed time ticks), so
+        // it is asserted through the shared formatter the cell calls.
+        let running = build_meta_text(
+            ToolPhase::Running,
+            Some("018f3a2c"),
+            None,
+            None,
+            Some(1_500_000),
+            None,
+            '⠋',
+            msgs.tool_phase_running,
+            msgs.tool_phase_success,
+            msgs.tool_phase_failed,
+            msgs.tool_meta_sep,
+            msgs.step_success_prefix,
+            msgs.step_fail_prefix,
+        );
+        assert!(
+            running.starts_with(&format!(
+                "⠋ {}{}018f3a2c",
+                msgs.tool_phase_running, msgs.tool_meta_sep
+            )),
+            "the id must be the field right after the phase: {running}"
+        );
+        assert!(
+            running.contains(&format!(
+                "018f3a2c{}{}",
+                msgs.tool_meta_sep,
+                format_duration_us(1_500_000)
+            )),
+            "the duration must follow the id: {running}"
+        );
+
+        // A finished background card keeps the id on its meta row — the row the
+        // collapsed-card hit test measures.
+        let finished = ToolWidget::new()
+            .with_tool("background_run")
+            .with_arg_summary("cargo build")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(1_500_000)
+            .with_task_id(Some("018f3a2c".to_string()))
+            .build();
+        let text = finished.meta_text(&msgs).expect("finished-row text");
+        assert!(
+            text.starts_with(&format!(
+                "{} {}{}018f3a2c",
+                msgs.step_success_prefix, msgs.tool_phase_success, msgs.tool_meta_sep
+            )),
+            "finished row: {text}"
+        );
+
+        // No id: the row is exactly what it was before.
+        let without_id = ToolWidget::new()
+            .with_tool("background_run")
+            .with_phase(ToolPhase::Success)
+            .with_duration_us(1_500_000)
+            .build();
+        assert_eq!(
+            without_id.meta_text(&msgs).unwrap(),
+            format!(
+                "{} {}{}{}",
+                msgs.step_success_prefix,
+                msgs.tool_phase_success,
+                msgs.tool_meta_sep,
+                format_duration_us(1_500_000)
+            )
+        );
     }
 
     #[test]
@@ -1912,6 +2012,7 @@ mod tests {
         );
         let meta = build_meta_text(
             output.phase,
+            output.task_id.as_deref(),
             output.permission_label.as_deref(),
             output.size_bytes,
             output.duration_us,

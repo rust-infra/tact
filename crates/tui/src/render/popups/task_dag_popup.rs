@@ -26,8 +26,14 @@ pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App
             label: " close ",
         },
     ];
-    let inner =
-        super::render_popup_chrome(frame, popup_area, &app.theme, " tasks-dag ", Some(footer));
+    let inner = super::render_popup_chrome(
+        frame,
+        popup_area,
+        &app.theme,
+        " tasks-dag ",
+        None,
+        Some(footer),
+    );
 
     // The mermaid layout depends on width; re-render when the popup width changes.
     let width = inner.width as usize;

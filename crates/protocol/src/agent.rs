@@ -288,8 +288,15 @@ pub enum AgentUpdate {
     /// tables / fenced code keep their formatting), unlike [`Info`] which is
     /// treated as short single-line system text.
     MdInfo(String),
-    /// Session statistics (triggered by the /stats command)
-    SessionStats(String),
+    /// Pre-rendered Markdown to show in the modal popup instead of the
+    /// transcript, headed by `title`.
+    ///
+    /// Same rendering as [`Self::MdInfo`], different destination: a read-out you
+    /// open, read and dismiss (`/stats`, `/background`) should not push the
+    /// conversation off the log. The title travels with the body because the
+    /// producer also owns the text — the TUI does not have to know which command
+    /// it is answering.
+    PopupMarkdown { title: String, source: String },
 
     /// Request user to choose **one** option; returns option index (None = cancelled).
     /// Used by permission prompts and single-choice `ask_user`.
@@ -323,13 +330,18 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>,
         reason: TasksChangeReason,
     },
-    /// Update tool-card metadata (model name, token usage) without
-    /// cluttering the output stream. Emitted by subagents to keep
-    /// the parent tool card header up to date.
+    /// Update tool-card metadata (model name, token usage, task id) without
+    /// cluttering the output stream. Emitted by subagents (model / tokens, to
+    /// keep the parent tool card header up to date) and by `background_run`
+    /// (the id of the task it just started, which the card shows while the task
+    /// keeps running after the invocation returned).
     ToolMeta {
         tool_id: String,
         model: Option<String>,
         token_usage: Option<TokenUsageInfo>,
+        /// Background task started by this tool call, shown next to the card's
+        /// phase so the id can be read (and polled) while the task runs.
+        task_id: Option<String>,
     },
     /// Finalize a tool card that stayed live after its invocation returned
     /// (see [`ToolPresentationInfo::keep_live`]). Emitted by background tasks

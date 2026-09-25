@@ -466,9 +466,13 @@ pub fn is_account_query_supported() -> bool {
     read_provider(|p| p.is_account_query_supported())
 }
 
-/// Returns false if the current model is known to be text-only (e.g. DeepSeek V4).
+/// Endpoint heuristic: returns false if the current model is known to be
+/// text-only (e.g. DeepSeek V4), judging by the model id / base URL alone.
 ///
-/// Use this to gate image attachments before they reach the LLM layer.
+/// This is **not** the product gate: the config layer wraps it in
+/// `tact::config::supports_vision`, which lets a per-model
+/// `[llm.model_profiles."<id>"].supports_vision` override outrank it. Gate image
+/// inputs on that one, or a proxy serving a mixed pool cannot be described.
 pub fn supports_vision() -> bool {
     read_provider(|p| p.supports_vision())
 }

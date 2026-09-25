@@ -534,6 +534,55 @@ fn log_tool_card_renders_when_scrolled_into_placeholder_rows() {
     );
 }
 
+/// A `background_run` card shows the id of the task it started, right after
+/// the phase word, for as long as the task runs (the invocation has already
+/// returned by then, so this row is where the id is readable).
+#[test]
+fn running_background_card_shows_the_task_id() {
+    let mut app = make_app();
+    let mut presentation = ToolPresentationInfo::generic("background_run");
+    presentation.keep_live = true;
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "run build in background",
+        "background_run",
+        "bg1",
+        HashMap::from([("command".to_string(), "cargo build".to_string())]),
+    )));
+    app.handle_agent_update(AgentUpdate::StepStarted {
+        idx: 0,
+        tool_id: "bg1".into(),
+        tool_name: "background_run".into(),
+        arg_summary: "cargo build".into(),
+        arg_full: "cargo build".into(),
+        presentation,
+    });
+    // What `background_run` sends once the task exists.
+    app.handle_agent_update(AgentUpdate::ToolMeta {
+        tool_id: "bg1".into(),
+        model: None,
+        token_usage: None,
+        task_id: Some("018f3a2c".into()),
+    });
+
+    let text = render_log_panel_text(&mut app, 100, 20);
+    assert!(
+        text.contains("Background Run"),
+        "card title missing:\n{text}"
+    );
+    assert!(
+        text.contains("Running") && text.contains("018f3a2c"),
+        "the task id must be on the running row:\n{text}"
+    );
+    // The id belongs between the phase and the elapsed time, not at the tail
+    // where subagent metadata goes.
+    let running_at = text.find("Running").expect("phase word");
+    let id_at = text.find("018f3a2c").expect("task id");
+    assert!(
+        id_at > running_at,
+        "the id must follow the phase word:\n{text}"
+    );
+}
+
 #[test]
 fn completed_command_renders_header_rows_only() {
     let mut app = make_app();

@@ -13,6 +13,7 @@ use crate::widgets::state::{
 fn seed_diff_popup(app: &mut App) {
     app.tools_mut().popup = Some(DiffPopup {
         title: "read_file".into(),
+        tool_name: Some("read_image".into()),
         file_path: None,
         git_diff_path: None,
         workspace_dir: None,
@@ -461,6 +462,46 @@ fn main_area_diff_popup_renders_inline_content() {
 }
 
 #[test]
+fn tool_popup_bottom_border_names_the_tool_and_its_keys() {
+    let mut app = make_app();
+    seed_diff_popup(&mut app);
+
+    let terminal = render_main_area_terminal(&mut app, 100, 30);
+    let area = app.mouse.diff_popup_area;
+    assert!(!area.is_empty(), "tool popup must have rendered");
+
+    // Read the bottom border row itself: the tool id belongs there, not on the
+    // title row (which names the file / command instead).
+    let buffer = terminal.backend().buffer();
+    let bottom: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, area.bottom() - 1)].symbol().to_string())
+        .collect();
+
+    assert!(
+        bottom.contains("read_image"),
+        "tool id missing from the popup bottom border: {bottom}"
+    );
+    for hint in ["copy", "close", "scroll"] {
+        assert!(
+            bottom.contains(hint),
+            "the {hint} hint is missing from the popup bottom border: {bottom}"
+        );
+    }
+    assert!(
+        !bottom.contains("read_file"),
+        "the title must stay on the top border: {bottom}"
+    );
+
+    // The border row keeps the theme background on every column, footer text
+    // included — otherwise the note would leave a default-bg patch behind it.
+    let theme_bg = app.theme.bg;
+    assert!(
+        (area.left()..area.right()).all(|x| buffer[(x, area.bottom() - 1)].bg == theme_bg),
+        "the popup bottom border row must carry the theme background"
+    );
+}
+
+#[test]
 fn diff_popup_selection_reverses_source_cells_but_not_number_or_gutter() {
     let mut app = make_app();
     seed_diff_popup(&mut app);
@@ -830,6 +871,36 @@ fn main_area_system_message_renders_in_log() {
 }
 
 #[test]
+fn background_popup_keeps_the_listing_out_of_the_log() {
+    let mut app = make_app();
+    let listing = "```text\n018f3a2c  running   cargo build\n```";
+    let log_len = app.log.items.len();
+    app.handle_agent_update(tact_protocol::AgentUpdate::PopupMarkdown {
+        title: "⚙️ Background Tasks".to_string(),
+        source: listing.to_string(),
+    });
+
+    let popup = app.system_prompt_popup.as_ref().expect("background popup");
+    assert_eq!(popup.title, "⚙️ Background Tasks");
+    assert_eq!(popup.source, listing);
+    assert_eq!(
+        app.log.items.len(),
+        log_len,
+        "the listing is a read-out: it must not join the log"
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        text.contains("Background Tasks"),
+        "popup title missing:\n{text}"
+    );
+    assert!(
+        text.contains("018f3a2c"),
+        "task row missing from the popup:\n{text}"
+    );
+}
+
+#[test]
 fn session_stats_popup_renders_gfm_table() {
     let mut app = make_app();
     let stats = concat!(
@@ -839,7 +910,10 @@ fn session_stats_popup_renders_gfm_table() {
         "|--------|------:|\n",
         "| Elapsed | 1.0s |\n",
     );
-    app.handle_agent_update(tact_protocol::AgentUpdate::SessionStats(stats.into()));
+    app.handle_agent_update(tact_protocol::AgentUpdate::PopupMarkdown {
+        title: "Session Statistics".to_string(),
+        source: stats.to_string(),
+    });
 
     let popup = app
         .system_prompt_popup
@@ -1027,6 +1101,7 @@ fn diff_popup_renders_unified_diff_markers() {
 ";
     let mut app = make_app();
     app.tools_mut().popup = Some(DiffPopup {
+        tool_name: None,
         title: "edit_file".into(),
         file_path: None,
         git_diff_path: None,
@@ -1078,6 +1153,7 @@ fn diff_popup_renders_unified_diff_markers() {
 fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
     let mut app = make_app();
     app.tools_mut().popup = Some(DiffPopup {
+        tool_name: None,
         title: "read_file".into(),
         file_path: None,
         git_diff_path: None,
@@ -1249,12 +1325,25 @@ fn open_diff_popup_after_read_file_step_finish() {
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
 
+    assert_eq!(
+        app.tools_mut()
+            .popup
+            .as_ref()
+            .and_then(|p| p.tool_name.as_deref()),
+        Some("read_file"),
+        "the popup must carry the raw tool id of the block it was opened from"
+    );
+
     let text = render_main_area_text(&mut app, 100, 30);
     let _ = std::fs::remove_file(&file);
 
     assert!(
         text.contains("popup_real_path"),
         "open_diff_popup should render file content from StepFinished tool block, got:\n{text}"
+    );
+    assert!(
+        text.contains("read_file"),
+        "the tool id must reach the popup bottom border, got:\n{text}"
     );
 }
 

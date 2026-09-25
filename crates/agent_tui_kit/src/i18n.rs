@@ -333,7 +333,7 @@ pub struct Messages {
 
     // ---- 任务统计行 ----
     pub task_stats_prefix: &'static str, // "Task stats:" / "任务统计：" (no emoji — it rendered too wide)
-    pub task_stats_copy_btn: &'static str, // "[copy]" / "[复制]"
+    pub task_stats_copy_btn: &'static str, // "⎘" — an icon, so it is locale-independent
 }
 
 impl Messages {
@@ -623,7 +623,7 @@ impl Messages {
 
             scroll_indicator_tmpl: "↕ {}/{} ",
             task_stats_prefix: "Task stats:",
-            task_stats_copy_btn: "[copy]",
+            task_stats_copy_btn: "⎘",
         }
     }
 
@@ -901,7 +901,7 @@ impl Messages {
 
             scroll_indicator_tmpl: "↕ {}/{} ",
             task_stats_prefix: "任务统计：",
-            task_stats_copy_btn: "[复制]",
+            task_stats_copy_btn: "⎘",
         }
     }
 }

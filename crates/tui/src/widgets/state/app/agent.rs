@@ -398,13 +398,11 @@ impl App {
             AgentUpdate::MdInfo(msg) => {
                 self.append_system_markdown(msg);
             }
-            AgentUpdate::SessionStats(stats_text) => {
-                self.system_prompt_popup = Some(SystemPromptPopup {
-                    title: "Session Statistics".to_string(),
-                    source: stats_text,
-                    scroll: 0,
-                });
-                self.input_mode = InputMode::Normal;
+            // Pre-rendered Markdown for a modal read-out (`/stats`,
+            // `/background`): unlike `MdInfo` it does not join the log, so
+            // opening a listing does not push the conversation off screen.
+            AgentUpdate::PopupMarkdown { title, source } => {
+                self.open_markdown_popup(title, source);
             }
             AgentUpdate::RequestSelect {
                 prompt,
@@ -1922,11 +1920,11 @@ mod lifecycle_tests {
             .lines()
             .find(|l| l.contains("Task stats:"))
             .expect("stats block missing");
-        assert_eq!(stats_line, "[copy]  Task stats:⏱ 00:05");
+        assert_eq!(stats_line, "⎘  Task stats:⏱ 00:05");
     }
 
     #[test]
-    fn task_stats_block_localizes_prefix_and_copy_button() {
+    fn task_stats_block_localizes_the_prefix_and_keeps_the_icon_copy_button() {
         let mut app = make_app();
         app.language = crate::i18n::Language::Chinese;
         app.last_prompt_elapsed_secs = Some(5);
@@ -1944,17 +1942,20 @@ mod lifecycle_tests {
             .lines()
             .find(|l| l.contains("任务统计："))
             .expect("stats block missing");
-        assert_eq!(stats_line, "[复制]  任务统计：⏱ 00:05");
+        // The copy button is an icon, so it does not change with the language.
+        assert_eq!(stats_line, "⎘  任务统计：⏱ 00:05");
     }
 
     #[test]
     fn task_stats_line_detection_covers_all_languages_and_legacy_rows() {
         use crate::widgets::state::is_task_stats_line;
 
+        assert!(is_task_stats_line("⎘  Task stats:⏱ 01:05"));
+        assert!(is_task_stats_line("⎘  任务统计：⏱ 01:05"));
+        // Rows persisted before the icon replaced the label still need their
+        // `[copy]` / `[复制]` affordance (legacy rows keep it at the end).
         assert!(is_task_stats_line("[copy]  Task stats:⏱ 01:05"));
         assert!(is_task_stats_line("[复制]  任务统计：⏱ 01:05"));
-        // Rows persisted before the icon was removed still need `[copy]` support
-        // (legacy rows keep the button at the end).
         assert!(is_task_stats_line("📊 任务统计：⏱ 01:05  [copy]"));
         assert!(!is_task_stats_line("plain answer text"));
     }
@@ -2200,7 +2201,10 @@ mod lifecycle_tests {
 
         // An unrelated update resets the mode (the historical "missed popup"
         // hang). The pending request must force the popup back on screen.
-        app.handle_agent_update(AgentUpdate::SessionStats("tokens: 42".into()));
+        app.handle_agent_update(AgentUpdate::PopupMarkdown {
+            title: "Session Statistics".to_string(),
+            source: "tokens: 42".to_string(),
+        });
         assert!(
             matches!(app.input_mode, InputMode::Select),
             "a pending select must stay rendered so it can still be answered"

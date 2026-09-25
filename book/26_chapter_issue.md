@@ -32,6 +32,97 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-25 — The task-stats copy button is an icon, not a translated word
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`task_stats_copy_btn`); `crates/tui/src/widgets/state/app/messages.rs` (`is_task_stats_line`, `find_task_stats_copy_button`, `LEGACY_TASK_STATS_COPY_BTNS`); `crates/tui/src/handlers/mouse.rs` (the task-stats click target) |
+
+**Symptom / motivation:** The per-turn stats row led with a translated word — `[copy]` in English, `[复制]` in Chinese — i.e. the only affordance on the row was six columns of prose, and it changed size with the UI language (a two-character CJK label where the English one is six ASCII columns). It is an action, not text: the row's own wording already comes from the prefix (`Task stats:` / `任务统计：`), so the button only needed to say "click me to copy".
+
+**Decision:** `Messages::task_stats_copy_btn` becomes `⎘` (U+2398) in both languages. It is one column wide (the row is drawn with `SystemPlain`'s three-column indent, so the glyph sits at mouse column 4), which keeps the stats block compact, and it is locale-independent — one value instead of two. The legacy `[copy]` / `[复制]` labels stay supported: rows persisted by older versions are re-rendered from `raw`, so both matching (`is_task_stats_line`) and clicking (`find_task_stats_copy_button`) still recognize them. `find_task_stats_copy_button` now scans the current icon plus the two legacy labels and takes the **earliest** match — the affordance leads the row today, whereas old rows carried their label at the end. Rejected: keeping the bracketed word (it buys nothing over the icon and widens with translation) and dropping legacy support (old stats rows would silently lose the copy affordance).
+
+**Behavior after:** A finished turn ends with `⎘  Task stats:⏱ mm:ss · model · N tokens …` in both languages; clicking the glyph copies that turn's log text, and every other column — including the gap right after the glyph — still starts a text selection. Rows written before this change keep their `[copy]` / `[复制]` button and remain clickable. Tests: `tui::widgets::state::app::agent::tests::{task_stats_block_skips_empty_parts,task_stats_block_localizes_the_prefix_and_keeps_the_icon_copy_button,task_stats_line_detection_covers_all_languages_and_legacy_rows}`, `tui::handlers::mouse::tests::{task_stats_copy_only_triggers_inside_button,task_stats_body_click_does_not_copy}`.
+
+---
+
+
+## 1. 2026-09-25 — A background task's id lives on the card that started it
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/protocol/src/agent.rs` (`AgentUpdate::ToolMeta.task_id`); `crates/tact/src/tool/background_run.rs`; `crates/agent_tui_kit/src/components/tool.rs`; `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`build_meta_text`, `ToolWidget::with_task_id`); `crates/agent_tui_kit/src/render/cells/tool.rs`; [Ch 13](./13_chapter_background.md) |
+
+**Symptom / motivation:** The id of a background task was only reachable by reading the result text. `background_run` returns while its task keeps running, and the card that represents it is deliberately kept live until the process exits — but the card showed only the command and a ticking `⠋ Running · 1.5s`. The id sat in the tool *result* (`Background task 018f3a2c started: cargo build`), i.e. behind a double-click, at a moment when the card's live output was still streaming and the whole point was to be able to poll, cancel or wait on that specific task. `/background <id>` and `check_background { task_id }` both need the id, and it was the one piece of the card's state a reader could not see.
+
+**Decision:** Carry the id as structured card metadata instead of parsing it back out of the tool's output text. `AgentUpdate::ToolMeta` — already the "update card metadata without cluttering the stream" channel (subagents use it for model and token counts) — gains an optional `task_id`, and `background_run` sends it once, right after `BackgroundManager::start` returns. It is stored on the tool card (`ToolRenderOutput.task_id`), survives the keep-live finalize (a finished card keeps showing the id it ran under), and is rendered by the shared `build_meta_text` as the field directly after the phase word: `⠋ Running · 018f3a2c · 1.50s`, and `✓ Success · 018f3a2c · 12.00s` once it ends. Rejected: parsing the `Background task <id> started:` prefix in the UI layer (the exact wording of a tool result becomes a rendering contract, and it breaks silently), and folding the id into the `arg_summary` shown in the title (the title is the command, which is what identifies the card).
+
+**Behavior after:** A `background_run` card shows its task id on the meta row — after the phase, before the elapsed time — from the moment the task starts and after it finishes, so the id can be read, copied and passed to `/background <id>` or `check_background` without opening the card. `wait_background` / `check_background` cards are unchanged (their title already carries the id, via the `Id` argument-summary policy). Other tools' cards are unaffected: `build_meta_text` renders nothing extra when no id is set. Tests: `agent_tui_kit::widgets::tool_widget::tests::meta_puts_the_background_task_id_right_after_the_phase` (field order, plus the unchanged no-id row), `tui::render::log_render_tests::running_background_card_shows_the_task_id` (the drawn buffer carries the id after the phase word), `tact::tool::background_run::tests::background_run_reports_the_started_id_to_the_card` (the `ToolMeta` the tool emits carries the id it just started).
+
+---
+
+## 1. 2026-09-25 — `/background` reports in a popup, not in the transcript
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/protocol/src/agent.rs` (`AgentUpdate::PopupMarkdown`); `crates/tact-ui/src/driver.rs` (`UserCommand::QueryBackground`); `crates/tui/src/widgets/state/app/{agent,popups}.rs` (`open_markdown_popup`); `crates/tui/src/render/popups/system_prompt_popup.rs`; [Ch 13](./13_chapter_background.md) |
+
+**Symptom / motivation:** `/background` answered with `AgentUpdate::MdInfo`, i.e. it appended a Markdown cell to the transcript. That is the right destination for something the model said, but this is a read-out: the user asks for the task listing, reads it, and wants to dismiss it. Instead the listing stayed in the log forever, pushed the conversation up, and was re-rendered on every reload of that scroll position — and the same was true of the single-task pretty JSON, which could be dozens of lines.
+
+**Decision:** Name the *destination*, not the command: a new `AgentUpdate::PopupMarkdown { title, source }` replaces the per-command `SessionStats(String)`, and `/background` and `/stats` both emit it. The body is the same pre-rendered Markdown (the background listing stays a fenced `text` block, so the one-line-per-task alignment survives), but the TUI opens the shared read-out popup instead of appending a log cell; `open_markdown_popup` is the single place that opens it. The title travels with the body because the producer also owns the text — the TUI no longer hardcodes `Session Statistics`, and the next read-out costs no new protocol variant. Fixing the destination exposed the delivery path: `/background` used to fall through to `handle_user_command`, which the command loop only reaches after `await`ing the in-flight turn, so a listing asked for during a turn arrived minutes later — as a popup, which is worse than arriving in the log. It is now answered in the loop from a cloned `SharedBackgroundManager` (and a cloned session id), exactly like `QueryStats` reads the cloned `Arc<RwLock<SessionStats>>`; the `handle_user_command` arm is kept for callers that bypass the loop. Rejected: keeping `MdInfo` and having the TUI guess from the content (the `## ⚙️ Background Tasks` heading is not a contract), keeping `SessionStats` beside the new variant (two names for one destination, with the title split across the two ends of the channel), and answering late plus a `/mcp list`-style busy guard (refusing a read-out that the shared manager can answer without touching the Agent).
+
+**Behavior after:** `/background` and `/background <id>` open a scrollable popup titled `⚙️ Background Tasks`, and `/stats` the same popup titled `Session Statistics`; `Esc` closes, `j`/`k` scroll, and the transcript is untouched — no new log entries, no scroll jump on reload. Both commands answer *while a turn is running*, from shared state, instead of queueing behind it. Every other `MdInfo` producer is unchanged, so a task card's summary or an MCP listing still lands in the log. Tests: `tact_ui::driver::tests::query_background_emits_a_popup_listing_when_no_tasks` (the driver must not emit `MdInfo`, and the title/body must be the listing), `query_background_responds_immediately_while_task_runs` (a blocked responder must not delay the answer), `tui::render::popup_scene_tests::background_popup_keeps_the_listing_out_of_the_log` (popup opens with the given title, the log item count does not move, the row renders), plus the migrated `query_stats_responds_immediately_while_task_runs` and `session_stats_popup_renders_gfm_table`.
+
+---
+
+## 1. 2026-09-25 — A cancelled turn answers every tool call it had already asked for
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/agent/mod.rs` (`agent_loop` stop-reason arms, `abandon_pending_tools`); `crates/tact/src/agent/tool_dispatch.rs` (`unexecuted_tool_results`, `append_unexecuted_tool_uses`, the `TOOL_*_MSG` reasons); `crates/tact_llm/src/anthropic/mod.rs` (`prepare_body`); `crates/tact_llm/src/convert.rs` (`sanitize_assistant_messages`, `drop_orphaned_tool_messages`); [Ch 18](./18_chapter_agent_loop.md) |
+
+**Symptom / motivation:** A turn stored an unanswered tool call. The assistant message is pushed and persisted the moment the stream returns (`agent_loop`), and the cancel flag was only consulted *after* the stop reason was classified — so a cancel landing in that window (or a process that died there) left a persisted `ToolUse` with no `ToolResult`, and `Ok(())` returned as if the turn had completed. Nothing client-side rejects that shape on load, and the wire behaviour differs per provider: chat completions repairs it defensively (`sanitize_assistant_messages` strips the orphaned `tool_calls`, `drop_orphaned_tool_messages` drops orphaned results, both with a `tracing::warn!`), Anthropic serializes the request body verbatim and answers `tool_use ids were found without tool_result blocks` (400), and a Responses baseline keeps the `function_call` inside its committed `input_items`. Because the broken shape is *persisted*, it survived a resume — cancel, quit, resume, and the session could not continue. Three more, non-cancel, ways to reach the same shape existed: `Refusal`, an unrecognized stop reason, and the give-up arm of an exhausted `MaxTokens` continuation — all three returned directly after the assistant message was already durable.
+
+**Decision:** Answer the calls on every exit that ends a turn without executing them. `Agent::unexecuted_tool_results(content, reason)` reuses `append_unexecuted_tool_uses` (the helper the pre-flight cancel path already called, now parameterized by a reason) to build the `ContentBlock::ToolResult` for each pending `ToolUse`, and `Agent::abandon_pending_tools` pushes them as one user message before returning; cancel, refusal, unknown stop reason and the exhausted continuation all route through it, plus a defensive call on the ordinary end-of-turn arm (a no-op when the turn asked for nothing). The reason is written into each result because the result is persisted, and five are distinguished: `Cancelled by user`, `Not executed: the model refused this request`, `…unrecognized stop reason`, `…output was truncated before this tool ran`, `…the turn ended before this tool ran`. `MaxTokens` therefore moved out of the `EndTurn | StopSequence | PauseTurn | None` group into its own arm — the recovery branch above already `continue`s while attempts remain, so reaching the arm means giving up. Rejected: moving the cancel check above the assistant push — it would drop the assistant text the user just watched stream, and for Responses it would also have to skip the provider-state commit that already happened; and leaving the chat-completions wire repair as the only defence — Anthropic has none, and a repair at the wire cannot fix what the store hands to the next process.
+
+**Behavior after:** Every turn that ends after its assistant message is durable but before its tools run records one result per call it asked for — `Cancelled by user` for a cancel (identical to the stub a mid-execution cancel writes), and the matching `Not executed: …` explanation for a refusal, an unrecognized stop reason or an abandoned truncation. Every `ToolUse` in the stored history has a match, so the session resumes on any provider. No tool runs on those paths (no `StepFinished`), and the UI gets the same unexecuted `StepFailed` entries the mid-execution cancel path emits. Regression tests: `agent::tests::{cancel_before_tool_execution,refusal,truncated_turn}_pairs_every_tool_use` (all three verified to fail before the fix).
+
+---
+
+## 1. 2026-09-25 — The tool popup names its tool and its keys on the bottom border
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/state/tool_state.rs` (`DiffPopup.tool_name`); `crates/agent_tui_kit/src/render/popups/{mod,diff_popup}.rs` (`render_popup_chrome`, `TOOL_POPUP_FOOTER`); `crates/tui/src/widgets/state/app/popups.rs` (`popup_from_tool_output`); `docs/tool_rendering.md` §8; [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** The tool detail popup identified itself only through its title, and that title is content-shaped — a file path for `read_file`, `bash (<full command>)` for a command, the localized card title for a failed tool — so a modal opened from a file read never said which tool produced it. Its bottom border was empty as well (`render_popup_chrome(…, None)`), while every sibling popup (thinking, subagent, mermaid, code, dag, system prompt) prints its keys there, which left the tool popup as the one overlay with no visible hint that `y` copies, `Esc` closes, and `j`/`k` scroll.
+
+**Decision:** Print the raw tool id at the front of the bottom border, followed by this popup's real keys, as one centered line: `read_image | y copy | Esc close | j/k scroll`. `render_popup_chrome` gained a `footer_note: Option<&str>` ahead of the `&'static str` `FooterHint`s (the id is dynamic, so it cannot be a hint), joined by the same ` | ` separator. The id is stamped once, by a `popup_from_tool_output` wrapper over the per-kind branches, so no branch can forget it or disagree with another.
+
+**Behavior after:** Every popup opened from a tool block shows `{} | y copy | Esc close | j/k scroll` on its bottom border, `{}` being the raw tool id (`read_image`, `bash`, `spawn_subagent`, …). The key list matches `handle_overlay_key` exactly — `g`/`G` are deliberately absent because the code / mermaid / dag / subagent popups own them. The other overlay popups are unchanged (they pass `footer_note = None`), and a `DiffPopup` that did not come from a tool block carries `tool_name = None` and falls back to the keys-only footer.
+
+---
+
+## 1. 2026-09-25 — The image gate is overridable per model, because the endpoint heuristic cannot describe a proxy
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/{mod,types,resolve}.rs` (`supports_vision`, `ModelProfileToml`, the `model_profiles` merge); `crates/tact/src/tool/read_image.rs`; `crates/tact-ui/src/driver.rs`; `crates/tact_llm/src/{provider,profile,types}.rs`; [Ch 21](./21_chapter_config.md) §4; [Ch 22](./22_chapter_llm.md) |
+
+**Symptom / motivation:** `read_image` refused images on a model that can read them. The gate was `tact_llm::supports_vision()`, a pure name heuristic: a target is "DeepSeek-ish" when the provider kind, the base URL or the **model id** says `deepseek`, and a DeepSeek-ish target counts as text-only unless the id also contains `vision`. On an OpenAI-compatible proxy entry (`https://opencode.ai/zen/go/v1`, `[llm] provider = "openai"`, `model = "deepseek-flash"`) the id hit the DeepSeek branch and the gate closed. Measured against the live endpoint with hand-built 8×8 PNGs: `deepseek-flash` and `deepseek-v4.1-flash` accept `image_url` parts and describe the picture correctly (dark-green field, white square in the middle — not guessable), while `deepseek-v4-flash` answers 400 `Model only supports text input` and `deepseek-v4-pro` reports `[Unsupported Image]`. Two of the four ids were false negatives, and no local rule can separate the halves: the endpoint's `/v1/models` returns only `id / object / created / owned_by` for all 35 ids, so there is no modality metadata to read either.
+
+**Decision:** Add a per-model override rather than a smarter heuristic. `ModelProfileToml` — already keyed by exact model id and already merged TOML-over-built-in per model / per field — gains `supports_vision: Option<bool>`; unset keeps the heuristic, exactly as before. The gate moves to `tact::config::supports_vision()`, which consults the override for the current model and falls back to `tact_llm::supports_vision()`. Both product gates (the `read_image` tool and the image-attachment check in the UI driver) call it. Rejected: an entry-level bool (cannot describe a mixed pool), a per-entry model allow/deny list (new config surface for the same information), and probing the endpoint at startup (cost, side effects, and a cache to invalidate).
+
+**Behavior after:** `[llm.model_profiles."<id>"].supports_vision = true|false` overrides the gate for that exact model id; unset = endpoint heuristic. `read_image` and image attachments honour it, including after `/model` switches, because the lookup keys off the resolved `llm.model` that `/model` updates. `true` on a text-only model means the image reaches the API and comes back as its own 400; `false` on a capable model refuses locally. A vision-only TOML entry leaves the built-in thinking tiers intact and is invisible to the `/model` second step.
+
+---
+
 ## 1. 2026-09-18 — A cancel reaches a tree whose leader already exited, and the record keeps the end of the stream
 
 | Field | Value |

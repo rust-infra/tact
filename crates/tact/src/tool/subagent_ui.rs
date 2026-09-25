@@ -129,6 +129,7 @@ pub fn tagged_ui_channel_with_progress(
                         tool_id: progress.tool_id().to_string(),
                         model: None,
                         token_usage: Some(usage),
+                        task_id: None,
                     });
                 }
                 AgentUpdate::ModelInfo(params) => {
@@ -136,6 +137,7 @@ pub fn tagged_ui_channel_with_progress(
                         tool_id: progress.tool_id().to_string(),
                         model: Some(params.model),
                         token_usage: None,
+                        task_id: None,
                     });
                 }
                 AgentUpdate::RequestSelect {
@@ -475,9 +477,11 @@ mod tests {
                 tool_id,
                 model,
                 token_usage,
+                task_id,
             } => {
                 assert_eq!(tool_id, "t1");
                 assert!(model.is_none());
+                assert!(task_id.is_none());
                 let u = token_usage.unwrap();
                 assert_eq!(u.total, 999);
                 assert_eq!(u.prompt_cache_hit_tokens, 600);
@@ -553,8 +557,10 @@ mod tests {
                 tool_id,
                 model,
                 token_usage,
+                task_id,
             } => {
                 assert_eq!(tool_id, "t1");
+                assert!(task_id.is_none());
                 assert_eq!(model.unwrap(), "fake");
                 assert!(token_usage.is_none());
             }

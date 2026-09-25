@@ -239,7 +239,8 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
             label: " scroll ",
         },
     ];
-    let inner = super::render_popup_chrome(frame, popup_area, ctx.theme, &header, Some(footer));
+    let inner =
+        super::render_popup_chrome(frame, popup_area, ctx.theme, &header, None, Some(footer));
     let body_area = inner;
 
     let selection_range = selection.and_then(|sel| sel.normalized_non_empty(raw_text));
@@ -288,6 +289,7 @@ mod tests {
         ToolRenderOutput {
             title_raw: "53. Subagent".into(),
             phase: ToolPhase::Running,
+            task_id: None,
             permission_label: None,
             error_message: None,
             duration_us: Some(1),

@@ -32,6 +32,97 @@
 ---
 
 
+## 1. 2026-09-25 — 任务统计行的复制按钮改用图标，不再是需要翻译的词
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`task_stats_copy_btn`）；`crates/tui/src/widgets/state/app/messages.rs`（`is_task_stats_line`、`find_task_stats_copy_button`、`LEGACY_TASK_STATS_COPY_BTNS`）；`crates/tui/src/handlers/mouse.rs`（任务统计行的点击区域） |
+
+**现象 / 动机：** 每轮结束的统计行以一个被翻译过的词开头——英文 `[copy]`、中文 `[复制]`——这行唯一的可点区域是六列散文，而且宽度随界面语言变化（中文两字，英文六列 ASCII）。它表达的是动作而不是文本：行本身的措辞已经由前缀（`Task stats:` / `任务统计：`）承担，按钮只需要说明"点我复制"。
+
+**决策：** `Messages::task_stats_copy_btn` 两种语言统一改为 `⎘`（U+2398）。它只占一列（该行按 `SystemPlain` 的三列缩进绘制，所以字形落在鼠标第 4 列），统计块因此更紧凑，而且与语言无关——一个值取代两个。旧的 `[copy]` / `[复制]` 仍然受支持：老版本写进会话的行会按 `raw` 重新渲染，因此识别（`is_task_stats_line`）与点击（`find_task_stats_copy_button`）都必须认得它们。`find_task_stats_copy_button` 现在扫描当前图标加两个旧标签并取**最靠前**的匹配——按钮今天在行首，而旧行把标签放在行尾。否决的方案：保留带方括号的词（相比图标没有任何收益，还会随翻译变宽）、放弃旧格式兼容（旧统计行会悄悄失去复制入口）。
+
+**变更后行为：** 一轮结束后统计行在两种语言下都渲染为 `⎘  Task stats:⏱ mm:ss · model · N tokens …`；点击字形复制该轮的日志文本，其余任何一列——包括字形后面那个空格——仍然照常开始文本选择。本次改动之前写入的行保留 `[copy]` / `[复制]` 按钮且仍可点击。测试：`tui::widgets::state::app::agent::tests::{task_stats_block_skips_empty_parts,task_stats_block_localizes_the_prefix_and_keeps_the_icon_copy_button,task_stats_line_detection_covers_all_languages_and_legacy_rows}`、`tui::handlers::mouse::tests::{task_stats_copy_only_triggers_inside_button,task_stats_body_click_does_not_copy}`。
+
+---
+
+
+## 1. 2026-09-25 — 后台任务的 id 就钉在启动它的那张卡片上
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/protocol/src/agent.rs`（`AgentUpdate::ToolMeta.task_id`）；`crates/tact/src/tool/background_run.rs`；`crates/agent_tui_kit/src/components/tool.rs`；`crates/agent_tui_kit/src/widgets/tool_widget.rs`（`build_meta_text`、`ToolWidget::with_task_id`）；`crates/agent_tui_kit/src/render/cells/tool.rs`；[Ch 13](./13_chapter_background_zh.md) |
+
+**症状 / 动机：** 后台任务的 id 只能靠读结果文本来拿。`background_run` 在任务还在跑的时候就返回了，而代表它的卡片会被刻意保持存活直到进程退出——可卡片上只有命令和一行走动的 `⠋ Running · 1.5s`。id 躺在工具**结果**里（`Background task 018f3a2c started: cargo build`），也就是藏在双击之后；而此刻卡片的实时输出还在流，人真正想做的恰恰是对这个具体任务做轮询、取消或等待。`/background <id>` 与 `check_background { task_id }` 都需要这个 id，而它偏偏是卡片状态里唯一读不到的一项。
+
+**决策：** 把 id 作为**结构化的卡片元数据**传出来，而不是从工具输出文本里反解。`AgentUpdate::ToolMeta`——本来就是「在不打扰输出流的前提下更新卡片元数据」的通道（subagent 用它传模型名与 token 数）——新增可选字段 `task_id`，由 `background_run` 在 `BackgroundManager::start` 返回后立刻发一次。它存放在工具卡片上（`ToolRenderOutput.task_id`），能穿过 keep-live 的收尾（已完成的卡片继续显示它当时运行所用的 id），并由共用的 `build_meta_text` 渲染成紧跟阶段词之后的那个字段：`⠋ Running · 018f3a2c · 1.50s`，结束后是 `✓ Success · 018f3a2c · 12.00s`。已否决：在 UI 层解析 `Background task <id> started:` 前缀（工具结果的具体措辞会变成渲染契约，而且失效时悄无声息）；以及把 id 塞进标题里的 `arg_summary`（标题是命令，那才是识别卡片的东西）。
+
+**之后的可见行为：** `background_run` 卡片在 meta 行上显示自己的任务 id——位于阶段词之后、耗时之前——从任务启动起直到结束之后，因此无需打开卡片即可读到、复制并传给 `/background <id>` 或 `check_background`。`wait_background` / `check_background` 卡片不变（它们的标题本来就有 id，走 `Id` 参数摘要策略）。其它工具的卡片不受影响：没有 id 时 `build_meta_text` 不渲染任何额外内容。测试：`agent_tui_kit::widgets::tool_widget::tests::meta_puts_the_background_task_id_right_after_the_phase`（字段顺序 + 无 id 时逐字不变）、`tui::render::log_render_tests::running_background_card_shows_the_task_id`（渲染出的缓冲区里 id 确实在阶段词之后）、`tact::tool::background_run::tests::background_run_reports_the_started_id_to_the_card`（工具发出的 `ToolMeta` 带着它刚启动的 id）。
+
+---
+
+## 1. 2026-09-25 — `/background` 改用弹窗汇报，不再写进主面板
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/protocol/src/agent.rs`（`AgentUpdate::PopupMarkdown`）；`crates/tact-ui/src/driver.rs`（`UserCommand::QueryBackground`）；`crates/tui/src/widgets/state/app/{agent,popups}.rs`（`open_markdown_popup`）；`crates/tui/src/render/popups/system_prompt_popup.rs`；[Ch 13](./13_chapter_background_zh.md) |
+
+**症状 / 动机：** `/background` 用 `AgentUpdate::MdInfo` 回答，也就是往转录里追加一个 Markdown 单元。对"模型说过的话"这是正确的去处，但它其实是一份**只读报表**：用户要的是任务列表，看完就想关掉。结果这个列表永久留在日志里，把对话往上挤，而且在同一个滚动位置重新加载时还要重绘一遍——单任务的 pretty JSON 同理，可能几十行。
+
+**决策：** 命名**去处**而不是命名命令：新增 `AgentUpdate::PopupMarkdown { title, source }` 取代按命令划分的 `SessionStats(String)`，`/background` 与 `/stats` 都发它。正文还是同一份预渲染 Markdown（后台列表依旧是 fenced `text` 块，保住"一任务一行"的对齐），但 TUI 打开共用的只读弹窗，而不是追加日志单元；`open_markdown_popup` 是打开该弹窗的唯一入口。标题随正文一起传，因为正文本来就由生产方负责——TUI 不再硬编码 `Session Statistics`，而且下一个只读报表不需要再新增协议变体。改去处的过程顺带暴露出交付路径的问题：`/background` 原先落到 `handle_user_command`，而命令循环只有在 `await` 完正在跑的回合之后才会走到那里，于是"回合进行中要一份列表"会在几分钟后才到达——弹窗形态下这比出现在日志里更糟。现在它由循环直接回答，用的是 clone 出来的 `SharedBackgroundManager`（外加 clone 的 session id），与 `QueryStats` 读 clone 出来的 `Arc<RwLock<SessionStats>>` 完全同构；`handle_user_command` 里的分支保留给绕过循环的调用方。已否决：继续用 `MdInfo` 让 TUI 从内容猜（`## ⚙️ Background Tasks` 这个标题不是契约）；在新变体旁边留着 `SessionStats`（同一去处两个名字，标题还分裂在通道两端）；以及"延迟回答 + 照 `/mcp list` 加 busy 守卫"（共享 manager 本来就能在不碰 Agent 的情况下回答，没理由拒绝）。
+
+**之后的可见行为：** `/background` 与 `/background <id>` 打开一个标题为 `⚙️ Background Tasks` 的可滚动弹窗，`/stats` 打开同一个弹窗、标题 `Session Statistics`；`Esc` 关闭、`j`/`k` 滚动，转录完全不动——不新增日志条目、重新加载时也不跳滚动位置。两条命令都在**回合运行期间**从共享状态即时回答，而不是排在这一轮后面。其它所有 `MdInfo` 生产方不变，所以任务卡片摘要、MCP 列表仍旧落在日志里。测试：`tact_ui::driver::tests::query_background_emits_a_popup_listing_when_no_tasks`（driver 不得再发 `MdInfo`，标题/正文须是列表）、`query_background_responds_immediately_while_task_runs`（被阻塞的 responder 不得推迟回答）、`tui::render::popup_scene_tests::background_popup_keeps_the_listing_out_of_the_log`（弹窗带给定标题打开、日志条目数不变、行内容渲染出来），以及迁移后仍然覆盖该通路的 `query_stats_responds_immediately_while_task_runs` 与 `session_stats_popup_renders_gfm_table`。
+
+---
+
+## 1. 2026-09-25 — 被取消的一轮会把它已经要过的每个工具调用都答复掉
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/agent/mod.rs`（`agent_loop` 的 stop reason 分支、`abandon_pending_tools`）；`crates/tact/src/agent/tool_dispatch.rs`（`unexecuted_tool_results`、`append_unexecuted_tool_uses`、各 `TOOL_*_MSG` 原因文本）；`crates/tact_llm/src/anthropic/mod.rs`（`prepare_body`）；`crates/tact_llm/src/convert.rs`（`sanitize_assistant_messages`、`drop_orphaned_tool_messages`）；[Ch 18](./18_chapter_agent_loop_zh.md) |
+
+**症状 / 动机：** 一轮对话会把没有结果的工具调用存进历史。assistant 消息在流结束的那一刻就被 push 并持久化（`agent_loop`），而取消标志是在 stop reason 分类**之后**才检查的——所以落在这个窗口里的取消（或恰好在此刻死掉的进程）会留下一个已持久化的 `ToolUse`，却没有任何 `ToolResult`，然后代码用 `Ok(())` 返回，仿佛这一轮正常结束。这个形状在加载时没有任何客户端校验会拦下，而各 provider 的上线行为并不一致：chat completions 会在 wire 层兜底修复（`sanitize_assistant_messages` 剥掉孤立的 `tool_calls`、`drop_orphaned_tool_messages` 丢弃孤立的结果，两者都带 `tracing::warn!`）；Anthropic 把请求体原样序列化发出，得到 `tool_use ids were found without tool_result blocks`（400）；Responses 的 baseline 则把这个 `function_call` 留在已提交的 `input_items` 里。由于这个坏形状是**持久化**的，它能活过一次 resume——取消、退出、恢复，会话就再也跑不下去了。同一形状还有三个**非取消**的来源：`Refusal`、未知 stop reason、以及 `MaxTokens` 续写次数耗尽后放弃的那一支——三处都在 assistant 消息落库之后直接 `return`。
+
+**决策：** 让每一条"不执行工具就结束这一轮"的出口都补上结果。`Agent::unexecuted_tool_results(content, reason)` 复用 `append_unexecuted_tool_uses`（pre-flight 取消路径本来就在调用的 helper，现在把 reason 参数化）为每个待执行 `ToolUse` 生成 `ContentBlock::ToolResult`，`Agent::abandon_pending_tools` 再把它作为一条 user 消息 push 后返回；四个出口（取消、拒绝、未知 stop reason、`MaxTokens` 耗尽）加上正常的 end-of-turn 兜底全部走这条路径（无工具调用时是零成本 no-op）。reason 分五种写进结果文本，因为它是**持久化**的：`Cancelled by user` / `Not executed: the model refused this request` / `…unrecognized stop reason` / `…output was truncated before this tool ran` / `…the turn ended before this tool ran`。为此把 `MaxTokens` 从 `EndTurn | StopSequence | PauseTurn | None` 那一组里拆出来单独一支（续写预算未耗尽时上一段已经 `continue`，走到这里就是放弃）。已否决：把取消检查提到 assistant 消息 push 之前——那会丢掉用户刚看着流出来的 assistant 文本，而且对 Responses 还得跳过已经发生的 provider-state 提交；以及只留 chat completions 的 wire 级修复当唯一防线——Anthropic 根本没有这条修复，而且 wire 层的修复救不了"上一个进程写进库、下一个进程读出来"的形状。
+
+**之后的可见行为：** 任何在持久化 assistant 消息之后、执行工具之前结束的一轮，都会为它要过的每个工具调用记录一条结果——取消时是 `Cancelled by user`，与执行中取消写下的桩完全相同；拒绝 / 未知 stop reason / 截断放弃时是各自的 "Not executed: …" 说明。因此持久化历史里每个 `ToolUse` 都有配对，会话在任何 provider 上都能继续。这些工具不会执行（没有 `StepFinished`），UI 收到与执行中取消路径相同的"未执行"`StepFailed` 条目。回归测试：`agent::tests::{cancel_before_tool_execution,refusal,truncated_turn}_pairs_every_tool_use`（三条都验证过修复前失败）。
+
+---
+
+## 1. 2026-09-25 — 工具弹窗在底部边框上写出工具名与按键
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/agent_tui_kit/src/state/tool_state.rs`（`DiffPopup.tool_name`）、`crates/agent_tui_kit/src/render/popups/{mod,diff_popup}.rs`（`render_popup_chrome`、`TOOL_POPUP_FOOTER`）、`crates/tui/src/widgets/state/app/popups.rs`（`popup_from_tool_output`）、`docs/tool_rendering.md` §8；[Ch 23](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 工具详情弹窗只靠标题自证身份，而标题是"内容形状"的——`read_file` 是文件路径、命令是 `bash (<完整命令>)`、失败工具是本地化的卡片标题——所以从一次文件读取打开的弹窗从不说自己是哪个工具产生的。同时它的底部边框是空的（`render_popup_chrome(…, None)`），而所有同类弹窗（thinking、subagent、mermaid、code、dag、system prompt）都在那里打印按键，于是工具弹窗成了唯一一个不提示 `y` 复制、`Esc` 关闭、`j`/`k` 滚动的浮层。
+
+**决策：** 在底部边框最前面打印原始 tool id，其后接该弹窗真实支持的按键，合并为居中一行：`read_image | y copy | Esc close | j/k scroll`。`render_popup_chrome` 新增 `footer_note: Option<&str>` 参数，排在 `&'static str` 的 `FooterHint` 之前（id 是动态文本，装不进 hint），两者之间用同一个 ` | ` 分隔。id 只在 `popup_from_tool_output` 外层包装里盖章一次，覆盖所有按 kind 分支，因此没有任何分支会漏掉或写得不一致。
+
+**之后的可见行为：** 从工具块打开的任何弹窗，底部边框都是 `{} | y copy | Esc close | j/k scroll`，`{}` 即原始 tool id（`read_image`、`bash`、`spawn_subagent`……）。按键列表与 `handle_overlay_key` 完全一致——刻意不含 `g`/`G`，那两个键属于 code / mermaid / dag / subagent 弹窗。其它浮层弹窗不变（它们传 `footer_note = None`）；非工具来源的 `DiffPopup` 带 `tool_name = None`，退化为只有按键的底边。
+
+---
+
+## 1. 2026-09-25 — 图片门禁可按模型覆盖：端点启发式描述不了一个代理入口
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/config/{mod,types,resolve}.rs`（`supports_vision`、`ModelProfileToml`、`model_profiles` 合并）、`crates/tact/src/tool/read_image.rs`、`crates/tact-ui/src/driver.rs`、`crates/tact_llm/src/{provider,profile,types}.rs`；[Ch 21](./21_chapter_config_zh.md) §4；[Ch 22](./22_chapter_llm_zh.md) |
+
+**症状 / 动机：** `read_image` 对一个其实能读图的模型拒了图片。门禁是 `tact_llm::supports_vision()`，一条纯名字启发式：provider 类型、base_url 或**模型 id** 任一含 `deepseek` 就算"deepseek 系"，而 deepseek 系目标除非 id 里同时含 `vision`，否则算纯文本。指向一个 OpenAI-compatible 代理入口时（`https://opencode.ai/zen/go/v1`、`[llm] provider = "openai"`、`model = "deepseek-flash"`），这个 id 落进了 deepseek 分支，门禁关闭。用手工构造的 8×8 PNG 打真实端点实测：`deepseek-flash` 与 `deepseek-v4.1-flash` 接受 `image_url` 且能正确描述画面（深绿底、中间一个白方块——猜不出来），而 `deepseek-v4-flash` 回 400 `Model only supports text input`，`deepseek-v4-pro` 自述看到的是 `[Unsupported Image]`。四个 id 里两个是假阴性，而且没有任何本地规则能把它俩分开：该端点的 `/v1/models` 对全部 35 个 id 只返回 `id / object / created / owned_by`，也没有模态元数据可读。
+
+**决策：** 不去把启发式写得更聪明，而是加一个**按模型**的覆盖。`ModelProfileToml`——本来就按精确模型 id 建表、本来就按"按模型/按字段"合并 TOML 与内置默认——新增 `supports_vision: Option<bool>`；不写则完全维持原启发式。门禁迁到 `tact::config::supports_vision()`：先查当前模型的覆盖，再回落到 `tact_llm::supports_vision()`。两个产品门禁（`read_image` 工具、UI driver 的图片附件检查）都改调它。已否决：entry 级 bool（描述不了混合池）、entry 级的模型白/黑名单（同样信息却要新增配置面）、启动时探测端点（有成本、有副作用，还要维护缓存失效）。
+
+**之后的可见行为：** `[llm.model_profiles."<id>"].supports_vision = true|false` 按精确模型 id 覆盖门禁；不写 = 端点启发式。`read_image` 与图片附件都会遵守，`/model` 切换之后依然生效（查表用的是被 `/model` 更新的 resolved `llm.model`）。对纯文本模型设 `true` 意味着图片会发到接口、由接口回它自己的 400；对能读图的模型设 `false` 则本地直接拒绝。只写 `supports_vision` 的条目不会动内置思考档位，对 `/model` 第二步也不可见。
+
+---
+
 ## 1. 2026-09-18 — 取消能打到"leader 已退出的进程树"，且记录保留输出流的结尾
 
 | 字段 | 值 |

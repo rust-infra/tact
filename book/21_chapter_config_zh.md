@@ -130,6 +130,8 @@ thinking_budget = 32000    # 可选全局默认（`max_tokens` 不能设在这�
 
 # 可选：按模型的思考参数选项（模型 id → 可选档位）。
 # /model 第二步只显示该模型映射的档位；无映射的模型回落 provider 默认档位。
+# 同一张表里的 `supports_vision = true|false` 按精确模型 id 覆盖图片输入门禁
+# （不写 = 端点启发式；见 §4）。
 # [llm.model_profiles."gpt-5.6"]
 # reasoning_efforts = ["low", "medium", "high"]
 # [llm.model_profiles."claude-sonnet-4-20250514"]
@@ -232,6 +234,15 @@ kimi k3、k3-256k），`thinking_budgets` 对应 budget 语义模型（anthropic
 kimi coding 系）。两个字段均为可选数组；某模型无条目时回落 provider 默认
 档位。TOML 条目按模型/按字段覆盖内置默认（见 `tact::config::builtin_model_profiles`）。
 跨维度条目（如 effort 语义模型写 `thinking_budgets`）会被忽略，不报错。
+
+同一张表还承载一个非档位键：`supports_vision`（bool），按**精确模型 id**
+覆盖**图片输入门禁**。不写则走 `tact_llm::supports_vision` 的端点启发式——
+它只看 model id 与 base_url：deepseek 系目标除非 id 里同时含 `vision`，否则
+算纯文本，其余一律算支持。需要这个覆盖是因为启发式描述不了"一个
+OpenAI-compatible 代理入口同时提供能读图与不能读图的 id"这种混合池（例如
+`deepseek-flash` 能读图、同入口的 `deepseek-v4-flash` 不能）。`read_image`
+与 UI 图片附件检查调用的 `tact::config::supports_vision` 先查覆盖、再回落
+启发式。`true` 表示把图片发给接口（纯文本目标会回 400），`false` 表示本地直接拒绝。
 
 Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option<OpenAiReasoningEffort>, model_profiles, … }` 供热路径使用。serde 结构与单元测试见 `types.rs`。
 
