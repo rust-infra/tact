@@ -9275,20 +9275,11 @@ fn status_bar(
     let added: u32 = state.diff.iter().filter_map(|entry| entry.added).sum();
     let removed: u32 = state.diff.iter().filter_map(|entry| entry.removed).sum();
 
-    let permission = permission_mode_label(state.permission_mode.as_str());
-
     let running = state
         .subagents
         .iter()
         .filter(|run| run.status == tact_protocol::SubagentStatusSnapshot::Running)
         .count();
-
-    let context = state.usage.as_ref().map(|usage| {
-        format!(
-            "{}% context",
-            context_percent(usage.total, state.context_window)
-        )
-    });
 
     let mut bar = h_flex()
         .w_full()
@@ -9320,23 +9311,6 @@ fn status_bar(
             cx,
         ));
     }
-
-    bar = bar.child(
-        h_flex()
-            .items_center()
-            .gap(rems(0.3125))
-            .flex_shrink_0()
-            .text_color(crate::theme::ink3(cx))
-            .child(
-                div()
-                    .text_color(cx.theme().accent_foreground)
-                    .child("\u{25cf}"),
-            )
-            .child(SharedString::from(permission))
-            .id("status-permission")
-            .aria_label(SharedString::from(permission))
-            .test_support(),
-    );
 
     if added > 0 || removed > 0 {
         bar = bar.child(
@@ -9414,15 +9388,10 @@ fn status_bar(
 
     bar = bar.child(div().flex_1());
 
-    if let Some(context) = context {
-        bar = bar.child(status_item(
-            "status-context",
-            None,
-            context,
-            crate::theme::ink3(cx),
-            cx,
-        ));
-    }
+    // The context readout and the permission mode are deliberately not here:
+    // the composer already carries both — the ring above the prompt and the
+    // permission chip beside it — and a bar that repeats them is reading out
+    // the same state twice, a few centimetres apart.
 
     // The prototype closes the bar with the account balance; the provider only
     // reports one for accounts that track it, so the chip is conditional.

@@ -1655,18 +1655,19 @@ fn the_status_bar_renders_its_segmented_chips(cx: &mut TestAppContext) {
             !chip("status-branch").is_empty(),
             "the branch chip names the checked-out branch"
         );
-        assert_eq!(
-            chip("status-permission"),
-            "Ask permission",
-            "the prototype footer reads `Ask permission`, and the preview seeds \
-             the protocol's `default` mode so the chip takes that pairing"
+        // The composer carries the permission mode and the context percentage —
+        // the chip beside the prompt and the ring above it — so the bar does not
+        // repeat either one.
+        assert!(
+            window.try_find("status-permission").is_none(),
+            "the bar leaves the permission mode to the composer's chip"
         );
         // The preview seeds three diff cards: 412+188+76 added, 96+24+32 removed.
         assert_eq!(chip("status-diff"), "+676 \u{2212}152");
-        // `.ring` and this chip read the same pair — the last request's total
-        // against the configured window — so 84_000 of 200_000 has to read 42
-        // in both.
-        assert_eq!(chip("status-context"), "42% context");
+        assert!(
+            window.try_find("status-context").is_none(),
+            "the bar leaves the context percentage to the composer's ring"
+        );
         assert_eq!(chip("status-balance"), "$18.42");
         // The preview seeds one running subagent against one completed one.
         assert_eq!(chip("status-running"), "1 running");
