@@ -173,6 +173,12 @@ pub struct Messages {
     pub copied_tmpl: &'static str,
     pub copied_terminal_tmpl: &'static str,
     pub copied_internal_tmpl: &'static str,
+    /// Stands in for the preview when the copy has no preview to quote: how
+    /// much was copied, as `{}` lines and a `{}` human-readable size.
+    pub copied_summary_tmpl: &'static str,
+    /// Singular form of [`Self::copied_summary_tmpl`] — one line, so the count
+    /// is spelled out rather than substituted.
+    pub copied_summary_one_tmpl: &'static str,
 
     // ---- 用户操作反馈 ----
     pub no_options: &'static str,
@@ -467,6 +473,8 @@ impl Messages {
             copied_tmpl: "📋 Copied: {}",
             copied_terminal_tmpl: "📋 Copied to terminal clipboard: {}",
             copied_internal_tmpl: "📋 Copied to internal buffer (clipboard unavailable): {}",
+            copied_summary_tmpl: "{} lines · {}",
+            copied_summary_one_tmpl: "1 line · {}",
 
             no_options: "⚠ No options available",
             selected_tmpl: "✓ Selected: {}",
@@ -747,6 +755,8 @@ impl Messages {
             copied_tmpl: "📋 已复制: {}",
             copied_terminal_tmpl: "📋 已复制到终端剪贴板: {}",
             copied_internal_tmpl: "📋 已复制到内部缓冲区 (剪贴板不可用): {}",
+            copied_summary_tmpl: "{} 行 · {}",
+            copied_summary_one_tmpl: "1 行 · {}",
 
             no_options: "⚠ 无可用选项",
             selected_tmpl: "✓ 已选择: {}",

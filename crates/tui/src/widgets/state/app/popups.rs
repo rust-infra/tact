@@ -2,7 +2,10 @@ use arboard::Clipboard;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ratatui::{layout::Rect, style::Color, text::Line};
 
-use crate::widgets::{state::*, tool_widget::ToolPhase};
+use crate::{
+    i18n::Messages,
+    widgets::{state::*, tool_widget::ToolPhase},
+};
 
 impl App {
     /// Copy text via native clipboard → OSC 52 → internal buffer.
@@ -81,14 +84,16 @@ impl App {
         // still lands in the log for the record.
         self.copy_flash_at = Some(std::time::Instant::now());
         self.dirty = true;
-        let preview: String = text.chars().take(40).collect();
-        let copied = |template: &str| {
-            if include_preview {
-                template.replace("{}", &preview)
-            } else {
-                template.replace(": {}", "")
-            }
+        let msgs = self.msgs();
+        // Both forms fill the same `{}`: the quoted opening of the text, or —
+        // for a copy too long to quote (a whole turn) — what was copied, so
+        // the notice says something even when it cannot show the text.
+        let payload = if include_preview {
+            text.chars().take(40).collect::<String>()
+        } else {
+            copy_summary(&msgs, text)
         };
+        let copied = |template: &str| template.replace("{}", &payload);
 
         // Prefer the native clipboard. The `Clipboard` is kept alive for the
         // whole app lifetime (see `system_clipboard`) because on Linux the
@@ -97,7 +102,6 @@ impl App {
         // Either route lands in the system clipboard, so both report the same
         // way; the helper only runs when the native write was dropped.
         if self.write_system_clipboard(text) || Self::write_system_clipboard_helper(text) {
-            let msgs = self.msgs();
             self.add_system_message(copied(msgs.copied_tmpl));
             return;
         }
@@ -105,13 +109,11 @@ impl App {
         let encoded = BASE64.encode(text);
         let osc52 = format!("\x1b]52;c;{}\x07", encoded);
         if std::io::Write::write_all(&mut std::io::stdout(), osc52.as_bytes()).is_ok() {
-            let msgs = self.msgs();
             self.add_system_message(copied(msgs.copied_terminal_tmpl));
             return;
         }
 
         self.clipboard_buffer = text.to_string();
-        let msgs = self.msgs();
         self.add_system_message(copied(msgs.copied_internal_tmpl));
     }
 
@@ -945,6 +947,35 @@ impl App {
     }
 }
 
+/// What a preview-free copy notice says instead of quoting the text.
+///
+/// The only such caller copies a whole turn, so the notice reports its shape
+/// instead: how many lines, and how big — the size being the thing the
+/// clipboard tiers' behaviour turns on.
+fn copy_summary(msgs: &Messages, text: &str) -> String {
+    let size = human_size(text.len());
+    match text.lines().count() {
+        0 | 1 => msgs.copied_summary_one_tmpl.replace("{}", &size),
+        lines => msgs
+            .copied_summary_tmpl
+            .replacen("{}", &lines.to_string(), 1)
+            .replacen("{}", &size, 1),
+    }
+}
+
+/// Human-readable byte size for the copy notice (`240 B`, `12.3 KB`, `1.2 MB`).
+fn human_size(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    let bytes_f = bytes as f64;
+    if bytes_f < KB {
+        format!("{bytes} B")
+    } else if bytes_f < KB * KB {
+        format!("{:.1} KB", bytes_f / KB)
+    } else {
+        format!("{:.1} MB", bytes_f / (KB * KB))
+    }
+}
+
 fn point_in_rect(column: u16, row: u16, area: Rect) -> bool {
     column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
 }
@@ -1413,6 +1444,18 @@ mod clipboard_tests {
     /// fallbacks are what this test actually exercises.
     const OVERSIZED: usize = 200_000;
 
+    /// The clipboard is global and every test here writes it, so they take
+    /// turns instead of racing each other (cargo runs tests in parallel
+    /// threads, and the very race this module guards against makes a
+    /// concurrent reader see an empty clipboard).
+    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn take_clipboard() -> std::sync::MutexGuard<'static, ()> {
+        CLIPBOARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// This machine must have a clipboard we can write and read at all —
     /// otherwise none of the tiers below mean anything.
     fn clipboard_available() -> bool {
@@ -1444,6 +1487,7 @@ mod clipboard_tests {
 
     #[test]
     fn an_oversized_copy_lands_in_the_clipboard_or_says_that_it_did_not() {
+        let _clipboard = take_clipboard();
         if !clipboard_available() {
             return;
         }
@@ -1483,6 +1527,7 @@ mod clipboard_tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn the_helper_carries_what_the_native_clipboard_drops() {
+        let _clipboard = take_clipboard();
         if !clipboard_available() {
             return;
         }
@@ -1518,7 +1563,83 @@ mod clipboard_tests {
     }
 
     #[test]
+    fn a_preview_free_copy_reports_its_shape_instead_of_quoting_the_text() {
+        let many = "first line\nsecond line\nthird line";
+        let mut app = make_app();
+        let msgs = app.msgs();
+        let expected = msgs.copied_summary_tmpl.replacen("{}", "3", 1).replacen(
+            "{}",
+            &format!("{} B", many.len()),
+            1,
+        );
+
+        app.copy_text_without_preview(many);
+        let notice = notice_of(&app);
+
+        assert!(
+            notice.ends_with(&expected),
+            "the notice must say what was copied: {notice:?} (want suffix {expected:?})"
+        );
+        assert!(
+            !notice.contains("second line"),
+            "a preview-free copy must not quote the text: {notice:?}"
+        );
+    }
+
+    #[test]
+    fn a_preview_free_copy_of_one_line_uses_the_singular_form() {
+        let one = "just one line";
+        let mut app = make_app();
+        let msgs = app.msgs();
+        let expected = msgs
+            .copied_summary_one_tmpl
+            .replace("{}", &format!("{} B", one.len()));
+
+        app.copy_text_without_preview(one);
+
+        let notice = notice_of(&app);
+        assert!(
+            notice.ends_with(&expected),
+            "a single line is not '1 lines': {notice:?} (want suffix {expected:?})"
+        );
+    }
+
+    #[test]
+    fn the_preview_free_summary_is_localized() {
+        let text = "first line\nsecond line";
+        let mut app = make_app();
+        app.language = crate::i18n::Language::Chinese;
+        let msgs = app.msgs();
+        let expected = msgs.copied_summary_tmpl.replacen("{}", "2", 1).replacen(
+            "{}",
+            &format!("{} B", text.len()),
+            1,
+        );
+
+        app.copy_text_without_preview(text);
+
+        assert!(
+            expected.contains('行'),
+            "the Chinese summary must not be the English template: {expected:?}"
+        );
+        let notice = notice_of(&app);
+        assert!(
+            notice.ends_with(&expected),
+            "got {notice:?}, want suffix {expected:?}"
+        );
+    }
+
+    #[test]
+    fn human_size_scales_from_bytes_to_megabytes() {
+        assert_eq!(super::human_size(0), "0 B");
+        assert_eq!(super::human_size(240), "240 B");
+        assert_eq!(super::human_size(12_600), "12.3 KB");
+        assert_eq!(super::human_size(1_300_000), "1.2 MB");
+    }
+
+    #[test]
     fn a_small_copy_keeps_the_native_notice_and_lands() {
+        let _clipboard = take_clipboard();
         if !clipboard_available() {
             return;
         }
