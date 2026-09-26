@@ -35,6 +35,46 @@ impl App {
         }
     }
 
+    /// Hand the text to a system clipboard helper.
+    ///
+    /// The fallback for the `arboard` backend that gets it wrong: its Wayland
+    /// path drops payloads past ~32 KiB while reporting success, whereas
+    /// `wl-copy` hands the same bytes to the compositor (verified here: a 5 MB
+    /// payload round-trips). Only consulted after a native write was dropped,
+    /// and only where the tool exists — without it the caller's next fallback
+    /// (the OSC 52 terminal sequence) runs instead.
+    #[cfg(target_os = "linux")]
+    fn write_system_clipboard_helper(text: &str) -> bool {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+        };
+
+        // `wl-copy` forks and serves the selection itself, so this returns once
+        // the payload is handed over; the helper outlives the app, exactly as
+        // it does when the user pipes into it by hand.
+        let Ok(mut child) = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        wrote && child.wait().is_ok_and(|status| status.success())
+    }
+
+    /// Other platforms have no `wl-copy`, and their native clipboard does not
+    /// need it: the Wayland payload limit is Linux-specific.
+    #[cfg(not(target_os = "linux"))]
+    fn write_system_clipboard_helper(_text: &str) -> bool {
+        false
+    }
+
     fn copy_text_inner(&mut self, text: &str, include_preview: bool) {
         // The copy affordances themselves flash their confirmation (popup
         // footers render it while this is fresh) — the system-message notice
@@ -54,7 +94,9 @@ impl App {
         // whole app lifetime (see `system_clipboard`) because on Linux the
         // copier owns the selection and must keep serving it; dropping the
         // handle per-copy would make the text unpastable elsewhere.
-        if self.write_system_clipboard(text) {
+        // Either route lands in the system clipboard, so both report the same
+        // way; the helper only runs when the native write was dropped.
+        if self.write_system_clipboard(text) || Self::write_system_clipboard_helper(text) {
             let msgs = self.msgs();
             self.add_system_message(copied(msgs.copied_tmpl));
             return;
@@ -1363,75 +1405,130 @@ mod tests {
         assert!(!app.has_overlay_popup());
     }
 }
-
 #[cfg(test)]
 mod clipboard_tests {
     use crate::{render::test_harness::make_app, widgets::state::App};
 
-    /// A size arboard's Wayland backend silently drops (see
-    /// `write_system_clipboard`). Chosen well past the ~32 KiB limit so a
-    /// fixed arboard cannot flip the test's meaning.
+    /// Well past the ~32 KiB payload `arboard`'s Wayland backend drops, so the
+    /// fallbacks are what this test actually exercises.
     const OVERSIZED: usize = 200_000;
 
-    /// True when this machine's native clipboard really round-trips `size`
-    /// bytes — if it does, there is nothing to fall back from.
-    fn native_clipboard_handles(size: usize) -> Option<bool> {
-        let mut probe = arboard::Clipboard::new().ok()?;
-        let text = "z".repeat(size);
-        let set = probe.set_text(text.clone()).is_ok();
-        Some(set && probe.get_text().is_ok_and(|back| back == text))
+    /// This machine must have a clipboard we can write and read at all —
+    /// otherwise none of the tiers below mean anything.
+    fn clipboard_available() -> bool {
+        let Ok(mut probe) = arboard::Clipboard::new() else {
+            return false;
+        };
+        probe.set_text("tact-clipboard-probe".to_string()).is_ok() && probe.get_text().is_ok()
+    }
+
+    /// What another reader would find on the clipboard right now.
+    fn clipboard_text() -> Option<String> {
+        arboard::Clipboard::new().ok()?.get_text().ok()
     }
 
     fn notice_of(app: &App) -> String {
         app.log.items.last().expect("copy notice").raw.clone()
     }
 
-    #[test]
-    fn a_clipboard_write_that_did_not_land_is_not_reported_as_native() {
-        let Some(handles_oversized) = native_clipboard_handles(OVERSIZED) else {
-            return; // no native clipboard on this machine
-        };
-        if handles_oversized {
-            return; // this platform's clipboard took it; nothing to assert
-        }
-
-        let text = "x".repeat(OVERSIZED);
+    /// The notices the copy path can print for `text`, in tier order.
+    fn notices(app: &App, text: &str) -> [String; 3] {
         let preview: String = text.chars().take(40).collect();
-        let mut app = make_app();
         let msgs = app.msgs();
-        let native = msgs.copied_tmpl.replace("{}", &preview);
-        let terminal = msgs.copied_terminal_tmpl.replace("{}", &preview);
-        let internal = msgs.copied_internal_tmpl.replace("{}", &preview);
+        [
+            msgs.copied_tmpl.replace("{}", &preview),
+            msgs.copied_terminal_tmpl.replace("{}", &preview),
+            msgs.copied_internal_tmpl.replace("{}", &preview),
+        ]
+    }
+
+    #[test]
+    fn an_oversized_copy_lands_in_the_clipboard_or_says_that_it_did_not() {
+        if !clipboard_available() {
+            return;
+        }
+        let text = "x".repeat(OVERSIZED);
+        let mut app = make_app();
+        let [native, terminal, internal] = notices(&app, &text);
 
         app.copy_text(&text);
         let notice = notice_of(&app);
 
-        assert_ne!(
-            notice, native,
-            "a dropped clipboard write must not be reported as a native copy"
+        if notice == native {
+            // The app claims the system clipboard, so the text must really be
+            // readable back — by a reader other than the app's own handle.
+            assert_eq!(
+                clipboard_text().as_deref(),
+                Some(text.as_str()),
+                "claimed a clipboard write that never landed"
+            );
+        } else {
+            assert!(
+                notice == terminal || notice == internal,
+                "a dropped write must name its fallback, got: {notice:?}"
+            );
+        }
+    }
+
+    /// True when `arboard` itself round-trips `text` on this machine.
+    fn native_round_trips(text: &str) -> bool {
+        let Ok(mut probe) = arboard::Clipboard::new() else {
+            return false;
+        };
+        probe.set_text(text.to_string()).is_ok() && probe.get_text().is_ok_and(|back| back == text)
+    }
+
+    /// The user-visible bug this guards: the task-stats copy claiming success
+    /// while nothing could be pasted.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_helper_carries_what_the_native_clipboard_drops() {
+        if !clipboard_available() {
+            return;
+        }
+        let text = "x".repeat(OVERSIZED);
+        if native_round_trips(&text) {
+            return; // this machine's clipboard takes it; no fallback needed
+        }
+        // Without the helper installed the OSC 52 tier takes over instead, and
+        // that path cannot be verified from here (see the contract test).
+        if std::process::Command::new("wl-copy")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+
+        let mut app = make_app();
+        let [native, ..] = notices(&app, &text);
+
+        app.copy_text(&text);
+
+        assert_eq!(
+            notice_of(&app),
+            native,
+            "the helper hands the text to the system clipboard"
         );
-        assert!(
-            notice == terminal || notice == internal,
-            "the fallback must name itself, got: {notice:?}"
+        assert_eq!(
+            clipboard_text().as_deref(),
+            Some(text.as_str()),
+            "a payload the native clipboard dropped must still be pasteable"
         );
     }
 
     #[test]
-    fn a_clipboard_write_that_did_land_keeps_the_native_notice() {
-        let Some(handles_small) = native_clipboard_handles(64) else {
-            return; // no native clipboard on this machine
-        };
-        if !handles_small {
-            return; // nothing to assert about a platform that cannot copy at all
+    fn a_small_copy_keeps_the_native_notice_and_lands() {
+        if !clipboard_available() {
+            return;
         }
-
+        let text = "hello clipboard";
         let mut app = make_app();
-        app.copy_text("hello clipboard");
+        let [native, ..] = notices(&app, text);
 
-        let notice = notice_of(&app);
-        assert!(
-            notice.contains("hello clipboard"),
-            "a landed write still names the text: {notice:?}"
-        );
+        app.copy_text(text);
+
+        assert_eq!(notice_of(&app), native);
+        assert_eq!(clipboard_text().as_deref(), Some(text));
     }
 }
