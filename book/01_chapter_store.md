@@ -167,6 +167,23 @@ If no session store is attached (`with_session` not called), persistence methods
 
 `MAX_INPUT_HISTORY` = 100. When loading exceeds the cap, oldest rows are deleted in a trim pass.
 
+### Request-body trimming
+
+`[agent] max_token_usage_bodies` (default 1, fallback constant `MAX_TOKEN_USAGE_BODIES`).
+`token_usages.request_body` stores the whole
+serialized request of every call (system prompt + tool schemas + context), so it
+is **blanked in place** — an empty blob (`X''`), not a delete and not NULL — for
+every ordinary call older than the newest `max_token_usage_bodies` of a session.
+One row is blanked per insert (the row at the window edge), so a session that
+lives under the policy does O(1) work per call; rows that were already outside the
+window when the policy first applied are never revisited and are the documented
+one-off statement's job. Compaction rows
+(`compact`, `responses_compact`) keep their body regardless: that BLOB is the
+only place a compaction baseline or its encrypted content survives. Accounting
+columns are never touched, and `load_latest_request_body` skips blanked rows.
+The file only shrinks on `VACUUM`; `docs/token_usage_schema.md` has the one-off
+recipe for databases grown before this policy.
+
 ---
 
 ## 7. Lifecycle Diagram

@@ -38,7 +38,12 @@ static SETTINGS: RwLock<Option<types::ResolvedConfig>> = RwLock::new(None);
 /// Tiers follow the official docs:
 /// - openai (developers.openai.com/api/docs/guides/reasoning): gpt-5.6 系列,
 ///   default medium, model-dependent subsets.
-/// - deepseek (api-docs.deepseek.com/zh-cn/guides/thinking_mode): low/high/max.
+/// - deepseek (api-docs.deepseek.com/guides/thinking_mode): one family table for
+///   every id — `low`/`high`/`max` are the meaningful tiers (`none` disables
+///   thinking; `minimal`→`low` and `medium`/`xhigh`→`high` are compatibility
+///   folds), default `high`. The API reference lists `deepseek-flash` and
+///   `deepseek-v4-pro`, so both use that set here; a proxy may serve other ids
+///   of the same family (`deepseek-v4-flash`, dot-versioned variants).
 /// - kimi (www.kimi.com/code/docs/kimi-code/models.html): k3/k3-256k low/high/max;
 ///   coding 系 Thinking:ON fixed (budget tiers kept for the picker UI only).
 static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelProfileToml>> =
@@ -86,6 +91,14 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             },
         );
         m.insert(
+            "deepseek-flash".into(),
+            ModelProfileToml {
+                thinking_budgets: vec![],
+                reasoning_efforts: vec![E::Low, E::High, E::Max],
+                supports_vision: None,
+            },
+        );
+        m.insert(
             "deepseek-v4-flash".into(),
             ModelProfileToml {
                 thinking_budgets: vec![],
@@ -97,10 +110,14 @@ static BUILTIN_MODEL_PROFILES: LazyLock<std::collections::HashMap<String, ModelP
             "deepseek-v4-pro".into(),
             ModelProfileToml {
                 thinking_budgets: vec![],
-                reasoning_efforts: vec![E::High, E::Max],
+                reasoning_efforts: vec![E::Low, E::High, E::Max],
                 supports_vision: None,
             },
         );
+        // Legacy reasoning id, kept for older configs. It is not among the ids
+        // the current API reference lists (`deepseek-flash`, `deepseek-v4-pro`),
+        // so its tiers keep the narrower historical set instead of being
+        // widened without evidence.
         m.insert(
             "deepseek-reasoner".into(),
             ModelProfileToml {
@@ -430,6 +447,25 @@ mod tests {
             profile.reasoning_efforts,
             vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max]
         );
+    }
+
+    #[test]
+    fn deepseek_ids_share_the_official_tier_table() {
+        let profiles = builtin_model_profiles();
+        // The API reference lists `deepseek-flash` and `deepseek-v4-pro`; the
+        // thinking-mode guide gives one table for the family (`none`/`low`/
+        // `high`/`max`, default `high`), so every current id offers the same
+        // three meaningful tiers. A narrower table here silently hides `low`.
+        for id in ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"] {
+            let profile = profiles
+                .get(id)
+                .unwrap_or_else(|| panic!("built-in {id} profile"));
+            assert_eq!(
+                profile.reasoning_efforts,
+                vec![E::Low, E::High, E::Max],
+                "{id} must expose the documented DeepSeek tiers"
+            );
+        }
     }
 
     #[test]

@@ -45,6 +45,17 @@ provider = "deepseek"
 # kimi k3/k3-256k); `thinking_budgets` to budget-semantic models (anthropic /
 # kimi-for-coding*). Cross-dimension entries are ignored, not errors.
 #
+# An effort tier is a *name*, not a token allowance — and on a provider that
+# bills reasoning inside the output budget it is not a bound on thinking
+# either. DeepSeek (api-docs.deepseek.com/guides/thinking_mode) accepts `none`
+# (thinking off) / `low` / `high` / `max` (default `high`; `minimal`→`low`,
+# `medium`/`xhigh`→`high`), counts reasoning inside `max_tokens`, and defaults
+# an unset `max_tokens` to 8K with thinking off vs 64K with it on (128K at
+# `max`). The API reference lists `deepseek-flash` and `deepseek-v4-pro` as the
+# current ids, and both use that same tier table (`low`/`high`/`max` are the
+# selectable ones). There `[agent] max_tokens` is the only number that bounds
+# thinking, so the compaction summarizer floors its envelope by it (book Ch 5 §5).
+#
 # `supports_vision` overrides the image-input gate for that exact model id
 # (None/unset = endpoint heuristic: a DeepSeek-ish id counts as text-only
 # unless it contains "vision"). Set it when the heuristic is wrong for your
@@ -192,6 +203,16 @@ mode = "default"
 
 # Truncate old tool results in context (default: true)
 # micro_compact_enabled = true
+
+# How many request bodies `token_usages` keeps per session (default: 1).
+#
+# The column stores the whole serialized request — system prompt, tool schemas
+# and, on /responses, the entire context re-sent every call — so keeping them all
+# grew a session database to 8 GB in three weeks. Compaction rows (`compact`,
+# `responses_compact`) always keep their body: that BLOB is the only place a
+# compaction baseline and its encrypted content survive. `0` keeps none, which
+# also disables `/view-system-prompt`'s assembled view (it reads the newest body).
+# max_token_usage_bodies = 1
 
 # Project instruction files injected into the system prompt (default: ["agents_md"]).
 # Options: agents_md

@@ -164,6 +164,7 @@ model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
+max_token_usage_bodies = 1   # 每会话保留的请求正文条数（压缩行永远保留自己的）
 # 额外 skill 根目录（可选）。每个目录下应包含 */SKILL.md。
 # 相对路径按 workdir 解析；~ 展开为 $HOME。
 # 在内建根之后加载；同名冲突时靠后的条目胜出。
@@ -228,6 +229,18 @@ bash_timeout_secs = 1800
 DeepSeek 思考开启 + effort high、Kimi K3 high）。此字段没有 CLI override。
 Anthropic 拒绝该字段（native thinking budget，无 effort 字段）。
 
+effort 档位**不承诺**的事：它只是档位名，不是 token 配额；在「推理计在输出预算内」的
+provider 上，它也不构成思考的上限。DeepSeek 就是现成例子
+（`api-docs.deepseek.com/guides/thinking_mode`）：有效值只有 `none`（关思考）、
+`low`、`high`、`max`（默认 `high`；`minimal`→`low`、`medium`/`xhigh`→`high`），
+reasoning 计在 `max_tokens` 之内，而未设 `max_tokens` 时 provider 的默认值是：关思考
+8K、开思考 64K（`max` 档 128K）。因此在这类 provider 上 `[agent] max_tokens` 是唯一能
+封顶思考的数字——一个按 2K 开的摘要调用可能整发被推理吃掉、正文为零。Tact 因此用
+`[agent] max_tokens` 给压缩摘要的信封兜底（第 5 章 §5），在 `builtin_model_profiles`
+里按官方列出的模型 id（`deepseek-flash`、`deepseek-v4-pro`）配上这三个档位，并且让所有
+**派生预算**（摘要的 reasoning 预留）按 provider 实际会跑的档位取值：在 DeepSeek 上配
+`reasoning_effort = "medium"` 时，线上值仍是 `medium`（按配置原样发送），而预留按 `high` 桶算。
+
 可选 `[llm.model_profiles."<model>"]` 条目列出该模型在 `/model` 第二步的
 可选档位：`reasoning_efforts` 对应 effort 语义模型（openai / deepseek /
 kimi k3、k3-256k），`thinking_budgets` 对应 budget 语义模型（anthropic /
@@ -260,6 +273,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `max_token_usage_bodies` | 1 | —（每会话在 `token_usages` 保留的请求正文条数；`0` 表示一条不留，同时使 `/view-system-prompt` 的 assembled 视图失效） |
 | `instruction_sources` | `["agents_md"]` | — |
 | `skill_dirs` | 空（无额外根） | — |
 | `skill_body_auto_inject` | `false` | — |

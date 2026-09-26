@@ -32,6 +32,137 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-26 — Request bodies are retained for a configurable number of calls per session, not forever
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/store/session_store/mod.rs` (`MAX_TOKEN_USAGE_BODIES`); `crates/tact/src/store/session_store/sqlite.rs` (`record_token_usage`, `trim_token_usage_bodies`, `load_latest_request_body`); `docs/token_usage_schema.md`; [Ch 1](./01_chapter_store.md) |
+
+**Symptom / motivation:** `<workdir>/.tact/tact.db` reached **8.0 GB, of which `token_usages` was 99% (8,075 MB)**: 14,483 rows holding 7.87 GiB of `request_body`, because every LLM call stored its whole serialized request (system prompt + 60 tool schemas + full context, re-sent per call on `/responses`) and nothing ever pruned it — the only `DELETE FROM token_usages` is the session-delete cascade. The row size tracks the session's context: sampled averages went 109 KiB → 443 KiB → 1003 KiB across three weeks, and a single 9-hour session wrote 569 rows / 591 MiB (largest body 1.88 MB). The public surface did not need any of it: the only reader is `load_latest_request_body` (for `/view-system-prompt`'s assembled view) plus the numeric columns behind every readout.
+
+**Decision:** Keep the newest `[agent] max_token_usage_bodies` ordinary bodies per session (default **1**, falling back to the `MAX_TOKEN_USAGE_BODIES` constant when no config is loaded) and **every** compaction body, and blank the rest **in place** with an empty blob. One is the documented default because it is the smallest window that still answers `/view-system-prompt`'s assembled view (it reads the newest body); `0` is allowed and turns that view into "Unavailable". `X''` is the sentinel rather than `NULL` because the column is `NOT NULL` and because "no body retained" must stay distinguishable from a deleted row — accounting rows are never removed, so `/stats`, the cache/token readouts and the usage schema keep working unchanged. Blanking happens inside `record_token_usage` right after the insert, resolved from the settings, and it touches exactly **one** row: the ordinary row at the window edge — the trim *advances* the window rather than sweeping, so rows that were already outside the window when the policy first applied are never revisited and remain the one-off statement's job (measured: the whole 8 GB store, cleaned by that statement + `VACUUM`, went to 605 MB with every accounting row intact). A "blank everything older" UPDATE would have to read every body to test it — the very I/O this avoids — whereas the window edge advances one row per insert, so the trim walks the whole history at O(1) per call and an untouched session does no work. `compact` / `responses_compact` rows are excluded from both the window and the trim, since that BLOB is the only place a compaction baseline (and its `encrypted_content`) survives. `load_latest_request_body` now requires `length(request_body) > 0`, so it answers with the newest body that actually exists instead of returning an empty blob.
+
+**Behavior after:** A session's `token_usages` plateaus at the configured number of ordinary bodies (one by default, ~350 KiB for this workload) plus all compaction bodies, however long it runs; older rows keep every numeric column with an empty `request_body`. `X''` is the documented "not retained" marker, so a future reader can tell it apart from a call that genuinely carried no body. Reclaiming space in databases written before the policy needs `VACUUM` (blanking returns pages to the freelist, it does not shrink the file); the one-off `ROW_NUMBER() OVER (PARTITION BY session_id …)` statement plus the checkpoint/VACUUM sequence is recorded in `docs/token_usage_schema.md` §Request body retention and was verified against a synthetic two-session database. Tests: `store::session_store::sqlite::tests::record_token_usage_keeps_only_the_newest_bodies_and_compaction_rows` (the oldest bodies blanked, exactly ten ordinary bodies kept, compaction body untouched at any age, loader skips blanked rows), plus the unchanged `test_responses_compact_usage_row_is_distinguishable` and `load_latest_request_body` round trip.
+
+**Pointers:** `crates/tact/src/store/session_store/{mod.rs,sqlite.rs}`; `docs/token_usage_schema.md` (column table + retention section + reclaim recipe); Ch 1 §Request-body trimming. Measured with `sqlite3 .tact/tact.db "select name, round(sum(pgsize)/1048576.0,1) from dbstat group by name order by 2 desc"` — `messages` 55.6 MB and `responses_states` 27.1 MB were never the problem.
+
+---
+
+## 1. 2026-09-26 — DeepSeek's effort tiers and folds follow the official table
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/config/mod.rs` (`BUILTIN_MODEL_PROFILES`); `crates/tact/src/agent/mod.rs` (`effort_after_provider_fold`, `compact_effort_reserve_tokens`, `compact_summary_effort`); [Ch 21](./21_chapter_config.md); `config.example.toml` |
+
+**Symptom / motivation:** Two DeepSeek mismatches, both visible from the official docs (`api-docs.deepseek.com/guides/thinking_mode` + `/api/create-chat-completion`). (a) The built-in tier table narrowed `deepseek-v4-pro` to `[High, Max]` even though its own module comment cited the family table and the API reference lists `deepseek-flash` / `deepseek-v4-pro` against the same `reasoning_effort` enum — so `/model` hid `low` for that id and could not be reconciled with the documented behaviour. (b) DeepSeek *accepts* `minimal`/`medium`/`xhigh` but folds them (`minimal`→`low`, `medium`/`xhigh`→`high`); Tact forwards the configured value verbatim, so a config `reasoning_effort = "medium"` reserved the 4,000-token medium bucket while the model actually reasoned at `high` (8,000) — the same under-reserve that starves a summary envelope.
+
+**Decision:** Follow the documented table and keep the sent value honest. `deepseek-flash` (the id the reference lists, and the one this session runs) joins `deepseek-v4-flash` and `deepseek-v4-pro` at the family's three meaningful tiers `low`/`high`/`max`; the legacy `deepseek-reasoner` keeps its narrower historical set because the current reference does not list it (comment records that reasoning). A new `effort_after_provider_fold(provider_kind, effort)` applies DeepSeek's documented folds — and only DeepSeek's, since OpenAI's enum is real per model and Kimi documents none — to every **derived** budget. The wire value is never rewritten (the docs say the provider accepts these values for compatibility), so a readout still equals what was sent.
+
+**Behavior after:** On DeepSeek, `[llm] reasoning_effort = "medium"` still sends `medium` (visible in `[compact summary …] request … reasoning_effort=medium`) but the summarizer reserves the `high` bucket — `(text 2000 + reasoning 8000)` instead of `(text 2000 + reasoning 4000)`. `/model`'s second step offers `low`/`high`/`max` for `deepseek-flash` and `deepseek-v4-pro` alike. The stale claim in `compact_summary_effort` that DeepSeek "cannot fully disable" thinking is corrected: the toggle exists (`reasoning.effort = "none"`, or `thinking.type = "disabled"` on chat) and the ladder still stops at `low` on purpose, because the handoff's identifier detail comes from that thinking. Tests: `agent::tests::{effort_folds_to_what_deepseek_actually_runs,local_compact_folds_deepseek_effort_for_the_reserve}` (folds both ways, verbatim wire value, high bucket in the printed envelope), `config::tests::deepseek_ids_share_the_official_tier_table`.
+
+**Pointers:** `crates/tact/src/config/mod.rs`, `crates/tact/src/agent/mod.rs`. Docs: Ch 21 `reasoning_effort` section (fold list + derived-budget rule), `config.example.toml` model-profiles comment (accounting + documented ids).
+
+---
+
+## 1. 2026-09-26 — The handoff cell names the transcript it summarizes away
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/compact/mod.rs` (`summary_message`, `build_compacted_history`); `crates/tact/src/agent/mod.rs` (the two Codex-style rebuild call sites); [Ch 5](./05_chapter_compact.md) §5/§8/§11 |
+
+**Symptom / motivation:** Compaction summarizes only the recent tail (`KEEP_USER_MESSAGE_TOKENS = 20_000` estimated tokens), and everything older survives **only** in the on-disk transcript — but the continuing agent was never told that file exists. After compacting a long session it therefore behaved as if the handoff were the whole history. Measured on a 9-hour session: the handoff covered the last hour, the other eight lived in `.tact/transcripts/transcript_1790384715333130116_0.jsonl` (592 messages / 1.36 M chars) that nothing pointed at. Ch 5 §11 had this recorded as a known gap.
+
+**Decision:** Append the path inside the handoff **cell** — part of the `<context-handoff>` message, not a separate message — as `Full pre-compaction transcript: <path> — read it selectively if you need detail this summary dropped.` The hint is deliberately "read selectively": a long session's transcript dwarfs any reading budget. The note is emitted by the same builder that frames the cell, so reload-time detection is untouched (`is_summary_message` still sees the open tag, the `MessageKind::Summary` marker is unchanged), and the legacy `LegacySingleSummary` / `compacted_context` path passes no path, leaving its single-summary message byte-identical to before.
+
+**Behavior after:** The replacement context after a local compaction ends with that line before the closing tag, pointing at the same file the TUI already reports via `[transcript saved: …]` and the same one `write_transcript` wrote at the start of the compaction. An agent can therefore recover detail the tail-selection dropped instead of assuming the handoff is all that is left. Tests: `compact::tests::build_compacted_history_notes_where_the_transcript_lives` (path present and the cell still framed; without a path there is no note and the cell is still detected as a handoff on reload).
+
+**Pointers:** `crates/tact/src/compact/mod.rs` (`summary_message`, `build_compacted_history`, `write_transcript`), `crates/tact/src/agent/mod.rs` (rebuild call sites). Docs: Ch 5 §8 (on-disk layout) and §11 (gap row reworded: the path is now surfaced; *which* turns get summarized away is still tail selection, not importance).
+
+---
+
+## 1. 2026-09-26 — The summarizer's envelope is never smaller than the configured output budget
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/agent/mod.rs` (`compact_summary_envelope_ceiling`, the `summary_max_tokens` floor in `compact_history_local_with_mode`); [Ch 5](./05_chapter_compact.md) §5 + §9 |
+
+**Symptom / motivation:** A `/compact` on a DeepSeek-backed gateway paid for two summary requests and the first one produced nothing: `max_tokens = 4000` came back `stop=max_tokens` with `reasoning_tokens = 4000` and zero summary text. The cause is that this provider family has **no separate thinking budget** — `reasoning_effort` only names a tier (`none` disables thinking, `low`/`high`/`max` enable it, `minimal`→`low` and `medium`/`xhigh`→`high` are compatibility folds, default `high`) — and DeepSeek counts reasoning **inside** `max_tokens`. Its own default for an unset `max_tokens` in thinking mode is **64K** (128K at `max`, 8K with thinking off), so Tact's 2,000-token text budget plus a small effort bucket sat an order of magnitude below what the provider considers normal. On such a provider a too-small envelope does not mean "less thinking" — it means "no answer".
+
+**Decision:** Floor the summarizer's wire `max_tokens` by `[agent] max_tokens` (the already-resolved reply budget: CLI > provider entry > `[agent]` > default), capped by `compact_summary_envelope_ceiling` = `window − 10% headroom − tokens(instructions)`, so a tight window still yields a constructible request instead of a hard "window too small" bail. The floor applies only where the request can spend the envelope on reasoning — `effective_effort.is_some()`, i.e. every effort-semantic provider including the server-default tiers (DeepSeek / Kimi K3). Budget-semantic providers (Anthropic) never receive a thinking budget here, so they keep the classic `min(20% × window, 2,000)` text cap, which is what keeps a handoff compact. The text/reserve split stays as the ladder's **accounting** rather than a promise about the wire shape: the continuation envelopes are unchanged, because a continuation only has to finish a draft (measured: 649 reasoning + ~465 text out of a 2,000-token envelope). Trade-off recorded, not hidden: on these providers the 2,000-token cap no longer bounds the handoff text. On a large window that costs nothing structurally — the retained-user-message budget is `min(20,000, window − …)` and its window term stays in the hundreds of thousands — and the response notice now prints `completion N (reasoning M)`, so an oversized summary is visible in the transcript instead of inferred.
+
+**Behavior after:** On effort-semantic providers the first summary request is never given less than `[agent] max_tokens`. With the shipped default (8,000) that means 8,000 whenever the computed text+bucket is smaller (e.g. no configured effort); with a 65,536 budget the envelope is 65,536 in every case, which is the same order as DeepSeek's own thinking-mode default. Every stage still prints its exact envelope, and nothing else moved: same ladder, same continuation, same triggers, same text/reserve accounting. Tests: `agent::tests::{local_compact_envelope_is_at_least_the_configured_output_budget,compact_summary_envelope_ceiling_leaves_room_for_the_instructions}`, plus the unchanged assertions that Anthropic keeps its 2,000-token text budget (`local_compact_omits_thinking_for_anthropic`) and that an inherited `high` effort still yields 10,000 on a 128K window (`local_compact_inherits_session_effort`).
+
+**Pointers:** `crates/tact/src/agent/mod.rs` (`compact_summary_envelope_ceiling`, `compact_effort_reserve_tokens`, `compact_summary_server_default_effort`); Docs: Ch 5 §5 (summarization call) + §9 (configuration). Official source for the effort tiers and the 64K thinking-mode default: `api-docs.deepseek.com/guides/thinking_mode` and `/api/create-chat-completion` — recorded here because `config.example.toml` only names the tiers, not the accounting.
+
+---
+
+## 1. 2026-09-26 — The compaction notices speak in numbers, not in Rust `Debug`
+
+| Field | Value |
+|-------|-------|
+| **Type** | docs (log output) |
+| **Related** | `crates/tact/src/agent/mod.rs` (`compact_response_note`, `compact_truncation_note`, the `[compact summary …]` / `[compact continue …]` / `[compact fallback]` emissions); [Ch 5](./05_chapter_compact.md); [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** A real `/compact` printed its per-attempt state as `{:?}` dumps of internal Rust types — `response stop=Some(MaxTokens) usage=Some(TokenUsageInfo { prompt: 23470, completion: 4000, total: 27470, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 23470, reasoning_tokens: 4000 })` — a struct's field list where a sentence belongs, burying the one number that matters (the whole output budget went to `reasoning_tokens`) among five that do not. The truncation notice had the mirror-image problem: `summary truncated (15314 think bytes)` printed a **byte** count next to token budgets, so reading it against the 2,000-token text budget or the 4,000 reasoning tokens invited exactly the wrong comparison; and the fallback line claimed `truncated after 5 attempts` for a ladder that had run 6 stages.
+
+**Decision:** Print the provider's own numbers, labelled, and keep the unit honesty. `compact_response_note` renders `stop=<snake_case>` plus `prompt N, completion M (reasoning R), cache hit/miss` — `no usage reported` when the provider sends none (never a fabricated zero), and `unknown(<raw>)` for an unrecognized stop reason, matching the vocabulary the rest of the agent's messages already use (`stop_reason=refusal`). `compact_truncation_note` names **both** units of a truncated attempt — `4000 reasoning tokens, thinking block 15314 bytes` — reasoning first because that is what was actually billed, and only the byte weight when no usage arrived, so the notice never claims a spend it cannot see. The fallback line reports its own stage (`still truncated at stage 6/6`) instead of counting continuation attempts. No budgeting, ladder or wire behavior changed: same `max_tokens`, same reserve escalation, same continuation message.
+
+**Behavior after:** One `[compact summary n/6] request … max_tokens=… (text … + reasoning …), reasoning_effort=…, input … chars` line before each attempt and one `[compact summary n/6] response stop=…, prompt …, completion … (reasoning …), cache …/…` line after it — the same coverage the 2026-09-14 entry established, now readable and greppable: `stop=max_tokens, prompt 23470, completion 4000 (reasoning 4000), cache 0/23470`. A truncated attempt emits `[compact continue 1/5] summary truncated (4000 reasoning tokens, thinking block 15314 bytes), next attempt max_tokens=2000`, and an exhausted ladder emits `[compact fallback] summary still truncated at stage 6/6; using the best-effort partial summary`. Tests: `agent::tests::{compact_response_note_renders_the_providers_numbers,compact_truncation_note_labels_both_units}` (both units, plus the no-usage and unknown-stop paths) and the existing envelope test, which now asserts `[compact summary 1/6] response stop=end_turn, no usage reported`.
+
+**Pointers:** `crates/tact/src/agent/mod.rs` (`compact_response_note`, `compact_truncation_note`, the ladder loop's three `emit_update` calls). Docs: Ch 5 §summary ladder records the new line shapes; Ch 23 §`/compact` status messages lists the tags, which are unchanged.
+
+---
+
+## 1. 2026-09-26 — A `/compact` on a DeepSeek-backed endpoint burns its first summary request on reasoning alone
+
+| Field | Value |
+|-------|-------|
+| **Type** | investigation (cost; no code change yet) |
+| **Related** | `crates/tact/src/agent/mod.rs` (`compact_history_local_with_mode`, `compact_effort_reserve_tokens`, `compact_summary_effort`, `next_compaction_reserve`); `crates/tact-ui/src/driver.rs` (`UserCommand::Compact`); `crates/tact/src/recovery.rs` (`CONTINUATION_MESSAGE`); `crates/tact/src/compact/mod.rs` (`KEEP_USER_MESSAGE_TOKENS`, `AUTO_COMPACT_THRESHOLD_PERCENT`); [Ch 05](./05_chapter_compact.md) |
+
+**Symptom / motivation:** A `/compact` on a 9-hour session (`deepseek-flash` behind an OpenAI-compatible gateway) ran the summary ladder twice, and the first request produced **no summary text at all**:
+
+```
+[compact summary 1/6] request … max_tokens=4000 (text 2000 + reasoning 2000), reasoning_effort=low
+[compact summary 1/6] response stop=Some(MaxTokens) … completion: 4000, reasoning_tokens: 4000
+[compact continue 1/5] summary truncated (15314 think bytes), next attempt max_tokens=2000
+[compact summary 2/6] request … max_tokens=2000 (text 2000 + reasoning 0)
+[compact summary 2/6] response stop=Some(EndTurn) … completion: 1114, reasoning_tokens: 649
+```
+
+That endpoint counts `reasoning_tokens` **inside** `max_tokens`, so a from-scratch summarization of a 23K-token tail spent the whole 4,000-token envelope thinking and emitted nothing — the effort-keyed reserve `compact_effort_reserve_tokens(Low) = 2_000` is local bookkeeping only, the wire carries a single envelope. The wasted stage cost 23,470 prompt + 4,000 completion tokens; the compaction itself took the session from 417,680 to 85,235 wire tokens (966 → 27 protocol items, 1.64 MB → 0.30 MB request body).
+
+**Investigation:** (1) The trigger was read off the TUI strings: `[compacting]` / `Compaction complete.` are emitted **only** by `UserCommand::Compact` (`crates/tact-ui/src/driver.rs:365`), while automatic compaction emits `[auto compact]` and recovery emits `[Recovery] compact (1/2): context too large` — worth knowing because `/compact` is a palette command that never enters `input_history` (only `dispatch_user_task` calls `save_history`), so it leaves no textual trace. (2) It was **not** the 80% threshold: the session's resolved `model_context_window` was 1,000,000 (the built-in `deepseek-flash` mapping), proved by the wire `context_management.compact_threshold = 834464 = 1,000,000 − 65,536 (max_tokens) − 10% headroom`, so `last_token_total + incoming + max_tokens` had to reach 800,000 while the session sat at 419,861. Cross-check on the same store: the only automatic compaction fired 19 s after a request whose total was 735,712 (`735,712 + 65,536 = 801,248`). (3) Stage 2 succeeded although its envelope is **half** the size, because it is the same summary *continued*, not retried: the persisted wire body carries three input items — the 75,063-char summary prompt, a `reasoning` item holding 15,171 chars of `reasoning_text` (stage 1's thinking; `encrypted_content` is only 38 chars), and `CONTINUATION_MESSAGE` (“Output limit hit. Continue directly from where you stopped. No recap, no repetition. Pick up mid-sentence if needed.”). With the analysis already in context the model needs 649 reasoning tokens instead of 4,000, and the ladder's first continuation deliberately zeroes the reserve.
+
+**Decision:** recorded only — no code change. The minimal option if the waste should go away: start DeepSeek/Kimi at ladder stage 1 (reserve 0), or raise the `Low` reserve to at least the text budget. Both stay inside the existing ladder and change no wire contract. **Superseded by the envelope-floor entry above**: what shipped floors the envelope by `[agent] max_tokens` and leaves the buckets alone. Deliberately *not* recorded as a bug: the ladder's “think first, then write” shape is what makes stage 2 cheap, and the provider spending a whole envelope on thinking is that endpoint's behavior, not a Tact defect.
+
+**Behavior after:** The ladder's semantics are unchanged; its notices were rewritten in the same pass (see the notices entry above). The observable rules this entry pins down: `[compact continue N/5]` is normal ladder progress, not a failure (up to 6 stages, then `[compact fallback]` accepts a best-effort partial summary); that line now prints both units of the truncated attempt (`4000 reasoning tokens, thinking block 15314 bytes`), replacing the byte-only wording quoted above — the billed reasoning tokens come first, the byte weight of the thinking block second; the summarizer sees only the tail (`KEEP_USER_MESSAGE_TOKENS = 20_000`), so a handoff never covers a long session — the full pre-compaction context survives only in `.tact/transcripts/transcript_<nanos>_<n>.jsonl` (pruned to the newest 100); and on `/responses` `micro_compact` is skipped on purpose, so between compactions nothing shrinks.
+
+**Pointers:** `crates/tact/src/agent/mod.rs` (ladder loop with the `[compact summary …]` / `[compact continue …]` emissions, `write_transcript` before the summary call, `next_compaction_reserve`), `crates/tact-ui/src/driver.rs` (`UserCommand::Compact`), `crates/tact/src/recovery.rs` (`continuation_message`). Evidence for this run: `token_usages.id=14215` (`call_type=compact`, prompt 23,499 / completion 1,114, 98 KB request body), `.tact/transcripts/transcript_1790384715333130116_0.jsonl` (592 messages / 1.36 M chars).
+
+---
+
+## 1. 2026-09-26 — `token_usages.request_body` is never pruned, and it is the whole 8.2 GB store
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix (open) |
+| **Related** | `crates/tact/src/store/session_store/sqlite.rs` (`token_usages` schema; the only `DELETE FROM token_usages` is the session-delete cascade); `crates/tact/src/agent/mod.rs` (`persist_llm_call`); `docs/token_usage_schema.md` (column table + the `encrypted_content` safety note) |
+
+**Symptom / motivation:** `<workdir>/.tact/tact.db` reached **8.2 GB**; `dbstat` attributes **8,146 MB of it to `token_usages`** — 14,226 rows, i.e. ~570 KB per row — because `request_body` stores the serialized request of every `stream` / `compact` call (one session's rows are 330–370 KB each, the largest 1.64 MB). Nothing prunes it: the docs describe the column as a debugging aid and no retention rule exists, so the store grows monotonically with usage while `messages` (56 MB) and `responses_states` (27 MB) stay small.
+
+**Decision:** none yet — recorded so this is not rediscovered from a `du -h`. Any fix has to keep the property the safety note relies on: compaction `encrypted_content` is preserved **only** in the `request_body` BLOB of `stream` / `responses_compact` rows. That makes the lower-risk shape “drop bodies for ordinary `stream` rows only, keep `compact` / `responses_compact`”, with “keep the newest N rows / N days per session” as the alternative.
+
+**Behavior after:** Unchanged — this is disk growth, not a protocol or UI behavior.
+
+**Pointers:** `docs/token_usage_schema.md`. Measured with `sqlite3 .tact/tact.db "select name, sum(pgsize) from dbstat group by name order by 2 desc limit 5"`.
+
+---
+
 ## 1. 2026-09-25 — The task-stats copy button is an icon, not a translated word
 
 | Field | Value |

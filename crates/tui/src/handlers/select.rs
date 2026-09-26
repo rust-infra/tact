@@ -859,6 +859,7 @@ mod tests {
                 model_context_window: 500_000,
                 notifications_enabled: false,
                 snapshot_max_items: 80,
+                max_token_usage_bodies: tact::store::session_store::MAX_TOKEN_USAGE_BODIES,
                 micro_compact_enabled: true,
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),

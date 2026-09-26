@@ -203,15 +203,31 @@ pub fn is_summary_message(text: &str) -> bool {
 /// [`MessageKind::Summary`] so callers can special-case it by type instead of
 /// string matching. The `SUMMARY_PREFIX` line is kept inside the cell so
 /// reloaded sessions (where the in-memory marker is lost) still detect it.
-fn summary_message(summary_body: &str) -> Message {
+///
+/// When the pre-compaction transcript was persisted, its path is appended
+/// inside the same cell: the handoff only summarizes the recent tail, so the
+/// continuing agent has to be able to tell that older turns are recoverable and
+/// where from. The note is worded as a hint ("read it selectively") because a
+/// long session's transcript is far larger than any budget for reading it whole.
+fn summary_message(summary_body: &str, transcript_path: Option<&Path>) -> Message {
     let body = if summary_body.is_empty() {
         "(no summary available)"
     } else {
         summary_body
     };
+    let transcript_note = match transcript_path {
+        Some(path) => format!(
+            "\n\nFull pre-compaction transcript: {} — read it selectively if you need detail \
+             this summary dropped.",
+            path.display()
+        ),
+        None => String::new(),
+    };
     Message::new_text(
         Role::User,
-        format!("{HANDOFF_OPEN_TAG}\n{SUMMARY_PREFIX}\n\n{body}\n{HANDOFF_CLOSE_TAG}"),
+        format!(
+            "{HANDOFF_OPEN_TAG}\n{SUMMARY_PREFIX}\n\n{body}{transcript_note}\n{HANDOFF_CLOSE_TAG}"
+        ),
     )
     .with_kind(MessageKind::Summary)
 }
@@ -438,6 +454,7 @@ pub fn build_compacted_history(
     user_messages: &[Message],
     summary_text: String,
     max_tokens: usize,
+    transcript_path: Option<&Path>,
 ) -> Vec<Message> {
     let mut selected: Vec<Message> = Vec::with_capacity(user_messages.len().saturating_add(1));
     if max_tokens > 0 {
@@ -472,7 +489,7 @@ pub fn build_compacted_history(
     } else {
         summary_text
     };
-    selected.push(summary_message(&summary_body));
+    selected.push(summary_message(&summary_body, transcript_path));
     selected
 }
 
@@ -600,7 +617,7 @@ async fn prune_compact_artifacts(
 /// Produces a replacement context (single user message) containing a
 /// summary of what was compacted. Used by [`crate::agent::Agent::compact_history_legacy`].
 pub fn compacted_context(summary: String) -> Vec<Message> {
-    vec![summary_message(&summary)]
+    vec![summary_message(&summary, None)]
 }
 
 fn collect_tool_result_positions(messages: &[Message]) -> Vec<(usize, usize)> {
@@ -656,7 +673,9 @@ pub(crate) fn should_auto_compact(
 
 #[cfg(test)]
 mod tests {
-    use tact_llm::{ContentBlock, ImageSource, Message, MessageKind, Role};
+    use std::path::Path;
+
+    use tact_llm::{ContentBlock, ImageSource, Message, MessageContent, MessageKind, Role};
 
     use super::{
         HANDOFF_CLOSE_TAG, HANDOFF_OPEN_TAG, KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS,
@@ -772,7 +791,7 @@ mod tests {
             ),
             Message::new_text(Role::User, format!("{SUMMARY_PREFIX}\nold summary")),
             // Kind-marked cell: must be skipped by type, not just by prefix.
-            summary_message("handoff marked as Summary kind"),
+            summary_message("handoff marked as Summary kind", None),
             Message::new_text(Role::User, "goal B"),
         ];
         let kept = collect_user_messages(&messages);
@@ -810,7 +829,8 @@ mod tests {
             ],
         );
         let budget = estimate_message_tokens(&user);
-        let history = build_compacted_history(std::slice::from_ref(&user), "sum".into(), budget);
+        let history =
+            build_compacted_history(std::slice::from_ref(&user), "sum".into(), budget, None);
         assert_eq!(history.len(), 2);
         assert!(matches!(
             &history[0].content,
@@ -831,7 +851,7 @@ mod tests {
                 text: "abcdefghij".into(),
             }],
         );
-        let history = build_compacted_history(&[user], "sum".into(), 1);
+        let history = build_compacted_history(&[user], "sum".into(), 1, None);
         assert_eq!(history.len(), 2);
         assert!(matches!(
             &history[0].content,
@@ -851,8 +871,12 @@ mod tests {
                 },
             }],
         );
-        let history =
-            build_compacted_history(&[user], "sum".into(), approx_text_tokens(OMITTED_IMAGE));
+        let history = build_compacted_history(
+            &[user],
+            "sum".into(),
+            approx_text_tokens(OMITTED_IMAGE),
+            None,
+        );
         assert!(matches!(
             &history[0].content,
             tact_llm::MessageContent::Text { content } if content == OMITTED_IMAGE
@@ -883,8 +907,12 @@ mod tests {
             Message::new_text(Role::User, "old"),
             Message::new_text(Role::User, "newer"),
         ];
-        let history =
-            build_compacted_history(&users, "handoff body".into(), KEEP_USER_MESSAGE_TOKENS);
+        let history = build_compacted_history(
+            &users,
+            "handoff body".into(),
+            KEEP_USER_MESSAGE_TOKENS,
+            None,
+        );
         assert_eq!(history.len(), 3);
         assert!(matches!(
             &history[0].content,
@@ -913,7 +941,7 @@ mod tests {
             Message::new_text(Role::User, "cccccccccc"), // 10
         ];
         // Only enough room for the last message (+ maybe truncated earlier).
-        let history = build_compacted_history(&users, "sum".into(), 3);
+        let history = build_compacted_history(&users, "sum".into(), 3, None);
         assert_eq!(history.len(), 2); // one retained user + summary
         assert!(matches!(
             &history[0].content,
@@ -924,7 +952,7 @@ mod tests {
     #[test]
     fn build_compacted_history_truncates_oversized_message_keeping_tail() {
         let users = vec![Message::new_text(Role::User, "abcdefghij")]; // 10
-        let history = build_compacted_history(&users, "sum".into(), 1);
+        let history = build_compacted_history(&users, "sum".into(), 1, None);
         assert_eq!(history.len(), 2);
         assert!(matches!(
             &history[0].content,
@@ -961,6 +989,7 @@ mod tests {
             std::slice::from_ref(&harness_turn),
             "sum".into(),
             KEEP_USER_MESSAGE_TOKENS,
+            None,
         );
         // Retained user turn + summary, and no tool_result survives.
         assert_eq!(history.len(), 2);
@@ -982,6 +1011,41 @@ mod tests {
     }
 
     #[test]
+    fn build_compacted_history_notes_where_the_transcript_lives() {
+        let user = Message::new_text(Role::User, "goal A");
+        let history = build_compacted_history(
+            std::slice::from_ref(&user),
+            "sum".into(),
+            KEEP_USER_MESSAGE_TOKENS,
+            Some(Path::new("/tmp/x/.tact/transcripts/transcript_1_0.jsonl")),
+        );
+        let content = match &history.last().expect("handoff cell").content {
+            MessageContent::Text { content } => content,
+            other => panic!("the handoff cell is plain text: {other:?}"),
+        };
+        assert!(content.starts_with(HANDOFF_OPEN_TAG));
+        assert!(content.ends_with(HANDOFF_CLOSE_TAG));
+        assert!(
+            content.contains("transcript_1_0.jsonl"),
+            "the cell must name the transcript holding what the summary dropped: {content}"
+        );
+
+        // Without a persisted transcript the cell carries no path, and it is
+        // still detected as a handoff after a reload.
+        let without = build_compacted_history(
+            std::slice::from_ref(&user),
+            "sum".into(),
+            KEEP_USER_MESSAGE_TOKENS,
+            None,
+        );
+        let MessageContent::Text { content } = &without.last().unwrap().content else {
+            panic!("the handoff cell is plain text");
+        };
+        assert!(!content.contains("transcript"), "{content}");
+        assert!(is_summary_message(content));
+    }
+
+    #[test]
     fn build_compacted_history_skips_pure_tool_result_turns() {
         // A tool-result-only turn has no content left after stripping, so the
         // whole message is skipped instead of becoming an empty user turn.
@@ -996,6 +1060,7 @@ mod tests {
             std::slice::from_ref(&only_result),
             "sum".into(),
             KEEP_USER_MESSAGE_TOKENS,
+            None,
         );
         assert_eq!(history.len(), 1, "only the summary survives");
         assert!(history[0].is_summary());

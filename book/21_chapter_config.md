@@ -180,6 +180,7 @@ model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
+max_token_usage_bodies = 1   # request bodies kept per session (compaction rows always keep theirs)
 # Extra skill roots (optional). Each should contain */SKILL.md.
 # Relative paths resolve against the workdir; ~ expands to $HOME.
 # Loaded after the built-in roots; later entries win on a same-name clash.
@@ -264,6 +265,23 @@ applies (e.g. OpenAI medium, DeepSeek enabled + high, Kimi K3 high). There is
 no CLI override for this field. Anthropic rejects it (native thinking budget,
 no effort field).
 
+What an effort tier does **not** promise: it is a tier name, not a token
+allowance, and on a provider that counts reasoning inside the output budget it
+is not a bound on thinking either. DeepSeek is the worked example
+(`api-docs.deepseek.com/guides/thinking_mode`): valid values are `none`
+(thinking off), `low`, `high`, `max` (default `high`, `minimal`→`low`,
+`medium`/`xhigh`→`high`), reasoning is billed inside `max_tokens`, and the
+provider default for an unset `max_tokens` is 8K with thinking off versus 64K
+with it on (128K at `max`). So `[agent] max_tokens` is the only number that
+bounds thinking on such a provider — a summary call sized at 2K can be spent
+entirely on reasoning and return no text at all. Tact therefore floors the
+compaction summarizer's envelope by `[agent] max_tokens` (Ch 5 §5), lists the
+documented ids (`deepseek-flash`, `deepseek-v4-pro`) with those three tiers in
+`builtin_model_profiles`, and sizes every *derived* budget — the summarizer's
+reasoning reserve — from the effort the provider will actually run: with
+`reasoning_effort = "medium"` on DeepSeek the wire value stays `medium`
+(verbatim, as configured) while the reserve uses the `high` bucket.
+
 Optional `[llm.model_profiles."<model>"]` entries list the selectable tiers
 for that model in the `/model` second step: `reasoning_efforts` for
 effort-semantic models (openai / deepseek / kimi k3、k3-256k),
@@ -303,6 +321,7 @@ After merge, `resolve_config` applies these defaults when neither CLI nor TOML s
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `max_token_usage_bodies` | 1 | — (request bodies kept per session in `token_usages`; `0` keeps none and disables `/view-system-prompt`'s assembled view) |
 | `instruction_sources` | `["agents_md"]` | — |
 | `skill_dirs` | empty (no extra roots) | — |
 | `skill_body_auto_inject` | `false` | — |

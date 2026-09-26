@@ -103,6 +103,14 @@ pub enum UserCommand {
 | `[responses compacted: items=N, id=…]` | Responses 原生压缩成功；`N` = 基线 item 数，`id` = 截断后的 compaction id 前缀 |
 | `Compaction complete.` | `UserCommand::Compact` 成功完成 |
 
+前三行同时也是事后**区分触发源的唯一办法**：`[compacting]` / `Compaction
+complete.` 表示命令路径（`/compact`，键入或用命令面板选中），`[auto compact]`
+表示 `agent_loop` 里的 80% / 估算触发，`[Recovery] compact (n/N): context too
+large` 表示 provider 拒收了这个 prompt。`/compact` 在库里**不留文本痕迹**——
+palette command 从不经过 `dispatch_user_task`，而只有那条路径会调
+`save_history`，所以 `input_history` 回答不了「谁触发的压缩」。usage 行也回答
+不了：`/compact` 与恢复压缩落库都是 `call_type = compact`。
+
 **加密状态绝不渲染。** Responses 的 compaction / reasoning item 携带不透明的
 `encrypted_content`；它只会被回放给端点，绝不能出现在 `Info` 行、错误字符串、
 工具卡片或任何 TUI 表面。两种加密载荷的边界不同：reasoning 加密数据**只允许**

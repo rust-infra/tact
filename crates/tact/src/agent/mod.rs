@@ -93,6 +93,104 @@ fn compact_summary_server_default_effort(
     }
 }
 
+/// Ceiling for the summarizer's wire `max_tokens` on a given window.
+///
+/// The envelope may never eat the room the fixed instructions need, so a small
+/// window still yields a constructible summary request instead of a hard
+/// "window too small" bail.
+fn compact_summary_envelope_ceiling(model_context_window: usize) -> u32 {
+    if model_context_window == 0 {
+        return u32::MAX;
+    }
+    let headroom = model_context_window
+        .saturating_mul(COMPACT_SUMMARY_HEADROOM_PERCENT)
+        .div_ceil(100);
+    u32::try_from(
+        model_context_window
+            .saturating_sub(headroom)
+            .saturating_sub(approx_text_tokens(COMPACT_SUMMARY_INSTRUCTIONS)),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+/// One-line response summary for a compaction-summary attempt.
+///
+/// The compact notices are the only place a user sees what a summary call
+/// actually cost, so they report the provider's numbers instead of the derived
+/// `Debug` of the usage struct (`stop=Some(MaxTokens)
+/// usage=Some(TokenUsageInfo { … })` is not a sentence). Stop reasons use the
+/// same snake_case vocabulary as the rest of the agent's messages
+/// (`stop_reason=refusal`), so a reader can grep for one spelling.
+fn compact_response_note(
+    stop_reason: Option<&StopReason>,
+    usage: Option<&TokenUsageInfo>,
+) -> String {
+    let stop = match stop_reason {
+        None => "none".to_string(),
+        Some(StopReason::EndTurn) => "end_turn".to_string(),
+        Some(StopReason::MaxTokens) => "max_tokens".to_string(),
+        Some(StopReason::StopSequence) => "stop_sequence".to_string(),
+        Some(StopReason::ToolUse) => "tool_use".to_string(),
+        Some(StopReason::Refusal) => "refusal".to_string(),
+        Some(StopReason::PauseTurn) => "pause_turn".to_string(),
+        Some(StopReason::Unknown(raw)) => format!("unknown({raw})"),
+    };
+    match usage {
+        Some(usage) => format!(
+            "stop={stop}, prompt {}, completion {} (reasoning {}), cache {}/{}",
+            usage.prompt,
+            usage.completion,
+            usage.reasoning_tokens,
+            usage.prompt_cache_hit_tokens,
+            usage.prompt_cache_miss_tokens,
+        ),
+        None => format!("stop={stop}, no usage reported"),
+    }
+}
+
+/// Why a summary attempt was truncated, in both units that matter.
+///
+/// `think_block_bytes` is a byte length (`thinking.len() + signature.len()`),
+/// never a token count — the two used to be printed interchangeably, which
+/// invited reading bytes against the token budget. The tokens a provider
+/// actually billed are `reasoning_tokens`, printed first when it reported them;
+/// without usage the byte weight is still worth naming, so the note never
+/// claims a spend it cannot see.
+fn compact_truncation_note(reasoning_tokens: Option<u32>, think_block_bytes: usize) -> String {
+    match reasoning_tokens {
+        Some(tokens) => {
+            format!("{tokens} reasoning tokens, thinking block {think_block_bytes} bytes")
+        }
+        None => format!("thinking block {think_block_bytes} bytes"),
+    }
+}
+
+/// The effort a provider really runs at when it is handed `effort`.
+///
+/// Only DeepSeek documents a compatibility fold
+/// (`api-docs.deepseek.com/guides/thinking_mode`): `minimal`→`low`,
+/// `medium`/`xhigh`→`high`, `max`→`max`, and `none` disables thinking. Tact
+/// forwards the configured value verbatim — the provider accepts it — so every
+/// *derived* budget has to be sized from what the provider will actually do:
+/// otherwise `reasoning_effort = "medium"` on DeepSeek reserves the medium
+/// bucket while the model reasons at high, and the envelope starves. Kimi's
+/// table (`low`/`high`/`max`) needs no fold; no other kind documents one.
+fn effort_after_provider_fold(
+    provider_kind: &ProviderKind,
+    effort: OpenAiReasoningEffort,
+) -> OpenAiReasoningEffort {
+    match provider_kind {
+        ProviderKind::DeepSeek => match effort {
+            OpenAiReasoningEffort::Minimal => OpenAiReasoningEffort::Low,
+            OpenAiReasoningEffort::Medium | OpenAiReasoningEffort::Xhigh => {
+                OpenAiReasoningEffort::High
+            }
+            other => other,
+        },
+        _ => effort,
+    }
+}
+
 /// Initial reasoning reserve, in tokens, for an explicit effort tier.
 ///
 /// Compaction uses a fixed token bucket per effort rather than a percentage of
@@ -114,10 +212,16 @@ fn compact_effort_reserve_tokens(effort: OpenAiReasoningEffort) -> u32 {
 ///
 /// Stage 0 inherits the session's live effort (the summary request never
 /// enables Claude-style thinking). From stage 1 on, thinking is minimized where
-/// the provider allows it: DeepSeek and Kimi K3 forward `low` (the body hook
-/// cannot fully disable them), while an OpenAI reasoning model — one with a
-/// configured effort — sends `none`. Providers whose thinking is already off
-/// (Anthropic, unknown) keep omitting the field.
+/// the provider allows it: DeepSeek and Kimi K3 forward `low`, while an OpenAI
+/// reasoning model — one with a configured effort — sends `none`. Providers
+/// whose thinking is already off (Anthropic, unknown) keep omitting the field.
+///
+/// DeepSeek *can* be switched off outright (`reasoning.effort = "none"` on the
+/// Responses format, `thinking.type = "disabled"` on chat), but the summarizer
+/// deliberately stops at `low`: the identifier-level detail in a handoff is
+/// produced inside that thinking, and the continuation stage only has to finish
+/// a draft (measured: 649 reasoning + ~465 text tokens of a 2,000-token
+/// envelope).
 fn compact_summary_effort(
     provider_kind: &ProviderKind,
     session_effort: Option<OpenAiReasoningEffort>,
@@ -1571,18 +1675,44 @@ impl Agent {
         };
         // The reserve is the absolute token bucket of the effective effort:
         // the session's effort when configured, otherwise the effort a provider
-        // reasons at by server default (DeepSeek / Kimi K3 = high).
+        // reasons at by server default (DeepSeek / Kimi K3 = high). The bucket
+        // is keyed on the effort the provider will *actually* run at, so a
+        // compatibility fold (`medium` → `high` on DeepSeek) sizes the reserve
+        // instead of under-reserving.
         let effective_effort =
             session_effort.or_else(|| compact_summary_server_default_effort(&provider_kind));
         let reasoning_reserve = effective_effort
-            .map(compact_effort_reserve_tokens)
+            .map(|effort| {
+                compact_effort_reserve_tokens(effort_after_provider_fold(&provider_kind, effort))
+            })
             .unwrap_or(0);
         // Wire `max_tokens`: text plus the reasoning reserve. The text portion
         // keeps its classic budget; the reserve only covers providers that
         // reason by server default (DeepSeek / Kimi K3) — the summary call
         // never enables thinking itself (no Claude-style budget, no explicit
         // reasoning effort), so OpenAI / Anthropic get the full text budget.
-        let summary_max_tokens = summary_text_max_tokens.saturating_add(reasoning_reserve);
+        //
+        // The envelope is additionally floored by the configured output budget
+        // (`[agent] max_tokens`), but only where the request can spend that
+        // envelope on reasoning: a provider with no separate thinking budget
+        // counts reasoning *inside* `max_tokens`, so a small envelope can be
+        // spent entirely on thinking and leave no room for the summary at all
+        // (measured on a DeepSeek gateway: `max_tokens = 4000` came back with
+        // `reasoning_tokens = 4000` and zero summary text, while DeepSeek's own
+        // thinking-mode default is 64K). Budget-semantic providers (Anthropic)
+        // never receive a thinking budget here, so their summary text keeps the
+        // classic cap. The text/reserve split above stays as the ladder's
+        // accounting, not as a promise about the wire shape; the floor is capped
+        // by the window so a tight window still compacts.
+        let envelope_floor = if effective_effort.is_some() {
+            self.max_tokens()
+                .min(compact_summary_envelope_ceiling(model_context_window))
+        } else {
+            0
+        };
+        let summary_max_tokens = summary_text_max_tokens
+            .saturating_add(reasoning_reserve)
+            .max(envelope_floor);
         let summary_input_limit = if model_context_window == 0 {
             crate::compact::KEEP_USER_MESSAGE_TOKENS
         } else {
@@ -1732,16 +1862,17 @@ impl Agent {
                 Ok(response) => {
                     let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
                     self.emit_update(AgentUpdate::Info(format!(
-                        "[compact summary {stage}/{total_stages}] response stop={:?} usage={:?}",
-                        response.stop_reason, response.usage,
+                        "[compact summary {stage}/{total_stages}] response {}",
+                        compact_response_note(
+                            response.stop_reason.as_ref(),
+                            response.usage.as_ref(),
+                        ),
                     )));
                     if truncated && continuation_attempt < MAX_COMPACT_SUMMARY_ATTEMPTS {
                         let usage = response.usage.clone();
-                        // Byte length of the thinking block that ate into this
-                        // attempt's budget (`String::len() + signature.len()`),
-                        // NOT a token count. The tokens actually spent are
-                        // `usage.reasoning_tokens` below (`observed_think`),
-                        // which is what sizes the next reserve.
+                        // Byte weight only (`thinking.len() + signature.len()`);
+                        // the tokens actually spent are `observed_think` below,
+                        // which is also what sizes the next reserve.
                         let think_block_bytes = response.blocks.iter().fold(0, |acc, block| {
                             if let ContentBlock::Thinking {
                                 thinking,
@@ -1780,14 +1911,18 @@ impl Agent {
                         attempt_max_tokens =
                             summary_text_max_tokens.saturating_add(attempt_reserve);
                         self.emit_update(AgentUpdate::Info(format!(
-                            "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated ({think_block_bytes} think bytes), next attempt max_tokens={attempt_max_tokens}"
+                            "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated ({}), next attempt max_tokens={attempt_max_tokens}",
+                            compact_truncation_note(
+                                usage.as_ref().map(|usage| usage.reasoning_tokens),
+                                think_block_bytes,
+                            ),
                         )));
                         continue;
                     }
                     blocks_all.extend(response.blocks);
                     if truncated {
                         self.emit_update(AgentUpdate::Info(format!(
-                            "[compact fallback] summary truncated after {MAX_COMPACT_SUMMARY_ATTEMPTS} attempts; using best-effort partial summary"
+                            "[compact fallback] summary still truncated at stage {stage}/{total_stages}; using the best-effort partial summary"
                         )));
                     }
                     break (response.stop_reason, response.usage, response.request_body);
@@ -1880,8 +2015,12 @@ impl Agent {
                     self.max_tokens() as usize,
                     non_retained_input_tokens,
                 );
-                let mut rebuilt =
-                    build_compacted_history(&retained, full_summary.clone(), retained_tokens);
+                let mut rebuilt = build_compacted_history(
+                    &retained,
+                    full_summary.clone(),
+                    retained_tokens,
+                    Some(transcript_path.as_path()),
+                );
                 if model_context_window > 0 {
                     let headroom = compact_rebuild_headroom_tokens(model_context_window);
                     loop {
@@ -1907,6 +2046,7 @@ impl Agent {
                             &retained,
                             full_summary.clone(),
                             retained_tokens,
+                            Some(transcript_path.as_path()),
                         );
                     }
                 }
@@ -2346,6 +2486,7 @@ mod tests {
                     thinking_budget: 0,
                     snapshot_max_items: 80,
                     notifications_enabled: false,
+                    max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
                     micro_compact_enabled: true,
                     skill_body_auto_inject: false,
                     skill_dirs: Vec::new(),
@@ -2438,6 +2579,7 @@ mod tests {
             thinking_budget: 0,
             snapshot_max_items: 10,
             notifications_enabled: false,
+            max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
@@ -2990,6 +3132,42 @@ mod tests {
     }
 
     #[test]
+    fn effort_folds_to_what_deepseek_actually_runs() {
+        use tact_llm::OpenAiReasoningEffort as E;
+        // Documented compatibility folds (DeepSeek only, per the thinking-mode
+        // guide): the request is forwarded verbatim, the budget is not.
+        for (requested, actual) in [
+            (E::Minimal, E::Low),
+            (E::Medium, E::High),
+            (E::Xhigh, E::High),
+        ] {
+            assert_eq!(
+                effort_after_provider_fold(&ProviderKind::DeepSeek, requested),
+                actual,
+                "{requested} must be budgeted as {actual} on DeepSeek"
+            );
+        }
+        // Real tiers pass through untouched.
+        for effort in [E::None, E::Low, E::High, E::Max] {
+            assert_eq!(
+                effort_after_provider_fold(&ProviderKind::DeepSeek, effort),
+                effort
+            );
+        }
+        // No other kind documents a fold; OpenAI's enum is real per model.
+        for effort in [E::Minimal, E::Medium, E::Xhigh] {
+            assert_eq!(
+                effort_after_provider_fold(&ProviderKind::OpenAi, effort),
+                effort
+            );
+            assert_eq!(
+                effort_after_provider_fold(&ProviderKind::Kimi, effort),
+                effort
+            );
+        }
+    }
+
+    #[test]
     fn next_compaction_reserve_never_shrinks() {
         // A small observed reasoning must not shrink an already-large reserve.
         assert_eq!(next_compaction_reserve(0, 2_000, 4_000, 100), 4_000);
@@ -3154,8 +3332,179 @@ mod tests {
         );
         assert!(
             infos.iter().any(|msg| msg
-                .starts_with("[compact summary 1/6] response stop=Some(EndTurn) usage=None")),
+                .starts_with("[compact summary 1/6] response stop=end_turn, no usage reported")),
             "first attempt must log its response even without truncation: {infos:?}"
+        );
+    }
+
+    #[test]
+    fn compact_response_note_renders_the_providers_numbers() {
+        let usage = TokenUsageInfo {
+            prompt: 23_470,
+            completion: 4_000,
+            total: 27_470,
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 23_470,
+            reasoning_tokens: 4_000,
+        };
+        assert_eq!(
+            compact_response_note(Some(&StopReason::MaxTokens), Some(&usage)),
+            "stop=max_tokens, prompt 23470, completion 4000 (reasoning 4000), cache 0/23470"
+        );
+        // No usage is named, never invented.
+        assert_eq!(
+            compact_response_note(Some(&StopReason::EndTurn), None),
+            "stop=end_turn, no usage reported"
+        );
+        assert_eq!(
+            compact_response_note(None, None),
+            "stop=none, no usage reported"
+        );
+        // An unrecognized provider value keeps its raw spelling.
+        assert_eq!(
+            compact_response_note(Some(&StopReason::Unknown("paused".into())), None),
+            "stop=unknown(paused), no usage reported"
+        );
+    }
+
+    #[test]
+    fn compact_truncation_note_labels_both_units() {
+        assert_eq!(
+            compact_truncation_note(Some(4_000), 15_314),
+            "4000 reasoning tokens, thinking block 15314 bytes"
+        );
+        // Without usage the note names only what it can see.
+        assert_eq!(
+            compact_truncation_note(None, 15_314),
+            "thinking block 15314 bytes"
+        );
+    }
+
+    #[test]
+    fn compact_summary_envelope_ceiling_leaves_room_for_the_instructions() {
+        // No window → no ceiling.
+        assert_eq!(compact_summary_envelope_ceiling(0), u32::MAX);
+        // A real window keeps the 10% headroom plus the fixed instructions.
+        let instructions = approx_text_tokens(COMPACT_SUMMARY_INSTRUCTIONS) as u32;
+        assert_eq!(
+            compact_summary_envelope_ceiling(128_000),
+            128_000 - 12_800 - instructions
+        );
+        assert!(compact_summary_envelope_ceiling(500_000) > 65_536);
+        // A window too small for its own instructions cannot raise the floor.
+        assert_eq!(compact_summary_envelope_ceiling(100), 0);
+    }
+
+    #[tokio::test]
+    async fn local_compact_envelope_is_at_least_the_configured_output_budget() {
+        ensure_config();
+        let context = test_context("local_compact_envelope_floor");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CreateMessageParams>::new()));
+        let seen_arc = seen.clone();
+        let mock = MockClient::with_responder(move |request, _idx| {
+            seen_arc.lock().unwrap().push(request.clone());
+            Ok((
+                vec![make_text_block("floored summary")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_provider_kind(tact_llm::ProviderKind::DeepSeek)
+        .with_ui_channel(tx);
+        // DeepSeek reasons by server default, so its envelope is matter of
+        // billing: the computed value is text 2,000 + the high bucket 8,000 =
+        // 10,000, which a reasoning-inside-`max_tokens` provider can spend
+        // entirely on thinking. The configured output budget floors it.
+        agent.agent_settings.max_tokens = 65_536;
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "first turn"));
+
+        agent
+            .compact_history(None)
+            .await
+            .expect("compact with a floored envelope must succeed");
+
+        let requests = seen.lock().unwrap();
+        let request = requests
+            .first()
+            .expect("summarizer request must be captured");
+        assert_eq!(
+            request.max_tokens, 65_536,
+            "the summarizer envelope must never be smaller than [agent] max_tokens"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_compact_folds_deepseek_effort_for_the_reserve() {
+        ensure_config();
+        let context = test_context("local_compact_deepseek_fold");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("deepseek summary")],
+            Some(StopReason::EndTurn),
+        )]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_provider_kind(tact_llm::ProviderKind::DeepSeek)
+        .with_ui_channel(tx);
+        // DeepSeek accepts `medium` but folds it to `high` server-side, so the
+        // reserve must be the high bucket while the wire value stays verbatim.
+        agent.agent_settings.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::Medium);
+        agent.agent_settings.model_context_window = 128_000;
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "first turn"));
+
+        agent
+            .compact_history(None)
+            .await
+            .expect("compact with a folded effort must succeed");
+
+        let mut infos = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::Info(message) = update {
+                infos.push(message);
+            }
+        }
+        let envelope = infos
+            .iter()
+            .find(|msg| msg.starts_with("[compact summary 1/6] request"))
+            .expect("the first attempt logs its envelope");
+        assert!(
+            envelope.contains("(text 2000 + reasoning 8000)"),
+            "the reserve must be sized from the effort DeepSeek actually runs: {envelope}"
+        );
+        assert!(
+            envelope.contains("reasoning_effort=medium"),
+            "the configured value is still forwarded verbatim: {envelope}"
         );
     }
 
@@ -3582,6 +3931,7 @@ mod tests {
             thinking_budget: 0,
             snapshot_max_items: 80,
             notifications_enabled: false,
+            max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
@@ -3620,6 +3970,7 @@ mod tests {
             thinking_budget: 0,
             snapshot_max_items: 10,
             notifications_enabled: false,
+            max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),

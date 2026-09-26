@@ -32,6 +32,137 @@
 ---
 
 
+## 1. 2026-09-26 — 请求正文每会话只留可配置的条数，不再无限增长
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/store/session_store/mod.rs`（`MAX_TOKEN_USAGE_BODIES`）；`crates/tact/src/store/session_store/sqlite.rs`（`record_token_usage`、`trim_token_usage_bodies`、`load_latest_request_body`）；`docs/token_usage_schema.md`；[第 1 章](./01_chapter_store_zh.md) |
+
+**现象 / 动机：** `<workdir>/.tact/tact.db` 长到 **8.0 GB，其中 99% 是 `token_usages`（8,075 MB）**：14,483 行里躺着 7.87 GiB 的 `request_body`——因为每次 LLM 调用都存整份序列化请求（system prompt + 60 个工具 schema + 完整上下文，`/responses` 下每次重发），而且从没有人清理（全库唯一的 `DELETE FROM token_usages` 是删会话的级联）。单行大小跟着会话上下文走：三周内采样平均从 109 KiB → 443 KiB → 1003 KiB；**光一个 9 小时的会话就写了 569 行 / 591 MiB**（最大单行 1.88 MB）。而这些字节没有任何对外用途：唯一的读取方是 `load_latest_request_body`（供 `/view-system-prompt` 的 assembled 视图），其余读数全靠数值列。
+
+**决策：** 每个会话保留最新 `[agent] max_token_usage_bodies` 条普通调用的正文（默认 **1**；未加载配置时回落到常量 `MAX_TOKEN_USAGE_BODIES`）+ **全部**压缩调用的正文，其余**就地清空**为空 blob。默认取 1 的理由：它是仍能支撑 `/view-system-prompt` assembled 视图（读最新一条正文）的最小窗口；允许配 `0`，此时该视图显示 "Unavailable"。哨兵用 `X''` 而不是 `NULL`：列本身是 `NOT NULL`，而且「没保留正文」必须与「行被删了」可区分——计数行永远不删，所以 `/stats`、缓存/token 读数与 usage schema 全部不受影响。清空发生在 `record_token_usage` 的插入之后（上限从设置解析），且**只碰一行**：窗口边缘那条普通行——它是**推进**窗口而不是横扫，因此策略生效时就已在窗口之外的老行不会被回访，属于那条一次性语句的活（实测：整个 8 GB 的库经该语句 + `VACUUM` 后降到 605 MB，且计数行一条没少）。若写成「清空所有更旧的行」，UPDATE 必须逐行读正文来判断——正是这里要避开的 I/O；而窗口边缘每次插入只前进一行，于是裁剪以 O(1)/次走完整个历史，没人用的会话则完全不做事。`compact` / `responses_compact` 行既不进窗口也不被裁剪，因为那个 BLOB 是压缩基线（及其 `encrypted_content`）唯一的存身处。`load_latest_request_body` 现在要求 `length(request_body) > 0`，因此它返回的是真正还存在的最新正文，而不是一个空 blob。
+
+**变更后行为：** 会话的 `token_usages` 在「配置条数的普通正文（默认一条，本工作负载约 350 KiB）+ 全部压缩正文」处封顶，跑多久都不再涨；更旧的行保留全部计数列、`request_body` 为空。`X''` 是文档化的「未保留」标记，未来的读者能与「这次调用本来就没带正文」区分开。对策略生效前就已经长起来的库，回收空间需要 `VACUUM`（清空只是把页还回 freelist，不会缩小文件）；那条 `ROW_NUMBER() OVER (PARTITION BY session_id …)` 一次性语句与随后的 checkpoint/VACUUM 步骤记在 `docs/token_usage_schema.md` 的 §Request body retention，并且已在一个合成的双会话库上验证过。测试：`store::session_store::sqlite::tests::record_token_usage_keeps_only_the_newest_bodies_and_compaction_rows`（最旧的正文被清空、恰好保留十条普通正文、压缩正文无论多旧都不动、读取方跳过被清空的行），以及未变的 `test_responses_compact_usage_row_is_distinguishable` 与 `load_latest_request_body` 往返。
+
+**指针：** `crates/tact/src/store/session_store/{mod.rs,sqlite.rs}`；`docs/token_usage_schema.md`（列说明 + 保留策略一节 + 回收配方）；第 1 章 §请求正文裁剪。测量方式：`sqlite3 .tact/tact.db "select name, round(sum(pgsize)/1048576.0,1) from dbstat group by name order by 2 desc"`——`messages` 55.6 MB、`responses_states` 27.1 MB 从来不是问题。
+
+---
+
+## 1. 2026-09-26 — DeepSeek 的档位与折叠按官方表对齐
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/config/mod.rs`（`BUILTIN_MODEL_PROFILES`）；`crates/tact/src/agent/mod.rs`（`effort_after_provider_fold`、`compact_effort_reserve_tokens`、`compact_summary_effort`）；[第 21 章](./21_chapter_config_zh.md)；`config.example.toml` |
+
+**现象 / 动机：** 两处与官方文档对不上的地方（`api-docs.deepseek.com/guides/thinking_mode` 与 `/api/create-chat-completion`）。(a) 内建档位表把 `deepseek-v4-pro` 收窄成 `[High, Max]`，可它的模块注释引用的就是那张全族表，而 API 参考把 `deepseek-flash` / `deepseek-v4-pro` 列在同一个 `reasoning_effort` 枚举下——于是 `/model` 对这个 id 藏掉了 `low`，且与文档行为无法自洽。(b) DeepSeek **接受** `minimal`/`medium`/`xhigh` 但会折叠（`minimal`→`low`、`medium`/`xhigh`→`high`）；Tact 原样发送配置值，所以配置 `reasoning_effort = "medium"` 时预留按 4,000 的 medium 桶算，而模型实际以 `high`（8,000）推理——正是会饿死摘要信封的那种低估。
+
+**决策：** 按官方表来，同时保持「发送值如实」。`deepseek-flash`（参考里列出的 id，也是本会话在用的那个）与 `deepseek-v4-flash`、`deepseek-v4-pro` 一起采用全族那三个有意义的档位 `low`/`high`/`max`；旧的 `deepseek-reasoner` 保持较窄的历史集合，因为当前参考已不列它（注释写明了这个理由）。新增 `effort_after_provider_fold(provider_kind, effort)`，把 DeepSeek 官方的折叠——**只**折叠 DeepSeek，因为 OpenAI 的枚举是模型相关的真实档位、Kimi 没有任何折叠——应用到所有**派生**预算上。线上值永不改写（文档说这些值是为兼容而接受），所以读数仍等于实际发出的值。
+
+**变更后行为：** 在 DeepSeek 上，`[llm] reasoning_effort = "medium"` 依然发送 `medium`（`[compact summary …] request … reasoning_effort=medium` 可见），但摘要预留按 `high` 桶：`(text 2000 + reasoning 8000)` 而不是 `(text 2000 + reasoning 4000)`。`/model` 第二步对 `deepseek-flash` 与 `deepseek-v4-pro` 都给出 `low`/`high`/`max`。`compact_summary_effort` 里「DeepSeek 无法彻底关闭思考」这句过期说法已修正：开关是存在的（`reasoning.effort = "none"`，chat 格式为 `thinking.type = "disabled"`），而阶梯仍**故意**只降到 `low`——handoff 里的标识符细节正来自那段思考。测试：`agent::tests::{effort_folds_to_what_deepseek_actually_runs,local_compact_folds_deepseek_effort_for_the_reserve}`（两个方向的折叠、线上值原样、打印出的信封用 high 桶）、`config::tests::deepseek_ids_share_the_official_tier_table`。
+
+**指针：** `crates/tact/src/config/mod.rs`、`crates/tact/src/agent/mod.rs`。文档：第 21 章 `reasoning_effort` 一节（折叠表 + 派生预算规则）、`config.example.toml` 的 model-profiles 注释（记账 + 官方列出的 id）。
+
+---
+
+## 1. 2026-09-26 — handoff cell 会点明它摘要掉的那份 transcript 在哪
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/compact/mod.rs`（`summary_message`、`build_compacted_history`）；`crates/tact/src/agent/mod.rs`（Codex-style 重建的两处调用点）；[第 5 章](./05_chapter_compact_zh.md) §5/§8/§11 |
+
+**现象 / 动机：** 压缩只摘要最近的尾部（`KEEP_USER_MESSAGE_TOKENS = 20_000` 估算 token），更早的内容**只**存在于磁盘上的 transcript 里——但接续的 agent 从不知道这个文件存在。于是压完一个长会话后，它的行为像是「handoff 就是全部历史」。实测那次 9 小时会话：handoff 只覆盖最后一小时，另外八小时躺在 `.tact/transcripts/transcript_1790384715333130116_0.jsonl`（592 条消息 / 1.36 M 字符）里，而没有任何东西指向它。第 5 章 §11 本来就把它记成已知缺口。
+
+**决策：** 把路径追加在 handoff **cell 内部**——是 `<context-handoff>` 消息的一部分，而不是另一条消息——形如 `Full pre-compaction transcript: <path> — read it selectively if you need detail this summary dropped.`。提示刻意写成「按需择读」：长会话的 transcript 体量远超任何阅读预算。这句话由构造该 cell 的同一个函数产出，因此重载时的识别不受影响（`is_summary_message` 仍看到开标签，`MessageKind::Summary` 标记不变）；旧的 `LegacySingleSummary` / `compacted_context` 路径不传路径，其单摘要消息与改动前逐字节一致。
+
+**变更后行为：** 本地压缩后的替换上下文在闭标签前多出这一行，指向的文件与 TUI 已经打印的 `[transcript saved: …]` 是同一个、也是 `write_transcript` 在压缩开始时写下的那个。因此 agent 可以找回尾部筛选丢掉的细节，而不必以为 handoff 就是全部。测试：`compact::tests::build_compacted_history_notes_where_the_transcript_lives`（带路径时出现该行且 cell 仍被正确框住；不带路径时没有该行、且重载后仍被识别为 handoff）。
+
+**指针：** `crates/tact/src/compact/mod.rs`（`summary_message`、`build_compacted_history`、`write_transcript`）、`crates/tact/src/agent/mod.rs`（重建调用点）。文档：第 5 章 §8（落盘布局）与 §11（缺口行改写：路径已暴露；但**哪些**回合被摘要掉仍由尾部截断决定，而不是按重要性）。
+
+---
+
+## 1. 2026-09-26 — 摘要信封不会小于配置的输出预算
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/agent/mod.rs`（`compact_summary_envelope_ceiling`、`compact_history_local_with_mode` 里的 `summary_max_tokens` 下限）；[第 5 章](./05_chapter_compact_zh.md) §5 + §9 |
+
+**现象 / 动机：** 在 DeepSeek 系网关上的一次 `/compact` 付了两次摘要请求，而第一次什么都没产出：`max_tokens = 4000` 回来是 `stop=max_tokens`、`reasoning_tokens = 4000`、摘要正文为零。根因是这一族 provider **没有独立的 thinking 预算**——`reasoning_effort` 只是个档位名（`none` 关思考，`low`/`high`/`max` 开启；`minimal`→`low`、`medium`/`xhigh`→`high` 是兼容折叠；默认 `high`），而 DeepSeek 把 reasoning 计在 `max_tokens` **之内**。官方对思考模式不设 `max_tokens` 时的默认值是 **64K**（`max` 档 128K、关思考 8K），也就是说 Tact 的 2,000 文本预算加上一个小 effort 桶，比 provider 自己认为的正常量级低了一个数量级。在这类 provider 上，信封太小并不等于「想得少」，而是「没有答案」。
+
+**决策：** 用 `[agent] max_tokens`（已解析的回复预算：CLI > provider 条目 > `[agent]` > 默认）给摘要的线上 `max_tokens` 兜底，并以 `compact_summary_envelope_ceiling` = `窗口 − 10% 余量 − 指令 token 数` 封顶，这样紧窗口下仍能构造出请求，而不是硬报 "window too small"。下限只作用于「这次请求可能把信封花在推理上」的情形——`effective_effort.is_some()`，即所有 effort 语义 provider（含 DeepSeek / Kimi K3 这类服务端默认档）。budget 语义 provider（Anthropic）在这里从不接收 thinking 预算，因此继续保持经典的 `min(窗口 × 20%, 2,000)` 文本上限——正是它让 handoff 保持紧凑。文本/预留的拆分仍只是阶梯的**记账**，不是对线上形状的承诺：续写各档的信封不变，因为续写只需把草稿写完（实测：2,000 的信封里用掉 649 reasoning + 约 465 文本）。代价记录在案、不藏：这类 provider 上 2,000 的上限不再约束 handoff 正文。大窗口下这在结构上没有代价——保留用户消息的预算本身是 `min(20,000, 窗口 − …)`，窗口那一项仍在几十万量级——而响应提示现在会打印 `completion N (reasoning M)`，所以摘要真的吃掉整个下限是**看得见**的，不用靠推断。
+
+**变更后行为：** effort 语义 provider 上，首次摘要请求拿到的 `max_tokens` 不会低于 `[agent] max_tokens`。按默认值（8,000）就是「算出来的文本+桶更小时取 8,000」；配成 65,536 时信封在每种情形下都是 65,536——与 DeepSeek 自己的思考模式默认值同一量级。每一档仍打印自己的确切信封，其余一切未动：同样的阶梯、同样的续写、同样的触发条件、同样的文本/预留记账。测试：`agent::tests::{local_compact_envelope_is_at_least_the_configured_output_budget,compact_summary_envelope_ceiling_leaves_room_for_the_instructions}`，以及两条未变的断言——Anthropic 仍保持 2,000 文本预算（`local_compact_omits_thinking_for_anthropic`）、继承的 `high` 在 128K 窗口下仍是 10,000（`local_compact_inherits_session_effort`）。
+
+**指针：** `crates/tact/src/agent/mod.rs`（`compact_summary_envelope_ceiling`、`compact_effort_reserve_tokens`、`compact_summary_server_default_effort`）；文档：第 5 章 §5（摘要调用）+ §9（配置）。档位与 64K 思考模式默认值的官方出处：`api-docs.deepseek.com/guides/thinking_mode` 与 `/api/create-chat-completion`——记在这里，因为 `config.example.toml` 只列了档位名，没写这层记账。
+
+---
+
+## 1. 2026-09-26 — 压缩提示消息说人话：报数字，不再打印 Rust `Debug`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | docs（日志输出） |
+| **相关** | `crates/tact/src/agent/mod.rs`（`compact_response_note`、`compact_truncation_note`，以及 `[compact summary …]` / `[compact continue …]` / `[compact fallback]` 三处 emit）；[第 5 章](./05_chapter_compact_zh.md)；[第 23 章](./23_chapter_tui_zh.md) |
+
+**现象 / 动机：** 一次真实 `/compact` 把每次尝试的状态打成了内部 Rust 类型的 `{:?}` dump——`response stop=Some(MaxTokens) usage=Some(TokenUsageInfo { prompt: 23470, completion: 4000, total: 27470, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 23470, reasoning_tokens: 4000 })`——本该是一句话的地方成了一串结构体字段，把唯一重要的数字（整个输出预算都被 `reasoning_tokens` 吃掉）埋在五个无关字段里。续写提示则是镜像的问题：`summary truncated (15314 think bytes)` 把**字节**数与 token 预算并排打印，拿它去比 2,000 的文本预算或 4,000 的 reasoning tokens 只会得到相反的结论；而 fallback 那行还写着 `truncated after 5 attempts`，可阶梯实际跑了 6 级。
+
+**决策：** 打印 provider 自己的数字并逐个标注单位。`compact_response_note` 渲染 `stop=<snake_case>` 加 `prompt N, completion M (reasoning R), cache hit/miss`；provider 没给 usage 时写 `no usage reported`（绝不编造 0），无法识别的 stop reason 写 `unknown(<raw>)`，与 agent 其它消息既有记法一致（`stop_reason=refusal`）。`compact_truncation_note` 同时点名一次截断尝试的**两种单位**——`4000 reasoning tokens, thinking block 15314 bytes`——reasoning 在前，因为那才是真正计费的东西；没有 usage 时只报字节重量，绝不说自己看不见的开销。fallback 行改为报自己的级数（`still truncated at stage 6/6`），不再数续写次数。预算、阶梯与 wire 行为都没有改动：同样的 `max_tokens`、同样的预留升级、同样的续写消息。
+
+**变更后行为：** 每次尝试前一行 `[compact summary n/6] request … max_tokens=… (text … + reasoning …), reasoning_effort=…, input … chars`，后一行 `[compact summary n/6] response stop=…, prompt …, completion … (reasoning …), cache …/…`——覆盖面与 2026-09-14 那条一致，但现在可读也可 grep：`stop=max_tokens, prompt 23470, completion 4000 (reasoning 4000), cache 0/23470`。截断时发出 `[compact continue 1/5] summary truncated (4000 reasoning tokens, thinking block 15314 bytes), next attempt max_tokens=2000`；阶梯耗尽时发出 `[compact fallback] summary still truncated at stage 6/6; using the best-effort partial summary`。测试：`agent::tests::{compact_response_note_renders_the_providers_numbers,compact_truncation_note_labels_both_units}`（两种单位 + 无 usage / 未知 stop 两路），以及既有的信封测试（现在断言 `[compact summary 1/6] response stop=end_turn, no usage reported`）。
+
+**指针：** `crates/tact/src/agent/mod.rs`（`compact_response_note`、`compact_truncation_note`，阶梯循环里的三处 `emit_update`）。文档：第 5 章 §摘要阶梯记录新的行形状；第 23 章 §`/compact` 状态消息列出的是标签，未变。
+
+---
+
+## 1. 2026-09-26 — 在 DeepSeek 系端点上，`/compact` 的第一枪摘要请求整发被推理吃掉
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | investigation（成本；尚未改代码） |
+| **相关** | `crates/tact/src/agent/mod.rs`（`compact_history_local_with_mode`、`compact_effort_reserve_tokens`、`compact_summary_effort`、`next_compaction_reserve`）；`crates/tact-ui/src/driver.rs`（`UserCommand::Compact`）；`crates/tact/src/recovery.rs`（`CONTINUATION_MESSAGE`）；`crates/tact/src/compact/mod.rs`（`KEEP_USER_MESSAGE_TOKENS`、`AUTO_COMPACT_THRESHOLD_PERCENT`）；[Ch 05](./05_chapter_compact_zh.md) |
+
+**现象 / 动机：** 对一个跑了 9 小时的会话执行 `/compact`（`deepseek-flash` 走 OpenAI 兼容网关），摘要阶梯跑了两轮，而第一枪**一个字的摘要都没产出**：
+
+```
+[compact summary 1/6] request … max_tokens=4000 (text 2000 + reasoning 2000), reasoning_effort=low
+[compact summary 1/6] response stop=Some(MaxTokens) … completion: 4000, reasoning_tokens: 4000
+[compact continue 1/5] summary truncated (15314 think bytes), next attempt max_tokens=2000
+[compact summary 2/6] request … max_tokens=2000 (text 2000 + reasoning 0)
+[compact summary 2/6] response stop=Some(EndTurn) … completion: 1114, reasoning_tokens: 649
+```
+
+该端点把 `reasoning_tokens` **算在 `max_tokens` 之内**，于是「从零总结 23K tokens 的尾部」这件事把整个 4,000 的额度花在思考上、正文为零——按 effort 推出的 `reasoning` 预留（`compact_effort_reserve_tokens(Low) = 2_000`）只是本地记账，线上只有一整个信封。这一枪白花了 23,470 prompt + 4,000 completion tokens；而这次压缩整体把会话从 417,680 降到 85,235 wire tokens（协议 item 966 → 27，请求体 1.64 MB → 0.30 MB）。
+
+**调查：** (1) 触发源是从 TUI 文案读出来的：`[compacting]` / `Compaction complete.` **只**由 `UserCommand::Compact` 发出（`crates/tact-ui/src/driver.rs:365`），自动压缩发的是 `[auto compact]`、恢复压缩发的是 `[Recovery] compact (1/2): context too large`——这条值得记，因为 `/compact` 是 palette command，从不写入 `input_history`（只有 `dispatch_user_task` 调 `save_history`），事发后在库里查不到任何文本痕迹。(2) **不是** 80% 阈值：该会话解析出的 `model_context_window` 是 1,000,000（`deepseek-flash` 的内置映射），由请求体里的 `context_management.compact_threshold = 834464 = 1,000,000 − 65,536 (max_tokens) − 10% headroom` 反证；也就是说 `last_token_total + incoming + max_tokens` 得到 800,000 才触发，而当时只有 419,861。同一个库里的交叉验证：唯一一次自动压缩发生在一次 `total=735,712` 的请求之后 19 秒（`735,712 + 65,536 = 801,248`）。(3) 第 2 枪的额度只有一半却成功了，因为它是同一份摘要的**续写而不是重试**：落库的请求体里有三个 input item——75,063 字符的摘要 prompt、一个装 15,171 字符 `reasoning_text` 的 `reasoning` item（第 1 枪的思考；`encrypted_content` 只有 38 字符）、以及 `CONTINUATION_MESSAGE`（“Output limit hit. Continue directly from where you stopped. No recap, no repetition. Pick up mid-sentence if needed.”）。思考已经在上下文里，模型只需 649 个 reasoning tokens 而不是 4,000，而阶梯的第一次续写本来就把预留**归零**。
+
+**决策：** 只做记录，暂不改代码。若要去掉这份浪费，最小改法是让 DeepSeek/Kimi 的 stage 0 直接从 reserve 0 起步（等价于从 stage 1 开始），或把 `Low` 的预留提到不低于文本预算；两者都在现有阶梯内部，不改任何 wire 契约。**已被上面那条「信封下限」条目取代**：实际落地的是按 `[agent] max_tokens` 给信封兜底，桶本身不动。刻意**不**记为 bug：阶梯「先想、再写」的形状正是第 2 枪便宜的原因，而「一整发信封都花在思考上」是端点行为，不是 Tact 的缺陷。
+
+**变更后行为：** 阶梯语义不变；它的提示消息在同一次改动里重写过（见上面那条 notices 条目）。本条钉住的可观察规则：`[compact continue N/5]` 是阶梯的正常推进而非失败（最多 6 级，之后 `[compact fallback]` 用 best-effort 部分摘要收尾）；该行现在同时报两种单位（`4000 reasoning tokens, thinking block 15314 bytes`），取代上面引用的「只有字节」措辞——先写计费的 reasoning tokens，再写 thinking 块的字节重量；摘要器只看到尾部（`KEEP_USER_MESSAGE_TOKENS = 20_000`），所以 handoff 从不覆盖整个长会话——压缩前的完整上下文只存在于 `.tact/transcripts/transcript_<nanos>_<n>.jsonl`（保留最新 100 份）；`/responses` 下 `micro_compact` 是被刻意跳过的，因此两次压缩之间上下文不会自行缩小。
+
+**指针：** `crates/tact/src/agent/mod.rs`（阶梯循环与 `[compact summary …]` / `[compact continue …]` 的埋点、摘要调用前先 `write_transcript`、`next_compaction_reserve`）、`crates/tact-ui/src/driver.rs`（`UserCommand::Compact`）、`crates/tact/src/recovery.rs`（`continuation_message`）。本次运行的证据：`token_usages.id=14215`（`call_type=compact`，prompt 23,499 / completion 1,114，请求体 98 KB）、`.tact/transcripts/transcript_1790384715333130116_0.jsonl`（592 条消息 / 1.36 M 字符）。
+
+---
+
+## 1. 2026-09-26 — `token_usages.request_body` 从不清理，而它就是那 8.2 GB 的全部
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix（未修） |
+| **相关** | `crates/tact/src/store/session_store/sqlite.rs`（`token_usages` 表结构；唯一的 `DELETE FROM token_usages` 是删除会话时的级联）；`crates/tact/src/agent/mod.rs`（`persist_llm_call`）；`docs/token_usage_schema.md`（列表字段表 + `encrypted_content` 安全说明） |
+
+**现象 / 动机：** `<workdir>/.tact/tact.db` 已经涨到 **8.2 GB**；`dbstat` 显示其中 **8,146 MB 属于 `token_usages`**——14,226 行、平均每行约 570 KB——因为 `request_body` 把每次 `stream` / `compact` 调用的请求体原样存了下来（单个会话的行就有 330–370 KB，最大 1.64 MB）。而它没有任何清理：文档把这个列描述成调试用途，也没有保留策略，于是库随使用量单调增长，而 `messages`（56 MB）与 `responses_states`（27 MB）都还是小头。
+
+**决策：** 暂无——先记录，免得下次再从 `du -h` 重新发现一遍。任何修法都必须保住安全说明依赖的性质：压缩的 `encrypted_content` **只**保存在 `stream` / `responses_compact` 行的 `request_body` BLOB 里。因此风险最低的形状是「只丢普通 `stream` 行的正文，保留 `compact` / `responses_compact`」，备选是「按会话保留最新 N 行 / N 天」。
+
+**变更后行为：** 不变——这是磁盘增长，不是协议或 UI 行为。
+
+**指针：** `docs/token_usage_schema.md`。测量方式：`sqlite3 .tact/tact.db "select name, sum(pgsize) from dbstat group by name order by 2 desc limit 5"`。
+
+---
+
 ## 1. 2026-09-25 — 任务统计行的复制按钮改用图标，不再是需要翻译的词
 
 | 字段 | 值 |

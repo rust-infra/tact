@@ -44,9 +44,53 @@ CREATE INDEX idx_token_usages_session_id ON token_usages(session_id);
 | `reasoning_tokens` | INTEGER | Reasoning tokens consumed by the model (R1 / V3 thinking). |
 | `first_message_id` | INTEGER | Message-id link: earliest `messages.id` sent in this call. `0` means no message range (e.g., compaction sends a synthetic prompt). |
 | `last_message_id` | INTEGER | Message-id link: latest `messages.id` **sent** in this call (captured before the assistant response row is written). Used as the anchor for `tool_schedule` updates. |
-| `request_body` | BLOB | Optional. Serialized JSON body sent to the LLM API (stream, compact, or responses_compact call). Used for debugging provider/context issues. |
+| `request_body` | BLOB | Serialized JSON body sent to the LLM API (stream, compact, or responses_compact call). Used for debugging provider/context issues. **Retained for at most `[agent] max_token_usage_bodies` (default 1, fallback `MAX_TOKEN_USAGE_BODIES`) ordinary calls per session**; every compaction call keeps its body. Trimmed rows are blanked in place to an empty blob (`X''`) — not NULL, the column is `NOT NULL` — so accounting columns are untouched and the sentinel simply means "body not retained". See [Request body retention](#request-body-retention). |
 | `tool_schedule` | TEXT | Optional JSON. Summary of how this turn's tool calls were scheduled into parallel waves. Written by `execute_tool_call()` after the LLM call, keyed by the `last_message_id` stored on the token row (snapshot of the pre-assistant message window at `persist_llm_call`). See [Tool Schedule](#tool-schedule-column) and [parallel_tool_execution.md](parallel_tool_execution.md). |
 | `created_at` | TIMESTAMP | When this row was written. |
+
+### Request body retention
+
+A `request_body` is the **whole serialized request** — system prompt, every tool
+schema, and on `/responses` the entire logical context, re-sent each call — so
+per-row size grows with the session: measured on one store, the average body went
+from 109 KiB (day 1) to 1003 KiB three weeks later, and a single 9-hour session
+wrote 569 rows / 591 MiB. Keeping every body unbounded produced an 8 GB session
+database (99% of it this table).
+
+`record_token_usage` therefore trims right after each insert: it blanks the body
+of the single ordinary call sitting at the newest-`max_token_usage_bodies` window
+edge, i.e. it advances the trim by one row, and never touches a `compact` / `responses_compact` body (that BLOB
+is the only place a compaction baseline survives). One row per insert keeps the
+steady state at "N bodies per session" without ever re-reading a body to decide,
+and `load_latest_request_body` skips blanked rows. The flip side of that O(1) step
+is deliberate: rows already outside the window when the policy first applied are
+never revisited (the edge only moves forward), so **pre-policy backlogs are the
+one-off statement's job**, not this trim's.
+
+Rows are only blanked, not deleted: `DELETE`/`UPDATE` return pages to the file's
+freelist, so **the file does not shrink until `VACUUM`**. To reclaim space from
+databases written before this policy:
+
+```sql
+-- Once, with tact idle: keep the newest N (here 10) ordinary bodies per session
+-- plus every compaction body, blank the rest. Note the per-insert trim cannot do
+-- this itself: it only advances the window edge.
+UPDATE token_usages
+   SET request_body = X''
+ WHERE length(request_body) > 0
+   AND call_type NOT IN ('compact', 'responses_compact')
+   AND id NOT IN (
+        SELECT id FROM (
+            SELECT id,
+                   ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id DESC) AS rn
+              FROM token_usages
+             WHERE call_type NOT IN ('compact', 'responses_compact')
+        )
+        WHERE rn <= 10
+   );
+PRAGMA wal_checkpoint(TRUNCATE);
+VACUUM;   -- needs free space roughly the size of the file
+```
 
 ### `tool_schedule` Column
 

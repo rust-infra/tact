@@ -291,7 +291,7 @@ sequenceDiagram
 
 ### 步骤说明
 
-**1. Transcript 落盘** — `write_transcript` 原子创建唯一的 `.tact/transcripts/transcript_<unix_nanos>_<collision>.jsonl`，每行一条 JSON 消息。TUI 显示 `[transcript saved: …]`。完整历史可离线找回；摘要消息里**不会**自动告知模型该路径（§11 缺口）。
+**1. Transcript 落盘** — `write_transcript` 原子创建唯一的 `.tact/transcripts/transcript_<unix_nanos>_<collision>.jsonl`，每行一条 JSON 消息。TUI 显示 `[transcript saved: …]`。完整历史可离线找回，且模型收到的 handoff cell 末尾就带着该路径（`Full pre-compaction transcript: … — read it selectively if you need detail this summary dropped.`），因此接续的 agent 知道早期回合是可找回的，而不会以为摘要就是全部。
 
 **2. 近期窗口选择** — 从 `context` **末尾**向前，在模型窗口预算与 **20,000 估算 token 上限**内累加。超大消息转成合法的纯文本视图，图片变成省略占位符，不会切断 base64；无法容纳时不强塞消息。更早回合只靠 transcript + 摘要能推断的内容存活。
 
@@ -307,13 +307,13 @@ flowchart LR
     New -->|序列化进 prompt| SumLLM[摘要 LLM]
 ```
 
-**3. 摘要调用** — 一次新的非流式 `create_message`（无 tools）；选择输入前先预留输出与 10% 安全余量。摘要**文本**部分沿用经典的 `min(窗口 × 20%, 2,000)` 输出预算。摘要请求不转发 Claude 式 thinking budget（思考对手交摘要价值不大），其 reasoning 预留是该次尝试**有效 effort 对应的绝对 token 桶**——`none` 0、`minimal`/`low` 2,000、`medium` 4,000、`high` 8,000、`xhigh`/`max` 16,000——追加在文本预算**之上**（`max_tokens` = 文本 + 桶）。预留走一条**分档 effort 阶梯**：
+**3. 摘要调用** — 一次新的非流式 `create_message`（无 tools）；选择输入前先预留输出与 10% 安全余量。摘要**文本**部分沿用经典的 `min(窗口 × 20%, 2,000)` 输出预算。摘要请求不转发 Claude 式 thinking budget（思考对手交摘要价值不大），其 reasoning 预留是该次尝试**有效 effort 对应的绝对 token 桶**——`none` 0、`minimal`/`low` 2,000、`medium` 4,000、`high` 8,000、`xhigh`/`max` 16,000——追加在文本预算**之上**（`max_tokens` = 文本 + 桶）。当这次请求可能把信封花在推理上——即任何 effort 语义 provider（OpenAI / DeepSeek / Kimi k3 / 配置了 effort 的自定义 provider，含服务端默认档）——线上的 `max_tokens` 还会再被 `[agent] max_tokens` 兜底抬高，并以「固定指令仍放得下」为上限封顶。这类 provider **没有独立的 thinking 预算**，因此小于配置输出预算的信封可能被思考整个吃掉（实测：`max_tokens = 4000` → `reasoning_tokens = 4000`、摘要正文为零，而 DeepSeek 官方思考模式默认是 64K）。budget 语义 provider（Anthropic）在这里从不接收 thinking 预算，仍保持经典文本上限。预留走一条**分档 effort 阶梯**：
 
 - **阶段 0 — 继承。** 转发会话配置的 `reasoning_effort`；未配置时按 provider 服务端默认（DeepSeek / Kimi K3 默认 thinking 开启 + effort high，取 `high` 桶；OpenAI / Anthropic 取 0）。
 - **阶段 1 — 最小化。** 在 provider 允许的范围内压低思考：DeepSeek / Kimi K3 转发 `low`（其 body hook 无法完全关闭 thinking），OpenAI 推理模型发 `none`，其余 provider 省略该字段。
 - **阶段 2+ — 自适应。** 依据上一次尝试实际消耗的 `reasoning_tokens` 设定预留：`clamp(observed × 1.25, floor, cap)`，其中 `floor = max(上次预留, effort 桶, 文本/4)`、`cap = 2 × floor`。每次信封都受窗口上限约束，保证初始 prompt + `max_tokens` + headroom 仍放得下。
 
-reasoning 与文本共用同一个 `max_tokens` 信封，没有预留时推理模型会挤占摘要文本。如果连固定的摘要指令本身都超过输入上限，压缩会提前失败，因为即使删除全部历史也无法构造合法请求。瞬时传输错误最多退避重试五次。每次摘要尝试都会打印自己的信封——调用前 `[compact summary n/6] request … max_tokens=… (text … + reasoning …)`，调用后 `[compact summary n/6] response stop=… usage=…`，一次成功（0 次续写）时同样打印——因此实际发出的 `max_tokens` 永远在日志里。`MaxTokens` 截断的摘要会**续写**（最多 `MAX_COMPACT_SUMMARY_ATTEMPTS` = 5 次，`[compact continue n/5]`）：把已产生的部分摘要作为 assistant 消息、追加一条续写提示。阶梯用尽后，部分摘要以 `[compact fallback]` 被接受为 best-effort（Codex-style 重建反正会保留最近的真实用户消息）。拒绝/其它异常终止原因和空文本仍会被拒绝，旧 context 不会被替换。指令还说明对话以 JSON 消息数组形式附在后面（工具结果与附件可能被省略），摘要必须仅基于该内容。摘要要求模型保留：
+reasoning 与文本共用同一个 `max_tokens` 信封，没有预留时推理模型会挤占摘要文本——而且预留只是本地记账：线上只有一个信封，因此预留不足的 stage 0 等于什么都没买到。在 DeepSeek 系网关上实测（`deepseek-flash`、`reasoning_effort = low`）：stage 0 发出 `max_tokens = 4000 (text 2000 + reasoning 2000)`，回来是 `MaxTokens`、`reasoning_tokens = 4000`、摘要正文为零；下一阶段（`max_tokens = 2000`、预留 0）反而用 649 reasoning + 约 465 文本 token 产出了摘要，因为它是**续写**而不是重新推导那部分思考。如果连固定的摘要指令本身都超过输入上限，压缩会提前失败，因为即使删除全部历史也无法构造合法请求。瞬时传输错误最多退避重试五次。每次摘要尝试都会打印自己的信封——调用前 `[compact summary n/6] request … max_tokens=… (text … + reasoning …), reasoning_effort=…, input … chars`，调用后 `[compact summary n/6] response stop=…, prompt …, completion … (reasoning …), cache …/…`，一次成功（0 次续写）时同样打印——因此实际发出的 `max_tokens` 与这次调用真正的开销永远在日志里。stop reason 采用与 agent 其它消息一致的 snake_case 记法（`stop=end_turn`、`stop=max_tokens`、`stop=unknown(<raw>)`），没有 usage 时写 `no usage reported`，不再打印空的 Debug dump。`MaxTokens` 截断的摘要会**续写**（最多 `MAX_COMPACT_SUMMARY_ATTEMPTS` = 5 次，`[compact continue n/5]`）：把已产生的部分摘要作为 assistant 消息、追加一条续写提示，而该提示同时点名这次尝试花掉的**两种单位**——`summary truncated (4000 reasoning tokens, thinking block 15314 bytes), next attempt max_tokens=2000`——先写计费的 reasoning tokens，再写 thinking 块的字节重量，避免把字节数读成 token 数。阶梯用尽后，部分摘要以 `[compact fallback]` 被接受为 best-effort（Codex-style 重建反正会保留最近的真实用户消息）。拒绝/其它异常终止原因和空文本仍会被拒绝，旧 context 不会被替换。指令还说明对话以 JSON 消息数组形式附在后面（工具结果与附件可能被省略），摘要必须仅基于该内容。摘要要求模型保留：
 
 1. 当前目标与已完成工作  
 2. 关键发现、决策、架构洞见  
@@ -700,6 +700,7 @@ flowchart TB
 | 设置 | 默认 | 作用 |
 |------|------|------|
 | `agent.model_context_window`（`--model-context-window`） | 200,000 | Token 窗口：80% 时自动压缩 + TUI 用量条；非零时必须大于 `max_tokens`。解析顺序：CLI > `[agent]` > 模型→窗口映射（如 `deepseek-v4-pro` → 1M）> 默认值 |
+| `agent.max_tokens` | 8,000（Kimi K2.x 32,000） | 回复预算、压缩重建时的预留、自动触发的预留——以及 effort 语义 provider 上摘要信封的**下限**（以「指令仍放得下」封顶）；budget 语义 provider 仍保持经典 `min(窗口 × 20%, 2,000)` 文本上限 |
 | `agent.micro_compact_enabled`（`--no-micro-compact`） | `true` | 启用每轮 stub |
 
 经 `crates/tact/src/config/` 分层解析（CLI > TOML > 默认）。编译期常量（`KEEP_RECENT_TOOL_RESULTS`、`PERSIST_THRESHOLD` …）**尚不可配置**。
@@ -738,7 +739,7 @@ flowchart LR
 |------|------|
 | 冷启动 / 工具后 token 估算 | ASCII 按约 4 字符/token、非 ASCII 按 1 字符/token 的保守估算；有实际用量时仍 OR 此估算，以覆盖 tool result 追加后的膨胀 |
 | 简易用量百分比 | 用量条为 `used / model_context_window`（尚无 Codex 12K baseline / effective-window 算法） |
-| 只摘要近期 20k 估算 token | 早期回合在 transcript 里；替换消息未告知模型该路径 |
+| 只摘要近期 20k 估算 token | 早期回合只留在 transcript 里；handoff cell 会点明该文件（但「哪些回合被摘要掉」仍由尾部截断决定，而不是按重要性挑选） |
 | Stub 阈值固定 | 12 / 120 / 30k 是编译期常量 |
 
 ### 11.1 Micro Compact 已知问题

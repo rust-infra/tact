@@ -489,6 +489,7 @@ struct NonLlmSettings {
     notifications_enabled: bool,
     snapshot_max_items: usize,
     micro_compact_enabled: bool,
+    max_token_usage_bodies: usize,
     skill_body_auto_inject: bool,
     skill_dirs: Vec<String>,
     instruction_sources: InstructionSources,
@@ -530,6 +531,11 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
     } else {
         toml_cfg.agent.micro_compact_enabled.unwrap_or(false)
     };
+
+    let max_token_usage_bodies = toml_cfg
+        .agent
+        .max_token_usage_bodies
+        .unwrap_or(crate::store::session_store::MAX_TOKEN_USAGE_BODIES);
 
     let skill_body_auto_inject =
         args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
@@ -575,6 +581,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         notifications_enabled,
         snapshot_max_items,
         micro_compact_enabled,
+        max_token_usage_bodies,
         skill_body_auto_inject,
         skill_dirs,
         instruction_sources,
@@ -620,6 +627,7 @@ pub(super) fn resolve_non_llm_settings(
             notifications_enabled: non_llm.notifications_enabled,
             snapshot_max_items: non_llm.snapshot_max_items,
             micro_compact_enabled: non_llm.micro_compact_enabled,
+            max_token_usage_bodies: non_llm.max_token_usage_bodies,
             skill_body_auto_inject: non_llm.skill_body_auto_inject,
             skill_dirs: non_llm.skill_dirs,
             instruction_sources: non_llm.instruction_sources,
@@ -824,6 +832,7 @@ pub(super) fn resolve_config(
             notifications_enabled: non_llm.notifications_enabled,
             snapshot_max_items: non_llm.snapshot_max_items,
             micro_compact_enabled: non_llm.micro_compact_enabled,
+            max_token_usage_bodies: non_llm.max_token_usage_bodies,
             skill_body_auto_inject: non_llm.skill_body_auto_inject,
             skill_dirs: non_llm.skill_dirs,
             instruction_sources: non_llm.instruction_sources,
@@ -2142,6 +2151,46 @@ api_key = "sk-test"
         let resolved = resolve_non_llm_settings(&args, &TactTomlConfig::default(), None).unwrap();
         assert_eq!(resolved.ui.theme, "nord");
         assert!(resolved.llm.api_key.is_empty());
+    }
+
+    /// `[agent] max_token_usage_bodies` defaults to the store fallback (1), so a
+    /// session keeps exactly one request body unless the user asks for more.
+    #[test]
+    fn resolve_token_usage_bodies_defaults_to_one_and_is_overridable() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_token_usage_bodies, 1);
+        assert_eq!(
+            resolved.agent.max_token_usage_bodies,
+            crate::store::session_store::MAX_TOKEN_USAGE_BODIES
+        );
+
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+
+[agent]
+max_token_usage_bodies = 25
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.max_token_usage_bodies, 25);
     }
 
     #[test]

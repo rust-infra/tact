@@ -7,7 +7,8 @@ use tact_llm::{Message, MessageContent, MessageKind, ProviderConversationState, 
 use tact_protocol::TokenUsageInfo;
 
 use super::{
-    MAX_INPUT_HISTORY, MessageCountByPeriod, SessionSummary, process_identity::process_identity,
+    MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary,
+    process_identity::process_identity,
 };
 use crate::store::sqlite::{PoolRef, open_pool};
 
@@ -198,6 +199,53 @@ impl SqliteSessionStore {
         .execute(pool)
         .await
         .context("failed to trim input history")?;
+        Ok(())
+    }
+
+    /// Request bodies to keep per session: `[agent] max_token_usage_bodies`,
+    /// or [`MAX_TOKEN_USAGE_BODIES`] when no configuration is loaded (unit
+    /// tests, embedded use).
+    fn token_usage_body_limit() -> usize {
+        crate::config::try_settings()
+            .map(|settings| settings.agent.max_token_usage_bodies)
+            .unwrap_or(MAX_TOKEN_USAGE_BODIES)
+    }
+
+    /// Blank the body of the single ordinary call sitting at the newest-`keep`
+    /// window edge, i.e. advance the trim by one row. Compaction bodies are
+    /// never candidates.
+    ///
+    /// One row per insert is what keeps this cheap: the window edge moves exactly
+    /// one row per insert, so a session that lives under the policy does O(1)
+    /// work per call and never re-reads a body to decide (a "blank everything
+    /// older" UPDATE would have to read every body to test it — the very I/O this
+    /// avoids). The flip side, by design: rows that were *already* outside the
+    /// window when the policy first applied are never revisited, because the edge
+    /// only moves forward. Pre-policy backlogs are the documented one-off's job
+    /// (`docs/token_usage_schema.md` §Request body retention). History rows are
+    /// blanked, not deleted, and freed pages only return to the file's freelist —
+    /// reclaiming disk needs `VACUUM`.
+    async fn trim_token_usage_bodies(&self, session_id: &str, keep: usize) -> Result<()> {
+        let pool: &SqlitePool = &self.pool;
+        sqlx::query(
+            r#"
+            UPDATE token_usages
+               SET request_body = X''
+             WHERE request_body <> X''
+               AND id = (
+                    SELECT id FROM token_usages
+                     WHERE session_id = ?
+                       AND call_type NOT IN ('compact', 'responses_compact')
+                     ORDER BY id DESC
+                     LIMIT 1 OFFSET ?
+               )
+            "#,
+        )
+        .bind(session_id)
+        .bind(keep as i64)
+        .execute(pool)
+        .await
+        .context("failed to trim token usage bodies")?;
         Ok(())
     }
 }
@@ -805,12 +853,18 @@ impl super::SessionStore for SqliteSessionStore {
         .execute(&*self.pool)
         .await
         .context("failed to record token usage")?;
+        self.trim_token_usage_bodies(session_id, Self::token_usage_body_limit())
+            .await?;
         Ok(())
     }
 
     async fn load_latest_request_body(&self, session_id: &str) -> Result<Option<Vec<u8>>> {
+        // `length > 0` skips rows whose body was trimmed away
+        // (`MAX_TOKEN_USAGE_BODIES` uses an empty blob as the sentinel); any call
+        // type is fair game, because the native `responses_compact` body is the
+        // only place that baseline survives (see the usage-schema docs).
         let row = sqlx::query(
-            "SELECT request_body FROM token_usages WHERE session_id = ? AND request_body IS NOT NULL ORDER BY id DESC LIMIT 1",
+            "SELECT request_body FROM token_usages WHERE session_id = ? AND length(request_body) > 0 ORDER BY id DESC LIMIT 1",
         )
         .bind(session_id)
         .fetch_optional(&*self.pool)
@@ -1161,6 +1215,144 @@ mod tests {
         store.delete_session("session-1").await.unwrap();
         let after = store.load_session("session-1").await.unwrap();
         assert!(after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_token_usage_keeps_the_resolved_window_and_every_compaction_body() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        // Whatever `[agent] max_token_usage_bodies` resolves to (the fallback is
+        // 1), the insert path keeps exactly that many ordinary bodies — the
+        // configured default is asserted where it belongs, in the config tests.
+        let limit = SqliteSessionStore::token_usage_body_limit();
+        for call in 0..limit + 3 {
+            let body = format!("body-{call}");
+            store
+                .record_token_usage(
+                    "session-1",
+                    "stream",
+                    None,
+                    call as i64,
+                    call as i64,
+                    Some(body.as_bytes()),
+                )
+                .await
+                .unwrap();
+        }
+        // Compaction bodies are exempt from the window … whatever their age.
+        store
+            .record_token_usage("session-1", "responses_compact", None, 99, 99, Some(b"c-1"))
+            .await
+            .unwrap();
+        // … and do not consume a slot of it.
+        store
+            .record_token_usage("session-1", "stream", None, 100, 100, Some(b"newest"))
+            .await
+            .unwrap();
+
+        let rows = sqlx::query(
+            "SELECT call_type, length(request_body) as len FROM token_usages WHERE session_id = ? ORDER BY id",
+        )
+        .bind("session-1")
+        .fetch_all(&*store.pool)
+        .await
+        .unwrap();
+        let kept: Vec<i64> = rows.iter().map(|row| row.try_get("len").unwrap()).collect();
+        let ordinary_bodies = rows
+            .iter()
+            .zip(&kept)
+            .filter(|(row, len)| {
+                **len > 0 && row.try_get::<String, _>("call_type").unwrap() == "stream"
+            })
+            .count();
+        assert_eq!(
+            ordinary_bodies, limit,
+            "the insert path keeps exactly the resolved window: {kept:?}"
+        );
+        assert_eq!(kept.last().copied(), Some(6), "the newest body survives");
+        assert_eq!(
+            kept[kept.len() - 2],
+            3,
+            "the compaction body is untouched while ordinary bodies around it are not: {kept:?}"
+        );
+
+        // The reader skips blanked rows: blank the newest body by hand, and the
+        // loader answers with the newest body that still exists.
+        sqlx::query("UPDATE token_usages SET request_body = X'' WHERE id = (SELECT max(id) FROM token_usages)")
+            .execute(&*store.pool)
+            .await
+            .unwrap();
+        let latest = store.load_latest_request_body("session-1").await.unwrap();
+        assert_eq!(latest.as_deref(), Some(b"c-1".as_slice()));
+    }
+
+    #[tokio::test]
+    async fn trim_token_usage_bodies_advances_the_window_edge_for_the_configured_limit() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        // Rows written before this policy existed: every body is still there, so
+        // the window has to be re-established row by row (the bulk case is the
+        // documented one-off statement, not this per-insert trim).
+        for call in 0..16 {
+            sqlx::query(
+                "INSERT INTO token_usages (session_id, call_type, request_body, first_message_id, last_message_id) VALUES (?, 'stream', ?, ?, ?)",
+            )
+            .bind("session-1")
+            .bind(format!("body-{call}").as_bytes())
+            .bind(call as i64)
+            .bind(call as i64)
+            .execute(&*store.pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO token_usages (session_id, call_type, request_body, first_message_id, last_message_id) VALUES ('session-1', 'compact', X'6331', 99, 99)",
+        )
+        .execute(&*store.pool)
+        .await
+        .unwrap();
+
+        // One step blanks exactly the row at the configured window edge …
+        store
+            .trim_token_usage_bodies("session-1", 10)
+            .await
+            .unwrap();
+        let lens = |rows: &[sqlx::sqlite::SqliteRow]| -> Vec<i64> {
+            rows.iter()
+                .map(|row| row.try_get("len").unwrap())
+                .collect::<Vec<i64>>()
+        };
+        let rows = sqlx::query(
+            "SELECT call_type, length(request_body) as len FROM token_usages WHERE session_id = ? ORDER BY id",
+        )
+        .bind("session-1")
+        .fetch_all(&*store.pool)
+        .await
+        .unwrap();
+        let kept = lens(&rows);
+        assert_eq!(kept.len(), 17);
+        assert_eq!(
+            kept[5], 0,
+            "the row just outside a ten-body window: {kept:?}"
+        );
+        assert_eq!(
+            kept.iter().filter(|len| **len > 0).count(),
+            16,
+            "one step blanks one row, it does not sweep the history: {kept:?}"
+        );
+        assert_eq!(kept[16], 2, "the compaction body is never trimmed");
     }
 
     #[tokio::test]

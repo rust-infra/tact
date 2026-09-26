@@ -127,6 +127,17 @@ depend on the provider:
 | `[responses compacted: items=N, id=…]` | Responses native compaction succeeded; `N` = baseline item count, `id` = truncated compaction-id prefix |
 | `Compaction complete.` | `UserCommand::Compact` finished successfully |
 
+The first three rows are also the **only way to tell which trigger fired**
+after the fact: `[compacting]` / `Compaction complete.` mean the command path
+(`/compact`, typed or chosen in the command palette), `[auto compact]` means
+the 80% / estimate trigger inside `agent_loop`, and `[Recovery] compact
+(n/N): context too large` means the provider rejected the prompt. `/compact`
+leaves no text trace in the store — palette commands never reach
+`dispatch_user_task`, and only that path calls `save_history`, so
+`input_history` cannot answer "who compacted?". The usage rows do not answer
+it either: a `/compact` and a recovery compaction both persist `call_type =
+compact`.
+
 **Encrypted state is never rendered.** Responses compaction and reasoning
 items carry opaque `encrypted_content`; it is replayed to the endpoint but
 must never appear in `Info` lines, error strings, tool cards, or any other TUI
