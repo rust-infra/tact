@@ -15,13 +15,22 @@ impl App {
         self.copy_text_inner(text, false);
     }
 
-    /// True when a native clipboard write succeeded via [`Self::system_clipboard`].
+    /// True when a native clipboard write actually landed.
+    ///
+    /// `arboard`'s Wayland backend answers `Ok` for payloads it never serves
+    /// (past ~32 KiB on 3.6.1 the write is dropped and the clipboard stays
+    /// empty), so the write is only believed once the same text reads back.
+    /// Without this the caller reports "Copied" off a clipboard nobody can
+    /// paste from.
     fn write_system_clipboard(&mut self, text: &str) -> bool {
         if self.system_clipboard.is_none() {
             self.system_clipboard = Clipboard::new().ok();
         }
         match &mut self.system_clipboard {
-            Some(clip) => clip.set_text(text.to_owned()).is_ok(),
+            Some(clip) => {
+                clip.set_text(text.to_owned()).is_ok()
+                    && clip.get_text().is_ok_and(|back| back == text)
+            }
             None => false,
         }
     }
@@ -1352,5 +1361,77 @@ mod tests {
         );
         assert!(!app.has_subagent_popup());
         assert!(!app.has_overlay_popup());
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use crate::{render::test_harness::make_app, widgets::state::App};
+
+    /// A size arboard's Wayland backend silently drops (see
+    /// `write_system_clipboard`). Chosen well past the ~32 KiB limit so a
+    /// fixed arboard cannot flip the test's meaning.
+    const OVERSIZED: usize = 200_000;
+
+    /// True when this machine's native clipboard really round-trips `size`
+    /// bytes — if it does, there is nothing to fall back from.
+    fn native_clipboard_handles(size: usize) -> Option<bool> {
+        let mut probe = arboard::Clipboard::new().ok()?;
+        let text = "z".repeat(size);
+        let set = probe.set_text(text.clone()).is_ok();
+        Some(set && probe.get_text().is_ok_and(|back| back == text))
+    }
+
+    fn notice_of(app: &App) -> String {
+        app.log.items.last().expect("copy notice").raw.clone()
+    }
+
+    #[test]
+    fn a_clipboard_write_that_did_not_land_is_not_reported_as_native() {
+        let Some(handles_oversized) = native_clipboard_handles(OVERSIZED) else {
+            return; // no native clipboard on this machine
+        };
+        if handles_oversized {
+            return; // this platform's clipboard took it; nothing to assert
+        }
+
+        let text = "x".repeat(OVERSIZED);
+        let preview: String = text.chars().take(40).collect();
+        let mut app = make_app();
+        let msgs = app.msgs();
+        let native = msgs.copied_tmpl.replace("{}", &preview);
+        let terminal = msgs.copied_terminal_tmpl.replace("{}", &preview);
+        let internal = msgs.copied_internal_tmpl.replace("{}", &preview);
+
+        app.copy_text(&text);
+        let notice = notice_of(&app);
+
+        assert_ne!(
+            notice, native,
+            "a dropped clipboard write must not be reported as a native copy"
+        );
+        assert!(
+            notice == terminal || notice == internal,
+            "the fallback must name itself, got: {notice:?}"
+        );
+    }
+
+    #[test]
+    fn a_clipboard_write_that_did_land_keeps_the_native_notice() {
+        let Some(handles_small) = native_clipboard_handles(64) else {
+            return; // no native clipboard on this machine
+        };
+        if !handles_small {
+            return; // nothing to assert about a platform that cannot copy at all
+        }
+
+        let mut app = make_app();
+        app.copy_text("hello clipboard");
+
+        let notice = notice_of(&app);
+        assert!(
+            notice.contains("hello clipboard"),
+            "a landed write still names the text: {notice:?}"
+        );
     }
 }
