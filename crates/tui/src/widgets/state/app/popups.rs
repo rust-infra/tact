@@ -1630,6 +1630,51 @@ mod clipboard_tests {
     }
 
     #[test]
+    fn the_preview_counts_characters_not_bytes() {
+        let _clipboard = take_clipboard();
+        // 60 Chinese characters, 180 bytes: the preview must be 40 *characters*
+        // and must not stop in the middle of one.
+        let text = "中".repeat(60);
+        let mut app = make_app();
+
+        app.copy_text(&text);
+
+        let notice = notice_of(&app);
+        assert!(
+            notice.contains(&"中".repeat(40)),
+            "the preview must carry 40 characters: {notice:?}"
+        );
+        assert!(
+            !notice.contains(&"中".repeat(41)),
+            "the preview must stop at 40 characters: {notice:?}"
+        );
+    }
+
+    #[test]
+    fn the_preview_free_summary_reports_bytes_for_wide_text() {
+        let _clipboard = take_clipboard();
+        // Three lines, 8 characters, 20 bytes: the notice reports bytes, which
+        // is what the clipboard carries (and what its size limits act on).
+        let text = "你好\n世界\n再见";
+        assert_eq!(text.chars().count(), 8);
+        let mut app = make_app();
+        let msgs = app.msgs();
+        let expected = msgs.copied_summary_tmpl.replacen("{}", "3", 1).replacen(
+            "{}",
+            &format!("{} B", text.len()),
+            1,
+        );
+
+        app.copy_text_without_preview(text);
+
+        let notice = notice_of(&app);
+        assert!(
+            notice.ends_with(&expected),
+            "wide text must be sized in bytes: {notice:?} (want suffix {expected:?})"
+        );
+    }
+
+    #[test]
     fn human_size_scales_from_bytes_to_megabytes() {
         assert_eq!(super::human_size(0), "0 B");
         assert_eq!(super::human_size(240), "240 B");
