@@ -48,7 +48,7 @@ cargo test -p tact-ui --test app_bridge_integration
 cargo test -p tact-ui --test permission_integration
 ```
 
-CI runs the integration packages explicitly, then the full workspace (`cargo test --verbose`).
+CI runs the integration packages explicitly, then the full workspace (`cargo test --verbose`). It also builds this workspace's own documentation (`cargo doc --no-deps`, so rustdoc never renders the third-party crates) — `scripts/check-rust.sh` does not, so a doc failure only shows up in CI.
 
 ### Before committing
 

@@ -49,7 +49,7 @@ cargo test -p tact-ui --test app_bridge_integration
 cargo test -p tact-ui --test permission_integration
 ```
 
-CI 显式运行集成包，然后全 workspace（`cargo test --verbose`）。
+CI 显式运行集成包，然后全 workspace（`cargo test --verbose`）。它还会构建**本仓库自己的**文档（`cargo doc --no-deps`，因此 rustdoc 完全不渲染第三方 crate）——`scripts/check-rust.sh` 不含这一步，所以文档问题只在 CI 暴露。
 
 ### 提交前
 
