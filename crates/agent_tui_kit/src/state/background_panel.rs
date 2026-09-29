@@ -9,7 +9,7 @@
 //!   exists and the invocation is about to return),
 //! - the command (the card's argument summary; the tool's metadata uses
 //!   `ArgumentSummaryPolicy::Command { field: "command" }`),
-//! - the start instant ([`ActiveToolBlock::started_at`]).
+//! - the start instant ([`crate::state::tool_state::ActiveToolBlock::started_at`]).
 //!
 //! So the rows are *derived* from the live tool cards on every tick
 //! (`App::sync_background_sticky`) instead of being pushed, and this module owns
