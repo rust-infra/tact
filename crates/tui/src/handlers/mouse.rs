@@ -1346,6 +1346,13 @@ mod tests {
                 let (start, row) = glyph_origin(&buf, "[󰜼");
                 let end = start + width;
                 let ctx = format!("{lang:?} (toggled after build: {toggled_after_build})");
+                // Pin the other edge against the frame too: `width` is the
+                // measured one, so only this ties the *drawn* tail to it.
+                assert_eq!(
+                    buf[(end - 1, row)].symbol(),
+                    "]",
+                    "{ctx}: the hit range must end on the drawn button's last glyph"
+                );
 
                 assert!(
                     double_click_opens(&mut app, start, row),

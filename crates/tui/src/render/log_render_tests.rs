@@ -673,6 +673,17 @@ fn completed_command_renders_header_rows_only() {
         glyph_start + unicode_width::UnicodeWidthStr::width(needle),
         "the hit range must end on the last glyph of {needle:?}"
     );
+
+    // The button patches its own `bg` onto the row, so pin the row's surface
+    // over the columns it covers: no cell may keep another surface's colour.
+    let surface_bg = app.theme.bg;
+    for x in content_x..hint_cols.end {
+        assert_eq!(
+            buf[(x, meta_row)].bg,
+            surface_bg,
+            "column {x} of the meta row must carry the panel background"
+        );
+    }
 }
 
 /// Card chrome (the border title and the bottom hint) is localized when the card
