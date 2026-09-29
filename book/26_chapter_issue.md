@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-29 — The thinking card's footer becomes the same button, so both cards advertise "open" alike
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature (UI) |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`thinking_card_bottom`, `thinking_card_action`), `crates/agent_tui_kit/src/render/cells/thinking.rs` (`ThinkingCell::footer`, `ThinkingCell::bottom_line`), `crates/agent_tui_kit/src/widgets/button.rs` (`ButtonChrome::wrap`); [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** A thinking card's footer read `⇕ 1/2 lines | Double-click for full content | ⏱ 1.5s` — 54 columns of prose with nothing on screen marking where the affordance is, one session after the collapsed tool card replaced exactly that kind of sentence with a bracketed button. Two cards meaning the same thing ("double-click me for the rest") were teaching it two different ways.
+
+**Decision:** The action is now the same `[󰜼 Open]` / `[󰜼 打开]` button the collapsed tool card draws — the kit's `Button` with `ButtonChrome::Brackets`, the glyph carrying the gesture and the word carrying what happens. Both surfaces take those glyphs from one definition, `ButtonChrome::wrap(label)`, which also backs `collapsed_action_text`, so a chrome that changes its frame changes both cards. In both, the action is the template's **tail**, so the cell splits it off by suffix match: a locale that stopped ending with it draws the readout without a button instead of a button in the wrong place. The whole card stays the double-click target (a collapsed tool card's button *is* its target), so no hit-testing changed; the elapsed timer moved left of the button so the action could sit last.
+
+**Behavior after:** `╰ ⇕ 1/2 lines | ⏱ 1.5s | [󰜼 Open] ────╯` — 33 columns instead of 54 (Chinese: 30 instead of 38), the button painted in the theme's `muted` color inside the border-colored readout. A terminal without a Nerd Font draws its replacement box here too, the same accepted cost as the tool card's button.
+
+**Pointers:** `ButtonChrome::wrap` (the chrome owns its delimiters; `wrap_is_what_the_chrome_draws` pins it against `Button::line`), `ThinkingCell::footer` (fill + suffix split) and `ThinkingCell::bottom_line` (draws it through `Button` as the card's `title_bottom`). Tests: `render::cells::thinking::tests::{the_footer_ends_in_the_shared_button, the_footer_button_is_drawn_in_the_button_color, every_locale_ends_its_footer_with_the_action}`, `widgets::button::tests::wrap_is_what_the_chrome_draws`. Docs: Ch 23 (`ThinkingCell` row and the card table).
+
+---
+
 ## 1. 2026-09-29 — The collapsed-output hint becomes a button: a gesture glyph for "how", one word for "what"
 
 | Field | Value |

@@ -44,9 +44,20 @@ pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
     pub thinking_card_title: &'static str, // "🧠 Thinking" (no line count — it lives in the bottom bar)
-    pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Double-click for full content | ⏱ {}"
-    pub diff_card_title: &'static str,      // "+{} {}"
-    pub diff_card_bottom: &'static str,     // "Double-click for full code"
+    /// Thinking card footer: `↕ {shown}/{total} lines | ⏱ {elapsed} | {action}`.
+    /// The action is the **tail**, the same rule a collapsed tool card's meta row
+    /// follows, so the cell splits it off by suffix match rather than searching.
+    pub thinking_card_bottom: &'static str,
+    /// Label of the footer's button — what a double-click on the card opens.
+    ///
+    /// The card itself is the hit target, so unlike
+    /// [`Self::tool_collapsed_output_action`] this one is *not* measured back
+    /// from the row's end; it is drawn for the affordance, by the same widget
+    /// and with the same shape as the tool card's. Brackets come from
+    /// `ButtonChrome::Brackets`, so they are never part of this key.
+    pub thinking_card_action: &'static str,
+    pub diff_card_title: &'static str,  // "+{} {}"
+    pub diff_card_bottom: &'static str, // "Double-click for full code"
     pub tool_error_card_title: &'static str,
     pub tool_error_card_bottom: &'static str,
     pub code_card_bottom: &'static str, // " Click for full code "
@@ -368,7 +379,10 @@ impl Messages {
         Self {
             log_title: " [Log] ",
             thinking_card_title: " 🧠 Thinking ",
-            thinking_card_bottom: " ↕ {}/{} lines | Double-click for full content | ⏱ {} ",
+            thinking_card_bottom: " ↕ {}/{} lines | ⏱ {} | {}",
+            // Nerd Font `md-gesture_double_tap` (U+F073C) for "how", the word
+            // for "what" — the same pair the collapsed tool card draws.
+            thinking_card_action: "󰜼 Open",
             diff_card_title: "+{} {}",
             diff_card_bottom: " Double-click for full code ",
             tool_error_card_title: " Error ",
@@ -657,7 +671,9 @@ impl Messages {
         Self {
             log_title: " [日志] ",
             thinking_card_title: " 🧠 思考中 ",
-            thinking_card_bottom: " ↕ {}/{} 行 | 双击查看完整内容 | ⏱ {} ",
+            thinking_card_bottom: " ↕ {}/{} 行 | ⏱ {} | {}",
+            // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
+            thinking_card_action: "󰜼 打开",
             diff_card_title: "+{} {}",
             diff_card_bottom: " 双击查看完整代码 ",
             tool_error_card_title: " 错误 ",

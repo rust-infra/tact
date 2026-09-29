@@ -414,7 +414,7 @@ pub(crate) trait Renderable {
 |------|------|-------|
 | `TextCell` | `cells/text.rs` | User/assistant/system text, selection, stream buffer |
 | `ToolCell` | `cells/tool.rs` | Tool title + meta + optional detail card (single `Renderable`) |
-| `ThinkingCell` | `cells/thinking.rs` | Direct live card with one blank row on each side: 1→3 line tail, then one-line completion summary; title and footer report the full line count |
+| `ThinkingCell` | `cells/thinking.rs` | Direct live card with one blank row on each side: 1→3 line tail, then one-line completion summary; title and footer report the full line count, and the footer ends in the `[󰜼 Open]` button the collapsed tool card draws — the card itself is the double-click target, so those glyphs are drawn for the affordance rather than measured for a hit range |
 | Diff overlay | (legacy path in `log.rs`) | File-write preview with `+` lines |
 | `CodeCell` | `cells/code.rs` | Syntax-tinted code block card |
 | Separator | `cells/separator.rs` | Visual gap between blocks |
@@ -548,7 +548,7 @@ The log is not a single list of strings. Each physical row is one `LogItem` in `
 | **User** | Green prefixed lines (`💬 …` / continuation `  …`) via `add_user_message` | Preceded by a blank separator row; continuation ownership is stored in `LogItemKind::User` |
 | **Assistant text** | Markdown-rendered lines from `StreamChunk` / `flush_stream_pending` | May span many physical rows per paragraph |
 | **System / info** | Explicit plain or Markdown insertion APIs | No indentation-based fallback; source decides the render path |
-| **Thinking card** | Placeholder rows (`Thinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, completion shows one summary line, and title/footer report the full count |
+| **Thinking card** | Placeholder rows (`Thinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, completion shows one summary line, title/footer report the full count, and the footer ends in the same `[󰜼 Open]` button a collapsed tool card draws |
 | **Tool blocks** | Blank placeholder rows (`SystemTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
 | **Loading placeholder** | One blank `SystemTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |

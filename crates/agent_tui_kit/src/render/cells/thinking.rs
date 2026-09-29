@@ -13,6 +13,7 @@ use crate::{
     render::{renderable::Renderable, util::LOG_THINKING_INDENT},
     state::{ActiveThinkingBlock, ThinkingBlock},
     theme::Theme,
+    widgets::button::{Button, ButtonChrome, ButtonTheme},
 };
 
 pub fn thinking_visual_rows(body_lines: usize) -> usize {
@@ -23,7 +24,11 @@ pub fn thinking_visual_rows(body_lines: usize) -> usize {
 pub struct ThinkingCell {
     lines: Vec<String>,
     title: String,
+    /// Footer text left of the button — see [`Self::footer`].
     bottom: String,
+    /// The footer button's label, when the locale's template ends with it.
+    bottom_action: Option<&'static str>,
+    button_theme: ButtonTheme,
     fg: ratatui::style::Color,
     bg: ratatui::style::Color,
     accent: ratatui::style::Color,
@@ -31,6 +36,33 @@ pub struct ThinkingCell {
 }
 
 impl ThinkingCell {
+    /// The footer the template fills, split into "everything before the button"
+    /// and the button's label.
+    ///
+    /// The action is the template's **tail**, the rule the collapsed tool card's
+    /// meta row follows too, so this is a suffix match rather than a search: a
+    /// locale that stopped ending with it draws the readout without a button
+    /// instead of a button in the wrong place.
+    fn footer(
+        msgs: &Messages,
+        shown: usize,
+        total: usize,
+        elapsed: Duration,
+    ) -> (String, Option<&'static str>) {
+        let label = msgs.thinking_card_action;
+        let action = ButtonChrome::Brackets.wrap(label);
+        let text = msgs
+            .thinking_card_bottom
+            .replacen("{}", &shown.to_string(), 1)
+            .replacen("{}", &total.to_string(), 1)
+            .replacen("{}", &format_elapsed(elapsed), 1)
+            .replacen("{}", &action, 1);
+        match text.strip_suffix(&action) {
+            Some(prefix) => (prefix.to_string(), Some(label)),
+            None => (text, None),
+        }
+    }
+
     pub fn active(
         block: &ActiveThinkingBlock,
         spinner: char,
@@ -41,14 +73,13 @@ impl ThinkingCell {
         let visible = lines.len().clamp(1, 3);
         let total = block.content.lines().count().max(1);
         let elapsed = block.started_at.elapsed();
+        let (bottom, bottom_action) = Self::footer(msgs, visible, total, elapsed);
         Self {
             lines,
             title: format!(" {spinner}{}", msgs.thinking_card_title),
-            bottom: msgs
-                .thinking_card_bottom
-                .replacen("{}", &visible.to_string(), 1)
-                .replacen("{}", &total.to_string(), 1)
-                .replacen("{}", &format_elapsed(elapsed), 1),
+            bottom,
+            bottom_action,
+            button_theme: ButtonTheme::from_theme(theme),
             fg: theme.thinking_preview_fg(),
             bg: theme.bg,
             accent: theme.thinking_card_border(),
@@ -58,19 +89,40 @@ impl ThinkingCell {
 
     pub fn completed(block: &ThinkingBlock, theme: &Theme, msgs: &Messages) -> Self {
         let total = block.content.lines().count().max(1);
+        let (bottom, bottom_action) = Self::footer(msgs, 1, total, block.elapsed);
         Self {
             lines: vec![block.summary.clone()],
             title: msgs.thinking_card_title.to_string(),
-            bottom: msgs
-                .thinking_card_bottom
-                .replacen("{}", "1", 1)
-                .replacen("{}", &total.to_string(), 1)
-                .replacen("{}", &format_elapsed(block.elapsed), 1),
+            bottom,
+            bottom_action,
+            button_theme: ButtonTheme::from_theme(theme),
             fg: theme.thinking_preview_fg(),
             bg: theme.bg,
             accent: theme.thinking_card_border(),
             border_type: theme.block_border_type(),
         }
+    }
+
+    /// The footer as one line: the readout (line count, elapsed) in the border
+    /// color, then the button that opens the full content — drawn by the shared
+    /// [`Button`] widget with the same chrome as a collapsed tool card's, so the
+    /// two affordances read the same wherever they appear.
+    fn bottom_line(&self) -> Line<'static> {
+        let style = Style::default().fg(self.accent).bg(self.bg);
+        let Some(label) = self.bottom_action else {
+            return Line::from(Span::styled(self.bottom.clone(), style));
+        };
+        let mut spans = vec![Span::styled(self.bottom.clone(), style)];
+        spans.extend(
+            Button::new(label, self.button_theme)
+                .chrome(ButtonChrome::Brackets)
+                .line()
+                .spans,
+        );
+        // Keep the closing bracket off the border dashes that follow it — the
+        // spacing the other footers carry as a trailing space in their template.
+        spans.push(Span::styled(" ", style));
+        Line::from(spans)
     }
 
     fn body_lines(&self) -> usize {
@@ -154,9 +206,9 @@ impl Renderable for ThinkingCell {
                 String::new()
             })
             .title_bottom(if borders.contains(Borders::BOTTOM) {
-                self.bottom.clone()
+                self.bottom_line()
             } else {
-                String::new()
+                Line::default()
             });
         block.render(card_area, buf);
 
@@ -219,6 +271,42 @@ mod tests {
             .draw(|frame| cell.render(frame.area(), frame.buffer_mut()))
             .expect("draw");
         buffer_text(terminal.backend().buffer())
+    }
+
+    fn render_buffer(cell: &ThinkingCell) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(80, cell.height(80));
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| cell.render(frame.area(), frame.buffer_mut()))
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    /// `(row, columns)` of the first run of cells spelling `needle` — every
+    /// glyph here is one column wide, so a cell window is a fair match.
+    fn find_run(buf: &ratatui::buffer::Buffer, needle: &str) -> Option<(u16, Vec<u16>)> {
+        let cells: Vec<String> = needle.chars().map(|c| c.to_string()).collect();
+        for y in 0..buf.area.height {
+            let row: Vec<String> = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            if let Some(start) = row.windows(cells.len()).position(|w| w == cells) {
+                let cols = (start as u16..start as u16 + cells.len() as u16).collect();
+                return Some((y, cols));
+            }
+        }
+        None
+    }
+
+    fn completed_cell(msgs: &crate::i18n::Messages, theme: &Theme) -> ThinkingCell {
+        let block = ThinkingBlock {
+            phys_idx: 0,
+            content: "first\nlast".into(),
+            summary: "last".into(),
+            cached_markdown: Vec::new(),
+            elapsed: std::time::Duration::from_millis(1500),
+        };
+        ThinkingCell::completed(&block, theme, msgs)
     }
 
     #[test]
@@ -293,5 +381,88 @@ mod tests {
             "{text}"
         );
         assert!(rows.iter().any(|line| line.contains("Thinking")), "{text}");
+    }
+
+    /// The footer's action is not more prose: it is the kit's button (brackets
+    /// from the chrome, label from the locale) drawn in the button color, with
+    /// the readout around it in the border color — the same shape a collapsed
+    /// tool card draws.
+    #[test]
+    fn the_footer_ends_in_the_shared_button() {
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        let en = crate::i18n::Messages::by_language(crate::i18n::Language::English);
+        let zh = crate::i18n::Messages::by_language(crate::i18n::Language::Chinese);
+
+        for (msgs, expected) in [(&en, "[󰜼 Open]"), (&zh, "[󰜼 打开]")] {
+            let cell = completed_cell(msgs, &theme);
+            let line = cell.bottom_line();
+            let drawn: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(drawn.trim_end().ends_with(expected), "{drawn:?}");
+            assert!(
+                drawn.contains("↕ 1/2 lines") || drawn.contains("↕ 1/2 行"),
+                "{drawn:?}"
+            );
+            assert_eq!(
+                line.spans[0].style.fg,
+                Some(theme.thinking_card_border()),
+                "the readout keeps the border color: {drawn:?}"
+            );
+            assert_eq!(
+                line.spans[1].style.fg,
+                Some(theme.muted),
+                "the button keeps its own color: {drawn:?}"
+            );
+        }
+    }
+
+    /// The footer reaches the frame as a `title_bottom` line, so pin the drawn
+    /// glyphs *and their color* in a real buffer: a title that dropped the
+    /// button's spans would still read as text.
+    #[test]
+    fn the_footer_button_is_drawn_in_the_button_color() {
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
+        let cell = completed_cell(&msgs, &theme);
+
+        let buf = render_buffer(&cell);
+        let glyphs = ButtonChrome::Brackets.wrap(msgs.thinking_card_action);
+        let (row, cols) = find_run(&buf, &glyphs).unwrap_or_else(|| {
+            panic!(
+                "the footer button {glyphs:?} must be drawn, got:\n{}",
+                buffer_text(&buf)
+            )
+        });
+        for x in &cols {
+            assert_eq!(
+                buf[(*x, row)].fg,
+                theme.muted,
+                "column {x} of the button carries the button color"
+            );
+            assert_eq!(buf[(*x, row)].bg, theme.bg, "painted on the card surface");
+        }
+        // One column left of it is the separator the readout ends with, drawn
+        // in the border color — the button is a patch inside the sentence.
+        assert_eq!(buf[(cols[0] - 1, row)].fg, theme.thinking_card_border());
+    }
+
+    /// The footer's tail is a contract, not an accident: both locales end the
+    /// template with the action, so the split is a suffix match and neither can
+    /// silently lose its button.
+    #[test]
+    fn every_locale_ends_its_footer_with_the_action() {
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        for lang in [
+            crate::i18n::Language::English,
+            crate::i18n::Language::Chinese,
+        ] {
+            let msgs = crate::i18n::Messages::by_language(lang);
+            let cell = completed_cell(&msgs, &theme);
+            assert_eq!(
+                cell.bottom_action,
+                Some(msgs.thinking_card_action),
+                "{lang:?}: the template must end with {}",
+                msgs.thinking_card_action
+            );
+        }
     }
 }

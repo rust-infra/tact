@@ -9,6 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::render::{bar::format_tokens_compact, util::LOG_TOOL_BLOCK_INDENT};
 
 use crate::i18n::Messages;
+use crate::widgets::button::ButtonChrome;
 
 const DEFAULT_MAX_DETAIL_LINES: usize = 200;
 const DEFAULT_PREVIEW_LINES: usize = 1;
@@ -242,9 +243,11 @@ pub fn meta_error(
 /// [`Button`](crate::widgets::button::Button) with
 /// [`ButtonChrome::Brackets`](crate::widgets::button::ButtonChrome::Brackets)
 /// and the row text embeds this same string, so the glyphs on screen are the
-/// glyphs the hit test measures.
+/// glyphs the hit test measures. The brackets come from
+/// [`ButtonChrome::wrap`](crate::widgets::button::ButtonChrome::wrap), never
+/// from here: a chrome that changes its frame changes this string with it.
 pub fn collapsed_action_text(msgs: &Messages) -> String {
-    format!("[{}]", msgs.tool_collapsed_output_action)
+    ButtonChrome::Brackets.wrap(msgs.tool_collapsed_output_action)
 }
 
 /// Meta-row hint telling the user that a collapsed command hid its output: the

@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-29 — thinking 卡片的底栏换成同一个按钮，两张卡片的「打开」说法统一
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature (UI) |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_bottom`、`thinking_card_action`）、`crates/agent_tui_kit/src/render/cells/thinking.rs`（`ThinkingCell::footer`、`ThinkingCell::bottom_line`）、`crates/agent_tui_kit/src/widgets/button.rs`（`ButtonChrome::wrap`）；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** thinking 卡片的底栏是 `⇕ 1/2 lines | Double-click for full content | ⏱ 1.5s`——54 列散文，画面上没有任何标记指出「可点」的位置；而这距离折叠 tool 卡片把同一类句子换成方括号按钮只隔了一次会话。两张表达同一件事（「双击我，看剩下的」）的卡片，用了两种教法。
+
+**决策：** 底栏的动作现在就是折叠 tool 卡片画的那个 `[󰜼 Open]` / `[󰜼 打开]` 按钮——kit 的 `Button` 配 `ButtonChrome::Brackets`，字形负责「怎么操作」、词负责「会发生什么」。两个界面的这几个字形共用同一处定义 `ButtonChrome::wrap(label)`（`collapsed_action_text` 也走它），所以改 chrome 就是同时改两张卡片。两者的动作都是模板的**尾部**，因此 cell 用后缀匹配切分：某个语言若不再以动作结尾，只会画出没有按钮的读数，而不会把按钮画到错误的位置。双击目标仍是整张卡片（折叠 tool 卡片是按钮本身当目标），命中测试没有任何变化；只是把耗时读数移到按钮左侧，好让动作落在最后。
+
+**之后的行为：** `╰ ⇕ 1/2 lines | ⏱ 1.5s | [󰜼 Open] ────╯`——33 列而不是 54 列（中文 30 列而不是 38 列），按钮用主题的 `muted` 色画在 border 色的读数里。没有 Nerd Font 的终端在这里同样会画出替代框，与 tool 卡片按钮是同一笔已接受的代价。
+
+**指针：** `ButtonChrome::wrap`（方括号归 chrome 所有；`wrap_is_what_the_chrome_draws` 把它和 `Button::line` 钉在一起）、`ThinkingCell::footer`（填模板 + 后缀切分）、`ThinkingCell::bottom_line`（用 `Button` 画成卡片的 `title_bottom`）。测试：`render::cells::thinking::tests::{the_footer_ends_in_the_shared_button, the_footer_button_is_drawn_in_the_button_color, every_locale_ends_its_footer_with_the_action}`、`widgets::button::tests::wrap_is_what_the_chrome_draws`。文档：第 23 章（`ThinkingCell` 行与卡片表）。
+
+---
+
 ## 1. 2026-09-29 — 折叠输出的提示改成按钮：字形负责「怎么操作」，一个词负责「会发生什么」
 
 | Field | Value |

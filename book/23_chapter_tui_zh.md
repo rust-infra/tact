@@ -361,7 +361,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 |------|------|------|
 | `TextCell` | `cells/text.rs` | User/assistant/system 文本、选择、stream buffer |
 | `ToolCell` | `cells/tool.rs` | Tool 标题 + meta + 可选 detail card（单个 `Renderable`） |
-| `ThinkingCell` | `cells/thinking.rs` | Direct live card：前后各有一行空白，1→3 行 tail，完成后为 1 行 summary；标题和底栏显示总行数 |
+| `ThinkingCell` | `cells/thinking.rs` | Direct live card：前后各有一行空白，1→3 行 tail，完成后为 1 行 summary；标题和底栏显示总行数，底栏末尾是与折叠 tool 卡片同款的 `[󰜼 打开]` 按钮——双击目标是整张卡片，因此这几个字形只是把「可点」说出来，不参与命中区测量 |
 | Diff overlay |（`log.rs` 中 legacy 路径） | 带 `+` 行的写文件 preview |
 | `CodeCell` | `cells/code.rs` | 语法着色 code block card |
 | Separator | `cells/separator.rs` | block 间视觉间隙 |
@@ -495,7 +495,7 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | **User** | `add_user_message` 产生的绿色前缀行（`💬 …` / 续行 `  …`） | 前有 blank 分隔行；续行归属记录为 `LogItemKind::User` |
 | **Assistant text** | `StreamChunk` / `flush_stream_pending` 的 Markdown 行 | 单段可能占多 physical 行 |
 | **System / info** | 显式 plain 或 Markdown 插入 API | 不再有基于缩进的 fallback，来源决定渲染路径 |
-| **Thinking card** | Placeholder 行（`Thinking`） | 一个 `ThinkingCell`；前后各有一行空白与相邻内容分隔，active tail 从 1 增至 3 行，完成后显示 1 行 summary，标题和底栏显示总行数 |
+| **Thinking card** | Placeholder 行（`Thinking`） | 一个 `ThinkingCell`；前后各有一行空白与相邻内容分隔，active tail 从 1 增至 3 行，完成后显示 1 行 summary，标题和底栏显示总行数，底栏末尾是与折叠 tool 卡片同款的 `[󰜼 打开]` 按钮 |
 | **Tool blocks** | Blank placeholder 行（`SystemTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
 | **Loading placeholder** | `app.loading_idx` 处一行 blank `SystemTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |

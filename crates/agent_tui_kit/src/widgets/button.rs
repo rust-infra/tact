@@ -32,6 +32,23 @@ pub enum ButtonChrome {
     Brackets,
 }
 
+impl ButtonChrome {
+    /// The chrome's glyphs around `label`, as one string: `[label]` for
+    /// [`Self::Brackets`], the bare label for [`Self::Plain`] — whose padding
+    /// belongs to the button, not the frame.
+    ///
+    /// [`Button::line`] draws exactly this (a test pins the two together), so a
+    /// host that has to *embed* or *measure* the drawn glyphs — a border title,
+    /// a click range — builds its text here instead of hardcoding the
+    /// delimiters, and cannot drift from what the button paints.
+    pub fn wrap(&self, label: &str) -> String {
+        match self {
+            ButtonChrome::Plain => label.to_string(),
+            ButtonChrome::Brackets => format!("[{label}]"),
+        }
+    }
+}
+
 /// Interaction state is independent of a button's semantic variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ButtonState {
@@ -312,6 +329,36 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(drawn, "[Cancel]");
+    }
+
+    /// Hosts that embed a button in their own text (`ButtonChrome::wrap`) must
+    /// get the glyphs the button draws, brackets included — that is what keeps a
+    /// border title or a click range on the same columns as the paint.
+    #[test]
+    fn wrap_is_what_the_chrome_draws() {
+        let drawn = |button: Button<'_>| -> String {
+            button
+                .line()
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+
+        for padding in [0u16, 1, 2] {
+            let button = Button::new("Open", theme()).horizontal_padding(padding);
+            let pad = " ".repeat(padding as usize);
+            assert_eq!(
+                drawn(button),
+                format!("{pad}{}{pad}", ButtonChrome::Plain.wrap("Open"))
+            );
+        }
+        // Brackets ignore padding: the frame is the padding.
+        let bracketed = Button::new("Open", theme())
+            .chrome(ButtonChrome::Brackets)
+            .horizontal_padding(2);
+        assert_eq!(drawn(bracketed), ButtonChrome::Brackets.wrap("Open"));
+        assert_eq!(ButtonChrome::Brackets.wrap("Open"), "[Open]");
     }
 
     #[test]
