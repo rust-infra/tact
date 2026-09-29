@@ -414,7 +414,7 @@ pub(crate) trait Renderable {
 |------|------|-------|
 | `TextCell` | `cells/text.rs` | User/assistant/system text, selection, stream buffer |
 | `ToolCell` | `cells/tool.rs` | Tool title + meta + optional detail card (single `Renderable`) |
-| `ThinkingCell` | `cells/thinking.rs` | Direct live card with one blank row on each side: 1→3 line tail, then one-line completion summary; title and footer report the full line count, and the footer ends in the `[󰜼 Open]` button the collapsed tool card draws — the card itself is the double-click target, so those glyphs are drawn for the affordance rather than measured for a hit range |
+| `ThinkingCell` | `cells/thinking.rs` | Direct live card with one blank row on each side: 1→3 line tail, then one-line completion summary; title and footer report the full line count, and the footer ends in the `[󰜼 Open]` button the collapsed tool card draws — that button is the card's only click target, measured from the same geometry the frame draws with (`footer_button_rect`), because the card paints text on rows that do not carry it |
 | Diff overlay | (legacy path in `log.rs`) | File-write preview with `+` lines |
 | `CodeCell` | `cells/code.rs` | Syntax-tinted code block card |
 | Separator | `cells/separator.rs` | Visual gap between blocks |
@@ -466,7 +466,7 @@ pub(crate) trait Renderable {
 | Select | `RequestSelect` permission / agent choice | `popups/select.rs` |
 | Help | `Ctrl+?` | `popups/help.rs` |
 | History | `Ctrl+H` | `popups/history.rs` |
-| Thinking detail | double-click thinking card; adjacent ordered-list items have blank-row separation | `popups/thinking_popup.rs` |
+| Thinking detail | double-click the Thinking card's footer `[󰜼 Open]` button (the card's text is not selectable); adjacent ordered-list items have blank-row separation | `popups/thinking_popup.rs` |
 | Tool/file detail | double-click tool card (a collapsed command/read/edit: the `[󰜼 Open]` button on its meta row) | `popups/diff_popup.rs` |
 | Code detail | double-click code card | `popups/code_popup.rs` |
 | Mermaid diagram / source | double-click rendered Mermaid diagram; opens on the rendered diagram, `Tab` toggles to source | `popups/mermaid_popup.rs` |
@@ -548,7 +548,7 @@ The log is not a single list of strings. Each physical row is one `LogItem` in `
 | **User** | Green prefixed lines (`💬 …` / continuation `  …`) via `add_user_message` | Preceded by a blank separator row; continuation ownership is stored in `LogItemKind::User` |
 | **Assistant text** | Markdown-rendered lines from `StreamChunk` / `flush_stream_pending` | May span many physical rows per paragraph |
 | **System / info** | Explicit plain or Markdown insertion APIs | No indentation-based fallback; source decides the render path |
-| **Thinking card** | Placeholder rows (`Thinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, completion shows one summary line, title/footer report the full count, and the footer ends in the same `[󰜼 Open]` button a collapsed tool card draws |
+| **Thinking card** | Placeholder rows (`Thinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, completion shows one summary line, title/footer report the full count, and the footer ends in the same `[󰜼 Open]` button a collapsed tool card draws — that button is the only part of the card a click answers |
 | **Tool blocks** | Blank placeholder rows (`SystemTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
 | **Loading placeholder** | One blank `SystemTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |

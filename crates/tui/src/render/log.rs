@@ -66,16 +66,23 @@ pub(crate) fn render_log_panel_with_borders(
         borders,
     );
     let ctx = app.render_ctx();
-    let cancel_buttons = render_log_panel_pure(frame, area, &ctx, borders);
+    let output = render_log_panel_pure(frame, area, &ctx, borders);
     // Route mouse clicks on live async-subagent cancel buttons: store the
     // button rects on mouse state (overwritten every frame; cleared when the
     // card finishes).
     app.mouse.subagent_cancel_btn_areas.clear();
     app.mouse.subagent_cancel_btn_areas.extend(
-        cancel_buttons
+        output
+            .cancel_buttons
             .into_iter()
             .map(|btn| (btn.child_id, btn.rect)),
     );
+    // Same for the Thinking cards' footer buttons: they are the only glyphs on
+    // a card that answer a click, so the frame has to say where they are.
+    app.mouse.thinking_open_btn_areas.clear();
+    app.mouse
+        .thinking_open_btn_areas
+        .extend(output.thinking_open_buttons);
 }
 
 /// Phase 0-2: rebuild the scroll/layout caches (mutable). Runs once per frame

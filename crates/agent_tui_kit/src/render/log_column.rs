@@ -29,6 +29,32 @@ impl<'a> LogColumnRenderer<'a> {
     pub fn push(&mut self, vis_start: usize, cell: impl Renderable + 'a) {
         self.cells.push((vis_start, Box::new(cell)));
     }
+
+    /// The screen slice one pushed cell draws into, for a panel `area`: the
+    /// rect of its visible rows and how many of its own rows the clip ate off
+    /// the top. `None` when the cell falls entirely outside the viewport.
+    ///
+    /// This is the geometry [`Widget::render`] uses, so a caller that needs a
+    /// cell's hit rects can ask for the same rect the frame will draw — one
+    /// formula, no drift.
+    pub fn cell_slice(&self, vis_start: usize, height: usize, area: Rect) -> Option<(Rect, usize)> {
+        let viewport_bottom = self.viewport_top + self.viewport_height;
+        let vis_end = vis_start + height;
+        if vis_end <= self.viewport_top || vis_start >= viewport_bottom {
+            return None;
+        }
+
+        let visible_start = vis_start.max(self.viewport_top);
+        let visible_end = vis_end.min(viewport_bottom);
+        let skip_lines = visible_start - vis_start;
+        let visible_lines = visible_end - visible_start;
+
+        let y = area.y + (visible_start - self.viewport_top) as u16;
+        Some((
+            Rect::new(area.x, y, area.width, visible_lines as u16),
+            skip_lines,
+        ))
+    }
 }
 
 impl<'a> Default for LogColumnRenderer<'a> {
@@ -39,24 +65,14 @@ impl<'a> Default for LogColumnRenderer<'a> {
 
 impl Widget for LogColumnRenderer<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let viewport_bottom = self.viewport_top + self.viewport_height;
         for (vis_start, cell) in &self.cells {
-            let cell_height = cell.height(area.width) as usize;
-            let vis_end = vis_start + cell_height;
-            if vis_end <= self.viewport_top || *vis_start >= viewport_bottom {
+            // Only render rows within the viewport: from skip_lines, at most
+            // the visible ones.
+            let Some((cell_area, skip_lines)) =
+                self.cell_slice(*vis_start, cell.height(area.width) as usize, area)
+            else {
                 continue;
-            }
-
-            // Calculate visible portion
-            let visible_start = (*vis_start).max(self.viewport_top);
-            let visible_end = vis_end.min(viewport_bottom);
-            let skip_lines = visible_start - vis_start;
-            let visible_lines = visible_end - visible_start;
-
-            let y = area.y + (visible_start - self.viewport_top) as u16;
-            let cell_area = Rect::new(area.x, y, area.width, visible_lines as u16);
-
-            // Only render rows within the viewport: from skip_lines, at most visible_lines rows
+            };
             cell.render_partial(cell_area, buf, skip_lines);
         }
     }

@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-29 — A Thinking card opens its popup from its footer button, not from anywhere on the card
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix (UI) |
+| **Related** | `crates/agent_tui_kit/src/render/cells/thinking.rs` (`ThinkingCell::card_geometry`, `footer_button_rect`), `crates/agent_tui_kit/src/render/log.rs` (`LogRenderOutput`), `crates/agent_tui_kit/src/render/log_column.rs` (`LogColumnRenderer::cell_slice`), `crates/agent_tui_kit/src/state/mouse_state.rs` (`thinking_open_btn_areas`), `crates/tui/src/handlers/mouse.rs` (`handle_log_click`); [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** A double-click anywhere on a Thinking card opened its detail popup — its title, its summary and its blank rows all counted. The card is not selectable text either (it paints a tail or a summary on rows that carry the transcript's raw thinking text), so every one of those clicks was swallowed by the card and could not have selected anything. The `[󰜼 Open]` button drawn on the footer said "here", and the card answered "anywhere".
+
+**Decision:** The footer button is the card's only click target, measured from the geometry the frame draws with. `ThinkingCell::card_geometry` is the single place the card's rect, borders and top-clip are computed; `render_partial` draws from it and `footer_button_rect` derives the button from it (the bottom-border row, after the left corner and the readout, exactly the drawn label's width), so a hit range cannot drift from the glyphs. The pure log renderer asks the same `LogColumnRenderer::cell_slice` the widget pass uses for a cell's visible slice, and hands the rects back in `LogRenderOutput`; the app stores them on `MouseState::thinking_open_btn_areas` for the click handler — the `subagent_cancel_btn_areas` idiom. Clicks elsewhere on the card stay inert and drop any selection, the rule whole-Markdown rows already follow. A footer that is clipped (bottom border off screen, or a card too narrow for the whole button) has no target at all, and the gesture is unchanged: still a double-click.
+
+**Behavior after:** Double-click on `[󰜼 Open]` / `[󰜼 打开]` opens the detail popup; the same double-click on the card's title, its text, its blank rows, the readout left of the button or the column after it does nothing, and leaves no selection behind.
+
+**Pointers:** `ThinkingCell::{card_geometry, footer_button_rect}`, `LogColumnRenderer::cell_slice` (one formula for drawing and for hit rects), `LogRenderOutput`, `render_log_panel_pure`'s Thinking branch, `MouseState::thinking_open_btn_areas`, `handle_log_click`'s Thinking branch. Tests: `agent_tui_kit::render::cells::thinking::tests::{the_footer_button_rect_is_the_drawn_button, a_clipped_footer_has_no_button_rect, the_button_rect_follows_a_scrolled_card}` and `tui::handlers::mouse::tests::{thinking_popup_opens_from_the_drawn_button_only, clicking_a_thinking_card_body_leaves_no_selection}` (the second pair was verified to fail against the whole-card target). Docs: Ch 23 (`ThinkingCell` row, card table, popup table).
+
+---
+
 ## 1. 2026-09-29 — The thinking card's footer becomes the same button, so both cards advertise "open" alike
 
 | Field | Value |
@@ -41,7 +58,7 @@ Newest entries first. Each entry should include:
 
 **Symptom / motivation:** A thinking card's footer read `⇕ 1/2 lines | Double-click for full content | ⏱ 1.5s` — 54 columns of prose with nothing on screen marking where the affordance is, one session after the collapsed tool card replaced exactly that kind of sentence with a bracketed button. Two cards meaning the same thing ("double-click me for the rest") were teaching it two different ways.
 
-**Decision:** The action is now the same `[󰜼 Open]` / `[󰜼 打开]` button the collapsed tool card draws — the kit's `Button` with `ButtonChrome::Brackets`, the glyph carrying the gesture and the word carrying what happens. Both surfaces take those glyphs from one definition, `ButtonChrome::wrap(label)`, which also backs `collapsed_action_text`, so a chrome that changes its frame changes both cards. In both, the action is the template's **tail**, so the cell splits it off by suffix match: a locale that stopped ending with it draws the readout without a button instead of a button in the wrong place. The whole card stays the double-click target (a collapsed tool card's button *is* its target), so no hit-testing changed; the elapsed timer moved left of the button so the action could sit last.
+**Decision:** The action is now the same `[󰜼 Open]` / `[󰜼 打开]` button the collapsed tool card draws — the kit's `Button` with `ButtonChrome::Brackets`, the glyph carrying the gesture and the word carrying what happens. Both surfaces take those glyphs from one definition, `ButtonChrome::wrap(label)`, which also backs `collapsed_action_text`, so a chrome that changes its frame changes both cards. In both, the action is the template's **tail**, so the cell splits it off by suffix match: a locale that stopped ending with it draws the readout without a button instead of a button in the wrong place. The whole card stays the double-click target (a collapsed tool card's button *is* its target), so no hit-testing changed; the elapsed timer moved left of the button so the action could sit last. (The target was narrowed to the button itself later the same day — see the entry above.)
 
 **Behavior after:** `╰ ⏱ 1.5s | ↕ 1/2 lines | [󰜼 Open] ────╯` — 33 columns instead of 54 (Chinese: 30 instead of 38), the button painted in the theme's `muted` color inside the border-colored readout. The two readouts swapped places the same day, on request: the timer leads and the line count follows, each label staying on the readout it names (the cell fills the template in that order). A terminal without a Nerd Font draws its replacement box here too, the same accepted cost as the tool card's button.
 

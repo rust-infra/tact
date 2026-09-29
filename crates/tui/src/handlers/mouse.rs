@@ -319,14 +319,27 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         .find_thinking_at_logical(line_idx)
         .map(|(thinking_phys, _, _)| thinking_phys);
     if let Some(thinking_phys) = thinking_hit {
-        if app.mouse.click_count == 1 {
-            app.mouse.last_click_card = Some(thinking_phys);
+        // A Thinking card draws text on rows that do not map to that text, so
+        // nothing on it can be selected. Its footer `[Open]` button is the one
+        // target, and the frame recorded where it drew those glyphs.
+        let on_button = app
+            .mouse
+            .thinking_open_btn_areas
+            .iter()
+            .any(|rect| point_in_rect(mouse.column, mouse.row, *rect));
+        if on_button {
+            if app.mouse.click_count == 1 {
+                app.mouse.last_click_card = Some(thinking_phys);
+                app.mouse.log_selection = None;
+                app.mouse.dragging_log = false;
+            } else if app.mouse.click_count == 2 && app.mouse.last_click_card == Some(thinking_phys)
+            {
+                app.open_thinking_popup(thinking_phys);
+            }
+        } else {
+            app.mouse.last_click_card = None;
             app.mouse.log_selection = None;
             app.mouse.dragging_log = false;
-        } else if app.mouse.click_count == 2 && app.mouse.last_click_card == Some(thinking_phys) {
-            app.open_thinking_popup(thinking_phys);
-        } else if app.mouse.click_count >= 3 {
-            handle_log_triple_click(app, line_idx, false);
         }
         return;
     } else {
@@ -519,7 +532,9 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{
+        AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo,
+    };
 
     use super::*;
     use crate::{
@@ -1298,6 +1313,117 @@ mod tests {
         let opened = app.tools_mut().popup.is_some();
         app.tools_mut().popup = None;
         opened
+    }
+
+    /// Does a double-click at (`column`, `row`) open the Thinking card's popup?
+    fn double_click_opens_thinking(app: &mut App, column: u16, row: u16) -> bool {
+        app.thinking_mut().popup = None;
+        handle_log_click(app, mouse_down(column, row));
+        handle_log_click(app, mouse_down(column, row));
+        let opened = app.thinking_mut().popup.is_some();
+        app.thinking_mut().popup = None;
+        opened
+    }
+
+    /// An app whose log holds one completed Thinking card.
+    fn app_with_thinking_card(language: crate::i18n::Language) -> App {
+        let mut app = make_app();
+        app.language = language;
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "one\ntwo\nthree\nfour\n".into(),
+        )));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        app
+    }
+
+    /// A Thinking card has one target: the `[󰜼 Open]` button on its bottom
+    /// border. It draws text on rows that do not map to that text, so — like a
+    /// whole-Markdown row — nothing else about it answers a click, not its
+    /// summary, not its title, not the blank rows around it.
+    ///
+    /// The probe reads the rendered frame: the hit rects are recorded from the
+    /// geometry the frame drew, and this proves they land on the glyphs.
+    #[test]
+    fn thinking_popup_opens_from_the_drawn_button_only() {
+        use crate::i18n::Language;
+        use crate::render::test_harness::render_main_area_terminal;
+        use agent_tui_kit::widgets::button::ButtonChrome;
+        use unicode_width::UnicodeWidthStr;
+
+        for lang in [Language::English, Language::Chinese] {
+            let mut app = app_with_thinking_card(lang);
+            let ctx = format!("{lang:?}");
+            let width = UnicodeWidthStr::width(
+                ButtonChrome::Brackets
+                    .wrap(app.msgs().thinking_card_action)
+                    .as_str(),
+            ) as u16;
+
+            let terminal = render_main_area_terminal(&mut app, 100, 20);
+            let buf = terminal.backend().buffer().clone();
+            let (start, row) = glyph_origin(&buf, "[󰜼");
+            let end = start + width;
+            assert_eq!(
+                buf[(end - 1, row)].symbol(),
+                "]",
+                "{ctx}: the measured width must land on the drawn button's last glyph"
+            );
+            // The card is a blank row, title, one body row, the footer, a blank
+            // row — so the title sits two rows above the footer.
+            let title_row = row - 2;
+            let title: String = (0..buf.area.width)
+                .map(|x| buf[(x, title_row)].symbol())
+                .collect();
+            assert!(
+                title.contains('🧠'),
+                "{ctx}: the card title must be where this test thinks it is: {title:?}"
+            );
+
+            assert!(
+                double_click_opens_thinking(&mut app, start, row),
+                "{ctx}: the button's first glyph must open the popup"
+            );
+            assert!(
+                double_click_opens_thinking(&mut app, end - 1, row),
+                "{ctx}: the button's last glyph must open the popup"
+            );
+            assert!(
+                !double_click_opens_thinking(&mut app, start - 1, row),
+                "{ctx}: the readout left of the button must stay inert"
+            );
+            assert!(
+                !double_click_opens_thinking(&mut app, end, row),
+                "{ctx}: the column after the button must stay inert"
+            );
+            assert!(
+                !double_click_opens_thinking(&mut app, start, row - 1),
+                "{ctx}: the card's own text must stay inert"
+            );
+            assert!(
+                !double_click_opens_thinking(&mut app, start, title_row),
+                "{ctx}: the card's title must stay inert"
+            );
+        }
+    }
+
+    /// A non-button click on a Thinking card must not leave a selection behind
+    /// either: the card's rows do not carry the text drawn inside it.
+    #[test]
+    fn clicking_a_thinking_card_body_leaves_no_selection() {
+        use crate::render::test_harness::render_main_area_terminal;
+
+        let mut app = app_with_thinking_card(crate::i18n::Language::English);
+        let terminal = render_main_area_terminal(&mut app, 100, 20);
+        let buf = terminal.backend().buffer().clone();
+        let (start, row) = glyph_origin(&buf, "[󰜼");
+
+        app.mouse.last_click_time = Some(std::time::Instant::now());
+        app.mouse.last_click_pos = Some((start, row - 1));
+        app.mouse.click_count = 3;
+        handle_log_click(&mut app, mouse_down(start, row - 1));
+
+        assert!(app.mouse.log_selection.is_none());
+        assert!(!app.mouse.dragging_log);
     }
 
     /// The hint's click window has to be the glyphs the row **draws**, in every

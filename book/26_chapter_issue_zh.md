@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-29 — thinking 卡片的弹窗改由底栏按钮打开，而不是整张卡片
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix (UI) |
+| **相关** | `crates/agent_tui_kit/src/render/cells/thinking.rs`（`ThinkingCell::card_geometry`、`footer_button_rect`）、`crates/agent_tui_kit/src/render/log.rs`（`LogRenderOutput`）、`crates/agent_tui_kit/src/render/log_column.rs`（`LogColumnRenderer::cell_slice`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`thinking_open_btn_areas`）、`crates/tui/src/handlers/mouse.rs`（`handle_log_click`）；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 双击 thinking 卡片的任何位置都会弹出详情——标题、summary、前后的空白行全算命中。而这张卡片本来也不是可选文本（它把 tail 或 summary 画在承载转录原始 thinking 文本的行上），所以那些点击既弹了窗、也不可能选中任何东西。底栏画着 `[󰜼 打开]` 按钮说的是「点这里」，卡片回答的却是「点哪都行」。
+
+**决策：** 底栏那个按钮成为卡片唯一的点击目标，位置由画帧所用的同一套几何算出。卡片矩形、边框与顶部裁剪只在一处计算——`ThinkingCell::card_geometry`；`render_partial` 据此绘制，`footer_button_rect` 据此推导按钮（底边框那一行、左角与读数之后、宽度恰为画出的标签宽度），因此命中区不可能与字形漂移。纯渲染器用 widget 阶段同一个 `LogColumnRenderer::cell_slice` 取每个 cell 的可见切片，并把矩形放进 `LogRenderOutput` 交回；App 把它们存到 `MouseState::thinking_open_btn_areas` 供点击处理读取——即 `subagent_cancel_btn_areas` 的既有做法。卡片其它位置的点击保持无效并清掉选择（整行 Markdown 早就这么做）。底栏被裁掉时（底边框不在屏上，或卡片太窄放不下整个按钮）没有目标；手势不变，仍是双击。
+
+**之后的行为：** 双击 `[󰜼 Open]` / `[󰜼 打开]` 打开详情弹窗；同样的双击落在卡片标题、卡片正文、空白行、按钮左侧的读数或按钮右侧那一列，都什么都不做，也不留下选择。
+
+**指针：** `ThinkingCell::{card_geometry, footer_button_rect}`、`LogColumnRenderer::cell_slice`（绘制与命中区共用一条公式）、`LogRenderOutput`、`render_log_panel_pure` 的 thinking 分支、`MouseState::thinking_open_btn_areas`、`handle_log_click` 的 thinking 分支。测试：`agent_tui_kit::render::cells::thinking::tests::{the_footer_button_rect_is_the_drawn_button, a_clipped_footer_has_no_button_rect, the_button_rect_follows_a_scrolled_card}` 与 `tui::handlers::mouse::tests::{thinking_popup_opens_from_the_drawn_button_only, clicking_a_thinking_card_body_leaves_no_selection}`（后一对已验证对「整张卡片是目标」的旧行为是红的）。文档：第 23 章（`ThinkingCell` 行、卡片表、弹窗表）。
+
+---
+
 ## 1. 2026-09-29 — thinking 卡片的底栏换成同一个按钮，两张卡片的「打开」说法统一
 
 | 字段 | 值 |
@@ -41,7 +58,7 @@
 
 **症状 / 动机：** thinking 卡片的底栏是 `⇕ 1/2 lines | Double-click for full content | ⏱ 1.5s`——54 列散文，画面上没有任何标记指出「可点」的位置；而这距离折叠 tool 卡片把同一类句子换成方括号按钮只隔了一次会话。两张表达同一件事（「双击我，看剩下的」）的卡片，用了两种教法。
 
-**决策：** 底栏的动作现在就是折叠 tool 卡片画的那个 `[󰜼 Open]` / `[󰜼 打开]` 按钮——kit 的 `Button` 配 `ButtonChrome::Brackets`，字形负责「怎么操作」、词负责「会发生什么」。两个界面的这几个字形共用同一处定义 `ButtonChrome::wrap(label)`（`collapsed_action_text` 也走它），所以改 chrome 就是同时改两张卡片。两者的动作都是模板的**尾部**，因此 cell 用后缀匹配切分：某个语言若不再以动作结尾，只会画出没有按钮的读数，而不会把按钮画到错误的位置。双击目标仍是整张卡片（折叠 tool 卡片是按钮本身当目标），命中测试没有任何变化；只是把耗时读数移到按钮左侧，好让动作落在最后。
+**决策：** 底栏的动作现在就是折叠 tool 卡片画的那个 `[󰜼 Open]` / `[󰜼 打开]` 按钮——kit 的 `Button` 配 `ButtonChrome::Brackets`，字形负责「怎么操作」、词负责「会发生什么」。两个界面的这几个字形共用同一处定义 `ButtonChrome::wrap(label)`（`collapsed_action_text` 也走它），所以改 chrome 就是同时改两张卡片。两者的动作都是模板的**尾部**，因此 cell 用后缀匹配切分：某个语言若不再以动作结尾，只会画出没有按钮的读数，而不会把按钮画到错误的位置。双击目标仍是整张卡片（折叠 tool 卡片是按钮本身当目标），命中测试没有任何变化；只是把耗时读数移到按钮左侧，好让动作落在最后。（同日稍后又把目标收窄到按钮本身——见上一条。）
 
 **之后的行为：** `╰ ⏱ 1.5s | ↕ 1/2 lines | [󰜼 Open] ────╯`——33 列而不是 54 列（中文 30 列而不是 38 列），按钮用主题的 `muted` 色画在 border 色的读数里。两段读数在同一天按用户要求对调了位置：耗时在前、行数在后，各自的标签跟着自己那段读数走（cell 就是按这个顺序填模板）。没有 Nerd Font 的终端在这里同样会画出替代框，与 tool 卡片按钮是同一笔已接受的代价。
 
