@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-29 — The Thinking card's title drops "in progress": `思考`, not `思考中`
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix (copy) |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`thinking_card_title`, `thinking_title`); [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** One title string serves the active and the completed Thinking card, and the Chinese one read `🧠 思考中`. Finished cards therefore kept announcing that they were still thinking — the spinner prefix is what marks a running card, and the wording was claiming it too.
+
+**Decision:** The Chinese card title is `🧠 思考` and the popup title `(╭ರ_•́) 思考...`; English (`🧠 Thinking`) was already tense-neutral and is unchanged. The field's doc comment now states the rule — one string for both states, so it must not name progress — because the next wording change is what would break it again.
+
+**Behavior after:** A running card reads `⠋🧠 思考` (spinner + `思考`), a finished one `🧠 思考`; the popup title is `(╭ರ_•́) 思考...` in both states.
+
+**Pointers:** `Messages::thinking_card_title` (doc comment carries the invariant) and `Messages::thinking_title` (popup + component card).
+
+---
+
 ## 1. 2026-09-29 — A Thinking card opens its popup from its footer button, not from anywhere on the card
 
 | Field | Value |
