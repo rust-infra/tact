@@ -51,11 +51,12 @@ impl ThinkingCell {
     ) -> (String, Option<&'static str>) {
         let label = msgs.thinking_card_action;
         let action = ButtonChrome::Brackets.wrap(label);
+        // Filled in template order: elapsed first, then the line count.
         let text = msgs
             .thinking_card_bottom
+            .replacen("{}", &format_elapsed(elapsed), 1)
             .replacen("{}", &shown.to_string(), 1)
             .replacen("{}", &total.to_string(), 1)
-            .replacen("{}", &format_elapsed(elapsed), 1)
             .replacen("{}", &action, 1);
         match text.strip_suffix(&action) {
             Some(prefix) => (prefix.to_string(), Some(label)),
@@ -103,7 +104,7 @@ impl ThinkingCell {
         }
     }
 
-    /// The footer as one line: the readout (line count, elapsed) in the border
+    /// The footer as one line: the readout (elapsed, line count) in the border
     /// color, then the button that opens the full content — drawn by the shared
     /// [`Button`] widget with the same chrome as a collapsed tool card's, so the
     /// two affordances read the same wherever they appear.
@@ -401,6 +402,18 @@ mod tests {
             assert!(
                 drawn.contains("↕ 1/2 lines") || drawn.contains("↕ 1/2 行"),
                 "{drawn:?}"
+            );
+            // Order is a contract too: the elapsed time leads, the line count
+            // follows, each label staying on the readout it names.
+            let elapsed_at = drawn
+                .find('⏱')
+                .unwrap_or_else(|| panic!("no elapsed readout: {drawn:?}"));
+            let count_at = drawn
+                .find('↕')
+                .unwrap_or_else(|| panic!("no line count: {drawn:?}"));
+            assert!(
+                elapsed_at < count_at && drawn.contains("⏱ 1.5s | ↕ 1/2"),
+                "the elapsed time must lead the readout: {drawn:?}"
             );
             assert_eq!(
                 line.spans[0].style.fg,

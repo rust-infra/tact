@@ -44,7 +44,8 @@ pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
     pub thinking_card_title: &'static str, // "🧠 Thinking" (no line count — it lives in the bottom bar)
-    /// Thinking card footer: `↕ {shown}/{total} lines | ⏱ {elapsed} | {action}`.
+    /// Thinking card footer: `⏱ {elapsed} | ↕ {shown}/{total} lines | {action}`
+    /// — the elapsed time leads, each label staying on the readout it names.
     /// The action is the **tail**, the same rule a collapsed tool card's meta row
     /// follows, so the cell splits it off by suffix match rather than searching.
     pub thinking_card_bottom: &'static str,
@@ -379,7 +380,7 @@ impl Messages {
         Self {
             log_title: " [Log] ",
             thinking_card_title: " 🧠 Thinking ",
-            thinking_card_bottom: " ↕ {}/{} lines | ⏱ {} | {}",
+            thinking_card_bottom: " ⏱ {} | ↕ {}/{} lines | {}",
             // Nerd Font `md-gesture_double_tap` (U+F073C) for "how", the word
             // for "what" — the same pair the collapsed tool card draws.
             thinking_card_action: "󰜼 Open",
@@ -671,7 +672,7 @@ impl Messages {
         Self {
             log_title: " [日志] ",
             thinking_card_title: " 🧠 思考中 ",
-            thinking_card_bottom: " ↕ {}/{} 行 | ⏱ {} | {}",
+            thinking_card_bottom: " ⏱ {} | ↕ {}/{} 行 | {}",
             // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
             thinking_card_action: "󰜼 打开",
             diff_card_title: "+{} {}",
