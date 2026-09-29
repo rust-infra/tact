@@ -44,7 +44,7 @@ use tracing::warn;
 
 use crate::{
     compact::CompactTrigger,
-    consts::PluginHome,
+    consts::{PluginDirs, PluginHome},
     hook::{
         HookControl, NotificationContext, SubagentStartContext, SubagentStartFn,
         SubagentStopContext, SubagentStopFn, ToolResult, ToolUse,
@@ -202,9 +202,10 @@ impl HookOutput {
 /// `Continue` is returned. Async hooks are spawned and return immediately.
 pub async fn run_command_hook(
     command: &HookCommand,
-    plugin_root: &Path,
+    dirs: impl Into<PluginDirs>,
     input: &HookRunInput,
 ) -> HookOutput {
+    let dirs = dirs.into();
     let Some(raw) = command.command.as_deref() else {
         return HookOutput::continue_default();
     };
@@ -212,9 +213,9 @@ pub async fn run_command_hook(
         tracing::debug!("plugin hook status: {message}");
     }
     if command.async_ == Some(true) {
-        let expanded = expand_plugin_root(raw, plugin_root);
+        let expanded = expand_plugin_placeholders(raw, &dirs);
         let work_dir = input.work_dir.clone();
-        let plugin_root = plugin_root.to_path_buf();
+        let dirs = dirs.clone();
         let payload = build_payload(input);
         let _ = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new();
@@ -223,7 +224,7 @@ pub async fn run_command_hook(
                 Err(_) => return,
             };
             rt.block_on(async move {
-                let _ = run_process(&expanded, &work_dir, &plugin_root, &payload, None).await;
+                let _ = run_process(&expanded, &work_dir, &dirs, &payload, None).await;
             });
         });
         return HookOutput::continue_default();
@@ -233,9 +234,9 @@ pub async fn run_command_hook(
     // Claude semantics: default 60s; an explicit `0` disables the timeout.
     let timeout_secs = resolve_timeout(command.timeout);
     match run_process(
-        &expand_plugin_root(raw, plugin_root),
+        &expand_plugin_placeholders(raw, &dirs),
         &input.work_dir,
-        plugin_root,
+        &dirs,
         &payload,
         timeout_secs,
     )
@@ -252,27 +253,33 @@ pub async fn run_command_hook(
 async fn run_process(
     command: &str,
     work_dir: &Path,
-    plugin_root: &Path,
+    dirs: &PluginDirs,
     payload: &Value,
     timeout_secs: Option<u64>,
 ) -> Result<String> {
-    // Inject the Codex/Claude-Code hook-protocol env vars into the subprocess:
-    //   - `CLAUDE_PLUGIN_ROOT` = absolute plugin cache root (the dir holding
-    //     `.codex-plugin/`, `hooks/`, `skills/`, …). Hook scripts read it to
-    //     locate their own resources; it is also the value substituted for the
-    //     `${CLAUDE_PLUGIN_ROOT}` placeholder in the command string (see
-    //     [`expand_plugin_root`]).
+    // Inject the hook-protocol env vars into the subprocess:
+    //   - `CLAUDE_PLUGIN_ROOT` / `PLUGIN_ROOT` = absolute plugin cache root (the
+    //     dir holding `.codex-plugin/`, `hooks/`, `skills/`, …). Hook scripts
+    //     read it to locate their own resources; the same value is substituted
+    //     for the matching placeholder in the command string (see
+    //     [`expand_plugin_placeholders`]).
+    //   - `CLAUDE_PLUGIN_DATA` / `PLUGIN_DATA` = the plugin's writable directory,
+    //     which outlives the revision-hashed package (Agent Plugins §9.1).
     //   - `CLAUDE_PROJECT_DIR` = the agent's current working directory, so a
     //     hook knows which project scope it is running in.
-    // The variable names intentionally keep the `CLAUDE_` prefix: that is the
-    // standard Codex/Claude-Code hook engine injects, so third-party plugin
-    // scripts work unchanged inside tact. Only the manifest dir was renamed to
-    // `.codex-plugin`; these env names are part of the cross-tool hook ABI.
+    // Every name is exported in both spellings because two plugin ABIs are in
+    // circulation: Claude Code uses the `CLAUDE_`-prefixed pair, while Agent
+    // Plugins / Codex bundles use the bare one. Only the manifest dir was
+    // renamed to `.codex-plugin`; these env names are part of the cross-tool
+    // hook ABI.
     let mut child = Command::new("sh")
         .arg("-c")
         .arg(command)
         .current_dir(work_dir)
-        .env("CLAUDE_PLUGIN_ROOT", plugin_root)
+        .env("CLAUDE_PLUGIN_ROOT", &dirs.root)
+        .env("PLUGIN_ROOT", &dirs.root)
+        .env("CLAUDE_PLUGIN_DATA", &dirs.data)
+        .env("PLUGIN_DATA", &dirs.data)
         .env("CLAUDE_PROJECT_DIR", work_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -438,20 +445,63 @@ struct RawHookSpecificOutput {
     suppress_output: Option<bool>,
 }
 
-/// Expands `${CLAUDE_PLUGIN_ROOT}` (and `$CLAUDE_PLUGIN_ROOT`) in a command
-/// string to the plugin cache root.
+/// Expands the plugin directory placeholders in a command string.
 ///
-/// Codex/Claude-Code plugins write commands like
-/// `node "${CLAUDE_PLUGIN_ROOT}/hooks/x.js"` because the revision-hashed cache
-/// path is unknowable ahead of time. We resolve the placeholder at spawn time
-/// so the hook needs no separate discovery step; the same value is also made
-/// available to the subprocess as the `CLAUDE_PLUGIN_ROOT` env var (see
-/// [`run_process`]).
-fn expand_plugin_root(command: &str, plugin_root: &Path) -> String {
-    let root = plugin_root.to_string_lossy();
-    command
-        .replace("${CLAUDE_PLUGIN_ROOT}", &root)
-        .replace("$CLAUDE_PLUGIN_ROOT", &root)
+/// Four names are in circulation and all are accepted, in braced and bare form:
+///
+/// - `${CLAUDE_PLUGIN_ROOT}` / `${PLUGIN_ROOT}` — the Claude Code hook ABI and
+///   the Agent Plugins / Codex bundle ABI respectively, both naming the unpacked
+///   package (the reference `basic-memory` plugin runs
+///   `uv run --quiet --script "${PLUGIN_ROOT}/hooks/session_start.py"`);
+/// - `${CLAUDE_PLUGIN_DATA}` / `${PLUGIN_DATA}` — the writable directory that
+///   survives package updates (Agent Plugins §9.1).
+///
+/// Plugins need the placeholders because the revision-hashed cache path is
+/// unknowable ahead of time. We resolve them at spawn time so the hook needs no
+/// separate discovery step; the same values are exported as env vars (see
+/// [`run_process`]). Accepting only the Claude root spelling used to leave the
+/// Codex one to `sh`, where an unset `${PLUGIN_ROOT}` expands to the empty
+/// string and the hook silently addressed `/hooks/...`.
+fn expand_plugin_placeholders(command: &str, dirs: &PluginDirs) -> String {
+    // Placeholder name and the directory it names, one pair per plugin ABI.
+    let names = [
+        ("CLAUDE_PLUGIN_ROOT", dirs.root.as_path()),
+        ("PLUGIN_ROOT", dirs.root.as_path()),
+        ("CLAUDE_PLUGIN_DATA", dirs.data.as_path()),
+        ("PLUGIN_DATA", dirs.data.as_path()),
+    ];
+    let mut expanded = command.to_owned();
+    for (name, value) in names {
+        let value = value.to_string_lossy();
+        expanded = expanded.replace(&format!("${{{name}}}"), &value);
+        expanded = replace_bare_var(&expanded, name, &value);
+    }
+    expanded
+}
+
+/// Substitutes a bare `$NAME` (no braces), leaving a longer variable name
+/// alone.
+///
+/// A plain `str::replace` would rewrite `$PLUGIN_ROOT_SUFFIX` into
+/// `<root>_SUFFIX`, but the shell reads that as the single variable
+/// `PLUGIN_ROOT_SUFFIX`; the name has to end where the placeholder does.
+fn replace_bare_var(command: &str, name: &str, value: &str) -> String {
+    let bare = format!("${name}");
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(at) = rest.find(&bare) {
+        let (head, tail) = rest.split_at(at);
+        let after = &tail[bare.len()..];
+        out.push_str(head);
+        match after.chars().next() {
+            // A longer variable name: leave it for the shell to expand.
+            Some(next) if next.is_alphanumeric() || next == '_' => out.push_str(&bare),
+            _ => out.push_str(value),
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// True when an optional matcher regex matches `subject`. An absent or empty
@@ -533,7 +583,10 @@ fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
             continue;
         };
         out.push(InstalledHooks {
-            plugin_root: root.root,
+            dirs: PluginDirs {
+                data: home.plugin_data_dir(&root.marketplace, &root.plugin_id),
+                root: root.root,
+            },
             hooks,
         });
     }
@@ -565,7 +618,9 @@ struct HookManifest {
 }
 
 struct InstalledHooks {
-    plugin_root: PathBuf,
+    /// The plugin's two Agent Plugins directories: the unpacked package, and the
+    /// client-managed data directory that outlives it (§9.1).
+    dirs: PluginDirs,
     hooks: HooksFile,
 }
 
@@ -590,11 +645,11 @@ fn plugin_subagent_start_hooks_with_home(
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::SubagentStart) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.to_path_buf();
             out.push(Arc::new(move |ctx: &mut SubagentStartContext| {
                 let command = command.clone();
-                let plugin_root = plugin_root.clone();
+                let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
                 let matcher = matcher.clone();
                 let name = ctx.name.clone();
@@ -605,7 +660,7 @@ fn plugin_subagent_start_hooks_with_home(
                     }
                     let output = run_command_hook(
                         &command,
-                        &plugin_root,
+                        &dirs,
                         &HookRunInput {
                             session_id: String::new(),
                             work_dir,
@@ -659,11 +714,11 @@ fn plugin_subagent_stop_hooks_with_home(
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::SubagentStop) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.to_path_buf();
             out.push(Arc::new(move |ctx: &mut SubagentStopContext| {
                 let command = command.clone();
-                let plugin_root = plugin_root.clone();
+                let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
                 let matcher = matcher.clone();
                 let agent_type = ctx.agent_type.clone();
@@ -674,7 +729,7 @@ fn plugin_subagent_stop_hooks_with_home(
                     }
                     let output = run_command_hook(
                         &command,
-                        &plugin_root,
+                        &dirs,
                         &HookRunInput {
                             session_id: String::new(),
                             work_dir,
@@ -722,12 +777,12 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::SessionStart) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_session_start(move |_agent: &crate::Agent| {
                 let matcher = matcher.clone();
                 let command = command.clone();
-                let plugin_root = plugin_root.clone();
+                let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
                 Box::pin(async move {
                     // Tact sessions start normally; the Claude `source`
@@ -738,7 +793,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                     }
                     let output = run_command_hook(
                         &command,
-                        &plugin_root,
+                        &dirs,
                         &HookRunInput {
                             session_id: String::new(),
                             work_dir,
@@ -771,13 +826,13 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
                 agent.with_user_prompt_submit(move |_agent: &crate::Agent, prompt: &mut String| {
                     let matcher = matcher.clone();
                     let command = command.clone();
-                    let plugin_root = plugin_root.clone();
+                    let dirs = dirs.clone();
                     let work_dir = work_dir.clone();
                     let prompt_snapshot = prompt.clone();
                     Box::pin(async move {
@@ -786,7 +841,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                         }
                         let output = run_command_hook(
                             &command,
-                            &plugin_root,
+                            &dirs,
                             &HookRunInput {
                                 session_id: String::new(),
                                 work_dir,
@@ -806,12 +861,12 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::PreToolUse) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_pre_tool(move |_agent: &crate::Agent, tool_use: &mut ToolUse| {
                 let matcher = matcher.clone();
                 let command = command.clone();
-                let plugin_root = plugin_root.clone();
+                let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
                 let tool_name = tool_use.name.clone();
                 let tool_input = tool_use.input.clone();
@@ -821,7 +876,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                     }
                     let output = run_command_hook(
                         &command,
-                        &plugin_root,
+                        &dirs,
                         &HookRunInput {
                             session_id: String::new(),
                             work_dir,
@@ -846,7 +901,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::PostToolUse) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_hook(
                 move |_agent: &crate::Agent,
@@ -855,7 +910,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                       _status| {
                     let matcher = matcher.clone();
                     let command = command.clone();
-                    let plugin_root = plugin_root.clone();
+                    let dirs = dirs.clone();
                     let work_dir = work_dir.clone();
                     let tool_name = tool_use.name.clone();
                     let tool_input = tool_use.input.clone();
@@ -866,7 +921,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                         }
                         let output = run_command_hook(
                             &command,
-                            &plugin_root,
+                            &dirs,
                             &HookRunInput {
                                 session_id: String::new(),
                                 work_dir,
@@ -894,13 +949,13 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_failure(
                 move |_agent: &crate::Agent, tool_use: &ToolUse, error: &str| {
                     let matcher = matcher.clone();
                     let command = command.clone();
-                    let plugin_root = plugin_root.clone();
+                    let dirs = dirs.clone();
                     let work_dir = work_dir.clone();
                     let tool_name = tool_use.name.clone();
                     let tool_input = tool_use.input.clone();
@@ -912,7 +967,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                         }
                         let output = run_command_hook(
                             &command,
-                            &plugin_root,
+                            &dirs,
                             &HookRunInput {
                                 session_id: String::new(),
                                 work_dir,
@@ -938,13 +993,13 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::Notification) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
                 agent.with_notification(move |_agent: &crate::Agent, ctx: &NotificationContext| {
                     let matcher = matcher.clone();
                     let command = command.clone();
-                    let plugin_root = plugin_root.clone();
+                    let dirs = dirs.clone();
                     let work_dir = work_dir.clone();
                     let notification_type = ctx.notification_type.clone();
                     let title = ctx.title.clone();
@@ -957,7 +1012,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                         }
                         let output = run_command_hook(
                             &command,
-                            &plugin_root,
+                            &dirs,
                             &HookRunInput {
                                 session_id: String::new(),
                                 work_dir,
@@ -980,12 +1035,12 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::TaskCompleted) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_task_completed(move |agent: &crate::Agent| {
                 let matcher = matcher.clone();
                 let command = command.clone();
-                let plugin_root = plugin_root.clone();
+                let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
                 let task_description = agent.last_assistant_message().unwrap_or_default();
                 Box::pin(async move {
@@ -996,7 +1051,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                     }
                     let output = run_command_hook(
                         &command,
-                        &plugin_root,
+                        &dirs,
                         &HookRunInput {
                             session_id: String::new(),
                             work_dir,
@@ -1017,12 +1072,12 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::Stop) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_stop(move |agent: &crate::Agent| {
                 let matcher = matcher.clone();
                 let command = command.clone();
-                let plugin_root = plugin_root.clone();
+                let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
                 let last = agent.last_assistant_message();
                 Box::pin(async move {
@@ -1033,7 +1088,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                     }
                     let output = run_command_hook(
                         &command,
-                        &plugin_root,
+                        &dirs,
                         &HookRunInput {
                             session_id: String::new(),
                             work_dir,
@@ -1055,12 +1110,12 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::SessionEnd) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_session_end(move |_agent: &crate::Agent| {
                 let matcher = matcher.clone();
                 let command = command.clone();
-                let plugin_root = plugin_root.clone();
+                let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
                 Box::pin(async move {
                     // Codex matches SessionEnd against `reason` ("other").
@@ -1069,7 +1124,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                     }
                     let output = run_command_hook(
                         &command,
-                        &plugin_root,
+                        &dirs,
                         &HookRunInput {
                             session_id: String::new(),
                             work_dir,
@@ -1088,13 +1143,13 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::PreCompact) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
                 agent.with_pre_compact(move |_agent: &crate::Agent, trigger: CompactTrigger| {
                     let matcher = matcher.clone();
                     let command = command.clone();
-                    let plugin_root = plugin_root.clone();
+                    let dirs = dirs.clone();
                     let work_dir = work_dir.clone();
                     Box::pin(async move {
                         if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
@@ -1102,7 +1157,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                         }
                         let output = run_command_hook(
                             &command,
-                            &plugin_root,
+                            &dirs,
                             &HookRunInput {
                                 session_id: String::new(),
                                 work_dir,
@@ -1120,13 +1175,13 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::PostCompact) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let plugin_root = installed.plugin_root.clone();
+            let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
                 agent.with_post_compact(move |_agent: &crate::Agent, trigger: CompactTrigger| {
                     let matcher = matcher.clone();
                     let command = command.clone();
-                    let plugin_root = plugin_root.clone();
+                    let dirs = dirs.clone();
                     let work_dir = work_dir.clone();
                     Box::pin(async move {
                         if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
@@ -1134,7 +1189,7 @@ pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate:
                         }
                         let output = run_command_hook(
                             &command,
-                            &plugin_root,
+                            &dirs,
                             &HookRunInput {
                                 session_id: String::new(),
                                 work_dir,
@@ -1654,13 +1709,176 @@ mod tests {
         );
     }
 
+    /// The `(root, data)` pair the hook tests expand against. The two
+    /// directories differ so a `PLUGIN_DATA` substitution cannot pass by
+    /// accident.
+    fn test_dirs() -> PluginDirs {
+        PluginDirs {
+            root: PathBuf::from("/cache/p"),
+            data: PathBuf::from("/data/p"),
+        }
+    }
+
     #[test]
     fn expands_plugin_root_placeholder() {
-        let expanded = expand_plugin_root(
-            r#"node "${CLAUDE_PLUGIN_ROOT}/hooks/x.js""#,
-            Path::new("/cache/p"),
+        let dirs = test_dirs();
+        // Braced form, Claude Code ABI.
+        assert_eq!(
+            expand_plugin_placeholders(r#"node "${CLAUDE_PLUGIN_ROOT}/hooks/x.js""#, &dirs),
+            r#"node "/cache/p/hooks/x.js""#
         );
-        assert_eq!(expanded, r#"node "/cache/p/hooks/x.js""#);
+        // Braced form, Agent Plugins / Codex ABI — the shape the reference
+        // `basic-memory` plugin ships.
+        assert_eq!(
+            expand_plugin_placeholders(
+                r#"uv run --quiet --script "${PLUGIN_ROOT}/hooks/session_start.py""#,
+                &dirs
+            ),
+            r#"uv run --quiet --script "/cache/p/hooks/session_start.py""#
+        );
+        // Bare form, both root ABIs.
+        assert_eq!(
+            expand_plugin_placeholders("$PLUGIN_ROOT/x", &dirs),
+            "/cache/p/x"
+        );
+        assert_eq!(
+            expand_plugin_placeholders("$CLAUDE_PLUGIN_ROOT/x", &dirs),
+            "/cache/p/x"
+        );
+    }
+
+    #[test]
+    fn expands_the_plugin_data_placeholders() {
+        let dirs = test_dirs();
+        // §9.1: the data directory is its own placeholder in both ABIs, and it
+        // must not resolve to the package root.
+        assert_eq!(
+            expand_plugin_placeholders(r#"sh "${PLUGIN_DATA}/run.sh""#, &dirs),
+            r#"sh "/data/p/run.sh""#
+        );
+        assert_eq!(
+            expand_plugin_placeholders(r#"sh "${CLAUDE_PLUGIN_DATA}/run.sh""#, &dirs),
+            r#"sh "/data/p/run.sh""#
+        );
+        assert_eq!(
+            expand_plugin_placeholders("$PLUGIN_DATA/x", &dirs),
+            "/data/p/x"
+        );
+    }
+
+    #[test]
+    fn a_longer_variable_name_is_not_a_placeholder() {
+        let dirs = test_dirs();
+        // `$PLUGIN_ROOT_DATA` names one variable; the shell reads it that way,
+        // so tact must not rewrite the prefix.
+        assert_eq!(
+            expand_plugin_placeholders("${PLUGIN_ROOT_DATA}/x", &dirs),
+            "${PLUGIN_ROOT_DATA}/x"
+        );
+        assert_eq!(
+            expand_plugin_placeholders("$PLUGIN_ROOT_DATA/x", &dirs),
+            "$PLUGIN_ROOT_DATA/x"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hook_reads_the_plugin_data_env() {
+        let dir = tempdir().unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some(
+                r#"printf '{"decision":"approve","additionalContext":"%s"}' "$(printenv PLUGIN_DATA)""#
+                    .into(),
+            ),
+            command_windows: None,
+            timeout: Some(10),
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            PluginDirs::root_only(dir.path()),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "UserPromptSubmit",
+                event: Value::Null,
+            },
+        )
+        .await;
+
+        let expected = dir.path().display().to_string();
+        assert_eq!(
+            output.additional_context.as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    /// The reference `basic-memory` plugin runs
+    /// `uv run --quiet --script "${PLUGIN_ROOT}/hooks/session_start.py"`, so a
+    /// hook written that way has to find its own script through the Codex
+    /// placeholder and actually execute.
+    #[tokio::test]
+    async fn a_codex_style_hook_command_resolves_its_script() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("hooks")).unwrap();
+        std::fs::write(dir.path().join("hooks/probe.sh"), "printf probe-ran").unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some(r#"sh "${PLUGIN_ROOT}/hooks/probe.sh""#.into()),
+            command_windows: None,
+            timeout: Some(10),
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "UserPromptSubmit",
+                event: Value::Null,
+            },
+        )
+        .await;
+
+        assert_eq!(output.additional_context.as_deref(), Some("probe-ran"));
+    }
+
+    /// `printenv` keeps a `$PLUGIN_ROOT` placeholder out of the command string,
+    /// so this isolates the exported env var from the placeholder rewrite.
+    #[tokio::test]
+    async fn a_codex_style_hook_reads_the_plugin_root_env() {
+        let dir = tempdir().unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some(
+                r#"printf '{"decision":"approve","additionalContext":"%s"}' "$(printenv PLUGIN_ROOT)""#
+                    .into(),
+            ),
+            command_windows: None,
+            timeout: Some(10),
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "UserPromptSubmit",
+                event: Value::Null,
+            },
+        )
+        .await;
+
+        let expected = dir.path().display().to_string();
+        assert_eq!(
+            output.additional_context.as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     #[test]
