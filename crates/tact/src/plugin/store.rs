@@ -24,6 +24,9 @@ pub struct PluginSkillRoot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginRoot {
     pub plugin_id: String,
+    /// Marketplace that supplied the plugin — the other half of the key into
+    /// [`PluginHome::plugin_data_dir`].
+    pub marketplace: String,
     pub root: PathBuf,
 }
 
@@ -90,6 +93,7 @@ impl PluginStore {
                 }
                 Some(PluginRoot {
                     plugin_id: plugin.id,
+                    marketplace: plugin.marketplace,
                     root: plugin_root,
                 })
             })

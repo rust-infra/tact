@@ -43,7 +43,13 @@
 //! resolved — it can shadow, and be shadowed by, an enabled one — but is never
 //! connected, and `mcp list` shows it as disabled.
 
-use std::{collections::HashMap, fs, path::Path, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Component, Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+};
 
 /// Ceiling on the MCP `initialize` handshake.
 ///
@@ -81,7 +87,7 @@ use tokio::process::Command;
 
 use crate::{
     ToolSpec,
-    consts::{PluginHome, TactPath},
+    consts::{PluginDirs, PluginHome, TactPath},
     plugin::{PluginRoot, PluginStore},
     tool::copy_tool_spec,
 };
@@ -111,6 +117,13 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Working directory for the subprocess.
+    ///
+    /// `None` inherits tact's own directory, which is what a user-level
+    /// `.mcp.json` entry has always done. A plugin-supplied entry always sets
+    /// it: Agent Plugins §7.2.1 defaults it to the plugin root.
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
 }
 
 /// Tact's native MCP configuration file (`.mcp.json`), using the same
@@ -489,8 +502,16 @@ pub struct PluginManifest {
     pub name: String,
     #[serde(default)]
     pub version: Option<String>,
+    /// Left untyped on purpose.
+    ///
+    /// Codex bundles write either the server map inline or a path to it
+    /// (`"mcpServers": "./.mcp.json"`). Typing this as a map made the whole
+    /// manifest unparseable in the second case, which downgraded a valid bundle
+    /// to "no MCP servers at all". Interpretation happens in
+    /// [`plugin_manifest_mcp_servers`], where a bad shape costs one field
+    /// instead of the manifest.
     #[serde(default)]
-    pub mcp_servers: HashMap<String, McpProjectConfig>,
+    pub mcp_servers: Option<Value>,
 }
 
 /// MCP server entry in `.mcp.json` / a plugin `.mcp.json`.
@@ -514,6 +535,14 @@ pub struct McpProjectConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Working directory for a stdio server (Agent Plugins §7.2.1).
+    ///
+    /// Modelled rather than left in [`Self::extra`] because a plugin entry may
+    /// set it, and `mcp list` should not report a field tact honours as
+    /// unmodelled. Entries from user and project configuration keep whatever
+    /// they wrote; only plugin-supplied entries are resolved and contained.
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
     /// Extra request headers for remote servers (static auth goes here).
@@ -554,6 +583,7 @@ impl Default for McpProjectConfig {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            cwd: None,
             url: None,
             headers: HashMap::new(),
             auth: None,
@@ -581,6 +611,7 @@ impl McpProjectConfig {
             command: self.command.clone()?,
             args: self.args.clone(),
             env: self.env.clone(),
+            cwd: self.cwd.as_deref().map(PathBuf::from),
         })
     }
 
@@ -596,6 +627,7 @@ impl McpProjectConfig {
                 command: command.clone(),
                 args: self.args.clone(),
                 env: self.env.clone(),
+                cwd: self.cwd.as_deref().map(PathBuf::from),
             }));
         }
         let url = self.url.clone()?;
@@ -620,16 +652,42 @@ pub fn installed_plugin_mcp_servers(home: &PluginHome) -> Result<Vec<(String, Mc
     let store = PluginStore::new(home.clone());
     let mut servers = Vec::new();
     for root in store.installed_plugin_roots()? {
-        collect_plugin_mcp_servers(&root, &mut servers)?;
+        let dirs = PluginDirs {
+            data: home.plugin_data_dir(&root.marketplace, &root.plugin_id),
+            root: root.root.clone(),
+        };
+        collect_plugin_mcp_servers(&root, &dirs, &mut servers)?;
     }
     Ok(servers)
 }
 
 fn collect_plugin_mcp_servers(
     root: &PluginRoot,
+    dirs: &PluginDirs,
     servers: &mut Vec<(String, McpProjectConfig)>,
 ) -> Result<()> {
     let prefix = |name: &str| format!("plugin__{}__{}", root.plugin_id, name);
+    let accept =
+        |servers: &mut Vec<(String, McpProjectConfig)>, name: String, config: McpProjectConfig| {
+            match prepare_plugin_entry(&config, dirs) {
+                Some(prepared) => {
+                    if let Err(error) = ensure_plugin_data_dir(&prepared, dirs) {
+                        tracing::warn!(
+                            "plugin {}: cannot create data directory {}: {error}",
+                            root.plugin_id,
+                            dirs.data.display()
+                        );
+                    }
+                    servers.push((prefix(&name), prepared));
+                }
+                // Agent Plugins §7.2.2: a bad entry is invalid on its own,
+                // never the whole plugin.
+                None => tracing::warn!(
+                    "plugin {} MCP server {name} is not a valid Agent Plugins entry; skipping",
+                    root.plugin_id
+                ),
+            }
+        };
 
     let manifest_path = root.root.join(".codex-plugin").join("plugin.json");
     if manifest_path.is_file() {
@@ -637,8 +695,16 @@ fn collect_plugin_mcp_servers(
             .with_context(|| format!("failed to read {}", manifest_path.display()))?;
         match serde_json::from_str::<PluginManifest>(&raw) {
             Ok(manifest) => {
-                for (name, config) in manifest.mcp_servers {
-                    servers.push((prefix(&name), config));
+                match plugin_manifest_mcp_servers(&root.root, manifest.mcp_servers.as_ref()) {
+                    Ok(configs) => {
+                        for (name, config) in configs {
+                            accept(servers, name, config);
+                        }
+                    }
+                    Err(error) => tracing::warn!(
+                        "plugin {} manifest MCP declaration is unusable: {error}",
+                        root.plugin_id
+                    ),
                 }
             }
             Err(error) => {
@@ -651,11 +717,17 @@ fn collect_plugin_mcp_servers(
         }
     }
 
-    // A plugin-root `.mcp.json` is part of the plugin *bundle* format, not a
-    // project config convention. Tact deliberately does not read a `.mcp.json`
-    // at the working directory — that role belongs to `<workdir>/.tact/.mcp.json`.
-    let mcp_path = root.root.join(".mcp.json");
-    if mcp_path.is_file() {
+    // A plugin-root MCP file is part of the plugin *bundle* format, not a
+    // project config convention. Tact deliberately does not read one at the
+    // working directory — that role belongs to `<workdir>/.tact/.mcp.json`.
+    //
+    // `.mcp.json` is the Codex bundle name; `mcp.json` is the Agent Plugins
+    // §7.2.1 core path. The Codex name wins when a bundle ships both.
+    for file_name in [".mcp.json", "mcp.json"] {
+        let mcp_path = root.root.join(file_name);
+        if !mcp_path.is_file() {
+            continue;
+        }
         let raw = fs::read_to_string(&mcp_path)
             .with_context(|| format!("failed to read {}", mcp_path.display()))?;
         let configs = parse_plugin_mcp_document(&raw)?;
@@ -669,11 +741,203 @@ fn collect_plugin_mcp_servers(
                     name
                 );
             }
-            servers.push((prefix(&name), config));
+            accept(servers, name, config);
         }
     }
 
     Ok(())
+}
+
+/// The placeholder names Agent Plugins defines — v1 has exactly these two.
+const PLUGIN_ROOT_VAR: &str = "${PLUGIN_ROOT}";
+const PLUGIN_DATA_VAR: &str = "${PLUGIN_DATA}";
+
+/// Expands both placeholders in a single non-recursive pass (§9.2).
+///
+/// Single-pass matters: text introduced by a replacement must never be
+/// rescanned, so a plugin root that happens to contain `${PLUGIN_DATA}` stays
+/// exactly as written. An unrecognized `${…}` is left literal.
+fn expand_placeholders(value: &str, dirs: &PluginDirs) -> String {
+    if !value.contains("${") {
+        return value.to_owned();
+    }
+    let root = dirs.root.to_string_lossy();
+    let data = dirs.data.to_string_lossy();
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(at) = rest.find("${") {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        if let Some(after) = tail.strip_prefix(PLUGIN_ROOT_VAR) {
+            out.push_str(&root);
+            rest = after;
+        } else if let Some(after) = tail.strip_prefix(PLUGIN_DATA_VAR) {
+            out.push_str(&data);
+            rest = after;
+        } else {
+            out.push_str("${");
+            rest = &tail[2..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Folds `.` and `..` without touching the filesystem.
+///
+/// A plugin-supplied `cwd` may name a directory that does not exist yet, so
+/// `canonicalize` is unavailable; lexical folding is still enough to reject an
+/// escape such as `${PLUGIN_DATA}/../../etc`.
+fn fold_path(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other.as_os_str()),
+        }
+    }
+    folded
+}
+
+/// Resolves a plugin entry's `cwd` (§7.2.1).
+///
+/// Returns `None` when the value is not one of the three allowed forms, or when
+/// it escapes the root it names — either way the entry is invalid.
+fn resolve_plugin_cwd(raw: &str, dirs: &PluginDirs) -> Option<PathBuf> {
+    let raw = raw.trim();
+    let at_data = raw == PLUGIN_DATA_VAR || raw.starts_with(&format!("{PLUGIN_DATA_VAR}/"));
+    let at_root = raw == PLUGIN_ROOT_VAR || raw.starts_with(&format!("{PLUGIN_ROOT_VAR}/"));
+    let (base, candidate) = if at_data {
+        (
+            dirs.data.clone(),
+            PathBuf::from(expand_placeholders(raw, dirs)),
+        )
+    } else if at_root {
+        (
+            dirs.root.clone(),
+            PathBuf::from(expand_placeholders(raw, dirs)),
+        )
+    } else {
+        let relative = raw.strip_prefix("./")?;
+        (dirs.root.clone(), dirs.root.join(relative))
+    };
+    let folded = fold_path(&candidate);
+    folded.starts_with(fold_path(&base)).then_some(folded)
+}
+
+/// Resolves a plugin entry's `command` (§7.2.1).
+///
+/// `command` takes **no** placeholder expansion (§9.2). A `./` path resolves
+/// against the plugin root and must stay inside it; anything else is left to
+/// the platform's executable search, which is also what a user-level `.mcp.json`
+/// entry relies on.
+fn resolve_plugin_command(command: &str, dirs: &PluginDirs) -> Option<String> {
+    let Some(relative) = command.strip_prefix("./") else {
+        return Some(command.to_owned());
+    };
+    let folded = fold_path(&dirs.root.join(relative));
+    folded
+        .starts_with(&dirs.root)
+        .then(|| folded.to_string_lossy().into_owned())
+}
+
+/// Interprets `plugin.json`'s `mcpServers` field.
+///
+/// Codex bundles either inline the map or point at a file with
+/// `"mcpServers": "./.mcp.json"`. Agent Plugins 1.0.0 itself declares MCP only
+/// in the root `mcp.json` and forbids this field, but the Codex compatibility
+/// layout is what installed bundles actually ship, so both shapes are read.
+fn plugin_manifest_mcp_servers(
+    root: &Path,
+    declared: Option<&Value>,
+) -> Result<HashMap<String, McpProjectConfig>> {
+    match declared {
+        None | Some(Value::Null) => Ok(HashMap::new()),
+        Some(Value::Object(map)) => Ok(serde_json::from_value(Value::Object(map.clone()))?),
+        Some(Value::String(path)) => {
+            let resolved = fold_path(&root.join(path));
+            if !resolved.starts_with(root) {
+                bail!("mcpServers path {path} escapes the plugin root");
+            }
+            let raw = fs::read_to_string(&resolved)
+                .with_context(|| format!("failed to read {}", resolved.display()))?;
+            parse_plugin_mcp_document(&raw)
+        }
+        Some(other) => bail!("mcpServers must be an object or a path, found {other}"),
+    }
+}
+
+/// Applies the Agent Plugins rules a plugin-supplied MCP entry must satisfy,
+/// returning `None` when the entry is invalid on its own (§7.2.2).
+///
+/// - `env` may not declare the two reserved names (§9.2)
+/// - `args` values, `env` values and `cwd` get placeholder expansion (§9.2)
+/// - a `cwd` must be one of the three allowed forms and stay contained (§7.2.1)
+/// - the client supplies `PLUGIN_ROOT`/`PLUGIN_DATA` itself, last (§9.1)
+fn prepare_plugin_entry(config: &McpProjectConfig, dirs: &PluginDirs) -> Option<McpProjectConfig> {
+    // A remote entry launches nothing and §9.2 scopes expansion to stdio
+    // configuration, so it passes through untouched.
+    if config.command.is_none() {
+        return Some(config.clone());
+    }
+    if config
+        .env
+        .keys()
+        .any(|key| key == "PLUGIN_ROOT" || key == "PLUGIN_DATA")
+    {
+        return None;
+    }
+    let mut prepared = config.clone();
+    // A `./` command that escapes the plugin root invalidates the entry — the
+    // `?` is the whole point: without it the entry would survive with no
+    // command and be reported as merely unsupported.
+    prepared.command = Some(resolve_plugin_command(config.command.as_deref()?, dirs)?);
+    prepared.args = config
+        .args
+        .iter()
+        .map(|arg| expand_placeholders(arg, dirs))
+        .collect();
+    prepared.env = config
+        .env
+        .iter()
+        .map(|(key, value)| (key.clone(), expand_placeholders(value, dirs)))
+        .collect();
+    // §7.2.1: an absent `cwd` means the plugin root.
+    prepared.cwd = match config.cwd.as_deref() {
+        Some(raw) => Some(
+            resolve_plugin_cwd(raw, dirs)?
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        None => Some(dirs.root.to_string_lossy().into_owned()),
+    };
+    // §9.1: the client sets these after the configured env, replacing same-name
+    // entries — which the reserved-name rejection above guarantees cannot be
+    // present.
+    prepared.env.insert(
+        "PLUGIN_ROOT".to_owned(),
+        dirs.root.to_string_lossy().into_owned(),
+    );
+    prepared.env.insert(
+        "PLUGIN_DATA".to_owned(),
+        dirs.data.to_string_lossy().into_owned(),
+    );
+    Some(prepared)
+}
+
+/// Creates the plugin's data directory the first time a stdio entry needs it.
+///
+/// Agent Plugins §9.1 requires the directory to exist before the subprocess
+/// starts. It is deliberately not created for a plugin that only declares
+/// remote servers, which launch nothing.
+fn ensure_plugin_data_dir(config: &McpProjectConfig, dirs: &PluginDirs) -> std::io::Result<()> {
+    if config.command.is_none() {
+        return Ok(());
+    }
+    fs::create_dir_all(&dirs.data)
 }
 
 /// Parse a plugin bundle's `.mcp.json`.
@@ -830,6 +1094,7 @@ impl McpClient {
         let command = config.command;
         let args = config.args;
         let env = config.env;
+        let cwd = config.cwd;
         // Capture and drain the server's stderr instead of inheriting it to
         // the terminal. Many stdio MCP servers log incidental progress (e.g.
         // index/recovery "Reconstruction complete") there; forwarding those
@@ -838,6 +1103,9 @@ impl McpClient {
         let (transport, stderr) =
             TokioChildProcess::builder(Command::new(&command).configure(move |cmd| {
                 cmd.args(&args).envs(&env);
+                if let Some(cwd) = cwd.as_deref() {
+                    cmd.current_dir(cwd);
+                }
             }))
             .stderr(Stdio::piped())
             .spawn()
@@ -1545,6 +1813,7 @@ mod tests {
     use std::{
         borrow::Cow,
         collections::{BTreeMap, HashMap},
+        path::Path,
         sync::Arc,
     };
 
@@ -1560,8 +1829,10 @@ mod tests {
     use super::{
         MCPToolRouter, McpAuthConfig, McpClient, McpConfigFile, McpLiveStatus, McpLoadReport,
         McpProjectConfig, McpServerConfig, McpToolName, McpTransportConfig, MockMcpService,
-        PluginManifest, RealMcpService, SourcedServer, UnmodelledKeys, collect_sourced_servers,
-        describe_resolved, drain_mcp_stderr, installed_plugin_mcp_servers, resolve_servers,
+        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, UnmodelledKeys,
+        collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved, drain_mcp_stderr,
+        installed_plugin_mcp_servers, plugin_manifest_mcp_servers, prepare_plugin_entry,
+        resolve_servers,
     };
 
     use crate::{
@@ -1598,16 +1869,233 @@ mod tests {
             command: "node".to_string(),
             args: vec!["server.js".to_string()],
             env: [("A".to_string(), "B".to_string())].into(),
+            cwd: None,
         };
 
         assert_eq!(manifest.name, "demo");
         assert_eq!(manifest.version.as_deref(), Some("1.0.0"));
+        let servers =
+            plugin_manifest_mcp_servers(Path::new("/plugins/demo"), manifest.mcp_servers.as_ref())
+                .expect("an inline map is a valid declaration");
+        let echo = servers.get("echo").expect("echo is declared");
+        assert_eq!(echo.command.as_deref(), Some(expected.command.as_str()));
+        assert_eq!(echo.args, expected.args);
+        assert_eq!(echo.env, expected.env);
+    }
+
+    /// The `(root, data)` pair for a throwaway plugin root.
+    fn plugin_dirs(root: &Path) -> PluginDirs {
+        PluginDirs {
+            root: root.to_path_buf(),
+            data: root.join("data"),
+        }
+    }
+
+    #[test]
+    fn plugin_placeholders_expand_in_args_env_and_cwd() {
+        let dirs = plugin_dirs(Path::new("/plugins/demo"));
+        let config = McpProjectConfig {
+            command: Some("./bin/server".to_owned()),
+            args: vec!["--data".to_owned(), "${PLUGIN_DATA}/db".to_owned()],
+            env: HashMap::from([("CONFIG".to_owned(), "${PLUGIN_ROOT}/config.json".to_owned())]),
+            cwd: Some("${PLUGIN_ROOT}/sub".to_owned()),
+            ..McpProjectConfig::default()
+        };
+
+        let prepared = prepare_plugin_entry(&config, &dirs).expect("a valid entry");
+
         assert_eq!(
-            manifest.mcp_servers["echo"].command.as_deref(),
-            Some(expected.command.as_str())
+            prepared.command.as_deref(),
+            Some("/plugins/demo/bin/server")
         );
-        assert_eq!(manifest.mcp_servers["echo"].args, expected.args);
-        assert_eq!(manifest.mcp_servers["echo"].env, expected.env);
+        assert_eq!(prepared.args[1], "/plugins/demo/data/db");
+        assert_eq!(prepared.env["CONFIG"], "/plugins/demo/config.json");
+        assert_eq!(prepared.cwd.as_deref(), Some("/plugins/demo/sub"));
+        // §9.1: the client supplies the two reserved variables itself.
+        assert_eq!(prepared.env["PLUGIN_ROOT"], "/plugins/demo");
+        assert_eq!(prepared.env["PLUGIN_DATA"], "/plugins/demo/data");
+    }
+
+    #[test]
+    fn an_absent_cwd_defaults_to_the_plugin_root() {
+        let dirs = plugin_dirs(Path::new("/plugins/demo"));
+        let config = McpProjectConfig {
+            command: Some("node".to_owned()),
+            ..McpProjectConfig::default()
+        };
+
+        let prepared = prepare_plugin_entry(&config, &dirs).expect("a valid entry");
+
+        assert_eq!(prepared.cwd.as_deref(), Some("/plugins/demo"));
+    }
+
+    #[test]
+    fn a_cwd_outside_the_three_allowed_forms_is_rejected() {
+        let dirs = plugin_dirs(Path::new("/plugins/demo"));
+        for raw in [
+            "data",
+            "../elsewhere",
+            "${PLUGIN_ROOT}/../elsewhere",
+            "${PLUGIN_DATA}/../../etc",
+            "~/somewhere",
+        ] {
+            let config = McpProjectConfig {
+                command: Some("run".to_owned()),
+                cwd: Some(raw.to_owned()),
+                ..McpProjectConfig::default()
+            };
+            assert!(
+                prepare_plugin_entry(&config, &dirs).is_none(),
+                "cwd {raw:?} must invalidate the entry"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_cwd_stays_inside_the_plugin_root() {
+        let dirs = plugin_dirs(Path::new("/plugins/demo"));
+        let config = McpProjectConfig {
+            command: Some("run".to_owned()),
+            cwd: Some("./nested/dir".to_owned()),
+            ..McpProjectConfig::default()
+        };
+
+        let prepared = prepare_plugin_entry(&config, &dirs).expect("a valid entry");
+
+        assert_eq!(prepared.cwd.as_deref(), Some("/plugins/demo/nested/dir"));
+    }
+
+    #[test]
+    fn a_command_escaping_the_plugin_root_is_rejected() {
+        let dirs = plugin_dirs(Path::new("/plugins/demo"));
+        let escaping = McpProjectConfig {
+            command: Some("./../bin/server".to_owned()),
+            ..McpProjectConfig::default()
+        };
+        assert!(prepare_plugin_entry(&escaping, &dirs).is_none());
+
+        // A bare name is the platform's executable search, never tact's business.
+        let bare = McpProjectConfig {
+            command: Some("node".to_owned()),
+            ..McpProjectConfig::default()
+        };
+        assert_eq!(
+            prepare_plugin_entry(&bare, &dirs)
+                .expect("a valid entry")
+                .command
+                .as_deref(),
+            Some("node")
+        );
+    }
+
+    #[test]
+    fn a_reserved_env_name_invalidates_the_entry() {
+        let dirs = plugin_dirs(Path::new("/plugins/demo"));
+        for name in ["PLUGIN_ROOT", "PLUGIN_DATA"] {
+            let config = McpProjectConfig {
+                command: Some("run".to_owned()),
+                env: HashMap::from([(name.to_owned(), "not yours".to_owned())]),
+                ..McpProjectConfig::default()
+            };
+            assert!(
+                prepare_plugin_entry(&config, &dirs).is_none(),
+                "{name} is reserved for the client"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_placeholder_stays_literal() {
+        let dirs = plugin_dirs(Path::new("/plugins/demo"));
+        let config = McpProjectConfig {
+            command: Some("run".to_owned()),
+            args: vec!["${OTHER}/x".to_owned()],
+            ..McpProjectConfig::default()
+        };
+
+        let prepared = prepare_plugin_entry(&config, &dirs).expect("a valid entry");
+
+        assert_eq!(prepared.args[0], "${OTHER}/x");
+    }
+
+    #[test]
+    fn a_replacement_is_never_rescanned() {
+        // A root whose own path contains the data placeholder: a second pass
+        // would expand inside the text the first pass produced.
+        let tricky = Path::new("/plugins/${PLUGIN_DATA}/loop");
+        let dirs = plugin_dirs(tricky);
+        let config = McpProjectConfig {
+            command: Some("run".to_owned()),
+            args: vec!["${PLUGIN_ROOT}/x".to_owned()],
+            ..McpProjectConfig::default()
+        };
+
+        let prepared = prepare_plugin_entry(&config, &dirs).expect("a valid entry");
+
+        assert_eq!(prepared.args[0], "/plugins/${PLUGIN_DATA}/loop/x");
+    }
+
+    #[test]
+    fn a_manifest_mcp_servers_path_is_read_from_the_plugin_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers":{"echo":{"command":"node"}}}"#,
+        )
+        .unwrap();
+        let manifest: PluginManifest =
+            serde_json::from_str(r#"{"name":"demo","mcpServers":"./.mcp.json"}"#).unwrap();
+
+        let servers =
+            plugin_manifest_mcp_servers(dir.path(), manifest.mcp_servers.as_ref()).unwrap();
+
+        assert_eq!(
+            servers
+                .get("echo")
+                .expect("echo is declared")
+                .command
+                .as_deref(),
+            Some("node")
+        );
+    }
+
+    #[test]
+    fn a_manifest_mcp_servers_path_may_not_escape_the_plugin_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest: PluginManifest =
+            serde_json::from_str(r#"{"name":"demo","mcpServers":"../outside.json"}"#).unwrap();
+
+        assert!(plugin_manifest_mcp_servers(dir.path(), manifest.mcp_servers.as_ref()).is_err());
+    }
+
+    #[test]
+    fn a_plugin_root_mcp_file_is_read_under_both_names() {
+        for file_name in [".mcp.json", "mcp.json"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join(file_name),
+                r#"{"mcpServers":{"echo":{"command":"node","args":["${PLUGIN_DATA}/x"]}}}"#,
+            )
+            .unwrap();
+            let root = PluginRoot {
+                plugin_id: "demo".to_owned(),
+                marketplace: "mk".to_owned(),
+                root: dir.path().to_path_buf(),
+            };
+            let dirs = plugin_dirs(dir.path());
+            let mut servers = Vec::new();
+
+            collect_plugin_mcp_servers(&root, &dirs, &mut servers).unwrap();
+
+            assert_eq!(servers.len(), 1, "{file_name}");
+            assert_eq!(servers[0].0, "plugin__demo__echo");
+            assert_eq!(
+                servers[0].1.args[0],
+                format!("{}/data/x", dir.path().display())
+            );
+            // §9.1: a stdio entry's data directory exists before the spawn.
+            assert!(dirs.data.is_dir(), "{file_name}");
+        }
     }
 
     #[test]
