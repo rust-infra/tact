@@ -251,9 +251,11 @@ Fn(&LoopState, &mut SessionStartContext) -> Pin<Box<dyn Future<Output = Result<H
 
 They run **once per session** from `dispatch_session_start_hooks`, which the TUI and headless startup paths call right after `apply_plugin_hooks`.
 
-Context a hook collects lands on `AgentRuntime::pending_session_context` rather than going straight into the conversation: `dispatch_session_start_hooks` runs before `ensure_session`, and `push_message` there would leave the context non-empty and suppress the history restore. `agent_loop` drains it immediately after `ensure_session` and before the turn's user message, recording each chunk as its own synthetic `<hook-context>` user message carrying `MessageKind::HookContext`.
+Context a hook collects lands on `AgentRuntime::pending_session_context` rather than going straight into the conversation: `dispatch_session_start_hooks` runs before `ensure_session`, and `push_message` there would leave the context non-empty and suppress the history restore. `agent_loop` drains it **after any pre-turn compaction** and before the turn's user message, recording each chunk as its own synthetic `<hook-context>` user message carrying `MessageKind::HookContext`. It has to be after the compaction: `build_compacted_history` keeps only real user turns, so a cell injected earlier would be dropped by the very compaction it arrived with.
 
-That placement and the one-message-per-chunk rule match Codex, whose `SessionStart` handler records each `additionalContext` as its own `developer` role message. Tact's message model has only user/assistant, so the `<hook-context>` markers carry the provenance instead — and unlike the in-memory kind, they survive a reload. Stdout that looks like JSON but does not parse is treated as a failed hook rather than injected, matching Codex's `looks_like_json` check.
+A chunk over 2,500 approximate tokens is written in full under `<temp_dir>/hook_outputs/<session>/` and replaced with a head/tail preview plus `Full hook output saved to: <path>` (Codex's `HookOutputSpiller` and its default limit); the TUI still shows the hook's full text.
+
+That placement and the one-message-per-chunk rule match Codex, whose `SessionStart` handler records each `additionalContext` as its own `developer` role message and whose start hooks run after `run_pre_sampling_compact`. Tact's message model has only user/assistant, so the `<hook-context>` markers carry the provenance instead — and unlike the in-memory kind, they survive a reload. Stdout that looks like JSON but does not parse is treated as a failed hook rather than injected, matching Codex's `looks_like_json` check.
 
 Hooks are also the right place for one-time setup: warming caches, validating workspace invariants, or injecting telemetry context.
 

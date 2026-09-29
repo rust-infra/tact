@@ -45,12 +45,13 @@ Newest entries first. Each entry should include:
 
 **Behavior after:**
 
-- `SessionStart` hooks collect into `SessionStartContext`; `dispatch_session_start_hooks` stashes it and `agent_loop` drains it right after `ensure_session`, before the turn's user message — one message per chunk. The stash exists because `ensure_session` restores history only into an *empty* context.
+- `SessionStart` hooks collect into `SessionStartContext`; `dispatch_session_start_hooks` stashes it and `agent_loop` drains it **after any pre-turn compaction** and before the turn's user message — one message per chunk. The stash exists because `ensure_session` restores history only into an *empty* context; the placement after compaction exists because `build_compacted_history` keeps only real user turns and would otherwise drop the briefing on the way in (Codex runs its start hooks after `run_pre_sampling_compact` for the same reason).
+- A chunk over 2,500 approximate tokens is written in full under `<temp_dir>/hook_outputs/<session>/` and replaced with a head/tail preview plus `Full hook output saved to: <path>` (Codex's `HookOutputSpiller` and its default limit); the TUI still shows the hook's full text.
 - The cell carries `MessageKind::HookContext`, so compaction does not keep it as a recent real user turn and the TUI renders it as a system notice rather than something the user typed.
 - Stdout that looks like JSON but does not parse is a failed hook, not context (`looks_like_json`, matching Codex's `output_parser`); plain and blank stdout behave as before.
 - Unchanged: the matcher is still tested against `"startup"` only, so a plugin's `resume` / `compact` branches never fire, and the hook payload's `session_id` is still empty.
 
-**Pointers:** `plugin::hooks::tests::{session_start_output_routes_its_context_to_the_agent, a_plugin_hook_command_reaches_the_session_start_context, start_hook_stdout_is_context_unless_it_looks_like_json}` (the first two verified to fail against the old drop), `agent::tests::agent_loop_injects_session_start_context_as_its_own_message`, `compact::tests::hook_context_is_not_a_real_user_message`, `tui::widgets::state::app::messages::tests::load_history_renders_hook_context_as_a_system_notice`.
+**Pointers:** `plugin::hooks::tests::{session_start_output_routes_its_context_to_the_agent, a_plugin_hook_command_reaches_the_session_start_context, start_hook_stdout_is_context_unless_it_looks_like_json}` (the first two verified to fail against the old drop), `agent::tests::{agent_loop_injects_session_start_context_as_its_own_message, session_start_context_survives_the_pre_turn_compaction}` (the second verified to fail against the pre-compaction placement), `agent::tests::an_oversized_hook_briefing_is_spilled_and_previewed`, `openai::responses::convert::tests::a_message_appended_after_the_baseline_keeps_it_reusable`, `compact::tests::hook_context_is_not_a_real_user_message`, `tui::widgets::state::app::messages::tests::load_history_renders_hook_context_as_a_system_notice`.
 
 ---
 

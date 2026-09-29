@@ -49,7 +49,7 @@ use crate::{
     store::DynSessionStore,
     subagent::SubagentResult,
     tool::{ToolContext, ToolRouter},
-    utils::{LockExt, RwLockExt},
+    utils::{LockExt, RwLockExt, truncate::truncate_middle_with_token_budget},
 };
 
 enum CompactRebuildMode {
@@ -265,6 +265,60 @@ fn next_compaction_reserve(
         observed.saturating_add(observed / 4)
     };
     target.clamp(floor, cap)
+}
+
+/// Token ceiling for one hook-context chunk reaching the model.
+///
+/// Codex's `DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT`: an oversized chunk is written out
+/// and replaced with a preview plus its path, so a talkative hook cannot fill
+/// the context window.
+const HOOK_CONTEXT_TOKEN_LIMIT: usize = 2_500;
+
+/// Keeps one hook-context chunk inside the model-visible budget.
+///
+/// Mirrors Codex's `HookOutputSpiller`: the full text goes under
+/// `<temp_dir>/hook_outputs/<session>/`, and the model sees a head/tail preview
+/// plus the path back to it. Falls back to plain truncation when the file
+/// cannot be written, because losing the tail of a briefing beats failing the
+/// turn.
+fn spill_hook_context(text: &str, session_id: &str) -> String {
+    if approx_text_tokens(text) <= HOOK_CONTEXT_TOKEN_LIMIT {
+        return text.to_string();
+    }
+
+    let path = hook_output_path(session_id);
+    let footer = format!("\n\nFull hook output saved to: {}", path.display());
+    // Budget the footer before truncating, so the recovery path does not eat
+    // into the preview it complements.
+    let budget = HOOK_CONTEXT_TOKEN_LIMIT.saturating_sub(approx_text_tokens(&footer));
+
+    let saved = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|()| std::fs::write(&path, text));
+    if let Err(error) = saved {
+        tracing::warn!(
+            path = %path.display(),
+            "failed to save an oversized hook output: {error}"
+        );
+        return truncate_middle_with_token_budget(text, HOOK_CONTEXT_TOKEN_LIMIT).0;
+    }
+
+    let (preview, _) = truncate_middle_with_token_budget(text, budget);
+    format!("{preview}{footer}")
+}
+
+/// Where an oversized hook chunk is preserved, one file per spill.
+fn hook_output_path(session_id: &str) -> std::path::PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir()
+        .join("hook_outputs")
+        .join(session_id)
+        .join(format!("{}-{stamp}.txt", std::process::id()))
 }
 
 /// Shared state for a running agent session.
@@ -974,11 +1028,6 @@ impl Agent {
         // Restore history if the startup path left context empty.
         self.ensure_session().await?;
 
-        // SessionStart hook context is recorded after the restore and before
-        // this turn's user message, so it frames the turn instead of being
-        // buried in history (Codex runs its start hooks at the same point).
-        self.inject_pending_session_context().await?;
-
         // Codex-style pre-turn: compact *old* history before appending this
         // turn's user message, reserving space for the incoming prompt so we
         // do not overflow immediately after push.
@@ -990,6 +1039,14 @@ impl Agent {
             self.emit_update(AgentUpdate::Info("[auto compact]".into()));
             self.compact_history(None).await?;
         }
+
+        // SessionStart hook context is recorded after that compaction and
+        // before this turn's user message. After, because
+        // `build_compacted_history` keeps only real user turns and would drop
+        // it — Codex runs its start hooks after `run_pre_sampling_compact` for
+        // the same reason. Before the turn's message, so it frames the turn
+        // instead of being buried in history.
+        self.inject_pending_session_context().await?;
         if let Some(mut message) = user_turn_message {
             // UserPromptSubmit hooks may append context to the user prompt
             // (Claude Code `additionalContext`). Runs before the message is
@@ -1470,12 +1527,19 @@ impl Agent {
     /// notice. No-op without pending context, which is the common case.
     async fn inject_pending_session_context(&mut self) -> Result<()> {
         let chunks = std::mem::take(&mut self.runtime.pending_session_context);
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        let session_id = self.runtime.session_id.clone().unwrap_or_default();
         for chunk in chunks {
-            let framed = format!("{HOOK_CONTEXT_OPEN_TAG}\n{chunk}\n{HOOK_CONTEXT_CLOSE_TAG}");
+            let body = spill_hook_context(&chunk, &session_id);
+            let framed = format!("{HOOK_CONTEXT_OPEN_TAG}\n{body}\n{HOOK_CONTEXT_CLOSE_TAG}");
             self.push_message(
                 Message::new_text(Role::User, framed).with_kind(MessageKind::HookContext),
             )
             .await?;
+            // The reader gets the hook's full text; only the model's copy is
+            // budgeted (Codex shows the whole hook output in its run summary).
             self.emit_update(AgentUpdate::MdInfo(chunk));
         }
         Ok(())
@@ -4035,6 +4099,41 @@ mod tests {
         assert!(!agent.auto_compact_due(0));
     }
 
+    /// A hook that prints more than the budget gets its output preserved on
+    /// disk and previewed in context (Codex's `HookOutputSpiller`), so one
+    /// talkative plugin cannot fill the context window.
+    #[test]
+    fn an_oversized_hook_briefing_is_spilled_and_previewed() {
+        let session = "spill-test";
+        assert_eq!(spill_hook_context("brief", session), "brief");
+
+        let big = "graph node ".repeat(4 * HOOK_CONTEXT_TOKEN_LIMIT);
+        let text = spill_hook_context(&big, session);
+
+        assert!(
+            text.starts_with("graph node "),
+            "the head survives: {:?}",
+            &text[..24]
+        );
+        assert!(text.contains("Full hook output saved to: "));
+        assert!(
+            approx_text_tokens(&text) <= HOOK_CONTEXT_TOKEN_LIMIT + 32,
+            "the preview stays inside the budget: {} tokens",
+            approx_text_tokens(&text)
+        );
+
+        let path = text
+            .split("Full hook output saved to: ")
+            .nth(1)
+            .expect("path footer")
+            .trim();
+        assert_eq!(
+            std::fs::read_to_string(path).expect("the full text is on disk"),
+            big
+        );
+        std::fs::remove_file(path).ok();
+    }
+
     #[tokio::test]
     async fn responses_agent_loop_passes_and_commits_provider_state() {
         ensure_config();
@@ -4830,6 +4929,69 @@ mod tests {
             }
         }
         assert_eq!(notices, vec![BRIEF.to_string()]);
+    }
+
+    /// The briefing outlives the pre-turn compaction it arrives with.
+    ///
+    /// It is recorded *after* `auto_compact_due` / `compact_history`, because
+    /// `build_compacted_history` keeps only real user turns and would drop a
+    /// `<hook-context>` cell — the same reason Codex runs its start hooks after
+    /// `run_pre_sampling_compact`.
+    #[tokio::test]
+    async fn session_start_context_survives_the_pre_turn_compaction() {
+        ensure_config();
+        const BRIEF: &str = "graph says: resume from checkpoint 7";
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![
+            (
+                vec![make_text_block("## Handoff\nwe were mid-refactor")],
+                Some(StopReason::EndTurn),
+            ),
+            (vec![make_text_block("ok")], Some(StopReason::EndTurn)),
+        ]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("session_start_survives_compact"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session_start(|_agent, context| {
+            context.push_additional_context(BRIEF);
+            Box::pin(async { Ok(HookControl::Continue) })
+        });
+        agent.agent_settings.model_context_window = 60_000;
+        agent.agent_settings.max_tokens = 100;
+
+        // A restored history large enough to trip the pre-turn compaction.
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "x".repeat(300_000)));
+        assert!(agent.auto_compact_due(0), "the fixture must compact");
+
+        agent.dispatch_session_start_hooks().await.unwrap();
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        let brief = agent
+            .runtime
+            .context
+            .iter()
+            .find(|message| message.is_hook_context())
+            .expect("the briefing must outlive the compaction it arrived with");
+        assert!(
+            crate::extract_text(&brief.content).contains(BRIEF),
+            "and carry its text: {}",
+            crate::extract_text(&brief.content)
+        );
     }
 
     #[tokio::test]

@@ -45,12 +45,13 @@
 
 **之后的行为：**
 
-- `SessionStart` hooks 收集到 `SessionStartContext`；`dispatch_session_start_hooks` 先暂存，`agent_loop` 在 `ensure_session` 之后、本轮用户消息之前取走它——每个片段一条消息。暂存这一步之所以必需，是因为 `ensure_session` 只在 context **为空**时才恢复历史。
+- `SessionStart` hooks 收集到 `SessionStartContext`；`dispatch_session_start_hooks` 先暂存，`agent_loop` 在**本轮预压缩之后**、本轮用户消息之前取走它——每个片段一条消息。暂存这一步之所以必需，是因为 `ensure_session` 只在 context **为空**时才恢复历史；放在压缩之后则是因为 `build_compacted_history` 只保留真实 user turn，否则简报会在进入的同时被那次压缩丢掉（Codex 的 start hooks 同样跑在 `run_pre_sampling_compact` 之后）。
+- 超过约 2,500 token 的片段会全文写到 `<temp_dir>/hook_outputs/<session>/`，模型看到的是头尾预览加一句 `Full hook output saved to: <path>`（Codex 的 `HookOutputSpiller` 及其默认上限）；TUI 仍显示 hook 的完整文本。
 - 该消息携带 `MessageKind::HookContext`，因此压缩不会把它当成最近的「真实用户回合」保留，TUI 也把它渲染成系统提示而非用户发言。
 - stdout 看起来像 JSON 却解析失败时按失败的 hook 处理、不注入（`looks_like_json`，与 Codex 的 `output_parser` 一致）；纯文本与空 stdout 的行为不变。
 - 未变的部分：matcher 仍只对 `"startup"` 求值，所以插件的 `resume` / `compact` 分支永不触发，hook payload 里的 `session_id` 也仍为空。
 
-**指向：** `plugin::hooks::tests::{session_start_output_routes_its_context_to_the_agent, a_plugin_hook_command_reaches_the_session_start_context, start_hook_stdout_is_context_unless_it_looks_like_json}`（前两条已验证对旧的「丢弃」行为失败）、`agent::tests::agent_loop_injects_session_start_context_as_its_own_message`、`compact::tests::hook_context_is_not_a_real_user_message`、`tui::widgets::state::app::messages::tests::load_history_renders_hook_context_as_a_system_notice`。
+**指向：** `plugin::hooks::tests::{session_start_output_routes_its_context_to_the_agent, a_plugin_hook_command_reaches_the_session_start_context, start_hook_stdout_is_context_unless_it_looks_like_json}`（前两条已验证对旧的「丢弃」行为失败）、`agent::tests::{agent_loop_injects_session_start_context_as_its_own_message, session_start_context_survives_the_pre_turn_compaction}`（第二条已验证对「注入早于压缩」的旧顺序失败）、`agent::tests::an_oversized_hook_briefing_is_spilled_and_previewed`、`openai::responses::convert::tests::a_message_appended_after_the_baseline_keeps_it_reusable`、`compact::tests::hook_context_is_not_a_real_user_message`、`tui::widgets::state::app::messages::tests::load_history_renders_hook_context_as_a_system_notice`。
 
 ---
 

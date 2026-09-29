@@ -252,9 +252,11 @@ Fn(&LoopState, &mut SessionStartContext) -> Pin<Box<dyn Future<Output = Result<H
 
 它们由 `dispatch_session_start_hooks` **每会话运行一次**，TUI 与 headless 启动路径在 `apply_plugin_hooks` 之后紧接着调用它。
 
-hook 收集到的 context 落在 `AgentRuntime::pending_session_context` 上，而不是直接进入对话：`dispatch_session_start_hooks` 发生在 `ensure_session` 之前，此时 `push_message` 会让 context 非空、从而抑制历史恢复。`agent_loop` 在 `ensure_session` 之后、本轮用户消息之前把它取走，每个片段各记为一条合成的 `<hook-context>` user 消息，携带 `MessageKind::HookContext`。
+hook 收集到的 context 落在 `AgentRuntime::pending_session_context` 上，而不是直接进入对话：`dispatch_session_start_hooks` 发生在 `ensure_session` 之前，此时 `push_message` 会让 context 非空、从而抑制历史恢复。`agent_loop` 在**本轮预压缩之后**、本轮用户消息之前把它取走，每个片段各记为一条合成的 `<hook-context>` user 消息，携带 `MessageKind::HookContext`。必须在压缩之后：`build_compacted_history` 只保留真实 user turn，早于压缩注入的 cell 会被它伴随的那次压缩直接丢掉。
 
-这个时机与「一片段一条消息」的规则与 Codex 一致：它的 `SessionStart` 处理把每个 `additionalContext` 各记为一条 `developer` 角色消息。Tact 的消息模型只有 user/assistant，所以改由 `<hook-context>` 标记来承载来源信息 —— 而且与内存中的 kind 不同，这些标记在重新加载后依然存在。stdout 看起来像 JSON 却解析失败时，按失败的 hook 处理而非注入，与 Codex 的 `looks_like_json` 检查一致。
+超过约 2,500 token 的片段会全文写到 `<temp_dir>/hook_outputs/<session>/`，模型看到的则是头尾预览加一句 `Full hook output saved to: <path>`（Codex 的 `HookOutputSpiller` 及其默认上限）；TUI 仍显示 hook 的完整文本。
+
+这个时机与「一片段一条消息」的规则与 Codex 一致：它的 `SessionStart` 处理把每个 `additionalContext` 各记为一条 `developer` 角色消息，而它的 start hooks 也跑在 `run_pre_sampling_compact` 之后。Tact 的消息模型只有 user/assistant，所以改由 `<hook-context>` 标记来承载来源信息 —— 而且与内存中的 kind 不同，这些标记在重新加载后依然存在。stdout 看起来像 JSON 却解析失败时，按失败的 hook 处理而非注入，与 Codex 的 `looks_like_json` 检查一致。
 
 session hooks 也适合一次性 setup：预热缓存、校验工作区不变量或注入遥测 context。
 

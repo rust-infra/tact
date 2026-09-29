@@ -209,7 +209,6 @@ UserCommand::Cancel => {
 
 | Gap | Detail |
 |-----|--------|
-| **`SessionStart` not invoked** | Hooks can be registered via `session_start()` but `agent_loop` never runs them ([Ch 9](./09_chapter_hook.md)) |
 | **`TaskComplete` heuristic** | TUI uses last message in context when not cancelled; not explicitly last assistant text |
 | **Headless path** | No `ui_tx`; no `TaskComplete` emit — single direct `notify_task_complete` after stdout ([Ch 17](./17_chapter_notify.md)) |
 | **No dedicated cancel API on Agent** | Only atomic flag; subagents have separate flags |

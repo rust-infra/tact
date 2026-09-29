@@ -279,7 +279,7 @@ Hooks are registered on the `Agent` and run at three points:
 
 | Hook type | When | Can mutate | Can veto |
 |---|---|---|---|
-| `SessionStart` | Before the first LLM call | `LoopState` | Yes |
+| `SessionStart` | Once per session, after any pre-turn compaction and before the turn's user message | `&mut SessionStartContext` (appends injected context) | Yes |
 | `PreToolUse` | Before each tool execution | `ToolUse` input | Yes |
 | `PostToolUse` | After each tool execution | `ToolResult` content | Yes |
 

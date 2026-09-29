@@ -209,7 +209,6 @@ UserCommand::Cancel => {
 
 | 缺口 | 详情 |
 |------|------|
-| **`SessionStart` 未调用** | 可通过 `session_start()` 注册 hook，但 `agent_loop` 从不运行它们（[第 9 章](./09_chapter_hook.md)） |
 | **`TaskComplete` 启发式** | TUI 在未取消时用 context 中最后一条消息；非显式最后 assistant 文本 |
 | **Headless 路径** | 无 `ui_tx`；无 `TaskComplete` emit — stdout 后单次直接 `notify_task_complete`（[第 17 章](./17_chapter_notify_zh.md)） |
 | **Agent 上无专用 cancel API** | 只有 atomic flag；子 agent 有独立 flag |
