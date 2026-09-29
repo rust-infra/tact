@@ -5,9 +5,9 @@ mod harness;
 use std::time::Duration;
 
 use harness::{
-    bash_tool_use, first_index, mock_turn, mock_turn_with_usage, read_file_tool_use, run_commands,
-    run_single_task, run_single_task_with_setup, sample_token_usage, step_finished_ids, text_block,
-    write_file_tool_use,
+    background_run_tool_use, bash_tool_use, first_index, mock_turn, mock_turn_with_usage,
+    read_file_tool_use, run_commands, run_single_task, run_single_task_with_setup,
+    sample_token_usage, step_finished_ids, text_block, write_file_tool_use,
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
@@ -47,6 +47,69 @@ async fn parallel_read_files_both_succeed() {
         }),
         "all tool steps should succeed, got: {updates:?}"
     );
+}
+
+/// Every `background_run` in a parallel wave must publish its own
+/// `ToolMeta { task_id }` on its own `tool_id`: the Background sticky domain
+/// derives one row per *live card carrying a task id*, so a dropped or
+/// mis-addressed meta silently hides tasks from the strip.
+#[tokio::test]
+async fn parallel_background_runs_each_publish_their_task_id() {
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![
+                background_run_tool_use("bg_a", "sleep 3"),
+                background_run_tool_use("bg_b", "sleep 3"),
+            ],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("Both started.")], StopReason::EndTurn),
+    ]);
+
+    let (updates, _work_dir) = run_single_task(mock, "start both", PermissionMode::Auto).await;
+
+    let keep_live_starts: Vec<String> = updates
+        .iter()
+        .filter_map(|u| match u {
+            AgentUpdate::StepStarted {
+                tool_id,
+                presentation,
+                ..
+            } if presentation.keep_live => Some(tool_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let metas: Vec<(String, Option<String>)> = updates
+        .iter()
+        .filter_map(|u| match u {
+            AgentUpdate::ToolMeta {
+                tool_id, task_id, ..
+            } => Some((tool_id.clone(), task_id.clone())),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        keep_live_starts.len(),
+        2,
+        "both calls must open a keep-live card, got: {updates:?}"
+    );
+    assert_eq!(
+        metas.len(),
+        2,
+        "each background_run must publish a task id, got: {updates:?}"
+    );
+    for (tool_id, task_id) in &metas {
+        assert!(
+            keep_live_starts.contains(tool_id),
+            "ToolMeta addressed {tool_id:?}, which is not one of the live cards {keep_live_starts:?}"
+        );
+        assert!(task_id.is_some(), "ToolMeta without a task id: {updates:?}");
+    }
+    let mut ids: Vec<&String> = metas.iter().map(|(id, _)| id).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 2, "the two metas must not share one tool id");
 }
 
 #[tokio::test]

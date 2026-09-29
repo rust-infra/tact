@@ -1,7 +1,7 @@
 //! Sticky host strip under the Log — app-layer wrapper.
 //!
-//! The kit renders a two-domain host (`Tasks | Subagent`); this wrapper
-//! records the host's screen area and per-frame tab hit rectangles on
+//! The kit renders a three-domain host (`Tasks | Subagent | Background`); this
+//! wrapper records the host's screen area and per-frame tab hit rectangles on
 //! `MouseState` (mirrors how `render_log_panel` stores cancel-button areas),
 //! then calls the pure renderer.
 
@@ -11,9 +11,10 @@ use crate::widgets::state::App;
 
 pub(crate) use agent_tui_kit::render::sticky_host::STICKY_BORDER_ROWS;
 
-/// True when either sticky domain (tasks or subagent overview) is visible.
+/// True when any sticky domain (tasks, subagent overview, running background
+/// tasks) is visible.
 pub(crate) fn sticky_host_visible(app: &App) -> bool {
-    app.task_panel().visible || app.subagent_panel().visible
+    app.task_panel().visible || app.subagent_panel().visible || app.background_panel().visible
 }
 
 /// Content rows inside the sticky host (excluding border). Collapsed = 1;
@@ -33,6 +34,7 @@ pub(crate) fn sticky_tab_expanded(app: &App, tab: agent_tui_kit::state::StickyTa
     match tab {
         agent_tui_kit::state::StickyTab::Tasks => app.task_panel().expanded,
         agent_tui_kit::state::StickyTab::Subagent => app.subagent_panel().expanded,
+        agent_tui_kit::state::StickyTab::Background => app.background_panel().expanded,
     }
 }
 
@@ -142,6 +144,183 @@ mod sticky_host_tests {
             "subagent-only title must not show the tasks tab: {}",
             lines[tabs]
         );
+    }
+
+    /// Seed a live `background_run` card the way the tool does: the card opens
+    /// on `StepStarted`, and `background_run` then sends `ToolMeta { task_id }`
+    /// once the task exists (the invocation itself has already returned).
+    fn seed_running_background(app: &mut crate::widgets::state::App, task_id: &str, command: &str) {
+        let mut presentation = tact_protocol::ToolPresentationInfo::generic("background_run");
+        presentation.keep_live = true;
+        app.handle_agent_update(tact_protocol::AgentUpdate::StepAdded(
+            tact_protocol::PlanStep::new(
+                "run build in background",
+                "background_run",
+                "bg1",
+                std::collections::HashMap::from([("command".to_string(), command.to_string())]),
+            ),
+        ));
+        app.handle_agent_update(tact_protocol::AgentUpdate::StepStarted {
+            idx: 0,
+            tool_id: "bg1".into(),
+            tool_name: "background_run".into(),
+            arg_summary: command.into(),
+            arg_full: command.into(),
+            presentation,
+        });
+        app.handle_agent_update(tact_protocol::AgentUpdate::ToolMeta {
+            tool_id: "bg1".into(),
+            model: None,
+            token_usage: None,
+            task_id: Some(task_id.into()),
+        });
+    }
+
+    #[test]
+    fn a_running_background_task_gets_its_own_sticky_domain() {
+        let mut app = make_app();
+        seed_running_background(&mut app, "018f3a2c", "cargo build");
+
+        let text = render_main_area_text(&mut app, 100, 20);
+        let lines: Vec<&str> = text.lines().collect();
+        let tabs = lines
+            .iter()
+            .position(|l| l.contains("[Background]"))
+            .expect("background tab missing, got:\n{text}");
+
+        // Row shape: `[Background] N · ⏳ <id> <command> ⏱ <elapsed>`.
+        assert!(
+            lines[tabs].contains("[Background] 1 · ⏳"),
+            "background title shape changed: {}",
+            lines[tabs]
+        );
+        // Only this domain is up, so the title row lists no other tab.
+        assert!(
+            !lines[tabs].contains("[Tasks]") && !lines[tabs].contains("[Subagent]"),
+            "a lone background task must not summon the other tabs: {}",
+            lines[tabs]
+        );
+        // Default expanded → its body row sits under the hairline.
+        assert!(
+            lines[tabs + 1].trim().chars().all(|c| c == '─' || c == '│'),
+            "separator row should be a hairline rule, got: {:?}",
+            lines[tabs + 1]
+        );
+        let body = lines[tabs + 2..].join("\n");
+        assert!(
+            body.contains("018f3a2c"),
+            "task id missing from body:\n{body}"
+        );
+        assert!(
+            body.contains("cargo build"),
+            "command missing from body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn live_output_does_not_drop_a_background_row() {
+        let mut app = make_app();
+        seed_running_background(&mut app, "018f3a2c", "cargo build");
+
+        // The first chunk of output rebuilds the card. The task id must survive
+        // that rebuild, or the strip empties the moment the task prints
+        // anything (the live report: it flashed for well under a second).
+        app.handle_agent_update(tact_protocol::AgentUpdate::ToolProgress {
+            tool_id: "bg1".into(),
+            chunks: vec![tact_protocol::ToolOutputChunk::stdout("Compiling ...\n")],
+        });
+
+        assert_eq!(
+            app.tools_mut().active[0].output.task_id.as_deref(),
+            Some("018f3a2c"),
+            "the card must keep its task id across a progress rebuild"
+        );
+        let text = render_main_area_text(&mut app, 100, 20);
+        assert!(
+            text.contains("[Background] 1 · "),
+            "the strip lost its row after live output:\n{text}"
+        );
+        assert!(
+            text.contains("018f3a2c"),
+            "the row lost its task id:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_finished_background_task_lingers_then_the_domain_hides() {
+        let mut app = make_app();
+        seed_running_background(&mut app, "018f3a2c", "cargo build");
+        assert!(app.background_panel().visible);
+
+        // What the shell receives when the task ends.
+        app.handle_agent_update(tact_protocol::AgentUpdate::BackgroundTaskFinished {
+            tool_id: "bg1".into(),
+            success: true,
+            message: "Background task 018f3a2c completed".into(),
+            output: "done".into(),
+        });
+
+        // The row stays for the linger window, with the outcome on it: a strip
+        // that empties the instant a task ends reads as "it lost my task".
+        assert!(
+            app.background_panel().visible,
+            "a finished task must keep its row for the linger window"
+        );
+        let text = render_main_area_text(&mut app, 100, 20);
+        assert!(
+            text.contains("[Background] 1 done"),
+            "title must count the lingering row:\n{text}"
+        );
+        assert!(
+            text.contains("✓ 018f3a2c") && text.contains("cargo build"),
+            "the lingering row must carry the id and command:\n{text}"
+        );
+
+        // Once the window passes the row drops, and the strip goes with it —
+        // no task event is involved, the idle tick's prune is the trigger.
+        let after =
+            std::time::Instant::now() + agent_tui_kit::state::background_panel::BACKGROUND_LINGER;
+        app.background_panel_mut().prune_finished(after);
+        app.sync_background_sticky();
+        assert!(
+            !app.background_panel().visible && !app.background_panel().expanded,
+            "the strip must close once the last row expires"
+        );
+        let text = render_main_area_text(&mut app, 100, 20);
+        assert!(
+            !text.contains("[Background]"),
+            "an expired row must leave no tab behind:\n{text}"
+        );
+    }
+
+    #[test]
+    fn all_three_domains_share_one_title_row() {
+        let mut app = make_app();
+        seed_tasks(&mut app, "task work");
+        seed_subagent(&mut app, "sub work");
+        seed_running_background(&mut app, "018f3a2c", "cargo build");
+        app.background_panel_mut().expanded = true;
+        app.mouse.active_sticky_tab = agent_tui_kit::state::StickyTab::Background;
+
+        let text = render_main_area_text(&mut app, 140, 20);
+        let title = text
+            .lines()
+            .find(|l| {
+                l.contains("[Tasks]") && l.contains("[Subagent]") && l.contains("[Background]")
+            })
+            .unwrap_or_else(|| panic!("combined title row missing, got:\n{text}"));
+        assert!(title.contains("018f3a2c"), "got:\n{title}");
+
+        // The active domain is Background, so its body (not the task list) is
+        // what follows the hairline.
+        let lines: Vec<&str> = text.lines().collect();
+        let title_idx = lines.iter().position(|l| l.contains("[Tasks]")).unwrap();
+        let body = lines[title_idx + 2..].join("\n");
+        assert!(
+            body.contains("cargo build"),
+            "background body missing:\n{body}"
+        );
+        assert!(!body.contains("task work"), "tasks body leaked in:\n{body}");
     }
 
     #[test]

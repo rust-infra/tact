@@ -34,9 +34,9 @@ use agent_tui_kit::{
         util::wrap_line,
     },
     state::{
-        ActiveThinkingBlock, FocusedPanel, InputMode, LogCoordinator, LogItemKind, LogScroll,
-        MouseState, PlanPanel, SelectPopup, Status, StatusBarState, StreamState,
-        SubagentPanelState, TaskPanelState, ThinkingBlock, ThinkingState, ToolState,
+        ActiveThinkingBlock, BackgroundPanelState, FocusedPanel, InputMode, LogCoordinator,
+        LogItemKind, LogScroll, MouseState, PlanPanel, SelectPopup, Status, StatusBarState,
+        StreamState, SubagentPanelState, TaskPanelState, ThinkingBlock, ThinkingState, ToolState,
     },
     theme::{Theme, ThemeName},
 };
@@ -286,6 +286,7 @@ impl MockShell {
                     select: &SelectPopup::default(),
                     task_panel: &TaskPanelState::default(),
                     subagent_panel: &SubagentPanelState::default(),
+                    background_panel: &BackgroundPanelState::default(),
                 };
                 render_status_bar(frame, chunks[0], &ctx);
                 render_log_panel_pure(frame, chunks[1], &ctx, Borders::ALL);

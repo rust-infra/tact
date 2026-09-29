@@ -32,6 +32,60 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-29 — Live output wiped the background task id, so the Background strip vanished the moment a task printed anything
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/components/tool.rs` (`ToolComponent::on_tool_progress`); `crates/agent_tui_kit/src/state/background_panel.rs`, `crates/tui/src/render/task_panel.rs` (tests); [Ch 13](./13_chapter_background.md), [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** With several `background_run` tasks in flight the `[Background]` strip appeared for **well under a second** and then vanished, and it stayed empty until the process was restarted. The task cards kept running normally, and `/background` listed the tasks — only the strip lost them. The trigger was output: a task whose command printed anything (`echo hello; sleep 300`) lost its row immediately, while a bare `sleep 300` kept it — which is why the bug looked intermittent and why the strip then "never came back" (the id is sent once, at start).
+
+**Decision / root cause:** `ToolComponent::on_tool_progress` rebuilds the live card's render output on every chunk of live output, and the rebuild carried over the subagent model/tokens but **not** `task_id`. `AgentUpdate::ToolMeta { task_id }` is emitted exactly once, when the invocation returns right after the task starts, so the first progress chunk reset the id to `None` and nothing ever restored it. The Background domain derives its rows from *active cards carrying a task id*, so its rows disappeared — the strip then hides itself, which reads as "the strip lost my tasks". Diagnosis path: `tmux` + `capture-pane` on a real TUI (this session's model cannot read images) plus temporary dumps in `App::handle_agent_update` / `sync_background_sticky`, which showed a card going `Some(id) → None` **with no agent update in between** — i.e. the wipe was local to the progress rebuild, not driven by any protocol event. The fix is one line: carry `.with_task_id(active.output.task_id.clone())` through the rebuild, with the comment stating why the rebuild must preserve what it cannot re-derive.
+
+**Behavior after:** A running task's row now stays for the task's whole life, no matter how much output it produces. This also keeps the id readable on the card while the task runs — the id the reader needs for `/background <id>`.
+
+**Pointers:** `components/tool.rs::on_tool_progress` (the rebuild and the preserved-fields comment). Tests: `components::tool::tests::tool_progress_keeps_the_background_task_id` (the unit cause: `ToolMeta` then a progress chunk), `render::task_panel::sticky_host_tests::live_output_does_not_drop_a_background_row` (the drawn strip survives a chunk). Related entries below: the Background domain (2026-09-28) and the linger window (2026-09-29).
+
+---
+
+## 1. 2026-09-29 — Background strip rows linger after a task ends; a turn cancel stays the whole-session kill switch
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix (UX) |
+| **Related** | `crates/agent_tui_kit/src/state/background_panel.rs` (`BACKGROUND_LINGER`, `FinishedBackgroundTask`, `note_finished`/`prune_finished`, `format_background_lines`/`format_sticky_title_line`), `crates/agent_tui_kit/src/render/sticky_host.rs`, `crates/agent_tui_kit/src/i18n.rs` (`background_sticky_done`); `crates/tui/src/widgets/state/app/{background,agent}.rs`, `crates/tui/src/render/task_panel.rs`; [Ch 13](./13_chapter_background.md), [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** A user watching five concurrent `background_run` tasks reported the strip as *missing*, then *listing only one*, then *gone* — all three read as "the strip loses tasks". Investigation (tmux `capture-pane` on a real TUI + temporary dumps in `sync_background_sticky`) found **no defect in the derivation**: the rows always matched the tasks that were actually running. What it did find is that the domain is easy to misread:
+1. a finished task left the strip in the frame it ended, which looks like a lost row;
+2. between `StepStarted` (preflight) and the tool body, a card shows `⠏ Running` **without** an id — preflight is sequential and blocks on every permission prompt, so nothing executes until they are all answered — and that window contributes no row;
+3. a single user cancel (Esc, e.g. to dismiss an unrelated popup) kills **every** running background task of the session: `UserCommand::Cancel` sets the one session cancel flag the tasks poll on their progress tick, and the flag only clears on the next `SubmitTask`. Four tasks died with `[Cancelled by the user]` in the same second, which is what emptied the strip.
+
+**Decision:** Keep (3) as the contract — it is already documented in [Ch 13](./13_chapter_background.md) ("the session's cancel flag (Esc / cancel) terminates every running task of that session"; there is no per-task kill tool) — and fix the *reading* of (1): a task that ends keeps its row for `BACKGROUND_LINGER` (8 s), which is chosen to survive one idle-tick repaint cadence (~1/s) with room to spare. The row is fed from the finalized block the shell already has (`BackgroundTaskFinished` → the card's `task_id` + argument summary, captured in `App::note_finished_background` before the block scrolls away), not from a second snapshot — the domain stays derived. Expiry is a *time* trigger, so the prune runs from `poll_background_tasks` (idle tick) as well as from `handle_agent_update`, and a dropped row raises the dirty flag on its own: no task event is involved in hiding the strip.
+
+**Behavior after:** The strip's body is running rows first (`⏳ <id> <command> ⏱ <elapsed>`), then the rows of tasks that ended inside the window (`✓`/`✗ <id> <command> ⏱ <seconds since finish>`; the glyph carries the outcome, so no new words per row). The title keeps both counts — `[Background] 1 · 2 done` is one task running and two that just ended, and with nothing running the head reads `2 done` rather than a bare `0`. A lingering row keeps the strip visible on its own, expands it on first appearance exactly like a running task, and once the last row expires the strip collapses and disappears on the next idle tick. `(2)` is unchanged and deliberate: a card that has no id yet shows no row, and the row appears in the frame the id does.
+
+**Pointers:** `state/background_panel.rs` (`FinishedBackgroundTask::{is_live,ago_secs}`, `note_finished` (dedupes by task id, caps at `MAX_FINISHED_ROWS`), `prune_finished`, `apply_running` visibility, row/title formatting). Tests: `state::background_panel::tests::{a_finished_task_keeps_its_row_inside_the_linger_window,a_failed_task_lingers_under_the_failure_glyph,rows_drop_once_the_linger_window_passes,the_strip_stays_visible_for_a_lingering_row_only,note_finished_replaces_a_repeat_and_bounds_the_list,running_rows_come_before_lingering_rows,the_title_counts_running_and_done}` (the old `the_background_domain_hides_once_the_task_finishes` became `render::task_panel::sticky_host_tests::a_finished_background_task_lingers_then_the_domain_hides`, which asserts the drawn `✓ <id>` row and the later collapse).
+
+---
+
+## 1. 2026-09-28 — The sticky strip gains a Background domain for running `background_run` tasks
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/agent_tui_kit/src/state/background_panel.rs`, `crates/agent_tui_kit/src/components/background_panel.rs`, `crates/agent_tui_kit/src/render/sticky_host.rs`, `crates/agent_tui_kit/src/state/ui_types.rs` (`StickyTab`); `crates/tui/src/widgets/state/app/{background,agent,registry,config,construct}.rs`, `crates/tui/src/render/task_panel.rs`, `crates/tui/src/handlers/{mouse,mod}.rs`; [Ch 13](./13_chapter_background.md), [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** Tasks and Subagent each had a persistent strip under the Log, but a background task existed only as the tool card that started it (id + elapsed, per the 2026-09-25 entry) or behind one `/background` popup — so "what is still running" vanished as soon as that card scrolled out of the viewport, exactly when several long builds were in flight.
+
+**Decision:** Add the third sticky domain `[Background]`, whose rows are **derived from the live tool cards** rather than pushed. `background_run` is the only tool that starts a task, its presentation is `keep_live`, and `AgentUpdate::ToolMeta { task_id }` is what puts the id on the card — so "active card carrying a task id" *is* "task still running" (the `check_background` / `wait_background` cards merely take an id as an argument and never set the field). That makes `AgentUpdate::BackgroundTasksChanged` + a manager-side `known` registry unnecessary: the shell already holds the information, and a second copy would be one more thing to keep in sync. The strip is reconciled in `App::handle_agent_update` — the single place tool state changes — immediately before the scroll refresh, so its height is settled in the same frame that shows the card's id appear/disappear. The dirty flag is raised only on a visibility/expand transition, so a task that simply keeps running forces no repaints.
+
+**Behavior after:** While at least one task runs, the strip shows `[Background] N · ⏳ <id> <command> ⏱ <elapsed>` and defaults to expanded on first appearance; clicking the tab switches/expands it and wheel / `jk` scroll, exactly like the other two domains. It collapses and hides when the last task reaches a terminal state, and it never lists finished tasks — their output stays on the tool card and in `/background`. A card that has started but not yet reported its id contributes no row, so the strip appears when the id does rather than showing a placeholder.
+
+**Pointers:** `state/background_panel.rs` (derivation, row/ title formatting, scroll clamp), `components/background_panel.rs` (registry-owned state; claims no update), `render/sticky_host.rs` (three-domain host). Tests: `state::background_panel::tests::*` (10: derivation, first-appearance expand, user-collapse survival, scroll clamp, elapsed shapes, title decomposition), `render::task_panel::sticky_host_tests::{a_running_background_task_gets_its_own_sticky_domain,the_background_domain_hides_once_the_task_finishes,all_three_domains_share_one_title_row}`, `handlers::mouse::tests::click_background_tab_switches_domain_and_scrolls_active_panel`.
+
+---
+
 ## 1. 2026-09-26 — Request bodies are retained for a configurable number of calls per session, not forever
 
 | Field | Value |

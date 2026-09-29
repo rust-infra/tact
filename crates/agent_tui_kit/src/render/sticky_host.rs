@@ -1,9 +1,12 @@
-//! Two-domain sticky host under the Log (pure render): Tasks | Subagent.
+//! Three-domain sticky host under the Log (pure render):
+//! Tasks | Subagent | Background.
 //!
-//! Each domain (`TaskPanelState` / `SubagentPanelState`) independently decides
-//! visibility and expand state. This host draws one shared strip:
+//! Each domain (`TaskPanelState` / `SubagentPanelState` /
+//! `BackgroundPanelState`) independently decides visibility and expand state.
+//! This host draws one shared strip:
 //!
-//! - visible domains appear as `[Tasks] …` / `[Subagent] …` tab segments on
+//! - visible domains appear as `[Tasks] …` / `[Subagent] …` /
+//!   `[Background] …` tab segments on
 //!   the title row (accent = active, muted = inactive);
 //! - when the active visible domain is expanded, a hairline row and that
 //!   domain's body follow;
@@ -14,6 +17,8 @@
 //! Rendering invariants: the full `area` gets the base background, the strip
 //! continues the Log box (LEFT|RIGHT|BOTTOM borders), and every cell outside
 //! glyphs carries `theme.bg` (AGENTS.md render invariants).
+
+use std::time::Instant;
 
 use ratatui::{
     Frame,
@@ -28,6 +33,10 @@ use crate::{
     render::ctx::RenderCtx,
     state::{
         StickyTab,
+        background_panel::{
+            BackgroundTaskRow, format_background_lines,
+            format_sticky_title_line as format_bg_title, running_background_tasks,
+        },
         subagent_panel::{
             format_sticky_title_line as format_subagent_title, format_subagent_lines,
         },
@@ -44,14 +53,20 @@ pub struct StickyHostHitAreas {
     pub tab_areas: Vec<(StickyTab, Rect)>,
 }
 
+/// The running background tasks, derived from the live tool cards.
+fn background_rows(ctx: &RenderCtx) -> Vec<BackgroundTaskRow> {
+    running_background_tasks(ctx.tools)
+}
+
 pub fn sticky_host_visible(ctx: &RenderCtx) -> bool {
-    ctx.task_panel.visible || ctx.subagent_panel.visible
+    ctx.task_panel.visible || ctx.subagent_panel.visible || ctx.background_panel.visible
 }
 
 pub fn domain_visible(ctx: &RenderCtx, tab: StickyTab) -> bool {
     match tab {
         StickyTab::Tasks => ctx.task_panel.visible,
         StickyTab::Subagent => ctx.subagent_panel.visible,
+        StickyTab::Background => ctx.background_panel.visible,
     }
 }
 
@@ -59,19 +74,22 @@ fn domain_expanded(ctx: &RenderCtx, tab: StickyTab) -> bool {
     match tab {
         StickyTab::Tasks => ctx.task_panel.expanded,
         StickyTab::Subagent => ctx.subagent_panel.expanded,
+        StickyTab::Background => ctx.background_panel.expanded,
     }
 }
 
 /// The tab whose body the host should show: the mouse-active tab when visible,
-/// otherwise the first visible domain (Tasks preferred, then Subagent).
+/// otherwise the first visible domain (Tasks, then Subagent, then Background).
 pub fn active_visible_tab(ctx: &RenderCtx) -> StickyTab {
     let active = ctx.mouse.active_sticky_tab;
     if domain_visible(ctx, active) {
         active
     } else if ctx.task_panel.visible {
         StickyTab::Tasks
-    } else {
+    } else if ctx.subagent_panel.visible {
         StickyTab::Subagent
+    } else {
+        StickyTab::Background
     }
 }
 
@@ -101,6 +119,13 @@ fn body_lines(ctx: &RenderCtx, tab: StickyTab) -> Vec<String> {
             ctx.subagent_panel.scroll,
             ctx.subagent_panel.max_visible,
         ),
+        StickyTab::Background => format_background_lines(
+            &background_rows(ctx),
+            &ctx.background_panel.finished,
+            Instant::now(),
+            ctx.background_panel.scroll,
+            ctx.background_panel.max_visible,
+        ),
     }
 }
 
@@ -117,6 +142,15 @@ fn title_rest(ctx: &RenderCtx, tab: StickyTab) -> String {
         StickyTab::Subagent => (
             format_subagent_title(&ctx.messages, &ctx.subagent_panel.snapshot),
             ctx.messages.subagents_sticky_title,
+        ),
+        StickyTab::Background => (
+            format_bg_title(
+                &ctx.messages,
+                &background_rows(ctx),
+                &ctx.background_panel.finished,
+                Instant::now(),
+            ),
+            ctx.messages.background_sticky_title,
         ),
     };
     let trimmed = full.trim_start_matches('▸').trim_start();
@@ -170,7 +204,7 @@ pub fn render_sticky_host(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Sti
     let title_y = inner.y;
 
     let mut first = true;
-    for tab in [StickyTab::Tasks, StickyTab::Subagent] {
+    for tab in [StickyTab::Tasks, StickyTab::Subagent, StickyTab::Background] {
         if !domain_visible(ctx, tab) {
             continue;
         }
@@ -183,6 +217,7 @@ pub fn render_sticky_host(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Sti
         let label_text = match tab {
             StickyTab::Tasks => "[Tasks]",
             StickyTab::Subagent => "[Subagent]",
+            StickyTab::Background => "[Background]",
         };
         let label_style = if tab == active {
             if domain_expanded(ctx, tab) {

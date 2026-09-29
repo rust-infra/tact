@@ -230,7 +230,7 @@ flowchart TB
 | `agent_tui_kit::render/log.rs` | Log 面板纯渲染（消费 wrap cache、scroll、overlays、scrollbar） |
 | `agent_tui_kit::render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
 | `agent_tui_kit::render/task_panel.rs` | 持久任务 sticky body 格式化 + 单域渲染辅助 |
-| `agent_tui_kit::render/sticky_host.rs` | Log 下方双域 sticky host（`[Tasks] [Subagent]` tab；纯渲染并返回 tab 命中区） |
+| `agent_tui_kit::render/sticky_host.rs` | Log 下方三域 sticky host（`[Tasks] [Subagent] [Background]` tab；纯渲染并返回 tab 命中区） |
 | `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s（`pulldown-cmark` + Mermaid 路由 + 宽度感知表格） |
 | `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` 事件循环 → ratatui `Line`s |
 | `agent_tui_kit::render/mermaid_sequence.rs` | 本地 Mermaid `sequenceDiagram` 渲染器（alias/activation/CJK 安全） |
@@ -240,7 +240,7 @@ flowchart TB
 | `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select + chrome helpers |
 | `agent_tui_kit::widgets/` | `ToolWidget`、`HelpWidget`、`PopupWidget`、`SelectPopupWidget` |
 
-支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
+支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`BackgroundPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
 
 ### 6.2 帧管线
 
@@ -250,23 +250,36 @@ flowchart TB
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
 │    ├─ log panel (可滚动)
-│    └─ sticky host (Tasks | Subagent)?（隐藏时 0 行；点击展开）
+│    └─ sticky host (Tasks | Subagent | Background)?（隐藏时 0 行；点击展开）
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
-当 **Tasks** 面板（`task_panel.visible`，由 `TasksChanged` 驱动）或 **Subagent**
-总览（`subagent_panel.visible`，由 `SubagentsChanged` 驱动）有内容时，`render_main_area`
-对外层主区做 **outer-split**（上 Log、下双域 sticky host），不改动 Log wrap/scroll 内核。
-host 标题行对每个可见域渲染一个 `[Tasks] …` / `[Subagent] …` 分段；活动域展开时在分隔线下方
-显示该域 body。Tasks body 是持久任务清单；Subagent body 是**当前进程子代理运行的状态总览**，
-按 Running → Completed → Failed → Cancelled 分组（`marker 短id 摘要首行 ⏱ 耗时`）。子代理
-明细永不进入 sticky 或主 Log——仍留在父 `spawn_subagent` 工具卡与其 popup。点击非活动 tab 会
-切换并展开该域；点击活动 tab（或条内空白）收起；滚轮 / `jk` 滚动活动域。某域不可见即从 host
-消失：Tasks 在无 open 任务时，Subagent 在收起且无 Running 时。Tasks 可见性仍要求本会话出现过
+当任一 sticky 域有内容时，`render_main_area` 对外层主区做 **outer-split**（上 Log、
+下三域 sticky host），不改动 Log wrap/scroll 内核。三个域分别是：**Tasks**
+（`task_panel.visible`，由 `TasksChanged` 驱动）、**Subagent** 总览（`subagent_panel.visible`，
+由 `SubagentsChanged` 驱动）、**Background**（`background_panel.visible`，即当前进程在跑的
+`background_run` 任务）。host 标题行对每个可见域渲染一个 `[Tasks] …` / `[Subagent] …` /
+`[Background] …` 分段；活动域展开时在分隔线下方显示该域 body。Tasks body 是持久任务清单；
+Subagent body 是**当前进程子代理运行的状态总览**，按 Running → Completed → Failed →
+Cancelled 分组（`marker 短id 摘要首行 ⏱ 耗时`）；Background body 是每个在跑任务一行
+（`⏳ task-id command ⏱ 耗时`），其后跟着**留窗期内刚结束**的任务行
+（`✓`/`✗ task-id command ⏱ 距结束秒数`，`BACKGROUND_LINGER` = 8 s）。子代理明细永不进入
+sticky 或主 Log——仍留在父
+`spawn_subagent` 工具卡与其 popup。点击非活动 tab 会切换并展开该域；点击活动 tab（或条内空白）
+收起；滚轮 / `jk` 滚动活动域。某域不可见即从 host 消失：Tasks 在无 open 任务时，Subagent 在收起
+且无 Running 时，Background 在最后一行消失时——最后一个在跑任务会由它的留窗行把条撑住，
+留窗过期后由下一次空闲 tick（≈1 s）把条一起收走，全程没有任何任务事件参与。留窗行也让标题
+同时表达两件事：`[Background] 1 · 2 已完成` 表示 1 个在跑、2 个刚结束。Tasks 可见性仍要求本会话出现过
 `TasksChanged` 且有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、
 [第 25 章](./25_chapter_protocol_zh.md)）。
+
+与另两个域不同，Background 域是**派生**的而非被推送的：没有任何 `AgentUpdate` 携带它的行，
+因为 `background_run` 的存活卡片本身就持有 task id（`ToolMeta { task_id }`）、命令与启动时刻——
+于是 `state/background_panel.rs` 从 `ToolState` 派生出这些行，并由 `App::handle_agent_update`
+在滚动刷新之前对这条 sticky 做一次对齐（只管可见性/展开，用户的手动收起不会被覆盖）
+（见 [第 13 章](./13_chapter_background_zh.md)）。
 
 `lib.rs` 中垂直约束：
 

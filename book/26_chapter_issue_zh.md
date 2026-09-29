@@ -32,6 +32,60 @@
 ---
 
 
+## 1. 2026-09-29 — 实时输出把后台任务 id 抹掉，任务一开始打印东西 Background 条就消失
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/agent_tui_kit/src/components/tool.rs`（`ToolComponent::on_tool_progress`）；`crates/agent_tui_kit/src/state/background_panel.rs`、`crates/tui/src/render/task_panel.rs`（测试）；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 同时跑着几个 `background_run` 任务时，`[Background]` 条**只出现不到一秒**就消失了，而且之后一直空着，直到进程重启才恢复。任务卡片本身运行正常，`/background` 也列得出这些任务——只有这条 sticky 丢了它们。触发条件是**输出**：命令会打印东西的任务（`echo hello; sleep 300`）立刻丢行，而纯 `sleep 300` 的行会留着——这正是它看起来"时有时无"的原因，也是为什么条此后"再也不回来"（id 只在启动时发一次）。
+
+**决策 / 根因：** `ToolComponent::on_tool_progress` 在每来一段实时输出时都会**整块重建**存活卡片的渲染 output，而这次重建搬运了子代理的 model/tokens，却**漏了 `task_id`**。`AgentUpdate::ToolMeta { task_id }` 只在调用返回（任务刚启动）时发一次，所以第一段输出到来时 id 被重置为 `None`，之后再也没有任何东西把它放回去。Background 域的行是从"带 task id 的存活卡片"派生出来的，于是行消失、条自己隐藏——读起来就像"这条把我的任务弄丢了"。排查路径：在真 TUI 上用 `tmux` + `capture-pane` 读屏（本会话的模型读不了图），加上在 `App::handle_agent_update` / `sync_background_sticky` 里临时打点，看到某张卡片从 `Some(id) → None` 而**中间没有任何 agent 更新**——即这次抹除发生在本地的 progress 重建里，不是被任何协议事件驱动的。修法一行：在重建里带上 `.with_task_id(active.output.task_id.clone())`，并用注释写明"重建必须保留自己推导不出来的字段"。
+
+**之后的可见行为：** 只要任务在跑，它的行就一直在，无论它吐多少输出。这也让 id 在任务运行期间始终保持可读——也就是读者查 `/background <id>` 需要的那个 id。
+
+**指针：** `components/tool.rs::on_tool_progress`（重建处与"保留字段"注释）。测试：`components::tool::tests::tool_progress_keeps_the_background_task_id`（单元层根因：先 `ToolMeta` 再一段 progress）、`render::task_panel::sticky_host_tests::live_output_does_not_drop_a_background_row`（画出来的条能挺过一段输出）。相关条目见下方：Background 域（2026-09-28）与留窗（2026-09-29）。
+
+---
+
+## 1. 2026-09-29 — Background 条上的行在任务结束后留一会；一次 turn 取消仍是整会话的总击杀开关
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix（体验） |
+| **相关** | `crates/agent_tui_kit/src/state/background_panel.rs`（`BACKGROUND_LINGER`、`FinishedBackgroundTask`、`note_finished`/`prune_finished`、`format_background_lines`/`format_sticky_title_line`）、`crates/agent_tui_kit/src/render/sticky_host.rs`、`crates/agent_tui_kit/src/i18n.rs`（`background_sticky_done`）；`crates/tui/src/widgets/state/app/{background,agent}.rs`、`crates/tui/src/render/task_panel.rs`；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 用户看着 5 个并发的 `background_run` 任务，先报「没有 sticky」，再报「只显示一个」，最后报「什么都没有」——三次读起来都像「这条丢了任务」。排查（tmux `capture-pane` 读真 TUI + 在 `sync_background_sticky` 里临时打点）**没有发现派生逻辑的缺陷**：行数始终等于真正在跑的任务数。找到的是这条域很容易被读错：
+1. 任务一结束，那一行就在同一帧里消失，看起来像丢了行；
+2. 从 `StepStarted`（preflight）到工具体真正执行之间，卡片显示 `⠏ Running` 但**还没有 id**——preflight 是串行的且会在每个权限弹窗上等待，所以弹窗没答完之前工具根本没执行——这个窗口不产生行；
+3. 一次用户取消（Esc，例如只是为了关掉一个无关的弹窗）会杀掉**该会话所有**在跑的后台任务：`UserCommand::Cancel` 置位那个唯一的会话级 cancel flag，任务在各自的 progress tick 上轮询它，而该 flag 只在下一条 `SubmitTask` 时清零。那 4 个任务就是在同一秒里带着 `[Cancelled by the user]` 一起死的，条也因此空了。
+
+**决策：** (3) 保持为契约——[第 13 章](./13_chapter_background_zh.md) 里已经写明（「会话的 cancel flag（Esc / 取消）会终止该会话所有在跑任务」；没有单任务 kill 工具）——只修 (1) 的**可读性**：结束的任务保留它的行 `BACKGROUND_LINGER`（8 秒），这个时长是照着一次空闲 tick 重绘节奏（≈1/s）留足余量选的。该行的数据直接来自 shell 手里那张已完成卡片（`BackgroundTaskFinished` → 卡片上的 `task_id` + 参数摘要，在 block 滚走之前由 `App::note_finished_background` 取出），而不是第二份快照——这个域仍然是派生的。过期是**时间**触发的，所以裁剪在 `poll_background_tasks`（空闲 tick）与 `handle_agent_update` 两处都跑，且行被丢掉时会自己置 dirty：把条收走的过程不需要任何任务事件。
+
+**之后的可见行为：** body 排列为「在跑的行在前」（`⏳ <id> <command> ⏱ <耗时>`），其后是留窗期内刚结束的行（`✓`/`✗ <id> <command> ⏱ <距结束秒数>`；结果由字形承载，所以每行不需要新词）。标题同时表达两件事——`[Background] 1 · 2 已完成` 表示 1 个在跑、2 个刚结束；若没有在跑的，头部直接读作 `2 已完成` 而不是干巴巴的 `0`。留窗行自己就能把条撑住可见，首次出现时与在跑任务一样默认展开；最后一行过期后，条在下一次空闲 tick 收起并消失。(2) 保持不变且是有意为之：还没有 id 的卡片不产生行，行会在 id 到达的那一帧出现。
+
+**指针：** `state/background_panel.rs`（`FinishedBackgroundTask::{is_live,ago_secs}`、`note_finished`（按 task id 去重、上限 `MAX_FINISHED_ROWS`）、`prune_finished`、`apply_running` 的可见性、行/标题格式化）。测试：`state::background_panel::tests::{a_finished_task_keeps_its_row_inside_the_linger_window,a_failed_task_lingers_under_the_failure_glyph,rows_drop_once_the_linger_window_passes,the_strip_stays_visible_for_a_lingering_row_only,note_finished_replaces_a_repeat_and_bounds_the_list,running_rows_come_before_lingering_rows,the_title_counts_running_and_done}`；原来的 `the_background_domain_hides_once_the_task_finishes` 变成 `render::task_panel::sticky_host_tests::a_finished_background_task_lingers_then_the_domain_hides`（断言画出来的 `✓ <id>` 行，以及之后条收起）。
+
+---
+
+## 1. 2026-09-28 — sticky 条新增 Background 域，常驻显示在跑的 `background_run` 任务
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature |
+| **相关** | `crates/agent_tui_kit/src/state/background_panel.rs`、`crates/agent_tui_kit/src/components/background_panel.rs`、`crates/agent_tui_kit/src/render/sticky_host.rs`、`crates/agent_tui_kit/src/state/ui_types.rs`（`StickyTab`）；`crates/tui/src/widgets/state/app/{background,agent,registry,config,construct}.rs`、`crates/tui/src/render/task_panel.rs`、`crates/tui/src/handlers/{mouse,mod}.rs`；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** Tasks 与 Subagent 各有一条 Log 下方的常驻条，而后台任务只以「启动它的那张工具卡」（id + 耗时，见 2026-09-25 条目）或一次 `/background` 弹窗的形式存在——于是「还有哪些在跑」在那张卡片滚出视口之后就消失了，而这恰恰是同时压着几个长构建时最需要看的信息。
+
+**决策：** 新增第三个 sticky 域 `[Background]`，其行**从实时工具卡片派生**，而不是被推送。启动任务的工具只有 `background_run` 一个，它的 presentation 是 `keep_live`，而 id 是靠 `AgentUpdate::ToolMeta { task_id }` 落到卡片上的——所以「仍然 active 且带 task id 的卡片」**就是**「还在跑的任务」（`check_background` / `wait_background` 只是把 id 当参数，从不设置该字段）。因此不需要 `AgentUpdate::BackgroundTasksChanged` 加一份 manager 侧 `known` 注册表：信息本来就在 shell 手里，第二份拷贝只会多一处需要同步的状态。该条在 `App::handle_agent_update`——工具状态唯一会变的地方——里同步，且紧接滚动刷新之前，于是它的高度在同一帧内就定下来（卡片上 id 出现/消失的那一帧）。dirty 只在可见性/展开状态翻转时置位，因此单纯在跑的任务不会造成重绘。
+
+**之后的可见行为：** 只要还有任务在跑，该条显示 `[Background] N · ⏳ <id> <command> ⏱ <耗时>`，首次出现默认展开；点击 tab 切换/展开、滚轮 / `jk` 滚动，与另两个域完全一致。最后一个任务进入终态时它收起并隐藏，且从不列出已完成任务——那些任务的输出仍留在工具卡与 `/background` 里。已启动但尚未报出 id 的卡片不产生行，所以该条是在 id 到达时出现，而不是先显示占位行。
+
+**指针：** `state/background_panel.rs`（派生、行/标题格式化、滚动裁剪）、`components/background_panel.rs`（由 registry 持有状态；不认领任何更新）、`render/sticky_host.rs`（三域 host）。测试：`state::background_panel::tests::*`（10 个：派生、首次出现展开、用户收起不被覆盖、滚动裁剪、耗时形状、标题拆解）、`render::task_panel::sticky_host_tests::{a_running_background_task_gets_its_own_sticky_domain,the_background_domain_hides_once_the_task_finishes,all_three_domains_share_one_title_row}`、`handlers::mouse::tests::click_background_tab_switches_domain_and_scrolls_active_panel`。
+
+---
+
 ## 1. 2026-09-26 — 请求正文每会话只留可配置的条数，不再无限增长
 
 | 字段 | 值 |

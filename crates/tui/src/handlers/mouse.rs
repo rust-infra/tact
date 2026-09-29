@@ -166,6 +166,7 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
                 match tab {
                     StickyTab::Tasks => app.task_panel_mut().expanded = true,
                     StickyTab::Subagent => app.subagent_panel_mut().expanded = true,
+                    StickyTab::Background => app.background_panel_mut().expanded = true,
                 }
                 app.dirty = true;
             }
@@ -176,6 +177,7 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
                 match active {
                     StickyTab::Tasks => app.task_panel_mut().expanded = !expanded,
                     StickyTab::Subagent => app.subagent_panel_mut().expanded = !expanded,
+                    StickyTab::Background => app.background_panel_mut().expanded = !expanded,
                 }
                 app.mouse.in_task_panel = !expanded;
                 app.dirty = true;
@@ -582,6 +584,52 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(20, 10));
         assert!(!app.task_panel_mut().expanded);
         assert!(!app.task_panel_mut().expanded);
+    }
+
+    #[test]
+    fn click_background_tab_switches_domain_and_scrolls_active_panel() {
+        use agent_tui_kit::state::StickyTab;
+
+        let mut app = make_app();
+        // Two visible domains: Tasks (active by default) and Background (a
+        // task is running, so `sync_background_sticky` made the strip visible).
+        app.task_panel_mut().visible = true;
+        app.task_panel_mut().expanded = false;
+        app.background_panel_mut().apply_running(1);
+        app.background_panel_mut().expanded = false;
+        app.mouse.task_panel_area = Rect::new(0, 10, 60, 1);
+        // Renderer populates these each frame; the test stands in for it.
+        app.mouse.sticky_tab_areas = vec![
+            (StickyTab::Tasks, Rect::new(0, 10, 7, 1)),
+            (StickyTab::Background, Rect::new(10, 10, 12, 1)),
+        ];
+
+        // Click the Background tab: it becomes the active domain and expands.
+        handle_mouse_event(&mut app, mouse_down(12, 10));
+        assert_eq!(app.mouse.active_sticky_tab, StickyTab::Background);
+        assert!(app.background_panel_mut().expanded);
+
+        // A wheel scroll now moves the background panel, not the tasks panel.
+        app.task_panel_mut().scroll = 0;
+        app.background_panel_mut().scroll = 0;
+        handle_mouse_event(
+            &mut app,
+            mouse_event(crossterm::event::MouseEventKind::ScrollDown, 20, 10),
+        );
+        assert_eq!(
+            app.background_panel_mut().scroll,
+            1,
+            "background panel scroll should advance"
+        );
+        assert_eq!(app.task_panel_mut().scroll, 0, "tasks scroll untouched");
+
+        // Clicking the active tab again collapses it (and its scroll resets
+        // when the last task ends and the strip hides).
+        handle_mouse_event(&mut app, mouse_down(20, 10));
+        assert!(!app.background_panel_mut().expanded);
+        app.background_panel_mut().apply_running(0);
+        assert!(!app.background_panel().visible);
+        assert_eq!(app.background_panel().scroll, 0);
     }
 
     #[test]

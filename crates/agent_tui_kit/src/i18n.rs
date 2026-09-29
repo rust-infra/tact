@@ -325,6 +325,10 @@ pub struct Messages {
     // ---- 持久任务进度 ----
     pub tasks_sticky_title: &'static str,
     pub subagents_sticky_title: &'static str,
+    pub background_sticky_title: &'static str,
+    /// Count of background tasks still on the strip after finishing
+    /// ("2 done" / "2 已完成").
+    pub background_sticky_done: &'static str,
     pub tasks_log_created_tmpl: &'static str, // "Tasks · {}/{} created"
     pub tasks_log_updated_tmpl: &'static str, // "Tasks · {}/{} updated"
 
@@ -616,6 +620,8 @@ impl Messages {
             tasks_log_created_tmpl: "Tasks · {}/{} created",
             tasks_log_updated_tmpl: "Tasks · {}/{} updated",
             subagents_sticky_title: "Subagent",
+            background_sticky_title: "Background",
+            background_sticky_done: "done",
 
             startup_welcome: "Agent TUI started. Press 'i' for insert mode, '/' for commands.",
             startup_mode_hint: "Current mode: Insert. Type a task and press Enter. Shift+Enter for new line.",
@@ -898,6 +904,8 @@ impl Messages {
             tasks_log_created_tmpl: "任务 · {}/{} 已创建",
             tasks_log_updated_tmpl: "任务 · {}/{} 已更新",
             subagents_sticky_title: "子代理",
+            background_sticky_title: "后台任务",
+            background_sticky_done: "已完成",
 
             startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",

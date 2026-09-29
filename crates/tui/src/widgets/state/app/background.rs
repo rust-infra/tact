@@ -157,6 +157,64 @@ impl App {
     pub(crate) fn poll_background_tasks(&mut self) {
         self.poll_git_branch();
         self.poll_skills_reload();
+        // Also runs here, not only on agent updates: a lingering row has to
+        // disappear on its own, with no event to trigger it (idle tick ≈ 1/s).
+        self.sync_background_sticky();
+    }
+
+    /// Reconcile the Background sticky strip with the live `background_run`
+    /// cards.
+    ///
+    /// Unlike Tasks / Subagent there is no protocol snapshot for this domain:
+    /// its rows are derived from the tool cards the shell already keeps
+    /// (`running_background_tasks`). So it is synced from
+    /// [`App::handle_agent_update`] — the one place tool state changes — which
+    /// makes the strip appear in the same frame that applies the card's
+    /// `ToolMeta { task_id }` and close in the frame that applies
+    /// `BackgroundTaskFinished`. The dirty flag is raised only on a
+    /// visibility/expand transition, so a task that simply keeps running never
+    /// forces repaints.
+    pub(crate) fn sync_background_sticky(&mut self) {
+        let now = std::time::Instant::now();
+        let expired = self.background_panel_mut().prune_finished(now);
+        let running =
+            agent_tui_kit::state::background_panel::running_background_tasks(self.tools().state())
+                .len();
+        let changed = self.background_panel_mut().apply_running(running);
+        // `expired` matters on its own: dropping the last lingering row has to
+        // hide the strip even though the running count did not move.
+        if expired || changed {
+            self.dirty = true;
+        }
+    }
+
+    /// Remember a task that just ended so its sticky row lingers for
+    /// [`agent_tui_kit::state::background_panel::BACKGROUND_LINGER`].
+    ///
+    /// The component has already moved the card into `ToolState::blocks` (the
+    /// tool-event outbox is applied before the shell tail) and the finalized
+    /// block keeps the task id and the command, which is everything the row
+    /// needs.
+    pub(crate) fn note_finished_background(&mut self, tool_id: &str, success: bool) {
+        let found = self
+            .tools()
+            .state()
+            .blocks
+            .iter()
+            .rev()
+            .find(|block| block.tool_id == tool_id)
+            .and_then(|block| {
+                let task_id = block.output.task_id.clone()?;
+                Some((task_id, block.output.arg_summary.clone()))
+            });
+        if let Some((task_id, command)) = found {
+            self.background_panel_mut().note_finished(
+                task_id,
+                command,
+                success,
+                std::time::Instant::now(),
+            );
+        }
     }
 
     fn poll_git_branch(&mut self) {

@@ -3,8 +3,8 @@
 mod harness;
 
 use harness::{
-    read_file_tool_use, run_single_task, run_single_task_with_setup, text_block,
-    write_file_tool_use,
+    background_run_tool_use, mock_turn, read_file_tool_use, run_single_task,
+    run_single_task_with_setup, text_block, write_file_tool_use,
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
@@ -126,5 +126,129 @@ async fn driver_token_usage_reaches_app_render() {
     assert!(
         text.contains("150") || text.contains("token") || text.contains("Token"),
         "token usage should affect rendered status/log:\n{text}"
+    );
+}
+
+/// Two `background_run` calls in one turn must both reach the Background
+/// sticky domain: the strip derives one row per *live card carrying a task id*,
+/// so a card that loses its id hides its task from the strip.
+#[tokio::test]
+async fn parallel_background_runs_each_get_a_sticky_row() {
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![
+                background_run_tool_use("bg_a", "sleep 5"),
+                background_run_tool_use("bg_b", "sleep 5"),
+            ],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("Both started.")], StopReason::EndTurn),
+    ]);
+
+    let (updates, work_dir) = run_single_task(mock, "start both", PermissionMode::Auto).await;
+    let task_ids: Vec<String> = updates
+        .iter()
+        .filter_map(|u| match u {
+            AgentUpdate::ToolMeta { task_id, .. } => task_id.clone(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(task_ids.len(), 2, "agent side: {updates:?}");
+
+    let mut app = TestApp::new_in_dir(work_dir);
+    app.feed_all(updates);
+
+    let screen = app.render(120, 40);
+    // Body rows only: the title row repeats the first row's text (and carries
+    // no `⏱` separator of its own before the focus text).
+    let rows: Vec<&str> = screen
+        .lines()
+        .filter(|line| line.contains('⏳') && line.contains('⏱'))
+        .filter(|line| !line.contains("[Background]"))
+        .collect();
+    assert!(
+        screen.contains("Background"),
+        "no Background sticky domain on screen:\n{screen}"
+    );
+    assert_eq!(
+        rows.len(),
+        2,
+        "expected one sticky row per running background task, got {}:\n{screen}",
+        rows.len()
+    );
+}
+
+/// The live shape: one `background_run` in an earlier turn, four more in a
+/// single later turn. Every live card must keep its task id, so the strip has
+/// one row per running task.
+#[tokio::test]
+async fn background_rows_accumulate_across_turns() {
+    use harness::{background_run_tool_use, run_commands};
+    use std::time::Duration;
+    use tact_protocol::UserCommand;
+
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![background_run_tool_use("bg_1", "sleep 10")],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("First started.")], StopReason::EndTurn),
+        mock_turn(
+            vec![
+                background_run_tool_use("bg_a", "sleep 10"),
+                background_run_tool_use("bg_b", "sleep 10"),
+                background_run_tool_use("bg_c", "sleep 10"),
+                background_run_tool_use("bg_d", "sleep 10"),
+            ],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("Four started.")], StopReason::EndTurn),
+    ]);
+
+    let (updates, work_dir) = run_commands(mock, PermissionMode::Auto, |tx| {
+        tokio::spawn(async move {
+            tx.send(UserCommand::SubmitTask("one".into())).unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            tx.send(UserCommand::SubmitTask("four".into())).unwrap();
+            drop(tx);
+        })
+    })
+    .await;
+
+    let metas = updates
+        .iter()
+        .filter(|u| {
+            matches!(
+                u,
+                AgentUpdate::ToolMeta {
+                    task_id: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        metas, 5,
+        "agent side must publish five task ids: {updates:?}"
+    );
+
+    let mut app = TestApp::new_in_dir(work_dir);
+    app.feed_all(updates);
+
+    let screen = app.render(120, 45);
+    let rows: Vec<&str> = screen
+        .lines()
+        .filter(|line| line.contains('⏳') && line.contains('⏱'))
+        .filter(|line| !line.contains("[Background]"))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        5,
+        "expected five sticky rows, got {}:\n{screen}",
+        rows.len()
+    );
+    assert!(
+        screen.contains("[Background] 5"),
+        "count in title:\n{screen}"
     );
 }

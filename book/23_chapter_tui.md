@@ -267,7 +267,7 @@ flowchart TB
 | `agent_tui_kit::render/log.rs` | Log panel pure render (wrap cache consumed, scroll, overlays, scrollbar) |
 | `agent_tui_kit::render/log_column.rs` | Viewport-clipped `Renderable` compositor |
 | `agent_tui_kit::render/task_panel.rs` | Sticky persistent-task body formatting + single-domain render helpers |
-| `agent_tui_kit::render/sticky_host.rs` | Two-domain sticky host under Log (`[Tasks] [Subagent]` tabs; pure render returns tab hit areas) |
+| `agent_tui_kit::render/sticky_host.rs` | Three-domain sticky host under Log (`[Tasks] [Subagent] [Background]` tabs; pure render returns tab hit areas) |
 | `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s (`pulldown-cmark` + Mermaid routing + width-aware tables) |
 | `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` event loop → ratatui `Line`s |
 | `agent_tui_kit::render/mermaid_sequence.rs` | Local Mermaid `sequenceDiagram` renderer (alias/activation/CJK-safe) |
@@ -279,7 +279,7 @@ flowchart TB
 
 Supporting pieces: `agent_tui_kit::state/` (`LogCoordinator`, `LogScroll`,
 `ToolState`, `ThinkingState`, `StreamState`, `StatusBarState`, `PlanPanel`,
-`TaskPanelState`, `SubagentPanelState`, `MouseState`, popup states …), `agent_tui_kit::theme` /
+`TaskPanelState`, `SubagentPanelState`, `BackgroundPanelState`, `MouseState`, popup states …), `agent_tui_kit::theme` /
 `i18n` (colors, `Messages` strings); `crates/tui/src/widgets/state/` holds
 `App` and the app-layer states (`AccountState`, `VoiceState`, `FilePicker`,
 `SlashCommandState`, `InputHistory`, `TaskDagPopup`, `SelectKind`).
@@ -292,29 +292,47 @@ Each repaint runs inside `terminal.draw(|f| { ... })` when the dirty check passe
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
 │    ├─ log panel (scrollable)
-│    └─ sticky host (Tasks | Subagent)? (0 rows if hidden; click to expand)
+│    └─ sticky host (Tasks | Subagent | Background)? (0 rows if hidden; click to expand)
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
-When the **Tasks** panel (`task_panel.visible`, fed by `TasksChanged`) or the
-**Subagent** overview (`subagent_panel.visible`, fed by `SubagentsChanged`) has
-content, `render_main_area` **outer-splits** the main Rect (Log above, a
-two-domain sticky host below) without changing Log wrap/scroll internals. The
-host title row shows one `[Tasks] …` / `[Subagent] …` segment per visible
-domain; the active domain's body (hairline-separated) appears when it is
-expanded. The Tasks body is the persistent-task checklist; the Subagent body
-is a **status overview** of the current process's subagent runs grouped
-Running → Completed → Failed → Cancelled (`marker short-id summary-first ⏱
-duration`). Subagent live detail never enters the sticky or the main Log —
-it stays on the parent `spawn_subagent` tool card and its popup. Clicking an
-inactive tab switches and expands that domain; clicking the active tab (or the
-strip) collapses it; wheel / `jk` scroll the active domain. A domain is
-dropped from the host when it is invisible: Tasks when no open task remains,
-Subagent when collapsed with nothing running. Visibility for Tasks still
-requires a `TasksChanged` with pending/in_progress items
-([Ch 19](./19_chapter_persistent_tasks.md), [Ch 25](./25_chapter_protocol.md)).
+When any sticky domain has content, `render_main_area` **outer-splits** the
+main Rect (Log above, a three-domain sticky host below) without changing Log
+wrap/scroll internals: **Tasks** (`task_panel.visible`, fed by `TasksChanged`),
+the **Subagent** overview (`subagent_panel.visible`, fed by
+`SubagentsChanged`), and **Background** (`background_panel.visible`, the
+current process's running `background_run` tasks). The host title row shows one
+`[Tasks] …` / `[Subagent] …` / `[Background] …` segment per visible domain; the
+active domain's body (hairline-separated) appears when it is expanded. The
+Tasks body is the persistent-task checklist; the Subagent body is a **status
+overview** of the current process's subagent runs grouped Running → Completed →
+Failed → Cancelled (`marker short-id summary-first ⏱ duration`); the Background
+body is one row per running task (`⏳ task-id command ⏱ elapsed`) followed by the
+rows of tasks that ended inside the linger window (`✓`/`✗ task-id command ⏱
+seconds-since-finish`, `BACKGROUND_LINGER` = 8 s). Subagent live
+detail never enters the sticky or the main Log — it stays on the parent
+`spawn_subagent` tool card and its popup. Clicking an inactive tab switches and
+expands that domain; clicking the active tab (or the strip) collapses it;
+wheel / `jk` scroll the active domain. A domain is dropped from the host when
+it is invisible: Tasks when no open task remains, Subagent when collapsed with
+nothing running, Background once its last row is gone — the last running task
+keeps the strip up through its linger row, and the expired row takes the strip
+with it on the next idle tick (≈1 s), with no task event involved. A lingering
+row also keeps the strip's title counting two things: `[Background] 1 · 2 done`
+is one task still running and two that just ended.
+Visibility for Tasks still requires a `TasksChanged` with pending/in_progress
+items ([Ch 19](./19_chapter_persistent_tasks.md),
+[Ch 25](./25_chapter_protocol.md)).
+
+Unlike the other two, the Background domain is **derived** rather than pushed:
+there is no `AgentUpdate` carrying its rows, because `background_run`'s live card
+already holds the task id (`ToolMeta { task_id }`), the command and the start
+instant — so `state/background_panel.rs` derives the rows from `ToolState` and
+`App::handle_agent_update` reconciles the strip (visibility/expand only; the
+user's collapse survives) right before the scroll refresh
+([Ch 13](./13_chapter_background.md)).
 
 Vertical constraints in `lib.rs`:
 

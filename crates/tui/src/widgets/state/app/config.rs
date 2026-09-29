@@ -114,6 +114,7 @@ impl App {
             select: &self.select,
             task_panel: self.task_panel().state(),
             subagent_panel: self.subagent_panel().state(),
+            background_panel: self.background_panel().state(),
         }
     }
 

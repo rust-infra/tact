@@ -12,10 +12,10 @@ use ratatui::{layout::Rect, style::Style};
 use crate::{
     i18n::{Language, Messages},
     state::{
-        AccountState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, LogCoordinator,
-        LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel, SelectPopup, SkillEntry,
-        Status, StatusBarState, StreamState, SubagentPanelState, SubagentPopup, SystemPromptPopup,
-        TaskPanelState, ThinkingState, ToolState,
+        AccountState, BackgroundPanelState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry,
+        InputMode, LogCoordinator, LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel,
+        SelectPopup, SkillEntry, Status, StatusBarState, StreamState, SubagentPanelState,
+        SubagentPopup, SystemPromptPopup, TaskPanelState, ThinkingState, ToolState,
     },
     theme::Theme,
 };
@@ -84,6 +84,9 @@ pub struct RenderCtx<'a> {
     pub task_panel: &'a TaskPanelState,
     /// Subagent overview sticky strip state (current-process runs).
     pub subagent_panel: &'a SubagentPanelState,
+    /// Background-task sticky strip state (running `background_run`
+    /// tasks; the rows are derived from the live tool cards).
+    pub background_panel: &'a BackgroundPanelState,
 }
 
 /// A command emitted by render code, executed by the app after the frame.

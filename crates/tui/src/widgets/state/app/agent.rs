@@ -63,6 +63,9 @@ impl App {
         // 4. Shell tail: rich behavior the kit components do not implement
         //    (log/status/scroll effects, select popups, plan writes).
         self.shell_handle(update);
+        // Derived sticky state must be settled before the scroll refresh: the
+        // strip's height changes the Log viewport.
+        self.sync_background_sticky();
         self.refresh_tail_scroll();
         // 5. Invariant: a pending select request must stay visible. If an
         //    update reset `input_mode` away from `Select` while a request is
@@ -472,8 +475,18 @@ impl App {
                 }
             }
             AgentUpdate::BackgroundTaskFinished {
-                tool_id, message, ..
-            } => self.on_background_task_finished_tail(&tool_id, &message),
+                tool_id,
+                success,
+                message,
+                ..
+            } => {
+                self.on_background_task_finished_tail(&tool_id, &message);
+                // Keep a row on the sticky for a short while: the component has
+                // just finalized the card (outbox applied before this tail), so
+                // the finished block still carries the id and command the
+                // running row showed.
+                self.note_finished_background(&tool_id, success);
+            }
             AgentUpdate::SubagentFinished {
                 tool_id,
                 child_id,
@@ -1519,6 +1532,76 @@ mod lifecycle_tests {
         assert_eq!(
             app.plan_mut().steps[0].output.as_deref(),
             Some("Background task 018f3a2c started: cargo build")
+        );
+    }
+
+    /// A later turn (a plain non-keep-live tool call) must not clear the task
+    /// ids the earlier `background_run` cards already carry. Regressed live:
+    /// the Background strip flashed for one frame and then vanished.
+    #[test]
+    fn a_later_turn_does_not_clear_background_task_ids() {
+        let mut app = make_app();
+        seed_running_background(&mut app, "bg1");
+        seed_running_background(&mut app, "bg2");
+        app.handle_agent_update(AgentUpdate::ToolMeta {
+            tool_id: "bg1".into(),
+            model: None,
+            token_usage: None,
+            task_id: Some("id1".into()),
+        });
+        app.handle_agent_update(AgentUpdate::ToolMeta {
+            tool_id: "bg2".into(),
+            model: None,
+            token_usage: None,
+            task_id: Some("id2".into()),
+        });
+        assert!(
+            app.tools_mut()
+                .active
+                .iter()
+                .all(|a| a.output.task_id.is_some())
+        );
+
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "inspect",
+            "bash",
+            "bash1",
+            HashMap::from([("command".to_string(), "ls".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 1,
+            tool_id: "bash1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "ls".into(),
+            arg_full: "ls".into(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 1,
+            tool_id: "bash1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "ls".into(),
+                arg_full: Some("ls".into()),
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: None,
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        let ids: Vec<Option<String>> = app
+            .tools_mut()
+            .active
+            .iter()
+            .map(|a| a.output.task_id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![Some("id1".into()), Some("id2".into())],
+            "a later turn must not clear background task ids"
         );
     }
 
