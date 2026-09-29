@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-29 — The collapsed-output hint becomes a button: a gesture glyph for "how", one word for "what"
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature (UI) |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`tool_collapsed_output_hint{,_one}`, `tool_collapsed_output_action`), `crates/agent_tui_kit/src/widgets/tool_widget.rs` (`collapsed_action_text`, `collapsed_output_hint`, `collapsed_action_cols`), `crates/agent_tui_kit/src/render/cells/tool.rs` (`meta_line`); [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** A card-less finished command advertised its popup with the words `double-click-result` — 19 columns of prose drawn in the phase color, with nothing on screen marking them as clickable, because the whole meta row is a single span: the text *was* the affordance. The row therefore spent its longest run of columns saying what a control says with its shape.
+
+**Decision:** The tail is now a real button, drawn by the kit's own `Button` with `ButtonChrome::Brackets`, so the chrome carries "this is a control" and the words only have to say what happens: `[󰜼 Open]` / `[󰜼 打开]`. The glyph is the Nerd Font `md-gesture_double_tap` (U+F073C), which depicts the gesture itself — so the row still says *how* (the icon) as well as *what* (the word), and only the word is localized. One definition serves both halves: `collapsed_action_text(msgs)` is the label wrapped in the chrome's brackets, the cell draws exactly those glyphs, and `collapsed_action_cols` measures that same string, so the drawn button and the hit range cannot drift. Activation is unchanged — a double-click on the meta row — and so is the `3 lines` count that says output exists. The glyph was checked against the terminal's own font before adoption: it is present in CaskaydiaMono Nerd Font, its advance is 1200/2048 em (one cell, like `0`), and `unicode-width` 0.2.2 reports width 1 — which is what the backwards measurement depends on.
+
+**Behavior after:** `✓ Success · 34ms · 3 lines · [󰜼 Open]` is 37 columns instead of 48; the Chinese row is `✓ 成功 · 34ms · 3 行 · [󰜼 打开]`, 31 instead of 35. The button is painted in the theme's `muted` color over the row's own background, so it reads as a control inside the phase-colored sentence. Two consequences are accepted: this is the repo's first Nerd Font (plane-15 PUA) glyph, so a terminal without a Nerd Font now draws a replacement box on that row; and the glyph must stay one column wide, because the range is measured backwards from the row's end — a glyph the terminal draws wider than `unicode-width` measures would shift the whole target.
+
+**Pointers:** `i18n.rs` (the two templates now take the count in the first `{}` and the button's glyphs in the second; the action key holds the bare label, never the brackets), `tool_widget.rs::collapsed_action_text` (the single definition of those glyphs), `render/cells/tool.rs::meta_line` (splits the row and draws the tail through `Button`). Tests: `widgets::tool_widget::tests::{collapsed_output_hint_ends_with_its_action,finished_block_meta_row_matches_its_hit_range}`, `render::cells::tool::tests::{collapsed_command_meta_row_reports_hidden_output,collapsed_command_meta_row_draws_its_action_as_a_button,open_card_meta_row_has_no_collapsed_hint}`, and the two buffer-level ones that locate the drawn glyphs — `render::log_render_tests::completed_command_renders_header_rows_only`, `handlers::mouse::tests::collapsed_hint_click_window_matches_the_drawn_glyphs`. Docs: `docs/tool_rendering.md` §5 "Collapsed output", [Ch 23](./23_chapter_tui.md).
+
+---
+
 ## 1. 2026-09-29 — Live output wiped the background task id, so the Background strip vanished the moment a task printed anything
 
 | Field | Value |

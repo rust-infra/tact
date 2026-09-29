@@ -635,17 +635,17 @@ fn completed_command_renders_header_rows_only() {
         "finished command output must not be drawn inline, got:\n{text}"
     );
     assert!(
-        text.contains("4 lines · double-click-result"),
+        text.contains("4 lines · [󰜼 Open]"),
         "the meta row must report the hidden output, got:\n{text}"
     );
 
     // The click target is measured from the block indent, so pin it against the
-    // real buffer: the hint's range must cover exactly the `double-click-result`
-    // glyphs one column past the panel border, and no more.
+    // real buffer: the hint's range must cover exactly the `[󰜼 Open]` glyphs one
+    // column past the panel border, and no more.
     let terminal = render_log_panel_terminal(&mut app, 100, 14);
     let buf = terminal.backend().buffer();
     let content_x = 1; // left border
-    let needle = "double-click-result";
+    let needle = "[󰜼 Open]";
     let meta_row = (0..buf.area.height)
         .find(|y| {
             let line: String = (0..buf.area.width)
@@ -670,7 +670,7 @@ fn completed_command_renders_header_rows_only() {
     );
     assert_eq!(
         hint_cols.end as usize,
-        glyph_start + needle.len(),
+        glyph_start + unicode_width::UnicodeWidthStr::width(needle),
         "the hit range must end on the last glyph of {needle:?}"
     );
 }

@@ -1311,6 +1311,7 @@ mod tests {
     fn collapsed_hint_click_window_matches_the_drawn_glyphs() {
         use crate::i18n::Language;
         use crate::render::test_harness::render_main_area_terminal;
+        use agent_tui_kit::widgets::tool_widget::collapsed_action_text;
         use unicode_width::UnicodeWidthStr;
 
         for lang in [Language::English, Language::Chinese] {
@@ -1332,11 +1333,17 @@ mod tests {
                 };
                 assert_eq!(app.language, lang, "{lang:?}");
 
-                let action = app.msgs().tool_collapsed_output_action;
-                let width = UnicodeWidthStr::width(action) as u16;
+                let action = collapsed_action_text(&app.msgs());
+                let width = UnicodeWidthStr::width(action.as_str()) as u16;
                 let terminal = render_main_area_terminal(&mut app, 100, 20);
                 let buf = terminal.backend().buffer().clone();
-                let (start, row) = glyph_origin(&buf, action);
+                // The probe stops at the opening bracket plus the glyph:
+                // `glyph_origin` matches runs with whitespace dropped, so a
+                // needle spanning the label's space could never match. Bracket
+                // and glyph are the same in every locale, so one probe serves
+                // both languages — the width above still comes from the whole
+                // drawn label.
+                let (start, row) = glyph_origin(&buf, "[󰜼");
                 let end = start + width;
                 let ctx = format!("{lang:?} (toggled after build: {toggled_after_build})");
 
@@ -1361,7 +1368,7 @@ mod tests {
     }
 
     /// A finished command collapses its output card, so the meta row's
-    /// `double-click-result` hint is the only thing left to click.
+    /// `[󰜼 Open]` button is the only thing left to click.
     #[test]
     fn double_click_collapsed_command_hint_opens_diff_popup() {
         let mut app = make_app();
@@ -1406,10 +1413,11 @@ mod tests {
             .collapsed_action_cols(&msgs)
             .expect("the hint is the target");
         let meta = block.output.meta_text(&msgs).expect("meta row");
-        assert!(meta.ends_with("double-click-result"), "{meta}");
+        assert!(meta.ends_with("[󰜼 Open]"), "{meta}");
         assert!(
-            hint_cols.end as usize - hint_cols.start as usize == "double-click-result".len(),
-            "the target is the action word alone: {hint_cols:?}"
+            hint_cols.end as usize - hint_cols.start as usize
+                == unicode_width::UnicodeWidthStr::width("[󰜼 Open]"),
+            "the target is the button's glyphs alone: {hint_cols:?}"
         );
 
         app.mouse.click_count = 1;
@@ -1468,8 +1476,8 @@ mod tests {
         );
     }
 
-    /// The trigger is the `double-click-result` hint alone — not the row it sits in,
-    /// and not the parameter row the command is written on.
+    /// The trigger is the `[󰜼 Open]` button alone — not the row it sits in, and
+    /// not the parameter row the command is written on.
     #[test]
     fn collapsed_command_ignores_clicks_off_the_hint() {
         let long_command = "cd /home/rg/Projects/tact && no_proxy=127.0.0.1,localhost \

@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-29 — 折叠输出的提示改成按钮：字形负责「怎么操作」，一个词负责「会发生什么」
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature (UI) |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_hint{,_one}`、`tool_collapsed_output_action`）、`crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapsed_action_text`、`collapsed_output_hint`、`collapsed_action_cols`）、`crates/agent_tui_kit/src/render/cells/tool.rs`（`meta_line`）；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 无卡片的已完成命令用 `double-click-result` 这几个字来宣告它的弹窗——19 列用 phase 色画的散文，而画面上没有任何标记说它可点，因为整条 meta 行就是**一个 span**：文字本身就是那个控件。于是这行把它最长的一段列数花在了「一个控件靠形状就能说清的事」上。
+
+**决策：** 行尾现在是一个真按钮，由 kit 自己的 `Button` 以 `ButtonChrome::Brackets` 画出——"这里是个控件"改由方括号 chrome 承担，文字只需要说会发生什么：`[󰜼 Open]` / `[󰜼 打开]`。字形是 Nerd Font 的 `md-gesture_double_tap`（U+F073C），画的正是那个手势，所以这行仍然同时表达了**怎么操作**（图标）与**会发生什么**（词），而只有词需要按语言维护。两半只有一个定义：`collapsed_action_text(msgs)` 就是"label 套上 chrome 的方括号"，cell 画的正是这几个字形，`collapsed_action_cols` 量的也是同一个串——画出来的按钮与命中区不可能漂移。激活方式不变（在 meta 行上双击），"有输出被藏起来"的 `3 lines` 计数也不变。字形在采用前对着终端自己的字体验过：CaskaydiaMono Nerd Font 各 face 都有，步进 1200/2048 em（和 `0` 一样正好一格），`unicode-width` 0.2.2 也算 1 列——而"从行尾往回量"正依赖这一点。
+
+**之后的行为：** `✓ Success · 34ms · 3 lines · [󰜼 Open]` 是 37 列而不是 48；中文行 `✓ 成功 · 34ms · 3 行 · [󰜼 打开]` 是 31 列而不是 35。按钮用主题的 `muted` 色画在该行自己的背景上，所以在 phase 色的句子里读起来就是一个控件。接受两点代价：这是仓库第一个 Nerd Font（plane-15 PUA）字形，因此没有 Nerd Font 的终端在这一行会画出替代框；以及字形必须保持一列宽——命中区是从行尾往回量的，终端若把某个字形画得比 `unicode-width` 量的更宽，整个目标都会跟着偏。
+
+**指针：** `i18n.rs`（两个模板的第一个 `{}` 填行数、第二个填按钮字形；action 键只放裸 label，绝不含方括号）、`tool_widget.rs::collapsed_action_text`（这几个字形的唯一定义）、`render/cells/tool.rs::meta_line`（把该行拆开、行尾走 `Button` 画）。测试：`widgets::tool_widget::tests::{collapsed_output_hint_ends_with_its_action,finished_block_meta_row_matches_its_hit_range}`、`render::cells::tool::tests::{collapsed_command_meta_row_reports_hidden_output,collapsed_command_meta_row_draws_its_action_as_a_button,open_card_meta_row_has_no_collapsed_hint}`，以及两个读**真实渲染帧**定位字形的用例——`render::log_render_tests::completed_command_renders_header_rows_only`、`handlers::mouse::tests::collapsed_hint_click_window_matches_the_drawn_glyphs`。文档：`docs/tool_rendering.md` §5「Collapsed output」、[第 23 章](./23_chapter_tui_zh.md)。
+
+---
+
 ## 1. 2026-09-29 — 实时输出把后台任务 id 抹掉，任务一开始打印东西 Background 条就消失
 
 | 字段 | 值 |

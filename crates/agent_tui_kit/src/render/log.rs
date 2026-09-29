@@ -219,6 +219,7 @@ pub fn render_log_panel_pure(
                     ctx.theme.accent,
                     ctx.theme.bg,
                     ctx.theme.fg,
+                    ctx.theme.muted,
                     ctx.theme.success,
                     ctx.theme.warning,
                     ctx.theme.error,

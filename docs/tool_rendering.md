@@ -143,7 +143,7 @@ Why two stages: `ToolWidget` needs `&Theme` and `&Messages`. `ToolCell` must liv
   ← LOG_TOOL_BLOCK_INDENT (8 cols)
   │
   ├─ Row 1  Title     "2. bash (git status)"         (bold; truncated at 120 chars)
-  ├─ Row 2  Meta      "⠋ Running · 1.2s"  or  "✓ Success · 21ms · 4 lines · double-click-result"
+  ├─ Row 2  Meta      "⠋ Running · 1.2s"  or  "✓ Success · 21ms · 4 lines · [󰜼 Open]"
   └─ Card   (optional: drawn only for a running or failed tool, or a
              finished subagent — every other finished tool collapses to
              the two rows above, its output one double-click away)
@@ -213,12 +213,12 @@ is removed and carriage return replaces the current logical line.
 
 Two exclusions keep the hint meaningful rather than universal:
 
-- **A one-line result does not collapse.** `sleep`, `save_memory`, `send_message` and friends answer with a confirmation the meta row already implies; `· 1 line · double-click-result` on all of them would be chrome that opens nothing worth reading.
+- **A one-line result does not collapse.** `sleep`, `save_memory`, `send_message` and friends answer with a confirmation the meta row already implies; `· 1 line · [󰜼 Open]` on all of them would be chrome that opens nothing worth reading.
 - **A result already printed on the meta row does not collapse** (`compact_result_to_meta`, i.e. `ask_user`): a second affordance for the same text is noise, not reach.
 
 Whenever a block collapses (or keeps a card), the full text is kept in `ToolRenderOutput.detail_full` and `detail_total_lines` carries its line count, so the popup path is unchanged — only the inline card is gone. What that detail *is* varies by tool: for an edit the `new_text` input field (`DetailPolicy::InputField`), which is what the card used to preview and count (the popup itself shows the git diff via `git_diff_path`, so the count on the meta row describes the payload, not the rendered diff); for a write the `content` input field, with the popup preferring the file on disk and falling back to the captured text; for a read the file body the tool returned, with the same path-then-text fallback, so a collapsed read is never a dead end (a read's gutter stays plain — no `+` column — in the popup, and `read_image`, which rides `FileRead`, falls back to its text envelope for a binary path it cannot read as text); for a cardless kind it is simply the tool's result string. Collapsed blocks keep a card title too — `ToolRenderOutput::card_title(&msgs)` derives the title the card would have carried (e.g. `<tool> output`) so a cardless kind's popup is not headed by its bare tool name.
 
-**Click target.** With no card to hit, the affordance is the hint that names the gesture: `ToolRenderOutput::collapsed_action_cols(&msgs)` is the column range of `tool_collapsed_output_action` (`double-click-result` / `双击查看结果`) at the end of the meta row, measured from the block's own left edge (`LOG_TOOL_BLOCK_INDENT .. indent + display width(meta_text)`), and `ToolRenderOutput::hits_collapsed_action(row, col, &msgs)` opens the popup only inside it — on the meta row (`TOOL_META_ROW`) alone. The title/parameter row and the rest of the meta row (success mark, duration, line count) stay inert, so what can be clicked is not merely visible but exactly the words that advertise the gesture.
+**Click target.** With no card to hit, the affordance is a **button**: the kit's `Button` with `ButtonChrome::Brackets`, labelled `tool_collapsed_output_action` (`󰜼 Open` / `󰜼 打开`) and drawn as the tail of the meta row. `ToolRenderOutput::collapsed_action_cols(&msgs)` is its column range, derived from `collapsed_action_text(&msgs)` — the label wrapped in the chrome's brackets, i.e. exactly the glyphs the cell draws — and measured from the block's own left edge (`LOG_TOOL_BLOCK_INDENT .. indent + display width(meta_text)`); `ToolRenderOutput::hits_collapsed_action(row, col, &msgs)` opens the popup only inside it — on the meta row (`TOOL_META_ROW`) alone. The title/parameter row and the rest of the meta row (success mark, duration, line count) stay inert, so what can be clicked is not merely visible but exactly the drawn button. The label must stay one column wide per glyph (the glyph here is a Nerd Font `md-gesture_double_tap`, U+F073C, one cell in the patched font and one column to `unicode-width`): the range is measured *backwards* from the row's end, so a glyph the terminal draws wider than it measures would shift the whole target.
 
 The range is derived backwards from the row's end, which only holds because the hint is the row's tail: `meta_suffixes` appends `collapsed_output_hint()` last, and every locale's hint ends with its action string (pinned by `collapsed_output_hint_ends_with_its_action`).
 
@@ -233,7 +233,7 @@ The range is derived backwards from the row's end, which only holds because the 
 | Success (subagent) | header + summary card | yes |
 | Failed | header + `Error` card, up to 5 preview rows | yes |
 
-Because a card-less block would otherwise hide the fact that output exists, the meta row appends `… · {n} lines · double-click-result` (`collapsed_output_hint()`, from `tool_collapsed_output_hint` / `..._one`). `n` is `detail_total_lines` — for a command, the same number the popup reports, prefix line included; for an edit, the new text's line count; for a read or a write, the body's line count; for a cardless kind, the result's line count. Only the trailing action is clickable: the count is readout, not a button.
+Because a card-less block would otherwise hide the fact that output exists, the meta row appends `… · {n} lines · [󰜼 Open]` (`collapsed_output_hint()`, from `tool_collapsed_output_hint` / `..._one`, with `collapsed_action_text()` filling the second placeholder). `n` is `detail_total_lines` — for a command, the same number the popup reports, prefix line included; for an edit, the new text's line count; for a read or a write, the body's line count; for a cardless kind, the result's line count. Only the trailing button is clickable: the count is readout, not a control.
 
 `ToolRenderOutput::meta_text(&msgs)` returns the **finished** block's exact meta row for the locale asked for (the cell draws the same row through `build_meta_text` + `meta_suffixes`, so the measured text and the drawn text cannot drift; a test asserts they are equal). It is `None` while a tool runs, where the cell re-derives a ticking elapsed time — and a running block has no card-less hit area to measure.
 
@@ -311,7 +311,7 @@ the terminal `StepResult.detail` becomes authoritative after completion.
 
 Centered modal styling (no drop shadow); scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
 
-A collapsed finished tool (`ToolLayout.detail_collapsed`) draws no card, so its click target is the trailing `double-click-result` hint on the meta row (`collapsed_action_cols(&msgs)` / `hits_collapsed_action(row, col, &msgs)`, measured in the locale the row is drawn in) — everything else in those two rows is inert. A tool that still draws a card (a finished subagent, a running or failed tool) opens only from a click inside that card. See §5 "Collapsed output".
+A collapsed finished tool (`ToolLayout.detail_collapsed`) draws no card, so its click target is the trailing `[󰜼 Open]` button on the meta row (`collapsed_action_cols(&msgs)` / `hits_collapsed_action(row, col, &msgs)`, measured in the locale the row is drawn in) — everything else in those two rows is inert. A tool that still draws a card (a finished subagent, a running or failed tool) opens only from a click inside that card. See §5 "Collapsed output".
 
 Tool detail popups support left-button text selection over the visible body. Hit testing stores UTF-8-safe byte offsets into the original cached content, so line numbers, green diff gutters, borders, titles, and scrollbars are never selected or copied. Display cells map to complete extended grapheme clusters using Ratatui-compatible widths; forward and backward drags therefore include the whole visible grapheme under both endpoints, including combining and emoji sequences. Dragging above or below the body clamps to the first or last visible source boundary without changing popup scroll; scrolling otherwise preserves the current selection. Automatic drag-edge scrolling is intentionally out of scope.
 

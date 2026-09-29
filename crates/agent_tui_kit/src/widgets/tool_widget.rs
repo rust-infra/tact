@@ -235,25 +235,39 @@ pub fn meta_error(
     error_message.filter(|_| !(has_detail_card && matches!(phase, ToolPhase::Failed)))
 }
 
-/// Meta-row hint telling the user that a collapsed command hid its output:
-/// `tool_collapsed_output_hint` with the popup's own line count filled in.
+/// Glyphs of the button that opens a collapsed command's output: its label
+/// wrapped in the chrome's brackets.
+///
+/// One definition for both halves of the affordance — the cell draws a
+/// [`Button`](crate::widgets::button::Button) with
+/// [`ButtonChrome::Brackets`](crate::widgets::button::ButtonChrome::Brackets)
+/// and the row text embeds this same string, so the glyphs on screen are the
+/// glyphs the hit test measures.
+pub fn collapsed_action_text(msgs: &Messages) -> String {
+    format!("[{}]", msgs.tool_collapsed_output_action)
+}
+
+/// Meta-row hint telling the user that a collapsed command hid its output: the
+/// popup's own line count, then [`collapsed_action_text`].
 pub fn collapsed_output_hint(msgs: &Messages, total_lines: usize) -> String {
-    if total_lines == 1 {
-        msgs.tool_collapsed_output_hint_one.to_string()
+    let tmpl = if total_lines == 1 {
+        msgs.tool_collapsed_output_hint_one
     } else {
         msgs.tool_collapsed_output_hint
-            .replacen("{}", &total_lines.to_string(), 1)
-    }
+    };
+    tmpl.replacen("{}", &total_lines.to_string(), 1)
+        .replacen("{}", &collapsed_action_text(msgs), 1)
 }
 
 /// Columns of the clickable action hint at the end of a collapsed command's
 /// meta row, measured from the block's own left edge (block indent included).
 ///
-/// The action is the tail of [`collapsed_output_hint`], which is itself the tail
-/// of the row the cell draws — so measuring backwards from the row's end lands
-/// on the drawn glyphs and cannot drift from them.
+/// The action is [`collapsed_action_text`], which is the tail of
+/// [`collapsed_output_hint`], which is itself the tail of the row the cell draws
+/// — so measuring backwards from the row's end lands on the drawn glyphs and
+/// cannot drift from them.
 pub fn collapsed_action_cols(msgs: &Messages, row_text: &str) -> Option<Range<u16>> {
-    let action_width = UnicodeWidthStr::width(msgs.tool_collapsed_output_action);
+    let action_width = UnicodeWidthStr::width(collapsed_action_text(msgs).as_str());
     let end = LOG_TOOL_BLOCK_INDENT as usize + UnicodeWidthStr::width(row_text);
     if action_width == 0 || end > u16::MAX as usize {
         return None;
@@ -1100,7 +1114,7 @@ impl ToolWidget {
     ///   keeping one double-click away, and collapsing it costs no extra row.
     ///   A one-line result is skipped: `sleep` / `save_memory` / `send_message`
     ///   answer with a confirmation the meta row already implies, and
-    ///   `· 1 line · double-click-result` on all of them would be chrome that opens
+    ///   `· 1 line · [󰜼 Open]` on all of them would be chrome that opens
     ///   nothing. A result already surfaced on the meta row
     ///   (`compact_result_to_meta`) is skipped for the same reason — a second
     ///   affordance for the same text is noise, not reach.
@@ -1695,7 +1709,7 @@ mod tests {
 
     /// The log hit test measures the stored meta text, so a finished block must
     /// keep exactly what the cell will draw — and a collapsed command's target
-    /// is the `double-click-result` tail of that row, nothing else.
+    /// is the `[󰜼 Open]` tail of that row, nothing else.
     #[test]
     fn finished_block_meta_row_matches_its_hit_range() {
         let msgs = test_msgs();
@@ -1716,10 +1730,10 @@ mod tests {
             .meta_text(&msgs)
             .expect("a finished block has a meta row");
         assert!(meta.contains("Success"), "{meta}");
-        assert!(meta.contains("3 lines · double-click-result"), "{meta}");
+        assert!(meta.contains("3 lines · [󰜼 Open]"), "{meta}");
 
-        // The target is the hint's action word, measured back from the row's end.
-        let action = UnicodeWidthStr::width(msgs.tool_collapsed_output_action);
+        // The target is the button's own glyphs, measured back from the row's end.
+        let action = UnicodeWidthStr::width(collapsed_action_text(&msgs).as_str());
         let end = LOG_TOOL_BLOCK_INDENT + UnicodeWidthStr::width(meta.as_str()) as u16;
         assert_eq!(
             output.collapsed_action_cols(&msgs),
@@ -1740,20 +1754,27 @@ mod tests {
         assert!(!output.hits_collapsed_action(2, (end - 1) as usize, &msgs));
     }
 
-    /// A collapsed hint is only measurable because its action word is its tail,
-    /// in every locale.
+    /// A collapsed hint is only measurable because the action's glyphs are its
+    /// tail, in every locale — and those glyphs are the bracketed button label,
+    /// not the bare label the build embeds.
     #[test]
     fn collapsed_output_hint_ends_with_its_action() {
         for lang in [Language::English, Language::Chinese] {
             let msgs = Messages::by_language(lang);
-            for hint in [
-                collapsed_output_hint(&msgs, 1),
-                collapsed_output_hint(&msgs, 42),
-            ] {
+            let action = collapsed_action_text(&msgs);
+            assert!(
+                action.starts_with('[') && action.ends_with(']'),
+                "{lang:?}: the drawn glyphs carry the chrome's brackets: {action:?}"
+            );
+            for lines in [1, 42] {
+                let hint = collapsed_output_hint(&msgs, lines);
                 assert!(
-                    hint.ends_with(msgs.tool_collapsed_output_action),
-                    "{lang:?}: {hint:?} must end with {:?}",
-                    msgs.tool_collapsed_output_action
+                    hint.ends_with(&action),
+                    "{lang:?}: {hint:?} must end with {action:?}"
+                );
+                assert!(
+                    hint.contains(&lines.to_string()),
+                    "{lang:?}: {hint:?} must name the line count"
                 );
             }
         }
@@ -1891,7 +1912,7 @@ mod tests {
 
     /// A one-line confirmation is not worth an affordance: `sleep`,
     /// `save_memory` and `send_message` would all grow
-    /// `· 1 line · double-click-result` for text the meta row already implies.
+    /// `· 1 line · [󰜼 Open]` for text the meta row already implies.
     #[test]
     fn one_line_result_of_a_cardless_kind_stays_plain() {
         let msgs = test_msgs();
@@ -1906,10 +1927,7 @@ mod tests {
         assert_eq!(output.visual_rows(false), TOOL_HEADER_ROWS);
         assert_eq!(output.detail_full, None);
         assert!(
-            !output
-                .meta_text(&msgs)
-                .unwrap()
-                .contains("double-click-result"),
+            !output.meta_text(&msgs).unwrap().contains("[󰜼 Open]"),
             "{:?}",
             output.meta_text(&msgs)
         );

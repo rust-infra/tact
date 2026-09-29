@@ -61,14 +61,21 @@ pub struct Messages {
     pub tool_meta_sep: &'static str,
     pub tool_live_output_title: &'static str, // "Live output" (no line count — it lives in the bottom bar)
     pub tool_live_output_bottom: &'static str,
-    /// Meta-row hint for a collapsed command card: "{} lines · double-click-result".
+    /// Meta-row hint for a collapsed command card: first `{}` the line count,
+    /// second `{}` the button [`Self::tool_collapsed_output_action`] draws.
     pub tool_collapsed_output_hint: &'static str,
     /// Singular form of [`Self::tool_collapsed_output_hint`] — reachable when
     /// the collapsed text is one line (a background task's summary, say).
     pub tool_collapsed_output_hint_one: &'static str,
-    /// The clickable action inside [`Self::tool_collapsed_output_hint`], which
-    /// must end with it: those glyphs are the whole double-click target of a
-    /// collapsed command, and the line count left of them stays inert.
+    /// Label of the button that opens a collapsed command's output — the whole
+    /// double-click target of that card, and the reason the line count left of
+    /// it stays inert.
+    ///
+    /// The brackets around it come from `ButtonChrome::Brackets`, never from
+    /// here: the row text wraps this label the same way the widget draws it, so
+    /// the glyphs on screen and the glyphs the hit test measures cannot drift.
+    /// Keep it to a gesture glyph plus one short word — a Nerd Font double-tap
+    /// icon carrying "how", the word carrying "what".
     pub tool_collapsed_output_action: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
@@ -375,9 +382,11 @@ impl Messages {
             tool_meta_sep: " · ",
             tool_live_output_title: "Live output",
             tool_live_output_bottom: " Double-click for buffered output ",
-            tool_collapsed_output_hint: "{} lines · double-click-result",
-            tool_collapsed_output_hint_one: "1 line · double-click-result",
-            tool_collapsed_output_action: "double-click-result",
+            tool_collapsed_output_hint: "{} lines · {}",
+            tool_collapsed_output_hint_one: "{} line · {}",
+            // Nerd Font `md-gesture_double_tap` (U+F073C) for "how", the word
+            // for "what"; the brackets around it are the chrome's.
+            tool_collapsed_output_action: "󰜼 Open",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
             command_title: " ⌘ Command ",
@@ -662,9 +671,10 @@ impl Messages {
             tool_meta_sep: " · ",
             tool_live_output_title: "实时输出",
             tool_live_output_bottom: " 双击查看已缓冲输出 ",
-            tool_collapsed_output_hint: "{} 行 · 双击查看结果",
-            tool_collapsed_output_hint_one: "1 行 · 双击查看结果",
-            tool_collapsed_output_action: "双击查看结果",
+            tool_collapsed_output_hint: "{} 行 · {}",
+            tool_collapsed_output_hint_one: "{} 行 · {}",
+            // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
+            tool_collapsed_output_action: "󰜼 打开",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
             command_title: " ⌘ 命令 ",

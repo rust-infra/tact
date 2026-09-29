@@ -19,9 +19,11 @@ use tact_protocol::{TokenUsageInfo, ToolOutputLine, ToolOutputStream};
 use crate::{
     i18n::Messages,
     render::renderable::Renderable,
+    widgets::button::{Button, ButtonChrome, ButtonTheme},
     widgets::tool_widget::{
-        TOOL_HEADER_ROWS, ToolPhase, ToolRenderOutput, build_meta_text, collapsed_output_hint,
-        meta_error, meta_suffixes, running_elapsed_us, tool_card_inner_rows, tool_visual_rows,
+        TOOL_HEADER_ROWS, ToolPhase, ToolRenderOutput, build_meta_text, collapsed_action_text,
+        collapsed_output_hint, meta_error, meta_suffixes, running_elapsed_us, tool_card_inner_rows,
+        tool_visual_rows,
     },
 };
 
@@ -48,6 +50,10 @@ pub struct ToolCell {
     card_progress_tmpl: &'static str,
     /// Meta-row hint for a collapsed command card (line count + how to open it).
     collapsed_output_hint: Option<String>,
+    /// Label of the button inside [`Self::collapsed_output_hint`].
+    collapsed_action_label: Option<&'static str>,
+    /// The glyphs that button draws — the tail this row splits off.
+    collapsed_action: Option<String>,
     tool_phase_running: &'static str,
     tool_phase_success: &'static str,
     tool_phase_failed: &'static str,
@@ -57,6 +63,7 @@ pub struct ToolCell {
     accent: Color,
     bg: Color,
     fg: Color,
+    muted: Color,
     success: Color,
     warning: Color,
     error: Color,
@@ -75,6 +82,7 @@ impl ToolCell {
         accent: Color,
         bg: Color,
         fg: Color,
+        muted: Color,
         success: Color,
         warning: Color,
         error: Color,
@@ -88,6 +96,16 @@ impl ToolCell {
             .layout
             .detail_collapsed
             .then(|| collapsed_output_hint(msgs, output.detail_total_lines));
+        // The button's own halves: the label it is built from, and the glyphs
+        // it draws, which are the tail the meta row splits off to style.
+        let collapsed_action_label = output
+            .layout
+            .detail_collapsed
+            .then_some(msgs.tool_collapsed_output_action);
+        let collapsed_action = output
+            .layout
+            .detail_collapsed
+            .then(|| collapsed_action_text(msgs));
         // Card chrome is localized too, and the cell is built once per frame
         // with the *current* messages: deriving it here (instead of reading it
         // off the output) is what keeps the card in the language the rest of the
@@ -113,6 +131,8 @@ impl ToolCell {
             card_bottom,
             card_progress_tmpl: msgs.tool_card_progress_tmpl,
             collapsed_output_hint,
+            collapsed_action_label,
+            collapsed_action,
             tool_phase_running: msgs.tool_phase_running,
             tool_phase_success: msgs.tool_phase_success,
             tool_phase_failed: msgs.tool_phase_failed,
@@ -122,6 +142,7 @@ impl ToolCell {
             accent,
             bg,
             fg,
+            muted,
             success,
             warning,
             error,
@@ -177,7 +198,36 @@ impl ToolCell {
             ToolPhase::Success => Style::default().fg(self.success),
             ToolPhase::Failed => Style::default().fg(self.error),
         };
-        Line::from(Span::styled(text, style))
+        // The collapsed-output button *is* this row's affordance when the card
+        // draws no body, so it is drawn by the shared button widget rather than
+        // as more phase-colored prose. The row text carries the same glyphs
+        // (both come from `collapsed_action_text`), which is what keeps the
+        // drawn button and `hits_collapsed_action` on the same columns.
+        let button = self
+            .collapsed_action
+            .as_deref()
+            .zip(self.collapsed_action_label)
+            .and_then(|(action, label)| text.strip_suffix(action).map(|prefix| (prefix, label)));
+        let Some((prefix, label)) = button else {
+            return Line::from(Span::styled(text, style));
+        };
+        let button_theme = ButtonTheme {
+            fg: self.fg,
+            bg: self.bg,
+            accent: self.accent,
+            muted: self.muted,
+            warning: self.warning,
+            error: self.error,
+            success: self.success,
+        };
+        let mut spans = vec![Span::styled(prefix.to_string(), style)];
+        spans.extend(
+            Button::new(label, button_theme)
+                .chrome(ButtonChrome::Brackets)
+                .line()
+                .spans,
+        );
+        Line::from(spans)
     }
 
     fn card_inner_rows(&self) -> usize {
@@ -571,6 +621,7 @@ mod tests {
             Color::Cyan,
             Color::Black,
             Color::White,
+            Color::Gray,
             Color::Green,
             Color::Yellow,
             Color::Red,
@@ -735,6 +786,7 @@ mod tests {
             theme.accent,
             theme.bg,
             theme.fg,
+            theme.muted,
             theme.success,
             theme.warning,
             theme.error,
@@ -771,10 +823,7 @@ mod tests {
         let cell = tool_cell(output);
 
         assert_eq!(meta_text(&cell), measured);
-        assert!(
-            measured.contains("4 lines · double-click-result"),
-            "{measured}"
-        );
+        assert!(measured.contains("4 lines · [󰜼 Open]"), "{measured}");
     }
 
     /// A collapsed command card draws no card, so the meta row must carry the
@@ -789,7 +838,42 @@ mod tests {
         let text = meta_text(&tool_cell(output));
 
         assert!(text.contains("7 lines"), "meta row: {text}");
-        assert!(text.contains("double-click-result"), "meta row: {text}");
+        assert!(text.contains("7 lines · [󰜼 Open]"), "meta row: {text}");
+    }
+
+    /// The tail is not more prose: it is the shared button widget's own spans
+    /// (brackets plus label), styled by the button, while the sentence before it
+    /// keeps the phase color.
+    #[test]
+    fn collapsed_command_meta_row_draws_its_action_as_a_button() {
+        let mut output = make_output(false, 0, 0);
+        output.layout.detail_collapsed = true;
+        output.detail_total_lines = 7;
+        output.tool_name = "bash".into();
+        output.visual_kind = tact_protocol::ToolVisualKind::Command;
+        let line = tool_cell(output).meta_line();
+
+        assert_eq!(line.spans.len(), 4, "prose + the button's three spans");
+        let tail: String = line.spans[1..]
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(tail, "[󰜼 Open]");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(Color::Green),
+            "prose keeps the phase color"
+        );
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(Color::Gray),
+            "the tail is drawn by the button"
+        );
+        assert_eq!(
+            line.spans[1].style.bg,
+            Some(Color::Black),
+            "the button paints its own bg"
+        );
     }
 
     #[test]
@@ -802,13 +886,14 @@ mod tests {
         let text = meta_text(&tool_cell(output));
 
         assert!(text.contains("1 line ·"), "meta row: {text}");
+        assert!(text.contains("1 line · [󰜼 Open]"), "meta row: {text}");
         assert!(!text.contains("1 lines"), "meta row: {text}");
     }
 
     #[test]
     fn open_card_meta_row_has_no_collapsed_hint() {
         let text = meta_text(&tool_cell(make_output(true, 3, 3)));
-        assert!(!text.contains("double-click-result"), "meta row: {text}");
+        assert!(!text.contains("[󰜼 Open]"), "meta row: {text}");
     }
 
     #[test]
