@@ -32,6 +32,23 @@
 ---
 
 
+## 1. 2026-09-29 — thinking 卡片跑完后说 `Thought`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix (文案) |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_title_active` / `_done`、`thinking_title_active` / `_done`；删除 `thinking_popup_title`）、`crates/agent_tui_kit/src/render/cells/thinking.rs`、`crates/agent_tui_kit/src/components/thinking.rs`、`crates/tui/src/widgets/state/app/popups.rs`；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 卡片与弹窗两种状态共用同一个标题字符串，于是已完成的卡片一直沿用运行中才需要的措辞——同一个字段错了两次，而第二次就发生在中文文案刚被改成不再显示 `思考中` 的下一个提交里。
+
+**决策：** 一个状态一个字符串，并在**知道状态的地方**挑：`thinking_card_title_active`（`🧠 Thinking` / `🧠 思考`）给 spinner 还在转的那张卡，`thinking_card_title_done`（`🧠 Thought` / `🧠 已思考`）给已出 summary 的那张；弹窗标题照同样方式拆开（`(╭ರ_•́) Thinking...` / `(╭ರ_•́) Thought`），因为弹窗既可能从运行中的卡片打开、也可能从已完成的卡片打开。一个被两种状态共读的字段正是错误措辞得以出现的条件，所以它被删掉，而不是被注释说明。kit 组件自带的那套卡片渲染改用同样两个字符串，顺带丢掉硬编码的英文 `🧠 live`；从未被读取的 `thinking_popup_title` 键删除。
+
+**之后的行为：** 运行中的卡片显示 `⠋🧠 Thinking` / `⠋🧠 思考`，已完成的显示 `🧠 Thought` / `🧠 已思考`；运行期间打开的弹窗标题是 `(╭ರ_•́) Thinking...`，跑完之后是 `(╭ರ_•́) Thought`。
+
+**指针：** `Messages::thinking_card_title_{active,done}` 与 `Messages::thinking_title_{active,done}`、`ThinkingCell::{active,completed}`、`App::open_thinking_popup`（按状态选择）、`ThinkingComponent::render`。测试：`agent_tui_kit::render::cells::thinking::tests::the_card_title_names_the_state_the_card_is_in`；`completed_thinking_cell_renders_only_its_summary` 现在钉住 `Thought`。
+
+---
+
 ## 1. 2026-09-29 — thinking 卡片标题去掉「进行中」：`思考`，不是 `思考中`
 
 | 字段 | 值 |
@@ -41,7 +58,7 @@
 
 **症状 / 动机：** 运行中与已完成的 thinking 卡片共用同一个标题字符串，而中文那条写的是 `🧠 思考中`。于是卡片跑完之后还在宣称自己正在思考——标记「运行中」的是标题前缀的 spinner，文案不该也来抢这个活。
 
-**决策：** 中文标题改为 `🧠 思考`，弹窗标题改为 `(╭ರ_•́) 思考...`；英文 `🧠 Thinking` 本来就是时态中性的，不动。字段的文档注释写明这条规则——一个字符串服务两种状态，因此不能自称进度——因为下一次改文案就会再犯。
+**决策：** 中文标题改为 `🧠 思考`，弹窗标题改为 `(╭ರ_•́) 思考...`；英文 `🧠 Thinking` 本来就是时态中性的，不动。字段的文档注释写明这条规则——一个字符串服务两种状态，因此不能自称进度——因为下一次改文案就会再犯。（同日即被推翻：两种状态各自拿到自己的字符串——见上一条。）
 
 **之后的行为：** 运行中的卡片显示 `⠋🧠 思考`（spinner + `思考`），已完成显示 `🧠 思考`；弹窗标题两种状态下都是 `(╭ರ_•́) 思考...`。
 

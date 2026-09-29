@@ -43,11 +43,13 @@ impl Language {
 pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
-    /// Card title (no line count — that lives in the bottom bar). One string
-    /// serves the active and the completed card, so it has to stay
-    /// tense-neutral: the active card's spinner prefix is what says "still
-    /// running", never the wording (`思考`, not `思考中` / `Thinking...`-style).
-    pub thinking_card_title: &'static str, // "🧠 Thinking"
+    /// Card title (no line count — that lives in the bottom bar). The active
+    /// and the completed card each get their own string, because the card says
+    /// what it *is* doing: `Thinking` while the spinner prefix turns, `Thought`
+    /// once the summary is in. One shared string cannot say both, which is how
+    /// a finished card came to read "in progress".
+    pub thinking_card_title_active: &'static str, // "🧠 Thinking"
+    pub thinking_card_title_done: &'static str, // "🧠 Thought"
     /// Thinking card footer: `⏱ {elapsed} | ↕ {shown}/{total} lines | {action}`
     /// — the elapsed time leads, each label staying on the readout it names.
     /// The action is the **tail**, the same rule a collapsed tool card's meta row
@@ -106,7 +108,6 @@ pub struct Messages {
     pub voice_cancelled: &'static str,
     pub history_title: &'static str,
     pub help_title: &'static str,
-    pub thinking_popup_title: &'static str,
     pub diff_popup_title: &'static str,      // "{}" (file path)
     pub tool_popup_read_error: &'static str, // "{}" (path)
     pub tool_popup_empty: &'static str,
@@ -330,7 +331,10 @@ pub struct Messages {
     pub step_sec_tmpl: &'static str,
     pub step_failed_tmpl: &'static str,
     pub error_tmpl: &'static str,
-    pub thinking_title: &'static str,
+    /// Popup title, by state — the popup is opened from a running card as
+    /// readily as from a finished one, so it needs both strings too.
+    pub thinking_title_active: &'static str, // "(╭ರ_•́) Thinking..."
+    pub thinking_title_done: &'static str, // "(╭ರ_•́) Thought"
     pub thinking_line_prefix: &'static str,
     pub user_msg_prefix: &'static str,
     pub user_msg_cont: &'static str,
@@ -383,7 +387,8 @@ impl Messages {
     fn english() -> Self {
         Self {
             log_title: " [Log] ",
-            thinking_card_title: " 🧠 Thinking ",
+            thinking_card_title_active: " 🧠 Thinking ",
+            thinking_card_title_done: " 🧠 Thought ",
             thinking_card_bottom: " ⏱ {} | ↕ {}/{} lines | {}",
             // Nerd Font `md-gesture_double_tap` (U+F073C) for "how", the word
             // for "what" — the same pair the collapsed tool card draws.
@@ -419,7 +424,6 @@ impl Messages {
             voice_cancelled: "Voice input cancelled",
             history_title: " Task History (Enter to retry, Esc to close) ",
             help_title: " Help (Esc to close) ",
-            thinking_popup_title: " (╭ರ_•́) Thinking ",
             diff_popup_title: " {} ",
             tool_popup_read_error: "Could not read file: {}",
             tool_popup_empty: "No content available.",
@@ -630,7 +634,8 @@ impl Messages {
             step_sec_tmpl: " [{}s]",
             step_failed_tmpl: "✗ Step {} failed: {}",
             error_tmpl: "❌ Error: {}",
-            thinking_title: "(╭ರ_•́) Thinking...",
+            thinking_title_active: "(╭ರ_•́) Thinking...",
+            thinking_title_done: "(╭ರ_•́) Thought",
             thinking_line_prefix: "│ {}",
             user_msg_prefix: "💬 {}",
             user_msg_cont: "  {}",
@@ -675,7 +680,8 @@ impl Messages {
     fn chinese() -> Self {
         Self {
             log_title: " [日志] ",
-            thinking_card_title: " 🧠 思考 ",
+            thinking_card_title_active: " 🧠 思考 ",
+            thinking_card_title_done: " 🧠 已思考 ",
             thinking_card_bottom: " ⏱ {} | ↕ {}/{} 行 | {}",
             // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
             thinking_card_action: "󰜼 打开",
@@ -709,7 +715,6 @@ impl Messages {
             voice_cancelled: "已取消语音输入",
             history_title: " 任务历史 (Enter 重试, Esc 关闭) ",
             help_title: " 帮助 (Esc 关闭) ",
-            thinking_popup_title: " (╭ರ_•́) 思考 ",
             diff_popup_title: " {} ",
             tool_popup_read_error: "无法读取文件: {}",
             tool_popup_empty: "没有可显示的内容。",
@@ -917,7 +922,8 @@ impl Messages {
             step_sec_tmpl: " [{}秒]",
             step_failed_tmpl: "✗ 步骤 {} 失败: {}",
             error_tmpl: "❌ 错误: {}",
-            thinking_title: "(╭ರ_•́) 思考...",
+            thinking_title_active: "(╭ರ_•́) 思考...",
+            thinking_title_done: "(╭ರ_•́) 已思考",
             thinking_line_prefix: "│ {}",
             user_msg_prefix: "💬 {}",
             user_msg_cont: "  {}",

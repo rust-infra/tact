@@ -78,7 +78,7 @@ impl ThinkingCell {
         let (bottom, bottom_action) = Self::footer(msgs, visible, total, elapsed);
         Self {
             lines,
-            title: format!(" {spinner}{}", msgs.thinking_card_title),
+            title: format!(" {spinner}{}", msgs.thinking_card_title_active),
             bottom,
             bottom_action,
             button_theme: ButtonTheme::from_theme(theme),
@@ -94,7 +94,7 @@ impl ThinkingCell {
         let (bottom, bottom_action) = Self::footer(msgs, 1, total, block.elapsed);
         Self {
             lines: vec![block.summary.clone()],
-            title: msgs.thinking_card_title.to_string(),
+            title: msgs.thinking_card_title_done.to_string(),
             bottom,
             bottom_action,
             button_theme: ButtonTheme::from_theme(theme),
@@ -384,7 +384,7 @@ mod tests {
         let text = render_text(&ThinkingCell::completed(&block, &theme, &msgs));
         assert!(text.contains("last"), "{text}");
         assert!(!text.contains("first"), "{text}");
-        assert!(text.contains("Thinking"), "{text}");
+        assert!(text.contains("Thought"), "{text}");
     }
 
     #[test]
@@ -526,6 +526,46 @@ mod tests {
             drawn,
             ButtonChrome::Brackets.wrap(msgs.thinking_card_action)
         );
+    }
+
+    /// The card names the state it is in: `Thinking` while the spinner turns,
+    /// `Thought` once the summary is in. One shared string could only ever be
+    /// right for one of the two, which is how a finished card kept reading
+    /// "in progress".
+    #[test]
+    fn the_card_title_names_the_state_the_card_is_in() {
+        use crate::i18n::{Language, Messages};
+
+        let theme = Theme::from(crate::theme::ThemeName::Dark);
+        for (lang, active_says, done_says) in [
+            (Language::English, "Thinking", "Thought"),
+            (Language::Chinese, "思考", "已思考"),
+        ] {
+            let msgs = Messages::by_language(lang);
+            let mut active = ActiveThinkingBlock::new(0, std::time::Instant::now());
+            active.push_delta("reasoning\n");
+
+            let active_cell = ThinkingCell::active(&active, 'x', &theme, &msgs);
+            let done_cell = completed_cell(&msgs, &theme);
+
+            assert_eq!(
+                active_cell.title,
+                format!(" x{}", msgs.thinking_card_title_active),
+                "{lang:?}: the running card is the spinner plus the state"
+            );
+            assert_eq!(
+                done_cell.title, msgs.thinking_card_title_done,
+                "{lang:?}: the finished card carries no spinner"
+            );
+            assert!(
+                msgs.thinking_card_title_active.contains(active_says),
+                "{lang:?}: a running card says {active_says:?}"
+            );
+            assert!(
+                msgs.thinking_card_title_done.contains(done_says),
+                "{lang:?}: a finished card says {done_says:?}"
+            );
+        }
     }
 
     /// The footer's action is not more prose: it is the kit's button (brackets

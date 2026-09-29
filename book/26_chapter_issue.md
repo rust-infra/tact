@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-29 — The Thinking card says `Thought` once it has finished
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix (copy) |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs` (`thinking_card_title_active` / `_done`, `thinking_title_active` / `_done`; `thinking_popup_title` removed), `crates/agent_tui_kit/src/render/cells/thinking.rs`, `crates/agent_tui_kit/src/components/thinking.rs`, `crates/tui/src/widgets/state/app/popups.rs`; [Ch 23](./23_chapter_tui.md) |
+
+**Symptom / motivation:** The card and the popup took one title string for both states, so a finished card kept whatever wording the running one needed — the same field wrong twice, one commit after the Chinese copy had been patched to stop reading `思考中`.
+
+**Decision:** One string per state, picked where the state is known: `thinking_card_title_active` (`🧠 Thinking` / `🧠 思考`) for the card whose spinner is turning, `thinking_card_title_done` (`🧠 Thought` / `🧠 已思考`) for the summarized one, with the same split for the popup title (`(╭ರ_•́) Thinking...` / `(╭ರ_•́) Thought`) because the popup opens from a running card as readily as from a finished one. A single field both states read is what made the wrong wording possible, so it is gone rather than documented. The kit component's own card renderer takes the same two strings and loses its hardcoded English `🧠 live`; the never-read `thinking_popup_title` key is deleted.
+
+**Behavior after:** A running card reads `⠋🧠 Thinking` / `⠋🧠 思考`, a finished one `🧠 Thought` / `🧠 已思考`; the popup opened while it runs says `(╭ರ_•́) Thinking...`, opened afterwards `(╭ರ_•́) Thought`.
+
+**Pointers:** `Messages::thinking_card_title_{active,done}` and `Messages::thinking_title_{active,done}`, `ThinkingCell::{active,completed}`, `App::open_thinking_popup` (picks by state), `ThinkingComponent::render`. Tests: `agent_tui_kit::render::cells::thinking::tests::the_card_title_names_the_state_the_card_is_in`; `completed_thinking_cell_renders_only_its_summary` now pins `Thought`.
+
+---
+
 ## 1. 2026-09-29 — The Thinking card's title drops "in progress": `思考`, not `思考中`
 
 | Field | Value |
@@ -41,7 +58,7 @@ Newest entries first. Each entry should include:
 
 **Symptom / motivation:** One title string serves the active and the completed Thinking card, and the Chinese one read `🧠 思考中`. Finished cards therefore kept announcing that they were still thinking — the spinner prefix is what marks a running card, and the wording was claiming it too.
 
-**Decision:** The Chinese card title is `🧠 思考` and the popup title `(╭ರ_•́) 思考...`; English (`🧠 Thinking`) was already tense-neutral and is unchanged. The field's doc comment now states the rule — one string for both states, so it must not name progress — because the next wording change is what would break it again.
+**Decision:** The Chinese card title is `🧠 思考` and the popup title `(╭ರ_•́) 思考...`; English (`🧠 Thinking`) was already tense-neutral and is unchanged. The field's doc comment now states the rule — one string for both states, so it must not name progress — because the next wording change is what would break it again. (Superseded the same day: each state got its own string instead — see the entry above.)
 
 **Behavior after:** A running card reads `⠋🧠 思考` (spinner + `思考`), a finished one `🧠 思考`; the popup title is `(╭ರ_•́) 思考...` in both states.
 

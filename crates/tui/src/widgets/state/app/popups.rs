@@ -477,20 +477,27 @@ impl App {
 
     /// Open the thinking popup for active or completed content at `phys_idx`.
     pub(crate) fn open_thinking_popup(&mut self, phys_idx: usize) {
-        let exists = self
+        let running = self
             .thinking_mut()
             .active
             .as_ref()
-            .is_some_and(|active| active.phys_idx == phys_idx)
+            .is_some_and(|active| active.phys_idx == phys_idx);
+        let exists = running
             || self
                 .thinking_mut()
                 .blocks
                 .iter()
                 .any(|block| block.phys_idx == phys_idx);
         if exists {
+            let msgs = self.msgs();
+            let title = if running {
+                msgs.thinking_title_active
+            } else {
+                msgs.thinking_title_done
+            };
             self.thinking_mut().popup = Some(ThinkingPopup {
                 phys_idx,
-                title: self.msgs().thinking_title.to_string(),
+                title: title.to_string(),
                 scroll: 0,
                 selection: None,
                 selection_text: String::new(),
