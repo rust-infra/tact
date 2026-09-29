@@ -5,6 +5,8 @@ use ratatui::{
 };
 use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
+use tact::hook::{hook_context_body, is_hook_context_text};
+
 use agent_tui_kit::widgets::button::{Button, ButtonTheme, ButtonVariant};
 
 use crate::{
@@ -12,6 +14,17 @@ use crate::{
     render::cells::separator::is_task_end_separator,
     widgets::state::*,
 };
+
+/// True for a cell carrying hook-injected context (`<hook-context>`) instead
+/// of a user turn.
+///
+/// Accepts both signals: the in-memory `MessageKind::HookContext` set at
+/// injection time, and the marker text — which is all that survives a reload
+/// from disk, since the kind is never serialized.
+fn is_hook_context_cell(message: &Message) -> bool {
+    message.is_hook_context()
+        || matches!(&message.content, MessageContent::Text { content } if is_hook_context_text(content))
+}
 
 /// Copy affordances written by older versions (`[copy]` / `[复制]`). Rows they
 /// persisted are re-rendered from `raw`, so they must stay both recognizable
@@ -156,6 +169,10 @@ impl App {
                     }
                     match msg.role {
                         Role::User => {
+                            if is_hook_context_cell(&msg) {
+                                self.append_system_markdown(hook_context_body(content));
+                                continue;
+                            }
                             // Seed the session turn counter: persisted user
                             // messages are the only durable record of past
                             // turns (no dedicated store query needed).
@@ -381,6 +398,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::render::test_harness::make_app;
+    use tact::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
 
     #[test]
     fn load_history_seeds_session_turn_counter() {
@@ -415,6 +433,52 @@ mod tests {
             app.status_bar_mut().turn_user,
             1,
             "blank user text is skipped for display and must not count as a turn"
+        );
+    }
+
+    /// Hook-injected context is shown as a system notice, not as something the
+    /// user typed, and does not count as a turn.
+    #[test]
+    fn load_history_renders_hook_context_as_a_system_notice() {
+        let mut app = make_app();
+        // As injected, and as a reload from disk would deliver it: same
+        // markers, no in-memory kind.
+        app.load_history(vec![
+            tact_llm::Message::new_text(
+                tact_llm::Role::User,
+                format!(
+                    "{}\nbrief body\n{}",
+                    HOOK_CONTEXT_OPEN_TAG, HOOK_CONTEXT_CLOSE_TAG
+                ),
+            )
+            .with_kind(tact_llm::MessageKind::HookContext),
+            tact_llm::Message::new_text(
+                tact_llm::Role::User,
+                format!(
+                    "{}\nfrom disk\n{}",
+                    HOOK_CONTEXT_OPEN_TAG, HOOK_CONTEXT_CLOSE_TAG
+                ),
+            ),
+            tact_llm::Message::new_text(tact_llm::Role::User, "real".to_string()),
+        ]);
+
+        assert_eq!(
+            app.status_bar_mut().turn_user,
+            1,
+            "only the real turn counts"
+        );
+        let raws: Vec<&str> = app.log.items.iter().map(|item| item.raw.as_str()).collect();
+        assert!(
+            raws.iter().any(|raw| raw.contains("brief body")),
+            "the briefing is kept: {raws:?}"
+        );
+        assert!(
+            raws.iter().any(|raw| raw.contains("from disk")),
+            "a reloaded session is recognized by its markers: {raws:?}"
+        );
+        assert!(
+            !raws.iter().any(|raw| raw.contains(HOOK_CONTEXT_OPEN_TAG)),
+            "the framing is not shown to the reader: {raws:?}"
         );
     }
 

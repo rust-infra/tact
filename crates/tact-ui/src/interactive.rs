@@ -361,7 +361,7 @@ async fn build_agent_for_interactive(
     .with_ui_channel(agent_tx)
     .with_session(session_id, session_store)
     .with_provider_kind(provider_kind)
-    .with_session_start(|_at| Box::pin(async move { Ok(HookControl::Continue) }))
+    .with_session_start(|_at, _ctx| Box::pin(async move { Ok(HookControl::Continue) }))
     .with_pre_tool(|_at, _tool_use| Box::pin(async move { Ok(HookControl::Continue) }))
     .with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
     // Claude plugin command hooks (SessionStart / UserPromptSubmit /

@@ -32,6 +32,28 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-29 — A plugin's `SessionStart` context reaches the model instead of a log line
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/plugin/hooks.rs` (`collect_session_start_output`, `parse_output`, `looks_like_json`), `crates/tact/src/hook/mod.rs` (`SessionStartContext`, `<hook-context>` markers), `crates/tact/src/agent/mod.rs` (`pending_session_context`, `inject_pending_session_context`), `crates/tact_llm/src/content.rs` (`MessageKind::HookContext`), `crates/tact/src/compact/mod.rs` (`is_real_user_message`), `crates/tui/src/widgets/state/app/messages.rs` (`load_history`); [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** A plugin's `SessionStart` hook ran, and its output was then dropped: both `additionalContext` and `systemPrompt` were logged as `not applied in v1`. The reference `basic-memory` plugin prints its entire session briefing as plain stdout on `SessionStart`, so installing it produced a hook that executed on every session and influenced nothing.
+
+**Decision:** Record the context the way Codex does. Codex's `SessionStart` handler turns each `additionalContext` into its own `role: "developer"` message, unmodified, and records it in the conversation. Tact's `Role` has only user/assistant, so the same text becomes a synthetic user message framed with `<hook-context>` markers — the convention `<subagent-finished>` and `<context-handoff>` already follow here. The markers carry the provenance a `developer` role would have given, and unlike the in-memory `MessageKind` they survive a reload. `systemPrompt` stays unsupported (v1).
+
+**Behavior after:**
+
+- `SessionStart` hooks collect into `SessionStartContext`; `dispatch_session_start_hooks` stashes it and `agent_loop` drains it right after `ensure_session`, before the turn's user message — one message per chunk. The stash exists because `ensure_session` restores history only into an *empty* context.
+- The cell carries `MessageKind::HookContext`, so compaction does not keep it as a recent real user turn and the TUI renders it as a system notice rather than something the user typed.
+- Stdout that looks like JSON but does not parse is a failed hook, not context (`looks_like_json`, matching Codex's `output_parser`); plain and blank stdout behave as before.
+- Unchanged: the matcher is still tested against `"startup"` only, so a plugin's `resume` / `compact` branches never fire, and the hook payload's `session_id` is still empty.
+
+**Pointers:** `plugin::hooks::tests::{session_start_output_routes_its_context_to_the_agent, a_plugin_hook_command_reaches_the_session_start_context, start_hook_stdout_is_context_unless_it_looks_like_json}` (the first two verified to fail against the old drop), `agent::tests::agent_loop_injects_session_start_context_as_its_own_message`, `compact::tests::hook_context_is_not_a_real_user_message`, `tui::widgets::state::app::messages::tests::load_history_renders_hook_context_as_a_system_notice`.
+
+---
+
 ## 1. 2026-09-29 — The Thinking card says `Thought` once it has finished
 
 | Field | Value |

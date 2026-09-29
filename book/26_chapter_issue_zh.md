@@ -32,6 +32,28 @@
 ---
 
 
+## 1. 2026-09-29 — 插件的 `SessionStart` context 真正进入模型，而不是只留一行日志
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`collect_session_start_output`、`parse_output`、`looks_like_json`）、`crates/tact/src/hook/mod.rs`（`SessionStartContext`、`<hook-context>` 标记）、`crates/tact/src/agent/mod.rs`（`pending_session_context`、`inject_pending_session_context`）、`crates/tact_llm/src/content.rs`（`MessageKind::HookContext`）、`crates/tact/src/compact/mod.rs`（`is_real_user_message`）、`crates/tui/src/widgets/state/app/messages.rs`（`load_history`）；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** 插件的 `SessionStart` hook 会运行，但它的输出随后被丢掉：`additionalContext` 与 `systemPrompt` 都只记成 `not applied in v1` 的警告。参考实现 `basic-memory` 插件正是把整份会话简报以纯 stdout 形式打印在 `SessionStart` 上，于是装上它等于装了一个每次会话都执行、却什么都影响不到的 hook。
+
+**决策：** 按 Codex 的做法记录这段 context。Codex 的 `SessionStart` 处理把每个 `additionalContext` 原样变成它自己的一条 `role: "developer"` 消息并记入对话。Tact 的 `Role` 只有 user/assistant，所以同样的文本变成一条合成的 user 消息、用 `<hook-context>` 标记包起来——这正是本仓库 `<subagent-finished>` 与 `<context-handoff>` 已经在用的约定。这些标记承担了 `developer` 角色本会提供的来源信息，而且与内存中的 `MessageKind` 不同，它们在重新加载后依然存在。`systemPrompt` 保持不支持（v1）。
+
+**之后的行为：**
+
+- `SessionStart` hooks 收集到 `SessionStartContext`；`dispatch_session_start_hooks` 先暂存，`agent_loop` 在 `ensure_session` 之后、本轮用户消息之前取走它——每个片段一条消息。暂存这一步之所以必需，是因为 `ensure_session` 只在 context **为空**时才恢复历史。
+- 该消息携带 `MessageKind::HookContext`，因此压缩不会把它当成最近的「真实用户回合」保留，TUI 也把它渲染成系统提示而非用户发言。
+- stdout 看起来像 JSON 却解析失败时按失败的 hook 处理、不注入（`looks_like_json`，与 Codex 的 `output_parser` 一致）；纯文本与空 stdout 的行为不变。
+- 未变的部分：matcher 仍只对 `"startup"` 求值，所以插件的 `resume` / `compact` 分支永不触发，hook payload 里的 `session_id` 也仍为空。
+
+**指向：** `plugin::hooks::tests::{session_start_output_routes_its_context_to_the_agent, a_plugin_hook_command_reaches_the_session_start_context, start_hook_stdout_is_context_unless_it_looks_like_json}`（前两条已验证对旧的「丢弃」行为失败）、`agent::tests::agent_loop_injects_session_start_context_as_its_own_message`、`compact::tests::hook_context_is_not_a_real_user_message`、`tui::widgets::state::app::messages::tests::load_history_renders_hook_context_as_a_system_notice`。
+
+---
+
 ## 1. 2026-09-29 — thinking 卡片跑完后说 `Thought`
 
 | 字段 | 值 |

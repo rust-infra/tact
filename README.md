@@ -311,7 +311,7 @@ Add another marketplace with `/plugin marketplace add <source>`. A source may be
 
 In the TUI, `/plugin list` and `/plugin marketplace list` render as titled tables (one row per plugin or marketplace). `/plugin reload` refreshes discovered plugin skills, and `/plugin uninstall` / `/plugin update` refresh them too so the plugin's skills change immediately.
 
-Tact owns marketplace state, checkouts, and revision-locked plugin caches under `~/.tact/plugins/`. It loads only `skills/*/SKILL.md` from an installed plugin; plugin hooks, agents, MCP servers, commands, LSPs, monitors, and executables are not loaded or run. Installed skills use `/plugin:skill` (for example `/superpowers:brainstorming`); standalone skills keep the unprefixed `/skill` form.
+Tact owns marketplace state, checkouts, and revision-locked plugin caches under `~/.tact/plugins/`. From an installed plugin it loads `skills/*/SKILL.md`, legacy `commands/*.md` slash commands, declared command hooks, and its MCP servers (`mcp.json` / `.mcp.json` at the plugin root, or the manifest's `mcpServers`). Declarative `agents/*.md` are not a feature, and LSPs, monitors, and executables are not loaded or run. Installed skills use `/plugin:skill` (for example `/superpowers:brainstorming`); standalone skills keep the unprefixed `/skill` form.
 
 ### 👥 Sub-agents & Team
 

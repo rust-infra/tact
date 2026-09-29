@@ -207,7 +207,7 @@ OR 两侧都与同一 **token** 窗口比较，且两侧都预留了输出预算
 
 摘要后重建（Codex 风格）：**`[近期真实 User…] + [<context-handoff> summary cell]`**，不再是单条 summary。交接摘要是一条带 `<context-handoff>` … `</context-handoff>` 包裹、内存中标记为 `MessageKind::Summary` 的 `User` 角色消息，是**一等公民 cell**：按类型检测（reload 会话回退到 `SUMMARY_PREFIX` 字符串匹配）、永远不会被当成真实 user turn，即使 provider 合并连续 user 消息也能靠标签区分。重建分为三步：
 
-1. **`collect_user_messages`** — 遍历整个 context，用 `is_real_user_message` 挑出真实 user turn（排除工具结果组成的 block 消息、旧 summary 消息和非 User 角色）。
+1. **`collect_user_messages`** — 遍历整个 context，用 `is_real_user_message` 挑出真实 user turn（排除工具结果组成的 block 消息、旧 summary 消息、hook 注入的 `<hook-context>` cell 和非 User 角色）。
 2. **`retained_user_message_token_budget`** — 预算 = `min(20k 估算 token, model_context_window - max_tokens - estimate(system + tools + summary) - 20% 余量)`。
 3. **`build_compacted_history`** — 从尾部保留真实 user 消息直到预算用尽；block turn 在预算内原样保留，超大 block turn 退化为文本尾部，纯图片则变成省略占位符，绝不截断 base64。最后追加一条 summary 消息。
 
@@ -416,6 +416,7 @@ id 仅存于 provider 状态与 SQLite 元数据中。
 | **目标** | 产出一份好的交接摘要 | 压缩后 agent 继续工作 |
 | **谁读** | 摘要 LLM（一次性） | 主 agent（每轮直到下次压缩） |
 | **角色** | User + Assistant + ToolResult | **仅 User** |
+| **消息类型** | 全部，经 `summary_message_fallback` 压缩 | 仅「真实 user」（跳过纯工具结果 block、旧 summary、hook 注入的 `<hook-context>`、非 User 角色） |
 | **用户原文** | 送入摘要器，不保留原文 | ✅ 原样保留（从尾部，预算内） |
 | **Assistant / ToolUse / ToolResult** | 送入摘要器（压缩后） | ❌ 丢弃（摘要已覆盖） |
 | **预算** | `min(20k, summary_input_limit - 固定指令)` | `min(20k, window - output - system - tools - summary - 20%)` |

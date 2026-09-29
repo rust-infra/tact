@@ -31,6 +31,34 @@ use anyhow::Result;
 
 use crate::{LoopState, compact::CompactTrigger};
 
+/// Framing around a hook-injected context message.
+///
+/// The context reaches the model as a user message, so it carries markers that
+/// name its author — the convention `<subagent-finished>` and
+/// `<context-handoff>` already use here. Codex gets the same effect from its
+/// `developer` role; Tact's message model has no such role, and the markers
+/// also survive a reload, where the in-memory `MessageKind` does not.
+pub const HOOK_CONTEXT_OPEN_TAG: &str = "<hook-context>";
+pub const HOOK_CONTEXT_CLOSE_TAG: &str = "</hook-context>";
+
+/// True when `text` is a hook-injected context cell (see
+/// [`HOOK_CONTEXT_OPEN_TAG`]).
+pub fn is_hook_context_text(text: &str) -> bool {
+    text.trim_start().starts_with(HOOK_CONTEXT_OPEN_TAG)
+}
+
+/// Returns the context carried by a `<hook-context>` cell, or `text`
+/// unchanged when it is not one — the inverse of the framing
+/// `Agent::inject_pending_session_context` applies.
+pub fn hook_context_body(text: &str) -> &str {
+    let trimmed = text.trim();
+    trimmed
+        .strip_prefix(HOOK_CONTEXT_OPEN_TAG)
+        .and_then(|rest| rest.strip_suffix(HOOK_CONTEXT_CLOSE_TAG))
+        .map(str::trim)
+        .unwrap_or(text)
+}
+
 #[derive(Debug)]
 pub struct ToolUse {
     pub id: String,
@@ -81,8 +109,35 @@ pub enum HookControl {
     Block(String),
 }
 
+/// Mutable context handed to session-start hooks.
+///
+/// A `SessionStart` hook may inject context into the conversation (Codex
+/// `additionalContext`, Claude Code `hookSpecificOutput.additionalContext`, or
+/// a plugin's plain stdout). Each chunk is recorded as its own synthetic user
+/// message before the first turn — one message per hook, matching Codex — and
+/// is framed with `<hook-context>` markers so the model does not read it as
+/// something the user typed.
+#[derive(Debug, Clone, Default)]
+pub struct SessionStartContext {
+    /// Context chunks, one message each, in hook-registration order.
+    pub additional_contexts: Vec<String>,
+}
+
+impl SessionStartContext {
+    /// Records one chunk, ignoring blank output.
+    pub fn push_additional_context(&mut self, text: &str) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            self.additional_contexts.push(trimmed.to_string());
+        }
+    }
+}
+
 pub trait SessionStartFn:
-    for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    for<'a> Fn(
+        &'a LoopState,
+        &'a mut SessionStartContext,
+    ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
 {
@@ -248,7 +303,10 @@ pub trait TaskCompletedFn:
 }
 
 impl<F> SessionStartFn for F where
-    F: for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    F: for<'a> Fn(
+            &'a LoopState,
+            &'a mut SessionStartContext,
+        ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
         + Sync
 {

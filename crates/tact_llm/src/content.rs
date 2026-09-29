@@ -62,13 +62,17 @@ pub struct ImageSource {
 /// `Normal` is the default for real turns. `Summary` marks a system-generated
 /// compaction handoff so it can be detected by type instead of by string
 /// matching, and rendered / handled specially by callers (TUI, summarizer,
-/// rebuild filters).
+/// rebuild filters). `HookContext` marks a plugin hook's injected context
+/// (Codex `SessionStart` `additionalContext`): it reaches the model as a real
+/// message but is not a user turn, so compaction and the turn counter ignore
+/// it.
 ///
 /// The kind is **in-memory only**: the field is `#[serde(skip)]`, so the wire
 /// format (Anthropic messages, OpenAI conversion, JSONL transcripts) never
 /// carries it. Persisted sessions reload as `Normal` and fall back to the
 /// `SUMMARY_PREFIX` / `<context-handoff>` string detection in
-/// `crates/tact/src/compact`.
+/// `crates/tact/src/compact` (and the `<hook-context>` markers for hook
+/// context).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     /// Real user / assistant turn.
@@ -76,6 +80,9 @@ pub enum MessageKind {
     Normal,
     /// System-generated compaction handoff, not a real user turn.
     Summary,
+    /// Plugin hook context injected before the first turn (`crates/tact/src/hook`),
+    /// not a real user turn.
+    HookContext,
 }
 
 /// Message in a conversation.
@@ -122,6 +129,11 @@ impl Message {
     /// True for system-generated compaction handoff cells.
     pub fn is_summary(&self) -> bool {
         self.kind == MessageKind::Summary
+    }
+
+    /// True for hook-injected context cells (see [`MessageKind::HookContext`]).
+    pub fn is_hook_context(&self) -> bool {
+        self.kind == MessageKind::HookContext
     }
 
     /// Returns true if this message contains any `ContentBlock::Image`.

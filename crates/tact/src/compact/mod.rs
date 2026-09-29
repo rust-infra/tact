@@ -18,7 +18,7 @@ use anyhow::Context as _;
 use tact_llm::{ContentBlock, Message, MessageContent, MessageKind, Role};
 use tokio::io::AsyncWriteExt;
 
-use crate::consts::TactPath;
+use crate::{consts::TactPath, hook::is_hook_context_text};
 
 /// How many recent tool results to preserve during micro-compaction;
 /// all earlier tool results with > 120 chars are replaced with a stub.
@@ -243,11 +243,16 @@ fn is_real_user_message(message: &Message) -> bool {
     if !matches!(message.role, Role::User) {
         return false;
     }
-    if message.is_summary() {
+    // Neither a compaction handoff nor hook-injected context is a user turn:
+    // keeping either as a "recent real user message" would make every
+    // compaction rebuild carry it forward.
+    if message.is_summary() || message.is_hook_context() {
         return false;
     }
     match &message.content {
-        MessageContent::Text { content } => !is_summary_message(content),
+        MessageContent::Text { content } => {
+            !is_summary_message(content) && !is_hook_context_text(content)
+        }
         MessageContent::Blocks { content } => content
             .iter()
             .any(|block| !matches!(block, ContentBlock::ToolResult { .. })),
@@ -681,10 +686,11 @@ mod tests {
         HANDOFF_CLOSE_TAG, HANDOFF_OPEN_TAG, KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS,
         OMITTED_IMAGE, SUMMARY_PREFIX, approx_text_tokens, build_compacted_history,
         collect_user_messages, estimate_context_tokens, estimate_message_tokens,
-        is_summary_message, persist_large_output, recent_messages_for_summary,
-        retained_user_message_token_budget, should_auto_compact, summary_message, take_last_tokens,
-        write_transcript,
+        is_real_user_message, is_summary_message, persist_large_output,
+        recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
+        summary_message, take_last_tokens, write_transcript,
     };
+    use crate::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
 
     #[test]
     fn should_auto_compact_uses_last_token_total_when_present() {
@@ -769,6 +775,30 @@ mod tests {
             "{HANDOFF_OPEN_TAG}\n{SUMMARY_PREFIX}\n\nhandoff\n{HANDOFF_CLOSE_TAG}"
         )));
         assert!(!is_summary_message("please fix the bug"));
+    }
+
+    /// Hook-injected context is not a user turn. Carrying it forward as a
+    /// "recent real user message" would re-emit it on every compaction rebuild
+    /// instead of letting it age out with the history it framed.
+    #[test]
+    fn hook_context_is_not_a_real_user_message() {
+        let cell = |kind: MessageKind| {
+            Message::new_text(
+                Role::User,
+                format!("{HOOK_CONTEXT_OPEN_TAG}\nbrief\n{HOOK_CONTEXT_CLOSE_TAG}"),
+            )
+            .with_kind(kind)
+        };
+
+        // As injected, and as a reload from disk delivers it — the kind is not
+        // serialized, so the markers alone have to carry the exclusion.
+        assert!(!is_real_user_message(&cell(MessageKind::HookContext)));
+        assert!(!is_real_user_message(&cell(MessageKind::Normal)));
+
+        assert!(is_real_user_message(&Message::new_text(
+            Role::User,
+            "fix the bug"
+        )));
     }
 
     #[test]

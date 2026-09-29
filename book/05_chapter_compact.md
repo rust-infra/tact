@@ -207,7 +207,7 @@ Both sides of the OR compare against the same **token** window and both reserve 
 
 Rebuild after summarize (Codex-style): **`[recent real User messages…] + [<context-handoff> summary cell]`**, not a single summary-only message. The handoff is a `User`-role message framed with `<context-handoff>` … `</context-handoff>` and marked `MessageKind::Summary` in memory so it is a first-class cell: detected by type (with a `SUMMARY_PREFIX` string fallback for reloaded sessions), never mistaken for a real user turn, and safely distinguishable even if a provider merges consecutive user messages. The rebuild has three stages:
 
-1. **`collect_user_messages`** — walks the entire context, extracting real user turns via `is_real_user_message` (excludes tool-result-only blocks, prior summaries, and non-User roles).
+1. **`collect_user_messages`** — walks the entire context, extracting real user turns via `is_real_user_message` (excludes tool-result-only blocks, prior summaries, hook-injected `<hook-context>` cells, and non-User roles).
 2. **`retained_user_message_token_budget`** — budget = `min(20k estimated tokens, model_context_window - max_tokens - estimate(system + tools + summary) - 20% headroom)`.
 3. **`build_compacted_history`** — keeps real user messages from the tail up to the budget; a block turn is kept verbatim when it fits, an oversized one falls back to its text tail, or an omission marker when it contains only images. Base64 is never sliced. A summary message is appended last.
 
@@ -430,7 +430,7 @@ The compaction pipeline has **two** message selection phases with very different
 | **Goal** | Produce a good handoff summary | Agent continues working after compact |
 | **Who reads it** | The summarizer LLM (one-shot) | The main agent (every turn until next compact) |
 | **Roles** | User + Assistant + ToolResult | **User only** |
-| **Message types** | All, with `summary_message_fallback` compression | Only "real user" (skips pure tool-result blocks, prior summaries, non-User) |
+| **Message types** | All, with `summary_message_fallback` compression | Only "real user" (skips pure tool-result blocks, prior summaries, hook-injected context, non-User) |
 | **User text** | Fed into summarizer, not preserved verbatim | ✅ Preserved verbatim (from tail, budget permitting) |
 | **Assistant / Thinking** | Fed into summarizer | ❌ Dropped (summary already covers it) |
 | **ToolUse** | Compressed to `[Tool call: {name}]` | ❌ Dropped |

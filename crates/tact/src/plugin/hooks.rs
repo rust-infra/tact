@@ -46,8 +46,8 @@ use crate::{
     compact::CompactTrigger,
     consts::{PluginDirs, PluginHome},
     hook::{
-        HookControl, NotificationContext, SubagentStartContext, SubagentStartFn,
-        SubagentStopContext, SubagentStopFn, ToolResult, ToolUse,
+        HookControl, NotificationContext, SessionStartContext, SubagentStartContext,
+        SubagentStartFn, SubagentStopContext, SubagentStopFn, ToolResult, ToolUse,
     },
     plugin::PluginStore,
 };
@@ -356,14 +356,23 @@ fn build_payload(input: &HookRunInput) -> Value {
 /// Parses hook stdout, accepting JSON in both the newer `decision` shape and
 /// the legacy `hookSpecificOutput` shape, plus Claude's plain-text fallback:
 /// for `UserPromptSubmit` / `SessionStart`, non-JSON stdout is treated as
-/// `additionalContext` verbatim (ponytail and other plugins rely on this).
+/// `additionalContext` verbatim (ponytail, and the reference `basic-memory`
+/// plugin, print their context this way).
+///
+/// Stdout that *looks* like JSON but does not parse is a failure, not context —
+/// the same line Codex's `output_parser::looks_like_json` draws. Injecting a
+/// half-written payload would poison the conversation with the hook's source.
 fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
     let raw: Result<RawHookOutput, _> = serde_json::from_str(stdout);
     let raw = match raw {
         Ok(raw) => raw,
-        Err(_) if matches!(event_name, "UserPromptSubmit" | "SessionStart") => {
+        Err(error) if matches!(event_name, "UserPromptSubmit" | "SessionStart") => {
             let text = stdout.trim();
             if text.is_empty() {
+                return HookOutput::continue_default();
+            }
+            if looks_like_json(stdout) {
+                warn!("plugin hook returned invalid JSON (continuing): {error}");
                 return HookOutput::continue_default();
             }
             return HookOutput {
@@ -407,6 +416,28 @@ fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
             .or_else(|| legacy.and_then(|l| l.suppress_output))
             .unwrap_or(false),
     }
+}
+
+/// Routes one completed command hook's output into the session-start context.
+///
+/// Extracted so the routing is testable without standing up a full `Agent`:
+/// this step is the bug it replaces — `additionalContext` was logged as a
+/// warning and dropped, which made the reference `basic-memory` plugin's
+/// session briefing inert.
+fn collect_session_start_output(output: &HookOutput, context: &mut SessionStartContext) {
+    if let Some(prompt) = &output.system_prompt {
+        warn!("plugin SessionStart hook returned a system prompt; not applied in v1: {prompt}");
+    }
+    if let Some(additional) = &output.additional_context {
+        context.push_additional_context(additional);
+    }
+}
+
+/// Whether stdout advertises itself as JSON — a `{` or `[` after leading
+/// whitespace (Codex's `output_parser::looks_like_json`).
+fn looks_like_json(stdout: &str) -> bool {
+    let trimmed = stdout.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -762,62 +793,64 @@ fn plugin_subagent_stop_hooks_with_home(
 ///
 /// A `block` output from `PreToolUse` / `PostToolUse` /
 /// `Stop` / `PreCompact` propagates through [`HookControl`]; `UserPromptSubmit`
-/// appends `additionalContext` to the prompt; `SessionStart`'s `systemPrompt`
-/// output is logged but not applied (unsupported in v1); `SessionEnd` /
-/// `PostCompact` / `SubagentStop` / `PostToolUseFailure` / `Notification` /
-/// `TaskCompleted` are observational.
+/// appends `additionalContext` to the prompt; `SessionStart`'s
+/// `additionalContext` is collected for injection before the first turn and
+/// its `systemPrompt` output is logged but not applied (unsupported in v1);
+/// `SessionEnd` / `PostCompact` / `SubagentStop` / `PostToolUseFailure` /
+/// `Notification` / `TaskCompleted` are observational.
 pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate::Agent> {
     let Some(home) = PluginHome::from_environment() else {
         return Ok(agent);
     };
+    apply_plugin_hooks_with_home(&home, agent, work_dir)
+}
+
+/// [`apply_plugin_hooks`] against an explicit plugin home, so tests do not have
+/// to move the process-wide `HOME` (same split as
+/// [`plugin_subagent_start_hooks_with_home`]).
+fn apply_plugin_hooks_with_home(
+    home: &PluginHome,
+    agent: crate::Agent,
+    work_dir: &Path,
+) -> Result<crate::Agent> {
     let mut agent = agent;
     let work_dir = work_dir.to_path_buf();
 
-    for installed in installed_hooks(&home)? {
+    for installed in installed_hooks(home)? {
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::SessionStart) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_session_start(move |_agent: &crate::Agent| {
-                let matcher = matcher.clone();
-                let command = command.clone();
-                let dirs = dirs.clone();
-                let work_dir = work_dir.clone();
-                Box::pin(async move {
-                    // Tact sessions start normally; the Claude `source`
-                    // matcher vocabulary (startup|resume|clear|compact) is
-                    // matched against "startup".
-                    if !matcher_matches(matcher.as_deref(), "startup") {
-                        return Ok(HookControl::Continue);
-                    }
-                    let output = run_command_hook(
-                        &command,
-                        &dirs,
-                        &HookRunInput {
-                            session_id: String::new(),
-                            work_dir,
-                            hook_event_name: "SessionStart",
-                            event: json!({ "source": "startup" }),
-                        },
-                    )
-                    .await;
-                    if let Some(prompt) = output.system_prompt {
-                        warn!("plugin SessionStart hook returned a system prompt; not applied in v1: {prompt}");
-                    }
-                    if let Some(context) = output.additional_context {
-                        // ponytail's native-Claude path emits plain text on
-                        // SessionStart (meant as injected context). Tact's
-                        // SessionStart hooks cannot rewrite the system prompt,
-                        // so surface it instead of silently dropping it.
-                        warn!(
-                            "plugin SessionStart hook returned additional context; \
-                             not applied in v1: {context}"
-                        );
-                    }
-                    Ok(output.control)
-                })
-            });
+            agent = agent.with_session_start(
+                move |_agent: &crate::Agent, context: &mut SessionStartContext| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let dirs = dirs.clone();
+                    let work_dir = work_dir.clone();
+                    Box::pin(async move {
+                        // Tact sessions start normally; the Claude `source`
+                        // matcher vocabulary (startup|resume|clear|compact) is
+                        // matched against "startup".
+                        if !matcher_matches(matcher.as_deref(), "startup") {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_command_hook(
+                            &command,
+                            &dirs,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "SessionStart",
+                                event: json!({ "source": "startup" }),
+                            },
+                        )
+                        .await;
+                        collect_session_start_output(&output, context);
+                        Ok(output.control)
+                    })
+                },
+            );
         }
 
         for (matcher, command) in installed
@@ -1312,6 +1345,86 @@ mod tests {
         assert_eq!(HookEventKind::parse("Nope"), None);
     }
 
+    /// Codex treats plain `SessionStart` stdout as model context and
+    /// invalid-JSON stdout as a failure; Tact must draw the same line, because
+    /// the reference `basic-memory` plugin prints its whole briefing as plain
+    /// text.
+    #[test]
+    fn start_hook_stdout_is_context_unless_it_looks_like_json() {
+        // Plain Markdown — the `basic-memory` briefing shape.
+        let brief = parse_output(
+            "# Basic Memory\n\n- resume from checkpoint 7\n",
+            "SessionStart",
+        );
+        assert_eq!(
+            brief.additional_context.as_deref(),
+            Some("# Basic Memory\n\n- resume from checkpoint 7")
+        );
+        assert!(matches!(brief.control, HookControl::Continue));
+
+        // JSON that does not parse is a failure: injecting it would put the
+        // hook's own source into the conversation.
+        let broken = parse_output("{\"hookSpecificOutput\":", "SessionStart");
+        assert!(broken.additional_context.is_none());
+        assert!(matches!(broken.control, HookControl::Continue));
+
+        // Blank output carries nothing.
+        assert!(
+            parse_output("  \n", "SessionStart")
+                .additional_context
+                .is_none()
+        );
+
+        // `UserPromptSubmit` shares the plain-text fallback.
+        assert_eq!(
+            parse_output("extra context", "UserPromptSubmit")
+                .additional_context
+                .as_deref(),
+            Some("extra context")
+        );
+
+        // Every other event keeps failing closed on non-JSON.
+        assert!(
+            parse_output("oops", "PreToolUse")
+                .additional_context
+                .is_none()
+        );
+    }
+
+    /// A `SessionStart` run's context reaches the agent; the system prompt it
+    /// returns is still unsupported. Regression guard: this routing used to be
+    /// a `warn!`, so a plugin's briefing never reached the model.
+    #[test]
+    fn session_start_output_routes_its_context_to_the_agent() {
+        let mut context = SessionStartContext::default();
+        collect_session_start_output(
+            &HookOutput {
+                control: HookControl::Continue,
+                additional_context: Some("graph: resume from checkpoint 7".to_string()),
+                system_prompt: Some("rewrite the system prompt".to_string()),
+                suppress_output: false,
+            },
+            &mut context,
+        );
+        assert_eq!(
+            context.additional_contexts,
+            vec!["graph: resume from checkpoint 7".to_string()]
+        );
+
+        // A blocking run still hands over the context it produced.
+        let mut blocked = SessionStartContext::default();
+        collect_session_start_output(
+            &HookOutput {
+                control: HookControl::Block("stop".to_string()),
+                additional_context: Some("ctx".to_string()),
+                system_prompt: None,
+                suppress_output: false,
+            },
+            &mut blocked,
+        );
+        assert_eq!(blocked.additional_contexts, vec!["ctx".to_string()]);
+    }
+
     #[test]
     fn matcher_matches_regex_and_fails_open() {
         assert!(matcher_matches(None, "anything"));
@@ -1350,6 +1463,40 @@ mod tests {
 
         assert_eq!(output.control, HookControl::Continue);
         assert!(output.additional_context.is_none());
+    }
+
+    /// End-to-end through the command runner, in the shape the reference
+    /// `basic-memory` plugin uses (plain-text stdout): the briefing becomes
+    /// session context instead of a dropped warning.
+    #[tokio::test]
+    async fn a_plugin_hook_command_reaches_the_session_start_context() {
+        let dir = tempdir().unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some("echo graph: resume from checkpoint 7".into()),
+            command_windows: None,
+            timeout: None,
+            status_message: None,
+            async_: None,
+        };
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "SessionStart",
+                event: json!({ "source": "startup" }),
+            },
+        )
+        .await;
+
+        let mut context = SessionStartContext::default();
+        collect_session_start_output(&output, &mut context);
+        assert_eq!(
+            context.additional_contexts,
+            vec!["graph: resume from checkpoint 7".to_string()]
+        );
     }
 
     #[tokio::test]

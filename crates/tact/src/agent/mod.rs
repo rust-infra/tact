@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use tact_llm::{
     ContentBlock, CreateMessageParams, LlmClient, LlmProvider, Message, MessageContent,
-    OpenAiReasoningEffort, ProviderConversationState, ProviderKind, ProviderStateUpdate,
-    RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
+    MessageKind, OpenAiReasoningEffort, ProviderConversationState, ProviderKind,
+    ProviderStateUpdate, RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
 use tact_protocol::{AgentUpdate, TokenUsageInfo};
 
@@ -29,9 +29,10 @@ use crate::{
     },
     config::{self, AgentSettings},
     hook::{
-        Hook, HookControl, HookTypes, NotificationFn, PostCompactFn, PostToolUseFailureFn,
-        PostToolUseFn, PreCompactFn, PreToolUseFn, SessionEndFn, SessionStartFn, StopFn,
-        TaskCompletedFn, UserPromptSubmitFn,
+        HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG, Hook, HookControl, HookTypes,
+        NotificationFn, PostCompactFn, PostToolUseFailureFn, PostToolUseFn, PreCompactFn,
+        PreToolUseFn, SessionEndFn, SessionStartContext, SessionStartFn, StopFn, TaskCompletedFn,
+        UserPromptSubmitFn,
     },
     invoke_hooks,
     mcp::{MCPToolRouter, McpLoadReport},
@@ -306,6 +307,15 @@ pub struct AgentRuntime {
     /// so detached child tasks can push into it via the stamped
     /// `ToolContext.subagent_results` handle.
     pub pending_subagent_results: Arc<Mutex<VecDeque<SubagentResult>>>,
+    /// Context collected by `SessionStart` hooks (plugin `additionalContext`),
+    /// drained once by `Agent::inject_pending_session_context` before the
+    /// first turn and recorded as synthetic `<hook-context>` user messages.
+    ///
+    /// Held here rather than pushed at dispatch time because
+    /// [`Agent::ensure_session`] loads history only into an *empty* context —
+    /// injecting during `dispatch_session_start_hooks` (which runs before the
+    /// session is ensured) would suppress the history restore entirely.
+    pub pending_session_context: Vec<String>,
 }
 
 /// How the agent builds its system prompt.
@@ -402,6 +412,7 @@ impl Agent {
                 last_token_total: 0,
                 provider_state: None,
                 pending_subagent_results: Arc::new(Mutex::new(VecDeque::new())),
+                pending_session_context: Vec::new(),
             },
             tool_context,
             tools,
@@ -963,6 +974,11 @@ impl Agent {
         // Restore history if the startup path left context empty.
         self.ensure_session().await?;
 
+        // SessionStart hook context is recorded after the restore and before
+        // this turn's user message, so it frames the turn instead of being
+        // buried in history (Codex runs its start hooks at the same point).
+        self.inject_pending_session_context().await?;
+
         // Codex-style pre-turn: compact *old* history before appending this
         // turn's user message, reserving space for the incoming prompt so we
         // do not overflow immediately after push.
@@ -1424,16 +1440,45 @@ impl Agent {
         self
     }
 
+    /// Runs `SessionStart` hooks once per session.
+    ///
+    /// Context they collect is stashed on
+    /// [`AgentRuntime::pending_session_context`] rather than recorded here:
+    /// this runs during startup, before [`Self::ensure_session`] has loaded
+    /// persisted history, and [`Self::push_message`] would leave the context
+    /// non-empty and suppress that restore.
     pub async fn dispatch_session_start_hooks(&mut self) -> Result<()> {
-        match invoke_hooks!(SessionStart, self)? {
-            HookControl::Continue => Ok(()),
-            HookControl::Block(reason) => {
-                self.emit_update(AgentUpdate::Info(format!(
-                    "[SessionStart hook blocked] {reason}"
-                )));
-                Ok(())
-            }
+        let mut context = SessionStartContext::default();
+        let control = invoke_hooks!(SessionStart, self, &mut context)?;
+        self.runtime
+            .pending_session_context
+            .extend(context.additional_contexts);
+        if let HookControl::Block(reason) = control {
+            self.emit_update(AgentUpdate::Info(format!(
+                "[SessionStart hook blocked] {reason}"
+            )));
         }
+        Ok(())
+    }
+
+    /// Records the context [`Self::dispatch_session_start_hooks`] collected as
+    /// conversation messages, one per chunk.
+    ///
+    /// Each chunk is framed with `<hook-context>` markers (Codex records the
+    /// same text as a `developer` role message) so the model does not read it
+    /// as something the user typed; the TUI shows the unframed text as a system
+    /// notice. No-op without pending context, which is the common case.
+    async fn inject_pending_session_context(&mut self) -> Result<()> {
+        let chunks = std::mem::take(&mut self.runtime.pending_session_context);
+        for chunk in chunks {
+            let framed = format!("{HOOK_CONTEXT_OPEN_TAG}\n{chunk}\n{HOOK_CONTEXT_CLOSE_TAG}");
+            self.push_message(
+                Message::new_text(Role::User, framed).with_kind(MessageKind::HookContext),
+            )
+            .await?;
+            self.emit_update(AgentUpdate::MdInfo(chunk));
+        }
+        Ok(())
     }
 
     /// Runs [`Hook::Stop`] hooks once at the outer turn boundary and returns
@@ -4703,6 +4748,88 @@ mod tests {
             text.contains("found the bug"),
             "summary should be injected: {text}"
         );
+    }
+
+    /// A `SessionStart` hook's context reaches the model as a message of its
+    /// own, framed so it does not read as user input.
+    ///
+    /// Codex records the same text as a `developer` role message; Tact's
+    /// message model has only user/assistant, so the `<hook-context>` markers
+    /// carry the provenance instead. Before this, the text was logged as a
+    /// warning and dropped, which made the reference `basic-memory` plugin's
+    /// session briefing inert.
+    #[tokio::test]
+    async fn agent_loop_injects_session_start_context_as_its_own_message() {
+        ensure_config();
+        use tact_protocol::AgentUpdate;
+
+        const BRIEF: &str = "graph says: resume from checkpoint 7";
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("ok")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("session_start_context"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session_start(|_agent, context| {
+            context.push_additional_context(BRIEF);
+            // Blank output must not produce an empty message.
+            context.push_additional_context("   \n  ");
+            Box::pin(async { Ok(HookControl::Continue) })
+        });
+
+        agent.dispatch_session_start_hooks().await.unwrap();
+        assert_eq!(
+            agent.runtime.pending_session_context,
+            vec![BRIEF.to_string()]
+        );
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        let injected = agent
+            .runtime
+            .context
+            .first()
+            .expect("the injected context leads the conversation");
+        assert!(
+            injected.is_hook_context(),
+            "the cell is marked so the TUI and compaction can tell it apart"
+        );
+        let text = crate::extract_text(&injected.content);
+        assert!(
+            text.starts_with(HOOK_CONTEXT_OPEN_TAG) && text.ends_with(HOOK_CONTEXT_CLOSE_TAG),
+            "context is framed: {text}"
+        );
+        assert!(text.contains(BRIEF), "context body survives: {text}");
+        assert_eq!(agent.runtime.pending_session_context, Vec::<String>::new());
+
+        // The turn's own message still follows it.
+        assert!(matches!(
+            agent.runtime.context.get(1).map(|m| m.role),
+            Some(Role::User)
+        ));
+
+        // The TUI is told what was injected, without the framing.
+        let mut notices = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::MdInfo(md) = update {
+                notices.push(md);
+            }
+        }
+        assert_eq!(notices, vec![BRIEF.to_string()]);
     }
 
     #[tokio::test]

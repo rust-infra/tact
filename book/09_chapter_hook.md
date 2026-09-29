@@ -26,7 +26,7 @@ Defined in `crates/tact/src/hook/mod.rs`:
 
 | Hook | Registration | Invoked today? | Can mutate | Can veto |
 |------|----------------|----------------|------------|----------|
-| `SessionStart` | `Agent::session_start` | Yes — once per session, after initialization (`dispatch_session_start_hooks`) | read-only access to `LoopState` (`Agent`) | Yes |
+| `SessionStart` | `Agent::session_start` | Yes — once per session, after initialization (`dispatch_session_start_hooks`); what it collects is recorded before the first turn | `&mut SessionStartContext` (append injected context) | Yes |
 | `UserPromptSubmit` | `Agent::user_prompt_submit` | Yes — when a user turn message enters `agent_loop` | prompt text (append `additionalContext`) | Yes |
 | `PreToolUse` | `Agent::pre_tool` | Yes — before permission check, per tool in order | `ToolUse` input (`name`, `input` JSON) | Yes |
 | `PostToolUse` | `Agent::post_tool` | Yes — after each tool finishes, as results stream in | `ToolResult` content | Yes |
@@ -163,7 +163,7 @@ Multiple hooks of the same type compose: all must return `Continue` unless one `
 
 Installed marketplace plugins can declare command hooks through `.codex-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks` (in `crates/tact/src/plugin/hooks.rs`) registers them on the `Agent` builder in `interactive.rs` / `headless.rs` for the thirteen mapped events:
 
-- `SessionStart` — matcher is matched against `"startup"`; `systemPrompt` output is logged but **not applied** (v1).
+- `SessionStart` — matcher is matched against `"startup"`; `additionalContext` (JSON, or plain stdout — the shape the reference `basic-memory` plugin prints its briefing in) is recorded as a synthetic `<hook-context>` user message before the first turn; `systemPrompt` output is logged but **not applied** (v1).
 - `UserPromptSubmit` — matcher against the prompt text; `additionalContext` output is appended to the user prompt.
 - `PreToolUse` — matcher against the tool name; `additionalContext` is added to the tool input as `_hook_context`; `block` prevents execution.
 - `PostToolUse` — matcher against the tool name; `suppressOutput` clears the result; `block` turns it into a failure.
@@ -241,19 +241,21 @@ PreparedState::Run | Resolved(blocked message)
 
 ---
 
-## 10. SessionStart (API Today)
+## 10. SessionStart
 
 `Agent::session_start` accepts hooks with signature:
 
 ```rust
-Fn(&LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
+Fn(&LoopState, &mut SessionStartContext) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
 ```
 
-The intended call site is **once per session**, before the first LLM request in `agent_loop` (after `ensure_session`, before the main `loop` body).
+They run **once per session** from `dispatch_session_start_hooks`, which the TUI and headless startup paths call right after `apply_plugin_hooks`.
 
-As of this writing, **`agent_loop` does not yet invoke `invoke_hooks!(SessionStart, …)`**. You can register session hooks today, but they will not run until that call is wired in. PreToolUse and PostToolUse are fully active.
+Context a hook collects lands on `AgentRuntime::pending_session_context` rather than going straight into the conversation: `dispatch_session_start_hooks` runs before `ensure_session`, and `push_message` there would leave the context non-empty and suppress the history restore. `agent_loop` drains it immediately after `ensure_session` and before the turn's user message, recording each chunk as its own synthetic `<hook-context>` user message carrying `MessageKind::HookContext`.
 
-When wired, session hooks will be the right place for one-time setup: warming caches, validating workspace invariants, or injecting telemetry context.
+That placement and the one-message-per-chunk rule match Codex, whose `SessionStart` handler records each `additionalContext` as its own `developer` role message. Tact's message model has only user/assistant, so the `<hook-context>` markers carry the provenance instead — and unlike the in-memory kind, they survive a reload. Stdout that looks like JSON but does not parse is treated as a failed hook rather than injected, matching Codex's `looks_like_json` check.
+
+Hooks are also the right place for one-time setup: warming caches, validating workspace invariants, or injecting telemetry context.
 
 ---
 

@@ -27,7 +27,7 @@ Hooks 把这些关注点移出核心调度器，仍在流水线可预测的位�
 
 | Hook | 注册 | 今天是否调用 | 可否变更 | 可否否决 |
 |------|------|--------------|----------|----------|
-| `SessionStart` | `Agent::session_start` | 是 — 每会话一次，初始化后（`dispatch_session_start_hooks`） | 对 `LoopState`（`Agent`）只读 | 是 |
+| `SessionStart` | `Agent::session_start` | 是 — 每会话一次，初始化后（`dispatch_session_start_hooks`）；它收集的 context 在第一轮之前被记录 | `&mut SessionStartContext`（追加注入的 context） | 是 |
 | `UserPromptSubmit` | `Agent::user_prompt_submit` | 是 — 用户回合消息进入 `agent_loop` 时 | prompt 文本（追加 `additionalContext`） | 是 |
 | `PreToolUse` | `Agent::pre_tool` | 是 — 权限检查之前，按 tool 顺序 | `ToolUse` 输入（`name`、`input` JSON） | 是 |
 | `PostToolUse` | `Agent::post_tool` | 是 — 每个 tool 完成后，随结果流入 | `ToolResult` content | 是 |
@@ -164,7 +164,7 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把它们注册到 `Agent` 上，覆盖十三个映射事件：
 
-- `SessionStart` — matcher 与 `"startup"` 匹配；`systemPrompt` 输出仅记录日志、**不应用**（v1）。
+- `SessionStart` — matcher 与 `"startup"` 匹配；`additionalContext`（JSON，或纯 stdout —— 参考实现 `basic-memory` 插件正是以这种形式打印它的简报）会在第一轮之前被记录为一条合成的 `<hook-context>` user 消息；`systemPrompt` 输出仅记录日志、**不应用**（v1）。
 - `UserPromptSubmit` — matcher 匹配 prompt 文本；`additionalContext` 输出追加到用户 prompt。
 - `PreToolUse` — matcher 匹配工具名；`additionalContext` 以 `_hook_context` 加入工具输入；`block` 阻止执行。
 - `PostToolUse` — matcher 匹配工具名；`suppressOutput` 清空结果；`block` 使其变为失败。
@@ -242,19 +242,21 @@ PreparedState::Run | Resolved(blocked message)
 
 ---
 
-## 10. SessionStart（当前 API）
+## 10. SessionStart
 
 `Agent::session_start` 接受签名如下的 hooks：
 
 ```rust
-Fn(&LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
+Fn(&LoopState, &mut SessionStartContext) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
 ```
 
-预期调用点是**每个会话一次**，在 `agent_loop` 中第一次 LLM 请求之前（`ensure_session` 之后、主 `loop` 体之前）。
+它们由 `dispatch_session_start_hooks` **每会话运行一次**，TUI 与 headless 启动路径在 `apply_plugin_hooks` 之后紧接着调用它。
 
-截至本文写作时，**`agent_loop` 尚未调用 `invoke_hooks!(SessionStart, …)`**。今天可以注册 session hooks，但要接上调用才会运行。PreToolUse 与 PostToolUse 已完全生效。
+hook 收集到的 context 落在 `AgentRuntime::pending_session_context` 上，而不是直接进入对话：`dispatch_session_start_hooks` 发生在 `ensure_session` 之前，此时 `push_message` 会让 context 非空、从而抑制历史恢复。`agent_loop` 在 `ensure_session` 之后、本轮用户消息之前把它取走，每个片段各记为一条合成的 `<hook-context>` user 消息，携带 `MessageKind::HookContext`。
 
-接上后，session hooks 适合一次性 setup：预热缓存、校验工作区不变量或注入遥测 context。
+这个时机与「一片段一条消息」的规则与 Codex 一致：它的 `SessionStart` 处理把每个 `additionalContext` 各记为一条 `developer` 角色消息。Tact 的消息模型只有 user/assistant，所以改由 `<hook-context>` 标记来承载来源信息 —— 而且与内存中的 kind 不同，这些标记在重新加载后依然存在。stdout 看起来像 JSON 却解析失败时，按失败的 hook 处理而非注入，与 Codex 的 `looks_like_json` 检查一致。
+
+session hooks 也适合一次性 setup：预热缓存、校验工作区不变量或注入遥测 context。
 
 ---
 
