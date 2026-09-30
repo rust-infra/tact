@@ -827,6 +827,10 @@ mod tests {
     /// command line can contain the marker string (a test runner that shells a
     /// script mentioning it, `bwrap … sh -c <script>`), and that is not a
     /// survivor. The `sleep` is what the kill has to reach.
+    ///
+    /// Linux-only, with its two callers: `/proc` is how this observes a
+    /// process tree, and there is no portable equivalent here.
+    #[cfg(target_os = "linux")]
     fn matching_sleeps(needle: &str) -> Vec<String> {
         let mut found: Vec<String> = std::fs::read_dir("/proc")
             .into_iter()
@@ -851,6 +855,7 @@ mod tests {
     ///
     /// `SIGKILL` is asynchronous, so a process can still be listed momentarily
     /// after the kill; the assertion is about survivors, not about reap speed.
+    #[cfg(target_os = "linux")]
     async fn wait_for_no_matching_sleeps(needle: &str) -> Vec<String> {
         for _ in 0..150 {
             let found = matching_sleeps(needle);
@@ -1135,6 +1140,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn cancelling_terminates_the_task_and_its_children() {
         // Cancellation is the *only* way a running task ends early — there is no
         // command timeout — so it has to reach the whole tree: the `sleep` below
@@ -1196,6 +1202,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn cancelling_reaches_a_tree_whose_leader_already_exited() {
         // The leader exits immediately (`&` with no `wait`), but the
         // backgrounded grandchild inherits the pipes, so the task stays

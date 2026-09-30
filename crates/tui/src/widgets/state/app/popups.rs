@@ -1522,6 +1522,11 @@ mod clipboard_tests {
     }
 
     /// True when `arboard` itself round-trips `text` on this machine.
+    ///
+    /// Gated with its only caller: on a platform whose clipboard takes the text
+    /// the Linux-only test never runs, and an unguarded helper would then be
+    /// dead code under `-D warnings`.
+    #[cfg(target_os = "linux")]
     fn native_round_trips(text: &str) -> bool {
         let Ok(mut probe) = arboard::Clipboard::new() else {
             return false;
