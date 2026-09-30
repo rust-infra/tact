@@ -542,9 +542,18 @@ Resources are not tools — they have no input schema and are addressed by URI �
 | `list_mcp_resource_templates` | `server` (optional) | The same rendering over `resources/templates/list`. A template is a URI with `{…}` placeholders; the listing states that they must be filled before reading, because echoed verbatim into `read_mcp_resource` a template is just a URI that fails. |
 | `read_mcp_resource` | `server`, `uri` (both required) | `resources/read` for that URI. Text is returned as-is; a binary blob is reported by size instead of inlined, because a base64 payload is unreadable to the model and expensive to carry. |
 
-Both exist **only while a server is connected** (`MCPToolRouter::resource_tool_specs`): with an empty router the names are unresolvable and never advertised, so the model is never handed a tool whose only possible answer is "no MCP servers are connected". They resolve in the same place `mcp__…` names do, are `CapabilityRisk::High` (third-party content, and a listing touches every server), and `read_mcp_resource` is scoped to one server for scheduling while a listing is a barrier.
+All three exist **only while a server is connected** (`MCPToolRouter::resource_tool_specs`): with an empty router the names are unresolvable and never advertised, so the model is never handed a tool whose only possible answer is "no MCP servers are connected". They resolve in the same place `mcp__…` names do, and `read_mcp_resource` is scoped to one server for scheduling while a listing is a barrier.
 
 This matters more than it looks. Plenty of servers publish their real content as resources and tell the model to go read one — Basic Memory's `instructions` say "read the `memory://ai_assistant_guide` resource", and measured against the real server `tact-ui mcp get basic-memory` reports `resources  1 available`. Without Step 9 that sentence was a dead end.
+
+Their risk is declared in `[mcp]`, not in a server entry, because these names belong to Tact rather than to a server — which is exactly why an entry's `tools.<name>.risk` cannot reach them:
+
+| Key | Tools | Default |
+|---|---|---|
+| `mcp.resource_list_risk` | `list_mcp_resources`, `list_mcp_resource_templates` | `high` |
+| `mcp.resource_read_risk` | `read_mcp_resource` | `high` |
+
+Both take the same `read` / `write` / `high` vocabulary as `tools.<name>.risk`, and both default to `high`, so nothing changes until you declare otherwise. They are separate keys because a listing returns metadata while a read returns third-party content fetched over the network; declaring `read` for the read key bypasses plan mode, the same trade the native `read_file` makes.
 
 Templates are not a side note: a server whose resources are *template*-addressed publishes **nothing** through `resources/list`, so without the second tool it is indistinguishable from a server with nothing to offer — and its URIs are not guessable. An empty `list_mcp_resources` therefore names `list_mcp_resource_templates` as the next call rather than leaving the model to conclude the server is empty. Tact reports the template and the model performs the substitution, which keeps `read_mcp_resource` byte-exact and avoids inventing a URI-expansion rule the spec does not define here.
 
@@ -803,7 +812,7 @@ The measurement above is specific to the names Figma admits. Another provider ma
 | **Legacy HTTP+SSE** | `type: "sse"` maps to Streamable HTTP; the deprecated 2024-11-05 HTTP+SSE endpoint is not implemented |
 | **OAuth device flow / mTLS** | Only the authorization-code + PKCE flow is implemented; no device code, client certificates, or enterprise SSO |
 | **Client secrets / allowlisted providers** | Only self-registration (DCR) and public-client `clientId` are supported; a provider that refuses DCR *and* needs a client secret (Figma's remote server) cannot be authorized from Tact — the error names the alternatives |
-| **Per-tool permission granularity** | Solved for server tools: `tools.<name>.risk` / `default_tool_risk` declare `read` / `write` / `high`, and `mcp get` prints the effective tier. The two router-served resource tools (`list_mcp_resources`, `read_mcp_resource`) are **not** addressable this way — they are not in any server's `tools` map — so they stay `CapabilityRisk::High` |
+| **Per-tool permission granularity** | Solved on both sides. A server's tools take `tools.<name>.risk` / `default_tool_risk`, and `mcp get` prints the effective tier. Tact's own resource tools are not in any server's `tools` map, so `[mcp]`'s `resource_list_risk` / `resource_read_risk` declare theirs — see Step 9 |
 | **Server-declared tool annotations** | `readOnlyHint` is read and displayed, never applied: a third party's self-description cannot lower a risk, and `openWorldHint` would make an "honest" read-only tool an egress path Tact has no axis for |
 | **Unmodelled entry fields** | `omit_tools_from` (Codex's code-mode concept) is parsed and reported, never honoured; `env_vars` is reported when it appears on a remote entry, which has no child process |
 | **No `env_vars` `source: "remote"`** | Codex's `remote` source asks a remote stdio executor for a value. Tact has no such executor, so the entry is refused by name rather than starting without it |

@@ -543,9 +543,18 @@ Resources 不是工具——它们没有输入 schema，以 URI 寻址——因�
 | `list_mcp_resource_templates` | `server`（可选） | 对 `resources/templates/list` 做同样的渲染。模板是带 `{…}` 占位符的 URI；列表会说明必须先填充占位符才能读取——因为原样丢给 `read_mcp_resource` 的模板只是一个会失败的 URI。 |
 | `read_mcp_resource` | `server`、`uri`（均必填） | 对该 URI 执行 `resources/read`。文本原样返回；二进制 blob 只报告大小而不内联，因为 base64 载荷对模型不可读、又很占上下文。 |
 
-三者都**只在有 server 连接时**存在（`MCPToolRouter::resource_tool_specs`）：router 为空时这两个名字无法解析，也就不会被广告出去，模型不会拿到一个只能回答「没有连接任何 MCP server」的工具。它们与 `mcp__…` 名字在同一处解析，风险等级为 `CapabilityRisk::High`（第三方内容，且一次列表会触及所有 server）；调度上 `read_mcp_resource` 只作用于单个 server，而列表是一个 barrier。
+三者都**只在有 server 连接时**存在（`MCPToolRouter::resource_tool_specs`）：router 为空时这些名字无法解析，也就不会被广告出去，模型不会拿到一个只能回答「没有连接任何 MCP server」的工具。它们与 `mcp__…` 名字在同一处解析；调度上 `read_mcp_resource` 只作用于单个 server，而列表是一个 barrier。
 
 这件事比看上去重要。很多 server 把真正的内容作为 resource 发布，并告诉模型去读其中一个——Basic Memory 的 `instructions` 就写着「read the `memory://ai_assistant_guide` resource」，对真实 server 实测 `tact-ui mcp get basic-memory` 会显示 `resources  1 available`。没有 Step 9，这句话就是死路。
+
+它们的 risk 在 `[mcp]` 里声明，而不是在 server 条目里——因为这些名字属于 Tact 而非某个 server，这正是条目的 `tools.<name>.risk` 够不到它们的原因：
+
+| 键 | 工具 | 默认 |
+|---|---|---|
+| `mcp.resource_list_risk` | `list_mcp_resources`、`list_mcp_resource_templates` | `high` |
+| `mcp.resource_read_risk` | `read_mcp_resource` | `high` |
+
+两者都使用与 `tools.<name>.risk` 相同的 `read` / `write` / `high` 词汇，且都默认 `high`，因此在你明确声明之前不会有任何变化。之所以是两个键：列表返回的是元数据，而读取返回的是通过网络取回的第三方内容；给读取键声明 `read` 会绕过计划模式，与原生 `read_file` 是同一笔权衡。
 
 模板不是旁枝：资源以**模板**方式寻址的 server 通过 `resources/list` 什么都不发布，所以没有第二个工具时，它与「什么都没有」的 server 无法区分——而它的 URI 也猜不出来。因此 `list_mcp_resources` 为空时会点名 `list_mcp_resource_templates` 作为下一步调用，而不是让模型自己去得出「这个 server 是空的」结论。Tact 报告模板、由模型完成替换，这样 `read_mcp_resource` 保持逐字节精确，也不必发明一条规范在这里并未定义的 URI 展开规则。
 
@@ -803,7 +812,7 @@ oauth_client_name = "Codex"   # 默认；设为 "Tact" 可如实标识
 | **旧版 HTTP+SSE** | `type: "sse"` 映射到 Streamable HTTP；已废弃的 2024-11-05 HTTP+SSE 端点未实现 |
 | **OAuth 设备码 / mTLS** | 只实现授权码 + PKCE 流程；无设备码、客户端证书或企业 SSO |
 | **客户端密钥 / 白名单 provider** | 只支持自我注册（DCR）与公共客户端的 `clientId`；若 provider 既拒绝 DCR 又要求 client secret（Figma 远程 server），则无法在 Tact 内完成授权——报错会指明替代方案 |
-| **按工具的权限粒度** | 对 server 工具来说已解决：`tools.<name>.risk` / `default_tool_risk` 可声明 `read` / `write` / `high`，`mcp get` 会打印实际生效的档位。但两个由路由层提供的资源工具（`list_mcp_resources`、`read_mcp_resource`）**无法**用这种方式寻址——它们不在任何 server 的 `tools` 映射里——因此仍是 `CapabilityRisk::High` |
+| **按工具的权限粒度** | 两侧都已解决。server 的工具用 `tools.<name>.risk` / `default_tool_risk`，`mcp get` 会打印实际生效的档位。Tact 自己的资源工具不在任何 server 的 `tools` 映射里，因此由 `[mcp]` 的 `resource_list_risk` / `resource_read_risk` 声明——见 Step 9 |
 | **server 声明的工具 annotations** | `readOnlyHint` 会被读取并展示，但从不施加：第三方的自述不能降低 risk；而且 `openWorldHint` 会让一个「诚实」的只读工具变成外泄通道，而 Tact 没有对应的轴 |
 | **未建模的条目字段** | `omit_tools_from`（Codex 的 code-mode 概念）只被解析并上报，不会被采纳；`env_vars` 出现在远程条目上时也会被上报，因为那里没有子进程 |
 | **不支持 `env_vars` 的 `source: "remote"`** | Codex 的 `remote` 源向远端 stdio 执行器索要取值。Tact 没有这样的执行器，因此该条目会按名拒绝，而不是缺值启动 |

@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tact_llm::{OpenAiProtocol, OpenAiReasoningEffort, ProviderInfo, ProviderKind};
 
+use crate::permission::CapabilityRisk;
+
 /// Top-level TOML config (`.tact/config.toml` or `config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -267,6 +269,22 @@ pub struct McpTomlConfig {
     /// `client_name` sent when Tact registers itself with an OAuth provider
     /// (`mcp.oauth_client_name`). Per-server `auth.clientName` overrides it.
     pub oauth_client_name: Option<String>,
+
+    /// Risk for Tact's own resource *listings* — `list_mcp_resources` and
+    /// `list_mcp_resource_templates` (`mcp.resource_list_risk`).
+    ///
+    /// These tools belong to Tact rather than to a server, which is why an
+    /// entry's `tools.<name>.risk` cannot address them and they need a key of
+    /// their own. Same vocabulary as there: `read` | `write` | `high`, default
+    /// `high`.
+    pub resource_list_risk: Option<String>,
+
+    /// Risk for `read_mcp_resource` (`mcp.resource_read_risk`).
+    ///
+    /// Separate from the listing key because the two acts are not the same: a
+    /// listing returns metadata, a read returns third-party content fetched over
+    /// the network.
+    pub resource_read_risk: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +307,12 @@ pub struct McpSettings {
     /// `mcp.oauth_client_name = "Tact"` to identify honestly and accept that
     /// allowlisting providers will refuse registration.
     pub oauth_client_name: String,
+
+    /// Risk for Tact's resource listings; `None` keeps `CapabilityRisk::High`.
+    pub resource_list_risk: Option<CapabilityRisk>,
+
+    /// Risk for `read_mcp_resource`; `None` keeps `CapabilityRisk::High`.
+    pub resource_read_risk: Option<CapabilityRisk>,
 }
 
 impl McpSettings {
@@ -304,6 +328,8 @@ impl Default for McpSettings {
         // provider, so the type's fallback must be the real default.
         Self {
             oauth_client_name: Self::DEFAULT_OAUTH_CLIENT_NAME.to_string(),
+            resource_list_risk: None,
+            resource_read_risk: None,
         }
     }
 }

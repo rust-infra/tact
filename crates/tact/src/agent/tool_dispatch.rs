@@ -654,9 +654,11 @@ impl Agent {
                 // The entry declares a tier through `tools.<name>.risk` or
                 // `default_tool_risk`; a silent entry keeps High.
                 ResolvedTool::Mcp { server, tool, .. } => self.mcp_router.risk_for(server, tool),
-                // Reading a resource is still third-party content, and a
-                // listing touches every server the user configured.
-                ResolvedTool::McpResource { .. } => CapabilityRisk::High,
+                // Tact's own resource tools: no server entry can declare their
+                // risk, so `[mcp]`'s two keys do, and both default to High.
+                ResolvedTool::McpResource { tool } => {
+                    crate::mcp::resource_tool_risk(*tool)
+                }
                 ResolvedTool::Unknown { .. } => CapabilityRisk::High,
             };
             // An MCP entry's `approval_mode: "auto"` skips the default prompt

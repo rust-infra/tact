@@ -99,7 +99,42 @@ fn resolve_mcp(toml_cfg: &TactTomlConfig) -> McpSettings {
             "MCP OAuth registration identity"
         );
     }
-    McpSettings { oauth_client_name }
+    // The resource tools are Tact's own, so their risk has no server entry to
+    // live in. Same vocabulary as `tools.<name>.risk`; an unknown value is
+    // warned about and ignored, so one typo cannot fail the whole config.
+    let resource_list_risk = parse_mcp_tool_risk(
+        toml_cfg.mcp.resource_list_risk.as_deref(),
+        "mcp.resource_list_risk",
+    );
+    let resource_read_risk = parse_mcp_tool_risk(
+        toml_cfg.mcp.resource_read_risk.as_deref(),
+        "mcp.resource_read_risk",
+    );
+
+    McpSettings {
+        oauth_client_name,
+        resource_list_risk,
+        resource_read_risk,
+    }
+}
+
+/// Parses one of `[mcp]`'s resource-tool risk keys.
+///
+/// `None` for absent *or* unrecognised: the caller treats both as "keep the
+/// default", and the default is the restrictive one.
+fn parse_mcp_tool_risk(value: Option<&str>, field: &str) -> Option<crate::permission::CapabilityRisk> {
+    let value = value?;
+    match crate::mcp::ToolRisk::parse(value) {
+        Some(risk) => Some(risk.to_capability()),
+        None => {
+            tracing::warn!(
+                field,
+                value,
+                "unknown MCP resource-tool risk (expected read|write|high); ignoring it"
+            );
+            None
+        }
+    }
 }
 
 fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
@@ -1007,6 +1042,30 @@ max_tokens = {subagent_max_tokens}
             McpSettings::default().oauth_client_name,
             McpSettings::DEFAULT_OAUTH_CLIENT_NAME
         );
+    }
+
+    #[test]
+    fn resolve_mcp_resource_tool_risk_defaults_to_high_and_is_overridable() {
+        use crate::permission::CapabilityRisk;
+
+        let (args, toml_cfg) = empty_cli_args_with_openai();
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.resource_list_risk, None);
+        assert_eq!(cfg.mcp.resource_read_risk, None);
+
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.resource_list_risk = Some(" write ".to_string());
+        toml_cfg.mcp.resource_read_risk = Some("read".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.resource_list_risk, Some(CapabilityRisk::Write));
+        assert_eq!(cfg.mcp.resource_read_risk, Some(CapabilityRisk::Read));
+
+        // An unknown value is ignored rather than guessed, so the tool keeps the
+        // restrictive default — the same rule `tools.<name>.risk` follows.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.resource_read_risk = Some("harmless".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.resource_read_risk, None);
     }
 
     #[test]

@@ -31,7 +31,7 @@ use rmcp::model::{
 use serde_json::json;
 
 use super::{MCP_RESOURCE_TIMEOUT, MCPToolRouter, McpClient};
-use crate::ToolSpec;
+use crate::{ToolSpec, permission::CapabilityRisk};
 
 /// List the resources connected servers expose (Codex's tool name).
 pub const LIST_RESOURCES_TOOL: &str = "list_mcp_resources";
@@ -140,6 +140,41 @@ impl McpResourceTool {
             },
         }
     }
+}
+
+/// The risk of one of Tact's own resource tools.
+///
+/// These names belong to Tact rather than to a server, which is why no entry's
+/// `tools.<name>.risk` can address them and they need `[mcp]`'s two keys instead.
+/// Sits beside [`crate::permission::normalize_mcp_capability`], the same kind of
+/// single sayer for server tools.
+///
+/// Listings and reads are separate keys because the acts are not the same: a
+/// listing returns metadata, a read returns third-party content fetched over the
+/// network. Both default to `High`, and so does an unresolvable config, so the
+/// unconfigured path is the restrictive one.
+#[must_use]
+pub fn resource_tool_risk(tool: McpResourceTool) -> CapabilityRisk {
+    match crate::config::try_settings() {
+        Some(settings) => resource_tool_risk_with(tool, &settings.mcp),
+        None => CapabilityRisk::High,
+    }
+}
+
+/// [`resource_tool_risk`] against given settings.
+///
+/// Split out so the tool-to-key mapping is testable without installing a
+/// process-global config.
+#[must_use]
+pub fn resource_tool_risk_with(
+    tool: McpResourceTool,
+    mcp: &crate::config::McpSettings,
+) -> CapabilityRisk {
+    match tool {
+        McpResourceTool::List | McpResourceTool::Templates => mcp.resource_list_risk,
+        McpResourceTool::Read => mcp.resource_read_risk,
+    }
+    .unwrap_or(CapabilityRisk::High)
 }
 
 impl McpClient {
@@ -668,5 +703,63 @@ mod tests {
             .await
             .expect_err("no servers is an error, not an empty listing");
         assert!(error.to_string().contains("no MCP servers"), "{error}");
+    }
+    // ── the resource tools' own risk ────────────────────────────────────
+
+    #[test]
+    fn the_resource_tools_are_high_unless_something_declares_otherwise() {
+        // No config in a test process, so `try_settings()` is `None` — which is
+        // exactly the "nobody declared anything" path, and it must be the
+        // restrictive one.
+        for tool in McpResourceTool::ALL {
+            assert_eq!(
+                resource_tool_risk(tool),
+                CapabilityRisk::High,
+                "{} must default to High",
+                tool.name()
+            );
+        }
+    }
+
+    #[test]
+    fn a_listing_and_a_read_are_declared_separately() {
+        // The two keys exist because the acts are not the same, so the mapping
+        // from tool to key is the property under test.
+        let mut mcp = crate::config::McpSettings::default();
+        assert_eq!(
+            resource_tool_risk_with(McpResourceTool::List, &mcp),
+            CapabilityRisk::High
+        );
+        assert_eq!(
+            resource_tool_risk_with(McpResourceTool::Read, &mcp),
+            CapabilityRisk::High
+        );
+
+        // Declaring the listing key moves both listings and neither the read…
+        mcp.resource_list_risk = Some(CapabilityRisk::Write);
+        assert_eq!(
+            resource_tool_risk_with(McpResourceTool::List, &mcp),
+            CapabilityRisk::Write
+        );
+        assert_eq!(
+            resource_tool_risk_with(McpResourceTool::Templates, &mcp),
+            CapabilityRisk::Write
+        );
+        assert_eq!(
+            resource_tool_risk_with(McpResourceTool::Read, &mcp),
+            CapabilityRisk::High,
+            "the read must keep its own default"
+        );
+
+        // …and the read key moves only the read.
+        mcp.resource_read_risk = Some(CapabilityRisk::Read);
+        assert_eq!(
+            resource_tool_risk_with(McpResourceTool::Read, &mcp),
+            CapabilityRisk::Read
+        );
+        assert_eq!(
+            resource_tool_risk_with(McpResourceTool::List, &mcp),
+            CapabilityRisk::Write
+        );
     }
 }

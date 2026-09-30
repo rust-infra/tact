@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — Tact's own resource tools get a risk you can declare
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/config/{types,resolve}.rs` (`McpTomlConfig::{resource_list_risk, resource_read_risk}`, `McpSettings`, `parse_mcp_tool_risk`), `crates/tact/src/mcp/resource.rs` (`resource_tool_risk`, `resource_tool_risk_with`), `crates/tact/src/agent/tool_dispatch.rs`; spec `docs/superpowers/specs/2026-09-30-mcp-resource-tool-risk-design.md`; [Ch 8](./08_chapter_mcp.md) |
+
+**Symptom / motivation:** `tools.<name>.risk` addresses a server's tools, and Tact's three resource tools are not a server's — they are native names served by the router — so no entry could declare them and they were `CapabilityRisk::High` by construction. A defensible default, and an unusable one: a user with a single trusted local server could not say "listing is fine, reading is not", so every listing prompted and a non-interactive run refused them outright. The gap was recorded when there were two such tools; there are three now.
+
+**Decision:** `[mcp]` gains `resource_list_risk` (`list_mcp_resources` + `list_mcp_resource_templates`) and `resource_read_risk` (`read_mcp_resource`), both taking the same `read` / `write` / `high` vocabulary as `tools.<name>.risk` and both defaulting to `high`, so the change is invisible until declared. They are separate keys because the acts are not the same: a listing returns metadata and touches every server, a read returns third-party content fetched from one. `[mcp]` rather than a server entry is the point — these tools are Tact's, which is why an entry could not reach them. `resource_tool_risk` resolves a tool to a `CapabilityRisk` from `config::try_settings()`, beside `normalize_mcp_capability` as the single sayer for server tools; its policy half, `resource_tool_risk_with`, takes the settings explicitly so the tool-to-key mapping is testable without installing a process-global config. `try_settings()` returning `None` — a process that never resolved a config — yields `High`, so the unconfigured path is the restrictive one, and an unknown value is warned about and ignored exactly as an unknown `tools.<name>.risk` is.
+
+**Behavior after:** A server tool's risk is declared in the entry, Tact's resource tools' risk in `[mcp]`, and Ch 8 has no row left for either. Declaring `read` for `read_mcp_resource` bypasses plan mode, which the chapter says out loud rather than leaving it to be discovered, and it remains a statement about writing rather than about the content being safe to fetch — there is still no data-flow axis.
+
+**Pointers:** `config::resolve::tests::resolve_mcp_resource_tool_risk_defaults_to_high_and_is_overridable`, `mcp::resource::tests::{the_resource_tools_are_high_unless_something_declares_otherwise, a_listing_and_a_read_are_declared_separately}`.
+
+---
+
 ## 1. 2026-09-30 — An administrator-managed hooks file runs unreviewed, by permissions rather than by a switch
 
 | Field | Value |

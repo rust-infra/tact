@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — Tact 自己的资源工具也有可声明的 risk 了
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/config/{types,resolve}.rs`（`McpTomlConfig::{resource_list_risk, resource_read_risk}`、`McpSettings`、`parse_mcp_tool_risk`）、`crates/tact/src/mcp/resource.rs`（`resource_tool_risk`、`resource_tool_risk_with`）、`crates/tact/src/agent/tool_dispatch.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-resource-tool-risk-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** `tools.<name>.risk` 寻址的是某个 server 的工具，而 Tact 的三个资源工具并不属于任何 server——它们是路由层提供的原生名字——因此没有条目能声明它们，它们按构造就是 `CapabilityRisk::High`。这是站得住脚的默认值，也是不可用的默认值：只有一个可信本地 server 的用户无法表达「列出来没问题、读取不行」，于是每次列表都要询问，而非交互运行会直接拒绝它们。记下这个缺口时只有两个这样的工具，现在有三个。
+
+**决策：** `[mcp]` 新增 `resource_list_risk`（`list_mcp_resources` + `list_mcp_resource_templates`）与 `resource_read_risk`（`read_mcp_resource`），两者使用与 `tools.<name>.risk` 相同的 `read` / `write` / `high` 词汇，且都默认 `high`，因此在你声明之前这次改动不可见。之所以分成两个键：这两件事并不相同——列表返回元数据且触及每个 server，读取返回的是从某一个 server 取回的第三方内容。放在 `[mcp]` 而不是 server 条目里正是要点——这些工具属于 Tact，这也是条目够不到它们的原因。`resource_tool_risk` 从 `config::try_settings()` 把工具解析成 `CapabilityRisk`，与 `normalize_mcp_capability` 并列，后者是 server 工具的唯一裁决点；其策略部分 `resource_tool_risk_with` 显式接收 settings，因此「工具到键」的映射无需安装进程级配置即可测试。`try_settings()` 返回 `None`——从未解析过配置的进程——会得到 `High`，所以未配置的路径是收紧的那一条；未知值会像未知的 `tools.<name>.risk` 一样被警告并忽略。
+
+**之后的行为：** server 工具的 risk 在条目里声明，Tact 资源工具的 risk 在 `[mcp]` 里声明，第 8 章的缺口表对两者都不再留行。给 `read_mcp_resource` 声明 `read` 会绕过计划模式——章节里把这一点明说，而不是留给人自己去发现——并且它仍然只是在陈述「不会写入」，而**不是**内容可以安全抓取：数据流这条轴依然不存在。
+
+**指引：** `config::resolve::tests::resolve_mcp_resource_tool_risk_defaults_to_high_and_is_overridable`、`mcp::resource::tests::{the_resource_tools_are_high_unless_something_declares_otherwise, a_listing_and_a_read_are_declared_separately}`。
+
+---
+
 ## 1. 2026-09-30 — 管理员托管的 hook 文件凭权限而非开关免于审核
 
 | 字段 | 值 |
