@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — hook 也可以住在 `config.toml` 里，一个文件一个来源
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`HooksFile::from_toml_file`、`config_hook_paths`、`collect_hook_sources_with`）；spec `docs/superpowers/specs/2026-09-30-hooks-in-config-toml-design.md`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** Codex 接受 hook 的第三种写法——其 `config.toml` 里的 `[hooks]` 表——而 Tact 只读 `hooks.json`，所以从 Codex 带过来的配置必须手动搬运 hook。当时记下的反对理由是「第二种写法需要自己的一套优先级规则」，其中一半是成立的：hook 是叠加的，因此没有覆盖关系需要裁决，新来源唯一能扰动的是 `SessionStart` 上下文的拼接顺序。另一半——「`hooks.json` 才是工具写出来的东西」——是保留 `hooks.json` 的理由，而不是拒绝读取用户在 Tact 已经拥有的那个文件里手写的表的理由。
+
+**决策：** `[hooks]` 反序列化进 JSON 文件用的同一个 `HooksFile`，因此 TOML 与 JSON 两种写法是同一份实现：同样的字段、同样的校验、同样的审核，`type: "mcp_tool"` 在两者中都可用。配置文件里的其它表由 serde 忽略；hook 收集器**直接**读这些文件——`TactTomlConfig` 刻意不新增 `hooks` 字段——因为配置加载器会**合并**这三个文件的取值，而合并对 hook 是错的：hook 是按身份审核的，审核必须点名它来自哪个文件。于是每个声明了 `[hooks]` 的文件都成为自己的来源、以路径为标签，并且这些来源追加在两份 `hooks.json` 之后，因此没有任何既有顺序被改变。用户作用域的那个文件是用户 `hooks.json` 旁边的 `config.toml`，而不是重新查一次 `$HOME`，这同时让用户作用域的这一对可以作为单个值注入。没有 `[hooks]` 表的文件完全不产生来源；格式错误的文件会被警告并跳过，与格式错误的 `hooks.json` 完全一致。由于收集器复用了 `hooks_file_source`/`admit_trusted`，所有既有性质原样成立：条目一开始未审核、审核前绝不注册、修改定义即作废批准。
+
+**之后的行为：** `~/.tact/config.toml`、`<workdir>/config.toml` 或 `<workdir>/.tact/config.toml` 中任一的 `[hooks]` 表都是一等来源：`hooks list` 以路径点名它，`hooks trust --source <路径>` 按文件批准。`config.example.toml` 里带有两种类型的完整示例。带 `bypass_trust` 的托管/企业 hooks 仍是最后一个有意留下的缺口，且它依然是信任模型决策而非缺失的写法：`bypass_trust` 是关闭审核闸门的开关，而 `tact-ui hooks trust --all` 是等价的可脚本化做法。
+
+**指引：** `plugin::hooks::tests::{a_hooks_table_in_config_toml_is_a_source_of_its_own, a_config_toml_without_a_hooks_table_contributes_nothing, two_config_files_stay_two_sources, an_mcp_tool_entry_can_be_declared_in_toml, the_users_config_toml_is_the_one_beside_its_hooks_json, config_hook_sources_come_after_the_hooks_json_ones}`。
+
+---
+
 ## 1. 2026-09-30 — hook 可以是一次 MCP 工具调用，且其身份覆盖它真正执行的内容
 
 | 字段 | 值 |

@@ -165,15 +165,32 @@ Multiple hooks of the same type compose: all must return `Continue` unless one `
 
 ### Command hooks
 
-A command hook comes from one of three places, and **all matching hooks run** — a higher layer never replaces a lower one, exactly as Codex layers user, project and managed hooks:
+A hook comes from one of six places, and **all matching hooks run** — a higher layer never replaces a lower one, exactly as Codex layers user, project and managed hooks:
 
 | Origin | Path | `${PLUGIN_ROOT}` | `${PLUGIN_DATA}` |
 |---|---|---|---|
 | user file | `~/.tact/hooks.json` | the file's directory | `~/.tact` |
 | project file | `<workdir>/.tact/hooks.json` | the file's directory | `<workdir>/.tact` |
 | installed plugin | bundle `hooks/hooks.json`, or the manifest's inline `hooks` map | bundle root | the plugin's data directory |
+| user config | `~/.tact/config.toml`, `[hooks]` table | the file's directory | `~/.tact` |
+| project config | `<workdir>/config.toml`, `[hooks]` table | the file's directory | `<workdir>/.tact` |
+| project config | `<workdir>/.tact/config.toml`, `[hooks]` table | the file's directory | `<workdir>/.tact` |
 
-They are registered in that order — plugins, user file, project file — after any Rust closures, so adding the file entry points cannot reorder an existing plugin's `SessionStart` context.
+They are registered in that order — plugins, user file, project file, then the `config.toml` tables — after any Rust closures. The order matters only for which `SessionStart` context is concatenated first, and appending is what keeps every existing order intact, so a new entry point cannot reorder a plugin's or a user file's context.
+
+**A `[hooks]` table is a third spelling, not a third mechanism.** It deserialises into the same `HooksFile` the JSON files use, so the fields, the validation and the review are one implementation:
+
+```toml
+# ~/.tact/config.toml
+[[hooks.PreToolUse]]
+matcher = "bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "policy.sh"
+timeout = 5
+```
+
+Each config file that declares `[hooks]` becomes its **own** source, labelled with its path — never merged, even though the config loaders merge those same files' other values. A hook is reviewed by identity and the review has to name the file it came from; merging would also make "approve this file's hooks" impossible. Because the collector reuses the same loader, every property holds unchanged: an entry starts **unreviewed** and is **never registered** until approved, so a repository-supplied `config.toml` cannot execute anything by being cloned. A file with no `[hooks]` table contributes no source at all, and a malformed one is warned about and skipped, exactly like a malformed `hooks.json`.
 
 The file name is `hooks.json` (Codex's), not `.hooks.json`: a file copied out of `bm hook install --harness codex` works as-is. Tact still never reads `~/.codex/`.
 
@@ -381,7 +398,7 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 | `crates/tact/src/agent/mod.rs` | `pre_tool`, `post_tool`, `session_start`, `hooks_by_type` |
 | `crates/tact/src/agent/tool_dispatch.rs` | PreToolUse / PostToolUse invocation in `execute_tool_call` |
 | `crates/tact/src/permission/mod.rs` | Runs after PreToolUse; separate from hooks |
-| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`, `admit_trusted`, `HookTrust`, `survey_hooks`, `trust_hooks`, `run_hook` (dispatches by `HookCommand::kind`), `run_command_hook`, `run_mcp_tool_hook`, `definition_text`, `build_payload` |
+| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources` / `config_hook_paths` (six origins), `HooksFile::{from_file, from_toml_file}`, `admit_trusted`, `HookTrust`, `survey_hooks`, `trust_hooks`, `run_hook` (dispatches by `HookCommand::kind`), `run_command_hook`, `run_mcp_tool_hook`, `definition_text`, `build_payload` |
 | `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget`, and their renderers |
 | `crates/tui/src/handlers/hooks.rs` | `/hooks list` / `trust` / `forget` — parsing and the idle gate; the driver runs the work |
 | `crates/tact-ui/src/driver.rs` | `UserCommand::Hooks{List,Trust,Forget}` → `survey_hooks` / `trust_hooks` / `forget_hook_trust`, reported on the `Info` / `MdInfo` channels |
@@ -394,7 +411,6 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 | Gap | Why |
 |-----|-----|
 | `SessionStart` sources `clear` and `fork` | Codex reports them, but Tact has no history-clear command and no session fork, so the variants would be unreachable. The vocabulary is `startup` / `resume` / `compact` — the three Tact actually distinguishes. |
-| Inline `[hooks]` tables in `config.toml` | Codex accepts a third spelling; Tact deliberately has one, because the file entry point is what `bm hook install`-style tooling writes and a second spelling would need its own precedence rules. |
 | Managed / enterprise hooks, `bypass_trust` | An admin-managed hook bundle and a switch that disables review are both trust-model decisions with no consumer here yet. `tact-ui hooks trust --all` is the scriptable equivalent. |
 
 ---

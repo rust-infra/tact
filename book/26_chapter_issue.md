@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — Hooks can live in `config.toml`, one source per file
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/plugin/hooks.rs` (`HooksFile::from_toml_file`, `config_hook_paths`, `collect_hook_sources_with`); spec `docs/superpowers/specs/2026-09-30-hooks-in-config-toml-design.md`; [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** Codex accepts a third spelling for hooks — a `[hooks]` table in its `config.toml` — and Tact read only `hooks.json`, so a configuration carried over from Codex had to have its hooks moved by hand. The recorded objection was that "a second spelling would need its own precedence rules", and half of that was real: hooks are additive, so there is no override to resolve, and the only thing a new source can disturb is the order `SessionStart` context is concatenated in. The other half — that `hooks.json` is what tooling writes — is an argument for keeping `hooks.json`, not for refusing to read a table a user wrote in the file Tact already owns.
+
+**Decision:** `[hooks]` deserialises into the same `HooksFile` the JSON files use, so the TOML and JSON spellings are one implementation: same fields, same validation, same review, and `type: "mcp_tool"` works in both. The config file's other tables are ignored by serde, and the hook collector reads the files **directly** — `TactTomlConfig` deliberately gains no `hooks` field — because the config loader *merges* those three files' values, and merging is wrong for hooks: a hook is reviewed by identity and the review has to name the file it came from. Each file that declares `[hooks]` therefore becomes its own source, labelled with its path, and the sources are appended after the two `hooks.json` ones so no existing order changes. The user-scope file is the `config.toml` beside the user's `hooks.json` rather than a fresh `$HOME` lookup, which also makes the user-scope pair injectable as one value. A file with no `[hooks]` table contributes no source at all; a malformed one is warned about and skipped, exactly like a malformed `hooks.json`. Because the collector reuses `hooks_file_source`/`admit_trusted`, every existing property holds unchanged: an entry starts unreviewed, is never registered before approval, and editing a definition invalidates its approval.
+
+**Behavior after:** A `[hooks]` table in any of `~/.tact/config.toml`, `<workdir>/config.toml` or `<workdir>/.tact/config.toml` is a first-class hook source that `hooks list` names by path and `hooks trust --source <path>` approves per file. `config.example.toml` carries a worked example of both kinds. Managed / enterprise hooks with `bypass_trust` remain the last deliberate gap and are still a trust-model decision rather than a missing spelling: `bypass_trust` is a switch that disables the review gate, and `tact-ui hooks trust --all` is the scriptable equivalent.
+
+**Pointers:** `plugin::hooks::tests::{a_hooks_table_in_config_toml_is_a_source_of_its_own, a_config_toml_without_a_hooks_table_contributes_nothing, two_config_files_stay_two_sources, an_mcp_tool_entry_can_be_declared_in_toml, the_users_config_toml_is_the_one_beside_its_hooks_json, config_hook_sources_come_after_the_hooks_json_ones}`.
+
+---
+
 ## 1. 2026-09-30 — A hook can be an MCP tool call, and its identity covers what it runs
 
 | Field | Value |

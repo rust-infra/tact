@@ -238,6 +238,20 @@ impl HooksFile {
             .with_context(|| format!("failed to parse hooks file {}", path.display()))
     }
 
+    /// Reads the `[hooks]` table out of a `config.toml`.
+    ///
+    /// The whole document is parsed as a [`HooksFile`], which has exactly one
+    /// field (`hooks`); every other table in the file is ignored by serde. That
+    /// keeps the TOML spelling and the JSON one on the same type — same fields,
+    /// same validation, same review — instead of a parallel parser that would
+    /// drift.
+    pub fn from_toml_file(path: &Path) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read config file {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("failed to parse [hooks] in {}", path.display()))
+    }
+
     /// Flattens `(matcher, command)` pairs for one event, in declaration order.
     pub fn commands_for(&self, event: HookEventKind) -> Vec<(&HookMatcher, &HookCommand)> {
         let mut out = Vec::new();
@@ -997,7 +1011,7 @@ fn collect_hook_sources_with(
         None => Vec::new(),
     };
 
-    if let Some(path) = user_file {
+    if let Some(path) = user_file.clone() {
         // The user file's `${PLUGIN_ROOT}` is its own directory — there is no
         // package — and `${PLUGIN_DATA}` is `~/.tact`, which outlives it.
         let dirs = PluginDirs {
@@ -1021,7 +1035,72 @@ fn collect_hook_sources_with(
         out.push(source);
     }
 
+    // `config.toml` last, and one source per file. Hooks are additive here as
+    // everywhere else, so the only thing a new source can disturb is
+    // registration order — and appending keeps every existing order intact.
+    // Merging the config files the way the config *loader* merges its values
+    // would be wrong: a hook is reviewed by identity, and the review has to name
+    // the file it came from.
+    for (path, origin) in config_hook_paths(work_dir, user_file.as_deref()) {
+        if !path.is_file() {
+            continue;
+        }
+        let hooks = match HooksFile::from_toml_file(&path) {
+            Ok(hooks) => hooks,
+            // Same rule as a malformed `hooks.json`: warn, skip, never make the
+            // whole load fail over one bad file.
+            Err(error) => {
+                warn!("[hooks] in {} skipped: {error:#}", path.display());
+                continue;
+            }
+        };
+        // A file with no `[hooks]` table contributes nothing, rather than an
+        // empty source that `hooks list` would have to explain away.
+        if hooks.hooks.is_empty() {
+            continue;
+        }
+        // `${PLUGIN_ROOT}` is the file's own directory and `${PLUGIN_DATA}` the
+        // `.tact` directory that holds it — the same rule the `hooks.json`
+        // sources above follow, so a command written for one spelling works in
+        // the other.
+        let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let data = match origin {
+            HookOrigin::UserFile => parent.clone(),
+            _ => crate::consts::TactPath::new(work_dir).tact_dir(),
+        };
+        out.push(HookSource {
+            label: path.display().to_string(),
+            origin,
+            dirs: PluginDirs { root: parent, data },
+            hooks,
+        });
+    }
+
     Ok(out)
+}
+
+/// The `config.toml` files that may carry a `[hooks]` table, in ascending
+/// specificity.
+///
+/// The user file is the `config.toml` beside the user's `hooks.json` rather than
+/// a fresh `$HOME` lookup: that keeps the two user-scope sources together, and
+/// it makes the pair injectable as one value (see `user_file`), which is also
+/// why a caller passing `None` gets no user-scope hooks of either spelling.
+///
+/// Deliberately not [`crate::config`]'s own search order: that one is ordered so
+/// a later file's *values* win, while these are additive and only their order
+/// matters. Ascending specificity matches the `hooks.json` pair above it.
+fn config_hook_paths(work_dir: &Path, user_file: Option<&Path>) -> Vec<(PathBuf, HookOrigin)> {
+    let mut paths = Vec::new();
+    if let Some(parent) = user_file.and_then(|path| path.parent()) {
+        paths.push((parent.join("config.toml"), HookOrigin::UserFile));
+    }
+    paths.push((work_dir.join("config.toml"), HookOrigin::ProjectFile));
+    paths.push((
+        work_dir.join(".tact").join("config.toml"),
+        HookOrigin::ProjectFile,
+    ));
+    paths
 }
 
 /// Splits one source's hooks into the reviewed ones and the ones that still
@@ -4397,5 +4476,188 @@ mod tests {
             "an edited definition must not inherit the old approval"
         );
         assert_eq!(admitted.hooks.len(), 0);
+    }
+    // ── `[hooks]` in `config.toml` ──────────────────────────────────────
+
+    /// Writes a `config.toml` carrying a `[hooks]` table plus an unrelated
+    /// table, to prove only the former is read.
+    fn write_config_with_hooks(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("config.toml");
+        let content = format!(
+            "[llm]\nmodel = \"unrelated\"\n\n{body}"
+        );
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn a_hooks_table_in_config_toml_is_a_source_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config_with_hooks(
+            dir.path(),
+            "[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"gate.sh\"\n",
+        );
+
+        let sources = collect_hook_sources_with(None, None, dir.path()).unwrap();
+        let config_sources: Vec<&HookSource> = sources
+            .iter()
+            .filter(|source| source.label.ends_with("config.toml"))
+            .collect();
+        let labels: Vec<&str> = sources.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(config_sources.len(), 1, "{labels:?}");
+        // The review names the file, so `hooks trust --source` can address it.
+        assert_eq!(
+            config_sources[0].label,
+            dir.path().join("config.toml").display().to_string()
+        );
+        assert_eq!(config_sources[0].origin, HookOrigin::ProjectFile);
+
+        // Fail-closed, like every other source: read, then refused.
+        let trust = HookTrust::from_path(dir.path().join("hooks-state.json"));
+        let mut report = HookLoadReport::default();
+        let admitted = admit_trusted(config_sources[0], &trust, &mut report);
+        assert_eq!(report.pending.len(), 1);
+        assert_eq!(report.pending[0].command, "gate.sh");
+        assert!(admitted.hooks.is_empty(), "nothing runs before review");
+    }
+
+    #[test]
+    fn a_config_toml_without_a_hooks_table_contributes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "[llm]\nmodel = \"x\"\n").unwrap();
+
+        let sources = collect_hook_sources_with(None, None, dir.path()).unwrap();
+        assert!(
+            sources.iter().all(|source| !source.label.ends_with("config.toml")),
+            "an empty table would be a source `hooks list` has to explain: {:?}",
+            sources.iter().map(|s| s.label.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn two_config_files_stay_two_sources() {
+        // Merging them the way the config loader merges its values would make
+        // "approve this file's hooks" impossible and would show the user one
+        // anonymous list.
+        let dir = tempfile::tempdir().unwrap();
+        write_config_with_hooks(
+            dir.path(),
+            "[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"root.sh\"\n",
+        );
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            dir.path().join(".tact").join("config.toml"),
+            "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"tact-dir.sh\"\n",
+        )
+        .unwrap();
+
+        let sources = collect_hook_sources_with(None, None, dir.path()).unwrap();
+        let labels: Vec<&str> = sources
+            .iter()
+            .map(|source| source.label.as_str())
+            .filter(|label| label.ends_with("config.toml"))
+            .collect();
+        assert_eq!(labels.len(), 2, "{labels:?}");
+        // Ascending specificity: the workdir file, then `.tact/`.
+        assert!(labels[0].ends_with("config.toml") && !labels[0].contains(".tact"));
+        assert!(labels[1].contains(".tact"));
+    }
+
+    #[test]
+    fn an_mcp_tool_entry_can_be_declared_in_toml() {
+        // The TOML and JSON spellings share one type, so the handler kind — and
+        // its identity — cannot differ between them.
+        let dir = tempfile::tempdir().unwrap();
+        write_config_with_hooks(
+            dir.path(),
+            "[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = \"mcp_tool\"\nserver = \"policy\"\ntool = \"gate\"\n\n[hooks.PreToolUse.hooks.arguments]\npath = \"a.txt\"\n",
+        );
+
+        let sources = collect_hook_sources_with(None, None, dir.path()).unwrap();
+        let source = sources
+            .iter()
+            .find(|source| source.label.ends_with("config.toml"))
+            .expect("the table became a source");
+
+        let trust = HookTrust::from_path(dir.path().join("hooks-state.json"));
+        let mut report = HookLoadReport::default();
+        admit_trusted(source, &trust, &mut report);
+        assert_eq!(report.pending.len(), 1);
+        assert_eq!(report.pending[0].command, "mcp_tool policy/gate {\"path\":\"a.txt\"}");
+    }
+
+    #[test]
+    fn the_users_config_toml_is_the_one_beside_its_hooks_json() {
+        // The user-scope pair is addressed as one value, so a caller that
+        // injects a user hooks file also decides the user config — and a caller
+        // passing neither gets no user-scope hooks at all, which is what keeps
+        // the suite independent of the machine's real `$HOME`.
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"user-config.sh\"\n",
+        )
+        .unwrap();
+
+        let sources =
+            collect_hook_sources_with(None, Some(home.join("hooks.json")), dir.path()).unwrap();
+        let user: Vec<&HookSource> = sources
+            .iter()
+            .filter(|source| source.origin == HookOrigin::UserFile)
+            .collect();
+        assert_eq!(user.len(), 1, "{:?}", sources.len());
+        assert_eq!(user[0].label, home.join("config.toml").display().to_string());
+        // `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` are the same directory for a
+        // user-scope file, exactly as they are for `~/.tact/hooks.json`.
+        assert_eq!(user[0].dirs.root, home);
+        assert_eq!(user[0].dirs.data, home);
+
+        // And with no user file injected, nothing user-scope is read.
+        let isolated = collect_hook_sources_with(None, None, dir.path()).unwrap();
+        assert!(
+            isolated.iter().all(|source| source.origin != HookOrigin::UserFile),
+            "a caller that injects no user file must read no user config"
+        );
+    }
+
+    #[test]
+    fn config_hook_sources_come_after_the_hooks_json_ones() {
+        // The order is the only thing a new source can disturb (SessionStart
+        // context is concatenated in it), so appending is the whole rule.
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("home");
+        std::fs::create_dir_all(&user).unwrap();
+        let user_hooks = user.join("hooks.json");
+        std::fs::write(
+            &user_hooks,
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user.sh"}]}]}}"#,
+        )
+        .unwrap();
+        write_config_with_hooks(
+            dir.path(),
+            "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"config.sh\"\n",
+        );
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            dir.path().join(".tact").join("hooks.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"project.sh"}]}]}}"#,
+        )
+        .unwrap();
+
+        let sources = collect_hook_sources_with(None, Some(user_hooks), dir.path()).unwrap();
+        let order: Vec<&str> = sources
+            .iter()
+            .map(|source| source.label.as_str())
+            .map(|label| {
+                if label.ends_with("config.toml") {
+                    "config"
+                } else {
+                    "hooks.json"
+                }
+            })
+            .collect();
+        assert_eq!(order, ["hooks.json", "hooks.json", "config"]);
     }
 }

@@ -419,3 +419,33 @@ api_key = ""
 # an egress path, not a safe one.
 # `omit_tools_from` has no Tact equivalent, and `env_vars` has none on a `url`
 # entry: both are reported as unmodelled rather than silently ignored.
+
+# ---------------------------------------------------------------------------
+# Command hooks, declared inline.
+#
+# The same hooks `~/.tact/hooks.json` holds, in Tact's own config file. The two
+# spellings share one type, so every field — `type`, `matcher`, `timeout`,
+# `additionalContextLimit`, and the `mcp_tool` kind below — means the same thing
+# in both. Each file that declares `[hooks]` is its own source, labelled with its
+# path: a hook is reviewed by identity, so these are never merged, and a
+# repository-supplied `.tact/config.toml` cannot execute anything by being cloned
+# — every entry starts unreviewed and only runs after
+# `tact-ui hooks trust --source <path>`.
+#
+# [[hooks.PreToolUse]]
+# matcher = "bash"
+# [[hooks.PreToolUse.hooks]]
+# type = "command"
+# command = "policy.sh"
+# timeout = 5
+#
+# A hook can also be a tool on a connected MCP server, returning the same
+# {"decision": …} / {"hookSpecificOutput": …} shapes a script would:
+#
+# [[hooks.PreToolUse]]
+# [[hooks.PreToolUse.hooks]]
+# type = "mcp_tool"
+# server = "policy"
+# tool = "gate"
+# [hooks.PreToolUse.hooks.arguments]
+# path = "secrets/.env"

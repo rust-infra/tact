@@ -166,15 +166,32 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 ### 命令 hook
 
-命令 hook 来自三处，且**所有匹配的 hook 都会运行**——高层不会取代低层，与 Codex 叠加 user / project / managed 的方式一致：
+hook 来自六处，且**所有匹配的 hook 都会运行**——高层不会取代低层，与 Codex 叠加 user / project / managed 的方式一致：
 
 | 来源 | 路径 | `${PLUGIN_ROOT}` | `${PLUGIN_DATA}` |
 |---|---|---|---|
 | user 文件 | `~/.tact/hooks.json` | 该文件所在目录 | `~/.tact` |
 | project 文件 | `<workdir>/.tact/hooks.json` | 该文件所在目录 | `<workdir>/.tact` |
 | 已安装插件 | bundle 的 `hooks/hooks.json`，或 manifest 内联 `hooks` 映射 | bundle 根 | 该插件的数据目录 |
+| user 配置 | `~/.tact/config.toml` 的 `[hooks]` 表 | 该文件所在目录 | `~/.tact` |
+| project 配置 | `<workdir>/config.toml` 的 `[hooks]` 表 | 该文件所在目录 | `<workdir>/.tact` |
+| project 配置 | `<workdir>/.tact/config.toml` 的 `[hooks]` 表 | 该文件所在目录 | `<workdir>/.tact` |
 
-注册顺序即上表顺序——插件、user 文件、project 文件——位于既有 Rust 闭包之后，因此新增文件入口不会打乱现有插件的 `SessionStart` 上下文顺序。
+注册顺序即上表顺序——插件、user 文件、project 文件，然后是 `config.toml` 的各张表——位于既有 Rust 闭包之后。这个顺序只影响哪一段 `SessionStart` 上下文先被拼接，而「追加在最后」正是保持所有既有顺序不变的做法，因此新增入口不会打乱插件或 user 文件的上下文顺序。
+
+**`[hooks]` 表是第三种写法，而不是第三套机制。** 它反序列化进 JSON 文件用的同一个 `HooksFile`，因此字段、校验与审核都是同一份实现：
+
+```toml
+# ~/.tact/config.toml
+[[hooks.PreToolUse]]
+matcher = "bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "policy.sh"
+timeout = 5
+```
+
+每个声明了 `[hooks]` 的配置文件都成为**它自己的**一个来源，并以路径作为标签——绝不合并，尽管配置加载器会合并这些文件的其它取值。hook 是按身份审核的，而审核必须点名它来自哪个文件；合并还会让「只批准这个文件的 hook」变得不可能。由于收集器复用了同一个加载器，所有既有性质原样成立：条目一开始处于**未审核**状态，未审核**绝不注册**，因此仓库附带的 `config.toml` 无法仅凭被克隆就执行任何东西。没有 `[hooks]` 表的文件完全不产生来源，而格式错误的文件会被警告并跳过，与格式错误的 `hooks.json` 完全一致。
 
 文件名用 `hooks.json`（Codex 的），不是 `.hooks.json`：从 `bm hook install --harness codex` 拷出来的文件可以原样使用。Tact 依然不读 `~/.codex/`。
 
@@ -382,7 +399,7 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 | `crates/tact/src/agent/mod.rs` | `pre_tool`、`post_tool`、`session_start`、`hooks_by_type` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call` 中的 PreToolUse / PostToolUse 调用 |
 | `crates/tact/src/permission/mod.rs` | PreToolUse 之后运行；与 hooks 分离 |
-| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`run_hook`（按 `HookCommand::kind` 分发）、`run_command_hook`、`run_mcp_tool_hook`、`definition_text`、`build_payload` |
+| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources` / `config_hook_paths`（六个来源）、`HooksFile::{from_file, from_toml_file}`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`run_hook`（按 `HookCommand::kind` 分发）、`run_command_hook`、`run_mcp_tool_hook`、`definition_text`、`build_payload` |
 | `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget` 及其渲染函数 |
 | `crates/tui/src/handlers/hooks.rs` | `/hooks list` / `trust` / `forget` —— 解析与空闲门控；实际工作由 driver 执行 |
 | `crates/tact-ui/src/driver.rs` | `UserCommand::Hooks{List,Trust,Forget}` → `survey_hooks` / `trust_hooks` / `forget_hook_trust`，经 `Info` / `MdInfo` 通道上报 |
@@ -395,7 +412,7 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 | 缺口 | 原因 |
 |-----|-----|
 | `SessionStart` 的 `clear` / `fork` 来源 | Codex 会上报它们，但 Tact 没有清空历史的命令、也没有会话 fork，因此这两个变体会不可达。词表是 `startup` / `resume` / `compact`——Tact 真正区分的那三个。 |
-| `config.toml` 内联 `[hooks]` 表 | Codex 还接受第三种写法；Tact 刻意只留一种，因为 `bm hook install` 式工具写的正是那个文件，而第二种写法需要自己的一套优先级规则。 |
+
 
 | 受管/企业 hook、`bypass_trust` | 管理员下发的 hook 包、以及关闭审核的开关，都是信任模型层面的决定，目前这里没有消费者。`tact-ui hooks trust --all` 是可脚本化的等价物。 |
 
