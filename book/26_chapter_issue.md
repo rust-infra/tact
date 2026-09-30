@@ -32,6 +32,25 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — A hook can be an MCP tool call, and its identity covers what it runs
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/plugin/hooks.rs` (`HookKind`, `HookCommand::{kind, server, tool, arguments}`, `run_hook`, `run_mcp_tool_hook`, `finish_hook_output`, `report_hook_failure`, `definition_text`), `crates/tact/src/mcp/mod.rs` (`mcp_tool_name`, `McpToolName::full_name`); spec `docs/superpowers/specs/2026-09-30-mcp-tool-hook-handlers-design.md`; [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** A hook entry declares a `type`, and Tact ignored it — the presence of a `command` string decided everything. So an entry written the Codex way, `{"type": "mcp_tool", "server": …, "tool": …}`, was **silently inert**: `server`, `tool` and `arguments` were not even fields on `HookCommand`, so serde dropped them, and `run_command_hook` returned `continue_default()` when there was no command. The review flow the hooks subsystem exists for could therefore ask a human to approve a definition that, once approved, could never run. The feature is worth having on its own terms too: a policy can live in the MCP server that already holds an integration's tools, returning the same `{"decision": …}` / `{"hookSpecificOutput": …}` shapes a shell script would, instead of a script re-implementing the payload, the decision contract and `additionalContext` parsing.
+
+**Decision:** Hook closures are registered as `Fn(&Agent, …)` and `MCPToolRouter::call` takes `&self`, so the handler needs no new plumbing: `HookCommand::kind()` resolves `Command` / `McpTool { server, tool }` / `Invalid(reason)`, and `run_hook` dispatches — `type: "mcp_tool"` (or `mcpTool`) calls the router, everything else stays a command, deliberately permissively, because an absent or unrecognised `type` has always meant "a command with a `command` string". The tool's result goes through **the same** `parse_output` a command hook's stdout does, so a JSON decision blocks and `additionalContextLimit` bounds the injected context; `finish_hook_output` and `report_hook_failure` were extracted so the two kinds cannot drift, and a broken tool call reports and continues like every other hook failure. `arguments` is static by design — merging the event payload into it would make the reviewed definition a lie.
+
+Fixing the handler exposed a second defect worth its own line: `admit_trusted` hashed `command.unwrap_or_default()`, which for an `mcp_tool` entry is the **empty string**. Every `mcp_tool` entry in one source therefore shared one identity — approving one approved the rest, editing `tool` or `arguments` would not have invalidated an approval, and the review listing showed a blank line where the definition should be. `definition_text` now produces `mcp_tool <server>/<tool> <arguments>` for the hash and for the listing. `mcp_tool_name` was also extracted, because the hook path and `build_tool_specs` both need the `mcp__<server>__<tool>` spelling and it is what routing keys on.
+
+**Behavior after:** A hook can be an MCP tool call, and an entry missing `server` or `tool` is reported as unrunnable instead of silently inert. Approving one `mcp_tool` hook admits only that one, and editing its `tool` or `arguments` puts it back into review. Inline `[hooks]` tables in `config.toml` and managed/enterprise hooks with `bypass_trust` remain deliberate gaps — the first needs its own precedence rules for a second spelling, and the second is a trust-model decision, so neither is reversed as a side effect of adding a handler type.
+
+**Pointers:** `plugin::hooks::tests::{an_mcp_tool_hook_calls_the_servers_tool_with_its_arguments, an_mcp_tool_hook_reaches_the_conversation_with_its_context, an_mcp_tool_hooks_context_is_bounded_by_its_own_limit, a_broken_mcp_tool_hook_reports_and_continues, an_mcp_tool_hook_without_a_server_or_tool_is_named_not_ignored, a_hook_type_tact_does_not_know_is_still_a_command, two_mcp_tool_entries_are_not_the_same_definition, approving_one_mcp_tool_entry_admits_only_that_one, editing_an_mcp_tool_hooks_arguments_invalidates_its_approval}`.
+
+---
+
 ## 1. 2026-09-30 — `list_mcp_resource_templates` closes the template-only dead end
 
 | Field | Value |

@@ -138,8 +138,29 @@ pub struct HookMatcher {
     pub hooks: Vec<HookCommand>,
 }
 
-/// One command hook entry.
-#[derive(Debug, Clone, Deserialize)]
+/// What one hook entry declares.
+///
+/// Resolved from `type` plus the fields present, so a declaration that cannot
+/// run is *named* rather than silently inert — the review flow asks a human to
+/// approve a definition, and approving one that can never fire is worse than no
+/// review at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookKind<'a> {
+    /// A shell command (`type: "command"`, or no `type`).
+    Command,
+    /// `type: "mcp_tool"`: call a tool on a connected MCP server.
+    McpTool {
+        /// The server half of the `mcp__<server>__<tool>` name.
+        server: &'a str,
+        /// The tool half.
+        tool: &'a str,
+    },
+    /// Declared, but not runnable. The reason names the missing field.
+    Invalid(&'a str),
+}
+
+/// One hook entry.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct HookCommand {
     #[serde(rename = "type")]
     pub ty: Option<String>,
@@ -161,6 +182,51 @@ pub struct HookCommand {
     /// rather than at whatever the session allows.
     #[serde(default, rename = "additionalContextLimit")]
     pub additional_context_limit: Option<usize>,
+    /// `type: "mcp_tool"` — the MCP server whose tool this hook calls.
+    ///
+    /// Modelled rather than left to serde's unknown-field handling: before this,
+    /// `server` / `tool` / `arguments` were dropped without a word, and the
+    /// entry still looked admitted.
+    #[serde(default)]
+    pub server: Option<String>,
+    /// `type: "mcp_tool"` — the tool name on that server.
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// `type: "mcp_tool"` — the tool's input. Absent means `{}`.
+    ///
+    /// Static by design: the hook payload is *not* merged in. A tool call whose
+    /// arguments shifted with the event would make the reviewed definition a
+    /// lie, and the definition is what the user approved.
+    #[serde(default)]
+    pub arguments: Option<Value>,
+}
+
+impl HookCommand {
+    /// What this entry is, and whether it can run at all.
+    ///
+    /// Deliberately permissive about `type`: an absent or unrecognised value has
+    /// always meant "a command with a `command` string", and turning that into
+    /// an error would break a working configuration to punish a typo. Only
+    /// `mcp_tool` is new, so only `mcp_tool` can be malformed.
+    #[must_use]
+    pub fn kind(&self) -> HookKind<'_> {
+        let is_mcp_tool = matches!(
+            self.ty.as_deref().map(str::trim),
+            Some("mcp_tool" | "mcpTool")
+        );
+        if !is_mcp_tool {
+            return HookKind::Command;
+        }
+        let server = self.server.as_deref().unwrap_or("").trim();
+        if server.is_empty() {
+            return HookKind::Invalid("`server` is required for `type: \"mcp_tool\"`");
+        }
+        let tool = self.tool.as_deref().unwrap_or("").trim();
+        if tool.is_empty() {
+            return HookKind::Invalid("`tool` is required for `type: \"mcp_tool\"`");
+        }
+        HookKind::McpTool { server, tool }
+    }
 }
 
 impl HooksFile {
@@ -227,6 +293,90 @@ impl HookOutput {
     }
 }
 
+/// Runs one hook entry, whichever kind it declares.
+///
+/// The two kinds share everything downstream — the same output normalization,
+/// the same decision contract, the same `additionalContextLimit` — so only what
+/// produces the output differs. This is what every event registration calls;
+/// [`run_command_hook`] remains the command implementation.
+pub async fn run_hook(
+    command: &HookCommand,
+    dirs: impl Into<PluginDirs>,
+    input: &HookRunInput,
+    agent: Option<&crate::Agent>,
+) -> HookOutput {
+    let dirs = dirs.into();
+    match command.kind() {
+        HookKind::Command => run_command_hook(command, dirs, input, agent).await,
+        HookKind::McpTool { server, tool } => {
+            run_mcp_tool_hook(command, server, tool, input, agent).await
+        }
+        HookKind::Invalid(reason) => {
+            // A declaration the user reviewed and approved must not be silently
+            // inert — which is exactly what an `mcp_tool` entry was before this.
+            report_hook_failure(input, agent, reason);
+            HookOutput::continue_default()
+        }
+    }
+}
+
+/// Runs one `mcp_tool` hook: calls a tool on a connected MCP server and
+/// normalizes its result exactly as a command hook's stdout is normalized.
+///
+/// That reuse is the point. A policy can then live in the MCP server that
+/// already holds the integration's tools, returning the same `{"decision": …}` /
+/// `{"hookSpecificOutput": …}` shapes a shell script would — instead of a script
+/// that re-implements the payload, the decision contract and `additionalContext`
+/// parsing in whatever language it is written in.
+///
+/// Failure semantics match every other hook: an unreachable server, an unknown
+/// tool or a tool error is reported and continues, because a hook must not be
+/// able to halt the loop by being broken.
+async fn run_mcp_tool_hook(
+    command: &HookCommand,
+    server: &str,
+    tool: &str,
+    input: &HookRunInput,
+    agent: Option<&crate::Agent>,
+) -> HookOutput {
+    if let Some(message) = command.status_message.as_deref() {
+        tracing::debug!("plugin hook status: {message}");
+    }
+    let Some(agent) = agent else {
+        report_hook_failure(
+            input,
+            None,
+            "an `mcp_tool` hook needs a live agent to reach the MCP router",
+        );
+        return HookOutput::continue_default();
+    };
+
+    let name = crate::mcp::mcp_tool_name(server, tool);
+    let arguments = command.arguments.clone().unwrap_or_else(|| json!({}));
+    // The hook's own budget, not the server's `tool_timeout_sec`: this timeout
+    // belongs to the definition the user reviewed.
+    let call = agent.mcp_router.call(&name, arguments);
+    let outcome = match resolve_timeout(command.timeout) {
+        Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), call).await {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!("{name} did not answer within {secs}s")),
+        },
+        None => call.await,
+    };
+
+    match outcome {
+        Ok(text) => {
+            let mut output = parse_output(&text, input.hook_event_name);
+            finish_hook_output(&mut output, command, Some(agent));
+            output
+        }
+        Err(error) => {
+            report_hook_failure(input, Some(agent), &format!("{error:#}"));
+            HookOutput::continue_default()
+        }
+    }
+}
+
 /// Runs one command hook and returns its normalized output.
 ///
 /// Failure semantics (Claude Code compatible): non-zero exit, timeout, invalid
@@ -290,57 +440,68 @@ pub async fn run_command_hook(
                     } else {
                         format!("exited with {:?}: {}", run.exit_code, run.stderr)
                     };
-                    warn!("plugin hook command failed (continuing): {detail}");
-                    if let Some(agent) = agent {
-                        agent.emit_update(AgentUpdate::Info(format!(
-                            "[plugin hook {} failed] {detail}",
-                            input.hook_event_name
-                        )));
-                    }
+                    report_hook_failure(input, agent, &detail);
                 }
                 // Otherwise the hook printed a decision: honour it. A JSON
                 // decision is the richer contract, so a bare exit status must
                 // not overwrite what it said.
             }
-            // A per-hook budget, applied where the context is produced: the
-            // hook's author declared how much of it should reach the model.
-            // A let-chain, not a tuple pattern: in `if let (Some(limit),
-            // Some(context)) = …` the `take()` runs even when there is no
-            // limit, and the context is then dropped on the floor.
-            if let Some(limit) = command.additional_context_limit
-                && let Some(context) = output.additional_context.take()
-            {
-                let (trimmed, _) =
-                    crate::utils::truncate::truncate_middle_with_token_budget(&context, limit);
-                output.additional_context = Some(if trimmed == context {
-                    context
-                } else {
-                    format!("{trimmed}\n\n[truncated to {limit} tokens by additionalContextLimit]")
-                });
-            }
-            // Codex records `systemMessage` as a warning entry; it never reaches
-            // the conversation.
-            if let Some(message) = &output.system_message
-                && let Some(agent) = agent
-            {
-                agent.emit_update(AgentUpdate::Info(message.clone()));
-            }
+            finish_hook_output(&mut output, command, agent);
             output
         }
         Err(error) => {
-            warn!("plugin hook command failed (continuing): {error}");
-            // Surface it: the warning above only reaches a log file, and
-            // `tact-ui` installs no subscriber unless `RUST_LOG` is set. A
-            // plugin hook that failed is otherwise indistinguishable from one
-            // that had nothing to say.
-            if let Some(agent) = agent {
-                agent.emit_update(AgentUpdate::Info(format!(
-                    "[plugin hook {} failed] {error}",
-                    input.hook_event_name
-                )));
-            }
+            report_hook_failure(input, agent, &format!("{error}"));
             HookOutput::continue_default()
         }
+    }
+}
+
+/// Applies the post-processing every hook kind shares.
+///
+/// Both kinds produce a [`HookOutput`], and both must then honour the same two
+/// rules. Factored out so a fix to one cannot miss the other.
+fn finish_hook_output(
+    output: &mut HookOutput,
+    command: &HookCommand,
+    agent: Option<&crate::Agent>,
+) {
+    // A per-hook budget, applied where the context is produced: the hook's
+    // author declared how much of it should reach the model. A let-chain, not a
+    // tuple pattern: in `if let (Some(limit), Some(context)) = …` the `take()`
+    // runs even when there is no limit, and the context is then dropped on the
+    // floor.
+    if let Some(limit) = command.additional_context_limit
+        && let Some(context) = output.additional_context.take()
+    {
+        let (trimmed, _) =
+            crate::utils::truncate::truncate_middle_with_token_budget(&context, limit);
+        output.additional_context = Some(if trimmed == context {
+            context
+        } else {
+            format!("{trimmed}\n\n[truncated to {limit} tokens by additionalContextLimit]")
+        });
+    }
+    // Codex records `systemMessage` as a warning entry; it never reaches the
+    // conversation.
+    if let Some(message) = &output.system_message
+        && let Some(agent) = agent
+    {
+        agent.emit_update(AgentUpdate::Info(message.clone()));
+    }
+}
+
+/// Reports a hook failure, so it is not a log-only event.
+///
+/// The warning alone only reaches a log file, and `tact-ui` installs no
+/// subscriber unless `RUST_LOG` is set. A hook that failed is otherwise
+/// indistinguishable from one that had nothing to say.
+fn report_hook_failure(input: &HookRunInput, agent: Option<&crate::Agent>, detail: &str) {
+    warn!("plugin hook command failed (continuing): {detail}");
+    if let Some(agent) = agent {
+        agent.emit_update(AgentUpdate::Info(format!(
+            "[plugin hook {} failed] {detail}",
+            input.hook_event_name
+        )));
     }
 }
 
@@ -876,13 +1037,13 @@ fn admit_trusted(source: &HookSource, trust: &HookTrust, report: &mut HookLoadRe
         for matcher in matchers {
             let mut kept_commands = Vec::new();
             for command in &matcher.hooks {
-                let command_text = command.command.as_deref().unwrap_or_default();
+                let command_text = definition_text(command);
                 let summary = HookSummary {
                     hash: hook_definition_hash(
                         &source.label,
                         event,
                         matcher.matcher.as_deref(),
-                        command_text,
+                        &command_text,
                     ),
                     source: source.label.clone(),
                     event: event.clone(),
@@ -983,6 +1144,33 @@ impl HookSummary {
             ),
             None => format!("{}  {}  {}", self.source, self.event, self.command),
         }
+    }
+}
+
+/// What one hook entry actually runs, as text.
+///
+/// The identity hash and the review listing both read this, and both must see
+/// the whole definition. A command hook is its command string; an `mcp_tool`
+/// hook has no command, so hashing on `command.unwrap_or_default()` would give
+/// every `mcp_tool` entry in one source the *same* identity — approving one
+/// would approve the rest, editing `tool` or `arguments` would not invalidate
+/// the approval, and the review would show a blank line where the definition
+/// should be.
+#[must_use]
+fn definition_text(command: &HookCommand) -> String {
+    match command.kind() {
+        HookKind::Command => command.command.clone().unwrap_or_default(),
+        HookKind::McpTool { server, tool } => {
+            // The arguments are part of the definition: the same tool called
+            // with a different input is a different thing to approve.
+            let arguments = command
+                .arguments
+                .as_ref()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "{}".to_string());
+            format!("mcp_tool {server}/{tool} {arguments}")
+        }
+        HookKind::Invalid(reason) => format!("unrunnable: {reason}"),
     }
 }
 
@@ -1231,7 +1419,7 @@ fn subagent_start_hooks_from(
                     if !matcher_matches(matcher.as_deref(), &name) {
                         return Ok(HookControl::Continue);
                     }
-                    let output = run_command_hook(
+                    let output = run_hook(
                         &command,
                         &dirs,
                         &HookRunInput {
@@ -1305,7 +1493,7 @@ fn subagent_stop_hooks_from(
                     if !matcher_matches(matcher.as_deref(), &agent_type) {
                         return Ok(HookControl::Continue);
                     }
-                    let output = run_command_hook(
+                    let output = run_hook(
                         &command,
                         &dirs,
                         &HookRunInput {
@@ -1472,7 +1660,7 @@ fn apply_hook_sources(
                         if let Some(status) = command.status_message.as_deref() {
                             agent.emit_update(AgentUpdate::Info(status.to_string()));
                         }
-                        let output = run_command_hook(
+                        let output = run_hook(
                             &command,
                             &dirs,
                             &HookRunInput {
@@ -1519,7 +1707,7 @@ fn apply_hook_sources(
                         if !matcher_matches(matcher.as_deref(), &prompt_snapshot) {
                             return Ok(HookControl::Continue);
                         }
-                        let output = run_command_hook(
+                        let output = run_hook(
                             &command,
                             &dirs,
                             &HookRunInput {
@@ -1556,7 +1744,7 @@ fn apply_hook_sources(
                     if !matcher_matches(matcher.as_deref(), &tool_name) {
                         return Ok(HookControl::Continue);
                     }
-                    let output = run_command_hook(
+                    let output = run_hook(
                         &command,
                         &dirs,
                         &HookRunInput {
@@ -1605,7 +1793,7 @@ fn apply_hook_sources(
                         if !matcher_matches(matcher.as_deref(), &tool_use.name) {
                             return Ok(HookControl::Continue);
                         }
-                        let output = run_command_hook(
+                        let output = run_hook(
                             &command,
                             &dirs,
                             &HookRunInput {
@@ -1650,7 +1838,7 @@ fn apply_hook_sources(
                         if !matcher_matches(matcher.as_deref(), &tool_name) {
                             return Ok(HookControl::Continue);
                         }
-                        let output = run_command_hook(
+                        let output = run_hook(
                             &command,
                             &dirs,
                             &HookRunInput {
@@ -1704,7 +1892,7 @@ fn apply_hook_sources(
                         if !matcher_matches(matcher.as_deref(), &tool_name) {
                             return Ok(HookControl::Continue);
                         }
-                        let output = run_command_hook(
+                        let output = run_hook(
                             &command,
                             &dirs,
                             &HookRunInput {
@@ -1750,7 +1938,7 @@ fn apply_hook_sources(
                         if !matcher_matches(matcher.as_deref(), &notification_type) {
                             return Ok(HookControl::Continue);
                         }
-                        let output = run_command_hook(
+                        let output = run_hook(
                             &command,
                             &dirs,
                             &HookRunInput {
@@ -1790,7 +1978,7 @@ fn apply_hook_sources(
                     if !matcher_matches(matcher.as_deref(), "") {
                         return Ok(HookControl::Continue);
                     }
-                    let output = run_command_hook(
+                    let output = run_hook(
                         &command,
                         &dirs,
                         &HookRunInput {
@@ -1828,7 +2016,7 @@ fn apply_hook_sources(
                     if !matcher_matches(matcher.as_deref(), "interrupt") {
                         return Ok(HookControl::Continue);
                     }
-                    let output = run_command_hook(
+                    let output = run_hook(
                         &command,
                         &dirs,
                         &HookRunInput {
@@ -1862,7 +2050,7 @@ fn apply_hook_sources(
                     if !matcher_matches(matcher.as_deref(), "") {
                         return Ok(HookControl::Continue);
                     }
-                    let output = run_command_hook(
+                    let output = run_hook(
                         &command,
                         &dirs,
                         &HookRunInput {
@@ -1899,7 +2087,7 @@ fn apply_hook_sources(
                     if !matcher_matches(matcher.as_deref(), "other") {
                         return Ok(HookControl::Continue);
                     }
-                    let output = run_command_hook(
+                    let output = run_hook(
                         &command,
                         &dirs,
                         &HookRunInput {
@@ -1932,7 +2120,7 @@ fn apply_hook_sources(
                     if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
                         return Ok(HookControl::Continue);
                     }
-                    let output = run_command_hook(
+                    let output = run_hook(
                         &command,
                         &dirs,
                         &HookRunInput {
@@ -1965,7 +2153,7 @@ fn apply_hook_sources(
                         if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
                             return Ok(HookControl::Continue);
                         }
-                        let output = run_command_hook(
+                        let output = run_hook(
                             &command,
                             &dirs,
                             &HookRunInput {
@@ -2213,6 +2401,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2245,6 +2434,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2278,6 +2468,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2312,6 +2503,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2346,6 +2538,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2378,6 +2571,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2411,6 +2605,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let agent = crate::Agent::new(
@@ -2465,6 +2660,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2495,6 +2691,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2523,6 +2720,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2562,6 +2760,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2597,6 +2796,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2629,6 +2829,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -2661,6 +2862,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -3036,6 +3238,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -3074,6 +3277,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -3107,6 +3311,7 @@ mod tests {
             status_message: None,
             async_: None,
             additional_context_limit: None,
+            ..Default::default()
         };
         let output = run_command_hook(
             &command,
@@ -3508,11 +3713,8 @@ mod tests {
         HookCommand {
             ty: Some("command".into()),
             command: Some(script.into()),
-            command_windows: None,
             timeout: Some(30),
-            status_message: None,
-            async_: None,
-            additional_context_limit: None,
+            ..Default::default()
         }
     }
 
@@ -3844,5 +4046,356 @@ mod tests {
         for event in ["SessionStart", "PreCompact", "PostCompact", "SessionEnd"] {
             assert!(!exit_two_blocks(event), "{event} must stay fail-open");
         }
+    }
+    // ── `type: "mcp_tool"`: a hook that lives in an MCP server ──────────
+
+    /// An agent wired to one mock MCP server whose tool replies with `reply`,
+    /// plus the service handle so a test can read the calls it received.
+    fn agent_with_an_mcp_tool(
+        name: &str,
+        reply: Value,
+    ) -> (crate::Agent, Arc<crate::mcp::MockMcpService>) {
+        let service = Arc::new(crate::mcp::MockMcpService::new(Vec::new(), move |_| {
+            Ok(rmcp::model::CallToolResult::success(vec![
+                rmcp::model::Content::text(reply.to_string()),
+            ]))
+        }));
+        let mut router = crate::mcp::MCPToolRouter::new();
+        router.register_client(crate::mcp::McpClient::with_service(
+            "policy",
+            Vec::new(),
+            service.clone(),
+        ));
+        let agent = crate::Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(Vec::new())),
+            crate::tool::test_support::test_context(name),
+            crate::tool::toolset(),
+            router,
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            crate::AgentSystemPrompt::Static("test".to_string()),
+        );
+        (agent, service)
+    }
+
+    fn mcp_tool_hook(server: &str, tool: &str) -> HookCommand {
+        HookCommand {
+            ty: Some("mcp_tool".into()),
+            server: Some(server.into()),
+            tool: Some(tool.into()),
+            ..Default::default()
+        }
+    }
+
+    /// An agent whose MCP tool always fails, for the failure contract.
+    fn agent_with_a_broken_mcp_tool(name: &str) -> crate::Agent {
+        let service = Arc::new(crate::mcp::MockMcpService::new(Vec::new(), |_| {
+            Err(rmcp::service::ServiceError::McpError(
+                rmcp::model::ErrorData::internal_error(
+                    "the policy server is on fire".to_string(),
+                    None,
+                ),
+            ))
+        }));
+        let mut router = crate::mcp::MCPToolRouter::new();
+        router.register_client(crate::mcp::McpClient::with_service(
+            "policy",
+            Vec::new(),
+            service,
+        ));
+        crate::Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(Vec::new())),
+            crate::tool::test_support::test_context(name),
+            crate::tool::toolset(),
+            router,
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            crate::AgentSystemPrompt::Static("test".to_string()),
+        )
+    }
+
+    #[tokio::test]
+    async fn an_mcp_tool_hook_calls_the_servers_tool_with_its_arguments() {
+        let dir = tempdir().unwrap();
+        let (agent, service) = agent_with_an_mcp_tool(
+            "mcp_tool_hook_calls",
+            json!({"decision": "block", "reason": "not on my watch"}),
+        );
+        let mut command = mcp_tool_hook("policy", "gate");
+        command.arguments = Some(json!({ "path": "secret.txt" }));
+
+        let output = run_hook(
+            &command,
+            PluginDirs::root_only(dir.path()),
+            &hook_input(dir.path(), "PreToolUse"),
+            Some(&agent),
+        )
+        .await;
+
+        // The tool's JSON decision is honoured exactly as a command hook's
+        // stdout would be — that reuse is the whole point of the handler.
+        assert_eq!(
+            output.control,
+            HookControl::Block("not on my watch".to_string())
+        );
+        // And the reviewed definition's arguments arrive intact.
+        let calls = service.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].0, "gate");
+        assert_eq!(calls[0].1, json!({ "path": "secret.txt" }));
+    }
+
+    #[tokio::test]
+    async fn an_mcp_tool_hook_reaches_the_conversation_with_its_context() {
+        let dir = tempdir().unwrap();
+        let (agent, _service) = agent_with_an_mcp_tool(
+            "mcp_tool_hook_context",
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "the policy server says hello"
+                }
+            }),
+        );
+        let command = mcp_tool_hook("policy", "brief");
+
+        let output = run_hook(
+            &command,
+            PluginDirs::root_only(dir.path()),
+            &hook_input(dir.path(), "UserPromptSubmit"),
+            Some(&agent),
+        )
+        .await;
+
+        assert_eq!(
+            output.additional_context.as_deref(),
+            Some("the policy server says hello")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_mcp_tool_hooks_context_is_bounded_by_its_own_limit() {
+        // `additionalContextLimit` is the author's own ceiling, and it must apply
+        // to this kind too — one contract, two ways to produce the output.
+        let dir = tempdir().unwrap();
+        let long = "word ".repeat(2_000);
+        let (agent, _service) = agent_with_an_mcp_tool(
+            "mcp_tool_hook_limit",
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": long
+                }
+            }),
+        );
+        let mut command = mcp_tool_hook("policy", "brief");
+        command.additional_context_limit = Some(10);
+
+        let output = run_hook(
+            &command,
+            PluginDirs::root_only(dir.path()),
+            &hook_input(dir.path(), "UserPromptSubmit"),
+            Some(&agent),
+        )
+        .await;
+
+        let context = output.additional_context.expect("context survived");
+        assert!(
+            context.contains("truncated to 10 tokens by additionalContextLimit"),
+            "{context}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_broken_mcp_tool_hook_reports_and_continues() {
+        // A hook must not be able to halt the loop by being broken — the same
+        // contract every command hook failure follows.
+        let dir = tempdir().unwrap();
+        let agent = agent_with_a_broken_mcp_tool("mcp_tool_hook_broken");
+        let command = mcp_tool_hook("policy", "gate");
+
+        let output = run_hook(
+            &command,
+            PluginDirs::root_only(dir.path()),
+            &hook_input(dir.path(), "PreToolUse"),
+            Some(&agent),
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+        assert!(output.additional_context.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_mcp_tool_hook_without_a_server_or_tool_is_named_not_ignored() {
+        // The failure this whole kind exists to fix: an entry the user reviewed
+        // and approved must not be silently inert.
+        let dir = tempdir().unwrap();
+        let agent = agent_with_a_broken_mcp_tool("mcp_tool_hook_invalid");
+
+        for command in [
+            HookCommand {
+                ty: Some("mcp_tool".into()),
+                ..Default::default()
+            },
+            HookCommand {
+                ty: Some("mcp_tool".into()),
+                server: Some("policy".into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(matches!(command.kind(), HookKind::Invalid(_)));
+            let output = run_hook(
+                &command,
+                PluginDirs::root_only(dir.path()),
+                &hook_input(dir.path(), "PreToolUse"),
+                Some(&agent),
+            )
+            .await;
+            assert_eq!(output.control, HookControl::Continue);
+        }
+    }
+
+    #[test]
+    fn a_hook_type_tact_does_not_know_is_still_a_command() {
+        // Deliberately permissive: an absent or unrecognised `type` has always
+        // meant "a command with a `command` string", and turning that into an
+        // error would break a working configuration to punish a typo.
+        for ty in [None, Some("command".to_string()), Some("somethingElse".to_string())] {
+            let command = HookCommand {
+                ty,
+                command: Some("echo hi".into()),
+                ..Default::default()
+            };
+            assert_eq!(command.kind(), HookKind::Command);
+        }
+        // Both spellings of the one type Tact does add.
+        assert!(matches!(
+            HookCommand {
+                ty: Some("mcpTool".into()),
+                server: Some("s".into()),
+                tool: Some("t".into()),
+                ..Default::default()
+            }
+            .kind(),
+            HookKind::McpTool { .. }
+        ));
+    }
+    // ── `mcp_tool` entries are identified by what they run ──────────────
+
+    /// A hooks file whose one matcher group holds the given `mcp_tool` entries.
+    fn mcp_tool_hooks(event: &str, entries: &[(&str, &str, serde_json::Value)]) -> HooksFile {
+        let group = serde_json::json!({
+            "hooks": entries
+                .iter()
+                .map(|(server, tool, arguments)| serde_json::json!({
+                    "type": "mcp_tool",
+                    "server": server,
+                    "tool": tool,
+                    "arguments": arguments,
+                }))
+                .collect::<Vec<_>>(),
+        });
+        let mut events = serde_json::Map::new();
+        events.insert(event.to_string(), serde_json::json!([group]));
+        serde_json::from_value(serde_json::json!({ "hooks": events })).unwrap()
+    }
+
+    #[test]
+    fn two_mcp_tool_entries_are_not_the_same_definition() {
+        // Before the identity covered the tool call, every `mcp_tool` entry in
+        // one source hashed on an empty command string: approving one would
+        // have approved the rest.
+        let dir = tempfile::tempdir().unwrap();
+        let source = source_with(
+            "~/.tact/hooks.json",
+            dir.path(),
+            mcp_tool_hooks(
+                "PreToolUse",
+                &[
+                    ("policy", "gate", json!({})),
+                    ("policy", "audit", json!({})),
+                ],
+            ),
+        );
+        let trust = HookTrust::from_path(dir.path().join("hooks-state.json"));
+        let mut report = HookLoadReport::default();
+        admit_trusted(&source, &trust, &mut report);
+
+        assert_eq!(report.pending.len(), 2);
+        assert_ne!(report.pending[0].hash, report.pending[1].hash);
+        // And the reviewer is shown the call, not a blank line.
+        assert_eq!(report.pending[0].command, "mcp_tool policy/gate {}");
+        assert_eq!(report.pending[1].command, "mcp_tool policy/audit {}");
+    }
+
+    #[test]
+    fn approving_one_mcp_tool_entry_admits_only_that_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("hooks-state.json");
+        let source = source_with(
+            "~/.tact/hooks.json",
+            dir.path(),
+            mcp_tool_hooks(
+                "PreToolUse",
+                &[("policy", "gate", json!({})), ("policy", "audit", json!({}))],
+            ),
+        );
+
+        let mut trust = HookTrust::from_path(state.clone());
+        let mut report = HookLoadReport::default();
+        admit_trusted(&source, &trust, &mut report);
+        assert_eq!(trust.trust(&report.pending[..1]).unwrap(), 1);
+
+        let reloaded = HookTrust::from_path(state);
+        let mut after = HookLoadReport::default();
+        let admitted = admit_trusted(&source, &reloaded, &mut after);
+
+        let tools: Vec<&str> = admitted
+            .commands_for(HookEventKind::PreToolUse)
+            .iter()
+            .filter_map(|(_, command)| command.tool.as_deref())
+            .collect();
+        assert_eq!(tools, ["gate"]);
+        assert_eq!(after.pending.len(), 1);
+        assert_eq!(after.pending[0].command, "mcp_tool policy/audit {}");
+    }
+
+    #[test]
+    fn editing_an_mcp_tool_hooks_arguments_invalidates_its_approval() {
+        // The arguments are what the tool will actually be asked to do, so
+        // changing them is changing the definition.
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("hooks-state.json");
+        let original = source_with(
+            "~/.tact/hooks.json",
+            dir.path(),
+            mcp_tool_hooks("PreToolUse", &[("policy", "gate", json!({ "path": "a.txt" }))]),
+        );
+        let mut trust = HookTrust::from_path(state.clone());
+        let mut report = HookLoadReport::default();
+        admit_trusted(&original, &trust, &mut report);
+        trust.trust(&report.pending).unwrap();
+
+        // Same server and tool, different input.
+        let edited = source_with(
+            "~/.tact/hooks.json",
+            dir.path(),
+            mcp_tool_hooks("PreToolUse", &[("policy", "gate", json!({ "path": "b.txt" }))]),
+        );
+        let reloaded = HookTrust::from_path(state);
+        let mut after = HookLoadReport::default();
+        let admitted = admit_trusted(&edited, &reloaded, &mut after);
+
+        assert_eq!(after.pending.len(), 1, "the edit must need a fresh review");
+        assert!(
+            admitted.commands_for(HookEventKind::PreToolUse).is_empty(),
+            "an edited definition must not inherit the old approval"
+        );
+        assert_eq!(admitted.hooks.len(), 0);
     }
 }

@@ -2189,6 +2189,24 @@ pub struct McpToolName {
     pub tool: String,
 }
 
+/// Builds the `mcp__<server>__<tool>` name the agent calls.
+///
+/// One place, because routing keys on this exact spelling: a second literal
+/// (the hook path needs the name too) would eventually differ from this one,
+/// and the failure would look like "the tool does not exist".
+#[must_use]
+pub fn mcp_tool_name(server: &str, tool: &str) -> String {
+    format!("mcp__{server}__{tool}")
+}
+
+impl McpToolName {
+    /// The namespaced name, the inverse of `TryFrom<&str>`.
+    #[must_use]
+    pub fn full_name(&self) -> String {
+        mcp_tool_name(&self.server, &self.tool)
+    }
+}
+
 impl TryFrom<&str> for McpToolName {
     type Error = anyhow::Error;
 
@@ -2496,7 +2514,7 @@ fn build_tool_specs(server_name: &str, tools: &[McpTool]) -> Vec<ToolSpec> {
     tools
         .iter()
         .map(|tool| ToolSpec {
-            name: format!("mcp__{server_name}__{}", tool.name),
+            name: mcp_tool_name(server_name, &tool.name),
             description: tool.description.as_ref().map(ToString::to_string),
             input_schema: Value::Object((*tool.input_schema).clone()),
         })

@@ -35,6 +35,25 @@
 ---
 
 
+## 1. 2026-09-30 — hook 可以是一次 MCP 工具调用，且其身份覆盖它真正执行的内容
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`HookKind`、`HookCommand::{kind, server, tool, arguments}`、`run_hook`、`run_mcp_tool_hook`、`finish_hook_output`、`report_hook_failure`、`definition_text`）、`crates/tact/src/mcp/mod.rs`（`mcp_tool_name`、`McpToolName::full_name`）；spec `docs/superpowers/specs/2026-09-30-mcp-tool-hook-handlers-design.md`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** hook 条目会声明一个 `type`，而 Tact 忽略它 —— 有没有 `command` 字符串决定一切。于是按 Codex 写法写的 `{"type": "mcp_tool", "server": …, "tool": …}` 条目**静默失效**：`server`、`tool`、`arguments` 甚至不是 `HookCommand` 的字段，serde 直接把它们丢掉；而 `run_command_hook` 在没有 command 时返回 `continue_default()`。hooks 子系统赖以存在的审核流程，因此可能请用户批准一个一旦批准也永远不会运行的定义。这个特性本身也有价值：策略可以住在那个已经持有集成工具的 MCP server 里，返回与 shell 脚本相同的 `{"decision": …}` / `{"hookSpecificOutput": …}` 形状，而不必让脚本重新实现 payload、决策契约与 `additionalContext` 解析。
+
+**决策：** hook 闭包以 `Fn(&Agent, …)` 注册，而 `MCPToolRouter::call` 取 `&self`，因此这个 handler 不需要任何新管道：`HookCommand::kind()` 解析出 `Command` / `McpTool { server, tool }` / `Invalid(reason)`，`run_hook` 据此分发 —— `type: "mcp_tool"`（或 `mcpTool`）调用 router，其余一律仍是命令，且刻意保持宽容，因为缺省或无法识别的 `type` 一直意味着「一条带 `command` 字符串的命令」。工具的结果走**同一个** `parse_output`，与命令 hook 的 stdout 完全一致，所以 JSON 决策会阻断、`additionalContextLimit` 会限定注入的上下文；`finish_hook_output` 与 `report_hook_failure` 被抽出，使两种类型不可能各自漂移；工具调用出错会像所有其他 hook 失败一样上报并继续。`arguments` 刻意是静态的 —— 把事件 payload 合并进去会让被审核的定义变成谎言。
+
+修这个 handler 还暴露出第二个值得单独写一行的缺陷：`admit_trusted` 对 `command.unwrap_or_default()` 求哈希，而对 `mcp_tool` 条目那就是**空字符串**。于是同一来源里的每个 `mcp_tool` 条目共享同一个身份 —— 批准一个就批准了其余全部，修改 `tool` 或 `arguments` 也不会让批准失效，审核列表还会在本该显示定义的地方显示一行空白。现在 `definition_text` 为哈希与列表产出 `mcp_tool <server>/<tool> <arguments>`。`mcp_tool_name` 也被抽出，因为 hook 路径与 `build_tool_specs` 都需要 `mcp__<server>__<tool>` 这一拼写，而路由正是以它为键。
+
+**之后的行为：** hook 可以是一次 MCP 工具调用；缺少 `server` 或 `tool` 的条目会被上报为无法运行，而不是静默失效。批准一个 `mcp_tool` hook 只放行那一个，修改它的 `tool` 或 `arguments` 会让它回到待审核。`config.toml` 内联 `[hooks]` 表、以及带 `bypass_trust` 的托管/企业 hooks 仍是有意留下的缺口 —— 前者需要为第二种拼写定义自己的优先级规则，后者是信任模型决策，因此都不会因为新增一种 handler 类型而被顺带反转。
+
+**指引：** `plugin::hooks::tests::{an_mcp_tool_hook_calls_the_servers_tool_with_its_arguments, an_mcp_tool_hook_reaches_the_conversation_with_its_context, an_mcp_tool_hooks_context_is_bounded_by_its_own_limit, a_broken_mcp_tool_hook_reports_and_continues, an_mcp_tool_hook_without_a_server_or_tool_is_named_not_ignored, a_hook_type_tact_does_not_know_is_still_a_command, two_mcp_tool_entries_are_not_the_same_definition, approving_one_mcp_tool_entry_admits_only_that_one, editing_an_mcp_tool_hooks_arguments_invalidates_its_approval}`。
+
+---
+
 ## 1. 2026-09-30 — `list_mcp_resource_templates` 补上「只有模板」这条死路
 
 | 字段 | 值 |

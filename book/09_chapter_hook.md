@@ -177,6 +177,26 @@ They are registered in that order — plugins, user file, project file — after
 
 The file name is `hooks.json` (Codex's), not `.hooks.json`: a file copied out of `bm hook install --harness codex` works as-is. Tact still never reads `~/.codex/`.
 
+An entry declares one of two **kinds**, and everything downstream is shared: the same output normalization, the same decision contract (`decision` / `hookSpecificOutput` / a bare `exit 2`), the same `additionalContextLimit`.
+
+| `type` | What it runs | Fields |
+|---|---|---|
+| `"command"` (or absent) | a shell command, with the JSON payload on stdin | `command`, `timeout`, `async`, … |
+| `"mcp_tool"` | a tool on a **connected MCP server** — reached through the same `MCPToolRouter` the agent uses | `server`, `tool`, `arguments` |
+
+```json
+{ "type": "mcp_tool", "server": "policy", "tool": "gate",
+  "arguments": { "path": "secrets/.env" } }
+```
+
+The point of the second kind is that a policy can live in the MCP server that already holds an integration's tools, returning the same `{"decision": …}` / `{"hookSpecificOutput": …}` shapes a shell script would — instead of a script that re-implements the payload, the decision contract and `additionalContext` parsing in whatever language it is written in. A tool that answers `{"decision":"block","reason":…}` blocks; one that answers `additionalContext` injects context.
+
+`arguments` is **static**: the hook payload is deliberately not merged into it. A tool call whose input shifted with the event would make the reviewed definition a lie, and the definition is what the user approved.
+
+An unreachable server, an unknown tool or a tool error is reported and **continues**, matching every other hook failure — a hook must not be able to halt the loop by being broken.
+
+Because the identity hash and the review listing both read the definition, an `mcp_tool` entry is identified by `mcp_tool <server>/<tool> <arguments>`. Hashing the (absent) `command` would have given every `mcp_tool` entry in one source the same identity — approving one would approve the rest, editing `tool` or `arguments` would not invalidate an approval, and the review would show a blank line where the definition should be. An entry missing `server` or `tool` is reported as unrunnable rather than silently inert.
+
 ### Reviewing a hook before it runs
 
 A hook file is executable configuration, and a repository can ship `.tact/hooks.json` — so cloning a repo must not run its commands. Every hook definition starts **unreviewed**, and an unreviewed hook is **never registered**: the file is read, and then refused. This is Codex's `trusted_hash` model with Tact's own store.
@@ -361,7 +381,7 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 | `crates/tact/src/agent/mod.rs` | `pre_tool`, `post_tool`, `session_start`, `hooks_by_type` |
 | `crates/tact/src/agent/tool_dispatch.rs` | PreToolUse / PostToolUse invocation in `execute_tool_call` |
 | `crates/tact/src/permission/mod.rs` | Runs after PreToolUse; separate from hooks |
-| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`, `admit_trusted`, `HookTrust`, `survey_hooks`, `trust_hooks`, `run_command_hook`, `build_payload` |
+| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`, `admit_trusted`, `HookTrust`, `survey_hooks`, `trust_hooks`, `run_hook` (dispatches by `HookCommand::kind`), `run_command_hook`, `run_mcp_tool_hook`, `definition_text`, `build_payload` |
 | `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget`, and their renderers |
 | `crates/tui/src/handlers/hooks.rs` | `/hooks list` / `trust` / `forget` — parsing and the idle gate; the driver runs the work |
 | `crates/tact-ui/src/driver.rs` | `UserCommand::Hooks{List,Trust,Forget}` → `survey_hooks` / `trust_hooks` / `forget_hook_trust`, reported on the `Info` / `MdInfo` channels |
@@ -375,7 +395,6 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 |-----|-----|
 | `SessionStart` sources `clear` and `fork` | Codex reports them, but Tact has no history-clear command and no session fork, so the variants would be unreachable. The vocabulary is `startup` / `resume` / `compact` — the three Tact actually distinguishes. |
 | Inline `[hooks]` tables in `config.toml` | Codex accepts a third spelling; Tact deliberately has one, because the file entry point is what `bm hook install`-style tooling writes and a second spelling would need its own precedence rules. |
-| `mcp_tool` hook handlers | Codex hooks can invoke an MCP tool; Tact runs commands only. |
 | Managed / enterprise hooks, `bypass_trust` | An admin-managed hook bundle and a switch that disables review are both trust-model decisions with no consumer here yet. `tact-ui hooks trust --all` is the scriptable equivalent. |
 
 ---

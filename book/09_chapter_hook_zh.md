@@ -178,6 +178,26 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 文件名用 `hooks.json`（Codex 的），不是 `.hooks.json`：从 `bm hook install --harness codex` 拷出来的文件可以原样使用。Tact 依然不读 `~/.codex/`。
 
+条目声明两种**类型**之一，而下游的一切都是共享的：同样的输出归一化、同样的决策契约（`decision` / `hookSpecificOutput` / 裸 `exit 2`）、同样的 `additionalContextLimit`。
+
+| `type` | 运行什么 | 字段 |
+|---|---|---|
+| `"command"`（或缺省） | 一条 shell 命令，JSON payload 走 stdin | `command`、`timeout`、`async` 等 |
+| `"mcp_tool"` | **已连接 MCP server** 上的一个工具 —— 经由 agent 用的同一个 `MCPToolRouter` 抵达 | `server`、`tool`、`arguments` |
+
+```json
+{ "type": "mcp_tool", "server": "policy", "tool": "gate",
+  "arguments": { "path": "secrets/.env" } }
+```
+
+第二种类型的意义在于：策略可以住在那个已经持有集成工具的 MCP server 里，返回与 shell 脚本相同的 `{"decision": …}` / `{"hookSpecificOutput": …}` 形状 —— 而不是写一个脚本，再用它所用的语言重新实现 payload、决策契约与 `additionalContext` 解析。回答 `{"decision":"block","reason":…}` 的工具会阻断；回答 `additionalContext` 的会注入上下文。
+
+`arguments` 是**静态**的：hook payload 刻意不合并进去。一个输入随事件漂移的工具调用会让被审核的定义变成谎言，而定义正是用户批准的东西。
+
+server 不可达、工具不存在或工具报错，都会被上报并**继续** —— 与所有其他 hook 失败一致：hook 不能靠自身损坏来中止循环。
+
+由于身份哈希与审核列表都读取这份定义，一个 `mcp_tool` 条目以 `mcp_tool <server>/<tool> <arguments>` 标识。若对（不存在的）`command` 求哈希，同一来源里的每个 `mcp_tool` 条目都会得到同一个身份 —— 批准一个就等于批准其余全部，修改 `tool` 或 `arguments` 也不会让批准失效，而且审核界面会在本该显示定义的地方显示一行空白。缺少 `server` 或 `tool` 的条目会被上报为无法运行，而不是静默失效。
+
 ### 运行前的审核
 
 hook 文件是可执行的配置，而仓库可以附带 `.tact/hooks.json`——所以克隆一个仓库绝不能执行它的命令。每个 hook 定义默认处于**未审核**状态，未审核的 hook **绝不注册**：文件会被读取，然后被拒绝。这是 Codex 的 `trusted_hash` 模型，配上 Tact 自己的存储。
@@ -362,7 +382,7 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 | `crates/tact/src/agent/mod.rs` | `pre_tool`、`post_tool`、`session_start`、`hooks_by_type` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call` 中的 PreToolUse / PostToolUse 调用 |
 | `crates/tact/src/permission/mod.rs` | PreToolUse 之后运行；与 hooks 分离 |
-| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`run_command_hook`、`build_payload` |
+| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`run_hook`（按 `HookCommand::kind` 分发）、`run_command_hook`、`run_mcp_tool_hook`、`definition_text`、`build_payload` |
 | `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget` 及其渲染函数 |
 | `crates/tui/src/handlers/hooks.rs` | `/hooks list` / `trust` / `forget` —— 解析与空闲门控；实际工作由 driver 执行 |
 | `crates/tact-ui/src/driver.rs` | `UserCommand::Hooks{List,Trust,Forget}` → `survey_hooks` / `trust_hooks` / `forget_hook_trust`，经 `Info` / `MdInfo` 通道上报 |
@@ -376,7 +396,7 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 |-----|-----|
 | `SessionStart` 的 `clear` / `fork` 来源 | Codex 会上报它们，但 Tact 没有清空历史的命令、也没有会话 fork，因此这两个变体会不可达。词表是 `startup` / `resume` / `compact`——Tact 真正区分的那三个。 |
 | `config.toml` 内联 `[hooks]` 表 | Codex 还接受第三种写法；Tact 刻意只留一种，因为 `bm hook install` 式工具写的正是那个文件，而第二种写法需要自己的一套优先级规则。 |
-| `mcp_tool` 类型的 hook handler | Codex 的 hook 可以调用 MCP 工具；Tact 只运行命令。 |
+
 | 受管/企业 hook、`bypass_trust` | 管理员下发的 hook 包、以及关闭审核的开关，都是信任模型层面的决定，目前这里没有消费者。`tact-ui hooks trust --all` 是可脚本化的等价物。 |
 
 ---
