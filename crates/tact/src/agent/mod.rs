@@ -31,8 +31,8 @@ use crate::{
     hook::{
         HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG, Hook, HookControl, HookTypes,
         NotificationFn, PostCompactFn, PostToolUseFailureFn, PostToolUseFn, PreCompactFn,
-        PreToolUseFn, SessionEndFn, SessionStartContext, SessionStartFn, StopFn, TaskCompletedFn,
-        UserPromptSubmitFn,
+        PreToolUseFn, SessionEndFn, SessionStartContext, SessionStartFn, SessionStartSource,
+        StopFn, TaskCompletedFn, UserPromptSubmitFn,
     },
     invoke_hooks,
     mcp::{MCPToolRouter, McpLoadReport},
@@ -370,6 +370,25 @@ pub struct AgentRuntime {
     /// injecting during `dispatch_session_start_hooks` (which runs before the
     /// session is ensured) would suppress the history restore entirely.
     pub pending_session_context: Vec<String>,
+    /// Whether the `SessionStart` hooks still have to run.
+    ///
+    /// Startup no longer calls them: a plugin hook can take seconds (the
+    /// reference `basic-memory` one takes ~8s warm) and would otherwise delay
+    /// the first frame. [`Agent::agent_loop`] dispatches them on the first turn
+    /// instead, which is still early enough — the context it collects is
+    /// recorded before that turn's user message.
+    pub session_start_hooks_pending: bool,
+    /// What the `SessionStart` hooks are told they are running for; see
+    /// [`SessionStartSource`]. Set to `Resume` when history is restored and to
+    /// `Compact` after a compaction re-queues the hooks.
+    pub session_start_source: SessionStartSource,
+    /// Context collected by `PreToolUse` / `PostToolUse` hooks during a turn.
+    ///
+    /// `Arc<Mutex<…>>` because those hooks receive only `&Agent`; the agent loop
+    /// drains it before building the next request, so the model reads the
+    /// context alongside the tool call it annotates. Same shape as
+    /// [`Self::pending_subagent_results`].
+    pub pending_hook_context: Arc<Mutex<VecDeque<String>>>,
 }
 
 /// How the agent builds its system prompt.
@@ -467,6 +486,9 @@ impl Agent {
                 provider_state: None,
                 pending_subagent_results: Arc::new(Mutex::new(VecDeque::new())),
                 pending_session_context: Vec::new(),
+                session_start_hooks_pending: true,
+                session_start_source: SessionStartSource::Startup,
+                pending_hook_context: Arc::new(Mutex::new(VecDeque::new())),
             },
             tool_context,
             tools,
@@ -662,6 +684,15 @@ impl Agent {
         self.emit_model_status();
     }
 
+    /// The model this agent is currently calling.
+    ///
+    /// Configured at construction and rewritten by [`Self::set_model`], so it is
+    /// the value a `SessionStart` hook payload should carry as `model`.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.agent_settings.model
+    }
+
     /// Update this agent's session reasoning effort (per-agent; never the
     /// global provider). `None` clears the explicit effort (wire omits it).
     ///
@@ -771,6 +802,11 @@ impl Agent {
 
         if self.runtime.context.is_empty() {
             let history = store.load_session(&session_id).await?;
+            if !history.is_empty() {
+                // Restoring history makes this a resume, not a fresh start —
+                // the distinction a plugin's `startup|resume` matcher is for.
+                self.runtime.session_start_source = SessionStartSource::Resume;
+            }
             self.runtime.context = history;
         }
 
@@ -1028,6 +1064,21 @@ impl Agent {
         // Restore history if the startup path left context empty.
         self.ensure_session().await?;
 
+        // Startup used to run these before the first frame, which meant waiting
+        // for a plugin subprocess (`basic-memory`'s hook needs ~8s warm) on
+        // every launch. The first turn is the earliest point where the result
+        // is still ahead of this turn's user message.
+        if self.runtime.session_start_hooks_pending {
+            // Codex's `continue: false` on `SessionStart`: the turn does not run
+            // at all, rather than running with a notice in the log.
+            if let HookControl::Block(reason) = self.dispatch_session_start_hooks().await? {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[SessionStart hook stopped the turn] {reason}"
+                )));
+                return Ok(());
+            }
+        }
+
         // Codex-style pre-turn: compact *old* history before appending this
         // turn's user message, reserving space for the incoming prompt so we
         // do not overflow immediately after push.
@@ -1129,6 +1180,9 @@ impl Agent {
                 self.push_message(Message::new_text(Role::User, text))
                     .await?;
             }
+
+            // And for whatever the tool hooks collected while the last wave ran.
+            self.inject_pending_hook_context().await?;
 
             // Snapshot the complete conversation after micro/auto compaction.
             // Includes the current user turn plus history, or retained users +
@@ -1500,22 +1554,54 @@ impl Agent {
     /// Runs `SessionStart` hooks once per session.
     ///
     /// Context they collect is stashed on
-    /// [`AgentRuntime::pending_session_context`] rather than recorded here:
-    /// this runs during startup, before [`Self::ensure_session`] has loaded
-    /// persisted history, and [`Self::push_message`] would leave the context
-    /// non-empty and suppress that restore.
-    pub async fn dispatch_session_start_hooks(&mut self) -> Result<()> {
-        let mut context = SessionStartContext::default();
-        let control = invoke_hooks!(SessionStart, self, &mut context)?;
-        self.runtime
-            .pending_session_context
-            .extend(context.additional_contexts);
-        if let HookControl::Block(reason) = control {
-            self.emit_update(AgentUpdate::Info(format!(
-                "[SessionStart hook blocked] {reason}"
-            )));
+    /// [`AgentRuntime::pending_session_context`] rather than recorded here: this
+    /// runs before [`Self::ensure_session`] has loaded persisted history, and
+    /// [`Self::push_message`] would leave the context non-empty and suppress
+    /// that restore.
+    ///
+    /// The hooks run **concurrently** — a plugin hook is a subprocess that can
+    /// take seconds (the reference `basic-memory` plugin needs ~8s warm), and
+    /// the hooks are independent. Results keep registration order, so the
+    /// concatenated context is deterministic.
+    pub async fn dispatch_session_start_hooks(&mut self) -> Result<HookControl> {
+        if !self.runtime.session_start_hooks_pending {
+            return Ok(HookControl::Continue);
         }
-        Ok(())
+        self.runtime.session_start_hooks_pending = false;
+
+        let collected = {
+            let agent: &Agent = self;
+            let runs = agent
+                .hooks_by_type(HookTypes::SessionStart)
+                .into_iter()
+                .filter_map(|hook| match hook {
+                    Hook::SessionStart(run) => Some(run),
+                    _ => None,
+                })
+                .map(|run| async move {
+                    let mut context = SessionStartContext::default();
+                    let control = run(agent, &mut context).await?;
+                    Ok::<_, anyhow::Error>((control, context.additional_contexts))
+                });
+            futures_util::future::join_all(runs).await
+        };
+
+        let mut stopped = None;
+        for result in collected {
+            let (control, contexts) = result?;
+            self.runtime.pending_session_context.extend(contexts);
+            // First stop in registration order wins, like the sequential run
+            // this replaced; the caller decides what a stop means.
+            if let HookControl::Block(reason) = control
+                && stopped.is_none()
+            {
+                stopped = Some(reason);
+            }
+        }
+        Ok(match stopped {
+            Some(reason) => HookControl::Block(reason),
+            None => HookControl::Continue,
+        })
     }
 
     /// Records the context [`Self::dispatch_session_start_hooks`] collected as
@@ -1527,21 +1613,42 @@ impl Agent {
     /// notice. No-op without pending context, which is the common case.
     async fn inject_pending_session_context(&mut self) -> Result<()> {
         let chunks = std::mem::take(&mut self.runtime.pending_session_context);
-        if chunks.is_empty() {
-            return Ok(());
-        }
-        let session_id = self.runtime.session_id.clone().unwrap_or_default();
         for chunk in chunks {
-            let body = spill_hook_context(&chunk, &session_id);
-            let framed = format!("{HOOK_CONTEXT_OPEN_TAG}\n{body}\n{HOOK_CONTEXT_CLOSE_TAG}");
-            self.push_message(
-                Message::new_text(Role::User, framed).with_kind(MessageKind::HookContext),
-            )
-            .await?;
-            // The reader gets the hook's full text; only the model's copy is
-            // budgeted (Codex shows the whole hook output in its run summary).
-            self.emit_update(AgentUpdate::MdInfo(chunk));
+            self.record_hook_context(&chunk).await?;
         }
+        Ok(())
+    }
+
+    /// Drains the context `PreToolUse` / `PostToolUse` hooks collected.
+    ///
+    /// Runs before every request inside the turn loop: those hooks fire while
+    /// the turn is already in flight, so their context belongs with the tool
+    /// call it annotates (Codex records it the same way, right after the hook
+    /// returns).
+    async fn inject_pending_hook_context(&mut self) -> Result<()> {
+        let chunks: Vec<String> = {
+            let mut queue = self.runtime.pending_hook_context.lock_recover();
+            queue.drain(..).collect()
+        };
+        for chunk in chunks {
+            self.record_hook_context(&chunk).await?;
+        }
+        Ok(())
+    }
+
+    /// Records one hook-context chunk as its own synthetic user message.
+    ///
+    /// The reader gets the hook's full text; only the model's copy is budgeted
+    /// (Codex shows the whole hook output in its run summary).
+    async fn record_hook_context(&mut self, chunk: &str) -> Result<()> {
+        let session_id = self.runtime.session_id.clone().unwrap_or_default();
+        let body = spill_hook_context(chunk, &session_id);
+        let framed = format!("{HOOK_CONTEXT_OPEN_TAG}\n{body}\n{HOOK_CONTEXT_CLOSE_TAG}");
+        self.push_message(
+            Message::new_text(Role::User, framed).with_kind(MessageKind::HookContext),
+        )
+        .await?;
+        self.emit_update(AgentUpdate::MdInfo(chunk.to_string()));
         Ok(())
     }
 
@@ -1642,6 +1749,15 @@ impl Agent {
         } else {
             self.compact_history_local(focus).await
         };
+
+        // Re-queue the `SessionStart` hooks with `source: "compact"`: Codex does
+        // the same, and it is how a plugin re-orients after its context was
+        // summarized away (the reference `basic-memory` plugin asks for an
+        // authored checkpoint this way). The next turn dispatches them.
+        if result.is_ok() {
+            self.runtime.session_start_source = SessionStartSource::Compact;
+            self.runtime.session_start_hooks_pending = true;
+        }
 
         // PostCompact hooks run once, only after a successful compaction.
         if result.is_ok() {
@@ -2555,8 +2671,6 @@ fn assemble_agents_md_prompt(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Once;
-
     use sqlx::Row;
     use tact_llm::{
         ContentBlock, LlmProvider, Message, MessageContent, MessageKind, MockClient,
@@ -2571,59 +2685,8 @@ mod tests {
     use crate::tool::test_support::test_context;
     use serde_json::Value;
 
-    static INIT_CONFIG: Once = Once::new();
-
     fn ensure_config() {
-        INIT_CONFIG.call_once(|| {
-            let config = crate::config::ResolvedConfig {
-                llm: crate::config::LlmSettings {
-                    provider: ProviderKind::OpenAi,
-                    protocol: tact_llm::OpenAiProtocol::default(),
-                    reasoning_effort: None,
-                    api_key: String::new(),
-                    base_url: String::new(),
-                    model: "mock-model".to_string(),
-                    models: Vec::new(),
-                    model_profiles: Default::default(),
-                    responses_compact_threshold: None,
-                },
-                agent: crate::config::AgentSettings {
-                    model: "mock-model".to_string(),
-                    reasoning_effort: None,
-                    model_context_window: 500_000,
-                    max_tokens: 8192,
-                    thinking_budget: 0,
-                    snapshot_max_items: 80,
-                    notifications_enabled: false,
-                    max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
-                    micro_compact_enabled: true,
-                    skill_body_auto_inject: false,
-                    skill_dirs: Vec::new(),
-                    instruction_sources: crate::config::InstructionSources::default(),
-                    subagent: None,
-                },
-                ui: crate::config::UiSettings {
-                    theme: "retro".to_string(),
-                    vision_image: crate::config::VisionImageSettings {
-                        compress: crate::config::VisionImageSettings::DEFAULT_COMPRESS,
-                        max_edge: crate::config::VisionImageSettings::DEFAULT_MAX_EDGE,
-                        jpeg_quality: crate::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
-                    },
-                },
-                tools: crate::config::ToolSettings {
-                    bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
-                    bash_nice: crate::config::ToolSettings::DEFAULT_BASH_NICE,
-                    rtk_filter: false,
-                    sandbox: false,
-                },
-                voice: crate::config::VoiceSettings::disabled_defaults(),
-                mcp: crate::config::McpSettings::default(),
-                permission_mode: None,
-                tokio_console: false,
-                config_path: None,
-            };
-            crate::config::install(config);
-        });
+        crate::config::test_support::install_default();
     }
 
     fn make_text_block(content: &str) -> ContentBlock {
@@ -4992,6 +5055,164 @@ mod tests {
             "and carry its text: {}",
             crate::extract_text(&brief.content)
         );
+
+        // The compaction re-queues the hooks as `compact` — Codex's checkpoint
+        // trigger — so the next turn re-orients against the new history.
+        assert!(agent.runtime.session_start_hooks_pending);
+        assert_eq!(
+            agent.runtime.session_start_source,
+            crate::hook::SessionStartSource::Compact
+        );
+    }
+
+    /// Startup must not wait for a plugin hook: the first turn runs them, which
+    /// is still ahead of that turn's user message but no longer ahead of the
+    /// first frame. `basic-memory`'s hook measured ~8s warm here.
+    #[tokio::test]
+    async fn session_start_hooks_run_on_the_first_turn_and_only_once() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let mock = MockClient::new(vec![
+            (vec![make_text_block("first")], Some(StopReason::EndTurn)),
+            (vec![make_text_block("second")], Some(StopReason::EndTurn)),
+        ]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("session_start_first_turn"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_session_start(move |_agent, context| {
+            let seen = seen.clone();
+            Box::pin(async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                context.push_additional_context("brief");
+                Ok(HookControl::Continue)
+            })
+        });
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "startup must not run them");
+        assert!(agent.runtime.session_start_hooks_pending);
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the first turn runs them");
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "again")))
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a later turn must not re-run them"
+        );
+    }
+
+    /// Codex's `continue: false` on `SessionStart` stops the turn: the user
+    /// message is never pushed, rather than pushed with a notice in the log.
+    #[tokio::test]
+    async fn session_start_stop_skips_the_turn() {
+        ensure_config();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("should not run")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("session_start_stop_skips"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session_start(|_agent, _context| {
+            Box::pin(async { Ok(HookControl::Block("no context yet".to_string())) })
+        });
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        assert!(
+            agent.runtime.context.is_empty(),
+            "the turn must not run: {:?}",
+            agent.runtime.context.len()
+        );
+        let mut notice = None;
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::Info(text) = update {
+                notice = Some(text);
+            }
+        }
+        assert!(
+            notice
+                .as_deref()
+                .is_some_and(|text| text.contains("no context yet")),
+            "{notice:?}"
+        );
+    }
+
+    /// Context the tool hooks collected is recorded before the next request, so
+    /// the model reads it alongside the tool call it annotates.
+    #[tokio::test]
+    async fn agent_loop_records_tool_hook_context() {
+        ensure_config();
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("ok")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("agent_loop_tool_hook_context"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        agent
+            .runtime
+            .pending_hook_context
+            .lock()
+            .unwrap()
+            .push_back("pre context".to_string());
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+
+        let injected: Vec<String> = agent
+            .runtime
+            .context
+            .iter()
+            .filter(|message| message.is_hook_context())
+            .map(|message| crate::extract_text(&message.content))
+            .collect();
+        assert_eq!(injected.len(), 1, "one cell: {injected:?}");
+        assert!(injected[0].contains("pre context"), "{injected:?}");
     }
 
     #[tokio::test]

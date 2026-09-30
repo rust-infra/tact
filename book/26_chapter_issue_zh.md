@@ -32,6 +32,57 @@
 ---
 
 
+## 1. 2026-09-29 — hook 的 payload 对齐 Codex schema，卡住的 hook 不再默默撒谎
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix + optimization |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`build_payload`、`run_command_hook`）、`crates/tact/src/hook/mod.rs`（`SessionStartSource`）、`crates/tact/src/agent/mod.rs`（`session_start_source`、`ensure_session`、`compact_history_with_trigger`）；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** 同一份契约上的四个缺口。（1）只有 `SessionStart` 带 `model` / `permission_mode`——而 Codex 要求**每个**事件都带，另外还有 `turn_id`（工具事件还有 `tool_use_id`），这些 Tact 一个都没发。（2）`transcript_path` 给的是 transcripts **目录**，插件会照着去打开一个目录。（3）`session_id` 是 `String::new()`——调用方从来没填过。（4）失败、超时或起不来的 hook 只产生一条 `tracing::warn!`，而默认的 `tact-ui` 会话从不把它写到任何地方：坏掉的插件 hook 看起来和安安静静的那个一模一样。
+
+**决策：** 在源头修契约，而不是逐个事件打补丁。`build_payload` 现在接收 agent，为每个事件填上 `model`、`permission_mode`、`turn_id` 与真实的 `session_id`；`transcript_path` 改为 `null`（诚实——Tact 没有单一的活动 transcript）；`source` 的取值变成真实的（`startup` / `resume` / `compact`，最后一种由压缩重新排队，与 Codex 做法一致）；`SessionStart` 现在按 **`continue: false`** 跳过这一轮（Codex 的字段——该 schema 里没有 `decision`），`systemMessage` 会作为提示显示；`run_command_hook` 会发出 `[plugin hook <Event> failed] <error>`，让失败可见。`async: true` 分支也不再为每个 hook 新建一个 tokio runtime——它直接在已有的 runtime 上 spawn。
+
+**之后的行为：** 照着 Codex schema 写的插件能读到它期望的值。压缩会以 `compact` 重跑 start hooks（每次压缩一次 hook 运行，与 Codex 相同）。失败的 hook 仍然 fail-open，但会被宣告。`SessionStart` 上的 `continue: false` 会跳过这一轮，并显示它的 `stopReason`。
+
+**指向：** `plugin::hooks::tests::{session_start_payload_carries_the_model_and_permission_mode, a_failing_hook_is_surfaced_to_the_ui}`、`agent::tests::session_start_context_survives_the_pre_turn_compaction`（现在还钉住 `compact` 重新排队）。
+
+---
+
+## 1. 2026-09-29 — 工具 hook 的 context 交给模型，而不是塞进一个没人读的字段
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`PreToolUse` / `PostToolUse` 闭包）、`crates/tact/src/agent/mod.rs`（`pending_hook_context`、`inject_pending_hook_context`、`record_hook_context`）；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** 两个工具 hook 产出的 `additionalContext` 去了虚空。`PreToolUse` 把它写进 `tool_use.input["_hook_context"]`——全树没有任何读取者，于是它留在了权限检查与工具本身都能看到的参数里；`PostToolUse` 则根本没读这个字段。想给工具调用做标注的插件（linter 建议、策略提示）等于写进了一个黑洞。
+
+**决策：** 两个事件都把 context 交给 `SessionStart` 用的同一条路径。因为这些 hook 只拿到 `&Agent`，它们往 `AgentRuntime::pending_hook_context`（`Arc<Mutex<VecDeque<…>>`，`pending_subagent_results` 已有的形状）里 push，`agent_loop` 在构造每个请求之前把它取走——于是模型读到的 context 与它所标注的工具调用相邻，正是 Codex 的 `record_additional_contexts` 放置它的位置。那个没人读的 `_hook_context` 键删掉了。
+
+**之后的行为：** `SessionStart`、`PreToolUse`、`PostToolUse` 都会记录 `<hook-context>` cell；加上 `SubagentStart` 与 `UserPromptSubmit`，这就是 Codex 提供 `additionalContext` 通道的全部事件集合。其余九个控制/观察类事件继续忽略它，与 Codex 一致。
+
+**指向：** `plugin::hooks::tests::tool_hook_context_is_collected_without_touching_the_arguments`（断言参数保持干净、两段 context 按序入队）、`agent::tests::agent_loop_records_tool_hook_context`。
+
+---
+
+## 1. 2026-09-29 — 插件的会话简报不再拖慢首帧
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/agent/mod.rs`（`session_start_hooks_pending`、`dispatch_session_start_hooks`、`Agent::model`）、`crates/tact/src/plugin/hooks.rs`（payload、`statusMessage`）、`crates/tact/src/permission/mod.rs`（`PermissionMode::hook_name`）、`crates/tact-ui/src/{interactive,headless}.rs`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** `SessionStart` hook 在启动阶段、首帧之前逐个运行。插件 hook 是一个子进程：参考实现 `basic-memory` 的 hook 在本机实测**热启动约 8 秒**、**`uv` 缓存冷启动约 100 秒**，而该插件自己声明 `"timeout": 30`——于是冷启动那次会被直接杀掉、什么都拿不到。每次启动都在静默中付出这段延迟：插件的 `statusMessage` 只进 `tracing::debug!`，而 `tact-ui` 默认不装 subscriber。
+
+**决策：** 改在**第一轮**派发，而不是启动时；用 `AgentRuntime::session_start_hooks_pending` 保证它仍然只跑一次、且仍落在那轮用户消息之前。hook 之间**并发**执行（收集到的内容保持注册顺序），插件的 `statusMessage` 以 `AgentUpdate::Info` 发出，payload 补上 Codex 的 `session-start.command.input` 在 Claude 基础字段之外要求的两个字段——`model`（新增 `Agent::model()`）与 `permission_mode`（`PermissionMode::hook_name()`，Claude Code 词汇：`default` / `plan` / `acceptEdits`）。
+
+**之后的行为：** 启动不再等插件 hook；改由第一轮等待，并且屏幕上会显示插件自己的状态行，而它收集的 context 仍记在那轮用户消息之前。按 `payload["model"]` 或 `payload["permission_mode"]` 分支的插件现在读到的是值而不是 `null`。
+
+**指向：** `agent::tests::session_start_hooks_run_on_the_first_turn_and_only_once`、`plugin::hooks::tests::session_start_payload_carries_the_model_and_permission_mode`。`crate::config::test_support::install_default` 从 agent 测试中提取出来，好让 plugin 测试也能构造 `Agent`。
+
+---
+
 ## 1. 2026-09-29 — 插件的 `SessionStart` context 真正进入模型，而不是只留一行日志
 
 | 字段 | 值 |

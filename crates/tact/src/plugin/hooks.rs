@@ -42,6 +42,8 @@ use serde_json::{Value, json};
 use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 use tracing::warn;
 
+use tact_protocol::AgentUpdate;
+
 use crate::{
     compact::CompactTrigger,
     consts::{PluginDirs, PluginHome},
@@ -50,6 +52,7 @@ use crate::{
         SubagentStartFn, SubagentStopContext, SubagentStopFn, ToolResult, ToolUse,
     },
     plugin::PluginStore,
+    utils::LockExt,
 };
 
 /// A Claude Code hook event that Tact maps to a loop point.
@@ -181,12 +184,18 @@ pub struct HookRunInput {
 #[derive(Debug, Clone, Default)]
 pub struct HookOutput {
     pub control: HookControl,
-    /// `additionalContext` — appended to prompt / tool input by the caller.
+    /// `additionalContext` — recorded as conversation context by the caller.
     pub additional_context: Option<String>,
-    /// `systemPrompt` / `updatedSystemPrompt` (SessionStart) — logged only.
-    pub system_prompt: Option<String>,
     /// `suppressOutput` (PostToolUse) — caller may clear the tool result.
     pub suppress_output: bool,
+    /// `continue: false` — Codex's stop. What stopping means depends on the
+    /// event: for `SessionStart` the turn does not run at all, and that is the
+    /// field a plugin uses (`decision: block` is not in that schema).
+    pub stop: bool,
+    /// `stopReason` — shown alongside a stop.
+    pub stop_reason: Option<String>,
+    /// `systemMessage` — surfaced to the reader as a notice; never injected.
+    pub system_message: Option<String>,
 }
 
 impl HookOutput {
@@ -204,6 +213,7 @@ pub async fn run_command_hook(
     command: &HookCommand,
     dirs: impl Into<PluginDirs>,
     input: &HookRunInput,
+    agent: Option<&crate::Agent>,
 ) -> HookOutput {
     let dirs = dirs.into();
     let Some(raw) = command.command.as_deref() else {
@@ -216,21 +226,17 @@ pub async fn run_command_hook(
         let expanded = expand_plugin_placeholders(raw, &dirs);
         let work_dir = input.work_dir.clone();
         let dirs = dirs.clone();
-        let payload = build_payload(input);
-        let _ = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new();
-            let rt = match rt {
-                Ok(rt) => rt,
-                Err(_) => return,
-            };
-            rt.block_on(async move {
-                let _ = run_process(&expanded, &work_dir, &dirs, &payload, None).await;
-            });
+        let payload = build_payload(input, agent);
+        // Fire-and-forget on the runtime we are already on: a plugin that opts
+        // into `async` does not want its result, and building a second runtime
+        // per hook just to run one process was pure overhead.
+        tokio::spawn(async move {
+            let _ = run_process(&expanded, &work_dir, &dirs, &payload, None).await;
         });
         return HookOutput::continue_default();
     }
 
-    let payload = build_payload(input);
+    let payload = build_payload(input, agent);
     // Claude semantics: default 60s; an explicit `0` disables the timeout.
     let timeout_secs = resolve_timeout(command.timeout);
     match run_process(
@@ -242,9 +248,29 @@ pub async fn run_command_hook(
     )
     .await
     {
-        Ok(stdout) => parse_output(&stdout, input.hook_event_name),
+        Ok(stdout) => {
+            let output = parse_output(&stdout, input.hook_event_name);
+            // Codex records `systemMessage` as a warning entry; it never reaches
+            // the conversation.
+            if let Some(message) = &output.system_message
+                && let Some(agent) = agent
+            {
+                agent.emit_update(AgentUpdate::Info(message.clone()));
+            }
+            output
+        }
         Err(error) => {
             warn!("plugin hook command failed (continuing): {error}");
+            // Surface it: the warning above only reaches a log file, and
+            // `tact-ui` installs no subscriber unless `RUST_LOG` is set. A
+            // plugin hook that failed is otherwise indistinguishable from one
+            // that had nothing to say.
+            if let Some(agent) = agent {
+                agent.emit_update(AgentUpdate::Info(format!(
+                    "[plugin hook {} failed] {error}",
+                    input.hook_event_name
+                )));
+            }
             HookOutput::continue_default()
         }
     }
@@ -334,17 +360,35 @@ fn resolve_timeout(timeout: Option<u64>) -> Option<u64> {
     }
 }
 
-/// Builds the Claude Code hook input JSON (`session_id`, `transcript_path`,
-/// `cwd`, `hook_event_name`) with event-specific fields merged at the top
-/// level (the Claude protocol puts `tool_name`, `tool_input`, `prompt`, …
-/// at the root, not nested).
-fn build_payload(input: &HookRunInput) -> Value {
+/// Builds a hook's stdin payload.
+///
+/// The base set (`session_id`, `transcript_path`, `cwd`, `hook_event_name`),
+/// plus the fields **every** event carries in Codex's schema — `model`,
+/// `permission_mode`, `turn_id` — plus the event-specific ones merged at the
+/// top level (the protocol puts `tool_name`, `tool_input`, `prompt`, … at the
+/// root, not nested).
+///
+/// `transcript_path` is `null`: Tact keeps a session in SQLite and writes a
+/// transcript only when compaction runs, so there is no single live file to
+/// name (Codex points at its rollout file). Reporting the transcripts
+/// *directory* here — as this did — was worse than null, because a plugin opens
+/// what it is given.
+fn build_payload(input: &HookRunInput, agent: Option<&crate::Agent>) -> Value {
     let mut payload = json!({
-        "session_id": input.session_id,
-        "transcript_path": input.work_dir.join(".tact/transcripts"),
+        // Callers historically passed `String::new()`; the live session id is
+        // the one a plugin can use to correlate runs.
+        "session_id": agent
+            .and_then(|agent| agent.runtime.session_id.clone())
+            .unwrap_or_else(|| input.session_id.clone()),
+        "transcript_path": Value::Null,
         "cwd": input.work_dir,
         "hook_event_name": input.hook_event_name,
     });
+    if let Some(agent) = agent {
+        payload["model"] = json!(agent.model());
+        payload["permission_mode"] = json!(agent.runtime.permission_manager.mode().hook_name());
+        payload["turn_id"] = json!(agent.turns_taken.to_string());
+    }
     if let Some(object) = input.event.as_object() {
         for (key, value) in object {
             payload[key] = value.clone();
@@ -378,8 +422,7 @@ fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
             return HookOutput {
                 control: HookControl::Continue,
                 additional_context: Some(text.to_string()),
-                system_prompt: None,
-                suppress_output: false,
+                ..HookOutput::default()
             };
         }
         Err(error) => {
@@ -407,10 +450,9 @@ fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
             .additional_context
             .clone()
             .or_else(|| legacy.and_then(|l| l.additional_context.clone())),
-        system_prompt: raw
-            .system_prompt
-            .clone()
-            .or_else(|| legacy.and_then(|l| l.updated_system_prompt.clone())),
+        stop: raw.continue_processing == Some(false),
+        stop_reason: raw.stop_reason.clone(),
+        system_message: raw.system_message.clone(),
         suppress_output: raw
             .suppress_output
             .or_else(|| legacy.and_then(|l| l.suppress_output))
@@ -425,9 +467,6 @@ fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
 /// warning and dropped, which made the reference `basic-memory` plugin's
 /// session briefing inert.
 fn collect_session_start_output(output: &HookOutput, context: &mut SessionStartContext) {
-    if let Some(prompt) = &output.system_prompt {
-        warn!("plugin SessionStart hook returned a system prompt; not applied in v1: {prompt}");
-    }
     if let Some(additional) = &output.additional_context {
         context.push_additional_context(additional);
     }
@@ -450,9 +489,13 @@ struct RawHookOutput {
     #[serde(default)]
     additional_context: Option<String>,
     #[serde(default)]
-    system_prompt: Option<String>,
-    #[serde(default)]
     suppress_output: Option<bool>,
+    #[serde(default, rename = "continue")]
+    continue_processing: Option<bool>,
+    #[serde(default)]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    system_message: Option<String>,
     #[serde(default)]
     hook_specific_output: Option<RawHookSpecificOutput>,
 }
@@ -460,18 +503,15 @@ struct RawHookOutput {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawHookSpecificOutput {
-    // Parsed for legacy-schema tolerance; not consumed by the current mapping.
-    #[serde(default)]
-    #[allow(dead_code)]
-    hook_event_name: Option<String>,
+    // `permissionDecision` is not Claude-only: Codex's PreToolUse parser accepts
+    // it too (`PreToolUsePermissionDecisionWire`), as an alternative to the
+    // top-level `decision: "block"`.
     #[serde(default)]
     permission_decision: Option<String>,
     #[serde(default)]
     permission_decision_reason: Option<String>,
     #[serde(default)]
     additional_context: Option<String>,
-    #[serde(default)]
-    updated_system_prompt: Option<String>,
     #[serde(default)]
     suppress_output: Option<bool>,
 }
@@ -707,6 +747,7 @@ fn plugin_subagent_start_hooks_with_home(
                                 "prompt": prompt,
                             }),
                         },
+                        None,
                     )
                     .await;
                     if let Some(extra) = output.additional_context {
@@ -771,6 +812,7 @@ fn plugin_subagent_stop_hooks_with_home(
                                 "last_assistant_message": summary,
                             }),
                         },
+                        None,
                     )
                     .await;
                     // Observational: a block cannot resume a finished child;
@@ -794,8 +836,7 @@ fn plugin_subagent_stop_hooks_with_home(
 /// A `block` output from `PreToolUse` / `PostToolUse` /
 /// `Stop` / `PreCompact` propagates through [`HookControl`]; `UserPromptSubmit`
 /// appends `additionalContext` to the prompt; `SessionStart`'s
-/// `additionalContext` is collected for injection before the first turn and
-/// its `systemPrompt` output is logged but not applied (unsupported in v1);
+/// `additionalContext` is collected for injection before the first turn;
 /// `SessionEnd` / `PostCompact` / `SubagentStop` / `PostToolUseFailure` /
 /// `Notification` / `TaskCompleted` are observational.
 pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate::Agent> {
@@ -823,17 +864,27 @@ fn apply_plugin_hooks_with_home(
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_session_start(
-                move |_agent: &crate::Agent, context: &mut SessionStartContext| {
+                move |agent: &crate::Agent, context: &mut SessionStartContext| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
                     let work_dir = work_dir.clone();
                     Box::pin(async move {
-                        // Tact sessions start normally; the Claude `source`
-                        // matcher vocabulary (startup|resume|clear|compact) is
-                        // matched against "startup".
-                        if !matcher_matches(matcher.as_deref(), "startup") {
+                        // The Claude `source` matcher vocabulary
+                        // (startup|resume|clear|compact); Tact reports the real
+                        // one, so a plugin's `startup|resume|compact` pattern
+                        // fires for the case it meant.
+                        let source = agent.runtime.session_start_source.as_str();
+                        if !matcher_matches(matcher.as_deref(), source) {
                             return Ok(HookControl::Continue);
+                        }
+                        // The plugin's own status line, surfaced rather than
+                        // logged: this hook is a subprocess that can take
+                        // seconds (a cold `uv run --script` took ~100s here),
+                        // and silence while the first turn waits reads as a
+                        // hang.
+                        if let Some(status) = command.status_message.as_deref() {
+                            agent.emit_update(AgentUpdate::Info(status.to_string()));
                         }
                         let output = run_command_hook(
                             &command,
@@ -842,12 +893,25 @@ fn apply_plugin_hooks_with_home(
                                 session_id: String::new(),
                                 work_dir,
                                 hook_event_name: "SessionStart",
-                                event: json!({ "source": "startup" }),
+                                // `model` and `permission_mode` are required by
+                                // Codex's `session-start.command.input` schema;
+                                // a plugin that branches on them would otherwise
+                                // read `null` and degrade.
+                                event: json!({ "source": source }),
                             },
+                            Some(agent),
                         )
                         .await;
                         collect_session_start_output(&output, context);
-                        Ok(output.control)
+                        // Codex's `SessionStart` schema has no `decision`; the
+                        // stop is `continue: false` with an optional reason.
+                        Ok(if output.stop {
+                            HookControl::Block(output.stop_reason.clone().unwrap_or_else(|| {
+                                "stopped by the plugin's SessionStart hook".to_string()
+                            }))
+                        } else {
+                            HookControl::Continue
+                        })
                     })
                 },
             );
@@ -862,7 +926,7 @@ fn apply_plugin_hooks_with_home(
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
-                agent.with_user_prompt_submit(move |_agent: &crate::Agent, prompt: &mut String| {
+                agent.with_user_prompt_submit(move |agent: &crate::Agent, prompt: &mut String| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -881,6 +945,7 @@ fn apply_plugin_hooks_with_home(
                                 hook_event_name: "UserPromptSubmit",
                                 event: json!({ "prompt": prompt_snapshot }),
                             },
+                            Some(agent),
                         )
                         .await;
                         if let Some(extra) = output.additional_context {
@@ -896,13 +961,14 @@ fn apply_plugin_hooks_with_home(
             let command = command.clone();
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_pre_tool(move |_agent: &crate::Agent, tool_use: &mut ToolUse| {
+            agent = agent.with_pre_tool(move |agent: &crate::Agent, tool_use: &mut ToolUse| {
                 let matcher = matcher.clone();
                 let command = command.clone();
                 let dirs = dirs.clone();
                 let work_dir = work_dir.clone();
                 let tool_name = tool_use.name.clone();
                 let tool_input = tool_use.input.clone();
+                let tool_use_id = tool_use.id.clone();
                 Box::pin(async move {
                     if !matcher_matches(matcher.as_deref(), &tool_name) {
                         return Ok(HookControl::Continue);
@@ -917,14 +983,24 @@ fn apply_plugin_hooks_with_home(
                             event: json!({
                                 "tool_name": tool_name,
                                 "tool_input": tool_input,
+                                "tool_use_id": tool_use_id,
                             }),
                         },
+                        Some(agent),
                     )
                     .await;
-                    if let Some(extra) = output.additional_context
-                        && let Some(object) = tool_use.input.as_object_mut()
-                    {
-                        object.insert("_hook_context".into(), json!(extra));
+                    if let Some(extra) = output.additional_context {
+                        // Injected as conversation context before the next
+                        // request, the way Codex records it. The old
+                        // `tool_use.input["_hook_context"]` key was written but
+                        // never read, so the context was lost — and it left an
+                        // extra field in the arguments the permission check and
+                        // the tool itself see.
+                        agent
+                            .runtime
+                            .pending_hook_context
+                            .lock_recover()
+                            .push_back(extra);
                     }
                     Ok(output.control)
                 })
@@ -937,7 +1013,7 @@ fn apply_plugin_hooks_with_home(
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_hook(
-                move |_agent: &crate::Agent,
+                move |agent: &crate::Agent,
                       tool_use: &ToolUse,
                       result: &mut ToolResult,
                       _status| {
@@ -947,6 +1023,7 @@ fn apply_plugin_hooks_with_home(
                     let work_dir = work_dir.clone();
                     let tool_name = tool_use.name.clone();
                     let tool_input = tool_use.input.clone();
+                    let tool_use_id = tool_use.id.clone();
                     let tool_response = result.content.clone();
                     Box::pin(async move {
                         if !matcher_matches(matcher.as_deref(), &tool_name) {
@@ -962,13 +1039,24 @@ fn apply_plugin_hooks_with_home(
                                 event: json!({
                                     "tool_name": tool_name,
                                     "tool_input": tool_input,
+                                    "tool_use_id": tool_use_id,
                                     "tool_response": tool_response,
                                 }),
                             },
+                            Some(agent),
                         )
                         .await;
                         if output.suppress_output {
                             result.content.clear();
+                        }
+                        if let Some(extra) = output.additional_context {
+                            // Same route as `PreToolUse`: collected here, turned
+                            // into conversation context before the next request.
+                            agent
+                                .runtime
+                                .pending_hook_context
+                                .lock_recover()
+                                .push_back(extra);
                         }
                         Ok(output.control)
                     })
@@ -985,7 +1073,7 @@ fn apply_plugin_hooks_with_home(
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_failure(
-                move |_agent: &crate::Agent, tool_use: &ToolUse, error: &str| {
+                move |agent: &crate::Agent, tool_use: &ToolUse, error: &str| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -1013,6 +1101,7 @@ fn apply_plugin_hooks_with_home(
                                     "is_interrupt": false,
                                 }),
                             },
+                            Some(agent),
                         )
                         .await;
                         // Observational: the tool already failed.
@@ -1029,7 +1118,7 @@ fn apply_plugin_hooks_with_home(
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
-                agent.with_notification(move |_agent: &crate::Agent, ctx: &NotificationContext| {
+                agent.with_notification(move |agent: &crate::Agent, ctx: &NotificationContext| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -1056,6 +1145,7 @@ fn apply_plugin_hooks_with_home(
                                     "message": message,
                                 }),
                             },
+                            Some(agent),
                         )
                         .await;
                         // Observational.
@@ -1093,6 +1183,7 @@ fn apply_plugin_hooks_with_home(
                                 "task_description": task_description,
                             }),
                         },
+                        Some(agent),
                     )
                     .await;
                     // Observational.
@@ -1131,6 +1222,7 @@ fn apply_plugin_hooks_with_home(
                                 "last_assistant_message": last,
                             }),
                         },
+                        Some(agent),
                     )
                     .await;
                     // `block` means "continue the turn with reason as the next
@@ -1145,7 +1237,7 @@ fn apply_plugin_hooks_with_home(
             let command = command.clone();
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_session_end(move |_agent: &crate::Agent| {
+            agent = agent.with_session_end(move |agent: &crate::Agent| {
                 let matcher = matcher.clone();
                 let command = command.clone();
                 let dirs = dirs.clone();
@@ -1164,6 +1256,7 @@ fn apply_plugin_hooks_with_home(
                             hook_event_name: "SessionEnd",
                             event: json!({ "reason": "other" }),
                         },
+                        Some(agent),
                     )
                     .await;
                     // Observational: a block cannot prevent teardown.
@@ -1178,31 +1271,31 @@ fn apply_plugin_hooks_with_home(
             let command = command.clone();
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
-            agent =
-                agent.with_pre_compact(move |_agent: &crate::Agent, trigger: CompactTrigger| {
-                    let matcher = matcher.clone();
-                    let command = command.clone();
-                    let dirs = dirs.clone();
-                    let work_dir = work_dir.clone();
-                    Box::pin(async move {
-                        if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
-                            return Ok(HookControl::Continue);
-                        }
-                        let output = run_command_hook(
-                            &command,
-                            &dirs,
-                            &HookRunInput {
-                                session_id: String::new(),
-                                work_dir,
-                                hook_event_name: "PreCompact",
-                                event: json!({ "trigger": trigger.as_str() }),
-                            },
-                        )
-                        .await;
-                        // `block` vetoes the compaction (Codex `should_stop`).
-                        Ok(output.control)
-                    })
-                });
+            agent = agent.with_pre_compact(move |agent: &crate::Agent, trigger: CompactTrigger| {
+                let matcher = matcher.clone();
+                let command = command.clone();
+                let dirs = dirs.clone();
+                let work_dir = work_dir.clone();
+                Box::pin(async move {
+                    if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
+                        return Ok(HookControl::Continue);
+                    }
+                    let output = run_command_hook(
+                        &command,
+                        &dirs,
+                        &HookRunInput {
+                            session_id: String::new(),
+                            work_dir,
+                            hook_event_name: "PreCompact",
+                            event: json!({ "trigger": trigger.as_str() }),
+                        },
+                        Some(agent),
+                    )
+                    .await;
+                    // `block` vetoes the compaction (Codex `should_stop`).
+                    Ok(output.control)
+                })
+            });
         }
 
         for (matcher, command) in installed.hooks.commands_for(HookEventKind::PostCompact) {
@@ -1211,7 +1304,7 @@ fn apply_plugin_hooks_with_home(
             let dirs = installed.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
-                agent.with_post_compact(move |_agent: &crate::Agent, trigger: CompactTrigger| {
+                agent.with_post_compact(move |agent: &crate::Agent, trigger: CompactTrigger| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -1229,6 +1322,7 @@ fn apply_plugin_hooks_with_home(
                                 hook_event_name: "PostCompact",
                                 event: json!({ "trigger": trigger.as_str() }),
                             },
+                            Some(agent),
                         )
                         .await;
                         // Observational: compaction already committed.
@@ -1391,9 +1485,29 @@ mod tests {
         );
     }
 
-    /// A `SessionStart` run's context reaches the agent; the system prompt it
-    /// returns is still unsupported. Regression guard: this routing used to be
-    /// a `warn!`, so a plugin's briefing never reached the model.
+    /// Codex's top-level fields: `continue` / `stopReason` / `systemMessage`.
+    /// `continue: false` is what stops a `SessionStart` — that schema has no
+    /// `decision`, so a plugin cannot block with one.
+    #[test]
+    fn continue_stop_reason_and_system_message_are_parsed() {
+        let output = parse_output(
+            r#"{"continue": false, "stopReason": "no context yet", "systemMessage": "warming up"}"#,
+            "SessionStart",
+        );
+        assert!(output.stop);
+        assert_eq!(output.stop_reason.as_deref(), Some("no context yet"));
+        assert_eq!(output.system_message.as_deref(), Some("warming up"));
+
+        // Absent means continue, which is the common case.
+        let default = parse_output("{}", "SessionStart");
+        assert!(!default.stop);
+        assert!(default.stop_reason.is_none());
+        assert!(default.system_message.is_none());
+    }
+
+    /// A `SessionStart` run's context reaches the agent. Regression guard: this
+    /// routing used to be a `warn!`, so a plugin's briefing never reached the
+    /// model.
     #[test]
     fn session_start_output_routes_its_context_to_the_agent() {
         let mut context = SessionStartContext::default();
@@ -1401,8 +1515,7 @@ mod tests {
             &HookOutput {
                 control: HookControl::Continue,
                 additional_context: Some("graph: resume from checkpoint 7".to_string()),
-                system_prompt: Some("rewrite the system prompt".to_string()),
-                suppress_output: false,
+                ..HookOutput::default()
             },
             &mut context,
         );
@@ -1417,8 +1530,7 @@ mod tests {
             &HookOutput {
                 control: HookControl::Block("stop".to_string()),
                 additional_context: Some("ctx".to_string()),
-                system_prompt: None,
-                suppress_output: false,
+                ..HookOutput::default()
             },
             &mut blocked,
         );
@@ -1458,6 +1570,7 @@ mod tests {
                 hook_event_name: "UserPromptSubmit",
                 event: json!({ "prompt": "hello" }),
             },
+            None,
         )
         .await;
 
@@ -1488,6 +1601,7 @@ mod tests {
                 hook_event_name: "SessionStart",
                 event: json!({ "source": "startup" }),
             },
+            None,
         )
         .await;
 
@@ -1519,6 +1633,7 @@ mod tests {
                 hook_event_name: "PreToolUse",
                 event: json!({ "tool_name": "Read" }),
             },
+            None,
         )
         .await;
 
@@ -1551,6 +1666,7 @@ mod tests {
                 hook_event_name: "PreToolUse",
                 event: json!({ "tool_name": "Read" }),
             },
+            None,
         )
         .await;
 
@@ -1583,6 +1699,7 @@ mod tests {
                 hook_event_name: "UserPromptSubmit",
                 event: json!({ "prompt": "hi" }),
             },
+            None,
         )
         .await;
 
@@ -1613,10 +1730,69 @@ mod tests {
                 hook_event_name: "PreToolUse",
                 event: Value::Null,
             },
+            None,
         )
         .await;
 
         assert_eq!(output.control, HookControl::Continue);
+    }
+
+    /// A hook that fails is fail-open (the turn continues) but no longer
+    /// silent: the warning alone only reaches a log file, and `tact-ui` installs
+    /// no subscriber unless `RUST_LOG` is set.
+    #[tokio::test]
+    async fn a_failing_hook_is_surfaced_to_the_ui() {
+        crate::config::test_support::install_default();
+
+        let dir = tempdir().unwrap();
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some("echo 'stderr says why' >&2; exit 3".into()),
+            command_windows: None,
+            timeout: None,
+            status_message: None,
+            async_: None,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let agent = crate::Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(Vec::new())),
+            crate::tool::test_support::test_context("failing_hook"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            crate::AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "SessionStart",
+                event: json!({ "source": "startup" }),
+            },
+            Some(&agent),
+        )
+        .await;
+
+        assert!(
+            matches!(output.control, HookControl::Continue),
+            "a hook failure stays fail-open"
+        );
+        let mut notice = None;
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::Info(text) = update {
+                notice = Some(text);
+            }
+        }
+        let notice = notice.expect("the failure reaches the UI");
+        assert!(notice.contains("SessionStart"), "{notice}");
+        assert!(notice.contains("stderr says why"), "{notice}");
     }
 
     #[tokio::test]
@@ -1639,6 +1815,7 @@ mod tests {
                 hook_event_name: "PreToolUse",
                 event: Value::Null,
             },
+            None,
         )
         .await;
 
@@ -1667,6 +1844,7 @@ mod tests {
                 hook_event_name: "PreToolUse",
                 event: Value::Null,
             },
+            None,
         )
         .await;
 
@@ -1693,6 +1871,7 @@ mod tests {
                 hook_event_name: "PostToolUse",
                 event: json!({ "tool_name": "Bash" }),
             },
+            None,
         )
         .await;
 
@@ -1730,6 +1909,7 @@ mod tests {
                 hook_event_name: "PostToolUse",
                 event: json!({ "tool_name": "Bash", "pad": "x".repeat(200 * 1024) }),
             },
+            None,
         )
         .await;
 
@@ -1763,6 +1943,7 @@ mod tests {
                 hook_event_name: "UserPromptSubmit",
                 event: Value::Null,
             },
+            None,
         )
         .await;
 
@@ -1793,6 +1974,7 @@ mod tests {
                 hook_event_name: "UserPromptSubmit",
                 event: json!({ "prompt": "hello" }),
             },
+            None,
         )
         .await;
 
@@ -1823,6 +2005,7 @@ mod tests {
                 hook_event_name: "PreToolUse",
                 event: json!({ "tool_name": "Read" }),
             },
+            None,
         )
         .await;
 
@@ -1832,17 +2015,248 @@ mod tests {
 
     #[test]
     fn build_payload_merges_event_fields_at_top_level() {
-        let payload = build_payload(&HookRunInput {
-            session_id: "s1".into(),
-            work_dir: PathBuf::from("/proj"),
-            hook_event_name: "PreToolUse",
-            event: json!({ "tool_name": "Bash", "tool_input": { "command": "ls" } }),
-        });
+        let payload = build_payload(
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: PathBuf::from("/proj"),
+                hook_event_name: "PreToolUse",
+                event: json!({ "tool_name": "Bash", "tool_input": { "command": "ls" } }),
+            },
+            None,
+        );
         assert_eq!(payload["session_id"], "s1");
         assert_eq!(payload["hook_event_name"], "PreToolUse");
         assert_eq!(payload["tool_name"], "Bash");
         assert_eq!(payload["tool_input"]["command"], "ls");
         assert!(payload.get("_event").is_none(), "event must not be nested");
+    }
+
+    /// Codex's `session-start.command.input` requires `model` and
+    /// `permission_mode`; a plugin that branches on them must not read `null`.
+    /// The plugin's own `statusMessage` also has to reach the UI, because the
+    /// hook can take seconds to answer.
+    #[tokio::test]
+    async fn session_start_payload_carries_the_model_and_permission_mode() {
+        use std::collections::BTreeMap;
+
+        use crate::plugin::InstalledPlugin;
+
+        crate::config::test_support::install_default();
+
+        let home = tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+        let plugin_root = plugin_home.cache.join("acme/demo/abc123");
+        std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
+        std::fs::write(
+            plugin_root.join(".codex-plugin/plugin.json"),
+            r#"{ "name": "demo" }"#,
+        )
+        .unwrap();
+        // `cat > file` keeps the payload the hook received.
+        let captured = home.path().join("payload.json");
+        std::fs::write(
+            plugin_root.join("hooks/hooks.json"),
+            format!(
+                r#"{{
+                    "hooks": {{
+                        "SessionStart": [{{
+                            "hooks": [{{ "type": "command",
+                                        "statusMessage": "Loading demo context",
+                                        "command": "cat > {captured}" }}]
+                        }}]
+                    }}
+                }}"#,
+                captured = captured.display()
+            ),
+        )
+        .unwrap();
+        PluginStore::new(plugin_home.clone())
+            .commit_install(
+                &crate::plugin::InstalledState {
+                    plugins: BTreeMap::from([(
+                        "acme/demo".to_owned(),
+                        InstalledPlugin {
+                            id: "demo".to_owned(),
+                            marketplace: "acme".to_owned(),
+                            revision: "abc123".to_owned(),
+                            cache_path: plugin_root.clone(),
+                            skill_count: 0,
+                            command_count: 0,
+                            has_hooks: true,
+                            has_mcp: false,
+                        },
+                    )]),
+                },
+                &plugin_root,
+            )
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = tact_llm::MockClient::new(vec![(
+            vec![tact_llm::ContentBlock::Text { text: "ok".into() }],
+            Some(tact_llm::StopReason::EndTurn),
+        )]);
+        let agent = crate::Agent::new(
+            tact_llm::LlmProvider::Mock(mock),
+            crate::tool::test_support::test_context("session_start_payload"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            crate::AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+        let mut agent = apply_plugin_hooks_with_home(&plugin_home, agent, home.path()).unwrap();
+        // The payload's `hook_event_name` carries the live session so a plugin
+        // can correlate runs; callers used to pass an empty string.
+        agent.runtime.session_id = Some("sess-1".to_string());
+
+        agent
+            .agent_loop(Some(tact_llm::Message::new_text(
+                tact_llm::Role::User,
+                "hi",
+            )))
+            .await
+            .unwrap();
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&captured).unwrap()).unwrap();
+        assert_eq!(payload["hook_event_name"], "SessionStart");
+        assert_eq!(payload["source"], "startup");
+        assert_eq!(payload["session_id"], "sess-1");
+        assert!(
+            payload["transcript_path"].is_null(),
+            "Tact has no single live transcript file, and a directory was worse \
+             than null: {payload}"
+        );
+        assert_eq!(payload["turn_id"], "0");
+        assert_eq!(
+            payload["model"], "mock-model",
+            "a plugin reads the model it is briefing: {payload}"
+        );
+        assert_eq!(
+            payload["permission_mode"], "default",
+            "Codex's required field, in the vocabulary plugins expect: {payload}"
+        );
+
+        let mut status = None;
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::Info(text) = update {
+                status = Some(text);
+            }
+        }
+        assert_eq!(
+            status.as_deref(),
+            Some("Loading demo context"),
+            "the plugin's status line reaches the UI"
+        );
+    }
+
+    /// `PreToolUse` / `PostToolUse` context is conversation context, not a field
+    /// on the tool arguments. It used to land in `tool_use.input["_hook_context"]`,
+    /// which nothing read — so the context was lost and the arguments were
+    /// polluted for the permission check and for the tool itself.
+    #[tokio::test]
+    async fn tool_hook_context_is_collected_without_touching_the_arguments() -> anyhow::Result<()> {
+        use std::collections::BTreeMap;
+
+        use crate::plugin::InstalledPlugin;
+
+        crate::config::test_support::install_default();
+
+        let home = tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+        let plugin_root = plugin_home.cache.join("acme/demo/abc123");
+        std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join("hooks")).unwrap();
+        std::fs::write(
+            plugin_root.join(".codex-plugin/plugin.json"),
+            r#"{ "name": "demo" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join("hooks/hooks.json"),
+            r#"{
+                "hooks": {
+                    "PreToolUse": [{ "hooks": [{ "type": "command",
+                        "command": "echo '{\"hookSpecificOutput\":{\"additionalContext\":\"pre context\"}}'" }] }],
+                    "PostToolUse": [{ "hooks": [{ "type": "command",
+                        "command": "echo '{\"hookSpecificOutput\":{\"additionalContext\":\"post context\"}}'" }] }]
+                }
+            }"#,
+        )
+        .unwrap();
+        PluginStore::new(plugin_home.clone())
+            .commit_install(
+                &crate::plugin::InstalledState {
+                    plugins: BTreeMap::from([(
+                        "acme/demo".to_owned(),
+                        InstalledPlugin {
+                            id: "demo".to_owned(),
+                            marketplace: "acme".to_owned(),
+                            revision: "abc123".to_owned(),
+                            cache_path: plugin_root.clone(),
+                            skill_count: 0,
+                            command_count: 0,
+                            has_hooks: true,
+                            has_mcp: false,
+                        },
+                    )]),
+                },
+                &plugin_root,
+            )
+            .unwrap();
+
+        let agent = crate::Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(Vec::new())),
+            crate::tool::test_support::test_context("tool_hook_context"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            crate::AgentSystemPrompt::Static("test".to_string()),
+        );
+        let agent = apply_plugin_hooks_with_home(&plugin_home, agent, home.path()).unwrap();
+
+        let mut tool_use = ToolUse {
+            id: "t1".into(),
+            name: "Read".into(),
+            input: serde_json::json!({ "file_path": "/tmp/x" }),
+        };
+        crate::invoke_hooks!(PreToolUse, &agent, &mut tool_use)?;
+        assert!(
+            tool_use.input.get("_hook_context").is_none(),
+            "the arguments must reach the tool unchanged: {}",
+            tool_use.input
+        );
+
+        let mut result = ToolResult {
+            tool_use_id: "t1".into(),
+            content: "body".into(),
+        };
+        crate::invoke_hooks!(
+            PostToolUse,
+            &agent,
+            &tool_use,
+            &mut result,
+            tact_protocol::StepStatus::Success
+        )?;
+
+        let collected: Vec<String> = {
+            let mut queue = agent.runtime.pending_hook_context.lock().unwrap();
+            queue.drain(..).collect()
+        };
+        assert_eq!(
+            collected,
+            vec!["pre context".to_string(), "post context".to_string()],
+            "both tool events hand their context to the next request"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1951,6 +2365,7 @@ mod tests {
                 hook_event_name: "UserPromptSubmit",
                 event: Value::Null,
             },
+            None,
         )
         .await;
 
@@ -1987,6 +2402,7 @@ mod tests {
                 hook_event_name: "UserPromptSubmit",
                 event: Value::Null,
             },
+            None,
         )
         .await;
 
@@ -2018,6 +2434,7 @@ mod tests {
                 hook_event_name: "UserPromptSubmit",
                 event: Value::Null,
             },
+            None,
         )
         .await;
 

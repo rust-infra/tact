@@ -36,6 +36,24 @@ pub enum PermissionMode {
     Auto,
 }
 
+impl PermissionMode {
+    /// The mode's name in the Claude Code / plugin-hook vocabulary.
+    ///
+    /// Hook payloads carry this spelling, not Tact's (`Codex`'s
+    /// `hook_permission_mode` maps its approval policy onto the same set), so a
+    /// plugin that branches on `payload["permission_mode"]` reads a value it
+    /// recognizes. `Auto` allows everything but high-risk operations, which is
+    /// Claude's `acceptEdits` rather than its blanket `bypassPermissions`.
+    #[must_use]
+    pub fn hook_name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Plan => "plan",
+            Self::Auto => "acceptEdits",
+        }
+    }
+}
+
 impl fmt::Display for PermissionMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {

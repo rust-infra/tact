@@ -275,13 +275,13 @@ Special cases:
 
 ## 4. Hook Engine
 
-Hooks are registered on the `Agent` and run at three points:
+Hooks are registered on the `Agent` and run from the agent loop; Tact maps thirteen lifecycle events (the full table is in [Ch 9](book/09_chapter_hook.md)). The mutable ones:
 
 | Hook type | When | Can mutate | Can veto |
 |---|---|---|---|
-| `SessionStart` | Once per session, after any pre-turn compaction and before the turn's user message | `&mut SessionStartContext` (appends injected context) | Yes |
-| `PreToolUse` | Before each tool execution | `ToolUse` input | Yes |
-| `PostToolUse` | After each tool execution | `ToolResult` content | Yes |
+| `SessionStart` | Once per session, on the first turn rather than at startup — after any pre-turn compaction, before that turn's user message; re-run with `source: "compact"` after a compaction | `&mut SessionStartContext` (appends injected context) | Yes — `Block` skips the turn (Codex `continue: false`) |
+| `PreToolUse` | Before each tool execution | `ToolUse` input; appends injected context | Yes |
+| `PostToolUse` | After each tool execution | `ToolResult` content; appends injected context | Yes |
 
 A hook returns `HookControl::Continue` or `HookControl::Block(reason)`. The first `Block` short-circuits the chain.
 

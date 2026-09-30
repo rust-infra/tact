@@ -159,14 +159,16 @@ Hooks are appended to `Agent.hooks` in registration order and executed in that o
 
 Multiple hooks of the same type compose: all must return `Continue` unless one `Block`s (first block wins).
 
-### Claude Code plugin command hooks
+### Plugin command hooks
+
+The output contract is **Codex's** (`codex-rs/hooks`): `decision` / `reason`, `hookSpecificOutput.additionalContext`, `suppressOutput`, `continue`, and the `command` handler are what Tact models and honours. Claude-only outputs are deliberately not implemented — there is no `systemPrompt` handling here, because no plugin can legally emit one (Claude's SessionStart documents `additionalContext` / `initialUserMessage` / `watchPaths` / `sessionTitle` / `reloadSkills`, and Codex's schema has exactly `hookEventName` + `additionalContext`).
 
 Installed marketplace plugins can declare command hooks through `.codex-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks` (in `crates/tact/src/plugin/hooks.rs`) registers them on the `Agent` builder in `interactive.rs` / `headless.rs` for the thirteen mapped events:
 
-- `SessionStart` — matcher is matched against `"startup"`; `additionalContext` (JSON, or plain stdout — the shape the reference `basic-memory` plugin prints its briefing in) is recorded as a synthetic `<hook-context>` user message before the first turn; `systemPrompt` output is logged but **not applied** (v1).
+- `SessionStart` — matcher is matched against the real `source` (`startup` / `resume` / `compact`); `additionalContext` (JSON, or plain stdout — the shape the reference `basic-memory` plugin prints its briefing in) is recorded as a synthetic `<hook-context>` user message before the first turn; `continue: false` skips the turn, since that schema has no `decision`.
 - `UserPromptSubmit` — matcher against the prompt text; `additionalContext` output is appended to the user prompt.
-- `PreToolUse` — matcher against the tool name; `additionalContext` is added to the tool input as `_hook_context`; `block` prevents execution.
-- `PostToolUse` — matcher against the tool name; `suppressOutput` clears the result; `block` turns it into a failure.
+- `PreToolUse` — matcher against the tool name; `additionalContext` is recorded as conversation context before the next request; `block` prevents execution.
+- `PostToolUse` — matcher against the tool name; `additionalContext` is recorded as conversation context before the next request; `suppressOutput` clears the result; `block` turns it into a failure.
 - `PostToolUseFailure` — matcher against the tool name; observational (`tool_name`, `tool_input`, `tool_use_id`, `error`).
 - `Notification` — matcher against the notification type (`permission_prompt`); observational (`notification_type`, `title`, `message`).
 - `TaskCompleted` — matcher ignored (parity); observational (`task_description` = last assistant message).
@@ -249,13 +251,48 @@ PreparedState::Run | Resolved(blocked message)
 Fn(&LoopState, &mut SessionStartContext) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
 ```
 
-They run **once per session** from `dispatch_session_start_hooks`, which the TUI and headless startup paths call right after `apply_plugin_hooks`.
+They run **once per session, on the first turn** — not at startup. A plugin hook is a subprocess that can take seconds (the reference `basic-memory` hook measured ~8s warm and ~100s on a cold `uv` cache), and waiting for it before the first frame delayed every launch. `AgentRuntime::session_start_hooks_pending` gates the dispatch so the hooks run exactly once, and the hooks themselves run **concurrently**, with registration order preserved in what they collect.
 
 Context a hook collects lands on `AgentRuntime::pending_session_context` rather than going straight into the conversation: `dispatch_session_start_hooks` runs before `ensure_session`, and `push_message` there would leave the context non-empty and suppress the history restore. `agent_loop` drains it **after any pre-turn compaction** and before the turn's user message, recording each chunk as its own synthetic `<hook-context>` user message carrying `MessageKind::HookContext`. It has to be after the compaction: `build_compacted_history` keeps only real user turns, so a cell injected earlier would be dropped by the very compaction it arrived with.
 
 A chunk over 2,500 approximate tokens is written in full under `<temp_dir>/hook_outputs/<session>/` and replaced with a head/tail preview plus `Full hook output saved to: <path>` (Codex's `HookOutputSpiller` and its default limit); the TUI still shows the hook's full text.
 
+The plugin path also fills in the two fields Codex's `session-start.command.input` schema requires beyond Claude's base set — `model` and `permission_mode` (the latter in the Claude Code vocabulary Tact maps onto: `default` / `plan` / `acceptEdits`) — and surfaces the plugin's own `statusMessage` through `AgentUpdate::Info`, so a hook that takes seconds is visible rather than silent.
+
 That placement and the one-message-per-chunk rule match Codex, whose `SessionStart` handler records each `additionalContext` as its own `developer` role message and whose start hooks run after `run_pre_sampling_compact`. Tact's message model has only user/assistant, so the `<hook-context>` markers carry the provenance instead — and unlike the in-memory kind, they survive a reload. Stdout that looks like JSON but does not parse is treated as a failed hook rather than injected, matching Codex's `looks_like_json` check.
+
+The matcher is matched against the **real** `source`: `startup` for a fresh session, `resume` when `ensure_session` restored history, and `compact` when a compaction re-queued the hooks. That last one is how a plugin re-orients after its context was summarized away — the reference `basic-memory` plugin asks for an authored checkpoint this way — and it costs a hook run per compaction, exactly as it does in Codex.
+
+A hook that returns `continue: false` on `SessionStart` **skips the turn**: `agent_loop` returns before the user message is pushed, matching Codex's `return Ok(None)`. Its `stopReason` is what the reader sees. `decision: block` is not part of that schema, so it is not a way to stop a session.
+
+### The hook payload
+
+Every event's stdin payload carries the fields Codex's schemas require, so a plugin written against them does not read `null`:
+
+| Field | Value |
+|---|---|
+| `session_id` | The live session id |
+| `cwd`, `hook_event_name` | As before |
+| `model` | `Agent::model()` — the current model, following `/model` |
+| `permission_mode` | Claude Code's vocabulary: `default` / `plan` / `acceptEdits` |
+| `turn_id` | `Agent::turns_taken` |
+| `transcript_path` | **`null`** — Tact keeps a session in SQLite and writes a transcript only when compaction runs, so there is no single live file (Codex names its rollout file). It used to report the transcripts *directory*, which a plugin would try to open. |
+| `tool_use_id` | On `PreToolUse` / `PostToolUse`: the call being annotated |
+
+A hook that fails (non-zero exit, timeout, unspawnable command) is fail-open and, since this work, **visible**: the agent emits `[plugin hook <Event> failed] <error>`, because the `tracing::warn!` alone only reached a log file that a default session never writes.
+
+### Which events carry `additionalContext` into the conversation
+
+Codex has exactly four such channels — `SessionStart` / `SubagentStart` (they share one outcome type), `UserPromptSubmit`, `PreToolUse`, and `PostToolUse` — and Tact now covers the same set:
+
+| Event | Where the context goes |
+|---|---|
+| `SessionStart` | A `<hook-context>` message before the first turn's user message |
+| `PreToolUse` / `PostToolUse` | A `<hook-context>` message before the next request, so it sits with the tool call it annotates |
+| `SubagentStart` | Appended to the child's system prompt (Claude Code semantics) |
+| `UserPromptSubmit` | Appended to the prompt text itself |
+
+The remaining nine events are control/observational only; their `additionalContext` is not a channel Codex defines either. In particular, `PreToolUse` context is **not** written into the tool arguments — an earlier `tool_use.input["_hook_context"]` key had no reader, so the context vanished and the field leaked into what the permission check and the tool itself saw.
 
 Hooks are also the right place for one-time setup: warming caches, validating workspace invariants, or injecting telemetry context.
 

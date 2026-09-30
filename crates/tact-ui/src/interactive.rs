@@ -367,8 +367,8 @@ async fn build_agent_for_interactive(
     // Claude plugin command hooks (SessionStart / UserPromptSubmit /
     // PreToolUse / PostToolUse) from every installed plugin.
     agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
-    // SessionStart hooks fire once per session, right after initialization.
-    agent.dispatch_session_start_hooks().await?;
+    // `SessionStart` hooks run on the first turn (`Agent::agent_loop`), so a
+    // slow plugin hook does not delay the first frame.
 
     Ok(agent)
 }

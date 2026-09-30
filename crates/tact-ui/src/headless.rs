@@ -167,9 +167,6 @@ async fn run_headless_locked(
     // PreToolUse / PostToolUse) from every installed plugin.
     agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
 
-    // SessionStart hooks fire once per session, before the first turn.
-    agent.dispatch_session_start_hooks().await?;
-
     // Restore any prior messages for resumed sessions.
     agent.ensure_session().await?;
 

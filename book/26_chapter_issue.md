@@ -32,6 +32,57 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-29 — The hook payload follows Codex's schema, and a stalled hook stops lying
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix + optimization |
+| **Related** | `crates/tact/src/plugin/hooks.rs` (`build_payload`, `run_command_hook`), `crates/tact/src/hook/mod.rs` (`SessionStartSource`), `crates/tact/src/agent/mod.rs` (`session_start_source`, `ensure_session`, `compact_history_with_trigger`); [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** Four separate gaps, all in one contract. (1) Only `SessionStart` carried `model` / `permission_mode` — Codex requires them on *every* event, and it also sends `turn_id` (and `tool_use_id` on the tool events), none of which Tact sent. (2) `transcript_path` named the transcripts **directory**, so a plugin opened a directory. (3) `session_id` was `String::new()` — callers had never filled it. (4) A hook that failed, timed out, or could not be spawned only produced a `tracing::warn!`, which a default `tact-ui` session never writes anywhere: a broken plugin hook looked exactly like a quiet one.
+
+**Decision:** Fix the contract at its source rather than per event. `build_payload` now takes the agent and fills `model`, `permission_mode`, `turn_id`, and the live `session_id` for every event; `transcript_path` is `null` (honest — Tact has no single live transcript); the `source` matcher value becomes real (`startup` / `resume` / `compact`, the last re-queued by a compaction the way Codex does it); `SessionStart` now honours **`continue: false`** by skipping the turn (Codex's field — that schema has no `decision`), and `systemMessage` is surfaced as a notice; and `run_command_hook` emits `[plugin hook <Event> failed] <error>` so a failure is visible. The `async: true` branch also stops building a fresh tokio runtime per hook — it spawns on the runtime it is already on.
+
+**Behavior after:** A plugin written against Codex's schemas reads the values it expects. Compaction re-runs the start hooks as `compact` (a hook run per compaction, as in Codex). A failed hook is fail-open but announced. `continue: false` on `SessionStart` skips the turn, with its `stopReason` shown.
+
+**Pointers:** `plugin::hooks::tests::{session_start_payload_carries_the_model_and_permission_mode, a_failing_hook_is_surfaced_to_the_ui}`, `agent::tests::session_start_context_survives_the_pre_turn_compaction` (now also pins the `compact` re-queue).
+
+---
+
+## 1. 2026-09-29 — Tool hooks hand their context to the model instead of an unread field
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/plugin/hooks.rs` (`PreToolUse` / `PostToolUse` closures), `crates/tact/src/agent/mod.rs` (`pending_hook_context`, `inject_pending_hook_context`, `record_hook_context`); [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** The `additionalContext` the two tool hooks produce went nowhere. `PreToolUse` wrote it into `tool_use.input["_hook_context"]` — a key nothing in the tree ever read, which therefore stayed in the arguments the permission check and the tool itself see. `PostToolUse` did not read the field at all. A plugin annotating a tool call (a linter's advice, a policy note) was writing into a void.
+
+**Decision:** Both events hand their context to the same path `SessionStart` uses. Because those hooks receive only `&Agent`, they push onto `AgentRuntime::pending_hook_context` (`Arc<Mutex<VecDeque<…>>`, the shape `pending_subagent_results` already has), and `agent_loop` drains it before building each request — so the model reads the context alongside the tool call it annotates, which is where Codex's `record_additional_contexts` puts it. The unread `_hook_context` key is gone.
+
+**Behavior after:** `SessionStart`, `PreToolUse`, and `PostToolUse` all record `<hook-context>` cells; with `SubagentStart` and `UserPromptSubmit` that is the complete set of events Codex gives an `additionalContext` channel. The nine control/observational events keep ignoring it, as Codex does.
+
+**Pointers:** `plugin::hooks::tests::tool_hook_context_is_collected_without_touching_the_arguments` (asserts the arguments stay clean and both chunks queue in order), `agent::tests::agent_loop_records_tool_hook_context`.
+
+---
+
+## 1. 2026-09-29 — A plugin's session briefing no longer delays the first frame
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/agent/mod.rs` (`session_start_hooks_pending`, `dispatch_session_start_hooks`, `Agent::model`), `crates/tact/src/plugin/hooks.rs` (payload, `statusMessage`), `crates/tact/src/permission/mod.rs` (`PermissionMode::hook_name`), `crates/tact-ui/src/{interactive,headless}.rs`; [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** `SessionStart` hooks ran during startup, before the first frame, one after another. A plugin hook is a subprocess: the reference `basic-memory` one measured **~8s warm** and **~100s on a cold `uv` cache** here, and that plugin declares `"timeout": 30` — so the cold case is killed outright and delivers nothing. Every launch paid the delay in silence: the plugin's `statusMessage` was only a `tracing::debug!`, and `tact-ui` installs no subscriber by default.
+
+**Decision:** Dispatch on the **first turn** instead of at startup, behind `AgentRuntime::session_start_hooks_pending` so it still happens exactly once and still lands ahead of that turn's user message. The hooks run **concurrently** (registration order preserved in what they collect), the plugin's `statusMessage` is emitted as `AgentUpdate::Info`, and the payload gains the two fields Codex's `session-start.command.input` requires beyond Claude's base set — `model` (new `Agent::model()`) and `permission_mode` (`PermissionMode::hook_name()`, in the Claude Code vocabulary: `default` / `plan` / `acceptEdits`).
+
+**Behavior after:** Launch no longer waits on plugin hooks; the first turn does, with the plugin's own status line on screen, and the context it collects is still recorded before that turn's user message. A plugin that branches on `payload["model"]` or `payload["permission_mode"]` now reads a value instead of `null`.
+
+**Pointers:** `agent::tests::session_start_hooks_run_on_the_first_turn_and_only_once`, `plugin::hooks::tests::session_start_payload_carries_the_model_and_permission_mode`. `crate::config::test_support::install_default` was extracted from the agent tests so plugin tests can build an `Agent`.
+
+---
+
 ## 1. 2026-09-29 — A plugin's `SessionStart` context reaches the model instead of a log line
 
 | Field | Value |

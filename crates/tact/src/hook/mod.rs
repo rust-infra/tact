@@ -41,6 +41,34 @@ use crate::{LoopState, compact::CompactTrigger};
 pub const HOOK_CONTEXT_OPEN_TAG: &str = "<hook-context>";
 pub const HOOK_CONTEXT_CLOSE_TAG: &str = "</hook-context>";
 
+/// Why the `SessionStart` hooks are running.
+///
+/// Codex's `source` matcher vocabulary: a plugin writes `startup|resume|compact`
+/// and decides per case. Tact reports the real one — a session that restored
+/// history is a resume, and a compaction that just summarized history away
+/// re-runs the hooks as `compact`, which is how a plugin re-orients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionStartSource {
+    /// A fresh session.
+    Startup,
+    /// History was restored from disk (`--resume-last`, `--session`, `/resume`).
+    Resume,
+    /// A compaction just replaced the history these hooks orient against.
+    Compact,
+}
+
+impl SessionStartSource {
+    /// The `source` matcher value, as Codex spells it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::Resume => "resume",
+            Self::Compact => "compact",
+        }
+    }
+}
+
 /// True when `text` is a hook-injected context cell (see
 /// [`HOOK_CONTEXT_OPEN_TAG`]).
 pub fn is_hook_context_text(text: &str) -> bool {

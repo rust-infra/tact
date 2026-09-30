@@ -160,14 +160,16 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 同类型多个 hook 组合：全部须 `Continue`，除非某个 `Block`（首个 block 生效）。
 
-### Claude Code 插件命令 hook
+### 插件的命令 hook
+
+输出契约以 **Codex**（`codex-rs/hooks`）为准：`decision` / `reason`、`hookSpecificOutput.additionalContext`、`suppressOutput`、`continue` 与 `command` handler 才是 Tact 建模并遵守的部分。只属于 Claude 的输出有意不实现——这里没有 `systemPrompt` 处理，因为没有插件能合法发出它（Claude 的 SessionStart 文档列的是 `additionalContext` / `initialUserMessage` / `watchPaths` / `sessionTitle` / `reloadSkills`，而 Codex 的 schema 恰好只有 `hookEventName` + `additionalContext`）。
 
 已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把它们注册到 `Agent` 上，覆盖十三个映射事件：
 
-- `SessionStart` — matcher 与 `"startup"` 匹配；`additionalContext`（JSON，或纯 stdout —— 参考实现 `basic-memory` 插件正是以这种形式打印它的简报）会在第一轮之前被记录为一条合成的 `<hook-context>` user 消息；`systemPrompt` 输出仅记录日志、**不应用**（v1）。
+- `SessionStart` — matcher 与真实的 `source`（`startup` / `resume` / `compact`）匹配；`additionalContext`（JSON，或纯 stdout —— 参考实现 `basic-memory` 插件正是以这种形式打印它的简报）会在第一轮之前被记录为一条合成的 `<hook-context>` user 消息；`continue: false` 会跳过这一轮（该 schema 里没有 `decision`）。
 - `UserPromptSubmit` — matcher 匹配 prompt 文本；`additionalContext` 输出追加到用户 prompt。
-- `PreToolUse` — matcher 匹配工具名；`additionalContext` 以 `_hook_context` 加入工具输入；`block` 阻止执行。
-- `PostToolUse` — matcher 匹配工具名；`suppressOutput` 清空结果；`block` 使其变为失败。
+- `PreToolUse` — matcher 匹配工具名；`additionalContext` 会记录为下一轮请求之前的对话上下文；`block` 阻止执行。
+- `PostToolUse` — matcher 匹配工具名；`additionalContext` 会记录为下一轮请求之前的对话上下文；`suppressOutput` 清空结果；`block` 使其变为失败。
 - `PostToolUseFailure` — matcher 匹配工具名；仅观测（`tool_name`、`tool_input`、`tool_use_id`、`error`）。
 - `Notification` — matcher 匹配通知类型（`permission_prompt`）；仅观测（`notification_type`、`title`、`message`）。
 - `TaskCompleted` — matcher 忽略（对齐）；仅观测（`task_description` = 最后一条 assistant 消息）。
@@ -250,13 +252,48 @@ PreparedState::Run | Resolved(blocked message)
 Fn(&LoopState, &mut SessionStartContext) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
 ```
 
-它们由 `dispatch_session_start_hooks` **每会话运行一次**，TUI 与 headless 启动路径在 `apply_plugin_hooks` 之后紧接着调用它。
+它们**每会话运行一次，且发生在第一轮**——不在启动时。插件 hook 是一个子进程，可能要跑好几秒（参考实现 `basic-memory` 的 hook 实测热启动约 8 秒、`uv` 缓存冷启动约 100 秒），在首帧之前等它会让每次启动都变慢。`AgentRuntime::session_start_hooks_pending` 保证这组 hook 只跑一次，而它们之间是**并发**执行的，收集到的内容仍按注册顺序排列。
 
 hook 收集到的 context 落在 `AgentRuntime::pending_session_context` 上，而不是直接进入对话：`dispatch_session_start_hooks` 发生在 `ensure_session` 之前，此时 `push_message` 会让 context 非空、从而抑制历史恢复。`agent_loop` 在**本轮预压缩之后**、本轮用户消息之前把它取走，每个片段各记为一条合成的 `<hook-context>` user 消息，携带 `MessageKind::HookContext`。必须在压缩之后：`build_compacted_history` 只保留真实 user turn，早于压缩注入的 cell 会被它伴随的那次压缩直接丢掉。
 
 超过约 2,500 token 的片段会全文写到 `<temp_dir>/hook_outputs/<session>/`，模型看到的则是头尾预览加一句 `Full hook output saved to: <path>`（Codex 的 `HookOutputSpiller` 及其默认上限）；TUI 仍显示 hook 的完整文本。
 
+插件这条路径还会补齐 Codex 的 `session-start.command.input` 在 Claude 基础字段之外要求的两个字段——`model` 与 `permission_mode`（后者用 Tact 映射过去的 Claude Code 词汇：`default` / `plan` / `acceptEdits`）——并通过 `AgentUpdate::Info` 把插件自己的 `statusMessage` 显示出来，让要跑几秒的 hook 有反馈而不是一片沉默。
+
 这个时机与「一片段一条消息」的规则与 Codex 一致：它的 `SessionStart` 处理把每个 `additionalContext` 各记为一条 `developer` 角色消息，而它的 start hooks 也跑在 `run_pre_sampling_compact` 之后。Tact 的消息模型只有 user/assistant，所以改由 `<hook-context>` 标记来承载来源信息 —— 而且与内存中的 kind 不同，这些标记在重新加载后依然存在。stdout 看起来像 JSON 却解析失败时，按失败的 hook 处理而非注入，与 Codex 的 `looks_like_json` 检查一致。
+
+matcher 匹配的是**真实的** `source`：全新会话是 `startup`，`ensure_session` 恢复了历史则是 `resume`，而压缩重新排队这批 hook 时是 `compact`。最后一种正是插件在上下文被摘要掉之后重新定位的手段——参考实现 `basic-memory` 插件就是这样请求一份需要人工撰写的 checkpoint——代价是每次压缩多跑一次 hook，与 Codex 完全一致。
+
+`SessionStart` hook 返回 `continue: false` 会**跳过这一轮**：`agent_loop` 在用户消息入队之前就返回，与 Codex 的 `return Ok(None)` 一致；读者看到的是它的 `stopReason`。那个 schema 里没有 `decision: block`，所以它不是停止会话的手段。
+
+### hook 的 payload
+
+每个事件 stdin 上的 payload 都带齐了 Codex 各 schema 要求的字段，照着那些 schema 写的插件不会再读到 `null`：
+
+| 字段 | 值 |
+|---|---|
+| `session_id` | 当前会话 id |
+| `cwd`、`hook_event_name` | 同以前 |
+| `model` | `Agent::model()`——当前模型，会跟随 `/model` |
+| `permission_mode` | Claude Code 词汇：`default` / `plan` / `acceptEdits` |
+| `turn_id` | `Agent::turns_taken` |
+| `transcript_path` | **`null`**——Tact 把会话放在 SQLite，只在压缩时才写 transcript，因此没有单一的活动文件（Codex 指向它的 rollout 文件）。此前这里报的是 transcripts **目录**，而插件会照着去打开它。 |
+| `tool_use_id` | `PreToolUse` / `PostToolUse` 上有：被标注的那次调用 |
+
+失败的 hook（非零退出、超时、命令起不来）是 fail-open 的，而且从这次改动起**可见**：agent 会发出 `[plugin hook <Event> failed] <error>`，因为单靠 `tracing::warn!` 只会写进一个默认会话永远不会写的日志文件。
+
+### 哪些事件会把 `additionalContext` 带进对话
+
+Codex 一共只有四条这样的通道——`SessionStart` / `SubagentStart`（两者共用一个 outcome 类型）、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`——Tact 现在覆盖同一集合：
+
+| 事件 | context 的去处 |
+|---|---|
+| `SessionStart` | 第一轮用户消息之前的一条 `<hook-context>` 消息 |
+| `PreToolUse` / `PostToolUse` | 下一轮请求之前的一条 `<hook-context>` 消息，与它所标注的工具调用相邻 |
+| `SubagentStart` | 追加到子代理的 system prompt（Claude Code 语义） |
+| `UserPromptSubmit` | 追加到 prompt 文本本身 |
+
+其余九个事件只承担控制/观察职责；它们的 `additionalContext` 也不是 Codex 定义的通道。特别地，`PreToolUse` 的 context **不会**写进工具参数——早先那个 `tool_use.input["_hook_context"]` 键没有任何读取者，于是 context 消失、字段还泄漏进了权限检查与工具本身能看到的内容里。
 
 session hooks 也适合一次性 setup：预热缓存、校验工作区不变量或注入遥测 context。
 

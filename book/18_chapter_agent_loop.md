@@ -33,8 +33,9 @@ On entry:
 
 1. **`RecoveryState` reset** — counters start fresh for this task invocation.
 2. **`ensure_session()`** — create or restore SQLite history when `session_store` is wired ([Ch 1](./01_chapter_store.md)).
-3. **`client.set_user_id(session_id)`** — provider-specific cache isolation (DeepSeek KV).
-4. **Initial user message** — pushed when provided and persisted via `push_message`.
+3. **`SessionStart` hooks** — dispatched on the first turn rather than at startup, and only once ([Ch 9](./09_chapter_hook.md)); the context they collect is injected after any pre-turn compaction and ahead of step 5's message.
+4. **`client.set_user_id(session_id)`** — provider-specific cache isolation (DeepSeek KV).
+5. **Initial user message** — pushed when provided and persisted via `push_message`.
 
 Subagents call `agent_loop(None)` with context pre-seeded; see [Ch 12 Subagents](./12_chapter_subagent.md).
 

@@ -34,8 +34,9 @@ pub async fn agent_loop(&mut self, initial_user_message: Option<Message>) -> Res
 
 1. **`RecoveryState` 重置** — 计数器为本 task 调用重新开始。
 2. **`ensure_session()`** — 当 `session_store` 已接线时创建或恢复 SQLite 历史（[第 1 章](./01_chapter_store_zh.md)）。
-3. **`client.set_user_id(session_id)`** — provider 特定的 cache 隔离（DeepSeek KV）。
-4. **初始用户消息** — 提供时 push 并通过 `push_message` 持久化。
+3. **`SessionStart` hooks** — 在第一轮派发（而非启动时），且只跑一次（[第 9 章](./09_chapter_hook_zh.md)）；它们收集的 context 在本轮预压缩之后、第 5 步的消息之前注入。
+4. **`client.set_user_id(session_id)`** — provider 特定的 cache 隔离（DeepSeek KV）。
+5. **初始用户消息** — 提供时 push 并通过 `push_message` 持久化。
 
 子 agent 调用 `agent_loop(None)`，上下文已预填；见 [第 12 章 Subagents](./12_chapter_subagent.md)。
 
