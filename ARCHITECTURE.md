@@ -275,7 +275,7 @@ Special cases:
 
 ## 4. Hook Engine
 
-Hooks are registered on the `Agent` and run from the agent loop; Tact maps thirteen lifecycle events (the full table is in [Ch 9](book/09_chapter_hook.md)). The mutable ones:
+Hooks are registered on the `Agent` and run from the agent loop; Tact maps fifteen lifecycle events (the full table is in [Ch 9](book/09_chapter_hook.md)). The mutable ones:
 
 | Hook type | When | Can mutate | Can veto |
 |---|---|---|---|

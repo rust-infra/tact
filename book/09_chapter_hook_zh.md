@@ -190,7 +190,7 @@ hook 文件是可执行的配置，而仓库可以附带 `.tact/hooks.json`—�
 
 输出契约以 **Codex**（`codex-rs/hooks`）为准：`decision` / `reason`、`hookSpecificOutput.additionalContext`、`suppressOutput`、`continue` 与 `command` handler 才是 Tact 建模并遵守的部分。只属于 Claude 的输出有意不实现——这里没有 `systemPrompt` 处理，因为没有插件能合法发出它（Claude 的 SessionStart 文档列的是 `additionalContext` / `initialUserMessage` / `watchPaths` / `sessionTitle` / `reloadSkills`，而 Codex 的 schema 恰好只有 `hookEventName` + `additionalContext`）。
 
-已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks_with_report`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把**已审核**的那些注册到 `Agent` 上，覆盖十五个映射事件：
+已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks_with_report`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把**已审核**的那些注册到 `Agent` 上，覆盖十五个映射事件中的十三个（`SubagentStart` / `SubagentStop` 改由 `plugin_subagent_*_hooks` 构建 `ToolContext` 闭包）：
 
 - `SessionStart` — matcher 与真实的 `source`（`startup` / `resume` / `compact`）匹配；`additionalContext`（JSON，或纯 stdout —— 参考实现 `basic-memory` 插件正是以这种形式打印它的简报）会在第一轮之前被记录为一条合成的 `<hook-context>` user 消息；`continue: false` 会跳过这一轮（该 schema 里没有 `decision`）。
 - `UserPromptSubmit` — matcher 匹配 prompt 文本；`additionalContext` 输出追加到用户 prompt。
