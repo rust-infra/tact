@@ -122,7 +122,10 @@ fn resolve_mcp(toml_cfg: &TactTomlConfig) -> McpSettings {
 ///
 /// `None` for absent *or* unrecognised: the caller treats both as "keep the
 /// default", and the default is the restrictive one.
-fn parse_mcp_tool_risk(value: Option<&str>, field: &str) -> Option<crate::permission::CapabilityRisk> {
+fn parse_mcp_tool_risk(
+    value: Option<&str>,
+    field: &str,
+) -> Option<crate::permission::CapabilityRisk> {
     let value = value?;
     match crate::mcp::ToolRisk::parse(value) {
         Some(risk) => Some(risk.to_capability()),

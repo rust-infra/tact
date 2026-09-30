@@ -1327,15 +1327,15 @@ mod tests {
         let asked = mgr.check("mcp__demo__search", CapabilityRisk::High, &input);
         assert_eq!(asked.behavior, PermissionBehavior::Ask);
 
-        mgr.allow_tool_with_input(
-            "mcp__demo__search",
-            PermissionPromptPolicy::Json,
-            &input,
-        );
+        mgr.allow_tool_with_input("mcp__demo__search", PermissionPromptPolicy::Json, &input);
 
         let allowed = mgr.check("mcp__demo__search", CapabilityRisk::High, &input);
         assert_eq!(allowed.behavior, PermissionBehavior::Allow);
-        assert!(allowed.reason.contains("Always-allowed"), "{}", allowed.reason);
+        assert!(
+            allowed.reason.contains("Always-allowed"),
+            "{}",
+            allowed.reason
+        );
     }
 
     #[test]

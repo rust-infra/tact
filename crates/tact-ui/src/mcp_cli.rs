@@ -772,10 +772,7 @@ mod tests {
             text.contains("mcp__bm__search_notes  risk read (declared)"),
             "{text}"
         );
-        assert!(
-            text.contains("(server-declared read-only)"),
-            "{text}"
-        );
+        assert!(text.contains("(server-declared read-only)"), "{text}");
         assert!(
             text.contains("mcp__bm__delete_project  risk high (default)"),
             "{text}"

@@ -375,13 +375,8 @@ pub fn render_resource_listing(listings: &[(String, Vec<Resource>)]) -> String {
 /// `memory://{topic}` verbatim into `read_mcp_resource` and gets an error it
 /// cannot interpret.
 #[must_use]
-pub fn render_resource_template_listing(
-    listings: &[(String, Vec<ResourceTemplate>)],
-) -> String {
-    let total: usize = listings
-        .iter()
-        .map(|(_, templates)| templates.len())
-        .sum();
+pub fn render_resource_template_listing(listings: &[(String, Vec<ResourceTemplate>)]) -> String {
+    let total: usize = listings.iter().map(|(_, templates)| templates.len()).sum();
     if total == 0 {
         return format!(
             "No resource templates: {} connected server(s) expose none through \
@@ -567,7 +562,10 @@ mod tests {
         let text = render_resource_template_listing(&listing);
         assert!(text.contains("1 resource template(s)"), "{text}");
         assert!(text.contains("## basic-memory"), "{text}");
-        assert!(text.contains("- memory://{topic} — Note by topic"), "{text}");
+        assert!(
+            text.contains("- memory://{topic} — Note by topic"),
+            "{text}"
+        );
         assert!(text.contains("(text/markdown)"), "{text}");
         // Echoed verbatim into `read_mcp_resource` a template is just a URI that
         // fails, so the placeholder rule has to be stated.

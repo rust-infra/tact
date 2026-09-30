@@ -2973,9 +2973,14 @@ mod tests {
             meta: None,
         };
 
-        let service = Arc::new(crate::mcp::MockMcpService::new(vec![tool("search")], |_| {
-            Ok(rmcp::model::CallToolResult::success(vec![Content::text("ok")]))
-        }));
+        let service = Arc::new(crate::mcp::MockMcpService::new(
+            vec![tool("search")],
+            |_| {
+                Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+                    "ok",
+                )]))
+            },
+        ));
         let mut mcp = crate::mcp::MCPToolRouter::new();
         mcp.register_client(crate::mcp::McpClient::with_service(
             "bm",

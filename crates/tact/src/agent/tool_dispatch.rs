@@ -14,9 +14,7 @@ use crate::{
     hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
     mcp::MCPToolRouter,
-    permission::{
-        CapabilityRisk, PermissionBehavior, format_permission_prompt,
-    },
+    permission::{CapabilityRisk, PermissionBehavior, format_permission_prompt},
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, TaskOperation, ToolDomain, ToolRouter,
     },
@@ -367,9 +365,7 @@ async fn run_mcp_resource_tool(
     let server = input.get("server").and_then(|value| value.as_str());
     let result = match tool {
         crate::mcp::McpResourceTool::List => mcp_router.list_resources(server).await,
-        crate::mcp::McpResourceTool::Templates => {
-            mcp_router.list_resource_templates(server).await
-        }
+        crate::mcp::McpResourceTool::Templates => mcp_router.list_resource_templates(server).await,
         crate::mcp::McpResourceTool::Read => {
             let Some(server) = server else {
                 return ExecResult {
@@ -656,9 +652,7 @@ impl Agent {
                 ResolvedTool::Mcp { server, tool, .. } => self.mcp_router.risk_for(server, tool),
                 // Tact's own resource tools: no server entry can declare their
                 // risk, so `[mcp]`'s two keys do, and both default to High.
-                ResolvedTool::McpResource { tool } => {
-                    crate::mcp::resource_tool_risk(*tool)
-                }
+                ResolvedTool::McpResource { tool } => crate::mcp::resource_tool_risk(*tool),
                 ResolvedTool::Unknown { .. } => CapabilityRisk::High,
             };
             // An MCP entry's `approval_mode: "auto"` skips the default prompt
@@ -1281,15 +1275,16 @@ mod tests {
         let mut router = MCPToolRouter::new();
         router.register_client(McpClient::with_service("bm", Vec::new(), Arc::new(service)));
 
-        let exec = run_mcp_resource_tool(
-            &router,
-            McpResourceTool::Templates,
-            &serde_json::json!({}),
-        )
-        .await;
+        let exec =
+            run_mcp_resource_tool(&router, McpResourceTool::Templates, &serde_json::json!({}))
+                .await;
 
         assert!(matches!(exec.status, StepStatus::Success));
-        assert!(exec.content.contains("memory://{topic}"), "{}", exec.content);
+        assert!(
+            exec.content.contains("memory://{topic}"),
+            "{}",
+            exec.content
+        );
     }
 
     #[test]

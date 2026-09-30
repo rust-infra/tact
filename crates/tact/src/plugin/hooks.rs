@@ -1059,7 +1059,9 @@ fn collect_hook_sources_with(
             data: parent.clone(),
             root: parent,
         };
-        if let Some(source) = hooks_file_source(&path, path.display().to_string(), HookOrigin::Managed, dirs) {
+        if let Some(source) =
+            hooks_file_source(&path, path.display().to_string(), HookOrigin::Managed, dirs)
+        {
             out.push(source);
         }
     }
@@ -4412,7 +4414,11 @@ mod tests {
         // Deliberately permissive: an absent or unrecognised `type` has always
         // meant "a command with a `command` string", and turning that into an
         // error would break a working configuration to punish a typo.
-        for ty in [None, Some("command".to_string()), Some("somethingElse".to_string())] {
+        for ty in [
+            None,
+            Some("command".to_string()),
+            Some("somethingElse".to_string()),
+        ] {
             let command = HookCommand {
                 ty,
                 command: Some("echo hi".into()),
@@ -4489,7 +4495,10 @@ mod tests {
             dir.path(),
             mcp_tool_hooks(
                 "PreToolUse",
-                &[("policy", "gate", json!({})), ("policy", "audit", json!({}))],
+                &[
+                    ("policy", "gate", json!({})),
+                    ("policy", "audit", json!({})),
+                ],
             ),
         );
 
@@ -4521,7 +4530,10 @@ mod tests {
         let original = source_with(
             "~/.tact/hooks.json",
             dir.path(),
-            mcp_tool_hooks("PreToolUse", &[("policy", "gate", json!({ "path": "a.txt" }))]),
+            mcp_tool_hooks(
+                "PreToolUse",
+                &[("policy", "gate", json!({ "path": "a.txt" }))],
+            ),
         );
         let mut trust = HookTrust::from_path(state.clone());
         let mut report = HookLoadReport::default();
@@ -4532,7 +4544,10 @@ mod tests {
         let edited = source_with(
             "~/.tact/hooks.json",
             dir.path(),
-            mcp_tool_hooks("PreToolUse", &[("policy", "gate", json!({ "path": "b.txt" }))]),
+            mcp_tool_hooks(
+                "PreToolUse",
+                &[("policy", "gate", json!({ "path": "b.txt" }))],
+            ),
         );
         let reloaded = HookTrust::from_path(state);
         let mut after = HookLoadReport::default();
@@ -4551,9 +4566,7 @@ mod tests {
     /// table, to prove only the former is read.
     fn write_config_with_hooks(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("config.toml");
-        let content = format!(
-            "[llm]\nmodel = \"unrelated\"\n\n{body}"
-        );
+        let content = format!("[llm]\nmodel = \"unrelated\"\n\n{body}");
         std::fs::write(&path, content).unwrap();
         path
     }
@@ -4596,7 +4609,9 @@ mod tests {
 
         let sources = collect_hook_sources_with(None, None, dir.path()).unwrap();
         assert!(
-            sources.iter().all(|source| !source.label.ends_with("config.toml")),
+            sources
+                .iter()
+                .all(|source| !source.label.ends_with("config.toml")),
             "an empty table would be a source `hooks list` has to explain: {:?}",
             sources.iter().map(|s| s.label.as_str()).collect::<Vec<_>>()
         );
@@ -4651,7 +4666,10 @@ mod tests {
         let mut report = HookLoadReport::default();
         admit_trusted(source, &trust, &mut report);
         assert_eq!(report.pending.len(), 1);
-        assert_eq!(report.pending[0].command, "mcp_tool policy/gate {\"path\":\"a.txt\"}");
+        assert_eq!(
+            report.pending[0].command,
+            "mcp_tool policy/gate {\"path\":\"a.txt\"}"
+        );
     }
 
     #[test]
@@ -4676,7 +4694,10 @@ mod tests {
             .filter(|source| source.origin == HookOrigin::UserFile)
             .collect();
         assert_eq!(user.len(), 1, "{:?}", sources.len());
-        assert_eq!(user[0].label, home.join("config.toml").display().to_string());
+        assert_eq!(
+            user[0].label,
+            home.join("config.toml").display().to_string()
+        );
         // `${PLUGIN_ROOT}` and `${PLUGIN_DATA}` are the same directory for a
         // user-scope file, exactly as they are for `~/.tact/hooks.json`.
         assert_eq!(user[0].dirs.root, home);
@@ -4685,7 +4706,9 @@ mod tests {
         // And with no user file injected, nothing user-scope is read.
         let isolated = collect_hook_sources_with(None, None, dir.path()).unwrap();
         assert!(
-            isolated.iter().all(|source| source.origin != HookOrigin::UserFile),
+            isolated
+                .iter()
+                .all(|source| source.origin != HookOrigin::UserFile),
             "a caller that injects no user file must read no user config"
         );
     }
@@ -4790,7 +4813,11 @@ mod tests {
         );
         managed.origin = HookOrigin::Managed;
         let project = source_with(
-            dir.path().join(".tact/hooks.json").display().to_string().as_str(),
+            dir.path()
+                .join(".tact/hooks.json")
+                .display()
+                .to_string()
+                .as_str(),
             dir.path(),
             one_command_hooks("Stop", &["repo.sh"]),
         );

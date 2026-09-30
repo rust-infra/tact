@@ -1507,9 +1507,8 @@ pub trait McpService: Send + Sync + 'static {
     /// Required for the same reason [`Self::list_resources`] is: a service that
     /// cannot ask must say so, or "this transport cannot answer" becomes
     /// indistinguishable from "the server publishes no templates".
-    fn list_resource_templates(
-        &self,
-    ) -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>>;
+    fn list_resource_templates(&self)
+    -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>>;
 
     /// The `instructions` string the server returned during `initialize`.
     ///
@@ -1874,7 +1873,10 @@ impl McpClient {
         server_name: &str,
         config: McpTransportConfig,
         timeout: Option<std::time::Duration>,
-    ) -> Result<(RunningService<RoleClient, ToolListChangedSignal>, ToolListChangedSignal)> {
+    ) -> Result<(
+        RunningService<RoleClient, ToolListChangedSignal>,
+        ToolListChangedSignal,
+    )> {
         let config = match config {
             McpTransportConfig::Stdio(config) => config,
             McpTransportConfig::Remote(remote) => {
@@ -2045,10 +2047,7 @@ impl MockMcpService {
 
     /// The tools this double currently advertises.
     fn tools(&self) -> Vec<McpTool> {
-        self.tools
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.tools.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Replaces the advertised tools, as a server would when its list moves.
@@ -2085,17 +2084,18 @@ impl MockMcpService {
     /// before it can read anything.
     #[must_use]
     pub fn with_resource_template(mut self, uri_template: &str, name: &str) -> Self {
-        self.resource_templates.push(rmcp::model::ResourceTemplate::new(
-            rmcp::model::RawResourceTemplate {
-                uri_template: uri_template.to_string(),
-                name: name.to_string(),
-                title: None,
-                description: None,
-                mime_type: None,
-                icons: None,
-            },
-            None,
-        ));
+        self.resource_templates
+            .push(rmcp::model::ResourceTemplate::new(
+                rmcp::model::RawResourceTemplate {
+                    uri_template: uri_template.to_string(),
+                    name: name.to_string(),
+                    title: None,
+                    description: None,
+                    mime_type: None,
+                    icons: None,
+                },
+                None,
+            ));
         self
     }
 
@@ -3099,9 +3099,9 @@ mod tests {
         ApprovalMode, MCP_INSTRUCTIONS_MAX_CHARS, MCPToolRouter, McpAuthConfig, McpClient,
         McpConfigFile, McpEnvVar, McpLiveStatus, McpLoadReport, McpProjectConfig, McpServerConfig,
         McpServerPolicy, McpToolConfig, McpToolName, McpTransportConfig, MockMcpService,
-        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, ToolListChangedSignal,
-        ToolListRefresh, ToolRisk, UnmodelledKeys, cap_instructions, collect_plugin_mcp_servers,
-        collect_sourced_servers, describe_resolved, drain_mcp_stderr,
+        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer,
+        ToolListChangedSignal, ToolListRefresh, ToolRisk, UnmodelledKeys, cap_instructions,
+        collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved, drain_mcp_stderr,
         installed_plugin_mcp_servers, plugin_manifest_mcp_servers, prepare_plugin_entry,
         resolve_env_vars, resolve_servers, unmodelled_keys,
     };
@@ -3823,10 +3823,7 @@ mod tests {
         }
 
         fn tools(&self) -> Vec<McpTool> {
-            self.tools
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
+            self.tools.lock().unwrap_or_else(|e| e.into_inner()).clone()
         }
     }
 
@@ -4693,7 +4690,9 @@ mod tests {
         .unwrap();
 
         // Only the field Tact genuinely does not model is reported.
-        assert!(unmodelled_keys("demo", "test", &config).is_some_and(|u| u.keys == ["omit_tools_from"]));
+        assert!(
+            unmodelled_keys("demo", "test", &config).is_some_and(|u| u.keys == ["omit_tools_from"])
+        );
         assert!(!config.extra.contains_key("default_tool_risk"));
         assert_eq!(config.default_tool_risk.as_deref(), Some("write"));
         assert_eq!(
@@ -4788,10 +4787,8 @@ mod tests {
         // End of the wiring: JSON entry → resolved policy → what the permission
         // layer is handed. `agent::tool_dispatch` delegates to this in one line.
         let policy = McpServerPolicy::from_config(
-            &serde_json::from_str(
-                r#"{"command":"node","tools":{"search_notes":{"risk":"read"}}}"#,
-            )
-            .unwrap(),
+            &serde_json::from_str(r#"{"command":"node","tools":{"search_notes":{"risk":"read"}}}"#)
+                .unwrap(),
         );
         let mut router = MCPToolRouter::new();
         router.register_client(McpClient::with_service_and_policy(
@@ -4803,17 +4800,17 @@ mod tests {
             policy,
         ));
 
-        assert_eq!(
-            router.risk_for("bm", "search_notes"),
-            CapabilityRisk::Read
-        );
+        assert_eq!(router.risk_for("bm", "search_notes"), CapabilityRisk::Read);
         // The tool the entry said nothing about keeps the default.
         assert_eq!(
             router.risk_for("bm", "delete_project"),
             CapabilityRisk::High
         );
         // An unknown server is not a reason to relax anything.
-        assert_eq!(router.risk_for("ghost", "search_notes"), CapabilityRisk::High);
+        assert_eq!(
+            router.risk_for("ghost", "search_notes"),
+            CapabilityRisk::High
+        );
     }
 
     #[test]
@@ -4949,7 +4946,11 @@ mod tests {
                 .iter()
                 .any(|spec| spec.name == "mcp__fixture__recall"),
             "{:?}",
-            client.agent_tools().iter().map(|s| &s.name).collect::<Vec<_>>()
+            client
+                .agent_tools()
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
         );
     }
 
