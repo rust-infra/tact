@@ -560,7 +560,35 @@ pub async fn persist_large_output(
     if output.chars().count() <= PERSIST_THRESHOLD {
         return Ok(output.to_string());
     }
+    spill_output(tact_path, tool_use_id, output).await
+}
 
+/// [`persist_large_output`] with a per-tool budget instead of the global
+/// threshold.
+///
+/// Used for an MCP entry's `tools.<name>.output_token_limit`: one tool that
+/// returns long documents (a knowledge-graph `build_context`, say) should not
+/// need the whole session's threshold lowered to keep its result out of the
+/// context window.
+pub async fn persist_large_output_over_tokens(
+    tact_path: &TactPath,
+    tool_use_id: &str,
+    output: &str,
+    limit_tokens: usize,
+) -> anyhow::Result<String> {
+    if approx_text_tokens(output) <= limit_tokens {
+        return Ok(output.to_string());
+    }
+    spill_output(tact_path, tool_use_id, output).await
+}
+
+/// Writes one oversized tool output to disk and returns the preview the model
+/// sees in its place. Unconditional: callers own the "is it too big?" test.
+async fn spill_output(
+    tact_path: &TactPath,
+    tool_use_id: &str,
+    output: &str,
+) -> anyhow::Result<String> {
     let output_dir = tact_path.tool_results_dir();
     tokio::fs::create_dir_all(&output_dir)
         .await
@@ -684,11 +712,12 @@ mod tests {
 
     use super::{
         HANDOFF_CLOSE_TAG, HANDOFF_OPEN_TAG, KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS,
-        OMITTED_IMAGE, SUMMARY_PREFIX, approx_text_tokens, build_compacted_history,
-        collect_user_messages, estimate_context_tokens, estimate_message_tokens,
-        is_real_user_message, is_summary_message, persist_large_output,
-        recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
-        summary_message, take_last_tokens, write_transcript,
+        OMITTED_IMAGE, PERSIST_THRESHOLD, SUMMARY_PREFIX, approx_text_tokens,
+        build_compacted_history, collect_user_messages, estimate_context_tokens,
+        estimate_message_tokens, is_real_user_message, is_summary_message, persist_large_output,
+        persist_large_output_over_tokens, recent_messages_for_summary,
+        retained_user_message_token_budget, should_auto_compact, summary_message, take_last_tokens,
+        write_transcript,
     };
     use crate::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
 
@@ -1140,8 +1169,32 @@ mod tests {
         assert!(output_dir.join("new.txt").exists());
     }
 
-    // ── proptest property-based tests ──────────────────────────────────
+    /// A per-tool budget (`tools.<name>.output_token_limit`) spills on its own
+    /// threshold, independently of the session-wide character rule.
+    #[tokio::test]
+    async fn a_per_tool_token_budget_spills_over_its_own_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let tact_path = crate::consts::TactPath::new(dir.path());
 
+        let small = "x".repeat(400);
+        let kept = persist_large_output_over_tokens(&tact_path, "small", &small, 500)
+            .await
+            .unwrap();
+        assert_eq!(kept, small, "under the budget the output is untouched");
+
+        let large = "x".repeat(4_000);
+        let spilled = persist_large_output_over_tokens(&tact_path, "large", &large, 500)
+            .await
+            .unwrap();
+        assert!(spilled.starts_with("<persisted-output>"), "{spilled}");
+        assert!(spilled.contains("large.txt"), "{spilled}");
+        // The global character threshold is deliberately *not* what triggered
+        // this: 4_000 characters is far below PERSIST_THRESHOLD.
+        assert!(large.chars().count() < PERSIST_THRESHOLD);
+        assert!(tact_path.tool_results_dir().join("large.txt").exists());
+    }
+
+    // ── proptest property-based tests ──────────────────────────────────
     use proptest::prelude::*;
 
     proptest! {

@@ -616,6 +616,8 @@ if name != "read_file" {
 | `PERSIST_THRESHOLD` | 30,000 字符 |
 | `PREVIEW_CHARS` | 2,000 字符 |
 
+有一个调用方会覆盖该阈值：MCP 条目的 `tools.<name>.output_token_limit` 会按自己的 token 预算通过 `persist_large_output_over_tokens` 落盘那一个工具的结果，信封完全相同。上面这条字符规则仍适用于没有声明该字段的所有工具。条目字段见[第 8 章](./08_chapter_mcp_zh.md)。
+
 ```mermaid
 flowchart TD
     Out[成功的工具输出] --> Th{字符数 > 30_000?}

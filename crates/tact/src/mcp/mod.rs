@@ -336,9 +336,9 @@ fn describe_resolved(
 
 /// An entry that declares keys Tact does not model.
 ///
-/// The Codex per-entry fields (`enabled_tools`, `omit_tools_from`,
-/// `startup_timeout_sec`, `tools`) land here: parsing them without implementing
-/// them is only honest if the user can see which ones were ignored.
+/// The Codex per-entry fields that remain unimplemented (`omit_tools_from`,
+/// `tool_timeout_sec`) land here: parsing them without implementing them is
+/// only honest if the user can see which ones were ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnmodelledKeys {
     /// The server name as it appears in the file (before any plugin prefix).
@@ -374,6 +374,14 @@ pub struct McpLoadReport {
     /// into a notice — but `mcp list` names them, because a configuration that
     /// is silently ignored is worse than one that is visibly unimplemented.
     pub unmodelled: Vec<UnmodelledKeys>,
+    /// Server name and the tool names this entry's `enabled_tools` /
+    /// `disabled_tools` hide from the agent.
+    ///
+    /// Like [`Self::unmodelled`], deliberately *not* part of
+    /// [`Self::is_quiet`]: filtering is a deliberate configuration, not a
+    /// problem — but hiding a tool must be visible somewhere, so `mcp list` and
+    /// `mcp get` report it.
+    pub filtered: Vec<(String, Vec<String>)>,
     /// Server names skipped because they declare an unsupported/incomplete
     /// transport (currently a remote entry without a `url`, or a stdio entry
     /// without a `command`).
@@ -448,6 +456,12 @@ pub struct McpServerInspection {
     /// Short tool names (as the server reports them, without the
     /// `mcp__<server>__` prefix). Empty unless [`McpServerStatus::Connected`].
     pub tools: Vec<String>,
+    /// Names the server exposes but this entry's `enabled_tools` /
+    /// `disabled_tools` keep away from the agent.
+    ///
+    /// Reported so a filtered server cannot be mistaken for one that simply
+    /// lacks those tools.
+    pub filtered: Vec<String>,
 }
 
 /// What one connection attempt produced.
@@ -464,7 +478,11 @@ enum ConnectOutcome {
 /// upgraded to the actionable pending state rather than reported as a failure.
 /// Shared by the full-config load and the single-server `get` view so both
 /// classify identically.
-async fn connect_server(name: &str, config: McpTransportConfig) -> ConnectOutcome {
+async fn connect_server(
+    name: &str,
+    config: McpTransportConfig,
+    policy: McpServerPolicy,
+) -> ConnectOutcome {
     if let McpTransportConfig::Remote(remote) = &config
         && remote.needs_authorization(name)
     {
@@ -474,7 +492,7 @@ async fn connect_server(name: &str, config: McpTransportConfig) -> ConnectOutcom
         );
         return ConnectOutcome::NeedsAuthorization;
     }
-    match McpClient::try_new(name.to_string(), config).await {
+    match McpClient::try_new_with_policy(name.to_string(), config, policy).await {
         Ok(client) => ConnectOutcome::Connected(client),
         Err(err)
             if err
@@ -512,6 +530,193 @@ pub struct PluginManifest {
     /// instead of the manifest.
     #[serde(default)]
     pub mcp_servers: Option<Value>,
+}
+
+/// Codex's `tools.<name>` override for one MCP tool.
+///
+/// Keys are snake_case exactly as Codex writes them, so this struct declares
+/// its own convention instead of inheriting `McpProjectConfig`'s `camelCase`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct McpToolConfig {
+    /// Codex `approval_mode`: `auto` | `prompt` | `approve`.
+    ///
+    /// Left as a string so an unknown value can be reported and ignored rather
+    /// than failing the whole entry.
+    #[serde(default)]
+    pub approval_mode: Option<String>,
+    /// Codex `output_token_limit`: result budget for this tool.
+    #[serde(default)]
+    pub output_token_limit: Option<usize>,
+}
+
+/// Codex's MCP approval modes.
+///
+/// Only [`ApprovalMode::Auto`] changes Tact's behaviour; it is an
+/// auto-**approve**, not a re-classification, so the tool stays
+/// `CapabilityRisk::High` everywhere it is displayed or reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalMode {
+    /// Run without asking.
+    Auto,
+    /// Ask every time — Tact's unchanged default.
+    Prompt,
+    /// Ask every time. Kept as its own value so a Codex config round-trips
+    /// instead of being rewritten.
+    Approve,
+}
+
+impl ApprovalMode {
+    /// Parses a configured value. `None` for anything unrecognised, which the
+    /// caller reports and treats as absent.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "auto" => Some(Self::Auto),
+            "prompt" => Some(Self::Prompt),
+            "approve" => Some(Self::Approve),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Prompt => "prompt",
+            Self::Approve => "approve",
+        }
+    }
+}
+
+/// Resolved per-tool policy inside one server's [`McpServerPolicy`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct McpToolPolicy {
+    approval_mode: Option<ApprovalMode>,
+    output_token_limit: Option<usize>,
+}
+
+/// What one `.mcp.json` entry declares about the server's tools.
+///
+/// Empty by default: a plain `{"command": …, "args": […]}` entry exposes every
+/// tool, uses the global handshake timeout, and keeps every tool asking for
+/// approval (`CapabilityRisk::High`).
+#[derive(Debug, Clone, Default)]
+pub struct McpServerPolicy {
+    enabled_tools: Option<Vec<String>>,
+    disabled_tools: Option<Vec<String>>,
+    startup_timeout: Option<std::time::Duration>,
+    default_approval_mode: Option<ApprovalMode>,
+    tool_overrides: HashMap<String, McpToolPolicy>,
+}
+
+impl McpServerPolicy {
+    /// Reads the Codex per-entry fields off a parsed configuration.
+    #[must_use]
+    fn from_config(config: &McpProjectConfig) -> Self {
+        // Codex documents both spellings; seconds wins when both are present so
+        // one entry can never mean two different budgets.
+        let startup_timeout = match (config.startup_timeout_sec, config.startup_timeout_ms) {
+            (Some(secs), _) => Some(std::time::Duration::from_secs(secs)),
+            (None, Some(ms)) => Some(std::time::Duration::from_millis(ms)),
+            (None, None) => None,
+        };
+
+        let tool_overrides = config
+            .tools
+            .as_ref()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .map(|(name, raw)| {
+                        (
+                            name.clone(),
+                            McpToolPolicy {
+                                approval_mode: parse_approval_mode(
+                                    raw.approval_mode.as_deref(),
+                                    &format!("tools.{name}.approval_mode"),
+                                ),
+                                output_token_limit: raw.output_token_limit,
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Self {
+            enabled_tools: config.enabled_tools.clone(),
+            disabled_tools: config.disabled_tools.clone(),
+            startup_timeout,
+            default_approval_mode: parse_approval_mode(
+                config.default_tools_approval_mode.as_deref(),
+                "default_tools_approval_mode",
+            ),
+            tool_overrides,
+        }
+    }
+
+    /// Whether this server exposes `tool` to the agent.
+    ///
+    /// `disabled_tools` is applied after `enabled_tools`, which is Codex's
+    /// documented order: naming a tool in both lists hides it.
+    #[must_use]
+    pub fn exposes(&self, tool: &str) -> bool {
+        if let Some(enabled) = &self.enabled_tools
+            && !enabled.iter().any(|listed| listed == tool)
+        {
+            return false;
+        }
+        if let Some(disabled) = &self.disabled_tools
+            && disabled.iter().any(|listed| listed == tool)
+        {
+            return false;
+        }
+        true
+    }
+
+    /// The handshake budget this entry asks for, if any.
+    #[must_use]
+    pub fn startup_timeout(&self) -> Option<std::time::Duration> {
+        self.startup_timeout
+    }
+
+    /// Whether the entry declares `approval_mode: "auto"` for `tool`.
+    ///
+    /// A per-tool override wins over the server default.
+    #[must_use]
+    pub fn is_auto_approved(&self, tool: &str) -> bool {
+        let mode = self
+            .tool_overrides
+            .get(tool)
+            .and_then(|policy| policy.approval_mode)
+            .or(self.default_approval_mode);
+        mode == Some(ApprovalMode::Auto)
+    }
+
+    /// The per-tool result budget this entry declares, if any.
+    #[must_use]
+    pub fn output_token_limit(&self, tool: &str) -> Option<usize> {
+        self.tool_overrides
+            .get(tool)
+            .and_then(|policy| policy.output_token_limit)
+    }
+}
+
+/// Parses an `approval_mode`, reporting an unknown value instead of ignoring it.
+fn parse_approval_mode(value: Option<&str>, field: &str) -> Option<ApprovalMode> {
+    let value = value?;
+    match ApprovalMode::parse(value) {
+        Some(mode) => Some(mode),
+        None => {
+            tracing::warn!(
+                field,
+                value,
+                "unknown MCP approval_mode (expected auto|prompt|approve); ignoring it"
+            );
+            None
+        }
+    }
 }
 
 /// MCP server entry in `.mcp.json` / a plugin `.mcp.json`.
@@ -559,12 +764,37 @@ pub struct McpProjectConfig {
     /// from a lower-precedence source — but is never connected.
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
+    /// Codex `enabled_tools`: allow list of tool names this server exposes.
+    ///
+    /// Absent means every tool the server lists. Written snake_case because
+    /// that is the spelling Codex uses for these fields.
+    #[serde(rename = "enabled_tools", default)]
+    pub enabled_tools: Option<Vec<String>>,
+    /// Codex `disabled_tools`: deny list, applied **after** `enabled_tools`.
+    #[serde(rename = "disabled_tools", default)]
+    pub disabled_tools: Option<Vec<String>>,
+    /// Codex `startup_timeout_sec`: handshake budget for this server.
+    ///
+    /// Overrides the global default for slow launchers (a cold `uvx` measured
+    /// ~100s). Absent keeps Tact's own default rather than Codex's 10s: an
+    /// entry that worked before must not start timing out.
+    #[serde(rename = "startup_timeout_sec", default)]
+    pub startup_timeout_sec: Option<u64>,
+    /// Codex `startup_timeout_ms`: millisecond alias for `startup_timeout_sec`.
+    #[serde(rename = "startup_timeout_ms", default)]
+    pub startup_timeout_ms: Option<u64>,
+    /// Codex `default_tools_approval_mode`: server-wide approval default.
+    #[serde(rename = "default_tools_approval_mode", default)]
+    pub default_tools_approval_mode: Option<String>,
+    /// Codex `tools`: per-tool `approval_mode` / `output_token_limit`.
+    #[serde(rename = "tools", default)]
+    pub tools: Option<HashMap<String, McpToolConfig>>,
     /// Keys this struct does not model.
     ///
     /// Kept so the resolver can report them instead of dropping them silently:
-    /// the Codex per-entry fields (`enabled_tools`, `omit_tools_from`,
-    /// `startup_timeout_sec`, `tools`) land here, and a configuration someone
-    /// wrote must not disappear without a word.
+    /// the remaining Codex per-entry fields (`omit_tools_from`,
+    /// `tool_timeout_sec`) land here, and a configuration someone wrote must
+    /// not disappear without a word.
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -588,6 +818,12 @@ impl Default for McpProjectConfig {
             headers: HashMap::new(),
             auth: None,
             enabled: true,
+            enabled_tools: None,
+            disabled_tools: None,
+            startup_timeout_sec: None,
+            startup_timeout_ms: None,
+            default_tools_approval_mode: None,
+            tools: None,
             extra: HashMap::new(),
         }
     }
@@ -1031,6 +1267,17 @@ pub struct McpClient {
     service: Arc<dyn McpService>,
     tools: Vec<McpTool>,
     tool_specs: Vec<ToolSpec>,
+    /// Tool names the entry's `enabled_tools` / `disabled_tools` hide.
+    ///
+    /// Kept so the filtering can be *reported*: a configuration that removes a
+    /// tool must not look identical to a server that never had it.
+    hidden: Vec<String>,
+    /// The entry's per-tool policy (approval mode, output budget).
+    ///
+    /// Boxed so `ConnectOutcome::Connected` stays small: the enum is built
+    /// once per server, and an unboxed policy doubled the variant's size
+    /// (`clippy::large_enum_variant`).
+    policy: Box<McpServerPolicy>,
 }
 
 impl McpClient {
@@ -1038,19 +1285,20 @@ impl McpClient {
         server_name: impl Into<String>,
         config: McpTransportConfig,
     ) -> Result<Self> {
+        Self::try_new_with_policy(server_name, config, McpServerPolicy::default()).await
+    }
+
+    /// Connects a server together with the policy its entry declared.
+    pub async fn try_new_with_policy(
+        server_name: impl Into<String>,
+        config: McpTransportConfig,
+        policy: McpServerPolicy,
+    ) -> Result<Self> {
         let server_name = server_name.into();
-        let running = Self::connect(&server_name, config).await?;
+        let running = Self::connect(&server_name, config, policy.startup_timeout()).await?;
         let service: Arc<dyn McpService> = Arc::new(RealMcpService::new(running));
         match Self::fetch_tools(&server_name, service.as_ref()).await {
-            Ok(tools) => {
-                let tool_specs = build_tool_specs(&server_name, &tools);
-                Ok(Self {
-                    server_name,
-                    service,
-                    tools,
-                    tool_specs,
-                })
-            }
+            Ok(tools) => Ok(Self::assemble(server_name, tools, service, policy)),
             Err(err) => {
                 let _ = service.cancel().await;
                 Err(err)
@@ -1067,13 +1315,44 @@ impl McpClient {
         tools: Vec<McpTool>,
         service: Arc<dyn McpService>,
     ) -> Self {
-        let server_name = server_name.into();
-        let tool_specs = build_tool_specs(&server_name, &tools);
+        Self::with_service_and_policy(server_name, tools, service, McpServerPolicy::default())
+    }
+
+    /// [`Self::with_service`] for a server whose entry declares a tool policy.
+    pub fn with_service_and_policy(
+        server_name: impl Into<String>,
+        tools: Vec<McpTool>,
+        service: Arc<dyn McpService>,
+        policy: McpServerPolicy,
+    ) -> Self {
+        Self::assemble(server_name.into(), tools, service, policy)
+    }
+
+    /// Applies the entry's tool filter and keeps the hidden names for reporting.
+    fn assemble(
+        server_name: String,
+        tools: Vec<McpTool>,
+        service: Arc<dyn McpService>,
+        policy: McpServerPolicy,
+    ) -> Self {
+        let mut exposed = Vec::new();
+        let mut hidden = Vec::new();
+        for tool in tools {
+            if policy.exposes(&tool.name) {
+                exposed.push(tool);
+            } else {
+                hidden.push(tool.name.to_string());
+            }
+        }
+        hidden.sort();
+        let tool_specs = build_tool_specs(&server_name, &exposed);
         Self {
             server_name,
             service,
-            tools,
+            tools: exposed,
             tool_specs,
+            hidden,
+            policy: Box::new(policy),
         }
     }
 
@@ -1081,9 +1360,20 @@ impl McpClient {
         &self.tools
     }
 
+    /// Tool names hidden by this entry's `enabled_tools` / `disabled_tools`.
+    pub fn hidden_tools(&self) -> &[String] {
+        &self.hidden
+    }
+
+    /// This server's resolved tool policy.
+    pub fn policy(&self) -> &McpServerPolicy {
+        self.policy.as_ref()
+    }
+
     async fn connect(
         server_name: &str,
         config: McpTransportConfig,
+        timeout: Option<std::time::Duration>,
     ) -> Result<RunningService<RoleClient, ()>> {
         let config = match config {
             McpTransportConfig::Stdio(config) => config,
@@ -1117,12 +1407,16 @@ impl McpClient {
             });
         }
 
-        tokio::time::timeout(MCP_INIT_TIMEOUT, ().serve(transport))
+        // Codex names this budget `startup_timeout_sec`; an entry that declares
+        // it overrides the global default so a slow launcher (a cold `uvx`) is a
+        // configuration problem, not a permanently failed server.
+        let budget = timeout.unwrap_or(MCP_INIT_TIMEOUT);
+        tokio::time::timeout(budget, ().serve(transport))
             .await
             .with_context(|| {
                 format!(
                     "MCP server {server_name} did not complete the handshake within {}s",
-                    MCP_INIT_TIMEOUT.as_secs()
+                    budget.as_secs()
                 )
             })?
             .with_context(|| format!("failed to initialize MCP client for server {server_name}"))
@@ -1320,6 +1614,27 @@ impl MCPToolRouter {
         McpToolName::try_from(name).ok().map(|p| p.server)
     }
 
+    /// Whether the server's entry declares `approval_mode: "auto"` for a tool.
+    ///
+    /// False for an unknown server or tool, so an unresolvable name keeps the
+    /// default ask behaviour instead of becoming auto-approved by accident.
+    #[must_use]
+    pub fn is_auto_approved(&self, server: &str, tool: &str) -> bool {
+        self.clients
+            .get(server)
+            .is_some_and(|client| client.policy().is_auto_approved(tool))
+    }
+
+    /// The per-tool result budget this server's entry declares, by full tool
+    /// name (`mcp__<server>__<tool>`).
+    #[must_use]
+    pub fn output_token_limit(&self, full_name: &str) -> Option<usize> {
+        let parsed = McpToolName::try_from(full_name).ok()?;
+        self.clients
+            .get(&parsed.server)
+            .and_then(|client| client.policy().output_token_limit(&parsed.tool))
+    }
+
     pub async fn call(&self, tool_name: &str, arguments: Value) -> Result<String> {
         let parsed = McpToolName::try_from(tool_name)?;
         let client = self
@@ -1464,9 +1779,23 @@ struct ResolvedServers {
     skipped_remote: Vec<String>,
     /// Entries that declare keys Tact does not model, in declaration order.
     unmodelled: Vec<UnmodelledKeys>,
+    /// Winning per-entry tool policy by server name.
+    ///
+    /// Kept beside the connect list rather than inside it so the
+    /// `(name, transport, source)` tuples every caller already matches on stay
+    /// unchanged.
+    policies: HashMap<String, McpServerPolicy>,
 }
 
 impl ResolvedServers {
+    /// The winning declaration's tool policy for `server_name`.
+    ///
+    /// An unknown name — or an entry that declared nothing — gets the empty
+    /// policy, so callers never branch on `Option`.
+    fn policy_for(&self, server_name: &str) -> McpServerPolicy {
+        self.policies.get(server_name).cloned().unwrap_or_default()
+    }
+
     /// Describes each server for diagnostics (`tact-ui mcp list`).
     ///
     /// Sorted by name: `.mcp.json` is parsed into a `HashMap`, so there is no
@@ -1552,6 +1881,7 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
             disabled: !config.enabled,
             transport,
             source,
+            policy: McpServerPolicy::from_config(&config),
         };
         match index_of.get(&name) {
             Some(&existing) => {
@@ -1575,7 +1905,9 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
 
     let mut servers = Vec::new();
     let mut disabled = Vec::new();
+    let mut policies: HashMap<String, McpServerPolicy> = HashMap::new();
     for resolution in order {
+        policies.insert(resolution.name.clone(), resolution.policy);
         let entry = (resolution.name, resolution.transport, resolution.source);
         if resolution.disabled {
             disabled.push(entry);
@@ -1587,6 +1919,7 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
     ResolvedServers {
         servers,
         disabled,
+        policies,
         shadowed,
         skipped_remote,
         unmodelled,
@@ -1601,16 +1934,18 @@ struct Resolution {
     source: String,
     /// Declared with `enabled: false`: listed, never connected.
     disabled: bool,
+    /// The Codex per-entry tool policy of the winning declaration.
+    policy: McpServerPolicy,
 }
 
 /// Describes the entry keys Tact does not model, or `None` when there are none.
 ///
 /// Silently ignoring configuration is the failure this exists to prevent: a
-/// Codex plugin can declare `enabled_tools` / `tools.<name>.output_token_limit`
-/// and Tact would otherwise look as if it honored them. The keys are both
-/// logged and returned so `mcp list` can name them — the log subscriber is
-/// only installed when `RUST_LOG` (or `tokio_console`) asks for it, so a
-/// warning alone would be invisible to a default run.
+/// Codex entry can declare `omit_tools_from` / `tool_timeout_sec` and Tact
+/// would otherwise look as if it honored them. The keys are both logged and
+/// returned so `mcp list` can name them — the log subscriber is only installed
+/// when `RUST_LOG` (or `tokio_console`) asks for it, so a warning alone would be
+/// invisible to a default run.
 fn unmodelled_keys(name: &str, source: &str, config: &McpProjectConfig) -> Option<UnmodelledKeys> {
     if config.extra.is_empty() {
         return None;
@@ -1656,11 +1991,13 @@ async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadRe
         ..McpLoadReport::default()
     };
 
+    let policies = resolved.policies.clone();
     let mut router = MCPToolRouter::new();
     let mut connections = FuturesUnordered::new();
     for (server_name, config, _source) in resolved.servers {
+        let policy = policies.get(&server_name).cloned().unwrap_or_default();
         connections.push(async move {
-            let outcome = connect_server(&server_name, config).await;
+            let outcome = connect_server(&server_name, config, policy).await;
             (server_name, outcome)
         });
     }
@@ -1670,6 +2007,11 @@ async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadRe
                 let tools = client.list_tools().len();
                 tracing::debug!(mcp_server = %server_name, tools, "MCP server connected");
                 report.connected.push((server_name.clone(), tools));
+                if !client.hidden_tools().is_empty() {
+                    report
+                        .filtered
+                        .push((server_name.clone(), client.hidden_tools().to_vec()));
+                }
                 router.register_client(client);
             }
             ConnectOutcome::NeedsAuthorization => report.pending_auth.push(server_name),
@@ -1680,6 +2022,7 @@ async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadRe
     report.connected.sort_by(|a, b| a.0.cmp(&b.0));
     report.failures.sort_by(|a, b| a.0.cmp(&b.0));
     report.shadowed.sort_by(|a, b| a.0.cmp(&b.0));
+    report.filtered.sort_by(|a, b| a.0.cmp(&b.0));
     report.pending_auth.sort();
     Ok((router, report))
 }
@@ -1708,7 +2051,7 @@ fn resolve_current() -> Result<ResolvedServers> {
 /// server actually lives before failing.
 pub fn resolved_server_for(
     server_name: &str,
-) -> Result<Option<(ConfiguredServer, McpTransportConfig)>> {
+) -> Result<Option<(ConfiguredServer, McpTransportConfig, McpServerPolicy)>> {
     let resolved = resolve_current()?;
     let described = resolved
         .configured()
@@ -1720,8 +2063,9 @@ pub fn resolved_server_for(
         .chain(resolved.disabled.iter())
         .find(|(name, _, _)| name == server_name)
         .map(|(_, transport, _)| transport.clone());
+    let policy = resolved.policy_for(server_name);
     Ok(match (described, transport) {
-        (Some(server), Some(transport)) => Some((server, transport)),
+        (Some(server), Some(transport)) => Some((server, transport, policy)),
         _ => None,
     })
 }
@@ -1731,7 +2075,7 @@ pub fn resolved_server_for(
 /// `mcp get <name>` uses this so inspecting a single server never spawns or
 /// dials the rest of the configuration. Returns `Ok(None)` for an unknown name.
 pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspection>> {
-    let Some((server, transport)) = resolved_server_for(server_name)? else {
+    let Some((server, transport, policy)) = resolved_server_for(server_name)? else {
         return Ok(None);
     };
     if server.disabled {
@@ -1739,24 +2083,31 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
             server,
             status: McpServerStatus::Disabled,
             tools: Vec::new(),
+            filtered: Vec::new(),
         }));
     }
-    let (status, tools) = match connect_server(server_name, transport).await {
+    let (status, tools, filtered) = match connect_server(server_name, transport, policy).await {
         ConnectOutcome::Connected(client) => {
             let tools = client
                 .list_tools()
                 .iter()
                 .map(|tool| tool.name.to_string())
                 .collect();
-            (McpServerStatus::Connected, tools)
+            let filtered = client.hidden_tools().to_vec();
+            (McpServerStatus::Connected, tools, filtered)
         }
-        ConnectOutcome::NeedsAuthorization => (McpServerStatus::PendingAuthorization, Vec::new()),
-        ConnectOutcome::Failed(error) => (McpServerStatus::Failed(error), Vec::new()),
+        ConnectOutcome::NeedsAuthorization => (
+            McpServerStatus::PendingAuthorization,
+            Vec::new(),
+            Vec::new(),
+        ),
+        ConnectOutcome::Failed(error) => (McpServerStatus::Failed(error), Vec::new(), Vec::new()),
     };
     Ok(Some(McpServerInspection {
         server,
         status,
         tools,
+        filtered,
     }))
 }
 
@@ -1827,12 +2178,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MCPToolRouter, McpAuthConfig, McpClient, McpConfigFile, McpLiveStatus, McpLoadReport,
-        McpProjectConfig, McpServerConfig, McpToolName, McpTransportConfig, MockMcpService,
-        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, UnmodelledKeys,
-        collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved, drain_mcp_stderr,
-        installed_plugin_mcp_servers, plugin_manifest_mcp_servers, prepare_plugin_entry,
-        resolve_servers,
+        ApprovalMode, MCPToolRouter, McpAuthConfig, McpClient, McpConfigFile, McpLiveStatus,
+        McpLoadReport, McpProjectConfig, McpServerConfig, McpServerPolicy, McpToolConfig,
+        McpToolName, McpTransportConfig, MockMcpService, PluginDirs, PluginManifest, PluginRoot,
+        RealMcpService, SourcedServer, UnmodelledKeys, collect_plugin_mcp_servers,
+        collect_sourced_servers, describe_resolved, drain_mcp_stderr, installed_plugin_mcp_servers,
+        plugin_manifest_mcp_servers, prepare_plugin_entry, resolve_servers,
     };
 
     use crate::{
@@ -2837,7 +3188,7 @@ mod tests {
     }
 
     /// Codex per-entry fields Tact has no equivalent for must not vanish
-    /// without a word — `report_unmodelled_keys` names them.
+    /// without a word — `unmodelled_keys` names them.
     #[test]
     fn codex_only_entry_keys_are_captured_instead_of_dropped() {
         let config: McpProjectConfig = serde_json::from_str(
@@ -2854,25 +3205,32 @@ mod tests {
         .unwrap();
 
         assert!(!config.enabled);
+        // The modelled fields are no longer "unmodelled": `enabled_tools`,
+        // `startup_timeout_sec` and `tools` are honoured, so only the fields
+        // Tact genuinely has no equivalent for remain.
         let mut keys: Vec<&str> = config.extra.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec![
-                "enabled_tools",
-                "omit_tools_from",
-                "startup_timeout_sec",
-                "tools"
-            ],
-        );
+        assert_eq!(keys, vec!["omit_tools_from"]);
         // `enabled` is modelled, so it must *not* also land in `extra`.
         assert!(!config.extra.contains_key("enabled"));
+        assert_eq!(
+            config.enabled_tools.as_deref(),
+            Some(["js".to_owned(), "js_reset".to_owned()].as_slice())
+        );
+        assert_eq!(config.startup_timeout_sec, Some(120));
+        assert_eq!(
+            config.tools.as_ref().and_then(|tools| tools.get("js")),
+            Some(&McpToolConfig {
+                approval_mode: None,
+                output_token_limit: Some(25_000),
+            })
+        );
     }
 
     #[test]
     fn codex_only_keys_are_reported_with_their_source() {
         let config: McpProjectConfig = serde_json::from_str(
-            r#"{"command":"node","startup_timeout_sec":5,"tools":{"js":{"output_token_limit":1}}}"#,
+            r#"{"command":"node","omit_tools_from":["code_mode"],"tool_timeout_sec":30}"#,
         )
         .unwrap();
 
@@ -2883,11 +3241,152 @@ mod tests {
         assert_eq!(resolved.unmodelled[0].source, "/tmp/.mcp.json");
         assert_eq!(
             resolved.unmodelled[0].keys,
-            vec!["startup_timeout_sec", "tools"]
+            vec!["omit_tools_from", "tool_timeout_sec"]
         );
         // The entry still connects: an unimplemented *option* is not a reason
         // to drop a server that declares a working transport.
         assert_eq!(resolved.servers.len(), 1);
+    }
+
+    // ── Per-entry tool policy ────────────────────────────────────────────
+
+    #[test]
+    fn enabled_tools_limits_exposure_and_disabled_tools_wins() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "enabled_tools": ["keep", "also_hidden"],
+                "disabled_tools": ["also_hidden"]
+            }"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        assert!(policy.exposes("keep"));
+        assert!(!policy.exposes("other"));
+        // Codex applies the deny list *after* the allow list, so naming a tool
+        // in both hides it.
+        assert!(!policy.exposes("also_hidden"));
+    }
+
+    #[test]
+    fn an_entry_without_tool_policy_exposes_everything() {
+        let config: McpProjectConfig = serde_json::from_str(r#"{"command":"node"}"#).unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        assert!(policy.exposes("anything"));
+        assert!(policy.startup_timeout().is_none());
+        assert!(!policy.is_auto_approved("anything"));
+        assert!(policy.output_token_limit("anything").is_none());
+    }
+
+    #[test]
+    fn startup_timeout_accepts_seconds_and_the_millisecond_alias() {
+        let secs: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","startup_timeout_sec":120}"#).unwrap();
+        assert_eq!(
+            McpServerPolicy::from_config(&secs).startup_timeout(),
+            Some(std::time::Duration::from_secs(120))
+        );
+
+        let ms: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","startup_timeout_ms":1500}"#).unwrap();
+        assert_eq!(
+            McpServerPolicy::from_config(&ms).startup_timeout(),
+            Some(std::time::Duration::from_millis(1500))
+        );
+
+        // Both present: seconds is the documented unit and wins, so one entry
+        // can never mean two budgets.
+        let both: McpProjectConfig = serde_json::from_str(
+            r#"{"command":"node","startup_timeout_sec":5,"startup_timeout_ms":9000}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            McpServerPolicy::from_config(&both).startup_timeout(),
+            Some(std::time::Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn a_per_tool_approval_mode_overrides_the_server_default() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "default_tools_approval_mode": "auto",
+                "tools": {
+                    "write_thing": { "approval_mode": "prompt" },
+                    "documented": { "output_token_limit": 2500 }
+                }
+            }"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        // Server default applies where nothing overrides it.
+        assert!(policy.is_auto_approved("read_thing"));
+        // An explicit per-tool mode wins over the default.
+        assert!(!policy.is_auto_approved("write_thing"));
+        // A tool with an unrelated override still inherits the default.
+        assert!(policy.is_auto_approved("documented"));
+        assert_eq!(policy.output_token_limit("documented"), Some(2500));
+        assert_eq!(policy.output_token_limit("read_thing"), None);
+    }
+
+    #[test]
+    fn an_unknown_approval_mode_is_ignored_rather_than_guessed() {
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","default_tools_approval_mode":"yolo"}"#)
+                .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        // Not auto-approved: an unreadable value must fail towards asking.
+        assert!(!policy.is_auto_approved("anything"));
+        assert_eq!(ApprovalMode::parse(" yolo "), None);
+        assert_eq!(ApprovalMode::parse(" auto "), Some(ApprovalMode::Auto));
+    }
+
+    #[test]
+    fn filtering_hides_tools_from_the_agent_and_reports_them() {
+        let policy = McpServerPolicy::from_config(
+            &serde_json::from_str(
+                r#"{"command":"node","enabled_tools":["visible"],"disabled_tools":["nope"]}"#,
+            )
+            .unwrap(),
+        );
+        let client = McpClient::with_service_and_policy(
+            "demo",
+            vec![
+                named_tool("visible"),
+                named_tool("hidden"),
+                named_tool("unlisted"),
+            ],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+            policy,
+        );
+
+        assert_eq!(client.list_tools().len(), 1);
+        assert_eq!(client.hidden_tools(), ["hidden", "unlisted"]);
+        assert_eq!(client.agent_tools().len(), 1);
+        assert_eq!(client.agent_tools()[0].name, "mcp__demo__visible");
+        assert_eq!(client.tool_count(), 1);
+    }
+
+    /// A tool with only a name — enough for exposure filtering.
+    fn named_tool(name: &'static str) -> McpTool {
+        McpTool {
+            name: Cow::Borrowed(name),
+            title: None,
+            description: None,
+            input_schema: Arc::new(JsonObject::new()),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        }
     }
 
     /// A plugin bundle carrying Codex-only fields is normal, so it must not

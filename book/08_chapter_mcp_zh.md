@@ -121,7 +121,40 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
 
 每个条目只声明一种传输：`command`（本地 stdio）或 `url`（远程 Streamable HTTP，可选 `headers` 与 `auth`）。两者同时存在时 `command` 优先。两者都没有的条目按**已跳过**上报，绝不当作硬错误。
 
-条目可以用 `"enabled": false` 关掉（Codex 的写法，OpenAI 自带的 `unified-computer-use` 就这么写）。被关掉的声明照常参与解析——它能顶掉更低优先级的启用声明，也能被更高优先级的启用声明顶掉——但**绝不连接**，`mcp list` 会把它显示为 `disabled (enabled: false)`。Codex 专有的条目字段（`enabled_tools`、`omit_tools_from`、`startup_timeout_sec`、`tools`）Tact 没有对应能力，会被解析出来并在 `mcp list` 里**逐条点名**（日志文件里同时有一条 warning），而不是无声丢弃——tracing 只在设了 `RUST_LOG` 或 `tokio_console` 时才装 subscriber，只靠日志等于没说。
+条目可以用 `"enabled": false` 关掉（Codex 的写法，OpenAI 自带的 `unified-computer-use` 就这么写）。被关掉的声明照常参与解析——它能顶掉更低优先级的启用声明，也能被更高优先级的启用声明顶掉——但**绝不连接**，`mcp list` 会把它显示为 `disabled (enabled: false)`。剩下的 Codex 专有条目字段（`omit_tools_from`、`tool_timeout_sec`）Tact 没有对应能力，会被解析出来并在 `mcp list` 里**逐条点名**（日志文件里同时有一条 warning），而不是无声丢弃——tracing 只在设了 `RUST_LOG` 或 `tokio_console` 时才装 subscriber，只靠日志等于没说。
+
+### 每个 server 的工具策略
+
+另外四个 Codex 条目字段已被支持，一个暴露二十多个工具的 server 不必每轮请求都把全部工具声明发一遍：
+
+| 字段 | 类型 | 行为 |
+|------|------|------|
+| `enabled_tools` | `[string]` | 允许列表。存在时，只有这些工具名会到达 agent。 |
+| `disabled_tools` | `[string]` | 拒绝列表，在 `enabled_tools` **之后**应用，所以同时写进两个列表的工具会被隐藏。 |
+| `startup_timeout_sec` / `startup_timeout_ms` | number | 该 server 的握手预算；两者同时存在时 `sec` 优先。 |
+| `default_tools_approval_mode` | `"auto" \| "prompt" \| "approve"` | 该 server 的默认审批行为。 |
+| `tools.<name>.approval_mode` | 同上 | 单工具覆盖，优先于默认值。 |
+| `tools.<name>.output_token_limit` | number | 该工具的结果预算；超限结果落盘到 `.tact/tool-results/` 并只留预览。 |
+
+```json
+{
+  "mcpServers": {
+    "basic-memory": {
+      "command": "/Users/me/.local/bin/basic-memory",
+      "args": ["mcp"],
+      "startup_timeout_sec": 120,
+      "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
+      "tools": { "search_notes": { "approval_mode": "auto" } }
+    }
+  }
+}
+```
+
+只有 `approval_mode: "auto"` 会改变 Tact 的行为，而且它是**自动批准**而非重新分级：该工具在一切展示与上报处仍是 `CapabilityRisk::High`。原因是 `Read` 在**计划模式之前**就被放行，若把 server 的声明映射成更低的 risk，就等于让一个配置项解锁计划模式。这条策略在计划模式、显式 `deny` 规则与显式 `ask` 规则之后才被查询，所以 server 自己的声明只能跳过**默认**询问，永远盖不过本地决定。`prompt`、`approve`、未知值与缺省字段一律维持现有的询问行为；未知值会记日志。
+
+隐藏工具是刻意的配置而非故障，但**绝不无声**：`mcp list` 会打印 **Filtered tools** 段落，`mcp get` 会打印 `hidden` 行，点名该条目挡在 agent 之外的工具。两者都不进入启动提示，理由与 `unmodelled` 相同：刻意的配置不该让每次启动都变吵。
+
+`startup_timeout_sec` 覆盖全局 60 秒握手上限；Tact 刻意保留 60 秒作为默认值而不是采用 Codex 的 10 秒，这样今天能用的条目不会在升级后开始超时。`output_token_limit` 用与压缩相同的估算器计 token；该字段存在于 Codex 的二进制中但不在其公开配置参考里，所以行为是 Tact 的解读。
 
 **从命令行管理 server。** 六个子命令按「允许触碰什么」划分——`list`/`get` 负责连接，`add`/`remove` 负责写 `mcp.json`，`login`/`logout` 负责已存凭据：
 
@@ -530,6 +563,7 @@ sequenceDiagram
 | 工具发现 | `McpClient::fetch_tools` | `tools/list` |
 | 工具执行 | `McpClient::call_tool` | `tools/call` |
 | 动态更新 | *（未实现）* | `tools/list_changed` 通知 + 缓存刷新 |
+| 工具策略 | `McpServerPolicy` | `enabled_tools` / `disabled_tools`、`startup_timeout_sec`、审批模式、单工具输出预算 |
 | 路由 | `MCPToolRouter` | 按 `mcp__*` 名路由到正确 Server |
 | Agent 集成 | `crates/tact/src/agent/mod.rs` | `Agent::new` 合并 tool spec；每轮 LLM 用 `all_tool_specs()` |
 | 并行调度 | `crates/tact/src/agent/tool_schedule.rs` | 同 Server 串行；不同 Server 可并行 |
@@ -669,7 +703,8 @@ oauth_client_name = "Codex"   # 默认；设为 "Tact" 可如实标识
 | **旧版 HTTP+SSE** | `type: "sse"` 映射到 Streamable HTTP；已废弃的 2024-11-05 HTTP+SSE 端点未实现 |
 | **OAuth 设备码 / mTLS** | 只实现授权码 + PKCE 流程；无设备码、客户端证书或企业 SSO |
 | **客户端密钥 / 白名单 provider** | 只支持自我注册（DCR）与公共客户端的 `clientId`；若 provider 既拒绝 DCR 又要求 client secret（Figma 远程 server），则无法在 Tact 内完成授权——报错会指明替代方案 |
-| **按工具的权限粒度** | 所有 MCP 工具都解析为 `CapabilityRisk::High`；`normalize_mcp_capability` 忽略 server 与 tool 两者 |
+| **按工具的权限粒度** | 所有 MCP 工具都解析为 `CapabilityRisk::High`；`normalize_mcp_capability` 忽略 server 与 tool 两者。条目可以用 `approval_mode: "auto"` 跳过**询问**，但无法降低上报的 risk——那需要 Tact 目前没有的能力维度 |
+| **未建模的条目字段** | `omit_tools_from`（Codex 的 code-mode 概念）与 `tool_timeout_sec` 只被解析并上报，不会被采纳 |
 | **无类型化环境变量插值** | `mcp.json` 的 `env` 值是字面量；不支持 `${VAR}` 展开 |
 
 ---

@@ -32,6 +32,26 @@
 ---
 
 
+---
+
+
+## 1. 2026-09-30 — Codex 的 MCP 单 server 字段从「只上报」变成「真支持」
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpServerPolicy`、`McpToolConfig`、`ApprovalMode`、`McpClient`、`McpLoadReport::filtered`）、`crates/tact/src/permission/mod.rs`（`check_with_auto`）、`crates/tact/src/compact/mod.rs`（`persist_large_output_over_tokens`、`spill_output`）、`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-tool-policy-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** 四个 Codex 条目字段此前只被解析出来点名成「未建模」，用户写了等于没写。代价是可量化的：Basic Memory 暴露 21 个工具、schema 合计 34,652 字符（约 8.7k tokens），**每一轮请求**都要发一遍；只想要四个召回工具的用户仍要为 `delete_project`、`schema_diff` 之类付账。经冷 `uvx` 启动的 server 实测握手要 ~100 秒，撞上 Tact 固定的 60 秒上限后被报成永久失败，用户没有任何办法说「这个只是慢」。而所有 MCP 工具都解析为 `CapabilityRisk::High`，于是一个只读的召回工具每次调用都要确认——唯一的出口是在 `settings.json` 里逐个工具名写 allow 规则。
+
+**决策：** 按 Codex 自己的 snake_case 拼写把这些字段建模。`enabled_tools` / `disabled_tools` 过滤暴露面（拒绝列表在允许列表**之后**应用，与 Codex 文档一致），被隐藏的名字保留下来用于上报。`startup_timeout_sec`（以及 Codex 的毫秒别名 `startup_timeout_ms`，两者同时存在时秒优先）按 server 覆盖握手预算——Tact 刻意保留 60 秒作为**默认值**而不采用 Codex 的 10 秒，这样今天能用的条目不会在升级后开始超时。`default_tools_approval_mode` 与 `tools.<name>.approval_mode` 取 Codex 的 `auto | prompt | approve`，其中只有 `auto` 改变行为：它是**自动批准**而非重新分级，因为 `Read` 在**计划模式之前**就被放行，把这条策略映射成更低的 risk 等于让一个配置项解锁计划模式。因此 `PermissionManager::check_with_auto` 把它当作独立的一维，在计划模式、显式 `deny` 规则与显式 `ask` 规则之后才查询——server 自己的声明只能跳过**默认**询问，永远盖不过本地决定。`tools.<name>.output_token_limit` 通过既有的 `.tact/tool-results` 落盘机制给单工具一个结果预算（无条件的落盘主体从 `persist_large_output` 中抽了出来）；该字段存在于 Codex 的二进制里但不在其公开配置参考中，因此计 token 属 Tact 的解读。`omit_tools_from` 与 `tool_timeout_sec` 维持未建模并照常上报。
+
+**之后的行为：** 一个条目就能把 21 个工具的 server 收窄到 7 个、每轮省约 6k tokens，且不需要改 Tact 代码；慢启动器变成可配置而非直接失败；选择开启的工具不再询问，而计划模式与本地规则依然优先。隐藏工具绝不无声——`mcp list` 打印 **Filtered tools** 段落、`mcp get` 打印 `hidden` 行——但两者都不进入启动提示，理由与未建模字段相同。`mcp list` 的「Entry keys Tact does not model」段落现在只点名剩下两个确实未实现的字段。
+
+**指向：** `mcp::tests::{enabled_tools_limits_exposure_and_disabled_tools_wins, startup_timeout_accepts_seconds_and_the_millisecond_alias, a_per_tool_approval_mode_overrides_the_server_default, filtering_hides_tools_from_the_agent_and_reports_them}`、`permission::tests::{server_auto_approval_skips_the_default_high_risk_prompt, server_auto_approval_does_not_unlock_plan_mode, an_explicit_deny_rule_outranks_server_auto_approval, an_explicit_ask_rule_outranks_server_auto_approval}`、`compact::tests::a_per_tool_token_budget_spills_over_its_own_limit`、`mcp_cli::tests::{tools_hidden_by_the_entry_policy_are_named_in_the_listing, the_detail_view_names_hidden_tools_too}`。
+
+---
+
 ## 1. 2026-09-29 — hook 的 payload 对齐 Codex schema，卡住的 hook 不再默默撒谎
 
 | 字段 | 值 |

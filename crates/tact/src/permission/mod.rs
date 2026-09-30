@@ -224,15 +224,34 @@ impl PermissionManager {
     ///    (including high-risk — user explicitly trusts the pattern).
     /// 6. Default mode + matching settings ask → ask (non-high only;
     ///    high-risk Ask/None still uses the high-risk ask path).
-    /// 7. Default mode + high risk (no Deny/Allow rule) → ask
+    /// 7. Default mode + server-policy auto-approve → allow.
+    /// 8. Default mode + high risk (no Deny/Allow rule) → ask
     ///    (skips the in-session always-allowed list).
-    /// 8. Default mode + in-session always-allowed → allow.
-    /// 9. Otherwise → ask.
+    /// 9. Default mode + in-session always-allowed → allow.
+    /// 10. Otherwise → ask.
     pub fn check(
         &mut self,
         tool_name: &str,
         risk: CapabilityRisk,
         input: &Value,
+    ) -> PermissionDecision {
+        self.check_with_auto(tool_name, risk, input, false)
+    }
+
+    /// [`Self::check`] plus the one policy that lives outside the permission
+    /// store: an MCP server entry's `approval_mode: "auto"`.
+    ///
+    /// Deliberately a *separate* switch rather than a lower risk: `Read` is
+    /// allowed before plan mode is consulted, so mapping a server policy onto
+    /// `Read` would let a write tool run in plan mode. `auto_approved` is
+    /// consulted after plan mode and after an explicit `deny` rule, so it can
+    /// only ever skip the *ask* step.
+    pub fn check_with_auto(
+        &mut self,
+        tool_name: &str,
+        risk: CapabilityRisk,
+        input: &Value,
+        auto_approved: bool,
     ) -> PermissionDecision {
         // 1. Read capabilities are always allowed.
         if risk == CapabilityRisk::Read {
@@ -273,10 +292,23 @@ impl PermissionManager {
                     tool_name
                 ));
             }
-            Some(settings::RuleAction::Ask) if risk != CapabilityRisk::High => {
+            // 7. An explicit local `ask` rule outranks the server's own entry —
+            //    including for a High-risk tool, where the rule would otherwise
+            //    fall through to the default high-risk prompt and let the
+            //    server's `auto` skip it.
+            Some(settings::RuleAction::Ask) if risk != CapabilityRisk::High || auto_approved => {
                 return PermissionDecision::ask(format!(
                     "Project permission rule requires confirmation: {}",
                     tool_name
+                ));
+            }
+            // 6. The server entry opted this tool into `approval_mode: "auto"`.
+            //    Checked after deny and ask so that a server's own declaration
+            //    can skip the *default* prompt, never a local decision.
+            _ if auto_approved => {
+                self.consecutive_denials = 0;
+                return PermissionDecision::allow(format!(
+                    "Auto-approved by the MCP server entry: {tool_name}"
                 ));
             }
             _ => {}
@@ -1228,5 +1260,96 @@ mod tests {
         let parent = PermissionManager::try_new(PermissionMode::Auto).unwrap();
         let child = PermissionManager::from_snapshot(parent.snapshot());
         assert_eq!(child.mode(), PermissionMode::Auto);
+    }
+
+    // ── MCP server-entry auto-approval ───────────────────────────────────
+
+    #[test]
+    fn server_auto_approval_skips_the_default_high_risk_prompt() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+
+        // Without the policy a high-risk MCP tool asks…
+        let asked = mgr.check("mcp__demo__search", CapabilityRisk::High, &Value::Null);
+        assert_eq!(asked.behavior, PermissionBehavior::Ask);
+        assert_eq!(mgr.consecutive_denials, 0);
+
+        // …and with it, the prompt is skipped.
+        let allowed = mgr.check_with_auto(
+            "mcp__demo__search",
+            CapabilityRisk::High,
+            &Value::Null,
+            true,
+        );
+        assert_eq!(allowed.behavior, PermissionBehavior::Allow);
+        assert!(
+            allowed.reason.contains("MCP server entry"),
+            "{}",
+            allowed.reason
+        );
+    }
+
+    #[test]
+    fn server_auto_approval_does_not_unlock_plan_mode() {
+        // `Read` is allowed before plan mode is consulted, so a server policy
+        // must never be expressed as a lower risk.
+        let mut mgr = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+        let decision = mgr.check_with_auto(
+            "mcp__demo__write_note",
+            CapabilityRisk::High,
+            &Value::Null,
+            true,
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn an_explicit_deny_rule_outranks_server_auto_approval() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"deny": ["mcp__demo__write_note"]}}"#);
+
+        let decision = mgr.check_with_auto(
+            "mcp__demo__write_note",
+            CapabilityRisk::High,
+            &Value::Null,
+            true,
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn an_explicit_ask_rule_outranks_server_auto_approval() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"ask": ["mcp__demo__write_note"]}}"#);
+
+        let decision = mgr.check_with_auto(
+            "mcp__demo__write_note",
+            CapabilityRisk::High,
+            &Value::Null,
+            true,
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn a_server_auto_tool_still_asks_when_it_is_not_approved() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"allow": ["read_file"]}}"#);
+
+        // `auto_approved: false` is the unchanged path: no local rule matches a
+        // high-risk MCP tool, so it asks.
+        let decision = mgr.check_with_auto(
+            "mcp__demo__search",
+            CapabilityRisk::High,
+            &Value::Null,
+            false,
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn check_keeps_the_old_behaviour_without_a_server_policy() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let decision = mgr.check("mcp__demo__search", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
     }
 }

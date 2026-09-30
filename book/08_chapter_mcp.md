@@ -120,7 +120,40 @@ A malformed native `.mcp.json` is a hard error naming the path (a user-authored 
 
 Each entry declares exactly one transport: `command` (local stdio) or `url` (remote Streamable HTTP, optionally with `headers` and `auth`). `command` wins if both are present. An entry with neither is reported as **skipped**, never treated as a hard error.
 
-An entry can be switched off with `"enabled": false` (the Codex convention; OpenAI's bundled `unified-computer-use` uses it). A disabled declaration is still resolved — it can shadow an enabled one below it, and be shadowed by an enabled one above it — but is **never connected**, and `mcp list` shows it as `disabled (enabled: false)`. The Codex-only entry fields (`enabled_tools`, `omit_tools_from`, `startup_timeout_sec`, `tools`) have no Tact equivalent: they are parsed and named one by one in `mcp list` (with a warning in the log file as well) rather than dropped in silence — a tracing subscriber is only installed when `RUST_LOG` or `tokio_console` asks for one, so the log alone would say nothing to a default run.
+An entry can be switched off with `"enabled": false` (the Codex convention; OpenAI's bundled `unified-computer-use` uses it). A disabled declaration is still resolved — it can shadow an enabled one below it, and be shadowed by an enabled one above it — but is **never connected**, and `mcp list` shows it as `disabled (enabled: false)`. The remaining Codex-only entry fields (`omit_tools_from`, `tool_timeout_sec`) have no Tact equivalent: they are parsed and named one by one in `mcp list` (with a warning in the log file as well) rather than dropped in silence — a tracing subscriber is only installed when `RUST_LOG` or `tokio_console` asks for one, so the log alone would say nothing to a default run.
+
+### Per-server tool policy
+
+Four more Codex per-entry fields are honoured, so a server that exposes two dozen tools does not have to advertise all of them on every request:
+
+| Field | Type | Behaviour |
+|-------|------|-----------|
+| `enabled_tools` | `[string]` | Allow list. When present, only these tool names reach the agent. |
+| `disabled_tools` | `[string]` | Deny list, applied **after** `enabled_tools`, so naming a tool in both hides it. |
+| `startup_timeout_sec` / `startup_timeout_ms` | number | Handshake budget for this server. `sec` wins when both are present. |
+| `default_tools_approval_mode` | `"auto" \| "prompt" \| "approve"` | Server-wide approval default. |
+| `tools.<name>.approval_mode` | same | Per-tool override, wins over the default. |
+| `tools.<name>.output_token_limit` | number | Result budget for this tool; an oversized result is spilled to `.tact/tool-results/` with a preview. |
+
+```json
+{
+  "mcpServers": {
+    "basic-memory": {
+      "command": "/Users/me/.local/bin/basic-memory",
+      "args": ["mcp"],
+      "startup_timeout_sec": 120,
+      "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
+      "tools": { "search_notes": { "approval_mode": "auto" } }
+    }
+  }
+}
+```
+
+Only `approval_mode: "auto"` changes Tact's behaviour, and it is an auto-**approve** rather than a re-classification: the tool stays `CapabilityRisk::High` everywhere it is displayed, because `Read` is allowed *before* plan mode is consulted and a server entry must not be able to unlock plan mode. The policy is consulted after plan mode, after an explicit `deny` rule and after an explicit `ask` rule, so a server's own declaration can skip the *default* prompt but never a local decision. `prompt`, `approve`, an unknown value and an absent field all keep today's ask behaviour; an unknown value is logged.
+
+Hiding a tool is a deliberate configuration, not a problem — but it is **never silent**: `mcp list` prints a **Filtered tools** section and `mcp get` prints a `hidden` line naming what the entry keeps away from the agent. Neither turns into a startup notice, for the same reason `unmodelled` does not: a deliberate configuration should not make every launch noisy.
+
+`startup_timeout_sec` overrides the global 60s handshake ceiling; Tact deliberately keeps 60s as the default instead of Codex's 10s, so an entry that works today cannot start timing out after an upgrade. `output_token_limit` counts tokens with the same estimator compaction uses; the field exists in Codex's binary but not in its published configuration reference, so the behaviour is Tact's interpretation.
 
 **Managing servers from the CLI.** Six subcommands, split by what they are allowed to touch — `list`/`get` connect, `add`/`remove` write `mcp.json`, `login`/`logout` own the stored credentials:
 
@@ -529,6 +562,7 @@ sequenceDiagram
 | Tool discovery | `McpClient::fetch_tools` | `tools/list` |
 | Tool execution | `McpClient::call_tool` | `tools/call` |
 | Dynamic updates | *(not implemented)* | `tools/list_changed` notification + cache refresh |
+| Tool policy | `McpServerPolicy` | `enabled_tools` / `disabled_tools`, `startup_timeout_sec`, approval mode, per-tool output budget |
 | Routing | `MCPToolRouter` | Route by `mcp__*` name to the right Server |
 | Agent integration | `crates/tact/src/agent/mod.rs` | Merge tool specs at `Agent::new`; `all_tool_specs()` per LLM turn |
 | Parallel scheduling | `crates/tact/src/agent/tool_schedule.rs` | Same Server serial; different Servers parallel |
@@ -668,7 +702,8 @@ The measurement above is specific to the names Figma admits. Another provider ma
 | **Legacy HTTP+SSE** | `type: "sse"` maps to Streamable HTTP; the deprecated 2024-11-05 HTTP+SSE endpoint is not implemented |
 | **OAuth device flow / mTLS** | Only the authorization-code + PKCE flow is implemented; no device code, client certificates, or enterprise SSO |
 | **Client secrets / allowlisted providers** | Only self-registration (DCR) and public-client `clientId` are supported; a provider that refuses DCR *and* needs a client secret (Figma's remote server) cannot be authorized from Tact — the error names the alternatives |
-| **Per-tool permission granularity** | Every MCP tool resolves to `CapabilityRisk::High`; `normalize_mcp_capability` ignores both server and tool |
+| **Per-tool permission granularity** | Every MCP tool resolves to `CapabilityRisk::High`; `normalize_mcp_capability` ignores both server and tool. An entry can skip the *prompt* with `approval_mode: "auto"`, but it cannot lower the reported risk — that needs a capability axis Tact does not have |
+| **Unmodelled entry fields** | `omit_tools_from` (Codex's code-mode concept) and `tool_timeout_sec` are parsed and reported, never honoured |
 | **No typed env interpolation** | `mcp.json` `env` values are literal; no `${VAR}` expansion |
 
 ---

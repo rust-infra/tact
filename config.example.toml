@@ -351,3 +351,42 @@ api_key = ""
 # Per-server override: `auth.clientName` in mcp.json, e.g.
 #   { "mcpServers": { "figma": { "url": "...", "auth": { "type": "oauth", "clientName": "Codex" } } } }
 # oauth_client_name = "Codex"
+
+# Per-entry tool policy lives in `.mcp.json` (not here) — Codex's own field
+# names, honoured per server. All are optional; an entry that declares none
+# exposes every tool, uses the 60s handshake ceiling, and asks before each call:
+#
+#   {
+#     "mcpServers": {
+#       "basic-memory": {
+#         "command": "/Users/me/.local/bin/basic-memory",
+#         "args": ["mcp"],
+#         # Handshake budget for this server. `_ms` is the millisecond alias;
+#         # seconds wins when both are present. Tact's default stays 60s rather
+#         # than Codex's 10s, so an entry that works today cannot start timing
+#         # out after an upgrade. Raise it for a slow launcher (a cold `uvx`
+#         # measured ~100s).
+#         "startup_timeout_sec": 120,
+#         # Only these tools reach the agent (21 tools ≈ 8.7k tokens of schema
+#         # on every request; these four recall tools ≈ 2.8k).
+#         "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
+#         # Deny list, applied after `enabled_tools`: a name in both is hidden.
+#         "disabled_tools": ["delete_note"],
+#         # "auto" skips the default approval prompt for these tools. It is an
+#         # auto-approve, not a lower risk: plan mode still blocks, and an
+#         # explicit deny/ask rule in .tact/settings.json still wins.
+#         "default_tools_approval_mode": "prompt",
+#         "tools": {
+#           "search_notes": { "approval_mode": "auto" },
+#           # Result budget for one tool; an oversized result is spilled to
+#           # .tact/tool-results/ with a preview instead of filling the context.
+#           "build_context": { "output_token_limit": 4000 }
+#         }
+#       }
+#     }
+#   }
+#
+# Hidden tools are never silent: `tact-ui mcp list` prints a "Filtered tools"
+# section and `tact-ui mcp get <name>` prints a `hidden` line.
+# `omit_tools_from` and `tool_timeout_sec` have no Tact equivalent and are
+# reported as unmodelled rather than silently ignored.

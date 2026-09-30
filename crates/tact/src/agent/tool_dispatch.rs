@@ -10,7 +10,7 @@ use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 
 use super::Agent;
 use crate::{
-    compact::persist_large_output,
+    compact::{persist_large_output, persist_large_output_over_tokens},
     hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
     mcp::MCPToolRouter,
@@ -315,7 +315,16 @@ async fn run_mcp_tool(
     match mcp_router.call(name, input.clone()).await {
         Ok(output) => {
             let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
-            match persist_large_output(&tact_path, tool_use_id, &output).await {
+            // A `tools.<name>.output_token_limit` on the server's entry wins
+            // over the session-wide character threshold; without one the
+            // global rule applies unchanged.
+            let persisted = match mcp_router.output_token_limit(name) {
+                Some(limit) => {
+                    persist_large_output_over_tokens(&tact_path, tool_use_id, &output, limit).await
+                }
+                None => persist_large_output(&tact_path, tool_use_id, &output).await,
+            };
+            match persisted {
                 Ok(content) => ExecResult {
                     content,
                     status: StepStatus::Success,
@@ -577,13 +586,24 @@ impl Agent {
                 ResolvedTool::Mcp { server, tool, .. } => normalize_mcp_capability(server, tool),
                 ResolvedTool::Unknown { .. } => CapabilityRisk::High,
             };
+            // An MCP entry's `approval_mode: "auto"` skips the default prompt
+            // without lowering the risk: it must not unlock plan mode, and an
+            // explicit local deny/ask rule still wins.
+            let auto_approved = match &resolved {
+                ResolvedTool::Mcp { server, tool, .. } => {
+                    self.mcp_router.is_auto_approved(server, tool)
+                }
+                _ => false,
+            };
 
             let state = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
                 Ok(HookControl::Continue) => {
-                    let decision =
-                        self.runtime
-                            .permission_manager
-                            .check(stable_name, risk, &tool_use.input);
+                    let decision = self.runtime.permission_manager.check_with_auto(
+                        stable_name,
+                        risk,
+                        &tool_use.input,
+                        auto_approved,
+                    );
                     match decision.behavior {
                         PermissionBehavior::Allow => PreparedState::Run,
                         PermissionBehavior::Deny => {

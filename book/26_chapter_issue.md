@@ -32,6 +32,24 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — Codex's per-server MCP fields are honoured instead of merely reported
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/mcp/mod.rs` (`McpServerPolicy`, `McpToolConfig`, `ApprovalMode`, `McpClient`, `McpLoadReport::filtered`), `crates/tact/src/permission/mod.rs` (`check_with_auto`), `crates/tact/src/compact/mod.rs` (`persist_large_output_over_tokens`, `spill_output`), `crates/tact/src/agent/tool_dispatch.rs`, `crates/tact-ui/src/mcp_cli.rs`; spec `docs/superpowers/specs/2026-09-30-mcp-tool-policy-design.md`; [Ch 8](./08_chapter_mcp.md) |
+
+**Symptom / motivation:** Four Codex per-entry fields were parsed only to be named as unmodelled, so a user could write them and get nothing. The cost was measurable: Basic Memory exposes 21 tools whose schemas total 34,652 characters (~8.7k tokens) on **every** request, and a user who wanted the four recall tools still paid for `delete_project`, `schema_diff` and the rest. A server launched through a cold `uvx` measured ~100s to handshake against Tact's fixed 60s ceiling, so it was reported as permanently failed with no way to say "this one is slow". And every MCP tool resolved to `CapabilityRisk::High`, so a read-only recall tool prompted on every call — the only escape was a `settings.json` allow rule naming each tool.
+
+**Decision:** Model the fields with Codex's own snake_case spellings. `enabled_tools` / `disabled_tools` filter what is exposed (the deny list applied after the allow list, as Codex documents) and the hidden names are kept for reporting. `startup_timeout_sec` (plus Codex's `startup_timeout_ms` alias; seconds wins when both are present) overrides the handshake budget per server — Tact keeps 60s as the *default* rather than adopting Codex's 10s, so an entry that works today cannot start timing out after an upgrade. `default_tools_approval_mode` and `tools.<name>.approval_mode` take Codex's `auto | prompt | approve`, of which only `auto` changes behaviour: it is an auto-**approve**, not a re-classification, because `Read` is allowed *before* plan mode is consulted and mapping the policy onto a lower risk would let a config entry unlock plan mode. `PermissionManager::check_with_auto` therefore consults it as a separate axis, after plan mode, after an explicit `deny` rule and after an explicit `ask` rule — a server's own declaration can skip the *default* prompt, never a local decision. `tools.<name>.output_token_limit` gets a per-tool result budget through the existing `.tact/tool-results` spill (the unconditional spill body was extracted from `persist_large_output`); the field exists in Codex's binary but not in its published configuration reference, so the token counting is Tact's interpretation. `omit_tools_from` and `tool_timeout_sec` stay unmodelled and reported.
+
+**Behavior after:** An entry can cut a 21-tool server to 7 and save ~6k tokens per request without touching Tact's code; a slow launcher is configured rather than failed; an opted-in tool stops prompting while plan mode and local rules still win. Hiding a tool is never silent — `mcp list` prints a **Filtered tools** section and `mcp get` a `hidden` line — but neither becomes a startup notice, for the same reason unmodelled keys do not. `mcp list`'s "Entry keys Tact does not model" section now names only the two fields that remain unimplemented.
+
+**Pointers:** `mcp::tests::{enabled_tools_limits_exposure_and_disabled_tools_wins, startup_timeout_accepts_seconds_and_the_millisecond_alias, a_per_tool_approval_mode_overrides_the_server_default, filtering_hides_tools_from_the_agent_and_reports_them}`, `permission::tests::{server_auto_approval_skips_the_default_high_risk_prompt, server_auto_approval_does_not_unlock_plan_mode, an_explicit_deny_rule_outranks_server_auto_approval, an_explicit_ask_rule_outranks_server_auto_approval}`, `compact::tests::a_per_tool_token_budget_spills_over_its_own_limit`, `mcp_cli::tests::{tools_hidden_by_the_entry_policy_are_named_in_the_listing, the_detail_view_names_hidden_tools_too}`.
+
+---
+
+
 ## 1. 2026-09-29 — The hook payload follows Codex's schema, and a stalled hook stops lying
 
 | Field | Value |

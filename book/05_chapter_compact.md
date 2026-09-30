@@ -633,6 +633,8 @@ if name != "read_file" {
 | `PERSIST_THRESHOLD` | 30,000 chars |
 | `PREVIEW_CHARS` | 2,000 chars |
 
+One caller overrides the threshold: an MCP entry's `tools.<name>.output_token_limit` spills that single tool on its own token budget through `persist_large_output_over_tokens`, using the same envelope. The character rule above still applies to every tool that declares none. See [Ch 8](./08_chapter_mcp.md) for the entry fields.
+
 ```mermaid
 flowchart TD
     Out[successful tool output] --> Th{chars > 30_000?}

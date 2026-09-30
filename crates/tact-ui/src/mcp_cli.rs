@@ -98,7 +98,7 @@ fn add(args: AddArgs) -> Result<()> {
 
     // A declaration the loader will not reach is a silent no-op from the
     // user's point of view, so say which file actually wins.
-    if let Ok(Some((resolved, _))) = mcp::resolved_server_for(&args.name)
+    if let Ok(Some((resolved, _, _))) = mcp::resolved_server_for(&args.name)
         && resolved.source != outcome.path.display().to_string()
     {
         println!(
@@ -159,7 +159,7 @@ fn scope_of(user: bool) -> McpConfigScope {
 /// Returns an empty string when there is nothing extra to say, so it can be
 /// used as `anyhow` context unconditionally.
 fn scope_hint(workdir: &Path, scope: McpConfigScope, name: &str) -> String {
-    let Ok(Some((server, _))) = mcp::resolved_server_for(name) else {
+    let Ok(Some((server, _, _))) = mcp::resolved_server_for(name) else {
         return String::new();
     };
     let source = &server.source;
@@ -239,6 +239,14 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
             // The full name is what the agent must call, so show it verbatim.
             lines.push(format!("            mcp__{name}__{tool}"));
         }
+    }
+    // A filtered server must not look like one that never had these tools.
+    if !inspection.filtered.is_empty() {
+        lines.push(format!(
+            "  hidden  {} by enabled_tools/disabled_tools: {}",
+            inspection.filtered.len(),
+            inspection.filtered.join(", "),
+        ));
     }
     lines.join("\n")
 }
@@ -407,6 +415,22 @@ pub fn render_report(report: &McpLoadReport) -> String {
             notes.push(format!("  {name}  {displaced} is shadowed by {winner}"));
         }
         out.push_str("\n\nOverridden declarations:\n");
+        out.push_str(&notes.join("\n"));
+    }
+
+    // Hiding a tool is a deliberate configuration, not a problem — but it must
+    // be visible somewhere, or a filtered server looks like one that simply
+    // lacks those tools.
+    if !report.filtered.is_empty() {
+        let mut notes = Vec::new();
+        for (server, hidden) in &report.filtered {
+            notes.push(format!(
+                "  {server}  {} hidden by enabled_tools/disabled_tools: {}",
+                hidden.len(),
+                hidden.join(", "),
+            ));
+        }
+        out.push_str("\n\nFiltered tools:\n");
         out.push_str(&notes.join("\n"));
     }
 
@@ -656,6 +680,46 @@ mod tests {
     }
 
     #[test]
+    fn tools_hidden_by_the_entry_policy_are_named_in_the_listing() {
+        // Hiding a tool is deliberate, but it must be visible: otherwise a
+        // filtered server is indistinguishable from one that lacks the tool.
+        let report = McpLoadReport {
+            configured: vec![configured("basic-memory", false)],
+            filtered: vec![(
+                "basic-memory".to_string(),
+                vec!["delete_note".to_string(), "schema_diff".to_string()],
+            )],
+            ..McpLoadReport::default()
+        };
+
+        let text = render_report(&report);
+        assert!(text.contains("Filtered tools:"), "{text}");
+        assert!(
+            text.contains("2 hidden by enabled_tools/disabled_tools"),
+            "{text}"
+        );
+        assert!(text.contains("delete_note, schema_diff"), "{text}");
+    }
+
+    #[test]
+    fn the_detail_view_names_hidden_tools_too() {
+        let inspection = mcp::McpServerInspection {
+            server: configured("basic-memory", false),
+            status: McpServerStatus::Connected,
+            tools: vec!["read_note".to_string()],
+            filtered: vec!["delete_note".to_string()],
+        };
+
+        let text = render_server_detail(&inspection);
+        assert!(text.contains("mcp__basic-memory__read_note"), "{text}");
+        assert!(
+            text.contains("hidden  1 by enabled_tools/disabled_tools"),
+            "{text}"
+        );
+        assert!(text.contains("delete_note"), "{text}");
+    }
+
+    #[test]
     fn a_disabled_server_is_reported_as_disabled_not_unknown() {
         // A disabled server was never dialled, so it has no connection
         // outcome; reporting "unknown" would read as a broken server.
@@ -795,6 +859,7 @@ mod tests {
             server: configured("figma", false),
             status: McpServerStatus::Connected,
             tools: vec!["get_file".into(), "list_files".into()],
+            filtered: Vec::new(),
         };
 
         let text = render_server_detail(&inspection);
@@ -817,6 +882,7 @@ mod tests {
             server: configured("linear", true),
             status: McpServerStatus::PendingAuthorization,
             tools: Vec::new(),
+            filtered: Vec::new(),
         };
         let report = McpLoadReport {
             configured: vec![configured("linear", true)],
@@ -834,6 +900,7 @@ mod tests {
             server: configured("broken", false),
             status: McpServerStatus::Failed("connection refused".into()),
             tools: Vec::new(),
+            filtered: Vec::new(),
         };
         let report = McpLoadReport {
             configured: vec![configured("broken", false)],
@@ -849,6 +916,7 @@ mod tests {
             server: configured("quiet", false),
             status: McpServerStatus::Connected,
             tools: Vec::new(),
+            filtered: Vec::new(),
         };
         let text = render_server_detail(&connected);
         assert!(text.contains("reports no tools"), "{text}");
