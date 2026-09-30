@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — `list_mcp_resource_templates` 补上「只有模板」这条死路
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/resource.rs`（`McpResourceTool::Templates`、`LIST_RESOURCE_TEMPLATES_TOOL`、`McpClient::list_resource_templates`、`MCPToolRouter::list_resource_templates`、`render_resource_template_listing`）、`crates/tact/src/mcp/mod.rs`（`McpService::list_resource_templates`、`McpServerInspection::resource_templates`）、`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-resource-templates-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** Tact 只暴露了 Codex 三个原生资源工具中的两个，而缺的那一个并非无关紧要的省略。资源以**模板**方式寻址的 server 通过 `resources/list` 什么都不发布，于是它与「什么都没有」的 server 无法区分——而且 Tact 还把这件事说了出来：空列表写道「A server may still expose resource *templates*, which Tact does not list yet」，然后不提供任何找到它们的办法。模板本身也猜不出来：`memory://{topic}` 需要先知道占位符词汇才能读到任何东西——所以这条死路恰好就是工具那次改动刚刚消除的那一类。
+
+**决策：** 补上 Codex 的第三个工具 `list_mcp_resource_templates`，参数与 `list_mcp_resources` 一样是可选的 `server`；`McpResourceTool::ALL` 变为 list → templates → read，让打印 URI 的那个列表紧邻消费它的那个读工具。渲染会统一说明一次：必须先填充 `{…}` 占位符才能调用 `read_mcp_resource`——因为原样转述的模板只是一个会失败的 URI。Tact 报告模板、由模型完成替换——这既让读取路径保持逐字节精确，也不必发明一条规范在这里并未定义的 URI 展开规则。`McpService::list_resource_templates` 是**必需**方法而非带默认实现，与 `list_resources` 一致：一个默认返回空列表的实现会让「这个传输层问不了」与「server 什么都没发布」变得无法区分，而这正是资源那次工作特别在意的那一个区分。`McpServerInspection` 增加 `resource_templates`，于是 `mcp get` 能像它对 `resources` 那样把这两件事分开。而空的 `resources/list` 文案不再说谎：它现在点名 `list_mcp_resource_templates` 作为下一步调用，而不是声称模板无法列出。
+
+**之后的行为：** 只提供模板的 server 变得可发现：`mcp get <server>` 会同时打印 `resources  0` 与 `templates  3`，而 `list_mcp_resource_templates` 会把 `memory://{topic} — Note by topic` 连同替换规则一起交给模型。缺口表现在只剩下 Prompts 这一项：`prompts/list` 与 `prompts/get` 仍未实现，因为 prompt 模板是 server 编写的一串消息而非一次工具调用，在 Tact 的轮次结构里还没有消费者。
+
+**指引：** `mcp::resource::tests::{the_resource_tools_exist_only_while_a_server_is_connected, a_template_listing_teaches_the_substitution, a_template_name_round_trips, no_templates_is_stated_not_rendered_blank, a_template_only_server_no_longer_looks_empty, an_empty_listing_says_so_instead_of_printing_nothing}`、`agent::tool_dispatch::tests::{a_template_listing_reaches_the_model, only_the_resource_names_resolve_to_the_resource_path}`、`agent::tests::the_resource_tools_are_offered_only_with_a_connected_server`、`mcp_cli::tests::a_template_only_server_is_not_reported_as_an_empty_one`。
+
+---
+
 ## 1. 2026-09-30 — MCP server 可以在会话中途增删工具，Tact 现在会注意到
 
 | 字段 | 值 |

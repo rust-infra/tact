@@ -283,6 +283,19 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
         }
         None => {}
     }
+    // A template-addressed server enumerates nothing above, so this is the line
+    // that tells a user their "empty" server is not empty.
+    match inspection.resource_templates {
+        Some(count) => lines.push(format!(
+            "  templates  {count} available to `list_mcp_resource_templates`"
+        )),
+        None if matches!(inspection.status, McpServerStatus::Connected) => {
+            lines.push(
+                "  templates  (the server did not answer `resources/templates/list`)".to_string(),
+            );
+        }
+        None => {}
+    }
     lines.join("\n")
 }
 
@@ -749,6 +762,7 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            resource_templates: None,
             declared_read_only: vec!["search_notes".to_string()],
             declared_risks: vec![("search_notes".to_string(), CapabilityRisk::Read)],
         };
@@ -769,6 +783,40 @@ mod tests {
     }
 
     #[test]
+    fn a_template_only_server_is_not_reported_as_an_empty_one() {
+        // A server that publishes templates enumerates nothing through
+        // `resources/list`, so "resources 0" alone reads as "nothing here".
+        let inspection = mcp::McpServerInspection {
+            server: configured("memory", false),
+            status: McpServerStatus::Connected,
+            tools: vec!["read_note".to_string()],
+            filtered: Vec::new(),
+            instructions_chars: None,
+            resources: Some(0),
+            resource_templates: Some(3),
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
+        };
+
+        let text = render_server_detail(&inspection);
+        assert!(
+            text.contains("templates  3 available to `list_mcp_resource_templates`"),
+            "{text}"
+        );
+
+        // And "did not answer" stays a different fact from "publishes none".
+        let unanswered = mcp::McpServerInspection {
+            resource_templates: None,
+            ..inspection
+        };
+        let text = render_server_detail(&unanswered);
+        assert!(
+            text.contains("did not answer `resources/templates/list`"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_detail_view_names_hidden_tools_too() {
         let inspection = mcp::McpServerInspection {
             server: configured("basic-memory", false),
@@ -777,6 +825,7 @@ mod tests {
             filtered: vec!["delete_note".to_string()],
             instructions_chars: None,
             resources: None,
+            resource_templates: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -799,6 +848,7 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: Some(2_043),
             resources: Some(3),
+            resource_templates: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -813,6 +863,7 @@ mod tests {
         let quiet = mcp::McpServerInspection {
             instructions_chars: None,
             resources: None,
+            resource_templates: None,
             ..inspection
         };
         assert!(
@@ -830,6 +881,7 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: Some(0),
+            resource_templates: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -843,6 +895,7 @@ mod tests {
         // the second is a statement about the server's contents.
         let silent = mcp::McpServerInspection {
             resources: None,
+            resource_templates: None,
             ..connected
         };
         let text = render_server_detail(&silent);
@@ -851,6 +904,7 @@ mod tests {
         let pending = mcp::McpServerInspection {
             status: McpServerStatus::PendingAuthorization,
             resources: None,
+            resource_templates: None,
             ..silent
         };
         assert!(
@@ -1002,6 +1056,7 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            resource_templates: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1029,6 +1084,7 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            resource_templates: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1051,6 +1107,7 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            resource_templates: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1071,6 +1128,7 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            resource_templates: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };

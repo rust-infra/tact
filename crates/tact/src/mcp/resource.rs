@@ -9,18 +9,25 @@
 //! Tact does not put resources in the tool list as `mcp__…` entries, because
 //! they are not tools: they have no input schema and are addressed by URI. It
 //! follows Codex instead, which exposes three native tools —
-//! `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`.
-//! Tact implements the first and last; templates are a documented gap, since a
-//! URI template can be read once its URIs are known and the listing is the part
-//! that goes stale fastest.
+//! `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource` —
+//! and Tact implements all three.
 //!
-//! These two names are resolved in `agent::tool_dispatch` against the live MCP
+//! Templates matter because a server whose resources are *template*-addressed
+//! publishes nothing through `resources/list`. Without the third tool such a
+//! server looks like one with no resources, and its URIs are not guessable:
+//! `memory://{topic}` needs the placeholder vocabulary before anything can be
+//! read. Tact reports the template; the model performs the substitution, which
+//! keeps the read path byte-exact.
+//!
+//! These three names are resolved in `agent::tool_dispatch` against the live MCP
 //! router, exactly like `mcp__…` names. They only exist while a server is
 //! connected: with an empty router the tools are not advertised at all, so the
 //! model is never handed a tool that cannot do anything.
 
 use anyhow::{Context as _, Result, bail};
-use rmcp::model::{ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents};
+use rmcp::model::{
+    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+};
 use serde_json::json;
 
 use super::{MCP_RESOURCE_TIMEOUT, MCPToolRouter, McpClient};
@@ -28,6 +35,8 @@ use crate::ToolSpec;
 
 /// List the resources connected servers expose (Codex's tool name).
 pub const LIST_RESOURCES_TOOL: &str = "list_mcp_resources";
+/// List the resource *templates* connected servers expose (Codex's tool name).
+pub const LIST_RESOURCE_TEMPLATES_TOOL: &str = "list_mcp_resource_templates";
 /// Read one resource by URI (Codex's tool name).
 pub const READ_RESOURCE_TOOL: &str = "read_mcp_resource";
 
@@ -35,18 +44,21 @@ pub const READ_RESOURCE_TOOL: &str = "read_mcp_resource";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpResourceTool {
     List,
+    Templates,
     Read,
 }
 
 impl McpResourceTool {
-    /// Both tools, in a stable order.
-    pub const ALL: [Self; 2] = [Self::List, Self::Read];
+    /// Every tool, in a stable order: the two listings first, so the URI a
+    /// listing prints is adjacent to the read that consumes it.
+    pub const ALL: [Self; 3] = [Self::List, Self::Templates, Self::Read];
 
     /// Resolves a tool name, or `None` when it is not a resource tool.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             LIST_RESOURCES_TOOL => Some(Self::List),
+            LIST_RESOURCE_TEMPLATES_TOOL => Some(Self::Templates),
             READ_RESOURCE_TOOL => Some(Self::Read),
             _ => None,
         }
@@ -57,6 +69,7 @@ impl McpResourceTool {
     pub fn name(self) -> &'static str {
         match self {
             Self::List => LIST_RESOURCES_TOOL,
+            Self::Templates => LIST_RESOURCE_TEMPLATES_TOOL,
             Self::Read => READ_RESOURCE_TOOL,
         }
     }
@@ -79,6 +92,26 @@ impl McpResourceTool {
                         "server": {
                             "type": "string",
                             "description": "Only list this MCP server's resources."
+                        }
+                    }
+                }),
+            },
+            Self::Templates => ToolSpec {
+                name: LIST_RESOURCE_TEMPLATES_TOOL.to_string(),
+                description: Some(
+                    "List the resource *templates* the connected MCP servers publish. A template \
+                     is a URI with `{…}` placeholders: substitute them and call \
+                     `read_mcp_resource` with the resulting URI. Call this when \
+                     `list_mcp_resources` comes back empty — a server can serve resources it \
+                     never enumerates."
+                        .to_string(),
+                ),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "server": {
+                            "type": "string",
+                            "description": "Only list this MCP server's resource templates."
                         }
                     }
                 }),
@@ -122,6 +155,25 @@ impl McpClient {
                 )
             })?
             .with_context(|| format!("failed to list resources from {}", self.server_name))
+    }
+
+    /// `resources/templates/list` for this server.
+    pub async fn list_resource_templates(&self) -> Result<Vec<ResourceTemplate>> {
+        tokio::time::timeout(MCP_RESOURCE_TIMEOUT, self.service.list_resource_templates())
+            .await
+            .with_context(|| {
+                format!(
+                    "MCP server {} did not list its resource templates within {}s",
+                    self.server_name,
+                    MCP_RESOURCE_TIMEOUT.as_secs()
+                )
+            })?
+            .with_context(|| {
+                format!(
+                    "failed to list resource templates from {}",
+                    self.server_name
+                )
+            })
     }
 
     /// `resources/read` for one URI on this server.
@@ -190,6 +242,39 @@ impl MCPToolRouter {
         Ok(render_resource_listing(&listings))
     }
 
+    /// Every resource template of every connected server, or of one named
+    /// server.
+    ///
+    /// The templates counterpart of [`Self::list_resources`], and the only way
+    /// to discover the URIs of a server that publishes nothing through
+    /// `resources/list`.
+    pub async fn list_resource_templates(&self, server: Option<&str>) -> Result<String> {
+        let names = self.known_servers();
+        if names.is_empty() {
+            bail!("no MCP servers are connected");
+        }
+
+        let selected: Vec<&str> = match server {
+            Some(server) => {
+                let client = self.clients.get(server).with_context(|| {
+                    format!(
+                        "unknown MCP server {server} (connected: {})",
+                        names.join(", ")
+                    )
+                })?;
+                vec![client.server_name.as_str()]
+            }
+            None => names.iter().map(String::as_str).collect(),
+        };
+
+        let mut listings = Vec::with_capacity(selected.len());
+        for name in selected {
+            let client = &self.clients[name];
+            listings.push((name.to_string(), client.list_resource_templates().await?));
+        }
+        Ok(render_resource_template_listing(&listings))
+    }
+
     /// Reads one resource and renders its contents for the model.
     pub async fn read_resource(&self, server: &str, uri: &str) -> Result<String> {
         let client = self.clients.get(server).with_context(|| {
@@ -218,10 +303,13 @@ impl MCPToolRouter {
 pub fn render_resource_listing(listings: &[(String, Vec<Resource>)]) -> String {
     let total: usize = listings.iter().map(|(_, resources)| resources.len()).sum();
     if total == 0 {
+        // A server whose resources are template-addressed enumerates nothing
+        // here, so the next call is named rather than left to be guessed.
         return format!(
             "No resources: {} connected server(s) expose none through `resources/list`.\n\
-             A server may still expose resource *templates*, which Tact does not list yet — if \
-             you know a URI, call `read_mcp_resource` directly.",
+             Call `list_mcp_resource_templates` — a server can serve resources it never \
+             enumerates, and a template's `{{…}}` placeholders have to be filled before \
+             `read_mcp_resource` can use it.",
             listings.len()
         );
     }
@@ -238,6 +326,51 @@ pub fn render_resource_listing(listings: &[(String, Vec<Resource>)]) -> String {
                 out.push_str(&format!(" ({mime})"));
             }
             if let Some(description) = &resource.description {
+                out.push_str(&format!("\n  {}", description.replace('\n', " ")));
+            }
+        }
+    }
+    out
+}
+
+/// Renders `list_mcp_resource_templates`'s result.
+///
+/// One `## <server>` section per server, and the substitution sentence once:
+/// without it a template reads as a URI that simply fails, and the model copies
+/// `memory://{topic}` verbatim into `read_mcp_resource` and gets an error it
+/// cannot interpret.
+#[must_use]
+pub fn render_resource_template_listing(
+    listings: &[(String, Vec<ResourceTemplate>)],
+) -> String {
+    let total: usize = listings
+        .iter()
+        .map(|(_, templates)| templates.len())
+        .sum();
+    if total == 0 {
+        return format!(
+            "No resource templates: {} connected server(s) expose none through \
+             `resources/templates/list`.",
+            listings.len()
+        );
+    }
+
+    let mut out = format!(
+        "{total} resource template(s) across {} server(s).\n\
+         Fill each `{{…}}` placeholder to form a real URI, then call `read_mcp_resource` with it:",
+        listings.len()
+    );
+    for (server, templates) in listings {
+        out.push_str(&format!("\n\n## {server}"));
+        for template in templates {
+            out.push_str("\n- ");
+            out.push_str(&template.uri_template);
+            out.push_str(" — ");
+            out.push_str(&template.name);
+            if let Some(mime) = &template.mime_type {
+                out.push_str(&format!(" ({mime})"));
+            }
+            if let Some(description) = &template.description {
                 out.push_str(&format!("\n  {}", description.replace('\n', " ")));
             }
         }
@@ -315,7 +448,16 @@ mod tests {
 
         let specs = router_with(&[]).resource_tool_specs();
         let names: Vec<&str> = specs.iter().map(|spec| spec.name.as_str()).collect();
-        assert_eq!(names, [LIST_RESOURCES_TOOL, READ_RESOURCE_TOOL]);
+        // Both listings before the read, so the URI a listing prints sits next
+        // to the tool that consumes it.
+        assert_eq!(
+            names,
+            [
+                LIST_RESOURCES_TOOL,
+                LIST_RESOURCE_TEMPLATES_TOOL,
+                READ_RESOURCE_TOOL
+            ]
+        );
     }
 
     #[test]
@@ -366,9 +508,95 @@ mod tests {
         let text = render_resource_listing(&[("basic-memory".to_string(), Vec::new())]);
         assert!(text.contains("No resources"), "{text}");
         assert!(text.contains("1 connected server(s)"), "{text}");
-        // The templates gap is named, so a server whose URIs are template-based
-        // is not written off as having nothing.
-        assert!(text.contains("resource *templates*"), "{text}");
+        // The next call is named, so a server whose URIs are template-based is
+        // not written off as having nothing. It used to say templates "are not
+        // listed yet", which was true and useless.
+        assert!(text.contains("list_mcp_resource_templates"), "{text}");
+    }
+
+    #[test]
+    fn a_template_listing_teaches_the_substitution() {
+        let template = ResourceTemplate::new(
+            rmcp::model::RawResourceTemplate {
+                uri_template: "memory://{topic}".to_string(),
+                name: "Note by topic".to_string(),
+                title: None,
+                description: Some("One note per topic\nacross lines".to_string()),
+                mime_type: Some("text/markdown".to_string()),
+                icons: None,
+            },
+            None,
+        );
+        let listing = vec![("basic-memory".to_string(), vec![template])];
+
+        let text = render_resource_template_listing(&listing);
+        assert!(text.contains("1 resource template(s)"), "{text}");
+        assert!(text.contains("## basic-memory"), "{text}");
+        assert!(text.contains("- memory://{topic} — Note by topic"), "{text}");
+        assert!(text.contains("(text/markdown)"), "{text}");
+        // Echoed verbatim into `read_mcp_resource` a template is just a URI that
+        // fails, so the placeholder rule has to be stated.
+        assert!(text.contains("placeholder"), "{text}");
+        assert!(text.contains("One note per topic across lines"), "{text}");
+    }
+
+    #[test]
+    fn a_template_name_round_trips() {
+        assert_eq!(
+            McpResourceTool::from_name(LIST_RESOURCE_TEMPLATES_TOOL),
+            Some(McpResourceTool::Templates)
+        );
+        assert_eq!(
+            McpResourceTool::Templates.name(),
+            LIST_RESOURCE_TEMPLATES_TOOL
+        );
+    }
+
+    #[test]
+    fn no_templates_is_stated_not_rendered_blank() {
+        let text = render_resource_template_listing(&[("basic-memory".to_string(), Vec::new())]);
+        assert!(text.contains("No resource templates"), "{text}");
+        assert!(text.contains("1 connected server(s)"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_template_only_server_no_longer_looks_empty() {
+        // The whole point: `resources/list` cannot describe a
+        // template-addressed server, so without the third tool it is
+        // indistinguishable from a server with nothing to offer.
+        let service = MockMcpService::new(Vec::new(), |_| {
+            Ok(rmcp::model::CallToolResult::success(Vec::new()))
+        })
+        .with_resource_template("memory://{topic}", "Note by topic");
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service(
+            "basic-memory",
+            Vec::new(),
+            Arc::new(service),
+        ));
+
+        let resources = router.list_resources(None).await.unwrap();
+        assert!(resources.contains("No resources"), "{resources}");
+        assert!(
+            resources.contains("list_mcp_resource_templates"),
+            "{resources}"
+        );
+
+        let templates = router.list_resource_templates(None).await.unwrap();
+        assert!(templates.contains("memory://{topic}"), "{templates}");
+
+        // And the one named server is addressable too.
+        let scoped = router
+            .list_resource_templates(Some("basic-memory"))
+            .await
+            .unwrap();
+        assert!(scoped.contains("memory://{topic}"), "{scoped}");
+
+        let error = router
+            .list_resource_templates(Some("nope"))
+            .await
+            .expect_err("an unknown server must not list nothing silently");
+        assert!(error.to_string().contains("basic-memory"), "{error}");
     }
 
     #[test]

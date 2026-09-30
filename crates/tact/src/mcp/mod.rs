@@ -96,7 +96,7 @@ use rmcp::{
     handler::client::ClientHandler,
     model::{
         CallToolRequestParams, CallToolResult, RawContent, RawResource, ReadResourceResult,
-        Resource, ResourceContents, Tool as McpTool,
+        Resource, ResourceContents, ResourceTemplate, Tool as McpTool,
     },
     service::{NotificationContext, RunningService, ServiceError},
     transport::{ConfigureCommandExt, TokioChildProcess},
@@ -595,6 +595,12 @@ pub struct McpServerInspection {
     /// cannot answer at all are different, and `list_mcp_resources` behaves
     /// differently for each.
     pub resources: Option<usize>,
+    /// How many templates `resources/templates/list` returned.
+    ///
+    /// `None` means the server did not answer, which is a different fact from
+    /// publishing none — and the one that matters, because a template-addressed
+    /// server is exactly the case `resources/list` cannot describe.
+    pub resource_templates: Option<usize>,
     /// Exposed tools the server marked `readOnlyHint: true`, sorted.
     ///
     /// Evidence for the human writing `tools.<name>.risk`, not an input to the
@@ -1496,6 +1502,15 @@ pub trait McpService: Send + Sync + 'static {
     fn read_resource(&self, uri: String)
     -> BoxFuture<'_, Result<ReadResourceResult, ServiceError>>;
 
+    /// `resources/templates/list`, paginated to the end by the implementation.
+    ///
+    /// Required for the same reason [`Self::list_resources`] is: a service that
+    /// cannot ask must say so, or "this transport cannot answer" becomes
+    /// indistinguishable from "the server publishes no templates".
+    fn list_resource_templates(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>>;
+
     /// The `instructions` string the server returned during `initialize`.
     ///
     /// This is the MCP spec's channel for "what this server is and how to use
@@ -1635,6 +1650,19 @@ impl McpService for RealMcpService {
             let guard = self.service.read().await;
             match guard.as_ref() {
                 Some(service) => service.read_resource(read_params(&uri)).await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
+    }
+
+    fn list_resource_templates(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.list_all_resource_templates().await,
                 None => Err(ServiceError::TransportClosed),
             }
         }
@@ -1984,6 +2012,7 @@ pub struct MockMcpService {
     calls: std::sync::Mutex<Vec<(String, Value)>>,
     instructions: Option<String>,
     resources: Vec<Resource>,
+    resource_templates: Vec<ResourceTemplate>,
     resource_text: HashMap<String, String>,
     /// Set by [`Self::announce_tools_changed`], read by
     /// [`McpService::take_tools_changed`].
@@ -2007,6 +2036,7 @@ impl MockMcpService {
             calls: std::sync::Mutex::new(Vec::new()),
             instructions: None,
             resources: Vec::new(),
+            resource_templates: Vec::new(),
             resource_text: HashMap::new(),
             tools_changed: Arc::new(AtomicBool::new(false)),
             list_tools_fails: false,
@@ -2045,6 +2075,27 @@ impl MockMcpService {
         self.resources
             .push(Resource::new(RawResource::new(uri, name), None));
         self.resource_text.insert(uri.to_string(), text.to_string());
+        self
+    }
+
+    /// Publishes a URI *template* this server can serve.
+    ///
+    /// A template-only server is the case `resources/list` cannot describe: it
+    /// answers with nothing, and the model needs the placeholder vocabulary
+    /// before it can read anything.
+    #[must_use]
+    pub fn with_resource_template(mut self, uri_template: &str, name: &str) -> Self {
+        self.resource_templates.push(rmcp::model::ResourceTemplate::new(
+            rmcp::model::RawResourceTemplate {
+                uri_template: uri_template.to_string(),
+                name: name.to_string(),
+                title: None,
+                description: None,
+                mime_type: None,
+                icons: None,
+            },
+            None,
+        ));
         self
     }
 
@@ -2099,6 +2150,13 @@ impl McpService for MockMcpService {
     fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>> {
         let resources = self.resources.clone();
         std::future::ready(Ok(resources)).boxed()
+    }
+
+    fn list_resource_templates(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>> {
+        let templates = self.resource_templates.clone();
+        std::future::ready(Ok(templates)).boxed()
     }
 
     fn read_resource(
@@ -2852,6 +2910,7 @@ struct InspectionFacts {
     filtered: Vec<String>,
     instructions_chars: Option<usize>,
     resources: Option<usize>,
+    resource_templates: Option<usize>,
     declared_read_only: Vec<String>,
     declared_risks: Vec<(String, CapabilityRisk)>,
 }
@@ -2865,6 +2924,7 @@ impl InspectionFacts {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            resource_templates: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         }
@@ -2878,6 +2938,7 @@ impl InspectionFacts {
             filtered: self.filtered,
             instructions_chars: self.instructions_chars,
             resources: self.resources,
+            resource_templates: self.resource_templates,
             declared_read_only: self.declared_read_only,
             declared_risks: self.declared_risks,
         }
@@ -2910,6 +2971,13 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
             // so a failed listing is reported as "did not answer" rather
             // than failing the inspection.
             let resources = client.list_resources().await.ok().map(|list| list.len());
+            // Same reasoning for templates: a server that does not answer and a
+            // server that publishes none must not look alike.
+            let resource_templates = client
+                .list_resource_templates()
+                .await
+                .ok()
+                .map(|list| list.len());
             // Only *declared* tiers, so "the entry is silent" and "the entry
             // said high" stay distinguishable in the printed view.
             let mut declared_risks: Vec<(String, CapabilityRisk)> = client
@@ -2929,6 +2997,7 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
                 filtered,
                 instructions_chars: chars,
                 resources,
+                resource_templates,
                 declared_read_only: client.declared_read_only().to_vec(),
                 declared_risks,
             }

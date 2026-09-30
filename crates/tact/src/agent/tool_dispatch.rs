@@ -355,7 +355,7 @@ fn is_mcp_resource_tool(name: &str) -> bool {
     crate::mcp::McpResourceTool::from_name(name).is_some()
 }
 
-/// Runs `list_mcp_resources` / `read_mcp_resource` against the live router.
+/// Runs the three resource tools against the live router.
 ///
 /// Deliberately outside `run_mcp_tool`: those tools take a `mcp__<server>__<tool>`
 /// name parsed into a server/tool pair, and a resource has no tool name at all.
@@ -367,6 +367,9 @@ async fn run_mcp_resource_tool(
     let server = input.get("server").and_then(|value| value.as_str());
     let result = match tool {
         crate::mcp::McpResourceTool::List => mcp_router.list_resources(server).await,
+        crate::mcp::McpResourceTool::Templates => {
+            mcp_router.list_resource_templates(server).await
+        }
         crate::mcp::McpResourceTool::Read => {
             let Some(server) = server else {
                 return ExecResult {
@@ -1264,9 +1267,33 @@ mod tests {
         assert!(exec.content.contains("Read me first."), "{}", exec.content);
     }
 
+    #[tokio::test]
+    async fn a_template_listing_reaches_the_model() {
+        // A template-addressed server enumerates nothing through
+        // `resources/list`, so this is the only call that reveals it has
+        // anything at all.
+        let service = MockMcpService::new(Vec::new(), |_| {
+            Ok(rmcp::model::CallToolResult::success(Vec::new()))
+        })
+        .with_resource_template("memory://{topic}", "Note by topic");
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service("bm", Vec::new(), Arc::new(service)));
+
+        let exec = run_mcp_resource_tool(
+            &router,
+            McpResourceTool::Templates,
+            &serde_json::json!({}),
+        )
+        .await;
+
+        assert!(matches!(exec.status, StepStatus::Success));
+        assert!(exec.content.contains("memory://{topic}"), "{}", exec.content);
+    }
+
     #[test]
     fn only_the_resource_names_resolve_to_the_resource_path() {
         assert!(is_mcp_resource_tool("list_mcp_resources"));
+        assert!(is_mcp_resource_tool("list_mcp_resource_templates"));
         assert!(is_mcp_resource_tool("read_mcp_resource"));
         assert!(!is_mcp_resource_tool("mcp__bm__read_note"));
         assert!(!is_mcp_resource_tool("read_file"));

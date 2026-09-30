@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — `list_mcp_resource_templates` closes the template-only dead end
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/mcp/resource.rs` (`McpResourceTool::Templates`, `LIST_RESOURCE_TEMPLATES_TOOL`, `McpClient::list_resource_templates`, `MCPToolRouter::list_resource_templates`, `render_resource_template_listing`), `crates/tact/src/mcp/mod.rs` (`McpService::list_resource_templates`, `McpServerInspection::resource_templates`), `crates/tact/src/agent/tool_dispatch.rs`, `crates/tact-ui/src/mcp_cli.rs`; spec `docs/superpowers/specs/2026-09-30-mcp-resource-templates-design.md`; [Ch 8](./08_chapter_mcp.md) |
+
+**Symptom / motivation:** Tact exposed two of Codex's three native resource tools, and the missing one was not a neutral omission. A server whose resources are *template*-addressed publishes nothing through `resources/list`, so it was indistinguishable from a server with nothing to offer — and Tact said as much out loud: the empty listing read "A server may still expose resource *templates*, which Tact does not list yet", then offered no way to find them. A template is not guessable either: `memory://{topic}` needs the placeholder vocabulary before anything can be read, so the dead end was exactly the kind the tools work had just removed.
+
+**Decision:** Add Codex's third tool, `list_mcp_resource_templates`, with the same optional `server` argument as `list_mcp_resources`; `McpResourceTool::ALL` becomes list → templates → read, so the listing that prints a URI sits next to the read that consumes it. The rendering states once that the `{…}` placeholders must be filled before `read_mcp_resource`, because a template echoed verbatim is just a URI that fails. Tact reports the template and the model performs the substitution — that keeps the read path byte-exact and avoids inventing a URI-expansion rule the spec does not define here. `McpService::list_resource_templates` is **required**, not defaulted, mirroring `list_resources`: a defaulted empty list would make "this transport cannot ask" indistinguishable from "the server publishes none", which is the one distinction the resources work was careful about. `McpServerInspection` gains `resource_templates`, so `mcp get` separates those two facts the way it already did for `resources`. And the empty `resources/list` message stops lying: it now names `list_mcp_resource_templates` as the next call instead of claiming templates cannot be listed.
+
+**Behavior after:** A template-only server is discoverable: `mcp get <server>` prints `resources  0` beside `templates  3`, and `list_mcp_resource_templates` hands the model `memory://{topic} — Note by topic` with the substitution rule attached. Prompts are now the whole of that gap row: `prompts/list` and `prompts/get` stay unimplemented, because a prompt template is a server-authored message sequence rather than a tool call and has no consumer in Tact's turn structure yet.
+
+**Pointers:** `mcp::resource::tests::{the_resource_tools_exist_only_while_a_server_is_connected, a_template_listing_teaches_the_substitution, a_template_name_round_trips, no_templates_is_stated_not_rendered_blank, a_template_only_server_no_longer_looks_empty, an_empty_listing_says_so_instead_of_printing_nothing}`, `agent::tool_dispatch::tests::{a_template_listing_reaches_the_model, only_the_resource_names_resolve_to_the_resource_path}`, `agent::tests::the_resource_tools_are_offered_only_with_a_connected_server`, `mcp_cli::tests::a_template_only_server_is_not_reported_as_an_empty_one`.
+
+---
+
 ## 1. 2026-09-30 — An MCP server can grow or drop tools mid-session, and Tact notices
 
 | Field | Value |

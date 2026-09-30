@@ -3051,6 +3051,12 @@ mod tests {
             names.contains(&"read_mcp_resource".to_string()),
             "{names:?}"
         );
+        // The templates listing is what makes a template-addressed server
+        // discoverable at all, so it must be advertised alongside the others.
+        assert!(
+            names.contains(&"list_mcp_resource_templates".to_string()),
+            "{names:?}"
+        );
 
         // No servers: the names must disappear, or the model gets a tool whose
         // only possible answer is "no MCP servers are connected".
