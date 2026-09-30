@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — An MCP server can grow or drop tools mid-session, and Tact notices
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/mcp/mod.rs` (`ToolListChangedSignal`, `McpService::take_tools_changed`, `McpClient::refresh_tools_if_stale`, `derive_exposed`, `MCPToolRouter::refresh_changed`, `ToolListRefresh`, `ToolListReport`), `crates/tact/src/mcp/remote.rs` (`serve_remote` handler), `crates/tact/src/agent/mod.rs` (`refresh_mcp_tools`); spec `docs/superpowers/specs/2026-09-30-mcp-tool-list-changed-design.md`; [Ch 8](./08_chapter_mcp.md) |
+
+**Symptom / motivation:** Tact snapshotted a server's tools once, at connect. MCP defines `notifications/tools/list_changed` for exactly the case where the list moves afterwards, and Tact was deaf to it, because the connection was created as `RunningService<RoleClient, ()>` — the handler was the unit type, so rmcp's `on_tool_list_changed` was a no-op. A server that finished an authorization or an indexing pass and then exposed more tools stayed stuck at whatever it advertised during the handshake: the model never learned the tool existed and `mcp list` agreed with the stale snapshot. A server that *removed* a tool was worse — the model kept being offered a name that now failed. The only remedies were a restart or `reload_mcp_router`, which re-dials every server including the healthy ones.
+
+**Decision:** `ToolListChangedSignal` — `Clone + Default` over an `Arc<AtomicBool>` — is installed as the connection's handler (`signal.clone().serve(transport)`), and the clone goes to `RealMcpService`, so `McpService::take_tools_changed()` can read it (defaulted `false`, so a double or a transport that cannot carry notifications never looks like a server that keeps changing its mind). The handler records only *that* something changed and never re-lists: a refresh needs `&mut McpClient`, and running one inside the service's own notification task would contend with the transport driving it. `McpClient::refresh_tools_if_stale()` is a no-op when the flag is clear, so a quiet server costs exactly nothing; when it is set it re-lists and re-derives the entry filter, `tool_specs` and `declared_read_only` through `derive_exposed`, the same helper `assemble` uses at connect — two paths deciding which tools a server exposes would eventually disagree, invisibly. `MCPToolRouter::refresh_changed()` reports `{ added, removed, newly_hidden }` per moved server, and `Agent::refresh_mcp_tools()` runs at the top of every `agent_loop` iteration before the request is built, then rebuilds `cached_tool_specs`. Refreshing per request rather than per turn is the point: the tool list is sent per request, so a change that lands mid-turn reaches the model on the very next call. A failed re-list **keeps the previous list** — only the server can remove its tools, and a transient transport error must not leave a working server looking empty. The system prompt's instructions block is deliberately not re-derived: instructions come from `initialize` and cannot change for the life of a connection.
+
+**Behavior after:** A server that reveals more tools after an auth or indexing pass is usable in the same session, without a restart and without re-dialling the other servers. Both the change and a failure to read it appear as `[mcp] <server> changed its tool list: added recall` / `... that could not be read: <reason>` lines, because a tool quietly appearing or disappearing is exactly what gets blamed on the model afterwards. The gap row for `tools/list_changed` is gone; the row that remains names only `resources/list_changed` and `prompts/list_changed`, which are not load-bearing.
+
+**Pointers:** `mcp::tests::{a_list_changed_notification_makes_the_new_tool_callable, a_quiet_server_is_never_polled, a_refresh_re_derives_the_filter_and_the_read_only_claims, the_router_reports_what_moved_and_keeps_a_list_it_could_not_re_read}`, `agent::tests::a_server_that_grows_its_tool_list_reaches_the_next_request`.
+
+---
+
 ## 1. 2026-09-30 — "Always allow this tool" was recorded and then ignored for a high-risk tool
 
 | Field | Value |

@@ -36,6 +36,7 @@ use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
 use rmcp::{
     RoleClient, ServiceExt,
+    handler::client::ClientHandler,
     service::{ClientInitializeError, RunningService},
     transport::{
         StreamableHttpClientTransport,
@@ -213,10 +214,14 @@ impl std::error::Error for AuthorizationRequired {}
 /// Returns [`AuthorizationRequired`] when OAuth is configured but no usable
 /// credential exists; callers that want the "pending authorization" UX should
 /// check [`McpRemoteConfig::needs_authorization`] first.
-pub async fn serve_remote(
+pub async fn serve_remote<H>(
     server_name: &str,
     config: &McpRemoteConfig,
-) -> Result<RunningService<RoleClient, ()>> {
+    handler: H,
+) -> Result<RunningService<RoleClient, H>>
+where
+    H: ClientHandler,
+{
     let auth = resolve_remote_auth(server_name, config).await?;
     if matches!(auth, RemoteAuthState::AuthorizationRequired) {
         return Err(anyhow::Error::new(AuthorizationRequired));
@@ -225,7 +230,7 @@ pub async fn serve_remote(
     tracing::info!(mcp_server = %server_name, url = %config.url, "connecting remote MCP server");
     let transport =
         StreamableHttpClientTransport::with_client(http_client_for(&config.url), transport_config);
-    tokio::time::timeout(REMOTE_INIT_TIMEOUT, ().serve(transport))
+    tokio::time::timeout(REMOTE_INIT_TIMEOUT, handler.serve(transport))
         .await
         .with_context(|| {
             format!(

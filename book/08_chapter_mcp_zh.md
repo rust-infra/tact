@@ -410,7 +410,7 @@ Tact 会把它注入系统提示词：
 - **description** — 展示给 LLM
 - **inputSchema** — 参数的 JSON Schema
 
-代码：`McpClient::fetch_tools` → `service.peer().list_all_tools()`。
+代码：`McpClient::fetch_tools` → `service.peer().list_all_tools()`，在连接时调用，并在 server 宣布变化后由 `refresh_tools_if_stale` 再次调用（见 Step 10）。
 
 ### Step 5：注册到 Agent——面向 LLM 的工具列表
 
@@ -563,24 +563,40 @@ Server 工具列表变化时，可不等待 Client 询问就推送：
 
 Client 应重新 `tools/list` 并刷新 Agent 工具表。
 
-**Tact 实现（目前仅启动时）：**
+**Tact 实现：** 通知被记录下来，而重新拉取发生在它仍有意义的位置——每次构建请求之前。
 
-1. 连接时 `McpClient::fetch_tools` 调用一次 `list_all_tools()` 并构建 `tool_specs`（`mcp/mod.rs`）
-2. `Agent::new` 把原生 + MCP spec 合并进 `cached_tool_specs` — **会话内固定**
-3. **尚未实现：** `notifications/tools/list_changed` handler、`TactMcpClientHandler`，或 `agent_loop` 中的 `refresh_mcp_tools_if_changed()`。连接后 Server 侧动态工具变更需重启才会生效。
+1. 连接用真正的 `ClientHandler` 建立：`ToolListChangedSignal`（`Clone + Default`，内部是 `Arc<AtomicBool>`）以 `signal.clone().serve(transport)` 安装，克隆出来的那一份交给 `RealMcpService`。它的 `on_tool_list_changed` **只记录**发生了变化——绝不在此重新拉取，因为刷新需要 `&mut McpClient`，在服务自身的通知任务里做会和驱动它的传输层争抢。
+2. `McpService::take_tools_changed()` 读取并清除该标志；它默认为 `false`，因此测试替身或无法携带通知的传输层，永远不会表现为一个反复改变主意的 server。
+3. 标志为空时 `McpClient::refresh_tools_if_stale()` 不发任何请求就返回 `Ok(None)`——安静的 server 成本恰好为零。标志置位时，它重新拉取，并通过与连接时 `assemble` 相同的 helper 重新推导条目的过滤、`tool_specs` 与 `declared_read_only`，因此两条路径不可能对「这个 server 暴露哪些工具」产生分歧。
+4. `MCPToolRouter::refresh_changed()` 遍历各 client，为真正发生变化的那些上报 `{ server, added, removed, newly_hidden }`。
+5. `Agent::refresh_mcp_tools()` 在每次 `agent_loop` 迭代的开头、构建请求之前运行，并重建 `cached_tool_specs`。工具列表是**按请求**发送的，所以中途到达的变化会在紧接着的那次调用就传达给模型，而不是等到下一个用户轮次。
+
+重新拉取失败时**保留原有列表**：只有 server 自己能移除它的工具，一次瞬时的传输错误不该让一个本来可用的 server 看起来空了。变化与失败都会以 `AgentUpdate::Info` 行上报——一个工具悄悄出现或消失，正是事后会被归咎于模型行为的那类事。
 
 ```rust
-// crates/tact/src/mcp/mod.rs — connect 用 rmcp 与 () handler（无 ClientHandler）
-().serve(transport).await?;
-// 工具只拉一次：
-service.peer().list_all_tools().await?;
+// crates/tact/src/mcp/mod.rs — connect 安装 handler，而不是 ()
+let signal = ToolListChangedSignal::default();
+let service = signal.clone().serve(transport).await?;
+Ok((service, signal))
 ```
 
 ```rust
-// crates/tact/src/agent/mod.rs — 工具列表在 Agent 构造时缓存
-let cached_tool_specs = tools.native_specs()
-    .chain(mcp_router.all_tools())
-    .collect();
+// crates/tact/src/agent/mod.rs — 按请求刷新，而不是按轮次
+self.refresh_mcp_tools().await;
+let request = CreateMessageParams::new(..).with_tools(self.all_tool_specs());
+```
+
+系统提示里的 `## <server>` instructions 段落**不会**在刷新时重新推导：instructions 来自 `initialize` 结果，在一条连接的生命周期内不可能改变。
+
+```rust
+// crates/tact/src/agent/mod.rs — 缓存是被重建的，不是每请求重读
+fn rebuild_cached_tool_specs(&mut self) {
+    self.cached_tool_specs = native_specs
+        .into_iter()
+        .chain(self.mcp_router.all_tools())
+        .chain(self.mcp_router.resource_tool_specs())
+        .collect();
+}
 ```
 
 ### Step 11：关闭连接
@@ -624,7 +640,7 @@ sequenceDiagram
     Host->>Host: 写入 context，继续 LLM
     Host-->>User: 最终答案
 
-    Note over Host,Server: 可选：动态更新（Tact 尚未实现）
+    Note over Host,Server: 可选：动态更新——每次请求前重新拉取
     Server-->>Client: notifications/tools/list_changed
     Note over Host: 应重新 list tools + 刷新 cached_tool_specs
     Note over Host,Server: 关闭
@@ -642,10 +658,10 @@ sequenceDiagram
 | 来源优先级 | `collect_sourced_servers`、`resolve_servers` | 分层合并所有来源并上报覆盖 |
 | 加载报告 | `McpLoadReport` | 把失败 / 覆盖 / 跳过暴露出来，而非 `debug!` |
 | 连接与握手 | `McpClient::connect` | stdio spawn + rmcp `serve()` |
-| 工具发现 | `McpClient::fetch_tools` | `tools/list` |
+| 工具发现 | `McpClient::fetch_tools` | `tools/list`，连接时以及每次收到变更通知时 |
 | 工具执行 | `McpClient::call_tool` | `tools/call` |
-| 动态更新 | *（未实现）* | `tools/list_changed` 通知 + 缓存刷新 |
-| 工具策略 | `McpServerPolicy` | `enabled_tools` / `disabled_tools`、`startup_timeout_sec`、审批模式、单工具输出预算 |
+| 动态更新 | `McpClient::refresh_tools_if_stale` | 连接处的 handler 记录 `tools/list_changed`，随后在每次请求前重新拉取 |
+| 工具策略 | `McpServerPolicy` | `enabled_tools` / `disabled_tools`、`startup_timeout_sec`、审批模式、单工具输出预算、单工具 `risk` |
 | 路由 | `MCPToolRouter` | 按 `mcp__*` 名路由到正确 Server |
 | Resources | `crates/tact/src/mcp/resource.rs` | `list_mcp_resources` / `read_mcp_resource`：`resources/list` 与 `resources/read`，并渲染给模型 |
 | Agent 集成 | `crates/tact/src/agent/mod.rs` | `Agent::new` 合并 tool spec；每轮 LLM 用 `all_tool_specs()` |
@@ -712,7 +728,7 @@ Tact 侧在 `plugin.json` 声明 `command` / `args` / `env` 即可接入。
 ### Q：工具列表何时变化？
 
 - **静态**工具在 Server 启动时确定 → Step 4 拉一次（当前 Tact 行为）
-- **动态**工具在运行时变化 → Step 10 Notification + 刷新（**未实现** — 需重启）
+- **动态**工具在运行时变化 → Server 发送 `notifications/tools/list_changed`；Tact 记录它并在构建下一次请求前立即重新拉取（Step 10），所以紧接着的那次 LLM 调用就能看到新列表。无需重启。
 
 ### Q：MCP 工具与原生工具有何不同？
 
@@ -781,7 +797,7 @@ oauth_client_name = "Codex"   # 默认；设为 "Tact" 可如实标识
 
 | 缺口 | 说明 |
 |------|------|
-| **无 `tools/list_changed` 处理** | 工具列表在连接时固定；无 `ClientHandler` 或循环内刷新 |
+| **其他列表变更通知** | `notifications/tools/list_changed` 已处理（Step 10）。`resources/list_changed` 与 `prompts/list_changed` 未处理：Resources 由工具调用按需读取，所以过期的数量并非关键；而 `mcp get` 是一次性检查，连接、读取、断开 |
 | **资源模板 / prompts** | Resources 已接通（`list_mcp_resources` / `read_mcp_resource`）；`resources/templates/list` 未接，Prompts 也未接——在 Tact 的轮次结构里 prompt 模板尚无消费者 |
 | **旧版 HTTP+SSE** | `type: "sse"` 映射到 Streamable HTTP；已废弃的 2024-11-05 HTTP+SSE 端点未实现 |
 | **OAuth 设备码 / mTLS** | 只实现授权码 + PKCE 流程；无设备码、客户端证书或企业 SSO |

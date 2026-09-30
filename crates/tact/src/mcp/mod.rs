@@ -44,11 +44,14 @@
 //! connected, and `mcp list` shows it as disabled.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// Ceiling on the MCP `initialize` handshake.
@@ -90,11 +93,12 @@ use futures_util::{
 };
 use rmcp::{
     RoleClient, ServiceExt,
+    handler::client::ClientHandler,
     model::{
         CallToolRequestParams, CallToolResult, RawContent, RawResource, ReadResourceResult,
         Resource, ResourceContents, Tool as McpTool,
     },
-    service::{RunningService, ServiceError},
+    service::{NotificationContext, RunningService, ServiceError},
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde::Deserialize;
@@ -1502,17 +1506,59 @@ pub trait McpService: Send + Sync + 'static {
     fn instructions(&self) -> Option<String> {
         None
     }
+
+    /// Whether the server signalled `notifications/tools/list_changed` since the
+    /// last check, clearing the flag.
+    ///
+    /// Defaulted to `false` rather than required: a test double, or a transport
+    /// that cannot carry notifications, must never look like a server that keeps
+    /// changing its mind — every request would re-list.
+    fn take_tools_changed(&self) -> bool {
+        false
+    }
+}
+
+/// Records that a server said its tool list changed.
+///
+/// The connection's `ClientHandler` is this type, so rmcp delivers
+/// `notifications/tools/list_changed` here instead of dropping it on the unit
+/// handler Tact used before. The handler deliberately records *only* that
+/// something changed, and never re-lists: a refresh needs `&mut McpClient`, and
+/// running one inside the service's own notification task would contend with
+/// the transport driving it. The flag means "ask again", not what the answer is.
+#[derive(Debug, Clone, Default)]
+struct ToolListChangedSignal {
+    changed: Arc<AtomicBool>,
+}
+
+impl ToolListChangedSignal {
+    /// Whether a notification arrived since the last check, clearing the flag.
+    fn take(&self) -> bool {
+        self.changed.swap(false, Ordering::AcqRel)
+    }
+}
+
+impl ClientHandler for ToolListChangedSignal {
+    async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        self.changed.store(true, Ordering::Release);
+    }
 }
 
 struct RealMcpService {
-    service: tokio::sync::RwLock<Option<RunningService<RoleClient, ()>>>,
+    service: tokio::sync::RwLock<Option<RunningService<RoleClient, ToolListChangedSignal>>>,
     /// Snapshotted at construction: `peer_info()` is only readable while the
     /// service is alive, and `McpService::instructions` is synchronous.
     instructions: Option<String>,
+    /// Shared with the connection's handler, so a notification the server sends
+    /// is visible to [`McpService::take_tools_changed`].
+    tools_changed: ToolListChangedSignal,
 }
 
 impl RealMcpService {
-    fn new(service: RunningService<RoleClient, ()>) -> Self {
+    fn new(
+        service: RunningService<RoleClient, ToolListChangedSignal>,
+        tools_changed: ToolListChangedSignal,
+    ) -> Self {
         // Snapshotted at construction: `peer_info()` is only readable while the
         // service is alive, and `McpService::instructions` is synchronous.
         let instructions = service
@@ -1521,6 +1567,7 @@ impl RealMcpService {
         Self {
             service: tokio::sync::RwLock::new(Some(service)),
             instructions,
+            tools_changed,
         }
     }
 }
@@ -1563,6 +1610,10 @@ impl McpService for RealMcpService {
 
     fn instructions(&self) -> Option<String> {
         self.instructions.clone()
+    }
+
+    fn take_tools_changed(&self) -> bool {
+        self.tools_changed.take()
     }
 
     fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>> {
@@ -1664,8 +1715,9 @@ impl McpClient {
         policy: McpServerPolicy,
     ) -> Result<Self> {
         let server_name = server_name.into();
-        let running = Self::connect(&server_name, config, policy.startup_timeout()).await?;
-        let service: Arc<dyn McpService> = Arc::new(RealMcpService::new(running));
+        let (running, tools_changed) =
+            Self::connect(&server_name, config, policy.startup_timeout()).await?;
+        let service: Arc<dyn McpService> = Arc::new(RealMcpService::new(running, tools_changed));
         match Self::fetch_tools(&server_name, service.as_ref()).await {
             Ok(tools) => Ok(Self::assemble(server_name, tools, service, policy)),
             Err(err) => {
@@ -1704,32 +1756,12 @@ impl McpClient {
         service: Arc<dyn McpService>,
         policy: McpServerPolicy,
     ) -> Self {
-        let mut exposed = Vec::new();
-        let mut hidden = Vec::new();
-        for tool in tools {
-            if policy.exposes(&tool.name) {
-                exposed.push(tool);
-            } else {
-                hidden.push(tool.name.to_string());
-            }
-        }
-        hidden.sort();
-        // Read the server's own read-only declarations off the tools we are
-        // about to keep. Only *exposed* tools matter: a tool the entry filtered
-        // away is not something the human can be asked to declare a risk for.
-        let mut declared_read_only: Vec<String> = exposed
-            .iter()
-            .filter(|tool| {
-                tool.annotations
-                    .as_ref()
-                    .and_then(|a| a.read_only_hint)
-                    .unwrap_or(false)
-            })
-            .map(|tool| tool.name.to_string())
-            .collect();
-        declared_read_only.sort();
-        declared_read_only.dedup();
-        let tool_specs = build_tool_specs(&server_name, &exposed);
+        let ExposedTools {
+            tools,
+            hidden,
+            tool_specs,
+            declared_read_only,
+        } = derive_exposed(&server_name, tools, &policy);
         // Read the server's prose before the service is moved into the client.
         // Normalizing here (not in the transport) keeps the mock and the real
         // client on one path: a whitespace-only payload means "sent nothing".
@@ -1741,13 +1773,46 @@ impl McpClient {
         Self {
             server_name,
             service,
-            tools: exposed,
+            tools,
             tool_specs,
             hidden,
             policy: Box::new(policy),
             declared_read_only,
             instructions,
         }
+    }
+
+    /// Re-lists this server's tools when it said they changed.
+    ///
+    /// `Ok(None)` means the server was quiet and nothing was re-listed: the
+    /// notification is only a hint that the answer moved, so a server that
+    /// never sends one costs exactly nothing. A re-list failure leaves the
+    /// previous list in place and is reported by the caller.
+    pub async fn refresh_tools_if_stale(&mut self) -> Result<Option<ToolListRefresh>> {
+        if !self.service.take_tools_changed() {
+            return Ok(None);
+        }
+        let tools = Self::fetch_tools(&self.server_name, self.service.as_ref()).await?;
+        let before: BTreeSet<String> = self.tools.iter().map(|t| t.name.to_string()).collect();
+        let before_hidden: BTreeSet<String> = self.hidden.iter().cloned().collect();
+        let ExposedTools {
+            tools,
+            hidden,
+            tool_specs,
+            declared_read_only,
+        } = derive_exposed(&self.server_name, tools, &self.policy);
+        let after: BTreeSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
+        let after_hidden: BTreeSet<String> = hidden.iter().cloned().collect();
+        let refresh = ToolListRefresh {
+            added: after.difference(&before).cloned().collect(),
+            removed: before.difference(&after).cloned().collect(),
+            newly_hidden: after_hidden.difference(&before_hidden).cloned().collect(),
+        };
+        self.tools = tools;
+        self.tool_specs = tool_specs;
+        self.hidden = hidden;
+        self.declared_read_only = declared_read_only;
+        Ok(Some(refresh))
     }
 
     /// The server's `initialize` instructions, capped and trimmed.
@@ -1781,11 +1846,13 @@ impl McpClient {
         server_name: &str,
         config: McpTransportConfig,
         timeout: Option<std::time::Duration>,
-    ) -> Result<RunningService<RoleClient, ()>> {
+    ) -> Result<(RunningService<RoleClient, ToolListChangedSignal>, ToolListChangedSignal)> {
         let config = match config {
             McpTransportConfig::Stdio(config) => config,
             McpTransportConfig::Remote(remote) => {
-                return remote::serve_remote(server_name, &remote).await;
+                let signal = ToolListChangedSignal::default();
+                let service = remote::serve_remote(server_name, &remote, signal.clone()).await?;
+                return Ok((service, signal));
             }
         };
         let command = config.command;
@@ -1821,11 +1888,15 @@ impl McpClient {
             });
         }
 
+        // The connection's handler records `notifications/tools/list_changed`
+        // into the signal we keep, so a server that grows or drops a tool after
+        // the handshake is not frozen at whatever it advertised then.
+        let signal = ToolListChangedSignal::default();
         // Codex names this budget `startup_timeout_sec`; an entry that declares
         // it overrides the global default so a slow launcher (a cold `uvx`) is a
         // configuration problem, not a permanently failed server.
         let budget = timeout.unwrap_or(MCP_INIT_TIMEOUT);
-        tokio::time::timeout(budget, ().serve(transport))
+        let service = tokio::time::timeout(budget, signal.clone().serve(transport))
             .await
             .with_context(|| {
                 format!(
@@ -1833,7 +1904,8 @@ impl McpClient {
                     budget.as_secs()
                 )
             })?
-            .with_context(|| format!("failed to initialize MCP client for server {server_name}"))
+            .with_context(|| format!("failed to initialize MCP client for server {server_name}"))?;
+        Ok((service, signal))
     }
 
     async fn fetch_tools(server_name: &str, service: &dyn McpService) -> Result<Vec<McpTool>> {
@@ -1904,12 +1976,21 @@ type McpToolHandler =
     Arc<dyn Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError> + Send + Sync>;
 
 pub struct MockMcpService {
-    tools: Vec<McpTool>,
+    /// Behind a lock so a test can grow the list the way a real server does
+    /// after `notifications/tools/list_changed` — a fixed vec could only ever
+    /// prove that a re-list was issued, not that it was used.
+    tools: std::sync::Mutex<Vec<McpTool>>,
     handler: McpToolHandler,
     calls: std::sync::Mutex<Vec<(String, Value)>>,
     instructions: Option<String>,
     resources: Vec<Resource>,
     resource_text: HashMap<String, String>,
+    /// Set by [`Self::announce_tools_changed`], read by
+    /// [`McpService::take_tools_changed`].
+    tools_changed: Arc<AtomicBool>,
+    /// When set, `tools/list` fails — the shape a re-list takes when the
+    /// transport went away between the notification and the request.
+    list_tools_fails: bool,
 }
 
 impl MockMcpService {
@@ -1921,13 +2002,41 @@ impl MockMcpService {
             + 'static,
     {
         Self {
-            tools,
+            tools: std::sync::Mutex::new(tools),
             handler: Arc::new(handler),
             calls: std::sync::Mutex::new(Vec::new()),
             instructions: None,
             resources: Vec::new(),
             resource_text: HashMap::new(),
+            tools_changed: Arc::new(AtomicBool::new(false)),
+            list_tools_fails: false,
         }
+    }
+
+    /// The tools this double currently advertises.
+    fn tools(&self) -> Vec<McpTool> {
+        self.tools
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Replaces the advertised tools, as a server would when its list moves.
+    pub fn set_tools(&self, tools: Vec<McpTool>) {
+        *self.tools.lock().unwrap_or_else(|e| e.into_inner()) = tools;
+    }
+
+    /// Blows the `notifications/tools/list_changed` whistle.
+    pub fn announce_tools_changed(&self) {
+        self.tools_changed.store(true, Ordering::Release);
+    }
+
+    /// Makes `tools/list` fail, so a re-list can be tested against a server that
+    /// announced a change and then went away.
+    #[must_use]
+    pub fn failing_to_list(mut self) -> Self {
+        self.list_tools_fails = true;
+        self
     }
 
     /// Publishes a readable text resource under `uri`.
@@ -1954,8 +2063,15 @@ impl MockMcpService {
 
 impl McpService for MockMcpService {
     fn list_all_tools(&self) -> BoxFuture<'_, Result<Vec<McpTool>, ServiceError>> {
-        let tools = self.tools.clone();
+        if self.list_tools_fails {
+            return std::future::ready(Err(ServiceError::TransportClosed)).boxed();
+        }
+        let tools = self.tools();
         std::future::ready(Ok(tools)).boxed()
+    }
+
+    fn take_tools_changed(&self) -> bool {
+        self.tools_changed.swap(false, Ordering::AcqRel)
     }
 
     fn call_tool(
@@ -2111,6 +2227,27 @@ impl MCPToolRouter {
             .unwrap_or_else(|| normalize_mcp_capability(server, tool))
     }
 
+    /// Re-lists every server that announced `notifications/tools/list_changed`.
+    ///
+    /// Quiet servers are untouched — no request is sent — so the cost of this
+    /// pass is zero until a server actually says something. A server that
+    /// announced a change and then failed to answer keeps its previous list,
+    /// and is reported rather than silently emptied.
+    pub async fn refresh_changed(&mut self) -> ToolListReport {
+        let mut report = ToolListReport::default();
+        for (server, client) in self.clients.iter_mut() {
+            match client.refresh_tools_if_stale().await {
+                Ok(None) => {}
+                Ok(Some(refresh)) if refresh.is_empty() => {}
+                Ok(Some(refresh)) => report.changed.push((server.clone(), refresh)),
+                Err(err) => report.failed.push((server.clone(), format!("{err:#}"))),
+            }
+        }
+        report.changed.sort_by(|a, b| a.0.cmp(&b.0));
+        report.failed.sort();
+        report
+    }
+
     /// The per-tool result budget this server's entry declares, by full tool
     /// name (`mcp__<server>__<tool>`).
     #[must_use]
@@ -2183,6 +2320,117 @@ impl MCPToolRouter {
         for (_, client) in self.clients.drain() {
             client.shutdown().await;
         }
+    }
+}
+
+/// Applies the entry's tool filter and derives everything the client keeps.
+///
+/// One place, because `assemble` (at connect) and `refresh_tools_if_stale`
+/// (after `notifications/tools/list_changed`) must not disagree about which
+/// tools a server exposes — a disagreement would be invisible, and `hidden` /
+/// `declared_read_only` exist precisely to make that decision visible.
+struct ExposedTools {
+    tools: Vec<McpTool>,
+    hidden: Vec<String>,
+    tool_specs: Vec<ToolSpec>,
+    declared_read_only: Vec<String>,
+}
+
+fn derive_exposed(
+    server_name: &str,
+    tools: Vec<McpTool>,
+    policy: &McpServerPolicy,
+) -> ExposedTools {
+    let mut exposed = Vec::new();
+    let mut hidden = Vec::new();
+    for tool in tools {
+        if policy.exposes(&tool.name) {
+            exposed.push(tool);
+        } else {
+            hidden.push(tool.name.to_string());
+        }
+    }
+    hidden.sort();
+    // Read the server's own read-only declarations off the tools we are about
+    // to keep. Only *exposed* tools matter: a tool the entry filtered away is
+    // not something the human can be asked to declare a risk for.
+    let mut declared_read_only: Vec<String> = exposed
+        .iter()
+        .filter(|tool| {
+            tool.annotations
+                .as_ref()
+                .and_then(|a| a.read_only_hint)
+                .unwrap_or(false)
+        })
+        .map(|tool| tool.name.to_string())
+        .collect();
+    declared_read_only.sort();
+    declared_read_only.dedup();
+    let tool_specs = build_tool_specs(server_name, &exposed);
+    ExposedTools {
+        tools: exposed,
+        hidden,
+        tool_specs,
+        declared_read_only,
+    }
+}
+
+/// What one server's tool list did when it was re-read.
+///
+/// Names rather than counts: "21 → 21" is not a debuggable fact, and a server
+/// that swaps one tool for another would otherwise look unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolListRefresh {
+    /// Tools the agent can now call and could not before.
+    pub added: Vec<String>,
+    /// Tools the agent can no longer call.
+    pub removed: Vec<String>,
+    /// Tools that became hidden by this entry's `enabled_tools` /
+    /// `disabled_tools` — not callable, but not the server's doing either.
+    pub newly_hidden: Vec<String>,
+}
+
+impl ToolListRefresh {
+    /// Whether the re-read changed anything the log is worth showing.
+    fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.newly_hidden.is_empty()
+    }
+
+    /// The phrase a report line carries.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.added.is_empty() {
+            parts.push(format!("added {}", self.added.join(", ")));
+        }
+        if !self.removed.is_empty() {
+            parts.push(format!("removed {}", self.removed.join(", ")));
+        }
+        if !self.newly_hidden.is_empty() {
+            parts.push(format!("now hidden {}", self.newly_hidden.join(", ")));
+        }
+        if parts.is_empty() {
+            parts.push("no visible change".to_string());
+        }
+        parts.join("; ")
+    }
+}
+
+/// The outcome of one refresh pass over every connected server.
+#[derive(Debug, Clone, Default)]
+pub struct ToolListReport {
+    /// Servers whose tool list was re-read, with what moved.
+    pub changed: Vec<(String, ToolListRefresh)>,
+    /// Servers that announced a change and could not be re-listed. Their
+    /// previous list is kept: a transient error must not leave a working
+    /// server looking like a server with no tools.
+    pub failed: Vec<(String, String)>,
+}
+
+impl ToolListReport {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.failed.is_empty()
     }
 }
 
@@ -2764,11 +3012,11 @@ mod tests {
         ApprovalMode, MCP_INSTRUCTIONS_MAX_CHARS, MCPToolRouter, McpAuthConfig, McpClient,
         McpConfigFile, McpEnvVar, McpLiveStatus, McpLoadReport, McpProjectConfig, McpServerConfig,
         McpServerPolicy, McpToolConfig, McpToolName, McpTransportConfig, MockMcpService,
-        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, ToolRisk,
-        UnmodelledKeys, cap_instructions, collect_plugin_mcp_servers, collect_sourced_servers,
-        describe_resolved, drain_mcp_stderr, installed_plugin_mcp_servers,
-        plugin_manifest_mcp_servers, prepare_plugin_entry, resolve_env_vars, resolve_servers,
-        unmodelled_keys,
+        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, ToolListChangedSignal,
+        ToolListRefresh, ToolRisk, UnmodelledKeys, cap_instructions, collect_plugin_mcp_servers,
+        collect_sourced_servers, describe_resolved, drain_mcp_stderr,
+        installed_plugin_mcp_servers, plugin_manifest_mcp_servers, prepare_plugin_entry,
+        resolve_env_vars, resolve_servers, unmodelled_keys,
     };
 
     use crate::{
@@ -3273,7 +3521,8 @@ mod tests {
             Ok(CallToolResult::success(vec![Content::text("ok")]))
         })
         .with_instructions(instructions);
-        McpClient::with_service(server, service.tools.clone(), Arc::new(service))
+        let tools = service.tools();
+        McpClient::with_service(server, tools, Arc::new(service))
     }
 
     #[test]
@@ -3453,7 +3702,45 @@ mod tests {
     }
 
     struct EchoServer {
-        tools: Vec<McpTool>,
+        /// Mutable, because `notifications/tools/list_changed` is only
+        /// meaningful if the list can move after the handshake.
+        tools: std::sync::Mutex<Vec<McpTool>>,
+        /// What a `reveal` call appends. The test chooses, so one fixture covers
+        /// a plain newcomer, a server-declared read-only one, and one this
+        /// entry's filter hides.
+        revealed: Vec<McpTool>,
+        /// Counts `tools/list` requests, so a test can prove a quiet server is
+        /// not polled.
+        list_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl EchoServer {
+        fn new(tools: Vec<McpTool>) -> Self {
+            Self {
+                tools: std::sync::Mutex::new(tools),
+                revealed: Vec::new(),
+                list_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        /// The shared `tools/list` counter, taken before the server is moved
+        /// into its task.
+        fn list_calls(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+            self.list_calls.clone()
+        }
+
+        /// Reveals `tools` when a client calls `reveal`.
+        fn revealing(mut self, tools: Vec<McpTool>) -> Self {
+            self.revealed = tools;
+            self
+        }
+
+        fn tools(&self) -> Vec<McpTool> {
+            self.tools
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
     }
 
     impl ServerHandler for EchoServer {
@@ -3462,7 +3749,7 @@ mod tests {
         }
 
         fn get_tool(&self, name: &str) -> Option<McpTool> {
-            self.tools.iter().find(|t| t.name == name).cloned()
+            self.tools().iter().find(|t| t.name == name).cloned()
         }
 
         fn list_tools(
@@ -3471,15 +3758,33 @@ mod tests {
             _context: RequestContext<RoleServer>,
         ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_
         {
-            std::future::ready(Ok(ListToolsResult::with_all_items(self.tools.clone())))
+            self.list_calls
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            std::future::ready(Ok(ListToolsResult::with_all_items(self.tools())))
         }
 
-        fn call_tool(
+        async fn call_tool(
             &self,
             request: rmcp::model::CallToolRequestParams,
-            _context: RequestContext<RoleServer>,
-        ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_
-        {
+            context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResult, McpError> {
+            // `reveal` is the fixture's stand-in for a server that finishes an
+            // auth or indexing pass and grows its tool list. Announcing it is
+            // the point: the client must learn the list moved without being
+            // told to look again.
+            if request.name.as_ref() == "reveal" {
+                self.tools
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(self.revealed.iter().cloned());
+                return match context.peer.notify_tool_list_changed().await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text("revealed")])),
+                    Err(err) => Err(McpError::internal_error(
+                        format!("fixture failed to notify: {err}"),
+                        None,
+                    )),
+                };
+            }
             let text = request
                 .arguments
                 .as_ref()
@@ -3487,7 +3792,7 @@ mod tests {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            std::future::ready(Ok(CallToolResult::success(vec![Content::text(text)])))
+            Ok(CallToolResult::success(vec![Content::text(text)]))
         }
 
         fn list_resources(
@@ -3528,7 +3833,7 @@ mod tests {
     async fn mcp_client_reads_resources_from_a_real_in_process_server() {
         // The mock proves the routing; this proves the rmcp call shapes are
         // right, which only a real server can.
-        let server = EchoServer { tools: Vec::new() };
+        let server = EchoServer::new(Vec::new());
         let (client_stream, server_stream) = tokio::io::duplex(64);
         let _server_handle = tokio::spawn(async move {
             let running = server.serve(server_stream).await.unwrap();
@@ -3537,11 +3842,12 @@ mod tests {
             }
         });
 
-        let running = ().serve(client_stream).await.unwrap();
+        let signal = ToolListChangedSignal::default();
+        let running = signal.clone().serve(client_stream).await.unwrap();
         let client = McpClient::with_service(
             "fixture",
             Vec::new(),
-            Arc::new(RealMcpService::new(running)),
+            Arc::new(RealMcpService::new(running, signal)),
         );
 
         let resources = client.list_resources().await.unwrap();
@@ -3555,9 +3861,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_client_talks_to_real_in_process_server() {
         let tool = echo_tool();
-        let server = EchoServer {
-            tools: vec![tool.clone()],
-        };
+        let server = EchoServer::new(vec![tool.clone()]);
         let (client_stream, server_stream) = tokio::io::duplex(64);
 
         let _server_handle = tokio::spawn(async move {
@@ -3568,11 +3872,12 @@ mod tests {
             }
         });
 
-        let running = ().serve(client_stream).await.unwrap();
+        let signal = ToolListChangedSignal::default();
+        let running = signal.clone().serve(client_stream).await.unwrap();
         let client = McpClient::with_service(
             "fixture",
             vec![tool],
-            Arc::new(RealMcpService::new(running)),
+            Arc::new(RealMcpService::new(running, signal)),
         );
 
         let output = client
@@ -4479,6 +4784,176 @@ mod tests {
         );
 
         assert!(client.declared_read_only().is_empty());
+    }
+
+    /// Polls `refresh_tools_if_stale` until it reports a refresh, with a
+    /// deadline.
+    ///
+    /// The notification travels on the service's own task, so "the server said
+    /// so" and "we noticed" are separated by a real scheduling hop. Asserting
+    /// once would be a race; waiting forever would hang the suite, which AGENTS.md
+    /// forbids.
+    async fn refresh_until_changed(client: &mut McpClient) -> ToolListRefresh {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(refresh) = client.refresh_tools_if_stale().await.unwrap() {
+                return refresh;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no tools/list_changed notification arrived within the deadline"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Connects a real in-process server and hands back the client, plus the
+    /// server's shared `tools/list` counter.
+    async fn connect_with_policy(
+        server: EchoServer,
+        policy: McpServerPolicy,
+    ) -> (McpClient, Arc<std::sync::atomic::AtomicUsize>) {
+        let list_calls = server.list_calls();
+        let (client_stream, server_stream) = tokio::io::duplex(64);
+        tokio::spawn(async move {
+            let running = server.serve(server_stream).await.unwrap();
+            // Keep the server alive until the client closes the transport.
+            while !running.is_transport_closed() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+        let signal = ToolListChangedSignal::default();
+        let running = signal.clone().serve(client_stream).await.unwrap();
+        let client = McpClient::with_service_and_policy(
+            "fixture",
+            vec![echo_tool()],
+            Arc::new(RealMcpService::new(running, signal)),
+            policy,
+        );
+        (client, list_calls)
+    }
+
+    /// [`connect_with_policy`] with the default (unfiltered) policy.
+    async fn connect(server: EchoServer) -> (McpClient, Arc<std::sync::atomic::AtomicUsize>) {
+        connect_with_policy(server, McpServerPolicy::default()).await
+    }
+
+    #[tokio::test]
+    async fn a_list_changed_notification_makes_the_new_tool_callable() {
+        let server = EchoServer::new(vec![echo_tool()]).revealing(vec![named_tool("recall")]);
+        let (mut client, _list_calls) = connect(server).await;
+
+        // What the handshake advertised.
+        assert_eq!(client.list_tools().len(), 1);
+
+        // A call that grows the list and announces it. The announcement is the
+        // whole difference from a server that changed silently.
+        client.call_tool("reveal", json!({})).await.unwrap();
+
+        let refresh = refresh_until_changed(&mut client).await;
+        assert_eq!(refresh.added, ["recall"]);
+        assert!(refresh.removed.is_empty());
+        assert_eq!(client.list_tools().len(), 2);
+        // The derived specs move with it: what the model is offered is what the
+        // server now has.
+        assert!(
+            client
+                .agent_tools()
+                .iter()
+                .any(|spec| spec.name == "mcp__fixture__recall"),
+            "{:?}",
+            client.agent_tools().iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_quiet_server_is_never_polled() {
+        // The notification is a hint, not a schedule: a server that never sends
+        // one must cost exactly nothing, so a refresh must not turn into a
+        // `tools/list` on every request.
+        let server = EchoServer::new(vec![echo_tool()]);
+        let (mut client, list_calls) = connect(server).await;
+        let after_connect = list_calls.load(std::sync::atomic::Ordering::Acquire);
+
+        assert!(client.refresh_tools_if_stale().await.unwrap().is_none());
+        assert!(client.refresh_tools_if_stale().await.unwrap().is_none());
+
+        assert_eq!(
+            list_calls.load(std::sync::atomic::Ordering::Acquire),
+            after_connect,
+            "a quiet server must not be re-listed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_re_derives_the_filter_and_the_read_only_claims() {
+        // The newcomer set is chosen to hit every derivation at once: one tool
+        // the entry hides, and one the server declares read-only.
+        let server = EchoServer::new(vec![echo_tool()])
+            .revealing(vec![read_only_tool("recall"), named_tool("secret")]);
+        let policy = McpServerPolicy::from_config(
+            &serde_json::from_str(r#"{"command":"node","disabled_tools":["secret"]}"#).unwrap(),
+        );
+        let (mut client, _list_calls) = connect_with_policy(server, policy).await;
+
+        client.call_tool("reveal", json!({})).await.unwrap();
+        let refresh = refresh_until_changed(&mut client).await;
+
+        // Only the newcomer the policy exposes counts as added…
+        assert_eq!(refresh.added, ["recall"]);
+        // …the hidden one is reported rather than silently dropped…
+        assert_eq!(refresh.newly_hidden, ["secret"]);
+        assert_eq!(client.hidden_tools(), ["secret"]);
+        // …and the read-only claim is re-derived from the new list, not the old.
+        assert_eq!(client.declared_read_only(), ["recall"]);
+    }
+
+    #[tokio::test]
+    async fn the_router_reports_what_moved_and_keeps_a_list_it_could_not_re_read() {
+        let moving = Arc::new(MockMcpService::new(vec![named_tool("one")], |_| {
+            Ok(CallToolResult::success(Vec::new()))
+        }));
+        let broken = Arc::new(
+            MockMcpService::new(vec![named_tool("kept")], |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })
+            .failing_to_list(),
+        );
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service(
+            "moving",
+            vec![named_tool("one")],
+            moving.clone(),
+        ));
+        router.register_client(McpClient::with_service(
+            "broken",
+            vec![named_tool("kept")],
+            broken.clone(),
+        ));
+
+        // Nothing announced: the pass costs nothing and reports nothing.
+        assert!(router.refresh_changed().await.is_empty());
+
+        moving.set_tools(vec![named_tool("one"), named_tool("two")]);
+        moving.announce_tools_changed();
+        broken.announce_tools_changed();
+
+        let report = router.refresh_changed().await;
+        assert_eq!(report.changed.len(), 1, "{report:?}");
+        assert_eq!(report.changed[0].0, "moving");
+        assert_eq!(report.changed[0].1.added, ["two"]);
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].0, "broken");
+        // A server that announced a change and could not answer keeps what it
+        // had: a transient failure must not leave it looking empty.
+        assert_eq!(router.server_summaries().len(), 2);
+        assert!(
+            router
+                .all_tools()
+                .iter()
+                .any(|spec| spec.name == "mcp__broken__kept"),
+            "the unreachable server's tools must survive the failed re-list"
+        );
     }
 
     /// A tool with only a name — enough for exposure filtering.

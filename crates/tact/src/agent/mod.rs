@@ -554,6 +554,35 @@ impl Agent {
             .collect();
     }
 
+    /// Picks up any MCP server that announced a tool-list change.
+    ///
+    /// Called immediately before each request is built, because the tool list is
+    /// sent per request. Quiet servers cost nothing: `refresh_changed` re-lists
+    /// only the ones that sent `notifications/tools/list_changed`, so this is
+    /// not a poll.
+    ///
+    /// A change is reported rather than applied in silence — a tool quietly
+    /// appearing or disappearing is exactly the kind of thing the model's
+    /// behaviour is blamed for afterwards.
+    async fn refresh_mcp_tools(&mut self) {
+        let report = self.mcp_router.refresh_changed().await;
+        if report.is_empty() {
+            return;
+        }
+        for (server, refresh) in &report.changed {
+            self.emit_update(AgentUpdate::Info(format!(
+                "[mcp] {server} changed its tool list: {}",
+                refresh.describe()
+            )));
+        }
+        for (server, reason) in &report.failed {
+            self.emit_update(AgentUpdate::Info(format!(
+                "[mcp] {server} announced a tool-list change that could not be read: {reason}"
+            )));
+        }
+        self.rebuild_cached_tool_specs();
+    }
+
     /// Reload every MCP server from disk and rebuild the tool list.
     ///
     /// Used after an interactive OAuth authorization (`/mcp auth <server>`) so
@@ -1195,6 +1224,14 @@ impl Agent {
 
             // And for whatever the tool hooks collected while the last wave ran.
             self.inject_pending_hook_context().await?;
+
+            // An MCP server may announce a new or removed tool at any time —
+            // typically right after it finishes an authorization or indexing
+            // pass. Re-list the ones that said so *here*, immediately before the
+            // request is built, because the tool list is sent per request: a
+            // change that lands mid-turn must reach the model on this call, not
+            // on the next user turn.
+            self.refresh_mcp_tools().await;
 
             // Snapshot the complete conversation after micro/auto compaction.
             // Includes the current user turn plus history, or retained users +
@@ -2912,6 +2949,76 @@ mod tests {
             prompt.contains("Call recent_activity to orient yourself."),
             "{prompt}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_grows_its_tool_list_reaches_the_next_request() {
+        // The agent sends a *cached* snapshot, so a refresh has to do both
+        // halves: re-list the server, and rebuild the cache. Either alone leaves
+        // the model with the list the handshake advertised.
+        use std::borrow::Cow;
+        use std::sync::Arc;
+
+        use rmcp::model::{Content, JsonObject, Tool as McpTool};
+
+        let tool = |name: &'static str| McpTool {
+            name: Cow::Borrowed(name),
+            title: None,
+            description: None,
+            input_schema: Arc::new(JsonObject::new()),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        };
+
+        let service = Arc::new(crate::mcp::MockMcpService::new(vec![tool("search")], |_| {
+            Ok(rmcp::model::CallToolResult::success(vec![Content::text("ok")]))
+        }));
+        let mut mcp = crate::mcp::MCPToolRouter::new();
+        mcp.register_client(crate::mcp::McpClient::with_service(
+            "bm",
+            vec![tool("search")],
+            service.clone(),
+        ));
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            test_context("mcp_tool_list_changed"),
+            crate::tool::toolset(),
+            mcp,
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let names = |agent: &Agent| -> Vec<String> {
+            agent
+                .all_tool_specs()
+                .into_iter()
+                .map(|spec| spec.name)
+                .collect()
+        };
+        assert!(!names(&agent).contains(&"mcp__bm__recall".to_string()));
+
+        // The server grows and says so.
+        service.set_tools(vec![tool("search"), tool("recall")]);
+        service.announce_tools_changed();
+
+        agent.refresh_mcp_tools().await;
+
+        assert!(
+            names(&agent).contains(&"mcp__bm__recall".to_string()),
+            "{:?}",
+            names(&agent)
+        );
+
+        // A second pass with nothing announced must not disturb it.
+        agent.refresh_mcp_tools().await;
+        assert!(names(&agent).contains(&"mcp__bm__recall".to_string()));
     }
 
     #[test]

@@ -409,7 +409,7 @@ Each tool includes:
 - **description** — shown to the LLM
 - **inputSchema** — JSON Schema for arguments
 
-Code: `McpClient::fetch_tools` → `service.peer().list_all_tools()`.
+Code: `McpClient::fetch_tools` → `service.peer().list_all_tools()`, called at connect and again by `refresh_tools_if_stale` whenever the server has announced a change (see Step 10).
 
 ### Step 5: Register with the Agent — the LLM-facing tool list
 
@@ -562,24 +562,41 @@ When a Server’s tool list changes, it can push without waiting for the Client 
 
 The Client should re-run `tools/list` and refresh the Agent’s tool table.
 
-**Tact implementation (startup only today):**
+**Tact implementation:** the notification is recorded, and the re-list happens at the point where it can still matter — immediately before each request is built.
 
-1. At connect time, `McpClient::fetch_tools` calls `list_all_tools()` once and builds `tool_specs` (`mcp/mod.rs`)
-2. `Agent::new` merges native + MCP specs into `cached_tool_specs` — **fixed for the session**
-3. **Not implemented yet:** `notifications/tools/list_changed` handler, `TactMcpClientHandler`, or `refresh_mcp_tools_if_changed()` in `agent_loop`. Dynamic server-side tool changes after connect are not picked up until restart.
+1. The connection is created with a real `ClientHandler`:
+   `ToolListChangedSignal` (`Clone + Default`, an `Arc<AtomicBool>`) is installed as `signal.clone().serve(transport)`, and the clone is handed to `RealMcpService`. Its `on_tool_list_changed` **only records** that something changed — it never re-lists, because a refresh needs `&mut McpClient` and running one inside the service's own notification task would contend with the transport driving it.
+2. `McpService::take_tools_changed()` reads that flag and clears it; it defaults to `false`, so a test double or a transport that cannot carry notifications never looks like a server that keeps changing its mind.
+3. `McpClient::refresh_tools_if_stale()` returns `Ok(None)` without sending anything when the flag is clear — a quiet server costs exactly nothing. When it is set, it re-lists and re-derives the entry's filter, `tool_specs`, and `declared_read_only` through the same helper `assemble` uses at connect, so the two paths cannot disagree about which tools a server exposes.
+4. `MCPToolRouter::refresh_changed()` walks the clients and reports `{ server, added, removed, newly_hidden }` for the ones that moved.
+5. `Agent::refresh_mcp_tools()` runs at the top of every `agent_loop` iteration, right before the request is built, and rebuilds `cached_tool_specs`. The tool list is sent **per request**, so a change that lands mid-turn reaches the model on the very next call rather than on the next user turn.
+
+A failed re-list **keeps the previous list**: only the server can remove its tools, and a transient transport error must not leave a working server looking empty. Both the changes and the failures are reported as `AgentUpdate::Info` lines — a tool quietly appearing or disappearing is exactly the kind of thing the model's behaviour gets blamed for afterwards.
 
 ```rust
-// crates/tact/src/mcp/mod.rs — connect uses rmcp with () handler (no ClientHandler)
-().serve(transport).await?;
-// tools fetched once:
-service.peer().list_all_tools().await?;
+// crates/tact/src/mcp/mod.rs — connect installs a handler instead of ()
+let signal = ToolListChangedSignal::default();
+let service = signal.clone().serve(transport).await?;
+Ok((service, signal))
 ```
 
 ```rust
-// crates/tact/src/agent/mod.rs — tool list is cached at Agent construction
-let cached_tool_specs = tools.native_specs()
-    .chain(mcp_router.all_tools())
-    .collect();
+// crates/tact/src/agent/mod.rs — per request, not per turn
+self.refresh_mcp_tools().await;
+let request = CreateMessageParams::new(..).with_tools(self.all_tool_specs());
+```
+
+The system prompt's `## <server>` instructions block is **not** re-derived on refresh: instructions come from the `initialize` result and cannot change for the life of a connection.
+
+```rust
+// crates/tact/src/agent/mod.rs — the cache is rebuilt, not re-read per request
+fn rebuild_cached_tool_specs(&mut self) {
+    self.cached_tool_specs = native_specs
+        .into_iter()
+        .chain(self.mcp_router.all_tools())
+        .chain(self.mcp_router.resource_tool_specs())
+        .collect();
+}
 ```
 
 ### Step 11: Close the connection
@@ -623,7 +640,7 @@ sequenceDiagram
     Host->>Host: write to context, continue LLM
     Host-->>User: final answer
 
-    Note over Host,Server: Optional: dynamic update (not implemented in Tact yet)
+    Note over Host,Server: Optional: dynamic update — re-listed before each request
     Server-->>Client: notifications/tools/list_changed
     Note over Host: would re-list tools + refresh cached_tool_specs
     Note over Host,Server: Shutdown
@@ -641,10 +658,10 @@ sequenceDiagram
 | Source precedence | `collect_sourced_servers`, `resolve_servers` | Layer all sources, report overrides |
 | Load report | `McpLoadReport` | Surface failures / overrides / skipped instead of `debug!` |
 | Connect & handshake | `McpClient::connect` | stdio spawn + rmcp `serve()` |
-| Tool discovery | `McpClient::fetch_tools` | `tools/list` |
+| Tool discovery | `McpClient::fetch_tools` | `tools/list`, at connect and on every announced change |
 | Tool execution | `McpClient::call_tool` | `tools/call` |
-| Dynamic updates | *(not implemented)* | `tools/list_changed` notification + cache refresh |
-| Tool policy | `McpServerPolicy` | `enabled_tools` / `disabled_tools`, `startup_timeout_sec`, approval mode, per-tool output budget |
+| Dynamic updates | `McpClient::refresh_tools_if_stale` | `tools/list_changed` recorded by the connection's handler, then re-listed before each request |
+| Tool policy | `McpServerPolicy` | `enabled_tools` / `disabled_tools`, `startup_timeout_sec`, approval mode, per-tool output budget, per-tool `risk` |
 | Routing | `MCPToolRouter` | Route by `mcp__*` name to the right Server |
 | Resources | `crates/tact/src/mcp/resource.rs` | `list_mcp_resources` / `read_mcp_resource`: `resources/list` and `resources/read`, rendered for the model |
 | Agent integration | `crates/tact/src/agent/mod.rs` | Merge tool specs at `Agent::new`; `all_tool_specs()` per LLM turn |
@@ -710,8 +727,8 @@ The handshake lives inside the **rmcp** SDK’s `serve()`. Application code only
 
 ### Q: When does the tool list change?
 
-- **Static** tools at Server startup → fetch once at Step 4 (current Tact behavior)
-- **Dynamic** tools at runtime → Step 10 Notification + refresh (**not implemented** — restart required)
+- **Static** tools at Server startup → fetched once at Step 4.
+- **Dynamic** tools at runtime → the Server sends `notifications/tools/list_changed`; Tact records it and re-lists immediately before building the next request (Step 10), so the very next LLM call sees the new list. Nothing to restart.
 
 ### Q: How do MCP tools differ from native tools?
 
@@ -780,7 +797,7 @@ The measurement above is specific to the names Figma admits. Another provider ma
 
 | Gap | Detail |
 |-----|--------|
-| **No `tools/list_changed` handling** | Tool list fixed at connect; no `ClientHandler` or loop refresh |
+| **Other list-change notifications** | `notifications/tools/list_changed` is handled (Step 10). `resources/list_changed` and `prompts/list_changed` are not: resources are read on demand by a tool call, so a stale count is not load-bearing, and `mcp get` is a one-shot inspection that connects, reads and disconnects |
 | **Resource templates / prompts** | Resources are wired (`list_mcp_resources` / `read_mcp_resource`); `resources/templates/list` is not, and neither are Prompts — a prompt template has no consumer in Tact's turn structure yet |
 | **Legacy HTTP+SSE** | `type: "sse"` maps to Streamable HTTP; the deprecated 2024-11-05 HTTP+SSE endpoint is not implemented |
 | **OAuth device flow / mTLS** | Only the authorization-code + PKCE flow is implemented; no device code, client certificates, or enterprise SSO |

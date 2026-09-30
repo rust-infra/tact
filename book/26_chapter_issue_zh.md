@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — MCP server 可以在会话中途增删工具，Tact 现在会注意到
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`ToolListChangedSignal`、`McpService::take_tools_changed`、`McpClient::refresh_tools_if_stale`、`derive_exposed`、`MCPToolRouter::refresh_changed`、`ToolListRefresh`、`ToolListReport`）、`crates/tact/src/mcp/remote.rs`（`serve_remote` 的 handler）、`crates/tact/src/agent/mod.rs`（`refresh_mcp_tools`）；spec `docs/superpowers/specs/2026-09-30-mcp-tool-list-changed-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** Tact 只在连接时对 server 的工具做一次快照。MCP 为「握手之后列表还会移动」这个场景定义了 `notifications/tools/list_changed`，而 Tact 对此是聋的——因为连接是以 `RunningService<RoleClient, ()>` 建立的：handler 是 unit 类型，于是 rmcp 的 `on_tool_list_changed` 是个空实现。一个在完成授权或索引之后才暴露更多工具的 server，永远停在握手时声明的那一份：模型从不知道那个工具存在，`mcp list` 也附和这份过期快照。而**移除**工具的 server 更糟——模型持续被提供一个已经失效的名字。唯一的补救是重启，或 `reload_mcp_router`——后者会重新拨号每一个 server，包括那些健康的。
+
+**决策：** `ToolListChangedSignal`——`Clone + Default`，内部是 `Arc<AtomicBool>`——被安装为连接的 handler（`signal.clone().serve(transport)`），克隆出的那一份交给 `RealMcpService`，于是 `McpService::take_tools_changed()` 能读到它（默认 `false`，因此测试替身或无法携带通知的传输层，永远不会表现为一个反复改变主意的 server）。handler **只记录**发生了变化，绝不重新拉取：刷新需要 `&mut McpClient`，在服务自身的通知任务里做会和驱动它的传输层争抢。标志为空时 `McpClient::refresh_tools_if_stale()` 是空操作，所以安静的 server 成本恰好为零；置位时它重新拉取，并通过 `derive_exposed` 重新推导条目过滤、`tool_specs` 与 `declared_read_only`——这正是连接时 `assemble` 用的那个 helper；两条路径若各自决定「server 暴露哪些工具」，迟早会产生看不见的分歧。`MCPToolRouter::refresh_changed()` 为每个真正移动过的 server 上报 `{ added, removed, newly_hidden }`，而 `Agent::refresh_mcp_tools()` 在每次 `agent_loop` 迭代的开头、构建请求之前运行，随后重建 `cached_tool_specs`。按请求而非按轮次刷新正是关键：工具列表是按请求发送的，所以中途到达的变化会在紧接着的那次调用就传达给模型。重新拉取失败时**保留原列表**——只有 server 自己能移除它的工具，一次瞬时的传输错误不该让一个可用的 server 看起来空了。系统提示里的 instructions 段落刻意不重新推导：instructions 来自 `initialize`，在一条连接的生命周期内不可能改变。
+
+**之后的行为：** 一个在授权或索引之后才揭示更多工具的 server，可以在同一会话内直接使用，无需重启，也无需重新拨号其他 server。变化与「读不到变化」都会以 `[mcp] <server> changed its tool list: added recall` / `... that could not be read: <原因>` 的形式出现——因为一个工具悄悄出现或消失，正是事后会被归咎于模型的那类事。`tools/list_changed` 的缺口行已删除；剩下的那一行只点名 `resources/list_changed` 与 `prompts/list_changed`，而这两者并非关键。
+
+**指引：** `mcp::tests::{a_list_changed_notification_makes_the_new_tool_callable, a_quiet_server_is_never_polled, a_refresh_re_derives_the_filter_and_the_read_only_claims, the_router_reports_what_moved_and_keeps_a_list_it_could_not_re_read}`、`agent::tests::a_server_that_grows_its_tool_list_reaches_the_next_request`。
+
+---
+
 ## 1. 2026-09-30 — 高风险工具上的「Always allow this tool」被记录了，然后被忽略
 
 | 字段 | 值 |
