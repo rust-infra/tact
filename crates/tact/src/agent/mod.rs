@@ -547,6 +547,10 @@ impl Agent {
         self.cached_tool_specs = native_specs
             .into_iter()
             .chain(self.mcp_router.all_tools())
+            // `list_mcp_resources` / `read_mcp_resource` exist only while a server
+            // is connected: with an empty router they would be tools that can
+            // only ever answer "no MCP servers are connected".
+            .chain(self.mcp_router.resource_tool_specs())
             .collect();
     }
 
@@ -2907,6 +2911,56 @@ mod tests {
         assert!(
             prompt.contains("Call recent_activity to orient yourself."),
             "{prompt}"
+        );
+    }
+
+    #[test]
+    fn the_resource_tools_are_offered_only_with_a_connected_server() {
+        let mut mcp = crate::mcp::MCPToolRouter::new();
+        mcp.register_client(mcp_client_with_instructions("basic-memory", "guidance"));
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            test_context("mcp_resource_tools"),
+            crate::tool::toolset(),
+            mcp,
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let names: Vec<String> = agent
+            .all_tool_specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(
+            names.contains(&"list_mcp_resources".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&"read_mcp_resource".to_string()),
+            "{names:?}"
+        );
+
+        // No servers: the names must disappear, or the model gets a tool whose
+        // only possible answer is "no MCP servers are connected".
+        agent.mcp_router = crate::mcp::MCPToolRouter::new();
+        agent.rebuild_cached_tool_specs();
+        let names: Vec<String> = agent
+            .all_tool_specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(
+            !names.contains(&"list_mcp_resources".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            !names.contains(&"read_mcp_resource".to_string()),
+            "{names:?}"
         );
     }
 

@@ -62,6 +62,12 @@ const MCP_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60)
 /// Ceiling on `tools/list` for one server.
 const MCP_LIST_TOOLS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Ceiling on one `resources/list` or `resources/read`.
+///
+/// The same order of magnitude as `tools/list`: a resource listing is served
+/// from the server's own index, and reading one is a fetch, not a computation.
+const MCP_RESOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Ceiling on a single `tools/call`.
 ///
 /// Generous on purpose: some MCP tools are legitimately long-running, so this
@@ -84,7 +90,10 @@ use futures_util::{
 };
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, CallToolResult, RawContent, ResourceContents, Tool as McpTool},
+    model::{
+        CallToolRequestParams, CallToolResult, RawContent, RawResource, ReadResourceResult,
+        Resource, ResourceContents, Tool as McpTool,
+    },
     service::{RunningService, ServiceError},
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
@@ -102,8 +111,10 @@ use crate::{
 
 mod edit;
 mod remote;
+mod resource;
 pub use edit::*;
 pub use remote::*;
+pub use resource::*;
 
 /// How the client reaches one MCP server.
 ///
@@ -572,6 +583,13 @@ pub struct McpServerInspection {
     /// silently dropped is distinguishable from one that never sent any —
     /// the same reason `filtered` exists.
     pub instructions_chars: Option<usize>,
+    /// How many resources `resources/list` returned.
+    ///
+    /// `None` means the server did not answer the request (no resource support,
+    /// or an error): a server that publishes no resources and a server that
+    /// cannot answer at all are different, and `list_mcp_resources` behaves
+    /// differently for each.
+    pub resources: Option<usize>,
 }
 
 /// What one connection attempt produced.
@@ -1337,6 +1355,18 @@ pub trait McpService: Send + Sync + 'static {
         std::future::ready(()).boxed()
     }
 
+    /// `resources/list`, paginated to the end by the implementation.
+    ///
+    /// Required rather than defaulted: a service that cannot answer must say so
+    /// (the mock returns an empty list, and `read_resource` a not-found error),
+    /// because a silently empty resource list is indistinguishable from a server
+    /// that publishes none.
+    fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>>;
+
+    /// `resources/read` for one URI.
+    fn read_resource(&self, uri: String)
+    -> BoxFuture<'_, Result<ReadResourceResult, ServiceError>>;
+
     /// The `instructions` string the server returned during `initialize`.
     ///
     /// This is the MCP spec's channel for "what this server is and how to use
@@ -1408,6 +1438,31 @@ impl McpService for RealMcpService {
 
     fn instructions(&self) -> Option<String> {
         self.instructions.clone()
+    }
+
+    fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.list_all_resources().await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
+    }
+
+    fn read_resource(
+        &self,
+        uri: String,
+    ) -> BoxFuture<'_, Result<ReadResourceResult, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.read_resource(read_params(&uri)).await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
     }
 }
 
@@ -1695,6 +1750,8 @@ pub struct MockMcpService {
     handler: McpToolHandler,
     calls: std::sync::Mutex<Vec<(String, Value)>>,
     instructions: Option<String>,
+    resources: Vec<Resource>,
+    resource_text: HashMap<String, String>,
 }
 
 impl MockMcpService {
@@ -1710,7 +1767,18 @@ impl MockMcpService {
             handler: Arc::new(handler),
             calls: std::sync::Mutex::new(Vec::new()),
             instructions: None,
+            resources: Vec::new(),
+            resource_text: HashMap::new(),
         }
+    }
+
+    /// Publishes a readable text resource under `uri`.
+    #[must_use]
+    pub fn with_text_resource(mut self, uri: &str, name: &str, text: &str) -> Self {
+        self.resources
+            .push(Resource::new(RawResource::new(uri, name), None));
+        self.resource_text.insert(uri.to_string(), text.to_string());
+        self
     }
 
     /// Adds an `InitializeResult.instructions` payload for this server.
@@ -1752,6 +1820,34 @@ impl McpService for MockMcpService {
 
     fn instructions(&self) -> Option<String> {
         self.instructions.clone()
+    }
+
+    fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>> {
+        let resources = self.resources.clone();
+        std::future::ready(Ok(resources)).boxed()
+    }
+
+    fn read_resource(
+        &self,
+        uri: String,
+    ) -> BoxFuture<'_, Result<ReadResourceResult, ServiceError>> {
+        // A missing URI is a real not-found error, not an empty result: the two
+        // must not be confusable in a test.
+        let result = match self.resource_text.get(&uri) {
+            Some(text) => Ok(ReadResourceResult {
+                contents: vec![rmcp::model::ResourceContents::text(
+                    text.clone(),
+                    uri.clone(),
+                )],
+            }),
+            None => Err(ServiceError::McpError(
+                rmcp::model::ErrorData::resource_not_found(
+                    format!("no such resource: {uri}"),
+                    None,
+                ),
+            )),
+        };
+        std::future::ready(result).boxed()
     }
 }
 
@@ -2339,9 +2435,10 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
             tools: Vec::new(),
             filtered: Vec::new(),
             instructions_chars: None,
+            resources: None,
         }));
     }
-    let (status, tools, filtered, instructions_chars) =
+    let (status, tools, filtered, instructions_chars, resources) =
         match connect_server(server_name, transport, policy).await {
             ConnectOutcome::Connected(client) => {
                 let tools = client
@@ -2351,17 +2448,32 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
                     .collect();
                 let filtered = client.hidden_tools().to_vec();
                 let chars = client.instructions().map(|text| text.chars().count());
-                (McpServerStatus::Connected, tools, filtered, chars)
+                // A server without resource support is expected, not an error,
+                // so a failed listing is reported as "did not answer" rather
+                // than failing the inspection.
+                let resources = client.list_resources().await.ok().map(|list| list.len());
+                (
+                    McpServerStatus::Connected,
+                    tools,
+                    filtered,
+                    chars,
+                    resources,
+                )
             }
             ConnectOutcome::NeedsAuthorization => (
                 McpServerStatus::PendingAuthorization,
                 Vec::new(),
                 Vec::new(),
                 None,
+                None,
             ),
-            ConnectOutcome::Failed(error) => {
-                (McpServerStatus::Failed(error), Vec::new(), Vec::new(), None)
-            }
+            ConnectOutcome::Failed(error) => (
+                McpServerStatus::Failed(error),
+                Vec::new(),
+                Vec::new(),
+                None,
+                None,
+            ),
         };
     Ok(Some(McpServerInspection {
         server,
@@ -2369,6 +2481,7 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
         tools,
         filtered,
         instructions_chars,
+        resources,
     }))
 }
 
@@ -3165,6 +3278,67 @@ mod tests {
                 .to_string();
             std::future::ready(Ok(CallToolResult::success(vec![Content::text(text)])))
         }
+
+        fn list_resources(
+            &self,
+            _request: Option<rmcp::model::PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> impl std::future::Future<
+            Output = Result<rmcp::model::ListResourcesResult, McpError>,
+        > + Send
+        + '_ {
+            std::future::ready(Ok(rmcp::model::ListResourcesResult {
+                resources: vec![rmcp::model::Resource::new(
+                    rmcp::model::RawResource::new("memory://guide", "Guide"),
+                    None,
+                )],
+                next_cursor: None,
+                meta: None,
+            }))
+        }
+
+        fn read_resource(
+            &self,
+            request: rmcp::model::ReadResourceRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> impl std::future::Future<Output = Result<rmcp::model::ReadResourceResult, McpError>>
+        + Send
+        + '_ {
+            std::future::ready(Ok(rmcp::model::ReadResourceResult {
+                contents: vec![rmcp::model::ResourceContents::text(
+                    format!("content of {}", request.uri),
+                    request.uri,
+                )],
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_client_reads_resources_from_a_real_in_process_server() {
+        // The mock proves the routing; this proves the rmcp call shapes are
+        // right, which only a real server can.
+        let server = EchoServer { tools: Vec::new() };
+        let (client_stream, server_stream) = tokio::io::duplex(64);
+        let _server_handle = tokio::spawn(async move {
+            let running = server.serve(server_stream).await.unwrap();
+            while !running.is_transport_closed() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+
+        let running = ().serve(client_stream).await.unwrap();
+        let client = McpClient::with_service(
+            "fixture",
+            Vec::new(),
+            Arc::new(RealMcpService::new(running)),
+        );
+
+        let resources = client.list_resources().await.unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].uri, "memory://guide");
+
+        let contents = client.read_resource("memory://guide").await.unwrap();
+        assert_eq!(contents.contents.len(), 1);
     }
 
     #[tokio::test]

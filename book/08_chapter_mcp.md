@@ -504,7 +504,7 @@ Agent writes to context → LLM produces final answer
 
 Each LLM request includes the latest tool list (`with_tools(self.all_tool_specs())`), so updates take effect on the next turn.
 
-### Step 9 (optional): Resources and Prompts
+### Step 9: Resources — read-only content addressed by URI
 
 Besides Tools, MCP defines two more primitives:
 
@@ -513,7 +513,20 @@ Besides Tools, MCP defines two more primitives:
 | **Resources** | Read-only context (files, schemas, API data) | `resources/list`, `resources/read` |
 | **Prompts** | Reusable prompt templates | `prompts/list`, `prompts/get` |
 
-Tact primarily uses the **Tools** path today. Resources and Prompts exist in the protocol; whether a Host exposes them to the LLM depends on the implementation.
+Resources are not tools — they have no input schema and are addressed by URI — so Tact does **not** expose them as `mcp__<server>__…` entries. It follows Codex and adds two native tools that dispatch to the MCP router:
+
+| Tool | Arguments | Behaviour |
+|------|-----------|-----------|
+| `list_mcp_resources` | `server` (optional) | Renders every connected server's `resources/list` as one `## <server>` section, with each URI and name. Naming a server narrows it. |
+| `read_mcp_resource` | `server`, `uri` (both required) | `resources/read` for that URI. Text is returned as-is; a binary blob is reported by size instead of inlined, because a base64 payload is unreadable to the model and expensive to carry. |
+
+Both exist **only while a server is connected** (`MCPToolRouter::resource_tool_specs`): with an empty router the names are unresolvable and never advertised, so the model is never handed a tool whose only possible answer is "no MCP servers are connected". They resolve in the same place `mcp__…` names do, are `CapabilityRisk::High` (third-party content, and a listing touches every server), and `read_mcp_resource` is scoped to one server for scheduling while a listing is a barrier.
+
+This matters more than it looks. Plenty of servers publish their real content as resources and tell the model to go read one — Basic Memory's `instructions` say "read the `memory://ai_assistant_guide` resource", and measured against the real server `tact-ui mcp get basic-memory` reports `resources  1 available`. Without Step 9 that sentence was a dead end.
+
+A third Codex tool, `list_mcp_resource_templates`, is **not** implemented: a URI template can be read once its URIs are known, and the concrete listing is the part that goes stale fastest. The empty-listing message says so rather than letting a template-only server look empty.
+
+`tact-ui mcp get <server>` reports which state a server is in: `resources  N available…` when it answered, and `(the server did not answer \`resources/list\`)` when it did not — "publishes none" and "cannot answer" are different facts, and only the first one is about the server's contents.
 
 ### Step 10: Notifications — Server pushes updates
 
@@ -612,6 +625,7 @@ sequenceDiagram
 | Dynamic updates | *(not implemented)* | `tools/list_changed` notification + cache refresh |
 | Tool policy | `McpServerPolicy` | `enabled_tools` / `disabled_tools`, `startup_timeout_sec`, approval mode, per-tool output budget |
 | Routing | `MCPToolRouter` | Route by `mcp__*` name to the right Server |
+| Resources | `crates/tact/src/mcp/resource.rs` | `list_mcp_resources` / `read_mcp_resource`: `resources/list` and `resources/read`, rendered for the model |
 | Agent integration | `crates/tact/src/agent/mod.rs` | Merge tool specs at `Agent::new`; `all_tool_specs()` per LLM turn |
 | Parallel scheduling | `crates/tact/src/agent/tool_schedule.rs` | Same Server serial; different Servers parallel |
 | Entry point | `crates/tact-ui/src/headless.rs`, `interactive.rs` | `load_mcp_router()` at startup |
@@ -746,7 +760,7 @@ The measurement above is specific to the names Figma admits. Another provider ma
 | Gap | Detail |
 |-----|--------|
 | **No `tools/list_changed` handling** | Tool list fixed at connect; no `ClientHandler` or loop refresh |
-| **Resources / prompts** | Protocol primitives exist; Tact only wires Tools today |
+| **Resource templates / prompts** | Resources are wired (`list_mcp_resources` / `read_mcp_resource`); `resources/templates/list` is not, and neither are Prompts — a prompt template has no consumer in Tact's turn structure yet |
 | **Legacy HTTP+SSE** | `type: "sse"` maps to Streamable HTTP; the deprecated 2024-11-05 HTTP+SSE endpoint is not implemented |
 | **OAuth device flow / mTLS** | Only the authorization-code + PKCE flow is implemented; no device code, client certificates, or enterprise SSO |
 | **Client secrets / allowlisted providers** | Only self-registration (DCR) and public-client `clientId` are supported; a provider that refuses DCR *and* needs a client secret (Figma's remote server) cannot be authorized from Tact — the error names the alternatives |

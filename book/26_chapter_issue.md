@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — MCP resources become readable content instead of a documented gap
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/mcp/resource.rs` (`McpResourceTool`, `resource_tool_specs`, `render_resource_listing`, `render_resource_contents`), `crates/tact/src/mcp/mod.rs` (`McpService::{list_resources, read_resource}`, `McpServerInspection::resources`), `crates/tact/src/agent/{mod,tool_dispatch}.rs`, `crates/tact-ui/src/mcp_cli.rs`; spec `docs/superpowers/specs/2026-09-30-mcp-resources-design.md`; [Ch 8](./08_chapter_mcp.md) |
+
+**Symptom / motivation:** Tact wired exactly one MCP primitive — Tools. Resources, the read-only content a server addresses by URI, went nowhere, and that gap was load-bearing: Basic Memory's `instructions` say "read the `memory://ai_assistant_guide` resource", so once Tact started delivering those instructions it also started telling the model about something it could not fetch. A dead end is worse than the silence it replaced, because the model now knows it is missing something.
+
+**Decision:** Two native tools, mirroring Codex — `list_mcp_resources` (`server` optional) and `read_mcp_resource` (`server`, `uri` required) — resolved in `agent::tool_dispatch` beside the `mcp__…` names, as a new `ResolvedTool::McpResource`. Resources are not tools: they have no input schema and cannot become one `mcp__<server>__<tool>` entry each. Both are `CapabilityRisk::High` (third-party content, and a listing touches every configured server); `read_mcp_resource` is scoped to its named server for scheduling while a listing is a barrier. They exist **only while a server is connected**, so the model is never handed a tool whose only answer is "no MCP servers are connected". A blob is reported by size rather than inlined, an empty listing names `resources/templates/list` as unread rather than letting a template-only server look empty, and an unknown server names the connected ones. `tact-ui mcp get <server>` now reports `resources  N available…` or, distinctly, that the server did not answer `resources/list` — "publishes none" and "cannot answer" are different facts.
+
+**Behavior after:** Basic Memory's guide is reachable: `tact-ui mcp get basic-memory` reports `resources  1 available`, and the model can list it and read it on demand. Codex's third tool, `list_mcp_resource_templates`, stays unimplemented and the chapter's gap row says so.
+
+**Pointers:** `mcp::resource::tests::*`, `mcp::tests::mcp_client_reads_resources_from_a_real_in_process_server`, `agent::tool_dispatch::tests::{a_resource_listing_is_a_successful_tool_result, a_resource_read_returns_the_text, a_resource_read_requires_both_server_and_uri}`, `agent::tests::the_resource_tools_are_offered_only_with_a_connected_server`, `mcp_cli::tests::the_detail_view_separates_no_resources_from_no_answer`.
+
+---
+
 ## 1. 2026-09-30 — MCP entries can pass environment variables through and bound one tool call
 
 | Field | Value |

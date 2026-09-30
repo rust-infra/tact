@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — MCP resources 从「文档里的缺口」变成可读内容
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/resource.rs`（`McpResourceTool`、`resource_tool_specs`、`render_resource_listing`、`render_resource_contents`）、`crates/tact/src/mcp/mod.rs`（`McpService::{list_resources, read_resource}`、`McpServerInspection::resources`）、`crates/tact/src/agent/{mod,tool_dispatch}.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-resources-design.md`；[第 8 章](./08_chapter_mcp.md) |
+
+**现象 / 动机：** Tact 只接入了 MCP 的一种原语——Tools。Resources（server 以 URI 寻址的只读内容）无处可去，而这个缺口是关键路径上的：Basic Memory 的 `instructions` 写着「read the `memory://ai_assistant_guide` resource」，所以 Tact 一旦开始投递这些 instructions，也就等于开始告诉模型一件它取不到的东西。死路比它取代的沉默更糟，因为模型现在知道自己缺了什么。
+
+**决策：** 对齐 Codex 新增两个原生工具——`list_mcp_resources`（`server` 可选）与 `read_mcp_resource`（`server`、`uri` 必填）——在 `agent::tool_dispatch` 中与 `mcp__…` 名字并列解析，实现为新的 `ResolvedTool::McpResource`。Resources 不是工具：它们没有输入 schema，无法各自变成一个 `mcp__<server>__<tool>` 条目。两者风险等级均为 `CapabilityRisk::High`（第三方内容，且一次列表会触及所有已配置 server）；调度上 `read_mcp_resource` 只作用于它指定的 server，而列表是 barrier。它们**只在有 server 连接时**存在，因此模型不会拿到一个只能回答「没有连接任何 MCP server」的工具。blob 只报告大小而不内联；列表为空时会点明 `resources/templates/list` 尚未读取，而不是让只提供模板的 server 看起来是空的；未知 server 会列出已连接的那些。`tact-ui mcp get <server>` 现在会显示 `resources  N available…`，或者明确区分地说明该 server 没有应答 `resources/list`——「一个都没发布」和「无法应答」是两件不同的事。
+
+**改后行为：** Basic Memory 的 guide 变得可达：`tact-ui mcp get basic-memory` 显示 `resources  1 available`，模型可以按需列出并读取。Codex 的第三个工具 `list_mcp_resource_templates` 仍未实现，章节的缺口表已如实写明。
+
+**指针：** `mcp::resource::tests::*`、`mcp::tests::mcp_client_reads_resources_from_a_real_in_process_server`、`agent::tool_dispatch::tests::{a_resource_listing_is_a_successful_tool_result, a_resource_read_returns_the_text, a_resource_read_requires_both_server_and_uri}`、`agent::tests::the_resource_tools_are_offered_only_with_a_connected_server`、`mcp_cli::tests::the_detail_view_separates_no_resources_from_no_answer`。
+
+---
+
 ## 1. 2026-09-30 — MCP 条目可以透传环境变量，也可以限定单次工具调用
 
 | 字段 | 值 |

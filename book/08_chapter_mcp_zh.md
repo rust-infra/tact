@@ -505,7 +505,7 @@ Agent 写入 context → LLM 产出最终答案
 
 每次 LLM 请求都带最新工具列表（`with_tools(self.all_tool_specs())`），更新在下一轮生效。
 
-### Step 9（可选）：Resources 与 Prompts
+### Step 9：Resources——以 URI 寻址的只读内容
 
 除 Tools 外，MCP 还定义两种原语：
 
@@ -514,7 +514,20 @@ Agent 写入 context → LLM 产出最终答案
 | **Resources** | 只读上下文（文件、schema、API 数据） | `resources/list`, `resources/read` |
 | **Prompts** | 可复用 prompt 模板 | `prompts/list`, `prompts/get` |
 
-Tact 今天主要走 **Tools** 路径。Resources 与 Prompts 在协议中存在；Host 是否暴露给 LLM 取决于实现。
+Resources 不是工具——它们没有输入 schema，以 URI 寻址——因此 Tact **不**把它们暴露成 `mcp__<server>__…` 条目，而是对齐 Codex，新增两个原生工具派发到 MCP router：
+
+| 工具 | 参数 | 行为 |
+|------|------|------|
+| `list_mcp_resources` | `server`（可选） | 把每个已连接 server 的 `resources/list` 渲染成一节 `## <server>`，逐条列出 URI 与名称。指定 server 可缩小范围。 |
+| `read_mcp_resource` | `server`、`uri`（均必填） | 对该 URI 执行 `resources/read`。文本原样返回；二进制 blob 只报告大小而不内联，因为 base64 载荷对模型不可读、又很占上下文。 |
+
+两者都**只在有 server 连接时**存在（`MCPToolRouter::resource_tool_specs`）：router 为空时这两个名字无法解析，也就不会被广告出去，模型不会拿到一个只能回答「没有连接任何 MCP server」的工具。它们与 `mcp__…` 名字在同一处解析，风险等级为 `CapabilityRisk::High`（第三方内容，且一次列表会触及所有 server）；调度上 `read_mcp_resource` 只作用于单个 server，而列表是一个 barrier。
+
+这件事比看上去重要。很多 server 把真正的内容作为 resource 发布，并告诉模型去读其中一个——Basic Memory 的 `instructions` 就写着「read the `memory://ai_assistant_guide` resource」，对真实 server 实测 `tact-ui mcp get basic-memory` 会显示 `resources  1 available`。没有 Step 9，这句话就是死路。
+
+Codex 的第三个工具 `list_mcp_resource_templates` **未**实现：URI 模板在知道具体 URI 之后就能直接读，而具体列表才是最快过时的部分。列表为空时的提示会把这一点说出来，免得一个只提供模板的 server 看起来是空的。
+
+`tact-ui mcp get <server>` 会区分这两种状态：能应答时显示 `resources  N available…`，不能应答时显示 `(the server did not answer \`resources/list\`)`——「一个都没发布」和「无法应答」是两件不同的事，只有前者是关于 server 内容的事实。
 
 ### Step 10：Notifications——Server 推送更新
 
@@ -613,6 +626,7 @@ sequenceDiagram
 | 动态更新 | *（未实现）* | `tools/list_changed` 通知 + 缓存刷新 |
 | 工具策略 | `McpServerPolicy` | `enabled_tools` / `disabled_tools`、`startup_timeout_sec`、审批模式、单工具输出预算 |
 | 路由 | `MCPToolRouter` | 按 `mcp__*` 名路由到正确 Server |
+| Resources | `crates/tact/src/mcp/resource.rs` | `list_mcp_resources` / `read_mcp_resource`：`resources/list` 与 `resources/read`，并渲染给模型 |
 | Agent 集成 | `crates/tact/src/agent/mod.rs` | `Agent::new` 合并 tool spec；每轮 LLM 用 `all_tool_specs()` |
 | 并行调度 | `crates/tact/src/agent/tool_schedule.rs` | 同 Server 串行；不同 Server 可并行 |
 | 入口 | `crates/tact-ui/src/headless.rs`, `interactive.rs` | 启动时 `load_mcp_router()` |
@@ -747,7 +761,7 @@ oauth_client_name = "Codex"   # 默认；设为 "Tact" 可如实标识
 | 缺口 | 说明 |
 |------|------|
 | **无 `tools/list_changed` 处理** | 工具列表在连接时固定；无 `ClientHandler` 或循环内刷新 |
-| **Resources / prompts** | 协议原语存在；Tact 今天只接 Tools |
+| **资源模板 / prompts** | Resources 已接通（`list_mcp_resources` / `read_mcp_resource`）；`resources/templates/list` 未接，Prompts 也未接——在 Tact 的轮次结构里 prompt 模板尚无消费者 |
 | **旧版 HTTP+SSE** | `type: "sse"` 映射到 Streamable HTTP；已废弃的 2024-11-05 HTTP+SSE 端点未实现 |
 | **OAuth 设备码 / mTLS** | 只实现授权码 + PKCE 流程；无设备码、客户端证书或企业 SSO |
 | **客户端密钥 / 白名单 provider** | 只支持自我注册（DCR）与公共客户端的 `clientId`；若 provider 既拒绝 DCR 又要求 client secret（Figma 远程 server），则无法在 Tact 内完成授权——报错会指明替代方案 |

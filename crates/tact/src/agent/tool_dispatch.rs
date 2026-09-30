@@ -33,6 +33,11 @@ enum ResolvedTool {
         server: String,
         tool: String,
     },
+    /// `list_mcp_resources` / `read_mcp_resource` — Codex's native resource
+    /// tools, served by the MCP router rather than by a `Tool` of their own.
+    McpResource {
+        tool: crate::mcp::McpResourceTool,
+    },
     Unknown {
         name: String,
     },
@@ -345,6 +350,52 @@ async fn run_mcp_tool(
     }
 }
 
+/// Whether `name` is one of Codex's two MCP resource tools.
+fn is_mcp_resource_tool(name: &str) -> bool {
+    crate::mcp::McpResourceTool::from_name(name).is_some()
+}
+
+/// Runs `list_mcp_resources` / `read_mcp_resource` against the live router.
+///
+/// Deliberately outside `run_mcp_tool`: those tools take a `mcp__<server>__<tool>`
+/// name parsed into a server/tool pair, and a resource has no tool name at all.
+async fn run_mcp_resource_tool(
+    mcp_router: &MCPToolRouter,
+    tool: crate::mcp::McpResourceTool,
+    input: &serde_json::Value,
+) -> ExecResult {
+    let server = input.get("server").and_then(|value| value.as_str());
+    let result = match tool {
+        crate::mcp::McpResourceTool::List => mcp_router.list_resources(server).await,
+        crate::mcp::McpResourceTool::Read => {
+            let Some(server) = server else {
+                return ExecResult {
+                    content: "Error invoking read_mcp_resource: `server` is required".to_string(),
+                    status: StepStatus::Failed,
+                    image: None,
+                };
+            };
+            match input.get("uri").and_then(|value| value.as_str()) {
+                Some(uri) => mcp_router.read_resource(server, uri).await,
+                None => Err(anyhow::anyhow!("`uri` is required")),
+            }
+        }
+    };
+
+    match result {
+        Ok(content) => ExecResult {
+            content,
+            status: StepStatus::Success,
+            image: None,
+        },
+        Err(error) => ExecResult {
+            content: format!("Error invoking {}: {error}", tool.name()),
+            status: StepStatus::Failed,
+            image: None,
+        },
+    }
+}
+
 // ── Presentation helper ─────────────────────────────────────────────────
 
 fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
@@ -404,6 +455,15 @@ fn tool_resources_for(
             )
         }
         ResolvedTool::Mcp { server, .. } => super::tool_schedule::mcp_server_resources(server),
+        // A listing may touch every server, so only a *read* can be scoped to
+        // one; a listing is a barrier over all of them.
+        ResolvedTool::McpResource {
+            tool: crate::mcp::McpResourceTool::Read,
+        } => match prep.input.get("server").and_then(|value| value.as_str()) {
+            Some(server) => super::tool_schedule::mcp_server_resources(server),
+            None => super::tool_schedule::ToolResources::barrier(),
+        },
+        ResolvedTool::McpResource { .. } => super::tool_schedule::ToolResources::barrier(),
         ResolvedTool::Unknown { .. } => super::tool_schedule::ToolResources::barrier(),
     }
 }
@@ -504,6 +564,10 @@ impl Agent {
                         server: mcp.server,
                         tool: mcp.tool,
                     },
+                    Ok(None) | Err(_) if is_mcp_resource_tool(name) => ResolvedTool::McpResource {
+                        tool: crate::mcp::McpResourceTool::from_name(name)
+                            .expect("guarded by is_mcp_resource_tool"),
+                    },
                     Ok(None) | Err(_) => {
                         let msg = format!("unknown tool: {name}");
                         self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
@@ -579,11 +643,15 @@ impl Agent {
             let stable_name = match &resolved {
                 ResolvedTool::Native { metadata } => metadata.name,
                 ResolvedTool::Mcp { full_name, .. } => full_name.as_str(),
+                ResolvedTool::McpResource { tool } => tool.name(),
                 ResolvedTool::Unknown { name } => name.as_str(),
             };
             let risk = match &resolved {
                 ResolvedTool::Native { metadata } => metadata.permission.resolve(&tool_use.input),
                 ResolvedTool::Mcp { server, tool, .. } => normalize_mcp_capability(server, tool),
+                // Reading a resource is still third-party content, and a
+                // listing touches every server the user configured.
+                ResolvedTool::McpResource { .. } => CapabilityRisk::High,
                 ResolvedTool::Unknown { .. } => CapabilityRisk::High,
             };
             // An MCP entry's `approval_mode: "auto"` skips the default prompt
@@ -876,13 +944,19 @@ impl Agent {
                 let ctx = &self.tool_context;
                 let prep = &prepared[pi];
                 let is_mcp = matches!(prep.resolved, ResolvedTool::Mcp { .. });
+                let resource_tool = match &prep.resolved {
+                    ResolvedTool::McpResource { tool } => Some(*tool),
+                    _ => None,
+                };
                 let output_policy = match &prep.resolved {
                     ResolvedTool::Native { metadata } => metadata.output,
                     _ => OutputPolicy::PersistLargeOutput,
                 };
                 futures.push(async move {
                     let start = std::time::Instant::now();
-                    let exec = if is_mcp {
+                    let exec = if let Some(tool) = resource_tool {
+                        run_mcp_resource_tool(mcp, tool, &prep.input).await
+                    } else if is_mcp {
                         run_mcp_tool(mcp, ctx, &prep.id, &prep.name, &prep.input).await
                     } else {
                         run_native_tool(
@@ -1113,8 +1187,88 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::mcp::{McpClient, McpResourceTool, MockMcpService};
     use tact_protocol::StepStatus;
+
+    /// A router with one server that publishes one readable resource.
+    fn router_with_a_resource() -> MCPToolRouter {
+        let service = MockMcpService::new(Vec::new(), |_| {
+            Ok(rmcp::model::CallToolResult::success(Vec::new()))
+        })
+        .with_text_resource("memory://guide", "Guide", "Read me first.");
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service("bm", Vec::new(), Arc::new(service)));
+        router
+    }
+
+    #[tokio::test]
+    async fn a_resource_listing_is_a_successful_tool_result() {
+        let exec = run_mcp_resource_tool(
+            &router_with_a_resource(),
+            McpResourceTool::List,
+            &serde_json::json!({}),
+        )
+        .await;
+
+        assert!(matches!(exec.status, StepStatus::Success));
+        assert!(exec.content.contains("memory://guide"), "{}", exec.content);
+    }
+
+    #[tokio::test]
+    async fn a_resource_read_requires_both_server_and_uri() {
+        // The schema marks both required, but a model can still send the wrong
+        // shape; failing with a named argument beats an "unknown server" from a
+        // lookup with an empty name.
+        let exec = run_mcp_resource_tool(
+            &router_with_a_resource(),
+            McpResourceTool::Read,
+            &serde_json::json!({"uri": "memory://guide"}),
+        )
+        .await;
+        assert!(matches!(exec.status, StepStatus::Failed));
+        assert!(
+            exec.content.contains("`server` is required"),
+            "{}",
+            exec.content
+        );
+
+        let exec = run_mcp_resource_tool(
+            &router_with_a_resource(),
+            McpResourceTool::Read,
+            &serde_json::json!({"server": "bm"}),
+        )
+        .await;
+        assert!(matches!(exec.status, StepStatus::Failed));
+        assert!(
+            exec.content.contains("`uri` is required"),
+            "{}",
+            exec.content
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resource_read_returns_the_text() {
+        let exec = run_mcp_resource_tool(
+            &router_with_a_resource(),
+            McpResourceTool::Read,
+            &serde_json::json!({"server": "bm", "uri": "memory://guide"}),
+        )
+        .await;
+
+        assert!(matches!(exec.status, StepStatus::Success));
+        assert!(exec.content.contains("Read me first."), "{}", exec.content);
+    }
+
+    #[test]
+    fn only_the_resource_names_resolve_to_the_resource_path() {
+        assert!(is_mcp_resource_tool("list_mcp_resources"));
+        assert!(is_mcp_resource_tool("read_mcp_resource"));
+        assert!(!is_mcp_resource_tool("mcp__bm__read_note"));
+        assert!(!is_mcp_resource_tool("read_file"));
+    }
 
     #[test]
     fn tool_detail_content_edit_file_returns_new_text() {

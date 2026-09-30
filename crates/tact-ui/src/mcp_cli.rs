@@ -255,6 +255,17 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
             "  instructions  {chars} chars (injected into the system prompt)"
         ));
     }
+    // "publishes none" and "does not answer resources/list" are different
+    // states, and only the first is worth reading as a fact about the server.
+    match inspection.resources {
+        Some(count) => lines.push(format!(
+            "  resources  {count} available to `list_mcp_resources`"
+        )),
+        None if matches!(inspection.status, McpServerStatus::Connected) => {
+            lines.push("  resources  (the server did not answer `resources/list`)".to_string());
+        }
+        None => {}
+    }
     lines.join("\n")
 }
 
@@ -716,6 +727,7 @@ mod tests {
             tools: vec!["read_note".to_string()],
             filtered: vec!["delete_note".to_string()],
             instructions_chars: None,
+            resources: None,
         };
 
         let text = render_server_detail(&inspection);
@@ -735,6 +747,7 @@ mod tests {
             tools: vec!["read_note".to_string()],
             filtered: Vec::new(),
             instructions_chars: Some(2_043),
+            resources: Some(3),
         };
         let text = render_server_detail(&inspection);
         assert!(
@@ -746,11 +759,48 @@ mod tests {
         // dropped, so absence stays silent — only a real payload gets a line.
         let quiet = mcp::McpServerInspection {
             instructions_chars: None,
+            resources: None,
             ..inspection
         };
         assert!(
             !render_server_detail(&quiet).contains("instructions"),
             "{quiet:?}"
+        );
+    }
+
+    #[test]
+    fn the_detail_view_separates_no_resources_from_no_answer() {
+        let connected = mcp::McpServerInspection {
+            server: configured("memory", false),
+            status: McpServerStatus::Connected,
+            tools: vec!["read_note".to_string()],
+            filtered: Vec::new(),
+            instructions_chars: None,
+            resources: Some(0),
+        };
+        let text = render_server_detail(&connected);
+        assert!(
+            text.contains("resources  0 available to `list_mcp_resources`"),
+            "{text}"
+        );
+
+        // "does not answer" is not the same fact as "publishes none", and only
+        // the second is a statement about the server's contents.
+        let silent = mcp::McpServerInspection {
+            resources: None,
+            ..connected
+        };
+        let text = render_server_detail(&silent);
+        assert!(text.contains("did not answer `resources/list`"), "{text}");
+
+        let pending = mcp::McpServerInspection {
+            status: McpServerStatus::PendingAuthorization,
+            resources: None,
+            ..silent
+        };
+        assert!(
+            !render_server_detail(&pending).contains("resources"),
+            "a server that was never contacted has nothing to say about resources"
         );
     }
 
@@ -896,6 +946,7 @@ mod tests {
             tools: vec!["get_file".into(), "list_files".into()],
             filtered: Vec::new(),
             instructions_chars: None,
+            resources: None,
         };
 
         let text = render_server_detail(&inspection);
@@ -920,6 +971,7 @@ mod tests {
             tools: Vec::new(),
             filtered: Vec::new(),
             instructions_chars: None,
+            resources: None,
         };
         let report = McpLoadReport {
             configured: vec![configured("linear", true)],
@@ -939,6 +991,7 @@ mod tests {
             tools: Vec::new(),
             filtered: Vec::new(),
             instructions_chars: None,
+            resources: None,
         };
         let report = McpLoadReport {
             configured: vec![configured("broken", false)],
@@ -956,6 +1009,7 @@ mod tests {
             tools: Vec::new(),
             filtered: Vec::new(),
             instructions_chars: None,
+            resources: None,
         };
         let text = render_server_detail(&connected);
         assert!(text.contains("reports no tools"), "{text}");
