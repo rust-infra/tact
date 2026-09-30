@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — MCP 条目可以透传环境变量，也可以限定单次工具调用
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpEnvVar`、`resolve_env_vars`、`McpProjectConfig::env_vars` / `tool_timeout_sec`、`McpServerPolicy::tool_timeout`、`McpClient::{connect, call_tool}`、`unmodelled_keys`）；spec `docs/superpowers/specs/2026-09-30-mcp-env-vars-and-tool-timeout-design.md`；[第 8 章](./08_chapter_mcp.md) |
+
+**现象 / 动机：** 有两个 Codex 条目字段此前只是被解析并上报，而它们各自都有实际代价。`tool_timeout_sec` 不存在，于是所有 server 的每次 `tools/call` 都套用同一个固定 600 秒上限——一个本该快速失败的工具无法这样要求。`env_vars` 不存在，于是 server 的凭据只能通过 `env` 以字面量写进 `.mcp.json`，既把密钥留在磁盘上，也让这个文件无法分享。
+
+**决策：** `env_vars` 接受 Codex 的两种写法（`["TOKEN"]` 与 `[{"name": "TOKEN", "source": "local"}]`），并在 `McpClient::connect` 里于子进程启动**之前**完成解析，因此未设置的变量会让**该 server** 以 `env var \`X\` is not set` 失败，而不是启动一个之后在不相干的地方以认证错误失败的子进程。`source: "remote"` 以及任何未知 source 都会按名拒绝——Tact 没有远端 stdio 执行器，糊过去的做法等于静默丢掉取值。同名时字面量 `env` 条目优先，因为写下来的值就是用户的本意。`env_vars` 是 stdio 字段，因此在远程（`url`）条目上声明它会被并入 `unmodelled_keys` 报告，而不是被忽略。`tool_timeout_sec` 现在为单次 `tools/call` 设定按 server 的预算，超时报错会写明实际生效的预算；Tact 保留自己 600 秒的默认值，这样今天可用的条目不会开始失败。
+
+**改后行为：** `"env_vars": ["GITHUB_TOKEN"]` 让 server 拿到 token 而密钥不进入配置文件，`"tool_timeout_sec": 120` 限定某个 server 的单次调用。`mcp list` 不再把 `tool_timeout_sec` 列为未建模，并且只在 `env_vars` 无法生效的地方才点名它。
+
+**指针：** `mcp::tests::{env_vars_accept_the_shorthand_and_the_explicit_form, env_vars_are_resolved_from_the_process_environment, a_literal_env_entry_wins_over_env_vars, an_unset_env_var_fails_the_server_by_name, a_remote_env_vars_source_names_the_missing_executor, an_unknown_env_vars_source_names_the_allowed_set, env_vars_on_a_remote_entry_are_reported_as_unmodelled, env_vars_are_resolved_before_the_child_is_spawned, tool_timeout_sec_overrides_the_global_call_ceiling, tool_timeout_sec_is_no_longer_reported_as_unmodelled}`。
+
+---
+
 ## 1. 2026-09-30 — `/hooks` 让 hook 在它触发的地方就能被审核
 
 | 字段 | 值 |

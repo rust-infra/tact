@@ -117,6 +117,91 @@ pub enum McpTransportConfig {
     Remote(McpRemoteConfig),
 }
 
+/// One Codex `env_vars` entry.
+///
+/// Codex accepts both a bare name (`"env_vars": ["TOKEN"]`) and the explicit
+/// `{ "name": …, "source": "local" | "remote" }` object; the bare form means
+/// `local`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum McpEnvVar {
+    /// The shorthand form.
+    Name(String),
+    /// The explicit form.
+    Explicit {
+        name: String,
+        #[serde(default)]
+        source: Option<String>,
+    },
+}
+
+impl McpEnvVar {
+    /// The variable this entry names.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Name(name) | Self::Explicit { name, .. } => name,
+        }
+    }
+
+    /// Where the value comes from. `None` means Codex's default, `local`.
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        match self {
+            Self::Name(_) => None,
+            Self::Explicit { source, .. } => source.as_deref(),
+        }
+    }
+}
+
+/// Resolves `env_vars` against Tact's environment for one stdio server.
+///
+/// `explicit` is the entry's literal `env` map and wins any name collision: a
+/// user who wrote a value down meant it.
+///
+/// Failures are returned rather than skipped. A server that expects
+/// `GITHUB_TOKEN` and starts without it fails later, somewhere unrelated, with
+/// a message about authentication; failing at spawn names the variable. Codex
+/// makes the same choice (`env var \`X\` is not set`).
+fn resolve_env_vars(
+    server_name: &str,
+    explicit: &HashMap<String, String>,
+    env_vars: &[McpEnvVar],
+) -> Result<HashMap<String, String>> {
+    let mut resolved = HashMap::new();
+    for entry in env_vars {
+        let name = entry.name();
+        if name.is_empty() {
+            bail!("MCP server {server_name} declares an env_vars entry with an empty name");
+        }
+        if explicit.contains_key(name) {
+            tracing::debug!(
+                mcp_server = %server_name,
+                variable = %name,
+                "env_vars entry is overridden by the literal env map; ignoring it"
+            );
+            continue;
+        }
+        match entry.source() {
+            None | Some("local") => {}
+            // Codex's `remote` source asks a remote stdio executor for the
+            // value. Tact has no remote-stdio executor, so the honest outcome is
+            // a named unsupported-feature error, not a silently missing value.
+            Some("remote") => bail!(
+                "MCP server {server_name}: env_vars source `remote` needs a remote stdio                  executor, which Tact does not implement"
+            ),
+            Some(other) => bail!(
+                "MCP server {server_name}: unsupported env_vars source `{other}`;                  expected `local` or `remote`"
+            ),
+        }
+        let value = std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("MCP server {server_name}: env var `{name}` is not set")
+        })?;
+        resolved.insert(name.to_string(), value);
+    }
+    Ok(resolved)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
@@ -125,6 +210,15 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Codex `env_vars`: names copied out of Tact's own environment.
+    ///
+    /// The child gets these in addition to [`Self::env`]; an explicit `env`
+    /// entry with the same name wins, so a literal value is never overridden by
+    /// a pass-through. Resolution happens at spawn time (see
+    /// [`resolve_env_vars`]) because an unset variable must fail *that server*
+    /// with a reason, not start it with a missing credential.
+    #[serde(default)]
+    pub env_vars: Vec<McpEnvVar>,
     /// Working directory for the subprocess.
     ///
     /// `None` inherits tact's own directory, which is what a user-level
@@ -344,9 +438,11 @@ fn describe_resolved(
 
 /// An entry that declares keys Tact does not model.
 ///
-/// The Codex per-entry fields that remain unimplemented (`omit_tools_from`,
-/// `tool_timeout_sec`) land here: parsing them without implementing them is
-/// only honest if the user can see which ones were ignored.
+/// Two things land here: a Codex per-entry field Tact still does not implement
+/// (`omit_tools_from`), and a field Tact does implement but not *here*
+/// (`env_vars` on a remote entry, which has no child process to receive it).
+/// Parsing either without honouring it is only honest if the user can see
+/// which ones were ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnmodelledKeys {
     /// The server name as it appears in the file (before any plugin prefix).
@@ -620,6 +716,7 @@ pub struct McpServerPolicy {
     enabled_tools: Option<Vec<String>>,
     disabled_tools: Option<Vec<String>>,
     startup_timeout: Option<std::time::Duration>,
+    tool_timeout: Option<std::time::Duration>,
     default_approval_mode: Option<ApprovalMode>,
     tool_overrides: HashMap<String, McpToolPolicy>,
 }
@@ -662,6 +759,7 @@ impl McpServerPolicy {
             enabled_tools: config.enabled_tools.clone(),
             disabled_tools: config.disabled_tools.clone(),
             startup_timeout,
+            tool_timeout: config.tool_timeout_sec.map(std::time::Duration::from_secs),
             default_approval_mode: parse_approval_mode(
                 config.default_tools_approval_mode.as_deref(),
                 "default_tools_approval_mode",
@@ -693,6 +791,12 @@ impl McpServerPolicy {
     #[must_use]
     pub fn startup_timeout(&self) -> Option<std::time::Duration> {
         self.startup_timeout
+    }
+
+    /// The single-call budget this entry asks for, if any.
+    #[must_use]
+    pub fn tool_timeout(&self) -> Option<std::time::Duration> {
+        self.tool_timeout
     }
 
     /// Whether the entry declares `approval_mode: "auto"` for `tool`.
@@ -754,6 +858,12 @@ pub struct McpProjectConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Codex `env_vars`: names to copy out of Tact's environment.
+    ///
+    /// Applies to stdio entries. A remote entry that declares any is reported as
+    /// unmodelled, because there is no child process to put them in.
+    #[serde(rename = "env_vars", default)]
+    pub env_vars: Vec<McpEnvVar>,
     /// Working directory for a stdio server (Agent Plugins §7.2.1).
     ///
     /// Modelled rather than left in [`Self::extra`] because a plugin entry may
@@ -797,6 +907,12 @@ pub struct McpProjectConfig {
     /// Codex `startup_timeout_ms`: millisecond alias for `startup_timeout_sec`.
     #[serde(rename = "startup_timeout_ms", default)]
     pub startup_timeout_ms: Option<u64>,
+    /// Codex `tool_timeout_sec`: budget for one `tools/call` on this server.
+    ///
+    /// Overrides Tact's global default for this server only, which is what the
+    /// field means in Codex. Absent keeps Tact's own ceiling.
+    #[serde(rename = "tool_timeout_sec", default)]
+    pub tool_timeout_sec: Option<u64>,
     /// Codex `default_tools_approval_mode`: server-wide approval default.
     #[serde(rename = "default_tools_approval_mode", default)]
     pub default_tools_approval_mode: Option<String>,
@@ -806,9 +922,8 @@ pub struct McpProjectConfig {
     /// Keys this struct does not model.
     ///
     /// Kept so the resolver can report them instead of dropping them silently:
-    /// the remaining Codex per-entry fields (`omit_tools_from`,
-    /// `tool_timeout_sec`) land here, and a configuration someone wrote must
-    /// not disappear without a word.
+    /// the remaining Codex per-entry field (`omit_tools_from`) lands here, and a
+    /// configuration someone wrote must not disappear without a word.
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -827,6 +942,7 @@ impl Default for McpProjectConfig {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            env_vars: Vec::new(),
             cwd: None,
             url: None,
             headers: HashMap::new(),
@@ -836,6 +952,7 @@ impl Default for McpProjectConfig {
             disabled_tools: None,
             startup_timeout_sec: None,
             startup_timeout_ms: None,
+            tool_timeout_sec: None,
             default_tools_approval_mode: None,
             tools: None,
             extra: HashMap::new(),
@@ -861,6 +978,7 @@ impl McpProjectConfig {
             command: self.command.clone()?,
             args: self.args.clone(),
             env: self.env.clone(),
+            env_vars: self.env_vars.clone(),
             cwd: self.cwd.as_deref().map(PathBuf::from),
         })
     }
@@ -877,6 +995,7 @@ impl McpProjectConfig {
                 command: command.clone(),
                 args: self.args.clone(),
                 env: self.env.clone(),
+                env_vars: self.env_vars.clone(),
                 cwd: self.cwd.as_deref().map(PathBuf::from),
             }));
         }
@@ -1459,7 +1578,14 @@ impl McpClient {
         let command = config.command;
         let args = config.args;
         let env = config.env;
+        let env_vars = config.env_vars;
         let cwd = config.cwd;
+        // Resolved before the spawn: an unset variable fails this server with a
+        // message naming it, rather than starting a child that will fail later
+        // somewhere unrelated.
+        let inherited = resolve_env_vars(server_name, &env, &env_vars)?;
+        let mut child_env = env;
+        child_env.extend(inherited);
         // Capture and drain the server's stderr instead of inheriting it to
         // the terminal. Many stdio MCP servers log incidental progress (e.g.
         // index/recovery "Reconstruction complete") there; forwarding those
@@ -1467,7 +1593,7 @@ impl McpClient {
         // are enabled.
         let (transport, stderr) =
             TokioChildProcess::builder(Command::new(&command).configure(move |cmd| {
-                cmd.args(&args).envs(&env);
+                cmd.args(&args).envs(&child_env);
                 if let Some(cwd) = cwd.as_deref() {
                     cmd.current_dir(cwd);
                 }
@@ -1520,8 +1646,11 @@ impl McpClient {
             }
         };
 
+        // The entry's `tool_timeout_sec` overrides the global ceiling for this
+        // server; the error names whichever budget was actually applied.
+        let budget = self.policy.tool_timeout().unwrap_or(MCP_CALL_TOOL_TIMEOUT);
         let result = tokio::time::timeout(
-            MCP_CALL_TOOL_TIMEOUT,
+            budget,
             self.service.call_tool(CallToolRequestParams {
                 meta: None,
                 name: tool_name.to_string().into(),
@@ -1533,7 +1662,7 @@ impl McpClient {
         .with_context(|| {
             format!(
                 "MCP tool {tool_name} did not return within {}s",
-                MCP_CALL_TOOL_TIMEOUT.as_secs()
+                budget.as_secs()
             )
         })?
         .with_context(|| format!("failed to call MCP tool {tool_name}"))?;
@@ -2060,16 +2189,22 @@ struct Resolution {
 /// Describes the entry keys Tact does not model, or `None` when there are none.
 ///
 /// Silently ignoring configuration is the failure this exists to prevent: a
-/// Codex entry can declare `omit_tools_from` / `tool_timeout_sec` and Tact
-/// would otherwise look as if it honored them. The keys are both logged and
+/// Codex entry can declare `omit_tools_from`, or `env_vars` on a server that has
+/// no child process, and Tact would otherwise look as if it honored them. The keys are both logged and
 /// returned so `mcp list` can name them — the log subscriber is only installed
 /// when `RUST_LOG` (or `tokio_console`) asks for it, so a warning alone would be
 /// invisible to a default run.
 fn unmodelled_keys(name: &str, source: &str, config: &McpProjectConfig) -> Option<UnmodelledKeys> {
-    if config.extra.is_empty() {
+    let mut keys: Vec<String> = config.extra.keys().cloned().collect();
+    // `env_vars` is modelled, but only for stdio: a remote entry has no child
+    // process to put the variables in, so declaring them there is the same kind
+    // of silence `extra` exists to prevent.
+    if !config.env_vars.is_empty() && config.is_remote() {
+        keys.push("env_vars".to_string());
+    }
+    if keys.is_empty() {
         return None;
     }
-    let mut keys: Vec<String> = config.extra.keys().cloned().collect();
     keys.sort_unstable();
     tracing::warn!(
         mcp_server = %name,
@@ -2305,12 +2440,12 @@ mod tests {
 
     use super::{
         ApprovalMode, MCP_INSTRUCTIONS_MAX_CHARS, MCPToolRouter, McpAuthConfig, McpClient,
-        McpConfigFile, McpLiveStatus, McpLoadReport, McpProjectConfig, McpServerConfig,
+        McpConfigFile, McpEnvVar, McpLiveStatus, McpLoadReport, McpProjectConfig, McpServerConfig,
         McpServerPolicy, McpToolConfig, McpToolName, McpTransportConfig, MockMcpService,
         PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, UnmodelledKeys,
         cap_instructions, collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved,
         drain_mcp_stderr, installed_plugin_mcp_servers, plugin_manifest_mcp_servers,
-        prepare_plugin_entry, resolve_servers,
+        prepare_plugin_entry, resolve_env_vars, resolve_servers, unmodelled_keys,
     };
 
     use crate::{
@@ -2347,6 +2482,7 @@ mod tests {
             command: "node".to_string(),
             args: vec!["server.js".to_string()],
             env: [("A".to_string(), "B".to_string())].into(),
+            env_vars: Vec::new(),
             cwd: None,
         };
 
@@ -3478,9 +3614,12 @@ mod tests {
         assert_eq!(resolved.unmodelled.len(), 1, "{:?}", resolved.unmodelled);
         assert_eq!(resolved.unmodelled[0].server, "codexish");
         assert_eq!(resolved.unmodelled[0].source, "/tmp/.mcp.json");
+        // `tool_timeout_sec` is honoured now, so only the field with no
+        // counterpart here is left to report.
+        assert_eq!(resolved.unmodelled[0].keys, vec!["omit_tools_from"]);
         assert_eq!(
-            resolved.unmodelled[0].keys,
-            vec!["omit_tools_from", "tool_timeout_sec"]
+            resolved.policies["codexish"].tool_timeout(),
+            Some(std::time::Duration::from_secs(30))
         );
         // The entry still connects: an unimplemented *option* is not a reason
         // to drop a server that declares a working transport.
@@ -3515,8 +3654,151 @@ mod tests {
 
         assert!(policy.exposes("anything"));
         assert!(policy.startup_timeout().is_none());
+        assert!(policy.tool_timeout().is_none());
         assert!(!policy.is_auto_approved("anything"));
         assert!(policy.output_token_limit("anything").is_none());
+    }
+
+    /// A variable name nothing can have set, so the "unset" tests cannot pass by
+    /// accident on a machine that happens to define it.
+    fn absent_var() -> String {
+        format!("TACT_TEST_ABSENT_{}", std::process::id())
+    }
+
+    #[test]
+    fn env_vars_accept_the_shorthand_and_the_explicit_form() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "env_vars": ["SHORTHAND", {"name": "LOCAL", "source": "local"}, {"name": "PLAIN"}]
+            }"#,
+        )
+        .unwrap();
+
+        let names: Vec<&str> = config.env_vars.iter().map(|v| v.name()).collect();
+        assert_eq!(names, ["SHORTHAND", "LOCAL", "PLAIN"]);
+        assert_eq!(config.env_vars[0].source(), None, "shorthand means local");
+        assert_eq!(config.env_vars[1].source(), Some("local"));
+        assert_eq!(config.env_vars[2].source(), None, "source is optional");
+    }
+
+    #[test]
+    fn env_vars_are_resolved_from_the_process_environment() {
+        let inherited =
+            resolve_env_vars("demo", &HashMap::new(), &[McpEnvVar::Name("PATH".into())])
+                .expect("PATH is always set");
+        assert_eq!(
+            inherited.get("PATH"),
+            std::env::var("PATH").ok().as_ref(),
+            "the value must be the process's own"
+        );
+    }
+
+    #[test]
+    fn a_literal_env_entry_wins_over_env_vars() {
+        // The name is deliberately unset: if the literal map did not win, this
+        // would fail instead of resolving, which is exactly the bug being
+        // pinned — a pass-through must never override what the user wrote down.
+        let explicit = HashMap::from([(absent_var(), "literal".to_string())]);
+        let resolved = resolve_env_vars("demo", &explicit, &[McpEnvVar::Name(absent_var())])
+            .expect("the literal entry wins, so the unset variable is never read");
+        assert!(resolved.is_empty(), "nothing needed inheriting");
+    }
+
+    #[test]
+    fn an_unset_env_var_fails_the_server_by_name() {
+        let error = resolve_env_vars("demo", &HashMap::new(), &[McpEnvVar::Name(absent_var())])
+            .expect_err("an unset variable must fail rather than start a broken child");
+        let message = error.to_string();
+        assert!(message.contains(&absent_var()), "{message}");
+        assert!(message.contains("is not set"), "{message}");
+    }
+
+    #[test]
+    fn a_remote_env_vars_source_names_the_missing_executor() {
+        let entry = McpEnvVar::Explicit {
+            name: "TOKEN".to_string(),
+            source: Some("remote".to_string()),
+        };
+        let error = resolve_env_vars("demo", &HashMap::new(), &[entry])
+            .expect_err("remote stdio is not implemented");
+        assert!(error.to_string().contains("remote stdio"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_env_vars_source_names_the_allowed_set() {
+        let entry = McpEnvVar::Explicit {
+            name: "TOKEN".to_string(),
+            source: Some("keychain".to_string()),
+        };
+        let error = resolve_env_vars("demo", &HashMap::new(), &[entry])
+            .expect_err("an unknown source must be reported, never ignored");
+        let message = error.to_string();
+        assert!(message.contains("keychain"), "{message}");
+        assert!(message.contains("`local` or `remote`"), "{message}");
+    }
+
+    #[test]
+    fn env_vars_on_a_remote_entry_are_reported_as_unmodelled() {
+        // A remote entry has no child process, so claiming to honour its
+        // `env_vars` would be exactly the silence `unmodelled_keys` prevents.
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"url":"https://example.test/mcp","env_vars":["TOKEN"]}"#)
+                .unwrap();
+        let reported = unmodelled_keys("hosted", "test", &config).expect("must be reported");
+        assert_eq!(reported.keys, ["env_vars"]);
+
+        // …and a stdio entry that uses it is not reported at all.
+        let stdio: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","env_vars":["TOKEN"]}"#).unwrap();
+        assert!(unmodelled_keys("local", "test", &stdio).is_none());
+    }
+
+    #[tokio::test]
+    async fn env_vars_are_resolved_before_the_child_is_spawned() {
+        // The command does not exist: if resolution ran after the spawn, the
+        // error would be about spawning. Naming the variable proves the order.
+        let config = McpServerConfig {
+            command: "/nonexistent-tact-test-binary".to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            env_vars: vec![McpEnvVar::Name(absent_var())],
+            cwd: None,
+        };
+        let error = McpClient::connect("demo", McpTransportConfig::Stdio(config), None)
+            .await
+            .expect_err("an unset env var must fail the connect");
+        let message = format!("{error:#}");
+        assert!(message.contains(&absent_var()), "{message}");
+        assert!(!message.contains("failed to spawn"), "{message}");
+    }
+
+    #[test]
+    fn tool_timeout_sec_overrides_the_global_call_ceiling() {
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","tool_timeout_sec":5}"#).unwrap();
+        assert_eq!(
+            McpServerPolicy::from_config(&config).tool_timeout(),
+            Some(std::time::Duration::from_secs(5))
+        );
+
+        // Absent keeps Tact's own ceiling rather than Codex's.
+        let plain: McpProjectConfig = serde_json::from_str(r#"{"command":"node"}"#).unwrap();
+        assert!(
+            McpServerPolicy::from_config(&plain)
+                .tool_timeout()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tool_timeout_sec_is_no_longer_reported_as_unmodelled() {
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","tool_timeout_sec":5}"#).unwrap();
+        assert!(
+            unmodelled_keys("demo", "test", &config).is_none(),
+            "Tact honours this field now, so reporting it would be a lie"
+        );
     }
 
     #[test]

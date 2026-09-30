@@ -372,6 +372,17 @@ api_key = ""
 #         "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
 #         # Deny list, applied after `enabled_tools`: a name in both is hidden.
 #         "disabled_tools": ["delete_note"],
+#         # Budget for ONE `tools/call` on this server. Absent keeps Tact's 600s
+#         # ceiling. The timeout error names whichever budget was applied.
+#         "tool_timeout_sec": 120,
+#         # Copy these variables out of Tact's OWN environment into the child, so
+#         # a credential does not have to be written into this file. Both Codex
+#         # spellings work: ["TOKEN"] or [{"name": "TOKEN", "source": "local"}].
+#         # A literal `env` entry of the same name wins. An unset variable fails
+#         # this server by name; `source: "remote"` is refused (no remote stdio
+#         # executor here), and on a `url` entry `env_vars` is reported as
+#         # unmodelled because there is no child process to receive it.
+#         "env_vars": ["GITHUB_TOKEN"],
 #         # "auto" skips the default approval prompt for these tools. It is an
 #         # auto-approve, not a lower risk: plan mode still blocks, and an
 #         # explicit deny/ask rule in .tact/settings.json still wins.
@@ -388,5 +399,5 @@ api_key = ""
 #
 # Hidden tools are never silent: `tact-ui mcp list` prints a "Filtered tools"
 # section and `tact-ui mcp get <name>` prints a `hidden` line.
-# `omit_tools_from` and `tool_timeout_sec` have no Tact equivalent and are
-# reported as unmodelled rather than silently ignored.
+# `omit_tools_from` has no Tact equivalent, and `env_vars` has none on a `url`
+# entry: both are reported as unmodelled rather than silently ignored.

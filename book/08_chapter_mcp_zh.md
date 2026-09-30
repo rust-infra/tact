@@ -121,17 +121,19 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
 
 每个条目只声明一种传输：`command`（本地 stdio）或 `url`（远程 Streamable HTTP，可选 `headers` 与 `auth`）。两者同时存在时 `command` 优先。两者都没有的条目按**已跳过**上报，绝不当作硬错误。
 
-条目可以用 `"enabled": false` 关掉（Codex 的写法，OpenAI 自带的 `unified-computer-use` 就这么写）。被关掉的声明照常参与解析——它能顶掉更低优先级的启用声明，也能被更高优先级的启用声明顶掉——但**绝不连接**，`mcp list` 会把它显示为 `disabled (enabled: false)`。剩下的 Codex 专有条目字段（`omit_tools_from`、`tool_timeout_sec`）Tact 没有对应能力，会被解析出来并在 `mcp list` 里**逐条点名**（日志文件里同时有一条 warning），而不是无声丢弃——tracing 只在设了 `RUST_LOG` 或 `tokio_console` 时才装 subscriber，只靠日志等于没说。
+条目可以用 `"enabled": false` 关掉（Codex 的写法，OpenAI 自带的 `unified-computer-use` 就这么写）。被关掉的声明照常参与解析——它能顶掉更低优先级的启用声明，也能被更高优先级的启用声明顶掉——但**绝不连接**，`mcp list` 会把它显示为 `disabled (enabled: false)`。剩下的 Codex 专有条目字段 `omit_tools_from` 在 Tact 没有对应能力，而 `env_vars` 在**远程条目**上也没有——两者都会被解析出来并在 `mcp list` 里**逐条点名**（日志文件里同时有一条 warning），而不是无声丢弃——tracing 只在设了 `RUST_LOG` 或 `tokio_console` 时才装 subscriber，只靠日志等于没说。
 
 ### 每个 server 的工具策略
 
-另外四个 Codex 条目字段已被支持，一个暴露二十多个工具的 server 不必每轮请求都把全部工具声明发一遍：
+越来越多 Codex 条目字段已被支持，一个暴露二十多个工具的 server 不必每轮请求都把全部工具声明发一遍：
 
 | 字段 | 类型 | 行为 |
 |------|------|------|
 | `enabled_tools` | `[string]` | 允许列表。存在时，只有这些工具名会到达 agent。 |
 | `disabled_tools` | `[string]` | 拒绝列表，在 `enabled_tools` **之后**应用，所以同时写进两个列表的工具会被隐藏。 |
 | `startup_timeout_sec` / `startup_timeout_ms` | number | 该 server 的握手预算；两者同时存在时 `sec` 优先。 |
+| `tool_timeout_sec` | number | 该 server 单次 `tools/call` 的预算；缺省时沿用 Tact 自己的上限。 |
+| `env_vars` | `[string \| { name, source }]` | 从 Tact 自身环境复制给 stdio 子进程的变量名。`source` 为 `local`（默认）或 `remote`。 |
 | `default_tools_approval_mode` | `"auto" \| "prompt" \| "approve"` | 该 server 的默认审批行为。 |
 | `tools.<name>.approval_mode` | 同上 | 单工具覆盖，优先于默认值。 |
 | `tools.<name>.output_token_limit` | number | 该工具的结果预算；超限结果落盘到 `.tact/tool-results/` 并只留预览。 |
@@ -145,6 +147,12 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
       "startup_timeout_sec": 120,
       "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
       "tools": { "search_notes": { "approval_mode": "auto" } }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env_vars": ["GITHUB_TOKEN"],
+      "tool_timeout_sec": 120
     }
   }
 }
@@ -154,7 +162,14 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
 
 隐藏工具是刻意的配置而非故障，但**绝不无声**：`mcp list` 会打印 **Filtered tools** 段落，`mcp get` 会打印 `hidden` 行，点名该条目挡在 agent 之外的工具。两者都不进入启动提示，理由与 `unmodelled` 相同：刻意的配置不该让每次启动都变吵。
 
-`startup_timeout_sec` 覆盖全局 60 秒握手上限；Tact 刻意保留 60 秒作为默认值而不是采用 Codex 的 10 秒，这样今天能用的条目不会在升级后开始超时。`output_token_limit` 用与压缩相同的估算器计 token；该字段存在于 Codex 的二进制中但不在其公开配置参考里，所以行为是 Tact 的解读。
+`startup_timeout_sec` 与 `tool_timeout_sec` 分别覆盖单个 server 的握手上限与单次调用上限；Tact 刻意保留自己的默认值（握手 60 秒、单次调用 600 秒）而不是采用 Codex 的，这样今天能用的条目不会在升级后开始超时。超时报错会写明实际生效的是哪个预算。`output_token_limit` 用与压缩相同的估算器计 token；该字段存在于 Codex 的二进制中但不在其公开配置参考里，所以行为是 Tact 的解读。
+
+`env_vars` 让 server 拿到凭据而不必把密钥写进 `.mcp.json`：Tact 从**自己的**环境里读取同名变量并传给子进程，所以 `"env_vars": ["GITHUB_TOKEN"]` 可用，而配置文件本身仍可分享。同名时字面量 `env` 条目优先——写下来的值就是用户的本意——简写 `"TOKEN"` 与显式 `{"name": "TOKEN", "source": "local"}` 等价。两种失败会被明确拒绝而不是糊过去：
+
+- **变量未设置会让该 server 以名字报错**（`env var \`GITHUB_TOKEN\` is not set`）。一个缺少预期凭据却照常启动的 server，会在之后某个不相干的地方以认证错误的形式失败。
+- **`source: "remote"` 被拒绝。** Codex 的 `remote` 源是向远端 stdio 执行器索要取值；Tact 没有远端 stdio 执行器，因此该条目会带着这个理由被拒，而不是静默地以空值启动。未知 `source` 会列出允许的取值。
+
+`env_vars` 是 **stdio** 字段：远程（`url`）条目没有子进程可承接变量，因此在那里声明它会被列进 *Unmodelled entry keys* 一节，而不是被悄悄忽略。
 
 **从命令行管理 server。** 六个子命令按「允许触碰什么」划分——`list`/`get` 负责连接，`add`/`remove` 负责写 `mcp.json`，`login`/`logout` 负责已存凭据：
 
@@ -737,8 +752,9 @@ oauth_client_name = "Codex"   # 默认；设为 "Tact" 可如实标识
 | **OAuth 设备码 / mTLS** | 只实现授权码 + PKCE 流程；无设备码、客户端证书或企业 SSO |
 | **客户端密钥 / 白名单 provider** | 只支持自我注册（DCR）与公共客户端的 `clientId`；若 provider 既拒绝 DCR 又要求 client secret（Figma 远程 server），则无法在 Tact 内完成授权——报错会指明替代方案 |
 | **按工具的权限粒度** | 所有 MCP 工具都解析为 `CapabilityRisk::High`；`normalize_mcp_capability` 忽略 server 与 tool 两者。条目可以用 `approval_mode: "auto"` 跳过**询问**，但无法降低上报的 risk——那需要 Tact 目前没有的能力维度 |
-| **未建模的条目字段** | `omit_tools_from`（Codex 的 code-mode 概念）与 `tool_timeout_sec` 只被解析并上报，不会被采纳 |
-| **无类型化环境变量插值** | `mcp.json` 的 `env` 值是字面量；不支持 `${VAR}` 展开 |
+| **未建模的条目字段** | `omit_tools_from`（Codex 的 code-mode 概念）只被解析并上报，不会被采纳；`env_vars` 出现在远程条目上时也会被上报，因为那里没有子进程 |
+| **不支持 `env_vars` 的 `source: "remote"`** | Codex 的 `remote` 源向远端 stdio 执行器索要取值。Tact 没有这样的执行器，因此该条目会按名拒绝，而不是缺值启动 |
+| **不做 `${VAR}` 插值** | `mcp.json` 的值是字面量。凭据走 `env_vars`——那是显式白名单，而不是模板引擎 |
 
 ---
 

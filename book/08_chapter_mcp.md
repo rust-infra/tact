@@ -120,17 +120,19 @@ A malformed native `.mcp.json` is a hard error naming the path (a user-authored 
 
 Each entry declares exactly one transport: `command` (local stdio) or `url` (remote Streamable HTTP, optionally with `headers` and `auth`). `command` wins if both are present. An entry with neither is reported as **skipped**, never treated as a hard error.
 
-An entry can be switched off with `"enabled": false` (the Codex convention; OpenAI's bundled `unified-computer-use` uses it). A disabled declaration is still resolved — it can shadow an enabled one below it, and be shadowed by an enabled one above it — but is **never connected**, and `mcp list` shows it as `disabled (enabled: false)`. The remaining Codex-only entry fields (`omit_tools_from`, `tool_timeout_sec`) have no Tact equivalent: they are parsed and named one by one in `mcp list` (with a warning in the log file as well) rather than dropped in silence — a tracing subscriber is only installed when `RUST_LOG` or `tokio_console` asks for one, so the log alone would say nothing to a default run.
+An entry can be switched off with `"enabled": false` (the Codex convention; OpenAI's bundled `unified-computer-use` uses it). A disabled declaration is still resolved — it can shadow an enabled one below it, and be shadowed by an enabled one above it — but is **never connected**, and `mcp list` shows it as `disabled (enabled: false)`. The remaining Codex-only entry field (`omit_tools_from`) has no Tact equivalent, and `env_vars` has no equivalent *on a remote entry*: both are parsed and named one by one in `mcp list` (with a warning in the log file as well) rather than dropped in silence — a tracing subscriber is only installed when `RUST_LOG` or `tokio_console` asks for one, so the log alone would say nothing to a default run.
 
 ### Per-server tool policy
 
-Four more Codex per-entry fields are honoured, so a server that exposes two dozen tools does not have to advertise all of them on every request:
+More Codex per-entry fields are honoured, so a server that exposes two dozen tools does not have to advertise all of them on every request:
 
 | Field | Type | Behaviour |
 |-------|------|-----------|
 | `enabled_tools` | `[string]` | Allow list. When present, only these tool names reach the agent. |
 | `disabled_tools` | `[string]` | Deny list, applied **after** `enabled_tools`, so naming a tool in both hides it. |
 | `startup_timeout_sec` / `startup_timeout_ms` | number | Handshake budget for this server. `sec` wins when both are present. |
+| `tool_timeout_sec` | number | Budget for one `tools/call` on this server. Absent keeps Tact's own ceiling. |
+| `env_vars` | `[string \| { name, source }]` | Names copied out of Tact's environment into the stdio child. `source` is `local` (the default) or `remote`. |
 | `default_tools_approval_mode` | `"auto" \| "prompt" \| "approve"` | Server-wide approval default. |
 | `tools.<name>.approval_mode` | same | Per-tool override, wins over the default. |
 | `tools.<name>.output_token_limit` | number | Result budget for this tool; an oversized result is spilled to `.tact/tool-results/` with a preview. |
@@ -144,6 +146,12 @@ Four more Codex per-entry fields are honoured, so a server that exposes two doze
       "startup_timeout_sec": 120,
       "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
       "tools": { "search_notes": { "approval_mode": "auto" } }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env_vars": ["GITHUB_TOKEN"],
+      "tool_timeout_sec": 120
     }
   }
 }
@@ -153,7 +161,14 @@ Only `approval_mode: "auto"` changes Tact's behaviour, and it is an auto-**appro
 
 Hiding a tool is a deliberate configuration, not a problem — but it is **never silent**: `mcp list` prints a **Filtered tools** section and `mcp get` prints a `hidden` line naming what the entry keeps away from the agent. Neither turns into a startup notice, for the same reason `unmodelled` does not: a deliberate configuration should not make every launch noisy.
 
-`startup_timeout_sec` overrides the global 60s handshake ceiling; Tact deliberately keeps 60s as the default instead of Codex's 10s, so an entry that works today cannot start timing out after an upgrade. `output_token_limit` counts tokens with the same estimator compaction uses; the field exists in Codex's binary but not in its published configuration reference, so the behaviour is Tact's interpretation.
+`startup_timeout_sec` and `tool_timeout_sec` override the global handshake and single-call ceilings for one server; Tact deliberately keeps its own defaults (60s handshake, 600s per call) instead of Codex's, so an entry that works today cannot start timing out after an upgrade. The timeout error names whichever budget was actually applied. `output_token_limit` counts tokens with the same estimator compaction uses; the field exists in Codex's binary but not in its published configuration reference, so the behaviour is Tact's interpretation.
+
+`env_vars` is how a server gets a credential without the secret being written into `.mcp.json`: Tact reads the named variable from **its own** environment and passes it to the child, so `"env_vars": ["GITHUB_TOKEN"]` works and the file stays shareable. A literal `env` entry of the same name wins — a value someone wrote down meant it — and the shorthand `"TOKEN"` and the explicit `{"name": "TOKEN", "source": "local"}` form are equivalent. Two failures are refused rather than papered over:
+
+- **An unset variable fails that server by name** (`env var \`GITHUB_TOKEN\` is not set`). A server that starts without the credential it expects fails later, somewhere unrelated, with a message about authentication.
+- **`source: "remote"` is refused.** Codex's `remote` source asks a remote stdio executor for the value; Tact has no remote-stdio executor, so the entry is rejected with that reason instead of silently starting with no value. An unknown `source` names the allowed set.
+
+`env_vars` is a **stdio** field: a remote (`url`) entry has no child process to put the variables in, so declaring it there is reported in the *Unmodelled entry keys* section instead of being quietly ignored.
 
 **Managing servers from the CLI.** Six subcommands, split by what they are allowed to touch — `list`/`get` connect, `add`/`remove` write `mcp.json`, `login`/`logout` own the stored credentials:
 
@@ -736,8 +751,9 @@ The measurement above is specific to the names Figma admits. Another provider ma
 | **OAuth device flow / mTLS** | Only the authorization-code + PKCE flow is implemented; no device code, client certificates, or enterprise SSO |
 | **Client secrets / allowlisted providers** | Only self-registration (DCR) and public-client `clientId` are supported; a provider that refuses DCR *and* needs a client secret (Figma's remote server) cannot be authorized from Tact — the error names the alternatives |
 | **Per-tool permission granularity** | Every MCP tool resolves to `CapabilityRisk::High`; `normalize_mcp_capability` ignores both server and tool. An entry can skip the *prompt* with `approval_mode: "auto"`, but it cannot lower the reported risk — that needs a capability axis Tact does not have |
-| **Unmodelled entry fields** | `omit_tools_from` (Codex's code-mode concept) and `tool_timeout_sec` are parsed and reported, never honoured |
-| **No typed env interpolation** | `mcp.json` `env` values are literal; no `${VAR}` expansion |
+| **Unmodelled entry fields** | `omit_tools_from` (Codex's code-mode concept) is parsed and reported, never honoured; `env_vars` is reported when it appears on a remote entry, which has no child process |
+| **No `env_vars` `source: "remote"`** | Codex's `remote` source asks a remote stdio executor for a value. Tact has no such executor, so the entry is refused by name rather than starting without it |
+| **No `${VAR}` interpolation** | `mcp.json` values are literal. Credentials go through `env_vars`, which is an explicit allowlist rather than a template engine |
 
 ---
 

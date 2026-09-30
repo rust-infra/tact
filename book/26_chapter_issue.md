@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — MCP entries can pass environment variables through and bound one tool call
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tact/src/mcp/mod.rs` (`McpEnvVar`, `resolve_env_vars`, `McpProjectConfig::env_vars` / `tool_timeout_sec`, `McpServerPolicy::tool_timeout`, `McpClient::{connect, call_tool}`, `unmodelled_keys`); spec `docs/superpowers/specs/2026-09-30-mcp-env-vars-and-tool-timeout-design.md`; [Ch 8](./08_chapter_mcp.md) |
+
+**Symptom / motivation:** Two Codex per-entry fields were parsed only to be reported, and both cost something real. `tool_timeout_sec` did not exist, so one fixed 600s ceiling applied to every `tools/call` of every server — a server whose tool should fail fast could not ask for that. `env_vars` did not exist, so a server's credential had to be written literally into `.mcp.json` through `env`, putting a secret on disk and making the file unshareable.
+
+**Decision:** `env_vars` accepts both Codex spellings (`["TOKEN"]` and `[{"name": "TOKEN", "source": "local"}]`) and is resolved in `McpClient::connect` *before* the child is spawned, so an unset variable fails **that server** with `env var \`X\` is not set` instead of starting a child that fails later somewhere unrelated with an authentication error. `source: "remote"` and any unknown source are refused by name — Tact has no remote-stdio executor, so approximating would silently drop the value. A literal `env` entry of the same name wins, because a value someone wrote down meant it. `env_vars` is a stdio field, so declaring it on a remote (`url`) entry is added to the `unmodelled_keys` report rather than ignored. `tool_timeout_sec` now sets a per-server budget for one `tools/call` and the timeout error names whichever budget was applied; Tact keeps its own 600s default so an entry that works today does not start failing.
+
+**Behavior after:** `"env_vars": ["GITHUB_TOKEN"]` gives a server its token without the secret entering the config file, and `"tool_timeout_sec": 120` bounds one call on one server. `mcp list` no longer names `tool_timeout_sec` as unmodelled, and names `env_vars` only where it cannot apply.
+
+**Pointers:** `mcp::tests::{env_vars_accept_the_shorthand_and_the_explicit_form, env_vars_are_resolved_from_the_process_environment, a_literal_env_entry_wins_over_env_vars, an_unset_env_var_fails_the_server_by_name, a_remote_env_vars_source_names_the_missing_executor, an_unknown_env_vars_source_names_the_allowed_set, env_vars_on_a_remote_entry_are_reported_as_unmodelled, env_vars_are_resolved_before_the_child_is_spawned, tool_timeout_sec_overrides_the_global_call_ceiling, tool_timeout_sec_is_no_longer_reported_as_unmodelled}`.
+
+---
+
 ## 1. 2026-09-30 — `/hooks` reviews command hooks where they fire
 
 | Field | Value |
