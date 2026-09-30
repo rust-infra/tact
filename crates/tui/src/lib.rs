@@ -4,6 +4,10 @@
 // Bridges Agent status updates and terminal events to the App state and
 // submodule render/handler functions.
 
+/// Test-only serialization of the process-global system clipboard.
+#[cfg(test)]
+mod clipboard_lock;
+
 mod handlers;
 pub(crate) mod i18n {
     pub(crate) use agent_tui_kit::i18n::*;
