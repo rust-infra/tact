@@ -17,6 +17,8 @@ use crate::{
     widgets::state::*,
 };
 
+/// How long the popup footer shows `✓ Copied` in place of the copy hint.
+const COPY_FLASH_MS: u128 = 1_500;
 const CODE_BG: Color = Color::Rgb(30, 35, 50);
 const CODE_FG: Color = Color::Rgb(200, 200, 210);
 const STREAMING_INDICATOR: &str = " ▌";
@@ -61,6 +63,9 @@ impl App {
         // 4. Shell tail: rich behavior the kit components do not implement
         //    (log/status/scroll effects, select popups, plan writes).
         self.shell_handle(update);
+        // Derived sticky state must be settled before the scroll refresh: the
+        // strip's height changes the Log viewport.
+        self.sync_background_sticky();
         self.refresh_tail_scroll();
         // 5. Invariant: a pending select request must stay visible. If an
         //    update reset `input_mode` away from `Select` while a request is
@@ -470,8 +475,18 @@ impl App {
                 }
             }
             AgentUpdate::BackgroundTaskFinished {
-                tool_id, message, ..
-            } => self.on_background_task_finished_tail(&tool_id, &message),
+                tool_id,
+                success,
+                message,
+                ..
+            } => {
+                self.on_background_task_finished_tail(&tool_id, &message);
+                // Keep a row on the sticky for a short while: the component has
+                // just finalized the card (outbox applied before this tail), so
+                // the finished block still carries the id and command the
+                // running row showed.
+                self.note_finished_background(&tool_id, success);
+            }
             AgentUpdate::SubagentFinished {
                 tool_id,
                 child_id,
@@ -877,6 +892,18 @@ impl App {
             .is_some_and(|(_, t)| t.elapsed().as_secs() >= 3)
         {
             self.flash_msg = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Clear the copy confirmation after [`COPY_FLASH_MS`] (shared with the
+    /// `run_tui` main loop, which repaints while it is set).
+    pub(crate) fn maybe_clear_copy_flash(&mut self) {
+        if self
+            .copy_flash_at
+            .is_some_and(|t| t.elapsed().as_millis() >= COPY_FLASH_MS)
+        {
+            self.copy_flash_at = None;
             self.dirty = true;
         }
     }
@@ -1508,6 +1535,76 @@ mod lifecycle_tests {
         );
     }
 
+    /// A later turn (a plain non-keep-live tool call) must not clear the task
+    /// ids the earlier `background_run` cards already carry. Regressed live:
+    /// the Background strip flashed for one frame and then vanished.
+    #[test]
+    fn a_later_turn_does_not_clear_background_task_ids() {
+        let mut app = make_app();
+        seed_running_background(&mut app, "bg1");
+        seed_running_background(&mut app, "bg2");
+        app.handle_agent_update(AgentUpdate::ToolMeta {
+            tool_id: "bg1".into(),
+            model: None,
+            token_usage: None,
+            task_id: Some("id1".into()),
+        });
+        app.handle_agent_update(AgentUpdate::ToolMeta {
+            tool_id: "bg2".into(),
+            model: None,
+            token_usage: None,
+            task_id: Some("id2".into()),
+        });
+        assert!(
+            app.tools_mut()
+                .active
+                .iter()
+                .all(|a| a.output.task_id.is_some())
+        );
+
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "inspect",
+            "bash",
+            "bash1",
+            HashMap::from([("command".to_string(), "ls".to_string())]),
+        )));
+        app.handle_agent_update(AgentUpdate::StepStarted {
+            idx: 1,
+            tool_id: "bash1".into(),
+            tool_name: "bash".into(),
+            arg_summary: "ls".into(),
+            arg_full: "ls".into(),
+            presentation: ToolPresentationInfo::generic("bash"),
+        });
+        app.handle_agent_update(AgentUpdate::StepFinished {
+            idx: 1,
+            tool_id: "bash1".into(),
+            result: StepResult {
+                tool: "bash".into(),
+                arg_summary: "ls".into(),
+                arg_full: Some("ls".into()),
+                status: StepStatus::Success,
+                message: "ok".into(),
+                detail: None,
+                duration_us: Some(1),
+                permission_label: None,
+                presentation: ToolPresentationInfo::generic("bash"),
+            },
+        });
+
+        let ids: Vec<Option<String>> = app
+            .tools_mut()
+            .active
+            .iter()
+            .map(|a| a.output.task_id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![Some("id1".into()), Some("id2".into())],
+            "a later turn must not clear background task ids"
+        );
+    }
+
     #[test]
     fn background_task_finished_finalizes_success_card() {
         let mut app = make_app();
@@ -1947,6 +2044,21 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn task_stats_row_draws_exactly_what_it_stores_as_raw() {
+        // The row is clickable and selectable through `raw` byte offsets, so the
+        // drawn glyphs must stay column-for-column identical to `raw`. The copy
+        // affordance comes from the shared button component — this pins the
+        // coupling that its padding and the row's gap have to keep.
+        let mut app = make_app();
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_stats_block();
+
+        let item = app.log.items.last().expect("stats row");
+        let drawn: String = item.line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(drawn, item.raw);
+    }
+
+    #[test]
     fn task_stats_line_detection_covers_all_languages_and_legacy_rows() {
         use crate::widgets::state::is_task_stats_line;
 
@@ -1982,6 +2094,10 @@ mod lifecycle_tests {
             .rposition(|item| item.raw.contains("Task stats:"))
             .expect("stats");
         app.copy_turn_ending_at_stats(stats_idx);
+        assert!(
+            app.copy_flash_at.is_some(),
+            "the preview-free copy path must also raise the confirmation"
+        );
         let copy_notice = app.log.items.last().expect("copy notice");
         assert!(copy_notice.raw.contains("已复制") || copy_notice.raw.contains("Copied"));
         assert!(!copy_notice.raw.contains("second question"));

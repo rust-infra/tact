@@ -273,6 +273,39 @@ mod wrap_tests {
     }
 
     #[test]
+    fn visual_offsets_stay_on_character_boundaries() {
+        // A column that lands inside a wide (CJK) or multi-byte (emoji) glyph
+        // must never produce an offset inside a character: the selection code
+        // slices `raw` with whatever this returns, and a mid-character offset
+        // makes that slice panic.
+        let raws = [
+            "📋 已复制: 3 行 · 33 B",
+            "💬 你好 world",
+            "中文abc中文",
+            "🎯 focus on what matters",
+            "",
+        ];
+        for raw in raws {
+            for wrap in [1usize, 3, 10, 40] {
+                for line in 0..8 {
+                    for col in 0..64 {
+                        let off = visual_pos_to_byte_offset(raw, wrap, line, col);
+                        assert!(
+                            off <= raw.len(),
+                            "{raw:?} wrap={wrap} line={line} col={col}"
+                        );
+                        assert!(
+                            raw.is_char_boundary(off),
+                            "offset {off} splits a character in {raw:?} \
+                             (wrap={wrap} line={line} col={col})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn wrap_break_offsets_prefers_word_boundaries() {
         assert_eq!(wrap_break_offsets("hello", 10), vec![0]);
         assert_eq!(wrap_break_offsets("hello world", 10), vec![0, 6]);

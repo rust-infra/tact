@@ -36,6 +36,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             thinking_budget: 0,
             snapshot_max_items: 80,
             notifications_enabled: false,
+            max_token_usage_bodies: tact::store::session_store::MAX_TOKEN_USAGE_BODIES,
             micro_compact_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),

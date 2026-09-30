@@ -2,7 +2,10 @@ use arboard::Clipboard;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ratatui::{layout::Rect, style::Color, text::Line};
 
-use crate::widgets::{state::*, tool_widget::ToolPhase};
+use crate::{
+    i18n::Messages,
+    widgets::{state::*, tool_widget::ToolPhase},
+};
 
 impl App {
     /// Copy text via native clipboard → OSC 52 → internal buffer.
@@ -15,33 +18,90 @@ impl App {
         self.copy_text_inner(text, false);
     }
 
-    /// True when a native clipboard write succeeded via [`Self::system_clipboard`].
+    /// True when a native clipboard write actually landed.
+    ///
+    /// `arboard`'s Wayland backend answers `Ok` for payloads it never serves
+    /// (past ~32 KiB on 3.6.1 the write is dropped and the clipboard stays
+    /// empty), so the write is only believed once the same text reads back.
+    /// Without this the caller reports "Copied" off a clipboard nobody can
+    /// paste from.
     fn write_system_clipboard(&mut self, text: &str) -> bool {
         if self.system_clipboard.is_none() {
             self.system_clipboard = Clipboard::new().ok();
         }
         match &mut self.system_clipboard {
-            Some(clip) => clip.set_text(text.to_owned()).is_ok(),
+            Some(clip) => {
+                clip.set_text(text.to_owned()).is_ok()
+                    && clip.get_text().is_ok_and(|back| back == text)
+            }
             None => false,
         }
     }
 
-    fn copy_text_inner(&mut self, text: &str, include_preview: bool) {
-        let preview: String = text.chars().take(40).collect();
-        let copied = |template: &str| {
-            if include_preview {
-                template.replace("{}", &preview)
-            } else {
-                template.replace(": {}", "")
-            }
+    /// Hand the text to a system clipboard helper.
+    ///
+    /// The fallback for the `arboard` backend that gets it wrong: its Wayland
+    /// path drops payloads past ~32 KiB while reporting success, whereas
+    /// `wl-copy` hands the same bytes to the compositor (verified here: a 5 MB
+    /// payload round-trips). Only consulted after a native write was dropped,
+    /// and only where the tool exists — without it the caller's next fallback
+    /// (the OSC 52 terminal sequence) runs instead.
+    #[cfg(target_os = "linux")]
+    fn write_system_clipboard_helper(text: &str) -> bool {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
         };
+
+        // `wl-copy` forks and serves the selection itself, so this returns once
+        // the payload is handed over; the helper outlives the app, exactly as
+        // it does when the user pipes into it by hand.
+        let Ok(mut child) = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        wrote && child.wait().is_ok_and(|status| status.success())
+    }
+
+    /// Other platforms have no `wl-copy`, and their native clipboard does not
+    /// need it: the Wayland payload limit is Linux-specific.
+    #[cfg(not(target_os = "linux"))]
+    fn write_system_clipboard_helper(_text: &str) -> bool {
+        false
+    }
+
+    fn copy_text_inner(&mut self, text: &str, include_preview: bool) {
+        // The copy affordances themselves flash their confirmation (popup
+        // footers render it while this is fresh) — the system-message notice
+        // still lands in the log for the record.
+        self.copy_flash_at = Some(std::time::Instant::now());
+        self.dirty = true;
+        let msgs = self.msgs();
+        // Both forms fill the same `{}`: the quoted opening of the text, or —
+        // for a copy too long to quote (a whole turn) — what was copied, so
+        // the notice says something even when it cannot show the text.
+        let payload = if include_preview {
+            text.chars().take(40).collect::<String>()
+        } else {
+            copy_summary(&msgs, text)
+        };
+        let copied = |template: &str| template.replace("{}", &payload);
 
         // Prefer the native clipboard. The `Clipboard` is kept alive for the
         // whole app lifetime (see `system_clipboard`) because on Linux the
         // copier owns the selection and must keep serving it; dropping the
         // handle per-copy would make the text unpastable elsewhere.
-        if self.write_system_clipboard(text) {
-            let msgs = self.msgs();
+        // Either route lands in the system clipboard, so both report the same
+        // way; the helper only runs when the native write was dropped.
+        if self.write_system_clipboard(text) || Self::write_system_clipboard_helper(text) {
             self.add_system_message(copied(msgs.copied_tmpl));
             return;
         }
@@ -49,13 +109,11 @@ impl App {
         let encoded = BASE64.encode(text);
         let osc52 = format!("\x1b]52;c;{}\x07", encoded);
         if std::io::Write::write_all(&mut std::io::stdout(), osc52.as_bytes()).is_ok() {
-            let msgs = self.msgs();
             self.add_system_message(copied(msgs.copied_terminal_tmpl));
             return;
         }
 
         self.clipboard_buffer = text.to_string();
-        let msgs = self.msgs();
         self.add_system_message(copied(msgs.copied_internal_tmpl));
     }
 
@@ -419,20 +477,27 @@ impl App {
 
     /// Open the thinking popup for active or completed content at `phys_idx`.
     pub(crate) fn open_thinking_popup(&mut self, phys_idx: usize) {
-        let exists = self
+        let running = self
             .thinking_mut()
             .active
             .as_ref()
-            .is_some_and(|active| active.phys_idx == phys_idx)
+            .is_some_and(|active| active.phys_idx == phys_idx);
+        let exists = running
             || self
                 .thinking_mut()
                 .blocks
                 .iter()
                 .any(|block| block.phys_idx == phys_idx);
         if exists {
+            let msgs = self.msgs();
+            let title = if running {
+                msgs.thinking_title_active
+            } else {
+                msgs.thinking_title_done
+            };
             self.thinking_mut().popup = Some(ThinkingPopup {
                 phys_idx,
-                title: self.msgs().thinking_title.to_string(),
+                title: title.to_string(),
                 scroll: 0,
                 selection: None,
                 selection_text: String::new(),
@@ -746,8 +811,8 @@ impl App {
     ///
     /// Two shapes are clickable, and only on what the user can actually see:
     /// a drawn detail card (its whole rectangle) and a collapsed command's
-    /// `double-click-result` hint — not its parameter row, and not the meta row's
-    /// earlier text (success mark, duration, line count) either.
+    /// collapsed command's `[󰜼 Open]` button — not its parameter row, and not the
+    /// meta row's earlier text (success mark, duration, line count) either.
     pub(crate) fn open_diff_popup_at(&mut self, phys_idx: usize, relative_row: usize, col: usize) {
         let Some(output) = self.tool_output_at(phys_idx) else {
             return;
@@ -886,6 +951,35 @@ impl App {
         }
         let text = self.mermaid_blocks[popup.block_idx].source.clone();
         self.copy_text(&text);
+    }
+}
+
+/// What a preview-free copy notice says instead of quoting the text.
+///
+/// The only such caller copies a whole turn, so the notice reports its shape
+/// instead: how many lines, and how big — the size being the thing the
+/// clipboard tiers' behaviour turns on.
+fn copy_summary(msgs: &Messages, text: &str) -> String {
+    let size = human_size(text.len());
+    match text.lines().count() {
+        0 | 1 => msgs.copied_summary_one_tmpl.replace("{}", &size),
+        lines => msgs
+            .copied_summary_tmpl
+            .replacen("{}", &lines.to_string(), 1)
+            .replacen("{}", &size, 1),
+    }
+}
+
+/// Human-readable byte size for the copy notice (`240 B`, `12.3 KB`, `1.2 MB`).
+fn human_size(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    let bytes_f = bytes as f64;
+    if bytes_f < KB {
+        format!("{bytes} B")
+    } else if bytes_f < KB * KB {
+        format!("{:.1} KB", bytes_f / KB)
+    } else {
+        format!("{:.1} MB", bytes_f / (KB * KB))
     }
 }
 
@@ -1347,5 +1441,267 @@ mod tests {
         );
         assert!(!app.has_subagent_popup());
         assert!(!app.has_overlay_popup());
+    }
+}
+#[cfg(test)]
+mod clipboard_tests {
+    use crate::{render::test_harness::make_app, widgets::state::App};
+
+    /// Well past the ~32 KiB payload `arboard`'s Wayland backend drops, so the
+    /// fallbacks are what this test actually exercises.
+    const OVERSIZED: usize = 200_000;
+
+    /// The clipboard is global and every test here writes it, so they take
+    /// turns instead of racing each other (cargo runs tests in parallel
+    /// threads, and the very race this module guards against makes a
+    /// concurrent reader see an empty clipboard).
+    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn take_clipboard() -> std::sync::MutexGuard<'static, ()> {
+        CLIPBOARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// This machine must have a clipboard we can write and read at all —
+    /// otherwise none of the tiers below mean anything.
+    fn clipboard_available() -> bool {
+        let Ok(mut probe) = arboard::Clipboard::new() else {
+            return false;
+        };
+        probe.set_text("tact-clipboard-probe".to_string()).is_ok() && probe.get_text().is_ok()
+    }
+
+    /// What another reader would find on the clipboard right now.
+    fn clipboard_text() -> Option<String> {
+        arboard::Clipboard::new().ok()?.get_text().ok()
+    }
+
+    fn notice_of(app: &App) -> String {
+        app.log.items.last().expect("copy notice").raw.clone()
+    }
+
+    /// The notices the copy path can print for `text`, in tier order.
+    fn notices(app: &App, text: &str) -> [String; 3] {
+        let preview: String = text.chars().take(40).collect();
+        let msgs = app.msgs();
+        [
+            msgs.copied_tmpl.replace("{}", &preview),
+            msgs.copied_terminal_tmpl.replace("{}", &preview),
+            msgs.copied_internal_tmpl.replace("{}", &preview),
+        ]
+    }
+
+    #[test]
+    fn an_oversized_copy_lands_in_the_clipboard_or_says_that_it_did_not() {
+        let _clipboard = take_clipboard();
+        if !clipboard_available() {
+            return;
+        }
+        let text = "x".repeat(OVERSIZED);
+        let mut app = make_app();
+        let [native, terminal, internal] = notices(&app, &text);
+
+        app.copy_text(&text);
+        let notice = notice_of(&app);
+
+        if notice == native {
+            // The app claims the system clipboard, so the text must really be
+            // readable back — by a reader other than the app's own handle.
+            assert_eq!(
+                clipboard_text().as_deref(),
+                Some(text.as_str()),
+                "claimed a clipboard write that never landed"
+            );
+        } else {
+            assert!(
+                notice == terminal || notice == internal,
+                "a dropped write must name its fallback, got: {notice:?}"
+            );
+        }
+    }
+
+    /// True when `arboard` itself round-trips `text` on this machine.
+    fn native_round_trips(text: &str) -> bool {
+        let Ok(mut probe) = arboard::Clipboard::new() else {
+            return false;
+        };
+        probe.set_text(text.to_string()).is_ok() && probe.get_text().is_ok_and(|back| back == text)
+    }
+
+    /// The user-visible bug this guards: the task-stats copy claiming success
+    /// while nothing could be pasted.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_helper_carries_what_the_native_clipboard_drops() {
+        let _clipboard = take_clipboard();
+        if !clipboard_available() {
+            return;
+        }
+        let text = "x".repeat(OVERSIZED);
+        if native_round_trips(&text) {
+            return; // this machine's clipboard takes it; no fallback needed
+        }
+        // Without the helper installed the OSC 52 tier takes over instead, and
+        // that path cannot be verified from here (see the contract test).
+        if std::process::Command::new("wl-copy")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+
+        let mut app = make_app();
+        let [native, ..] = notices(&app, &text);
+
+        app.copy_text(&text);
+
+        assert_eq!(
+            notice_of(&app),
+            native,
+            "the helper hands the text to the system clipboard"
+        );
+        assert_eq!(
+            clipboard_text().as_deref(),
+            Some(text.as_str()),
+            "a payload the native clipboard dropped must still be pasteable"
+        );
+    }
+
+    #[test]
+    fn a_preview_free_copy_reports_its_shape_instead_of_quoting_the_text() {
+        let many = "first line\nsecond line\nthird line";
+        let mut app = make_app();
+        let msgs = app.msgs();
+        let expected = msgs.copied_summary_tmpl.replacen("{}", "3", 1).replacen(
+            "{}",
+            &format!("{} B", many.len()),
+            1,
+        );
+
+        app.copy_text_without_preview(many);
+        let notice = notice_of(&app);
+
+        assert!(
+            notice.ends_with(&expected),
+            "the notice must say what was copied: {notice:?} (want suffix {expected:?})"
+        );
+        assert!(
+            !notice.contains("second line"),
+            "a preview-free copy must not quote the text: {notice:?}"
+        );
+    }
+
+    #[test]
+    fn a_preview_free_copy_of_one_line_uses_the_singular_form() {
+        let one = "just one line";
+        let mut app = make_app();
+        let msgs = app.msgs();
+        let expected = msgs
+            .copied_summary_one_tmpl
+            .replace("{}", &format!("{} B", one.len()));
+
+        app.copy_text_without_preview(one);
+
+        let notice = notice_of(&app);
+        assert!(
+            notice.ends_with(&expected),
+            "a single line is not '1 lines': {notice:?} (want suffix {expected:?})"
+        );
+    }
+
+    #[test]
+    fn the_preview_free_summary_is_localized() {
+        let text = "first line\nsecond line";
+        let mut app = make_app();
+        app.language = crate::i18n::Language::Chinese;
+        let msgs = app.msgs();
+        let expected = msgs.copied_summary_tmpl.replacen("{}", "2", 1).replacen(
+            "{}",
+            &format!("{} B", text.len()),
+            1,
+        );
+
+        app.copy_text_without_preview(text);
+
+        assert!(
+            expected.contains('行'),
+            "the Chinese summary must not be the English template: {expected:?}"
+        );
+        let notice = notice_of(&app);
+        assert!(
+            notice.ends_with(&expected),
+            "got {notice:?}, want suffix {expected:?}"
+        );
+    }
+
+    #[test]
+    fn the_preview_counts_characters_not_bytes() {
+        let _clipboard = take_clipboard();
+        // 60 Chinese characters, 180 bytes: the preview must be 40 *characters*
+        // and must not stop in the middle of one.
+        let text = "中".repeat(60);
+        let mut app = make_app();
+
+        app.copy_text(&text);
+
+        let notice = notice_of(&app);
+        assert!(
+            notice.contains(&"中".repeat(40)),
+            "the preview must carry 40 characters: {notice:?}"
+        );
+        assert!(
+            !notice.contains(&"中".repeat(41)),
+            "the preview must stop at 40 characters: {notice:?}"
+        );
+    }
+
+    #[test]
+    fn the_preview_free_summary_reports_bytes_for_wide_text() {
+        let _clipboard = take_clipboard();
+        // Three lines, 8 characters, 20 bytes: the notice reports bytes, which
+        // is what the clipboard carries (and what its size limits act on).
+        let text = "你好\n世界\n再见";
+        assert_eq!(text.chars().count(), 8);
+        let mut app = make_app();
+        let msgs = app.msgs();
+        let expected = msgs.copied_summary_tmpl.replacen("{}", "3", 1).replacen(
+            "{}",
+            &format!("{} B", text.len()),
+            1,
+        );
+
+        app.copy_text_without_preview(text);
+
+        let notice = notice_of(&app);
+        assert!(
+            notice.ends_with(&expected),
+            "wide text must be sized in bytes: {notice:?} (want suffix {expected:?})"
+        );
+    }
+
+    #[test]
+    fn human_size_scales_from_bytes_to_megabytes() {
+        assert_eq!(super::human_size(0), "0 B");
+        assert_eq!(super::human_size(240), "240 B");
+        assert_eq!(super::human_size(12_600), "12.3 KB");
+        assert_eq!(super::human_size(1_300_000), "1.2 MB");
+    }
+
+    #[test]
+    fn a_small_copy_keeps_the_native_notice_and_lands() {
+        let _clipboard = take_clipboard();
+        if !clipboard_available() {
+            return;
+        }
+        let text = "hello clipboard";
+        let mut app = make_app();
+        let [native, ..] = notices(&app, text);
+
+        app.copy_text(text);
+
+        assert_eq!(notice_of(&app), native);
+        assert_eq!(clipboard_text().as_deref(), Some(text));
     }
 }

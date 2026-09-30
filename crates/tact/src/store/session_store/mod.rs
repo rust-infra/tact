@@ -17,6 +17,21 @@ pub use session_lock::SessionLock;
 /// Maximum input history entries retained per session.
 pub const MAX_INPUT_HISTORY: usize = 100;
 
+/// Default for `[agent] max_token_usage_bodies`: how many ordinary LLM-call
+/// request bodies a session keeps in `token_usages`.
+///
+/// One is the smallest setting that still answers `/view-system-prompt`'s
+/// assembled view, which reads the newest persisted request body. The column
+/// stores the *whole serialized request* — system prompt, tool schemas and, on
+/// `/responses`, the entire context, re-sent every call — so keeping them all
+/// cost 8 GB in three weeks (one 9-hour session alone: 569 rows, 591 MiB, the
+/// largest body 1.88 MB). Compaction rows (`compact`, `responses_compact`) are
+/// exempt from the limit: that BLOB is the only place a compaction baseline and
+/// its `encrypted_content` survive. Older rows keep every accounting column with
+/// an **empty blob** as the "not retained" sentinel (`request_body` is
+/// `NOT NULL`, so the sentinel is `X''`, not NULL).
+pub const MAX_TOKEN_USAGE_BODIES: usize = 1;
+
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub id: String,
@@ -98,6 +113,11 @@ pub trait SessionStore: Send + Sync {
     /// Record per-call token usage (cache hit/miss, reasoning, prompt, completion).
     /// `first_message_id` / `last_message_id` link this call to the message range sent.
     /// `request_body` is the serialized JSON body sent to the LLM API (debug).
+    ///
+    /// The body is kept for at most [`MAX_TOKEN_USAGE_BODIES`] ordinary calls
+    /// per session; every compaction call keeps its body. Older bodies are
+    /// blanked in place right after the insert (see
+    /// `SqliteSessionStore::trim_token_usage_bodies`).
     async fn record_token_usage(
         &self,
         session_id: &str,

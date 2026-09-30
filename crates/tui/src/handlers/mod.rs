@@ -23,7 +23,7 @@ use tact_protocol::UserCommand;
 
 use crate::widgets::state::{App, InputMode, SelectKind, Status};
 
-/// Whether the active sticky panel (task / subagent) currently accepts scroll
+/// Whether the active sticky panel (task / subagent / background) currently accepts scroll
 /// input — the panel must be on screen and its sticky tab expanded.
 ///
 /// Shared by the keyboard (`normal`) and wheel (`mouse`) paths so the two can
@@ -44,6 +44,7 @@ pub(crate) fn scroll_active_sticky(app: &mut App, delta: isize) {
     let scroll = match tab {
         StickyTab::Tasks => &mut app.task_panel_mut().scroll,
         StickyTab::Subagent => &mut app.subagent_panel_mut().scroll,
+        StickyTab::Background => &mut app.background_panel_mut().scroll,
     };
     *scroll = if delta < 0 {
         scroll.saturating_sub(delta.unsigned_abs())

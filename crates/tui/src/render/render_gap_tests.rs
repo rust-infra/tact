@@ -815,7 +815,7 @@ fn full_frame_edit_file_tool_shows_in_log() {
         "a finished edit hides its diff behind the popup, got:\n{text}"
     );
     assert!(
-        text.contains("2 lines · double-click-result"),
+        text.contains("2 lines · [󰜼 Open]"),
         "the meta row must report the hidden diff, got:\n{text}"
     );
 }
@@ -866,7 +866,7 @@ fn full_frame_read_file_tool_shows_in_log() {
         "a finished read hides its body behind the popup, got:\n{text}"
     );
     assert!(
-        text.contains("3 lines · double-click-result"),
+        text.contains("3 lines · [󰜼 Open]"),
         "the meta row must report the hidden body, got:\n{text}"
     );
 }
@@ -917,7 +917,7 @@ fn full_frame_write_file_tool_shows_in_log() {
         "a finished write hides its content behind the popup, got:\n{text}"
     );
     assert!(
-        text.contains("3 lines · double-click-result"),
+        text.contains("3 lines · [󰜼 Open]"),
         "the meta row must report the hidden content, got:\n{text}"
     );
 }
@@ -972,7 +972,7 @@ fn full_frame_cardless_tool_result_is_openable() {
         "the task list stays behind the popup, got:\n{text}"
     );
     assert!(
-        text.contains("2 lines · double-click-result"),
+        text.contains("2 lines · [󰜼 Open]"),
         "a multi-line result must advertise that it can be opened, got:\n{text}"
     );
 }
@@ -1066,6 +1066,32 @@ fn flash_msg_persists_within_three_seconds() {
     app.maybe_clear_flash_msg();
 
     assert!(app.flash_msg.is_some());
+}
+
+#[test]
+fn copy_flash_expires_after_its_window() {
+    let mut app = make_app();
+    app.copy_flash_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(2_000));
+
+    app.maybe_clear_copy_flash();
+
+    assert!(
+        app.copy_flash_at.is_none(),
+        "a stale confirmation must clear"
+    );
+}
+
+#[test]
+fn copy_flash_persists_within_its_window() {
+    let mut app = make_app();
+    app.copy_flash_at = Some(std::time::Instant::now());
+
+    app.maybe_clear_copy_flash();
+
+    assert!(
+        app.copy_flash_at.is_some(),
+        "a fresh confirmation must stay on screen"
+    );
 }
 
 #[test]

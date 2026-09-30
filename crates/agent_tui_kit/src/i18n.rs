@@ -43,10 +43,28 @@ impl Language {
 pub struct Messages {
     // ---- 面板标题 ----
     pub log_title: &'static str,
-    pub thinking_card_title: &'static str, // "🧠 Thinking" (no line count — it lives in the bottom bar)
-    pub thinking_card_bottom: &'static str, // "↕ {}/{} lines | Double-click for full content | ⏱ {}"
-    pub diff_card_title: &'static str,      // "+{} {}"
-    pub diff_card_bottom: &'static str,     // "Double-click for full code"
+    /// Card title (no line count — that lives in the bottom bar). The active
+    /// and the completed card each get their own string, because the card says
+    /// what it *is* doing: `Thinking` while the spinner prefix turns, `Thought`
+    /// once the summary is in. One shared string cannot say both, which is how
+    /// a finished card came to read "in progress".
+    pub thinking_card_title_active: &'static str, // "🧠 Thinking"
+    pub thinking_card_title_done: &'static str, // "🧠 Thought"
+    /// Thinking card footer: `⏱ {elapsed} | ↕ {shown}/{total} lines | {action}`
+    /// — the elapsed time leads, each label staying on the readout it names.
+    /// The action is the **tail**, the same rule a collapsed tool card's meta row
+    /// follows, so the cell splits it off by suffix match rather than searching.
+    pub thinking_card_bottom: &'static str,
+    /// Label of the footer's button — what a double-click on the card opens.
+    ///
+    /// The card itself is the hit target, so unlike
+    /// [`Self::tool_collapsed_output_action`] this one is *not* measured back
+    /// from the row's end; it is drawn for the affordance, by the same widget
+    /// and with the same shape as the tool card's. Brackets come from
+    /// `ButtonChrome::Brackets`, so they are never part of this key.
+    pub thinking_card_action: &'static str,
+    pub diff_card_title: &'static str,  // "+{} {}"
+    pub diff_card_bottom: &'static str, // "Double-click for full code"
     pub tool_error_card_title: &'static str,
     pub tool_error_card_bottom: &'static str,
     pub code_card_bottom: &'static str, // " Click for full code "
@@ -61,14 +79,21 @@ pub struct Messages {
     pub tool_meta_sep: &'static str,
     pub tool_live_output_title: &'static str, // "Live output" (no line count — it lives in the bottom bar)
     pub tool_live_output_bottom: &'static str,
-    /// Meta-row hint for a collapsed command card: "{} lines · double-click-result".
+    /// Meta-row hint for a collapsed command card: first `{}` the line count,
+    /// second `{}` the button [`Self::tool_collapsed_output_action`] draws.
     pub tool_collapsed_output_hint: &'static str,
     /// Singular form of [`Self::tool_collapsed_output_hint`] — reachable when
     /// the collapsed text is one line (a background task's summary, say).
     pub tool_collapsed_output_hint_one: &'static str,
-    /// The clickable action inside [`Self::tool_collapsed_output_hint`], which
-    /// must end with it: those glyphs are the whole double-click target of a
-    /// collapsed command, and the line count left of them stays inert.
+    /// Label of the button that opens a collapsed command's output — the whole
+    /// double-click target of that card, and the reason the line count left of
+    /// it stays inert.
+    ///
+    /// The brackets around it come from `ButtonChrome::Brackets`, never from
+    /// here: the row text wraps this label the same way the widget draws it, so
+    /// the glyphs on screen and the glyphs the hit test measures cannot drift.
+    /// Keep it to a gesture glyph plus one short word — a Nerd Font double-tap
+    /// icon carrying "how", the word carrying "what".
     pub tool_collapsed_output_action: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
@@ -83,7 +108,6 @@ pub struct Messages {
     pub voice_cancelled: &'static str,
     pub history_title: &'static str,
     pub help_title: &'static str,
-    pub thinking_popup_title: &'static str,
     pub diff_popup_title: &'static str,      // "{}" (file path)
     pub tool_popup_read_error: &'static str, // "{}" (path)
     pub tool_popup_empty: &'static str,
@@ -128,6 +152,8 @@ pub struct Messages {
 
     // ---- 弹窗通用 ----
     pub popup_copy_hint: &'static str,
+    /// Shown in place of the copy hint for a moment after a copy lands.
+    pub popup_copy_done: &'static str,
     pub popup_close_hint: &'static str,
     pub popup_scroll_hint: &'static str,
     pub palette_empty: &'static str,
@@ -171,6 +197,12 @@ pub struct Messages {
     pub copied_tmpl: &'static str,
     pub copied_terminal_tmpl: &'static str,
     pub copied_internal_tmpl: &'static str,
+    /// Stands in for the preview when the copy has no preview to quote: how
+    /// much was copied, as `{}` lines and a `{}` human-readable size.
+    pub copied_summary_tmpl: &'static str,
+    /// Singular form of [`Self::copied_summary_tmpl`] — one line, so the count
+    /// is spelled out rather than substituted.
+    pub copied_summary_one_tmpl: &'static str,
 
     // ---- 用户操作反馈 ----
     pub no_options: &'static str,
@@ -299,7 +331,10 @@ pub struct Messages {
     pub step_sec_tmpl: &'static str,
     pub step_failed_tmpl: &'static str,
     pub error_tmpl: &'static str,
-    pub thinking_title: &'static str,
+    /// Popup title, by state — the popup is opened from a running card as
+    /// readily as from a finished one, so it needs both strings too.
+    pub thinking_title_active: &'static str, // "(╭ರ_•́) Thinking..."
+    pub thinking_title_done: &'static str, // "(╭ರ_•́) Thought"
     pub thinking_line_prefix: &'static str,
     pub user_msg_prefix: &'static str,
     pub user_msg_cont: &'static str,
@@ -317,6 +352,10 @@ pub struct Messages {
     // ---- 持久任务进度 ----
     pub tasks_sticky_title: &'static str,
     pub subagents_sticky_title: &'static str,
+    pub background_sticky_title: &'static str,
+    /// Count of background tasks still on the strip after finishing
+    /// ("2 done" / "2 已完成").
+    pub background_sticky_done: &'static str,
     pub tasks_log_created_tmpl: &'static str, // "Tasks · {}/{} created"
     pub tasks_log_updated_tmpl: &'static str, // "Tasks · {}/{} updated"
 
@@ -348,8 +387,12 @@ impl Messages {
     fn english() -> Self {
         Self {
             log_title: " [Log] ",
-            thinking_card_title: " 🧠 Thinking ",
-            thinking_card_bottom: " ↕ {}/{} lines | Double-click for full content | ⏱ {} ",
+            thinking_card_title_active: " 🧠 Thinking ",
+            thinking_card_title_done: " 🧠 Thought ",
+            thinking_card_bottom: " ⏱ {} | ↕ {}/{} lines | {}",
+            // Nerd Font `md-gesture_double_tap` (U+F073C) for "how", the word
+            // for "what" — the same pair the collapsed tool card draws.
+            thinking_card_action: "󰜼 Open",
             diff_card_title: "+{} {}",
             diff_card_bottom: " Double-click for full code ",
             tool_error_card_title: " Error ",
@@ -363,9 +406,11 @@ impl Messages {
             tool_meta_sep: " · ",
             tool_live_output_title: "Live output",
             tool_live_output_bottom: " Double-click for buffered output ",
-            tool_collapsed_output_hint: "{} lines · double-click-result",
-            tool_collapsed_output_hint_one: "1 line · double-click-result",
-            tool_collapsed_output_action: "double-click-result",
+            tool_collapsed_output_hint: "{} lines · {}",
+            tool_collapsed_output_hint_one: "{} line · {}",
+            // Nerd Font `md-gesture_double_tap` (U+F073C) for "how", the word
+            // for "what"; the brackets around it are the chrome's.
+            tool_collapsed_output_action: "󰜼 Open",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
             command_title: " ⌘ Command ",
@@ -379,7 +424,6 @@ impl Messages {
             voice_cancelled: "Voice input cancelled",
             history_title: " Task History (Enter to retry, Esc to close) ",
             help_title: " Help (Esc to close) ",
-            thinking_popup_title: " (╭ರ_•́) Thinking ",
             diff_popup_title: " {} ",
             tool_popup_read_error: "Could not read file: {}",
             tool_popup_empty: "No content available.",
@@ -424,6 +468,7 @@ impl Messages {
             bottom_permission_auto: "auto",
 
             popup_copy_hint: " [y] Copy ",
+            popup_copy_done: " ✓ Copied ",
             popup_close_hint: " [Esc] Close ",
             popup_scroll_hint: " [j/k] Scroll ",
             palette_empty: "No matching commands",
@@ -464,6 +509,8 @@ impl Messages {
             copied_tmpl: "📋 Copied: {}",
             copied_terminal_tmpl: "📋 Copied to terminal clipboard: {}",
             copied_internal_tmpl: "📋 Copied to internal buffer (clipboard unavailable): {}",
+            copied_summary_tmpl: "{} lines · {}",
+            copied_summary_one_tmpl: "1 line · {}",
 
             no_options: "⚠ No options available",
             selected_tmpl: "✓ Selected: {}",
@@ -587,7 +634,8 @@ impl Messages {
             step_sec_tmpl: " [{}s]",
             step_failed_tmpl: "✗ Step {} failed: {}",
             error_tmpl: "❌ Error: {}",
-            thinking_title: "(╭ರ_•́) Thinking...",
+            thinking_title_active: "(╭ರ_•́) Thinking...",
+            thinking_title_done: "(╭ರ_•́) Thought",
             thinking_line_prefix: "│ {}",
             user_msg_prefix: "💬 {}",
             user_msg_cont: "  {}",
@@ -605,6 +653,8 @@ impl Messages {
             tasks_log_created_tmpl: "Tasks · {}/{} created",
             tasks_log_updated_tmpl: "Tasks · {}/{} updated",
             subagents_sticky_title: "Subagent",
+            background_sticky_title: "Background",
+            background_sticky_done: "done",
 
             startup_welcome: "Agent TUI started. Press 'i' for insert mode, '/' for commands.",
             startup_mode_hint: "Current mode: Insert. Type a task and press Enter. Shift+Enter for new line.",
@@ -630,8 +680,11 @@ impl Messages {
     fn chinese() -> Self {
         Self {
             log_title: " [日志] ",
-            thinking_card_title: " 🧠 思考中 ",
-            thinking_card_bottom: " ↕ {}/{} 行 | 双击查看完整内容 | ⏱ {} ",
+            thinking_card_title_active: " 🧠 思考 ",
+            thinking_card_title_done: " 🧠 已思考 ",
+            thinking_card_bottom: " ⏱ {} | ↕ {}/{} 行 | {}",
+            // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
+            thinking_card_action: "󰜼 打开",
             diff_card_title: "+{} {}",
             diff_card_bottom: " 双击查看完整代码 ",
             tool_error_card_title: " 错误 ",
@@ -645,9 +698,10 @@ impl Messages {
             tool_meta_sep: " · ",
             tool_live_output_title: "实时输出",
             tool_live_output_bottom: " 双击查看已缓冲输出 ",
-            tool_collapsed_output_hint: "{} 行 · 双击查看结果",
-            tool_collapsed_output_hint_one: "1 行 · 双击查看结果",
-            tool_collapsed_output_action: "双击查看结果",
+            tool_collapsed_output_hint: "{} 行 · {}",
+            tool_collapsed_output_hint_one: "{} 行 · {}",
+            // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
+            tool_collapsed_output_action: "󰜼 打开",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
             command_title: " ⌘ 命令 ",
@@ -661,7 +715,6 @@ impl Messages {
             voice_cancelled: "已取消语音输入",
             history_title: " 任务历史 (Enter 重试, Esc 关闭) ",
             help_title: " 帮助 (Esc 关闭) ",
-            thinking_popup_title: " (╭ರ_•́) 思考 ",
             diff_popup_title: " {} ",
             tool_popup_read_error: "无法读取文件: {}",
             tool_popup_empty: "没有可显示的内容。",
@@ -703,6 +756,7 @@ impl Messages {
             bottom_permission_auto: "自动",
 
             popup_copy_hint: " [y] 复制 ",
+            popup_copy_done: " ✓ 已复制 ",
             popup_close_hint: " [Esc] 关闭 ",
             popup_scroll_hint: " [j/k] 滚动 ",
             palette_empty: "没有匹配的命令",
@@ -743,6 +797,8 @@ impl Messages {
             copied_tmpl: "📋 已复制: {}",
             copied_terminal_tmpl: "📋 已复制到终端剪贴板: {}",
             copied_internal_tmpl: "📋 已复制到内部缓冲区 (剪贴板不可用): {}",
+            copied_summary_tmpl: "{} 行 · {}",
+            copied_summary_one_tmpl: "1 行 · {}",
 
             no_options: "⚠ 无可用选项",
             selected_tmpl: "✓ 已选择: {}",
@@ -866,7 +922,8 @@ impl Messages {
             step_sec_tmpl: " [{}秒]",
             step_failed_tmpl: "✗ 步骤 {} 失败: {}",
             error_tmpl: "❌ 错误: {}",
-            thinking_title: "(╭ರ_•́) 思考中...",
+            thinking_title_active: "(╭ರ_•́) 思考...",
+            thinking_title_done: "(╭ರ_•́) 已思考",
             thinking_line_prefix: "│ {}",
             user_msg_prefix: "💬 {}",
             user_msg_cont: "  {}",
@@ -884,6 +941,8 @@ impl Messages {
             tasks_log_created_tmpl: "任务 · {}/{} 已创建",
             tasks_log_updated_tmpl: "任务 · {}/{} 已更新",
             subagents_sticky_title: "子代理",
+            background_sticky_title: "后台任务",
+            background_sticky_done: "已完成",
 
             startup_welcome: "Agent TUI 已启动。按 'i' 进入插入模式, '/' 打开命令面板。",
             startup_mode_hint: "当前模式: 插入。输入任务并按 Enter 提交。Shift+Enter 换行。",

@@ -66,6 +66,7 @@ pub fn render_code_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
         &format!(" {} ", lang),
         None,
         Some(footer),
+        ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
     );
 
     let content_height = inner.height as usize;

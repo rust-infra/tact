@@ -91,7 +91,7 @@ impl ThinkingComponent {
     }
 
     fn render_card(&self, block: &ThinkingBlock, area: Rect, buf: &mut Buffer) {
-        let title = format!(" 🧠 {} ", self.messages.thinking_title);
+        let title = self.messages.thinking_card_title_done.to_string();
         let style = Style::default().fg(self.theme.accent);
         let block_widget = Block::default()
             .borders(Borders::ALL)
@@ -149,7 +149,7 @@ impl Component for ThinkingComponent {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(self.theme.accent))
                 .title(Span::styled(
-                    " 🧠 live ",
+                    self.messages.thinking_card_title_active.to_string(),
                     Style::default().fg(self.theme.accent),
                 ));
             let inner = block_widget.inner(card_area);

@@ -5,6 +5,8 @@ use ratatui::{
 };
 use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
+use agent_tui_kit::widgets::button::{Button, ButtonTheme, ButtonVariant};
+
 use crate::{
     i18n::{Language, Messages},
     render::cells::separator::is_task_end_separator,
@@ -274,19 +276,21 @@ impl App {
         }
         let msgs = self.msgs();
         let body = format!("{}{}", msgs.task_stats_prefix, parts.join(" · "));
-        let copy_btn = msgs.task_stats_copy_btn;
-        let raw = format!("{copy_btn}  {body}");
-        let line = Line::from(vec![
-            Span::styled(
-                copy_btn.to_string(),
-                Style::default()
-                    .fg(self.theme.heading)
-                    .add_modifier(Modifier::BOLD)
-                    .add_modifier(Modifier::UNDERLINED),
-            ),
-            Span::raw("  "),
-            Span::styled(body, Style::default().fg(self.theme.accent)),
-        ]);
+        // The copy affordance is drawn by the shared button component; keep
+        // `raw` glyph-for-glyph identical to the line so the byte-based
+        // selection and click mapping stay aligned.
+        let button = Button::new(
+            msgs.task_stats_copy_btn,
+            ButtonTheme::from_theme(&self.theme),
+        )
+        .variant(ButtonVariant::Primary)
+        .horizontal_padding(0)
+        .modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        let raw = format!("{}  {body}", button.label());
+        let mut spans = button.line().spans;
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(body, Style::default().fg(self.theme.accent)));
+        let line = Line::from(spans);
         self.append_msg(line, raw, LogItemKind::SystemPlain(SystemMsgStyle::Default));
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
             self.scroll_log_to_bottom();

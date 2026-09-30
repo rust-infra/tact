@@ -8,8 +8,8 @@
 //! `Deref` exposes the underlying state type directly.
 
 use agent_tui_kit::components::{
-    PlanComponent, StatusBarComponent, StreamComponent, SubagentPanelComponent, TaskPanelComponent,
-    ThinkingComponent, ToolComponent,
+    BackgroundPanelComponent, PlanComponent, StatusBarComponent, StreamComponent,
+    SubagentPanelComponent, TaskPanelComponent, ThinkingComponent, ToolComponent,
 };
 
 use crate::widgets::state::App;
@@ -97,5 +97,17 @@ impl App {
         self.registry
             .get_mut::<SubagentPanelComponent>()
             .expect("subagent-panel component registered")
+    }
+
+    pub(crate) fn background_panel(&self) -> &BackgroundPanelComponent {
+        self.registry
+            .get::<BackgroundPanelComponent>()
+            .expect("background-panel component registered")
+    }
+
+    pub(crate) fn background_panel_mut(&mut self) -> &mut BackgroundPanelComponent {
+        self.registry
+            .get_mut::<BackgroundPanelComponent>()
+            .expect("background-panel component registered")
     }
 }

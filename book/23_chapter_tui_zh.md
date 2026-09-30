@@ -103,6 +103,14 @@ pub enum UserCommand {
 | `[responses compacted: items=N, id=…]` | Responses 原生压缩成功；`N` = 基线 item 数，`id` = 截断后的 compaction id 前缀 |
 | `Compaction complete.` | `UserCommand::Compact` 成功完成 |
 
+前三行同时也是事后**区分触发源的唯一办法**：`[compacting]` / `Compaction
+complete.` 表示命令路径（`/compact`，键入或用命令面板选中），`[auto compact]`
+表示 `agent_loop` 里的 80% / 估算触发，`[Recovery] compact (n/N): context too
+large` 表示 provider 拒收了这个 prompt。`/compact` 在库里**不留文本痕迹**——
+palette command 从不经过 `dispatch_user_task`，而只有那条路径会调
+`save_history`，所以 `input_history` 回答不了「谁触发的压缩」。usage 行也回答
+不了：`/compact` 与恢复压缩落库都是 `call_type = compact`。
+
 **加密状态绝不渲染。** Responses 的 compaction / reasoning item 携带不透明的
 `encrypted_content`；它只会被回放给端点，绝不能出现在 `Info` 行、错误字符串、
 工具卡片或任何 TUI 表面。两种加密载荷的边界不同：reasoning 加密数据**只允许**
@@ -222,7 +230,7 @@ flowchart TB
 | `agent_tui_kit::render/log.rs` | Log 面板纯渲染（消费 wrap cache、scroll、overlays、scrollbar） |
 | `agent_tui_kit::render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
 | `agent_tui_kit::render/task_panel.rs` | 持久任务 sticky body 格式化 + 单域渲染辅助 |
-| `agent_tui_kit::render/sticky_host.rs` | Log 下方双域 sticky host（`[Tasks] [Subagent]` tab；纯渲染并返回 tab 命中区） |
+| `agent_tui_kit::render/sticky_host.rs` | Log 下方三域 sticky host（`[Tasks] [Subagent] [Background]` tab；纯渲染并返回 tab 命中区） |
 | `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s（`pulldown-cmark` + Mermaid 路由 + 宽度感知表格） |
 | `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` 事件循环 → ratatui `Line`s |
 | `agent_tui_kit::render/mermaid_sequence.rs` | 本地 Mermaid `sequenceDiagram` 渲染器（alias/activation/CJK 安全） |
@@ -232,7 +240,7 @@ flowchart TB
 | `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select + chrome helpers |
 | `agent_tui_kit::widgets/` | `ToolWidget`、`HelpWidget`、`PopupWidget`、`SelectPopupWidget` |
 
-支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
+支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`BackgroundPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
 
 ### 6.2 帧管线
 
@@ -242,23 +250,36 @@ flowchart TB
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
 │    ├─ log panel (可滚动)
-│    └─ sticky host (Tasks | Subagent)?（隐藏时 0 行；点击展开）
+│    └─ sticky host (Tasks | Subagent | Background)?（隐藏时 0 行；点击展开）
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
-当 **Tasks** 面板（`task_panel.visible`，由 `TasksChanged` 驱动）或 **Subagent**
-总览（`subagent_panel.visible`，由 `SubagentsChanged` 驱动）有内容时，`render_main_area`
-对外层主区做 **outer-split**（上 Log、下双域 sticky host），不改动 Log wrap/scroll 内核。
-host 标题行对每个可见域渲染一个 `[Tasks] …` / `[Subagent] …` 分段；活动域展开时在分隔线下方
-显示该域 body。Tasks body 是持久任务清单；Subagent body 是**当前进程子代理运行的状态总览**，
-按 Running → Completed → Failed → Cancelled 分组（`marker 短id 摘要首行 ⏱ 耗时`）。子代理
-明细永不进入 sticky 或主 Log——仍留在父 `spawn_subagent` 工具卡与其 popup。点击非活动 tab 会
-切换并展开该域；点击活动 tab（或条内空白）收起；滚轮 / `jk` 滚动活动域。某域不可见即从 host
-消失：Tasks 在无 open 任务时，Subagent 在收起且无 Running 时。Tasks 可见性仍要求本会话出现过
+当任一 sticky 域有内容时，`render_main_area` 对外层主区做 **outer-split**（上 Log、
+下三域 sticky host），不改动 Log wrap/scroll 内核。三个域分别是：**Tasks**
+（`task_panel.visible`，由 `TasksChanged` 驱动）、**Subagent** 总览（`subagent_panel.visible`，
+由 `SubagentsChanged` 驱动）、**Background**（`background_panel.visible`，即当前进程在跑的
+`background_run` 任务）。host 标题行对每个可见域渲染一个 `[Tasks] …` / `[Subagent] …` /
+`[Background] …` 分段；活动域展开时在分隔线下方显示该域 body。Tasks body 是持久任务清单；
+Subagent body 是**当前进程子代理运行的状态总览**，按 Running → Completed → Failed →
+Cancelled 分组（`marker 短id 摘要首行 ⏱ 耗时`）；Background body 是每个在跑任务一行
+（`⏳ task-id command ⏱ 耗时`），其后跟着**留窗期内刚结束**的任务行
+（`✓`/`✗ task-id command ⏱ 距结束秒数`，`BACKGROUND_LINGER` = 8 s）。子代理明细永不进入
+sticky 或主 Log——仍留在父
+`spawn_subagent` 工具卡与其 popup。点击非活动 tab 会切换并展开该域；点击活动 tab（或条内空白）
+收起；滚轮 / `jk` 滚动活动域。某域不可见即从 host 消失：Tasks 在无 open 任务时，Subagent 在收起
+且无 Running 时，Background 在最后一行消失时——最后一个在跑任务会由它的留窗行把条撑住，
+留窗过期后由下一次空闲 tick（≈1 s）把条一起收走，全程没有任何任务事件参与。留窗行也让标题
+同时表达两件事：`[Background] 1 · 2 已完成` 表示 1 个在跑、2 个刚结束。Tasks 可见性仍要求本会话出现过
 `TasksChanged` 且有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、
 [第 25 章](./25_chapter_protocol_zh.md)）。
+
+与另两个域不同，Background 域是**派生**的而非被推送的：没有任何 `AgentUpdate` 携带它的行，
+因为 `background_run` 的存活卡片本身就持有 task id（`ToolMeta { task_id }`）、命令与启动时刻——
+于是 `state/background_panel.rs` 从 `ToolState` 派生出这些行，并由 `App::handle_agent_update`
+在滚动刷新之前对这条 sticky 做一次对齐（只管可见性/展开，用户的手动收起不会被覆盖）
+（见 [第 13 章](./13_chapter_background_zh.md)）。
 
 `lib.rs` 中垂直约束：
 
@@ -340,7 +361,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 |------|------|------|
 | `TextCell` | `cells/text.rs` | User/assistant/system 文本、选择、stream buffer |
 | `ToolCell` | `cells/tool.rs` | Tool 标题 + meta + 可选 detail card（单个 `Renderable`） |
-| `ThinkingCell` | `cells/thinking.rs` | Direct live card：前后各有一行空白，1→3 行 tail，完成后为 1 行 summary；标题和底栏显示总行数 |
+| `ThinkingCell` | `cells/thinking.rs` | Direct live card：前后各有一行空白，1→3 行 tail，完成后为 1 行 summary；标题和底栏显示总行数，底栏末尾是与折叠 tool 卡片同款的 `[󰜼 打开]` 按钮——该按钮是这张卡片唯一的点击目标，位置由画帧所用的同一套几何算出（`footer_button_rect`），因为卡片画出的文字并不落在承载它的那些行上 |
 | Diff overlay |（`log.rs` 中 legacy 路径） | 带 `+` 行的写文件 preview |
 | `CodeCell` | `cells/code.rs` | 语法着色 code block card |
 | Separator | `cells/separator.rs` | block 间视觉间隙 |
@@ -392,8 +413,8 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 | Select | `RequestSelect` 权限 / agent 选择 | `popups/select.rs` |
 | Help | `Ctrl+?` | `popups/help.rs` |
 | History | `Ctrl+H` | `popups/history.rs` |
-| Thinking detail | 双击 thinking card；相邻有序列表项以空行分隔 | `popups/thinking_popup.rs` |
-| Tool/file detail | 双击 tool card（已折叠的命令 / 读取 / 编辑卡片：meta 行末尾的 `双击查看结果`） | `popups/diff_popup.rs` |
+| Thinking detail | 双击 thinking card 底栏的 `[󰜼 打开]` 按钮（卡片正文不可选）；相邻有序列表项以空行分隔 | `popups/thinking_popup.rs` |
+| Tool/file detail | 双击 tool card（已折叠的命令 / 读取 / 编辑卡片：meta 行末尾的 `[󰜼 打开]` 按钮） | `popups/diff_popup.rs` |
 | Code detail | 双击 code card | `popups/code_popup.rs` |
 | Mermaid 图 / 源码 | 双击已渲染的 Mermaid 图；默认显示渲染图，`Tab` 切换到源码 | `popups/mermaid_popup.rs` |
 
@@ -474,7 +495,7 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | **User** | `add_user_message` 产生的绿色前缀行（`💬 …` / 续行 `  …`） | 前有 blank 分隔行；续行归属记录为 `LogItemKind::User` |
 | **Assistant text** | `StreamChunk` / `flush_stream_pending` 的 Markdown 行 | 单段可能占多 physical 行 |
 | **System / info** | 显式 plain 或 Markdown 插入 API | 不再有基于缩进的 fallback，来源决定渲染路径 |
-| **Thinking card** | Placeholder 行（`Thinking`） | 一个 `ThinkingCell`；前后各有一行空白与相邻内容分隔，active tail 从 1 增至 3 行，完成后显示 1 行 summary，标题和底栏显示总行数 |
+| **Thinking card** | Placeholder 行（`Thinking`） | 一个 `ThinkingCell`；前后各有一行空白与相邻内容分隔，active tail 从 1 增至 3 行，完成后显示 1 行 summary，标题和底栏显示总行数，底栏末尾是与折叠 tool 卡片同款的 `[󰜼 打开]` 按钮——卡片上只有这个按钮响应点击 |
 | **Tool blocks** | Blank placeholder 行（`SystemTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
 | **Loading placeholder** | `app.loading_idx` 处一行 blank `SystemTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
@@ -594,7 +615,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 构造 | 层 | 高度来源 | 双击 |
 |------|-----|----------|------|
 | **TextCell** | Inline | Cache 换行数 | 词选 / 行选 |
-| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — 替换 placeholder 范围 | 打开 `diff_popup`（折叠的命令 / 读取 / 编辑卡片：命中 meta 行末尾的 `双击查看结果`） |
+| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — 替换 placeholder 范围 | 打开 `diff_popup`（折叠的命令 / 读取 / 编辑卡片：命中 meta 行末尾的 `[󰜼 打开]` 按钮） |
 | **ThinkingCell** | Inline | 前后各一行空白；active 1→3 tail 行；completed 一行 summary | 打开 `thinking_popup` |
 | **TaskEndSeparator** | Inline | 1 visual 行（实线 + 居中耗时） | — |
 | **MessageSeparator** | Inline | user/system/assistant 组间 1 blank | — |
@@ -603,7 +624,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 
 **TextCell**（`cells/text.rs`）正常绘制 clone cache wrap 行。选择应用 `REVERSED`（词级或整行）。左 gutter `indent_cols` 来自行的 `LogItemKind`；user 归属与类别分隔线不再检查 raw 文本。
 
-**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，popup 用的就是这份「命令 + 输出」内容。命令（`Command`）、文件读取（`FileRead`：`read_file`、`read_image`）、文件写入（`FileWrite`：`write_file`）与文件编辑（`FileEdit`：`edit_file`、`apply_patch`）**完成后整块卡片消失**：block 只剩 title + meta 两行，以 `StepResult.detail` 为准，meta 行追加 `· {n} 行 · 双击查看结果`（`tool_collapsed_output_hint`），其中 `n` 与 popup 显示的行数是同一个数（编辑类取 `new_text` 的行数，popup 渲染的是 git diff；读取/写入类取正文行数）——没有卡片的 block 仍然要能说明「这里藏着输出」，而可点的只有末尾的 `双击查看结果`（参数行与行数都不响应）。本来就不画卡片的 kind（`Task` / `Sleep` / `Generic`，MCP/插件工具都走 `Generic`）同样会折叠，但**只在结果超过一行时**：没有卡片时它们的结果原本根本读不到（`detail_full` 一直是 `None`，既没有 popup 也没有点击目标），而只有一行的确认信息不值得给一个入口。已完成的 subagent 保留摘要卡片——它是 transcript 弹窗的入口。失败仍保留卡片（最多 5 行预览）。
+**ToolCell** 取代 placeholder `TextCell`：Phase 3 检测 physical 索引在 `[phys_idx .. phys_idx + placeholder_rows]` 内则在该 block visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool 传 `started_at` 作 live duration，并持有有界 `live_output` buffer。可见的 `bash` 输出会让 card 从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout 用普通文本，stderr 用 warning 色。Live card 标题为 `Live output`；行数位于卡片底部栏（截断时显示 `preview/total 行`），只统计流式输出行数；popup/`detail_full` 仍会前置 `$ <command>`，popup 用的就是这份「命令 + 输出」内容。命令（`Command`）、文件读取（`FileRead`：`read_file`、`read_image`）、文件写入（`FileWrite`：`write_file`）与文件编辑（`FileEdit`：`edit_file`、`apply_patch`）**完成后整块卡片消失**：block 只剩 title + meta 两行，以 `StepResult.detail` 为准，meta 行追加 `· {n} 行 · [󰜼 打开]`（`tool_collapsed_output_hint` + `collapsed_action_text`，由 kit 的 `Button` 以 `ButtonChrome::Brackets` 画出），其中 `n` 与 popup 显示的行数是同一个数（编辑类取 `new_text` 的行数，popup 渲染的是 git diff；读取/写入类取正文行数）——没有卡片的 block 仍然要能说明「这里藏着输出」，而可点的只有末尾那个按钮（参数行与行数都不响应）。本来就不画卡片的 kind（`Task` / `Sleep` / `Generic`，MCP/插件工具都走 `Generic`）同样会折叠，但**只在结果超过一行时**：没有卡片时它们的结果原本根本读不到（`detail_full` 一直是 `None`，既没有 popup 也没有点击目标），而只有一行的确认信息不值得给一个入口。已完成的 subagent 保留摘要卡片——它是 transcript 弹窗的入口。失败仍保留卡片（最多 5 行预览）。
 
 **为何仅 code 用 overlay：** code block 将流式 fence 行换成 blank placeholder，并用预渲染 `styled` cache 绘制 card。Thinking 则采用与 tool card 相同的 direct `Renderable` 模型，因此 live tail 与 completion summary 只有一个渲染所有者。
 
@@ -619,7 +640,7 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 双击（纯文本） | `find_word_bounds` 词选 |
 | 三击 | 整 logical 行；code block 内 → 整块范围 |
 | 单击 thinking/tool/code card | 记住 card 索引；无文本选择 |
-| 双击 card | 打开对应 detail popup；命令 / 读取 / 编辑类卡片已折叠时没有 card，命中目标是 meta 行末尾的 `双击查看结果`——参数行与该行其余文字都不响应 |
+| 双击 card | 打开对应 detail popup；命令 / 读取 / 编辑类卡片已折叠时没有 card，命中目标是 meta 行末尾的 `[󰜼 打开]` 按钮——参数行与该行其余文字都不响应 |
 | 在 tool/Thinking detail popup 内左键拖拽 | 选择原始 tool 文本或可见 Thinking 文本；排除仅用于显示的前缀 |
 
 复制（normal 模式 `y`）在 tool 或 Thinking popup active 时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无 selectable popup 时，优先 log 词选，然后拼接选中 logical 行的 `LogItem::raw`。

@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.31"
+version = "1.1.32"
 edition = "2024"
 license = "MIT"
 
@@ -81,3 +81,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2.5"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 ratatui-markdown = { git = "https://github.com/celestia-island/ratatui-markdown", rev = "3a8bcbe", default-features = false, features = ["mermaid"] }
+
+# Keep the dev build (and its on-disk footprint) small. This workspace has ~30
+# bin/test units per crate and Cargo stores every unit's artifacts in its own
+# hash directory, so a rebuilt unit hash keeps a full copy of its outputs: a
+# fully-debug tact-ui binary is 576 MB (76% of it DWARF). Line tables keep
+# backtraces useful without the per-type/per-variable blobs, and incremental
+# compilation is off because its caches dominate the target dir too.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false

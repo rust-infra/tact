@@ -229,6 +229,7 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
             &popup.title,
             popup.tool_name.as_deref(),
             Some(TOOL_POPUP_FOOTER),
+            ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
         );
         frame.render_widget(Paragraph::new(body), inner);
         surface.diff_popup_area = popup_area;
@@ -335,6 +336,7 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
         &title,
         popup.tool_name.as_deref(),
         Some(TOOL_POPUP_FOOTER),
+        ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
     );
     frame.render_widget(Paragraph::new(text), inner);
 

@@ -32,6 +32,276 @@
 ---
 
 
+## 1. 2026-09-29 — thinking 卡片跑完后说 `Thought`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix (文案) |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_title_active` / `_done`、`thinking_title_active` / `_done`；删除 `thinking_popup_title`）、`crates/agent_tui_kit/src/render/cells/thinking.rs`、`crates/agent_tui_kit/src/components/thinking.rs`、`crates/tui/src/widgets/state/app/popups.rs`；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 卡片与弹窗两种状态共用同一个标题字符串，于是已完成的卡片一直沿用运行中才需要的措辞——同一个字段错了两次，而第二次就发生在中文文案刚被改成不再显示 `思考中` 的下一个提交里。
+
+**决策：** 一个状态一个字符串，并在**知道状态的地方**挑：`thinking_card_title_active`（`🧠 Thinking` / `🧠 思考`）给 spinner 还在转的那张卡，`thinking_card_title_done`（`🧠 Thought` / `🧠 已思考`）给已出 summary 的那张；弹窗标题照同样方式拆开（`(╭ರ_•́) Thinking...` / `(╭ರ_•́) Thought`），因为弹窗既可能从运行中的卡片打开、也可能从已完成的卡片打开。一个被两种状态共读的字段正是错误措辞得以出现的条件，所以它被删掉，而不是被注释说明。kit 组件自带的那套卡片渲染改用同样两个字符串，顺带丢掉硬编码的英文 `🧠 live`；从未被读取的 `thinking_popup_title` 键删除。
+
+**之后的行为：** 运行中的卡片显示 `⠋🧠 Thinking` / `⠋🧠 思考`，已完成的显示 `🧠 Thought` / `🧠 已思考`；运行期间打开的弹窗标题是 `(╭ರ_•́) Thinking...`，跑完之后是 `(╭ರ_•́) Thought`。
+
+**指针：** `Messages::thinking_card_title_{active,done}` 与 `Messages::thinking_title_{active,done}`、`ThinkingCell::{active,completed}`、`App::open_thinking_popup`（按状态选择）、`ThinkingComponent::render`。测试：`agent_tui_kit::render::cells::thinking::tests::the_card_title_names_the_state_the_card_is_in`；`completed_thinking_cell_renders_only_its_summary` 现在钉住 `Thought`。
+
+---
+
+## 1. 2026-09-29 — thinking 卡片标题去掉「进行中」：`思考`，不是 `思考中`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix (文案) |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_title`、`thinking_title`）；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 运行中与已完成的 thinking 卡片共用同一个标题字符串，而中文那条写的是 `🧠 思考中`。于是卡片跑完之后还在宣称自己正在思考——标记「运行中」的是标题前缀的 spinner，文案不该也来抢这个活。
+
+**决策：** 中文标题改为 `🧠 思考`，弹窗标题改为 `(╭ರ_•́) 思考...`；英文 `🧠 Thinking` 本来就是时态中性的，不动。字段的文档注释写明这条规则——一个字符串服务两种状态，因此不能自称进度——因为下一次改文案就会再犯。（同日即被推翻：两种状态各自拿到自己的字符串——见上一条。）
+
+**之后的行为：** 运行中的卡片显示 `⠋🧠 思考`（spinner + `思考`），已完成显示 `🧠 思考`；弹窗标题两种状态下都是 `(╭ರ_•́) 思考...`。
+
+**指针：** `Messages::thinking_card_title`（不变量写在文档注释里）与 `Messages::thinking_title`（弹窗 + 组件卡片）。
+
+---
+
+## 1. 2026-09-29 — thinking 卡片的弹窗改由底栏按钮打开，而不是整张卡片
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix (UI) |
+| **相关** | `crates/agent_tui_kit/src/render/cells/thinking.rs`（`ThinkingCell::card_geometry`、`footer_button_rect`）、`crates/agent_tui_kit/src/render/log.rs`（`LogRenderOutput`）、`crates/agent_tui_kit/src/render/log_column.rs`（`LogColumnRenderer::cell_slice`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`thinking_open_btn_areas`）、`crates/tui/src/handlers/mouse.rs`（`handle_log_click`）；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 双击 thinking 卡片的任何位置都会弹出详情——标题、summary、前后的空白行全算命中。而这张卡片本来也不是可选文本（它把 tail 或 summary 画在承载转录原始 thinking 文本的行上），所以那些点击既弹了窗、也不可能选中任何东西。底栏画着 `[󰜼 打开]` 按钮说的是「点这里」，卡片回答的却是「点哪都行」。
+
+**决策：** 底栏那个按钮成为卡片唯一的点击目标，位置由画帧所用的同一套几何算出。卡片矩形、边框与顶部裁剪只在一处计算——`ThinkingCell::card_geometry`；`render_partial` 据此绘制，`footer_button_rect` 据此推导按钮（底边框那一行、左角与读数之后、宽度恰为画出的标签宽度），因此命中区不可能与字形漂移。纯渲染器用 widget 阶段同一个 `LogColumnRenderer::cell_slice` 取每个 cell 的可见切片，并把矩形放进 `LogRenderOutput` 交回；App 把它们存到 `MouseState::thinking_open_btn_areas` 供点击处理读取——即 `subagent_cancel_btn_areas` 的既有做法。卡片其它位置的点击保持无效并清掉选择（整行 Markdown 早就这么做）。底栏被裁掉时（底边框不在屏上，或卡片太窄放不下整个按钮）没有目标；手势不变，仍是双击。
+
+**之后的行为：** 双击 `[󰜼 Open]` / `[󰜼 打开]` 打开详情弹窗；同样的双击落在卡片标题、卡片正文、空白行、按钮左侧的读数或按钮右侧那一列，都什么都不做，也不留下选择。
+
+**指针：** `ThinkingCell::{card_geometry, footer_button_rect}`、`LogColumnRenderer::cell_slice`（绘制与命中区共用一条公式）、`LogRenderOutput`、`render_log_panel_pure` 的 thinking 分支、`MouseState::thinking_open_btn_areas`、`handle_log_click` 的 thinking 分支。测试：`agent_tui_kit::render::cells::thinking::tests::{the_footer_button_rect_is_the_drawn_button, a_clipped_footer_has_no_button_rect, the_button_rect_follows_a_scrolled_card}` 与 `tui::handlers::mouse::tests::{thinking_popup_opens_from_the_drawn_button_only, clicking_a_thinking_card_body_leaves_no_selection}`（后一对已验证对「整张卡片是目标」的旧行为是红的）。文档：第 23 章（`ThinkingCell` 行、卡片表、弹窗表）。
+
+---
+
+## 1. 2026-09-29 — thinking 卡片的底栏换成同一个按钮，两张卡片的「打开」说法统一
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature (UI) |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_bottom`、`thinking_card_action`）、`crates/agent_tui_kit/src/render/cells/thinking.rs`（`ThinkingCell::footer`、`ThinkingCell::bottom_line`）、`crates/agent_tui_kit/src/widgets/button.rs`（`ButtonChrome::wrap`）；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** thinking 卡片的底栏是 `⇕ 1/2 lines | Double-click for full content | ⏱ 1.5s`——54 列散文，画面上没有任何标记指出「可点」的位置；而这距离折叠 tool 卡片把同一类句子换成方括号按钮只隔了一次会话。两张表达同一件事（「双击我，看剩下的」）的卡片，用了两种教法。
+
+**决策：** 底栏的动作现在就是折叠 tool 卡片画的那个 `[󰜼 Open]` / `[󰜼 打开]` 按钮——kit 的 `Button` 配 `ButtonChrome::Brackets`，字形负责「怎么操作」、词负责「会发生什么」。两个界面的这几个字形共用同一处定义 `ButtonChrome::wrap(label)`（`collapsed_action_text` 也走它），所以改 chrome 就是同时改两张卡片。两者的动作都是模板的**尾部**，因此 cell 用后缀匹配切分：某个语言若不再以动作结尾，只会画出没有按钮的读数，而不会把按钮画到错误的位置。双击目标仍是整张卡片（折叠 tool 卡片是按钮本身当目标），命中测试没有任何变化；只是把耗时读数移到按钮左侧，好让动作落在最后。（同日稍后又把目标收窄到按钮本身——见上一条。）
+
+**之后的行为：** `╰ ⏱ 1.5s | ↕ 1/2 lines | [󰜼 Open] ────╯`——33 列而不是 54 列（中文 30 列而不是 38 列），按钮用主题的 `muted` 色画在 border 色的读数里。两段读数在同一天按用户要求对调了位置：耗时在前、行数在后，各自的标签跟着自己那段读数走（cell 就是按这个顺序填模板）。没有 Nerd Font 的终端在这里同样会画出替代框，与 tool 卡片按钮是同一笔已接受的代价。
+
+**指针：** `ButtonChrome::wrap`（方括号归 chrome 所有；`wrap_is_what_the_chrome_draws` 把它和 `Button::line` 钉在一起）、`ThinkingCell::footer`（填模板 + 后缀切分）、`ThinkingCell::bottom_line`（用 `Button` 画成卡片的 `title_bottom`）。测试：`render::cells::thinking::tests::{the_footer_ends_in_the_shared_button, the_footer_button_is_drawn_in_the_button_color, every_locale_ends_its_footer_with_the_action}`、`widgets::button::tests::wrap_is_what_the_chrome_draws`。文档：第 23 章（`ThinkingCell` 行与卡片表）。
+
+---
+
+## 1. 2026-09-29 — 折叠输出的提示改成按钮：字形负责「怎么操作」，一个词负责「会发生什么」
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature (UI) |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_hint{,_one}`、`tool_collapsed_output_action`）、`crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapsed_action_text`、`collapsed_output_hint`、`collapsed_action_cols`）、`crates/agent_tui_kit/src/render/cells/tool.rs`（`meta_line`）；[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 无卡片的已完成命令用 `double-click-result` 这几个字来宣告它的弹窗——19 列用 phase 色画的散文，而画面上没有任何标记说它可点，因为整条 meta 行就是**一个 span**：文字本身就是那个控件。于是这行把它最长的一段列数花在了「一个控件靠形状就能说清的事」上。
+
+**决策：** 行尾现在是一个真按钮，由 kit 自己的 `Button` 以 `ButtonChrome::Brackets` 画出——"这里是个控件"改由方括号 chrome 承担，文字只需要说会发生什么：`[󰜼 Open]` / `[󰜼 打开]`。字形是 Nerd Font 的 `md-gesture_double_tap`（U+F073C），画的正是那个手势，所以这行仍然同时表达了**怎么操作**（图标）与**会发生什么**（词），而只有词需要按语言维护。两半只有一个定义：`collapsed_action_text(msgs)` 就是"label 套上 chrome 的方括号"，cell 画的正是这几个字形，`collapsed_action_cols` 量的也是同一个串——画出来的按钮与命中区不可能漂移。激活方式不变（在 meta 行上双击），"有输出被藏起来"的 `3 lines` 计数也不变。字形在采用前对着终端自己的字体验过：CaskaydiaMono Nerd Font 各 face 都有，步进 1200/2048 em（和 `0` 一样正好一格），`unicode-width` 0.2.2 也算 1 列——而"从行尾往回量"正依赖这一点。
+
+**之后的行为：** `✓ Success · 34ms · 3 lines · [󰜼 Open]` 是 37 列而不是 48；中文行 `✓ 成功 · 34ms · 3 行 · [󰜼 打开]` 是 31 列而不是 35。按钮用主题的 `muted` 色画在该行自己的背景上，所以在 phase 色的句子里读起来就是一个控件。接受两点代价：这是仓库第一个 Nerd Font（plane-15 PUA）字形，因此没有 Nerd Font 的终端在这一行会画出替代框；以及字形必须保持一列宽——命中区是从行尾往回量的，终端若把某个字形画得比 `unicode-width` 量的更宽，整个目标都会跟着偏。
+
+**指针：** `i18n.rs`（两个模板的第一个 `{}` 填行数、第二个填按钮字形；action 键只放裸 label，绝不含方括号）、`tool_widget.rs::collapsed_action_text`（这几个字形的唯一定义）、`render/cells/tool.rs::meta_line`（把该行拆开、行尾走 `Button` 画）。测试：`widgets::tool_widget::tests::{collapsed_output_hint_ends_with_its_action,finished_block_meta_row_matches_its_hit_range}`、`render::cells::tool::tests::{collapsed_command_meta_row_reports_hidden_output,collapsed_command_meta_row_draws_its_action_as_a_button,open_card_meta_row_has_no_collapsed_hint}`，以及两个读**真实渲染帧**定位字形的用例——`render::log_render_tests::completed_command_renders_header_rows_only`、`handlers::mouse::tests::collapsed_hint_click_window_matches_the_drawn_glyphs`。文档：`docs/tool_rendering.md` §5「Collapsed output」、[第 23 章](./23_chapter_tui_zh.md)。
+
+---
+
+## 1. 2026-09-29 — 实时输出把后台任务 id 抹掉，任务一开始打印东西 Background 条就消失
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/agent_tui_kit/src/components/tool.rs`（`ToolComponent::on_tool_progress`）；`crates/agent_tui_kit/src/state/background_panel.rs`、`crates/tui/src/render/task_panel.rs`（测试）；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 同时跑着几个 `background_run` 任务时，`[Background]` 条**只出现不到一秒**就消失了，而且之后一直空着，直到进程重启才恢复。任务卡片本身运行正常，`/background` 也列得出这些任务——只有这条 sticky 丢了它们。触发条件是**输出**：命令会打印东西的任务（`echo hello; sleep 300`）立刻丢行，而纯 `sleep 300` 的行会留着——这正是它看起来"时有时无"的原因，也是为什么条此后"再也不回来"（id 只在启动时发一次）。
+
+**决策 / 根因：** `ToolComponent::on_tool_progress` 在每来一段实时输出时都会**整块重建**存活卡片的渲染 output，而这次重建搬运了子代理的 model/tokens，却**漏了 `task_id`**。`AgentUpdate::ToolMeta { task_id }` 只在调用返回（任务刚启动）时发一次，所以第一段输出到来时 id 被重置为 `None`，之后再也没有任何东西把它放回去。Background 域的行是从"带 task id 的存活卡片"派生出来的，于是行消失、条自己隐藏——读起来就像"这条把我的任务弄丢了"。排查路径：在真 TUI 上用 `tmux` + `capture-pane` 读屏（本会话的模型读不了图），加上在 `App::handle_agent_update` / `sync_background_sticky` 里临时打点，看到某张卡片从 `Some(id) → None` 而**中间没有任何 agent 更新**——即这次抹除发生在本地的 progress 重建里，不是被任何协议事件驱动的。修法一行：在重建里带上 `.with_task_id(active.output.task_id.clone())`，并用注释写明"重建必须保留自己推导不出来的字段"。
+
+**之后的可见行为：** 只要任务在跑，它的行就一直在，无论它吐多少输出。这也让 id 在任务运行期间始终保持可读——也就是读者查 `/background <id>` 需要的那个 id。
+
+**指针：** `components/tool.rs::on_tool_progress`（重建处与"保留字段"注释）。测试：`components::tool::tests::tool_progress_keeps_the_background_task_id`（单元层根因：先 `ToolMeta` 再一段 progress）、`render::task_panel::sticky_host_tests::live_output_does_not_drop_a_background_row`（画出来的条能挺过一段输出）。相关条目见下方：Background 域（2026-09-28）与留窗（2026-09-29）。
+
+---
+
+## 1. 2026-09-29 — Background 条上的行在任务结束后留一会；一次 turn 取消仍是整会话的总击杀开关
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix（体验） |
+| **相关** | `crates/agent_tui_kit/src/state/background_panel.rs`（`BACKGROUND_LINGER`、`FinishedBackgroundTask`、`note_finished`/`prune_finished`、`format_background_lines`/`format_sticky_title_line`）、`crates/agent_tui_kit/src/render/sticky_host.rs`、`crates/agent_tui_kit/src/i18n.rs`（`background_sticky_done`）；`crates/tui/src/widgets/state/app/{background,agent}.rs`、`crates/tui/src/render/task_panel.rs`；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 用户看着 5 个并发的 `background_run` 任务，先报「没有 sticky」，再报「只显示一个」，最后报「什么都没有」——三次读起来都像「这条丢了任务」。排查（tmux `capture-pane` 读真 TUI + 在 `sync_background_sticky` 里临时打点）**没有发现派生逻辑的缺陷**：行数始终等于真正在跑的任务数。找到的是这条域很容易被读错：
+1. 任务一结束，那一行就在同一帧里消失，看起来像丢了行；
+2. 从 `StepStarted`（preflight）到工具体真正执行之间，卡片显示 `⠏ Running` 但**还没有 id**——preflight 是串行的且会在每个权限弹窗上等待，所以弹窗没答完之前工具根本没执行——这个窗口不产生行；
+3. 一次用户取消（Esc，例如只是为了关掉一个无关的弹窗）会杀掉**该会话所有**在跑的后台任务：`UserCommand::Cancel` 置位那个唯一的会话级 cancel flag，任务在各自的 progress tick 上轮询它，而该 flag 只在下一条 `SubmitTask` 时清零。那 4 个任务就是在同一秒里带着 `[Cancelled by the user]` 一起死的，条也因此空了。
+
+**决策：** (3) 保持为契约——[第 13 章](./13_chapter_background_zh.md) 里已经写明（「会话的 cancel flag（Esc / 取消）会终止该会话所有在跑任务」；没有单任务 kill 工具）——只修 (1) 的**可读性**：结束的任务保留它的行 `BACKGROUND_LINGER`（8 秒），这个时长是照着一次空闲 tick 重绘节奏（≈1/s）留足余量选的。该行的数据直接来自 shell 手里那张已完成卡片（`BackgroundTaskFinished` → 卡片上的 `task_id` + 参数摘要，在 block 滚走之前由 `App::note_finished_background` 取出），而不是第二份快照——这个域仍然是派生的。过期是**时间**触发的，所以裁剪在 `poll_background_tasks`（空闲 tick）与 `handle_agent_update` 两处都跑，且行被丢掉时会自己置 dirty：把条收走的过程不需要任何任务事件。
+
+**之后的可见行为：** body 排列为「在跑的行在前」（`⏳ <id> <command> ⏱ <耗时>`），其后是留窗期内刚结束的行（`✓`/`✗ <id> <command> ⏱ <距结束秒数>`；结果由字形承载，所以每行不需要新词）。标题同时表达两件事——`[Background] 1 · 2 已完成` 表示 1 个在跑、2 个刚结束；若没有在跑的，头部直接读作 `2 已完成` 而不是干巴巴的 `0`。留窗行自己就能把条撑住可见，首次出现时与在跑任务一样默认展开；最后一行过期后，条在下一次空闲 tick 收起并消失。(2) 保持不变且是有意为之：还没有 id 的卡片不产生行，行会在 id 到达的那一帧出现。
+
+**指针：** `state/background_panel.rs`（`FinishedBackgroundTask::{is_live,ago_secs}`、`note_finished`（按 task id 去重、上限 `MAX_FINISHED_ROWS`）、`prune_finished`、`apply_running` 的可见性、行/标题格式化）。测试：`state::background_panel::tests::{a_finished_task_keeps_its_row_inside_the_linger_window,a_failed_task_lingers_under_the_failure_glyph,rows_drop_once_the_linger_window_passes,the_strip_stays_visible_for_a_lingering_row_only,note_finished_replaces_a_repeat_and_bounds_the_list,running_rows_come_before_lingering_rows,the_title_counts_running_and_done}`；原来的 `the_background_domain_hides_once_the_task_finishes` 变成 `render::task_panel::sticky_host_tests::a_finished_background_task_lingers_then_the_domain_hides`（断言画出来的 `✓ <id>` 行，以及之后条收起）。
+
+---
+
+## 1. 2026-09-28 — sticky 条新增 Background 域，常驻显示在跑的 `background_run` 任务
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature |
+| **相关** | `crates/agent_tui_kit/src/state/background_panel.rs`、`crates/agent_tui_kit/src/components/background_panel.rs`、`crates/agent_tui_kit/src/render/sticky_host.rs`、`crates/agent_tui_kit/src/state/ui_types.rs`（`StickyTab`）；`crates/tui/src/widgets/state/app/{background,agent,registry,config,construct}.rs`、`crates/tui/src/render/task_panel.rs`、`crates/tui/src/handlers/{mouse,mod}.rs`；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** Tasks 与 Subagent 各有一条 Log 下方的常驻条，而后台任务只以「启动它的那张工具卡」（id + 耗时，见 2026-09-25 条目）或一次 `/background` 弹窗的形式存在——于是「还有哪些在跑」在那张卡片滚出视口之后就消失了，而这恰恰是同时压着几个长构建时最需要看的信息。
+
+**决策：** 新增第三个 sticky 域 `[Background]`，其行**从实时工具卡片派生**，而不是被推送。启动任务的工具只有 `background_run` 一个，它的 presentation 是 `keep_live`，而 id 是靠 `AgentUpdate::ToolMeta { task_id }` 落到卡片上的——所以「仍然 active 且带 task id 的卡片」**就是**「还在跑的任务」（`check_background` / `wait_background` 只是把 id 当参数，从不设置该字段）。因此不需要 `AgentUpdate::BackgroundTasksChanged` 加一份 manager 侧 `known` 注册表：信息本来就在 shell 手里，第二份拷贝只会多一处需要同步的状态。该条在 `App::handle_agent_update`——工具状态唯一会变的地方——里同步，且紧接滚动刷新之前，于是它的高度在同一帧内就定下来（卡片上 id 出现/消失的那一帧）。dirty 只在可见性/展开状态翻转时置位，因此单纯在跑的任务不会造成重绘。
+
+**之后的可见行为：** 只要还有任务在跑，该条显示 `[Background] N · ⏳ <id> <command> ⏱ <耗时>`，首次出现默认展开；点击 tab 切换/展开、滚轮 / `jk` 滚动，与另两个域完全一致。最后一个任务进入终态时它收起并隐藏，且从不列出已完成任务——那些任务的输出仍留在工具卡与 `/background` 里。已启动但尚未报出 id 的卡片不产生行，所以该条是在 id 到达时出现，而不是先显示占位行。
+
+**指针：** `state/background_panel.rs`（派生、行/标题格式化、滚动裁剪）、`components/background_panel.rs`（由 registry 持有状态；不认领任何更新）、`render/sticky_host.rs`（三域 host）。测试：`state::background_panel::tests::*`（10 个：派生、首次出现展开、用户收起不被覆盖、滚动裁剪、耗时形状、标题拆解）、`render::task_panel::sticky_host_tests::{a_running_background_task_gets_its_own_sticky_domain,the_background_domain_hides_once_the_task_finishes,all_three_domains_share_one_title_row}`、`handlers::mouse::tests::click_background_tab_switches_domain_and_scrolls_active_panel`。
+
+---
+
+## 1. 2026-09-26 — 请求正文每会话只留可配置的条数，不再无限增长
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/store/session_store/mod.rs`（`MAX_TOKEN_USAGE_BODIES`）；`crates/tact/src/store/session_store/sqlite.rs`（`record_token_usage`、`trim_token_usage_bodies`、`load_latest_request_body`）；`docs/token_usage_schema.md`；[第 1 章](./01_chapter_store_zh.md) |
+
+**现象 / 动机：** `<workdir>/.tact/tact.db` 长到 **8.0 GB，其中 99% 是 `token_usages`（8,075 MB）**：14,483 行里躺着 7.87 GiB 的 `request_body`——因为每次 LLM 调用都存整份序列化请求（system prompt + 60 个工具 schema + 完整上下文，`/responses` 下每次重发），而且从没有人清理（全库唯一的 `DELETE FROM token_usages` 是删会话的级联）。单行大小跟着会话上下文走：三周内采样平均从 109 KiB → 443 KiB → 1003 KiB；**光一个 9 小时的会话就写了 569 行 / 591 MiB**（最大单行 1.88 MB）。而这些字节没有任何对外用途：唯一的读取方是 `load_latest_request_body`（供 `/view-system-prompt` 的 assembled 视图），其余读数全靠数值列。
+
+**决策：** 每个会话保留最新 `[agent] max_token_usage_bodies` 条普通调用的正文（默认 **1**；未加载配置时回落到常量 `MAX_TOKEN_USAGE_BODIES`）+ **全部**压缩调用的正文，其余**就地清空**为空 blob。默认取 1 的理由：它是仍能支撑 `/view-system-prompt` assembled 视图（读最新一条正文）的最小窗口；允许配 `0`，此时该视图显示 "Unavailable"。哨兵用 `X''` 而不是 `NULL`：列本身是 `NOT NULL`，而且「没保留正文」必须与「行被删了」可区分——计数行永远不删，所以 `/stats`、缓存/token 读数与 usage schema 全部不受影响。清空发生在 `record_token_usage` 的插入之后（上限从设置解析），且**只碰一行**：窗口边缘那条普通行——它是**推进**窗口而不是横扫，因此策略生效时就已在窗口之外的老行不会被回访，属于那条一次性语句的活（实测：整个 8 GB 的库经该语句 + `VACUUM` 后降到 605 MB，且计数行一条没少）。若写成「清空所有更旧的行」，UPDATE 必须逐行读正文来判断——正是这里要避开的 I/O；而窗口边缘每次插入只前进一行，于是裁剪以 O(1)/次走完整个历史，没人用的会话则完全不做事。`compact` / `responses_compact` 行既不进窗口也不被裁剪，因为那个 BLOB 是压缩基线（及其 `encrypted_content`）唯一的存身处。`load_latest_request_body` 现在要求 `length(request_body) > 0`，因此它返回的是真正还存在的最新正文，而不是一个空 blob。
+
+**变更后行为：** 会话的 `token_usages` 在「配置条数的普通正文（默认一条，本工作负载约 350 KiB）+ 全部压缩正文」处封顶，跑多久都不再涨；更旧的行保留全部计数列、`request_body` 为空。`X''` 是文档化的「未保留」标记，未来的读者能与「这次调用本来就没带正文」区分开。对策略生效前就已经长起来的库，回收空间需要 `VACUUM`（清空只是把页还回 freelist，不会缩小文件）；那条 `ROW_NUMBER() OVER (PARTITION BY session_id …)` 一次性语句与随后的 checkpoint/VACUUM 步骤记在 `docs/token_usage_schema.md` 的 §Request body retention，并且已在一个合成的双会话库上验证过。测试：`store::session_store::sqlite::tests::record_token_usage_keeps_only_the_newest_bodies_and_compaction_rows`（最旧的正文被清空、恰好保留十条普通正文、压缩正文无论多旧都不动、读取方跳过被清空的行），以及未变的 `test_responses_compact_usage_row_is_distinguishable` 与 `load_latest_request_body` 往返。
+
+**指针：** `crates/tact/src/store/session_store/{mod.rs,sqlite.rs}`；`docs/token_usage_schema.md`（列说明 + 保留策略一节 + 回收配方）；第 1 章 §请求正文裁剪。测量方式：`sqlite3 .tact/tact.db "select name, round(sum(pgsize)/1048576.0,1) from dbstat group by name order by 2 desc"`——`messages` 55.6 MB、`responses_states` 27.1 MB 从来不是问题。
+
+---
+
+## 1. 2026-09-26 — DeepSeek 的档位与折叠按官方表对齐
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/config/mod.rs`（`BUILTIN_MODEL_PROFILES`）；`crates/tact/src/agent/mod.rs`（`effort_after_provider_fold`、`compact_effort_reserve_tokens`、`compact_summary_effort`）；[第 21 章](./21_chapter_config_zh.md)；`config.example.toml` |
+
+**现象 / 动机：** 两处与官方文档对不上的地方（`api-docs.deepseek.com/guides/thinking_mode` 与 `/api/create-chat-completion`）。(a) 内建档位表把 `deepseek-v4-pro` 收窄成 `[High, Max]`，可它的模块注释引用的就是那张全族表，而 API 参考把 `deepseek-flash` / `deepseek-v4-pro` 列在同一个 `reasoning_effort` 枚举下——于是 `/model` 对这个 id 藏掉了 `low`，且与文档行为无法自洽。(b) DeepSeek **接受** `minimal`/`medium`/`xhigh` 但会折叠（`minimal`→`low`、`medium`/`xhigh`→`high`）；Tact 原样发送配置值，所以配置 `reasoning_effort = "medium"` 时预留按 4,000 的 medium 桶算，而模型实际以 `high`（8,000）推理——正是会饿死摘要信封的那种低估。
+
+**决策：** 按官方表来，同时保持「发送值如实」。`deepseek-flash`（参考里列出的 id，也是本会话在用的那个）与 `deepseek-v4-flash`、`deepseek-v4-pro` 一起采用全族那三个有意义的档位 `low`/`high`/`max`；旧的 `deepseek-reasoner` 保持较窄的历史集合，因为当前参考已不列它（注释写明了这个理由）。新增 `effort_after_provider_fold(provider_kind, effort)`，把 DeepSeek 官方的折叠——**只**折叠 DeepSeek，因为 OpenAI 的枚举是模型相关的真实档位、Kimi 没有任何折叠——应用到所有**派生**预算上。线上值永不改写（文档说这些值是为兼容而接受），所以读数仍等于实际发出的值。
+
+**变更后行为：** 在 DeepSeek 上，`[llm] reasoning_effort = "medium"` 依然发送 `medium`（`[compact summary …] request … reasoning_effort=medium` 可见），但摘要预留按 `high` 桶：`(text 2000 + reasoning 8000)` 而不是 `(text 2000 + reasoning 4000)`。`/model` 第二步对 `deepseek-flash` 与 `deepseek-v4-pro` 都给出 `low`/`high`/`max`。`compact_summary_effort` 里「DeepSeek 无法彻底关闭思考」这句过期说法已修正：开关是存在的（`reasoning.effort = "none"`，chat 格式为 `thinking.type = "disabled"`），而阶梯仍**故意**只降到 `low`——handoff 里的标识符细节正来自那段思考。测试：`agent::tests::{effort_folds_to_what_deepseek_actually_runs,local_compact_folds_deepseek_effort_for_the_reserve}`（两个方向的折叠、线上值原样、打印出的信封用 high 桶）、`config::tests::deepseek_ids_share_the_official_tier_table`。
+
+**指针：** `crates/tact/src/config/mod.rs`、`crates/tact/src/agent/mod.rs`。文档：第 21 章 `reasoning_effort` 一节（折叠表 + 派生预算规则）、`config.example.toml` 的 model-profiles 注释（记账 + 官方列出的 id）。
+
+---
+
+## 1. 2026-09-26 — handoff cell 会点明它摘要掉的那份 transcript 在哪
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/compact/mod.rs`（`summary_message`、`build_compacted_history`）；`crates/tact/src/agent/mod.rs`（Codex-style 重建的两处调用点）；[第 5 章](./05_chapter_compact_zh.md) §5/§8/§11 |
+
+**现象 / 动机：** 压缩只摘要最近的尾部（`KEEP_USER_MESSAGE_TOKENS = 20_000` 估算 token），更早的内容**只**存在于磁盘上的 transcript 里——但接续的 agent 从不知道这个文件存在。于是压完一个长会话后，它的行为像是「handoff 就是全部历史」。实测那次 9 小时会话：handoff 只覆盖最后一小时，另外八小时躺在 `.tact/transcripts/transcript_1790384715333130116_0.jsonl`（592 条消息 / 1.36 M 字符）里，而没有任何东西指向它。第 5 章 §11 本来就把它记成已知缺口。
+
+**决策：** 把路径追加在 handoff **cell 内部**——是 `<context-handoff>` 消息的一部分，而不是另一条消息——形如 `Full pre-compaction transcript: <path> — read it selectively if you need detail this summary dropped.`。提示刻意写成「按需择读」：长会话的 transcript 体量远超任何阅读预算。这句话由构造该 cell 的同一个函数产出，因此重载时的识别不受影响（`is_summary_message` 仍看到开标签，`MessageKind::Summary` 标记不变）；旧的 `LegacySingleSummary` / `compacted_context` 路径不传路径，其单摘要消息与改动前逐字节一致。
+
+**变更后行为：** 本地压缩后的替换上下文在闭标签前多出这一行，指向的文件与 TUI 已经打印的 `[transcript saved: …]` 是同一个、也是 `write_transcript` 在压缩开始时写下的那个。因此 agent 可以找回尾部筛选丢掉的细节，而不必以为 handoff 就是全部。测试：`compact::tests::build_compacted_history_notes_where_the_transcript_lives`（带路径时出现该行且 cell 仍被正确框住；不带路径时没有该行、且重载后仍被识别为 handoff）。
+
+**指针：** `crates/tact/src/compact/mod.rs`（`summary_message`、`build_compacted_history`、`write_transcript`）、`crates/tact/src/agent/mod.rs`（重建调用点）。文档：第 5 章 §8（落盘布局）与 §11（缺口行改写：路径已暴露；但**哪些**回合被摘要掉仍由尾部截断决定，而不是按重要性）。
+
+---
+
+## 1. 2026-09-26 — 摘要信封不会小于配置的输出预算
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/agent/mod.rs`（`compact_summary_envelope_ceiling`、`compact_history_local_with_mode` 里的 `summary_max_tokens` 下限）；[第 5 章](./05_chapter_compact_zh.md) §5 + §9 |
+
+**现象 / 动机：** 在 DeepSeek 系网关上的一次 `/compact` 付了两次摘要请求，而第一次什么都没产出：`max_tokens = 4000` 回来是 `stop=max_tokens`、`reasoning_tokens = 4000`、摘要正文为零。根因是这一族 provider **没有独立的 thinking 预算**——`reasoning_effort` 只是个档位名（`none` 关思考，`low`/`high`/`max` 开启；`minimal`→`low`、`medium`/`xhigh`→`high` 是兼容折叠；默认 `high`），而 DeepSeek 把 reasoning 计在 `max_tokens` **之内**。官方对思考模式不设 `max_tokens` 时的默认值是 **64K**（`max` 档 128K、关思考 8K），也就是说 Tact 的 2,000 文本预算加上一个小 effort 桶，比 provider 自己认为的正常量级低了一个数量级。在这类 provider 上，信封太小并不等于「想得少」，而是「没有答案」。
+
+**决策：** 用 `[agent] max_tokens`（已解析的回复预算：CLI > provider 条目 > `[agent]` > 默认）给摘要的线上 `max_tokens` 兜底，并以 `compact_summary_envelope_ceiling` = `窗口 − 10% 余量 − 指令 token 数` 封顶，这样紧窗口下仍能构造出请求，而不是硬报 "window too small"。下限只作用于「这次请求可能把信封花在推理上」的情形——`effective_effort.is_some()`，即所有 effort 语义 provider（含 DeepSeek / Kimi K3 这类服务端默认档）。budget 语义 provider（Anthropic）在这里从不接收 thinking 预算，因此继续保持经典的 `min(窗口 × 20%, 2,000)` 文本上限——正是它让 handoff 保持紧凑。文本/预留的拆分仍只是阶梯的**记账**，不是对线上形状的承诺：续写各档的信封不变，因为续写只需把草稿写完（实测：2,000 的信封里用掉 649 reasoning + 约 465 文本）。代价记录在案、不藏：这类 provider 上 2,000 的上限不再约束 handoff 正文。大窗口下这在结构上没有代价——保留用户消息的预算本身是 `min(20,000, 窗口 − …)`，窗口那一项仍在几十万量级——而响应提示现在会打印 `completion N (reasoning M)`，所以摘要真的吃掉整个下限是**看得见**的，不用靠推断。
+
+**变更后行为：** effort 语义 provider 上，首次摘要请求拿到的 `max_tokens` 不会低于 `[agent] max_tokens`。按默认值（8,000）就是「算出来的文本+桶更小时取 8,000」；配成 65,536 时信封在每种情形下都是 65,536——与 DeepSeek 自己的思考模式默认值同一量级。每一档仍打印自己的确切信封，其余一切未动：同样的阶梯、同样的续写、同样的触发条件、同样的文本/预留记账。测试：`agent::tests::{local_compact_envelope_is_at_least_the_configured_output_budget,compact_summary_envelope_ceiling_leaves_room_for_the_instructions}`，以及两条未变的断言——Anthropic 仍保持 2,000 文本预算（`local_compact_omits_thinking_for_anthropic`）、继承的 `high` 在 128K 窗口下仍是 10,000（`local_compact_inherits_session_effort`）。
+
+**指针：** `crates/tact/src/agent/mod.rs`（`compact_summary_envelope_ceiling`、`compact_effort_reserve_tokens`、`compact_summary_server_default_effort`）；文档：第 5 章 §5（摘要调用）+ §9（配置）。档位与 64K 思考模式默认值的官方出处：`api-docs.deepseek.com/guides/thinking_mode` 与 `/api/create-chat-completion`——记在这里，因为 `config.example.toml` 只列了档位名，没写这层记账。
+
+---
+
+## 1. 2026-09-26 — 压缩提示消息说人话：报数字，不再打印 Rust `Debug`
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | docs（日志输出） |
+| **相关** | `crates/tact/src/agent/mod.rs`（`compact_response_note`、`compact_truncation_note`，以及 `[compact summary …]` / `[compact continue …]` / `[compact fallback]` 三处 emit）；[第 5 章](./05_chapter_compact_zh.md)；[第 23 章](./23_chapter_tui_zh.md) |
+
+**现象 / 动机：** 一次真实 `/compact` 把每次尝试的状态打成了内部 Rust 类型的 `{:?}` dump——`response stop=Some(MaxTokens) usage=Some(TokenUsageInfo { prompt: 23470, completion: 4000, total: 27470, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 23470, reasoning_tokens: 4000 })`——本该是一句话的地方成了一串结构体字段，把唯一重要的数字（整个输出预算都被 `reasoning_tokens` 吃掉）埋在五个无关字段里。续写提示则是镜像的问题：`summary truncated (15314 think bytes)` 把**字节**数与 token 预算并排打印，拿它去比 2,000 的文本预算或 4,000 的 reasoning tokens 只会得到相反的结论；而 fallback 那行还写着 `truncated after 5 attempts`，可阶梯实际跑了 6 级。
+
+**决策：** 打印 provider 自己的数字并逐个标注单位。`compact_response_note` 渲染 `stop=<snake_case>` 加 `prompt N, completion M (reasoning R), cache hit/miss`；provider 没给 usage 时写 `no usage reported`（绝不编造 0），无法识别的 stop reason 写 `unknown(<raw>)`，与 agent 其它消息既有记法一致（`stop_reason=refusal`）。`compact_truncation_note` 同时点名一次截断尝试的**两种单位**——`4000 reasoning tokens, thinking block 15314 bytes`——reasoning 在前，因为那才是真正计费的东西；没有 usage 时只报字节重量，绝不说自己看不见的开销。fallback 行改为报自己的级数（`still truncated at stage 6/6`），不再数续写次数。预算、阶梯与 wire 行为都没有改动：同样的 `max_tokens`、同样的预留升级、同样的续写消息。
+
+**变更后行为：** 每次尝试前一行 `[compact summary n/6] request … max_tokens=… (text … + reasoning …), reasoning_effort=…, input … chars`，后一行 `[compact summary n/6] response stop=…, prompt …, completion … (reasoning …), cache …/…`——覆盖面与 2026-09-14 那条一致，但现在可读也可 grep：`stop=max_tokens, prompt 23470, completion 4000 (reasoning 4000), cache 0/23470`。截断时发出 `[compact continue 1/5] summary truncated (4000 reasoning tokens, thinking block 15314 bytes), next attempt max_tokens=2000`；阶梯耗尽时发出 `[compact fallback] summary still truncated at stage 6/6; using the best-effort partial summary`。测试：`agent::tests::{compact_response_note_renders_the_providers_numbers,compact_truncation_note_labels_both_units}`（两种单位 + 无 usage / 未知 stop 两路），以及既有的信封测试（现在断言 `[compact summary 1/6] response stop=end_turn, no usage reported`）。
+
+**指针：** `crates/tact/src/agent/mod.rs`（`compact_response_note`、`compact_truncation_note`，阶梯循环里的三处 `emit_update`）。文档：第 5 章 §摘要阶梯记录新的行形状；第 23 章 §`/compact` 状态消息列出的是标签，未变。
+
+---
+
+## 1. 2026-09-26 — 在 DeepSeek 系端点上，`/compact` 的第一枪摘要请求整发被推理吃掉
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | investigation（成本；尚未改代码） |
+| **相关** | `crates/tact/src/agent/mod.rs`（`compact_history_local_with_mode`、`compact_effort_reserve_tokens`、`compact_summary_effort`、`next_compaction_reserve`）；`crates/tact-ui/src/driver.rs`（`UserCommand::Compact`）；`crates/tact/src/recovery.rs`（`CONTINUATION_MESSAGE`）；`crates/tact/src/compact/mod.rs`（`KEEP_USER_MESSAGE_TOKENS`、`AUTO_COMPACT_THRESHOLD_PERCENT`）；[Ch 05](./05_chapter_compact_zh.md) |
+
+**现象 / 动机：** 对一个跑了 9 小时的会话执行 `/compact`（`deepseek-flash` 走 OpenAI 兼容网关），摘要阶梯跑了两轮，而第一枪**一个字的摘要都没产出**：
+
+```
+[compact summary 1/6] request … max_tokens=4000 (text 2000 + reasoning 2000), reasoning_effort=low
+[compact summary 1/6] response stop=Some(MaxTokens) … completion: 4000, reasoning_tokens: 4000
+[compact continue 1/5] summary truncated (15314 think bytes), next attempt max_tokens=2000
+[compact summary 2/6] request … max_tokens=2000 (text 2000 + reasoning 0)
+[compact summary 2/6] response stop=Some(EndTurn) … completion: 1114, reasoning_tokens: 649
+```
+
+该端点把 `reasoning_tokens` **算在 `max_tokens` 之内**，于是「从零总结 23K tokens 的尾部」这件事把整个 4,000 的额度花在思考上、正文为零——按 effort 推出的 `reasoning` 预留（`compact_effort_reserve_tokens(Low) = 2_000`）只是本地记账，线上只有一整个信封。这一枪白花了 23,470 prompt + 4,000 completion tokens；而这次压缩整体把会话从 417,680 降到 85,235 wire tokens（协议 item 966 → 27，请求体 1.64 MB → 0.30 MB）。
+
+**调查：** (1) 触发源是从 TUI 文案读出来的：`[compacting]` / `Compaction complete.` **只**由 `UserCommand::Compact` 发出（`crates/tact-ui/src/driver.rs:365`），自动压缩发的是 `[auto compact]`、恢复压缩发的是 `[Recovery] compact (1/2): context too large`——这条值得记，因为 `/compact` 是 palette command，从不写入 `input_history`（只有 `dispatch_user_task` 调 `save_history`），事发后在库里查不到任何文本痕迹。(2) **不是** 80% 阈值：该会话解析出的 `model_context_window` 是 1,000,000（`deepseek-flash` 的内置映射），由请求体里的 `context_management.compact_threshold = 834464 = 1,000,000 − 65,536 (max_tokens) − 10% headroom` 反证；也就是说 `last_token_total + incoming + max_tokens` 得到 800,000 才触发，而当时只有 419,861。同一个库里的交叉验证：唯一一次自动压缩发生在一次 `total=735,712` 的请求之后 19 秒（`735,712 + 65,536 = 801,248`）。(3) 第 2 枪的额度只有一半却成功了，因为它是同一份摘要的**续写而不是重试**：落库的请求体里有三个 input item——75,063 字符的摘要 prompt、一个装 15,171 字符 `reasoning_text` 的 `reasoning` item（第 1 枪的思考；`encrypted_content` 只有 38 字符）、以及 `CONTINUATION_MESSAGE`（“Output limit hit. Continue directly from where you stopped. No recap, no repetition. Pick up mid-sentence if needed.”）。思考已经在上下文里，模型只需 649 个 reasoning tokens 而不是 4,000，而阶梯的第一次续写本来就把预留**归零**。
+
+**决策：** 只做记录，暂不改代码。若要去掉这份浪费，最小改法是让 DeepSeek/Kimi 的 stage 0 直接从 reserve 0 起步（等价于从 stage 1 开始），或把 `Low` 的预留提到不低于文本预算；两者都在现有阶梯内部，不改任何 wire 契约。**已被上面那条「信封下限」条目取代**：实际落地的是按 `[agent] max_tokens` 给信封兜底，桶本身不动。刻意**不**记为 bug：阶梯「先想、再写」的形状正是第 2 枪便宜的原因，而「一整发信封都花在思考上」是端点行为，不是 Tact 的缺陷。
+
+**变更后行为：** 阶梯语义不变；它的提示消息在同一次改动里重写过（见上面那条 notices 条目）。本条钉住的可观察规则：`[compact continue N/5]` 是阶梯的正常推进而非失败（最多 6 级，之后 `[compact fallback]` 用 best-effort 部分摘要收尾）；该行现在同时报两种单位（`4000 reasoning tokens, thinking block 15314 bytes`），取代上面引用的「只有字节」措辞——先写计费的 reasoning tokens，再写 thinking 块的字节重量；摘要器只看到尾部（`KEEP_USER_MESSAGE_TOKENS = 20_000`），所以 handoff 从不覆盖整个长会话——压缩前的完整上下文只存在于 `.tact/transcripts/transcript_<nanos>_<n>.jsonl`（保留最新 100 份）；`/responses` 下 `micro_compact` 是被刻意跳过的，因此两次压缩之间上下文不会自行缩小。
+
+**指针：** `crates/tact/src/agent/mod.rs`（阶梯循环与 `[compact summary …]` / `[compact continue …]` 的埋点、摘要调用前先 `write_transcript`、`next_compaction_reserve`）、`crates/tact-ui/src/driver.rs`（`UserCommand::Compact`）、`crates/tact/src/recovery.rs`（`continuation_message`）。本次运行的证据：`token_usages.id=14215`（`call_type=compact`，prompt 23,499 / completion 1,114，请求体 98 KB）、`.tact/transcripts/transcript_1790384715333130116_0.jsonl`（592 条消息 / 1.36 M 字符）。
+
+---
+
+## 1. 2026-09-26 — `token_usages.request_body` 从不清理，而它就是那 8.2 GB 的全部
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix（未修） |
+| **相关** | `crates/tact/src/store/session_store/sqlite.rs`（`token_usages` 表结构；唯一的 `DELETE FROM token_usages` 是删除会话时的级联）；`crates/tact/src/agent/mod.rs`（`persist_llm_call`）；`docs/token_usage_schema.md`（列表字段表 + `encrypted_content` 安全说明） |
+
+**现象 / 动机：** `<workdir>/.tact/tact.db` 已经涨到 **8.2 GB**；`dbstat` 显示其中 **8,146 MB 属于 `token_usages`**——14,226 行、平均每行约 570 KB——因为 `request_body` 把每次 `stream` / `compact` 调用的请求体原样存了下来（单个会话的行就有 330–370 KB，最大 1.64 MB）。而它没有任何清理：文档把这个列描述成调试用途，也没有保留策略，于是库随使用量单调增长，而 `messages`（56 MB）与 `responses_states`（27 MB）都还是小头。
+
+**决策：** 暂无——先记录，免得下次再从 `du -h` 重新发现一遍。任何修法都必须保住安全说明依赖的性质：压缩的 `encrypted_content` **只**保存在 `stream` / `responses_compact` 行的 `request_body` BLOB 里。因此风险最低的形状是「只丢普通 `stream` 行的正文，保留 `compact` / `responses_compact`」，备选是「按会话保留最新 N 行 / N 天」。
+
+**变更后行为：** 不变——这是磁盘增长，不是协议或 UI 行为。
+
+**指针：** `docs/token_usage_schema.md`。测量方式：`sqlite3 .tact/tact.db "select name, sum(pgsize) from dbstat group by name order by 2 desc limit 5"`。
+
+---
+
 ## 1. 2026-09-25 — 任务统计行的复制按钮改用图标，不再是需要翻译的词
 
 | 字段 | 值 |

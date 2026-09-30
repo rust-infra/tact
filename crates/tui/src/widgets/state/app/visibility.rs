@@ -282,9 +282,7 @@ impl App {
     pub(crate) fn extract_selected_text(&self, start: TextPosition, end: TextPosition) -> String {
         if start.phys_idx == end.phys_idx {
             if let Some(item) = self.log.items.get(start.phys_idx) {
-                return item.raw
-                    [start.byte_offset.min(item.raw.len())..end.byte_offset.min(item.raw.len())]
-                    .to_string();
+                return char_slice(&item.raw, start.byte_offset, end.byte_offset).to_string();
             }
             return String::new();
         }
@@ -295,7 +293,7 @@ impl App {
         if self.is_message_visible(start.phys_idx)
             && let Some(item) = self.log.items.get(start.phys_idx)
         {
-            parts.push(&item.raw[start.byte_offset.min(item.raw.len())..]);
+            parts.push(char_slice(&item.raw, start.byte_offset, item.raw.len()));
         }
         for phys in (start.phys_idx + 1)..end.phys_idx {
             if self.is_message_visible(phys)
@@ -307,7 +305,7 @@ impl App {
         if self.is_message_visible(end.phys_idx)
             && let Some(item) = self.log.items.get(end.phys_idx)
         {
-            parts.push(&item.raw[..end.byte_offset.min(item.raw.len())]);
+            parts.push(char_slice(&item.raw, 0, end.byte_offset));
         }
         parts.join("\n")
     }
@@ -694,5 +692,46 @@ impl App {
         if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
             self.scroll_log_to_bottom();
         }
+    }
+}
+
+/// Slice `text` between two byte offsets, snapping both to a character
+/// boundary.
+///
+/// The offsets come from column arithmetic over a rendered row, so a wide
+/// (CJK) or multi-byte (emoji) glyph can leave them inside a character, and
+/// `&text[a..b]` would then panic with a message that says nothing about the
+/// selection. Snapping degrades to the enclosing characters instead, and an
+/// inverted range yields nothing.
+fn char_slice(text: &str, start: usize, end: usize) -> &str {
+    let start = text.floor_char_boundary(start.min(text.len()));
+    let end = text.floor_char_boundary(end.min(text.len()));
+    if end <= start { "" } else { &text[start..end] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::char_slice;
+
+    #[test]
+    fn char_slice_snaps_offsets_to_character_boundaries() {
+        // "已复制 ab": 已 is bytes 0..3, so 1 and 2 sit *inside* it — a plain
+        // `&text[1..4]` panics here, which is what this guards.
+        let text = "已复制 ab";
+        assert_eq!(char_slice(text, 0, text.len()), text);
+        assert_eq!(char_slice(text, 1, 4), "已"); // 1 snaps down to the boundary
+        assert_eq!(char_slice(text, 2, 3), "已"); // both ends inside 已
+        assert_eq!(char_slice(text, 1, 2), ""); // both snap to the same boundary
+        assert!(!text.is_char_boundary(1) && !text.is_char_boundary(2));
+    }
+
+    #[test]
+    fn char_slice_handles_emoji_and_out_of_range_offsets() {
+        let text = "💬 ok"; // 💬 is 4 bytes
+        assert_eq!(char_slice(text, 1, 4), "💬");
+        assert_eq!(char_slice(text, 0, 999), text);
+        assert_eq!(char_slice(text, 999, 999), "");
+        // An inverted range yields nothing instead of panicking.
+        assert_eq!(char_slice(text, 5, 3), "");
     }
 }

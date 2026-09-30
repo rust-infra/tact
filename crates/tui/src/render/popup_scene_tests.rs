@@ -1387,3 +1387,64 @@ fn tasks_dag_popup_renders_mermaid_markdown() {
         "legend should list subjects, got:\n{text}"
     );
 }
+
+#[test]
+fn popup_footer_swaps_the_copy_hint_for_the_confirmation_after_a_copy() {
+    let mut app = make_app();
+    seed_code_popup(&mut app);
+
+    // Nothing copied yet: the footer offers the key pair as usual.
+    let before = render_main_area_text(&mut app, 100, 30);
+    assert!(
+        before.contains("copy"),
+        "the copy hint must be offered:\n{before}"
+    );
+    assert!(
+        !before.contains("Copied"),
+        "no confirmation before a copy:\n{before}"
+    );
+
+    // A copy landed: the footer confirms instead of offering the key.
+    app.copy_text("fn main() {}");
+    let terminal = render_main_area_terminal(&mut app, 100, 30);
+    let area = app.mouse.code_popup_area;
+    assert!(!area.is_empty(), "code popup must have rendered");
+    let buffer = terminal.backend().buffer();
+    let bottom: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, area.bottom() - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bottom.contains("Copied"),
+        "the confirmation must replace the hint: {bottom}"
+    );
+    assert!(
+        !bottom.contains("copy "),
+        "the old hint must be gone while the confirmation shows: {bottom}"
+    );
+
+    // Drawn in the success color, on the popup's own background. Locate the
+    // glyphs by their cell suffix, not by the flattened string index: a wide
+    // grapheme earlier in the row leaves an empty continuation cell and shifts
+    // every string offset past it.
+    let theme = app.theme;
+    let row = area.bottom() - 1;
+    let copied_at = (0..buffer.area.width)
+        .find(|x| {
+            let suffix: String = (*x..buffer.area.width)
+                .map(|col| buffer[(col, row)].symbol())
+                .collect();
+            suffix.starts_with("Copied")
+        })
+        .expect("confirmation column");
+    for x in copied_at..copied_at + "Copied".len() as u16 {
+        let cell = &buffer[(x, row)];
+        assert_eq!(
+            cell.fg, theme.success,
+            "confirmation must use the success color"
+        );
+        assert_eq!(
+            cell.bg, theme.bg,
+            "the footer row keeps the popup background"
+        );
+    }
+}

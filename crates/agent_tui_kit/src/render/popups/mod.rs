@@ -21,7 +21,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear},
 };
 
-use crate::theme::Theme;
+use crate::{
+    theme::Theme,
+    widgets::button::{Button, ButtonState, ButtonTheme},
+};
 
 /// Mouse hit areas a popup render pass returns for the host to apply after
 /// the frame (kit renderers stay pure; `MouseState` lives in the app).
@@ -72,11 +75,19 @@ pub fn popup_inner(area: Rect) -> Rect {
     )
 }
 
+/// Key that means "copy" in every popup footer. `render_popup_chrome` is the
+/// one place that swaps it for the success confirmation.
+const COPY_HINT_KEY: &str = "y";
+
 /// RN-style popup chrome: Clear + styled border block + title row + optional footer.
 ///
 /// `footer_note` is free-form text drawn at the *front* of the bottom border,
 /// before the key hints — used by the tool popups to print the raw tool id
 /// (dynamic text, so it cannot live in the `&'static str` [`FooterHint`]s).
+///
+/// `copy_done` is the confirmation label (`✓ Copied`) to draw *in place of* the
+/// [`COPY_HINT_KEY`] hint; the host passes it only while a copy is fresh, and
+/// the label is rendered by the shared button component in its success state.
 /// Returns the inner content Rect.
 pub fn render_popup_chrome(
     frame: &mut Frame,
@@ -85,6 +96,7 @@ pub fn render_popup_chrome(
     title: &str,
     footer_note: Option<&str>,
     footer: Option<&[FooterHint]>,
+    copy_done: Option<&str>,
 ) -> Rect {
     frame.render_widget(Clear, popup_area);
 
@@ -114,6 +126,14 @@ pub fn render_popup_chrome(
         for hint in hints {
             if !footer_spans.is_empty() {
                 footer_spans.push(separator());
+            }
+            if let Some(label) = copy_done
+                && hint.key == COPY_HINT_KEY
+            {
+                let button =
+                    Button::new(label, ButtonTheme::from_theme(theme)).state(ButtonState::Success);
+                footer_spans.extend(button.line().spans);
+                continue;
             }
             footer_spans.push(Span::styled(hint.key, Style::default().fg(theme.accent)));
             footer_spans.push(Span::styled(hint.label, Style::default().fg(theme.muted)));

@@ -216,7 +216,11 @@ impl ToolComponent {
         let step_idx = self.resolve_step_idx(tool_id, 0);
         let (phys_idx, old_rows, output) = {
             let active = &self.state.active[pos];
-            // Preserve subagent metadata when rebuilding the output.
+            // Preserve the metadata a rebuild cannot re-derive: subagent
+            // counters and the `background_run` task id. Dropping the task id
+            // here empties the Background sticky strip the moment a task
+            // starts producing output (`ToolMeta` is sent once, so nothing
+            // puts it back).
             let output = ToolWidget::new()
                 .with_tool(active.output.tool_name.clone())
                 .with_arg_summary(active.output.arg_summary.clone())
@@ -227,6 +231,7 @@ impl ToolComponent {
                 .with_live_output(&active.live_output)
                 .with_subagent_model(active.output.subagent_model.clone())
                 .with_subagent_tokens(active.output.subagent_tokens.clone())
+                .with_task_id(active.output.task_id.clone())
                 .build();
             (active.phys_idx, active.output.visual_rows(false), output)
         };
@@ -775,6 +780,56 @@ mod tests {
         assert!(!c.state().active[0].live_output.preview_lines(10).is_empty());
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], ToolEvent::Resize { .. }));
+    }
+
+    /// The progress rebuild must not drop the `background_run` task id: the
+    /// Background sticky strip derives its rows from it, and `ToolMeta` is sent
+    /// once at start, so a wiped id never comes back — the strip then vanishes
+    /// the moment the task produces its first line of output.
+    #[test]
+    fn tool_progress_keeps_the_background_task_id() {
+        let mut c = comp();
+        step_added(&mut c, "bg1");
+        let (mut log, mut pending, mut events, mut tool_events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut presentation = ToolPresentationInfo::generic("background_run");
+        presentation.keep_live = true;
+        c.on_update(
+            &AgentUpdate::StepStarted {
+                idx: 0,
+                tool_id: "bg1".into(),
+                tool_name: "background_run".into(),
+                arg_summary: "cargo build".into(),
+                arg_full: "cargo build".into(),
+                presentation,
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+        );
+        c.on_update(
+            &AgentUpdate::ToolMeta {
+                tool_id: "bg1".into(),
+                model: None,
+                token_usage: None,
+                task_id: Some("018f3a2c".into()),
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+        );
+        assert_eq!(
+            c.state().active[0].output.task_id.as_deref(),
+            Some("018f3a2c")
+        );
+
+        let _ = tool_progress(&mut c, "bg1", "Compiling ...\n");
+
+        assert_eq!(
+            c.state().active[0].output.task_id.as_deref(),
+            Some("018f3a2c"),
+            "a live-progress rebuild must keep the task id"
+        );
     }
 
     #[test]

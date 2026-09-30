@@ -148,6 +148,11 @@ pub struct MouseState {
     /// Refreshed every frame by the log renderer; a click sends
     /// `UserCommand::CancelSubagent { child_id }`.
     pub subagent_cancel_btn_areas: Vec<(String, Rect)>,
+    /// Footer `[󰜼 Open]` button rects of the Thinking cards on screen, refreshed
+    /// every frame by the log renderer. A Thinking card draws text of its own
+    /// on rows that do not map to that text, so its button is the only glyph a
+    /// click may open the popup from.
+    pub thinking_open_btn_areas: Vec<Rect>,
     /// Selectable body area inside the active text popup border.
     pub popup_text_body_area: Rect,
     /// Hit maps for rows currently visible in the active text popup body.

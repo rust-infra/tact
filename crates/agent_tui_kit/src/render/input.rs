@@ -18,6 +18,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     render::{ctx::RenderCtx, slash_style::style_input_skill_line},
     state::InputMode,
+    widgets::button::{Button, ButtonChrome, ButtonTheme, ButtonVariant},
 };
 
 /// Soft-wrap a logical line into display-line slices no wider than
@@ -286,8 +287,15 @@ fn render_pending_block(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Rect 
         return Rect::default();
     }
     let inner_width = area.width.saturating_sub(2).max(1) as usize;
-    let cancel_label = ctx.messages.pending_cancel_btn;
-    let cancel_width = UnicodeWidthStr::width(cancel_label) + 2; // "[label]"
+    // The `[Cancel]` affordance is drawn by the shared button component, which
+    // also owns its width — the hit area below has to stay exactly the glyphs.
+    let cancel_button = Button::new(
+        ctx.messages.pending_cancel_btn,
+        ButtonTheme::from_theme(ctx.theme).with_bg(ctx.theme.input_box_bg),
+    )
+    .variant(ButtonVariant::Warning)
+    .chrome(ButtonChrome::Brackets);
+    let cancel_width = cancel_button.preferred_size().0 as usize;
     let can_show_cancel = !ctx.pending_messages.is_empty() && inner_width >= cancel_width + 30;
     let hint = ctx.messages.pending_submit_hint;
     let hint_max = if can_show_cancel {
@@ -319,12 +327,6 @@ fn render_pending_block(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Rect 
             " ",
             Style::default().bg(ctx.theme.input_box_bg),
         ));
-        lines[0].spans.push(Span::styled(
-            format!("[{cancel_label}]"),
-            Style::default()
-                .fg(ctx.theme.warning)
-                .bg(ctx.theme.input_box_bg),
-        ));
     }
     for pending in ctx.pending_messages.iter().take(3) {
         let text = truncate_to_width(&format!("↳ {}", pending.display), inner_width);
@@ -339,6 +341,9 @@ fn render_pending_block(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Rect 
         Paragraph::new(Text::from(lines)).style(Style::default().bg(ctx.theme.input_box_bg)),
         area,
     );
+    if !cancel_area.is_empty() {
+        frame.render_widget(cancel_button, cancel_area);
+    }
     cancel_area
 }
 

@@ -145,6 +145,18 @@ pub struct AgentTomlConfig {
     /// Enable micro-compaction of old tool results (default: true)
     pub micro_compact_enabled: Option<bool>,
 
+    /// How many ordinary LLM-call request bodies `token_usages` keeps per
+    /// session (default: 1).
+    ///
+    /// The column stores the *whole serialized request* — system prompt, tool
+    /// schemas and, on `/responses`, the entire context — so unbounded growth
+    /// measured 8 GB in three weeks. Compaction rows (`compact`,
+    /// `responses_compact`) always keep their body regardless of this value,
+    /// because that BLOB is the only place a compaction baseline survives.
+    /// `0` keeps none: `/view-system-prompt`'s assembled view then reports
+    /// "Unavailable" for sessions without a compaction row.
+    pub max_token_usage_bodies: Option<usize>,
+
     /// Auto-inject full skill body into system prompt (default: false)
     pub skill_body_auto_inject: Option<bool>,
 
@@ -345,6 +357,9 @@ pub struct AgentSettings {
     pub notifications_enabled: bool,
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
+    /// Request bodies kept per session in `token_usages` (see
+    /// [`AgentTomlConfig::max_token_usage_bodies`]).
+    pub max_token_usage_bodies: usize,
     pub skill_body_auto_inject: bool,
     /// Extra skill roots from `[agent].skill_dirs` (unresolved path strings).
     pub skill_dirs: Vec<String>,
@@ -491,6 +506,7 @@ mode = "auto"
 model_context_window = 500000
 snapshot_max_items = 120
 micro_compact_enabled = false
+max_token_usage_bodies = 3
 
 [ui]
 theme = "nord"
@@ -513,6 +529,7 @@ vision_image.jpeg_quality = 75
         assert_eq!(cfg.agent.model_context_window, Some(500000));
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
         assert_eq!(cfg.agent.micro_compact_enabled, Some(false));
+        assert_eq!(cfg.agent.max_token_usage_bodies, Some(3));
         assert_eq!(cfg.ui.theme.as_deref(), Some("nord"));
         assert_eq!(cfg.ui.vision_image.compress, Some(false));
         assert_eq!(cfg.ui.vision_image.max_edge, Some(1024));

@@ -12,10 +12,10 @@ use ratatui::{layout::Rect, style::Style};
 use crate::{
     i18n::{Language, Messages},
     state::{
-        AccountState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry, InputMode, LogCoordinator,
-        LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel, SelectPopup, SkillEntry,
-        Status, StatusBarState, StreamState, SubagentPanelState, SubagentPopup, SystemPromptPopup,
-        TaskPanelState, ThinkingState, ToolState,
+        AccountState, BackgroundPanelState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry,
+        InputMode, LogCoordinator, LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel,
+        SelectPopup, SkillEntry, Status, StatusBarState, StreamState, SubagentPanelState,
+        SubagentPopup, SystemPromptPopup, TaskPanelState, ThinkingState, ToolState,
     },
     theme::Theme,
 };
@@ -53,6 +53,9 @@ pub struct RenderCtx<'a> {
     pub task_start_time: Option<&'a chrono::DateTime<chrono::Local>>,
     /// Transient flash message text (the expiry `Instant` lives in the app).
     pub flash_msg: Option<&'a str>,
+    /// A copy just landed: popup footers show the confirmation in place of the
+    /// copy hint until the app's expiry passes.
+    pub copy_flash: bool,
     /// Account balance/quota surface; `None` when the host has no account
     /// channel (renders no `¤` segment on the bottom bar).
     pub account: Option<&'a AccountState>,
@@ -81,6 +84,9 @@ pub struct RenderCtx<'a> {
     pub task_panel: &'a TaskPanelState,
     /// Subagent overview sticky strip state (current-process runs).
     pub subagent_panel: &'a SubagentPanelState,
+    /// Background-task sticky strip state (running `background_run`
+    /// tasks; the rows are derived from the live tool cards).
+    pub background_panel: &'a BackgroundPanelState,
 }
 
 /// A command emitted by render code, executed by the app after the frame.

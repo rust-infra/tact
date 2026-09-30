@@ -23,6 +23,14 @@ pub struct PluginHome {
     pub state: PathBuf,
     pub marketplaces: PathBuf,
     pub cache: PathBuf,
+    /// `$HOME/.tact/plugins/data` — per-plugin writable state.
+    ///
+    /// Agent Plugins §9.1 requires the client to hand every plugin subprocess a
+    /// persistent data directory it may write to. It cannot live under
+    /// [`Self::cache`]: that path is revision-hashed, so an update would orphan
+    /// everything the plugin stored. Keyed by `<marketplace>/<plugin>` (see
+    /// [`Self::plugin_data_dir`]) and dropped only on uninstall.
+    pub data: PathBuf,
 }
 
 impl PluginHome {
@@ -41,8 +49,90 @@ impl PluginHome {
             state: root.join("state"),
             marketplaces: root.join("marketplaces"),
             cache: root.join("cache"),
+            data: root.join("data"),
             root,
         }
+    }
+
+    /// The persistent data directory for one installed plugin (§9.1).
+    ///
+    /// Keyed by marketplace *and* plugin id so two marketplaces shipping the
+    /// same plugin name never share state. A marketplace name may look like
+    /// `owner/repo`, so anything that is not a safe single path component is
+    /// folded to `_`: the name is client-managed and never shown to the plugin,
+    /// which only ever sees the resolved `PLUGIN_DATA` path.
+    #[must_use]
+    pub fn plugin_data_dir(&self, marketplace: &str, plugin_id: &str) -> PathBuf {
+        self.data
+            .join(sanitize_component(marketplace))
+            .join(sanitize_component(plugin_id))
+    }
+}
+
+/// Folds a name into a single safe path component.
+///
+/// Only a marketplace or plugin id reaches this, never a user-supplied path.
+fn sanitize_component(value: &str) -> String {
+    let folded: String = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // `.` and `..` survive the fold but would not name a child.
+    if folded.is_empty() || folded == "." || folded == ".." {
+        return "_".to_owned();
+    }
+    folded
+}
+
+/// The two directories Agent Plugins reserves for one installed plugin.
+///
+/// `root` is the revision-hashed cache directory the package was unpacked into;
+/// `data` is the client-managed writable directory that survives updates
+/// (§9.1). Both are needed wherever a plugin-supplied command is expanded: the
+/// hook engine and the stdio MCP spawner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginDirs {
+    pub root: PathBuf,
+    pub data: PathBuf,
+}
+
+impl PluginDirs {
+    /// A pair that knows only the package root.
+    ///
+    /// Used where no marketplace is in scope (the hook unit tests). `data`
+    /// mirrors `root`, which is harmless: no caller of this constructor reads a
+    /// plugin-supplied `${PLUGIN_DATA}`.
+    #[must_use]
+    pub fn root_only(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        Self {
+            data: root.clone(),
+            root,
+        }
+    }
+}
+
+impl From<&Path> for PluginDirs {
+    fn from(root: &Path) -> Self {
+        Self::root_only(root)
+    }
+}
+
+impl From<&PathBuf> for PluginDirs {
+    fn from(root: &PathBuf) -> Self {
+        Self::root_only(root)
+    }
+}
+
+impl From<&PluginDirs> for PluginDirs {
+    fn from(dirs: &PluginDirs) -> Self {
+        dirs.clone()
     }
 }
 

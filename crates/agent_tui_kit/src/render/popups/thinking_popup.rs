@@ -96,6 +96,7 @@ pub fn render_thinking_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
         &popup.title,
         None,
         Some(footer),
+        ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
     );
     let body_area = inner;
     let selection_text = styled_lines

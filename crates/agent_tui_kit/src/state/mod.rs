@@ -4,6 +4,7 @@
 //! Each type is pure state + methods — no `App` dependency.
 
 pub mod account;
+pub mod background_panel;
 pub mod log;
 pub mod log_scroll;
 pub mod mouse_state;
@@ -20,6 +21,7 @@ pub mod tool_state;
 pub mod ui_types;
 
 pub use account::AccountState;
+pub use background_panel::BackgroundPanelState;
 pub use log::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle, log_indent_at};
 pub use log_scroll::LogScroll;
 pub use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};

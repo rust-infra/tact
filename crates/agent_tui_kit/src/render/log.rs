@@ -28,11 +28,15 @@ use crate::{
         },
         ctx::RenderCtx,
         log_column::LogColumnRenderer,
+        renderable::Renderable,
         util::LOG_THINKING_INDENT,
     },
     state::{LogItemKind, find_thinking_at_logical, log_indent_at},
     theme::Theme,
-    widgets::tool_widget::TOOL_RUNNING_SPINNER,
+    widgets::{
+        button::{Button, ButtonChrome, ButtonTheme, ButtonVariant},
+        tool_widget::TOOL_RUNNING_SPINNER,
+    },
 };
 
 /// A rendered cancel button for a live async subagent tool card.
@@ -42,15 +46,25 @@ pub struct SubagentCancelButton {
     pub rect: Rect,
 }
 
-/// Phase 3: pure render — build cells from the caches and draw. Returns the
-/// cancel-button rects for live async subagent cards so the host can route
-/// mouse clicks. Reads only.
+/// What a Phase 3 frame drew that the host routes mouse clicks to.
+#[derive(Debug, Default)]
+pub struct LogRenderOutput {
+    /// Cancel-button rects for live async subagent cards.
+    pub cancel_buttons: Vec<SubagentCancelButton>,
+    /// Footer `[󰜼 Open]` button rects for the Thinking cards on screen. A
+    /// Thinking card's text and blank rows are not selectable, so these glyphs
+    /// are the only part of it that answers a click.
+    pub thinking_open_buttons: Vec<Rect>,
+}
+
+/// Phase 3: pure render — build cells from the caches and draw the panel.
+/// Reads only; returns the glyph rects the host needs to route mouse input.
 pub fn render_log_panel_pure(
     frame: &mut Frame,
     area: Rect,
     ctx: &RenderCtx,
     borders: Borders,
-) -> Vec<SubagentCancelButton> {
+) -> LogRenderOutput {
     let top = u16::from(borders.contains(Borders::TOP));
     let bottom = u16::from(borders.contains(Borders::BOTTOM));
     let left = u16::from(borders.contains(Borders::LEFT));
@@ -76,8 +90,18 @@ pub fn render_log_panel_pure(
     // Phase 3: build TextCells for visible logical rows, then render.
     let log_fg = ctx.theme.fg;
 
+    // The rect the renderer will draw cells into, computed up front: a cell's
+    // hit rects have to be measured against the same area it draws in.
+    let inner = Rect::new(
+        area.x + left,
+        area.y + top,
+        area.width.saturating_sub(left + right),
+        area.height.saturating_sub(top + bottom),
+    );
+
     let mut renderer = LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
     let mut cancel_buttons: Vec<SubagentCancelButton> = Vec::new();
+    let mut thinking_open_buttons: Vec<Rect> = Vec::new();
 
     // Track message categories for separator insertion
     let mut prev_category: Option<&'static str> = None;
@@ -149,23 +173,30 @@ pub fn render_log_panel_pure(
                 let msgs = &ctx.messages;
                 let spinner =
                     TOOL_RUNNING_SPINNER[(ctx.spinner_frame as usize) % TOOL_RUNNING_SPINNER.len()];
-                if let Some(active) = ctx
+                let cell = ctx
                     .thinking
                     .active
                     .as_ref()
                     .filter(|active| active.phys_idx == thinking_phys)
-                {
-                    renderer.push(
-                        vis_start,
-                        ThinkingCell::active(active, spinner, ctx.theme, msgs),
-                    );
-                } else if let Some(block) = ctx
-                    .thinking
-                    .blocks
-                    .iter()
-                    .find(|block| block.phys_idx == thinking_phys)
-                {
-                    renderer.push(vis_start, ThinkingCell::completed(block, ctx.theme, msgs));
+                    .map(|active| ThinkingCell::active(active, spinner, ctx.theme, msgs))
+                    .or_else(|| {
+                        ctx.thinking
+                            .blocks
+                            .iter()
+                            .find(|block| block.phys_idx == thinking_phys)
+                            .map(|block| ThinkingCell::completed(block, ctx.theme, msgs))
+                    });
+                if let Some(cell) = cell {
+                    // Record the footer button's rect from the geometry the
+                    // renderer is about to draw with: the card's text and blank
+                    // rows are not a click target, these glyphs are.
+                    if let Some((cell_area, skip_lines)) =
+                        renderer.cell_slice(vis_start, cell.height(inner.width) as usize, inner)
+                        && let Some(rect) = cell.footer_button_rect(cell_area, skip_lines)
+                    {
+                        thinking_open_buttons.push(rect);
+                    }
+                    renderer.push(vis_start, cell);
                 }
                 logical_i += thinking_rows - rows_before;
                 continue;
@@ -216,6 +247,7 @@ pub fn render_log_panel_pure(
                     ctx.theme.accent,
                     ctx.theme.bg,
                     ctx.theme.fg,
+                    ctx.theme.muted,
                     ctx.theme.success,
                     ctx.theme.warning,
                     ctx.theme.error,
@@ -229,19 +261,23 @@ pub fn render_log_panel_pure(
                 if let Some(active) = ctx.tools.active.iter().find(|a| a.phys_idx == phys_idx)
                     && let Some(child_id) = &active.subagent_child_id
                 {
-                    let label = format!("[{}]", msgs.subagent_cancel_btn);
-                    let label_width = label.chars().count() as u16;
+                    // The affordance is drawn by the shared button component, so
+                    // its width is the glyphs — which is exactly what the host
+                    // may click (the rect is recorded below).
+                    let cancel_button =
+                        Button::new(msgs.subagent_cancel_btn, ButtonTheme::from_theme(ctx.theme))
+                            .variant(ButtonVariant::Danger)
+                            .chrome(ButtonChrome::Brackets)
+                            .modifier(Modifier::BOLD);
+                    let button_width = cancel_button.preferred_size().0;
                     let btn_x = area
                         .right()
                         .saturating_sub(right)
-                        .saturating_sub(label_width + 1);
+                        .saturating_sub(button_width + 1);
                     let btn_y = area.y + top + vis_start.saturating_sub(visual_scroll) as u16;
-                    let btn_area = Rect::new(btn_x, btn_y, label_width + 1, 1);
+                    let btn_area = Rect::new(btn_x, btn_y, button_width, 1);
                     if btn_area.bottom() <= area.bottom() {
-                        let style = Style::default()
-                            .fg(ctx.theme.error)
-                            .add_modifier(Modifier::BOLD);
-                        frame.render_widget(Paragraph::new(Span::styled(label, style)), btn_area);
+                        frame.render_widget(cancel_button, btn_area);
                         cancel_buttons.push(SubagentCancelButton {
                             child_id: child_id.clone(),
                             rect: btn_area,
@@ -322,12 +358,6 @@ pub fn render_log_panel_pure(
         .border_style(Style::default().fg(ctx.theme.border))
         .title(panel_title)
         .style(Style::default().bg(ctx.theme.bg));
-    let inner = Rect::new(
-        area.x + left,
-        area.y + top,
-        area.width.saturating_sub(left + right),
-        area.height.saturating_sub(top + bottom),
-    );
     frame.render_widget(log_block, area);
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg)),
@@ -373,7 +403,10 @@ pub fn render_log_panel_pure(
     // left border every frame so those residues cannot persist.
     restamp_log_left_border(frame.buffer_mut(), area, borders, ctx.theme);
 
-    cancel_buttons
+    LogRenderOutput {
+        cancel_buttons,
+        thinking_open_buttons,
+    }
 }
 
 /// Re-assert the log panel's left vertical border and mark it `AlwaysUpdate`.

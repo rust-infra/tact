@@ -127,6 +127,17 @@ depend on the provider:
 | `[responses compacted: items=N, id=…]` | Responses native compaction succeeded; `N` = baseline item count, `id` = truncated compaction-id prefix |
 | `Compaction complete.` | `UserCommand::Compact` finished successfully |
 
+The first three rows are also the **only way to tell which trigger fired**
+after the fact: `[compacting]` / `Compaction complete.` mean the command path
+(`/compact`, typed or chosen in the command palette), `[auto compact]` means
+the 80% / estimate trigger inside `agent_loop`, and `[Recovery] compact
+(n/N): context too large` means the provider rejected the prompt. `/compact`
+leaves no text trace in the store — palette commands never reach
+`dispatch_user_task`, and only that path calls `save_history`, so
+`input_history` cannot answer "who compacted?". The usage rows do not answer
+it either: a `/compact` and a recovery compaction both persist `call_type =
+compact`.
+
 **Encrypted state is never rendered.** Responses compaction and reasoning
 items carry opaque `encrypted_content`; it is replayed to the endpoint but
 must never appear in `Info` lines, error strings, tool cards, or any other TUI
@@ -256,7 +267,7 @@ flowchart TB
 | `agent_tui_kit::render/log.rs` | Log panel pure render (wrap cache consumed, scroll, overlays, scrollbar) |
 | `agent_tui_kit::render/log_column.rs` | Viewport-clipped `Renderable` compositor |
 | `agent_tui_kit::render/task_panel.rs` | Sticky persistent-task body formatting + single-domain render helpers |
-| `agent_tui_kit::render/sticky_host.rs` | Two-domain sticky host under Log (`[Tasks] [Subagent]` tabs; pure render returns tab hit areas) |
+| `agent_tui_kit::render/sticky_host.rs` | Three-domain sticky host under Log (`[Tasks] [Subagent] [Background]` tabs; pure render returns tab hit areas) |
 | `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s (`pulldown-cmark` + Mermaid routing + width-aware tables) |
 | `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` event loop → ratatui `Line`s |
 | `agent_tui_kit::render/mermaid_sequence.rs` | Local Mermaid `sequenceDiagram` renderer (alias/activation/CJK-safe) |
@@ -268,7 +279,7 @@ flowchart TB
 
 Supporting pieces: `agent_tui_kit::state/` (`LogCoordinator`, `LogScroll`,
 `ToolState`, `ThinkingState`, `StreamState`, `StatusBarState`, `PlanPanel`,
-`TaskPanelState`, `SubagentPanelState`, `MouseState`, popup states …), `agent_tui_kit::theme` /
+`TaskPanelState`, `SubagentPanelState`, `BackgroundPanelState`, `MouseState`, popup states …), `agent_tui_kit::theme` /
 `i18n` (colors, `Messages` strings); `crates/tui/src/widgets/state/` holds
 `App` and the app-layer states (`AccountState`, `VoiceState`, `FilePicker`,
 `SlashCommandState`, `InputHistory`, `TaskDagPopup`, `SelectKind`).
@@ -281,29 +292,47 @@ Each repaint runs inside `terminal.draw(|f| { ... })` when the dirty check passe
 ┌─ row 0 ─────────────────────────────  render_status_bar
 │  main area (flex)                     render_main_area
 │    ├─ log panel (scrollable)
-│    └─ sticky host (Tasks | Subagent)? (0 rows if hidden; click to expand)
+│    └─ sticky host (Tasks | Subagent | Background)? (0 rows if hidden; click to expand)
 ├─ input (1–3 lines + border) ───────── render_input_box
 └─ bottom (2 rows) ──────────────────── render_bottom_bar
      optional full-screen overlays ───── popups (palette, select, file picker, slash)
 ```
 
-When the **Tasks** panel (`task_panel.visible`, fed by `TasksChanged`) or the
-**Subagent** overview (`subagent_panel.visible`, fed by `SubagentsChanged`) has
-content, `render_main_area` **outer-splits** the main Rect (Log above, a
-two-domain sticky host below) without changing Log wrap/scroll internals. The
-host title row shows one `[Tasks] …` / `[Subagent] …` segment per visible
-domain; the active domain's body (hairline-separated) appears when it is
-expanded. The Tasks body is the persistent-task checklist; the Subagent body
-is a **status overview** of the current process's subagent runs grouped
-Running → Completed → Failed → Cancelled (`marker short-id summary-first ⏱
-duration`). Subagent live detail never enters the sticky or the main Log —
-it stays on the parent `spawn_subagent` tool card and its popup. Clicking an
-inactive tab switches and expands that domain; clicking the active tab (or the
-strip) collapses it; wheel / `jk` scroll the active domain. A domain is
-dropped from the host when it is invisible: Tasks when no open task remains,
-Subagent when collapsed with nothing running. Visibility for Tasks still
-requires a `TasksChanged` with pending/in_progress items
-([Ch 19](./19_chapter_persistent_tasks.md), [Ch 25](./25_chapter_protocol.md)).
+When any sticky domain has content, `render_main_area` **outer-splits** the
+main Rect (Log above, a three-domain sticky host below) without changing Log
+wrap/scroll internals: **Tasks** (`task_panel.visible`, fed by `TasksChanged`),
+the **Subagent** overview (`subagent_panel.visible`, fed by
+`SubagentsChanged`), and **Background** (`background_panel.visible`, the
+current process's running `background_run` tasks). The host title row shows one
+`[Tasks] …` / `[Subagent] …` / `[Background] …` segment per visible domain; the
+active domain's body (hairline-separated) appears when it is expanded. The
+Tasks body is the persistent-task checklist; the Subagent body is a **status
+overview** of the current process's subagent runs grouped Running → Completed →
+Failed → Cancelled (`marker short-id summary-first ⏱ duration`); the Background
+body is one row per running task (`⏳ task-id command ⏱ elapsed`) followed by the
+rows of tasks that ended inside the linger window (`✓`/`✗ task-id command ⏱
+seconds-since-finish`, `BACKGROUND_LINGER` = 8 s). Subagent live
+detail never enters the sticky or the main Log — it stays on the parent
+`spawn_subagent` tool card and its popup. Clicking an inactive tab switches and
+expands that domain; clicking the active tab (or the strip) collapses it;
+wheel / `jk` scroll the active domain. A domain is dropped from the host when
+it is invisible: Tasks when no open task remains, Subagent when collapsed with
+nothing running, Background once its last row is gone — the last running task
+keeps the strip up through its linger row, and the expired row takes the strip
+with it on the next idle tick (≈1 s), with no task event involved. A lingering
+row also keeps the strip's title counting two things: `[Background] 1 · 2 done`
+is one task still running and two that just ended.
+Visibility for Tasks still requires a `TasksChanged` with pending/in_progress
+items ([Ch 19](./19_chapter_persistent_tasks.md),
+[Ch 25](./25_chapter_protocol.md)).
+
+Unlike the other two, the Background domain is **derived** rather than pushed:
+there is no `AgentUpdate` carrying its rows, because `background_run`'s live card
+already holds the task id (`ToolMeta { task_id }`), the command and the start
+instant — so `state/background_panel.rs` derives the rows from `ToolState` and
+`App::handle_agent_update` reconciles the strip (visibility/expand only; the
+user's collapse survives) right before the scroll refresh
+([Ch 13](./13_chapter_background.md)).
 
 Vertical constraints in `lib.rs`:
 
@@ -385,7 +414,7 @@ pub(crate) trait Renderable {
 |------|------|-------|
 | `TextCell` | `cells/text.rs` | User/assistant/system text, selection, stream buffer |
 | `ToolCell` | `cells/tool.rs` | Tool title + meta + optional detail card (single `Renderable`) |
-| `ThinkingCell` | `cells/thinking.rs` | Direct live card with one blank row on each side: 1→3 line tail, then one-line completion summary; title and footer report the full line count |
+| `ThinkingCell` | `cells/thinking.rs` | Direct live card with one blank row on each side: 1→3 line tail, then one-line completion summary; title and footer report the full line count, and the footer ends in the `[󰜼 Open]` button the collapsed tool card draws — that button is the card's only click target, measured from the same geometry the frame draws with (`footer_button_rect`), because the card paints text on rows that do not carry it |
 | Diff overlay | (legacy path in `log.rs`) | File-write preview with `+` lines |
 | `CodeCell` | `cells/code.rs` | Syntax-tinted code block card |
 | Separator | `cells/separator.rs` | Visual gap between blocks |
@@ -437,8 +466,8 @@ pub(crate) trait Renderable {
 | Select | `RequestSelect` permission / agent choice | `popups/select.rs` |
 | Help | `Ctrl+?` | `popups/help.rs` |
 | History | `Ctrl+H` | `popups/history.rs` |
-| Thinking detail | double-click thinking card; adjacent ordered-list items have blank-row separation | `popups/thinking_popup.rs` |
-| Tool/file detail | double-click tool card (a collapsed command/read/edit: the `double-click-result` hint on its meta row) | `popups/diff_popup.rs` |
+| Thinking detail | double-click the Thinking card's footer `[󰜼 Open]` button (the card's text is not selectable); adjacent ordered-list items have blank-row separation | `popups/thinking_popup.rs` |
+| Tool/file detail | double-click tool card (a collapsed command/read/edit: the `[󰜼 Open]` button on its meta row) | `popups/diff_popup.rs` |
 | Code detail | double-click code card | `popups/code_popup.rs` |
 | Mermaid diagram / source | double-click rendered Mermaid diagram; opens on the rendered diagram, `Tab` toggles to source | `popups/mermaid_popup.rs` |
 
@@ -519,7 +548,7 @@ The log is not a single list of strings. Each physical row is one `LogItem` in `
 | **User** | Green prefixed lines (`💬 …` / continuation `  …`) via `add_user_message` | Preceded by a blank separator row; continuation ownership is stored in `LogItemKind::User` |
 | **Assistant text** | Markdown-rendered lines from `StreamChunk` / `flush_stream_pending` | May span many physical rows per paragraph |
 | **System / info** | Explicit plain or Markdown insertion APIs | No indentation-based fallback; source decides the render path |
-| **Thinking card** | Placeholder rows (`Thinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, completion shows one summary line, and title/footer report the full count |
+| **Thinking card** | Placeholder rows (`Thinking`) | One `ThinkingCell`; one blank row separates it from adjacent content, the active tail grows from 1 to 3 lines, completion shows one summary line, title/footer report the full count, and the footer ends in the same `[󰜼 Open]` button a collapsed tool card draws — that button is the only part of the card a click answers |
 | **Tool blocks** | Blank placeholder rows (`SystemTool`) | Actual drawing is a single `ToolCell`; placeholders reserve scroll height |
 | **Code blocks** | Blank placeholder rows after fence closes | Card drawn by `render_code_cards` overlay |
 | **Loading placeholder** | One blank `SystemTool` row at `app.loading_idx` | **Legacy:** only inserted when `PlanGenerated` arrives — agent never emits today, so spinner overlay is usually inactive |
@@ -636,7 +665,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 | Construct | Layer | Height source | Double-click |
 |-----------|-------|---------------|--------------|
 | **TextCell** | Inline | Wrapped line count from cache | Word select / line select |
-| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — replaces placeholder range | Opens `diff_popup` (collapsed command/read/edit: the meta row's `double-click-result` hint) |
+| **ToolCell** | Inline | `ToolRenderOutput.visual_rows()` — replaces placeholder range | Opens `diff_popup` (collapsed command/read/edit: the meta row's `[󰜼 Open]` button) |
 | **ThinkingCell** | Inline | One blank row on each side; active 1→3 tail rows; completed one summary row | Opens `thinking_popup` |
 | **TaskEndSeparator** | Inline | 1 visual row (rule + centered elapsed) | — |
 | **MessageSeparator** | Inline | 1 blank row between user/system/assistant groups | — |
@@ -645,7 +674,7 @@ The log uses a **two-layer** drawing model inside the bordered panel:
 
 **TextCell** (`cells/text.rs`) clones cached wrap lines for normal draw. Selection applies `REVERSED` modifier (word-level or whole-line). Left gutter `indent_cols` comes from the row's `LogItemKind`; user ownership and category separators never inspect raw text.
 
-**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. Visible `bash` output grows the card from one to three rows; later chunks update the three-line tail in place. stdout uses normal text, stderr uses warning color. The live card is titled `Live output`; line counts live in the card's bottom bar (`preview/total lines` when truncated) and count streamed output lines only; popup/`detail_full` still prepend `$ <command>`, and the popup shares that same combined content. Completion **drops the card entirely** for commands (`Command`), file reads (`FileRead`: `read_file`, `read_image`), file writes (`FileWrite`: `write_file`) and file edits (`FileEdit`: `edit_file`, `apply_patch`) that produced detail: the block is its two header rows, `StepResult.detail` becomes authoritative, and the meta row appends `· {n} lines · double-click-result` (`tool_collapsed_output_hint`) where `n` is the same count the popup reports (for an edit: the `new_text` line count, while the popup renders the git diff; for a read or a write: the body's line count) — a card-less block must still say that output exists, and only that trailing `double-click-result` word is clickable (the parameter row and the count are inert). Kinds that never drew a card (`Task` / `Sleep` / `Generic`, which includes every MCP/plugin tool) collapse the same way but **only when the result has more than one line**: without a card their result used to be unreachable outright (`detail_full` stayed `None`, so there was no popup and no click target either), and a one-line confirmation is not worth an affordance. A finished subagent keeps its summary card — it is the transcript popup's entry point. Failures keep their card (up to five preview rows).
+**ToolCell** supersedes placeholder `TextCell`s: Phase 3 detects any physical index inside `[phys_idx .. phys_idx + placeholder_rows]` and pushes one cell at the block's visual start, then skips the remaining placeholder logical rows. Running tools pass `started_at` for live duration and retain a bounded `live_output` buffer. Visible `bash` output grows the card from one to three rows; later chunks update the three-line tail in place. stdout uses normal text, stderr uses warning color. The live card is titled `Live output`; line counts live in the card's bottom bar (`preview/total lines` when truncated) and count streamed output lines only; popup/`detail_full` still prepend `$ <command>`, and the popup shares that same combined content. Completion **drops the card entirely** for commands (`Command`), file reads (`FileRead`: `read_file`, `read_image`), file writes (`FileWrite`: `write_file`) and file edits (`FileEdit`: `edit_file`, `apply_patch`) that produced detail: the block is its two header rows, `StepResult.detail` becomes authoritative, and the meta row appends `· {n} lines · [󰜼 Open]` (`tool_collapsed_output_hint` + `collapsed_action_text`, drawn by the kit's `Button` with `ButtonChrome::Brackets`) where `n` is the same count the popup reports (for an edit: the `new_text` line count, while the popup renders the git diff; for a read or a write: the body's line count) — a card-less block must still say that output exists, and only that trailing button is clickable (the parameter row and the count are inert). Kinds that never drew a card (`Task` / `Sleep` / `Generic`, which includes every MCP/plugin tool) collapse the same way but **only when the result has more than one line**: without a card their result used to be unreachable outright (`detail_full` stayed `None`, so there was no popup and no click target either), and a one-line confirmation is not worth an affordance. A finished subagent keeps its summary card — it is the transcript popup's entry point. Failures keep their card (up to five preview rows).
 
 **Why code remains an overlay:** code blocks replace streamed fence lines with blank placeholders plus a pre-rendered `styled` cache for the card interior. Thinking instead follows the direct `Renderable` model used by tool cards, so its live tail and completion summary have one rendering owner.
 
@@ -661,7 +690,7 @@ Diff previews for file-write tools are now folded into `ToolCell` detail cards; 
 | Double click (plain text) | Word selection via `find_word_bounds` |
 | Triple click | Whole logical line; inside code block → entire block range |
 | Single click on thinking/tool/code card | Remember card index; no text selection |
-| Double click on card | Open corresponding detail popup; for a collapsed command/read/edit the card is gone, so the meta row's `double-click-result` hint is the target — the parameter row and the rest of the meta row are inert |
+| Double click on card | Open corresponding detail popup; for a collapsed command/read/edit the card is gone, so the meta row's `[󰜼 Open]` button is the target — the parameter row and the rest of the meta row are inert |
 | Left-button drag in tool/Thinking detail popup | Select original tool text or visible Thinking text; display-only prefixes are excluded |
 
 Copy (`y` in normal mode) prefers a non-empty selection while a tool or Thinking popup is active; with an empty popup selection it copies the full original popup content. Without a selectable popup, it prefers log word selection, then concatenates the selected logical rows' `LogItem::raw` values.

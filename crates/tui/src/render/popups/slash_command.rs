@@ -42,6 +42,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
             &format!("{}{}", msgs.slash_title_mixed, msgs.popup_close_hint),
             None,
             None,
+            None,
         );
         frame.buffer_mut().set_line(
             inner.x,

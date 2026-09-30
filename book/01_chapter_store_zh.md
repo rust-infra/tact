@@ -168,6 +168,17 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 
 `MAX_INPUT_HISTORY` = 100。加载超过上限时，在 trim 阶段删除最旧行。
 
+### 请求正文裁剪
+
+`[agent] max_token_usage_bodies`（默认 1，兜底常量 `MAX_TOKEN_USAGE_BODIES`）。
+`token_usages.request_body` 存的是每次调用的整份序列化请求
+（system prompt + 全部工具 schema + 上下文），因此对每个会话中「比最新 `max_token_usage_bodies` 条更旧」的普通调用，
+它会被**就地清空**——写成空 blob（`X''`），既不是删行也不是 NULL。每次插入只清一行（窗口边缘那行），
+因此遵守该策略的会话每次调用只做 O(1) 工作；而策略生效时就已在窗口之外的老行不会被回访，那是一次性语句的活。压缩行（`compact`、
+`responses_compact`）无论多旧都保留正文：那个 BLOB 是压缩基线及其加密内容唯一的存身处。
+计数列永不改动，`load_latest_request_body` 会跳过被清空的行。文件只有在 `VACUUM` 之后才会变小；
+对该策略生效之前就已经长起来的库，`docs/token_usage_schema.md` 里有一次性的回收配方。
+
 ---
 
 ## 7. 生命周期图

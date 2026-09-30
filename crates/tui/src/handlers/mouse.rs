@@ -166,6 +166,7 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
                 match tab {
                     StickyTab::Tasks => app.task_panel_mut().expanded = true,
                     StickyTab::Subagent => app.subagent_panel_mut().expanded = true,
+                    StickyTab::Background => app.background_panel_mut().expanded = true,
                 }
                 app.dirty = true;
             }
@@ -176,6 +177,7 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
                 match active {
                     StickyTab::Tasks => app.task_panel_mut().expanded = !expanded,
                     StickyTab::Subagent => app.subagent_panel_mut().expanded = !expanded,
+                    StickyTab::Background => app.background_panel_mut().expanded = !expanded,
                 }
                 app.mouse.in_task_panel = !expanded;
                 app.dirty = true;
@@ -317,14 +319,27 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         .find_thinking_at_logical(line_idx)
         .map(|(thinking_phys, _, _)| thinking_phys);
     if let Some(thinking_phys) = thinking_hit {
-        if app.mouse.click_count == 1 {
-            app.mouse.last_click_card = Some(thinking_phys);
+        // A Thinking card draws text on rows that do not map to that text, so
+        // nothing on it can be selected. Its footer `[Open]` button is the one
+        // target, and the frame recorded where it drew those glyphs.
+        let on_button = app
+            .mouse
+            .thinking_open_btn_areas
+            .iter()
+            .any(|rect| point_in_rect(mouse.column, mouse.row, *rect));
+        if on_button {
+            if app.mouse.click_count == 1 {
+                app.mouse.last_click_card = Some(thinking_phys);
+                app.mouse.log_selection = None;
+                app.mouse.dragging_log = false;
+            } else if app.mouse.click_count == 2 && app.mouse.last_click_card == Some(thinking_phys)
+            {
+                app.open_thinking_popup(thinking_phys);
+            }
+        } else {
+            app.mouse.last_click_card = None;
             app.mouse.log_selection = None;
             app.mouse.dragging_log = false;
-        } else if app.mouse.click_count == 2 && app.mouse.last_click_card == Some(thinking_phys) {
-            app.open_thinking_popup(thinking_phys);
-        } else if app.mouse.click_count >= 3 {
-            handle_log_triple_click(app, line_idx, false);
         }
         return;
     } else {
@@ -517,7 +532,9 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{
+        AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo,
+    };
 
     use super::*;
     use crate::{
@@ -582,6 +599,52 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(20, 10));
         assert!(!app.task_panel_mut().expanded);
         assert!(!app.task_panel_mut().expanded);
+    }
+
+    #[test]
+    fn click_background_tab_switches_domain_and_scrolls_active_panel() {
+        use agent_tui_kit::state::StickyTab;
+
+        let mut app = make_app();
+        // Two visible domains: Tasks (active by default) and Background (a
+        // task is running, so `sync_background_sticky` made the strip visible).
+        app.task_panel_mut().visible = true;
+        app.task_panel_mut().expanded = false;
+        app.background_panel_mut().apply_running(1);
+        app.background_panel_mut().expanded = false;
+        app.mouse.task_panel_area = Rect::new(0, 10, 60, 1);
+        // Renderer populates these each frame; the test stands in for it.
+        app.mouse.sticky_tab_areas = vec![
+            (StickyTab::Tasks, Rect::new(0, 10, 7, 1)),
+            (StickyTab::Background, Rect::new(10, 10, 12, 1)),
+        ];
+
+        // Click the Background tab: it becomes the active domain and expands.
+        handle_mouse_event(&mut app, mouse_down(12, 10));
+        assert_eq!(app.mouse.active_sticky_tab, StickyTab::Background);
+        assert!(app.background_panel_mut().expanded);
+
+        // A wheel scroll now moves the background panel, not the tasks panel.
+        app.task_panel_mut().scroll = 0;
+        app.background_panel_mut().scroll = 0;
+        handle_mouse_event(
+            &mut app,
+            mouse_event(crossterm::event::MouseEventKind::ScrollDown, 20, 10),
+        );
+        assert_eq!(
+            app.background_panel_mut().scroll,
+            1,
+            "background panel scroll should advance"
+        );
+        assert_eq!(app.task_panel_mut().scroll, 0, "tasks scroll untouched");
+
+        // Clicking the active tab again collapses it (and its scroll resets
+        // when the last task ends and the strip hides).
+        handle_mouse_event(&mut app, mouse_down(20, 10));
+        assert!(!app.background_panel_mut().expanded);
+        app.background_panel_mut().apply_running(0);
+        assert!(!app.background_panel().visible);
+        assert_eq!(app.background_panel().scroll, 0);
     }
 
     #[test]
@@ -1252,6 +1315,117 @@ mod tests {
         opened
     }
 
+    /// Does a double-click at (`column`, `row`) open the Thinking card's popup?
+    fn double_click_opens_thinking(app: &mut App, column: u16, row: u16) -> bool {
+        app.thinking_mut().popup = None;
+        handle_log_click(app, mouse_down(column, row));
+        handle_log_click(app, mouse_down(column, row));
+        let opened = app.thinking_mut().popup.is_some();
+        app.thinking_mut().popup = None;
+        opened
+    }
+
+    /// An app whose log holds one completed Thinking card.
+    fn app_with_thinking_card(language: crate::i18n::Language) -> App {
+        let mut app = make_app();
+        app.language = language;
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+            "one\ntwo\nthree\nfour\n".into(),
+        )));
+        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        app
+    }
+
+    /// A Thinking card has one target: the `[󰜼 Open]` button on its bottom
+    /// border. It draws text on rows that do not map to that text, so — like a
+    /// whole-Markdown row — nothing else about it answers a click, not its
+    /// summary, not its title, not the blank rows around it.
+    ///
+    /// The probe reads the rendered frame: the hit rects are recorded from the
+    /// geometry the frame drew, and this proves they land on the glyphs.
+    #[test]
+    fn thinking_popup_opens_from_the_drawn_button_only() {
+        use crate::i18n::Language;
+        use crate::render::test_harness::render_main_area_terminal;
+        use agent_tui_kit::widgets::button::ButtonChrome;
+        use unicode_width::UnicodeWidthStr;
+
+        for lang in [Language::English, Language::Chinese] {
+            let mut app = app_with_thinking_card(lang);
+            let ctx = format!("{lang:?}");
+            let width = UnicodeWidthStr::width(
+                ButtonChrome::Brackets
+                    .wrap(app.msgs().thinking_card_action)
+                    .as_str(),
+            ) as u16;
+
+            let terminal = render_main_area_terminal(&mut app, 100, 20);
+            let buf = terminal.backend().buffer().clone();
+            let (start, row) = glyph_origin(&buf, "[󰜼");
+            let end = start + width;
+            assert_eq!(
+                buf[(end - 1, row)].symbol(),
+                "]",
+                "{ctx}: the measured width must land on the drawn button's last glyph"
+            );
+            // The card is a blank row, title, one body row, the footer, a blank
+            // row — so the title sits two rows above the footer.
+            let title_row = row - 2;
+            let title: String = (0..buf.area.width)
+                .map(|x| buf[(x, title_row)].symbol())
+                .collect();
+            assert!(
+                title.contains('🧠'),
+                "{ctx}: the card title must be where this test thinks it is: {title:?}"
+            );
+
+            assert!(
+                double_click_opens_thinking(&mut app, start, row),
+                "{ctx}: the button's first glyph must open the popup"
+            );
+            assert!(
+                double_click_opens_thinking(&mut app, end - 1, row),
+                "{ctx}: the button's last glyph must open the popup"
+            );
+            assert!(
+                !double_click_opens_thinking(&mut app, start - 1, row),
+                "{ctx}: the readout left of the button must stay inert"
+            );
+            assert!(
+                !double_click_opens_thinking(&mut app, end, row),
+                "{ctx}: the column after the button must stay inert"
+            );
+            assert!(
+                !double_click_opens_thinking(&mut app, start, row - 1),
+                "{ctx}: the card's own text must stay inert"
+            );
+            assert!(
+                !double_click_opens_thinking(&mut app, start, title_row),
+                "{ctx}: the card's title must stay inert"
+            );
+        }
+    }
+
+    /// A non-button click on a Thinking card must not leave a selection behind
+    /// either: the card's rows do not carry the text drawn inside it.
+    #[test]
+    fn clicking_a_thinking_card_body_leaves_no_selection() {
+        use crate::render::test_harness::render_main_area_terminal;
+
+        let mut app = app_with_thinking_card(crate::i18n::Language::English);
+        let terminal = render_main_area_terminal(&mut app, 100, 20);
+        let buf = terminal.backend().buffer().clone();
+        let (start, row) = glyph_origin(&buf, "[󰜼");
+
+        app.mouse.last_click_time = Some(std::time::Instant::now());
+        app.mouse.last_click_pos = Some((start, row - 1));
+        app.mouse.click_count = 3;
+        handle_log_click(&mut app, mouse_down(start, row - 1));
+
+        assert!(app.mouse.log_selection.is_none());
+        assert!(!app.mouse.dragging_log);
+    }
+
     /// The hint's click window has to be the glyphs the row **draws**, in every
     /// locale — including blocks built before a `/lang` switch, whose row is
     /// painted in the new language while the block itself is not rebuilt.
@@ -1263,6 +1437,7 @@ mod tests {
     fn collapsed_hint_click_window_matches_the_drawn_glyphs() {
         use crate::i18n::Language;
         use crate::render::test_harness::render_main_area_terminal;
+        use agent_tui_kit::widgets::tool_widget::collapsed_action_text;
         use unicode_width::UnicodeWidthStr;
 
         for lang in [Language::English, Language::Chinese] {
@@ -1284,13 +1459,26 @@ mod tests {
                 };
                 assert_eq!(app.language, lang, "{lang:?}");
 
-                let action = app.msgs().tool_collapsed_output_action;
-                let width = UnicodeWidthStr::width(action) as u16;
+                let action = collapsed_action_text(&app.msgs());
+                let width = UnicodeWidthStr::width(action.as_str()) as u16;
                 let terminal = render_main_area_terminal(&mut app, 100, 20);
                 let buf = terminal.backend().buffer().clone();
-                let (start, row) = glyph_origin(&buf, action);
+                // The probe stops at the opening bracket plus the glyph:
+                // `glyph_origin` matches runs with whitespace dropped, so a
+                // needle spanning the label's space could never match. Bracket
+                // and glyph are the same in every locale, so one probe serves
+                // both languages — the width above still comes from the whole
+                // drawn label.
+                let (start, row) = glyph_origin(&buf, "[󰜼");
                 let end = start + width;
                 let ctx = format!("{lang:?} (toggled after build: {toggled_after_build})");
+                // Pin the other edge against the frame too: `width` is the
+                // measured one, so only this ties the *drawn* tail to it.
+                assert_eq!(
+                    buf[(end - 1, row)].symbol(),
+                    "]",
+                    "{ctx}: the hit range must end on the drawn button's last glyph"
+                );
 
                 assert!(
                     double_click_opens(&mut app, start, row),
@@ -1313,7 +1501,7 @@ mod tests {
     }
 
     /// A finished command collapses its output card, so the meta row's
-    /// `double-click-result` hint is the only thing left to click.
+    /// `[󰜼 Open]` button is the only thing left to click.
     #[test]
     fn double_click_collapsed_command_hint_opens_diff_popup() {
         let mut app = make_app();
@@ -1358,10 +1546,11 @@ mod tests {
             .collapsed_action_cols(&msgs)
             .expect("the hint is the target");
         let meta = block.output.meta_text(&msgs).expect("meta row");
-        assert!(meta.ends_with("double-click-result"), "{meta}");
+        assert!(meta.ends_with("[󰜼 Open]"), "{meta}");
         assert!(
-            hint_cols.end as usize - hint_cols.start as usize == "double-click-result".len(),
-            "the target is the action word alone: {hint_cols:?}"
+            hint_cols.end as usize - hint_cols.start as usize
+                == unicode_width::UnicodeWidthStr::width("[󰜼 Open]"),
+            "the target is the button's glyphs alone: {hint_cols:?}"
         );
 
         app.mouse.click_count = 1;
@@ -1420,8 +1609,8 @@ mod tests {
         );
     }
 
-    /// The trigger is the `double-click-result` hint alone — not the row it sits in,
-    /// and not the parameter row the command is written on.
+    /// The trigger is the `[󰜼 Open]` button alone — not the row it sits in, and
+    /// not the parameter row the command is written on.
     #[test]
     fn collapsed_command_ignores_clicks_off_the_hint() {
         let long_command = "cd /home/rg/Projects/tact && no_proxy=127.0.0.1,localhost \
