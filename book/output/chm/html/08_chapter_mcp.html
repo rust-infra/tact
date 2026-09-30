@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="mcp-protocol-and-agent-integration">MCP Protocol and Agent
+Integration</h1>
+<blockquote>
+<p>Language: <a href="./08_chapter_mcp.html">English</a> · <a href="./08_chapter_mcp_zh.html">中文</a></p>
+</blockquote>
+<p>This tutorial walks through <a href="https://modelcontextprotocol.io/">Model Context Protocol (MCP)</a>
+from first principles to the concrete implementation in Tact—how an
+agent connects to external tools end to end.</p>
+<hr />
+<h2 id="1-what-problem-does-mcp-solve">1. What Problem Does MCP
+Solve?</h2>
+<p>Before MCP, every AI application (Claude Desktop, Cursor, custom
+agents, …) had to write bespoke glue for every external capability
+(databases, GitHub, filesystems, …). That is the classic <strong>M×N
+integration problem</strong>:</p>
+<ul>
+<li>M AI applications</li>
+<li>N external tools / data sources</li>
+<li>M×N pieces of adapter code</li>
+</ul>
+<p>MCP turns this into <strong>M + N</strong> with a <strong>single
+protocol</strong>:</p>
+<ul>
+<li>Each external capability implements an <strong>MCP
+Server</strong></li>
+<li>Each AI application implements an <strong>MCP Client</strong></li>
+<li>Both sides speak the same JSON-RPC session rules</li>
+</ul>
+<hr />
+<h2 id="2-three-roles">2. Three Roles</h2>
+<pre class="mermaid"><code>graph TB
+    subgraph Host[&quot;MCP Host (AI app, e.g. Tact)&quot;]
+        C1[&quot;MCP Client 1&quot;]
+        C2[&quot;MCP Client 2&quot;]
+    end
+    S1[&quot;MCP Server A (local stdio)&quot;]
+    S2[&quot;MCP Server B (remote HTTP)&quot;]
+
+    C1 --- S1
+    C2 --- S2</code></pre>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>What it is</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Host</strong></td>
+<td>The AI application itself</td>
+<td>Manages the LLM, permissions, user interaction, and aggregates all
+external capabilities</td>
+</tr>
+<tr>
+<td><strong>Client</strong></td>
+<td>One connection object inside the Host</td>
+<td><strong>One Client per Server</strong>—handshake, requests,
+responses</td>
+</tr>
+<tr>
+<td><strong>Server</strong></td>
+<td>A standalone process or service</td>
+<td>Exposes tools / resources / prompts</td>
+</tr>
+</tbody>
+</table>
+<p>Relationship: <strong>1 Host → N Clients → N Servers</strong>.</p>
+<p>In Tact, the Host is <code>Agent</code> + <code>tact-ui</code>; each
+<code>McpClient</code> maps to one Client instance in the rmcp
+library.</p>
+<hr />
+<h2 id="3-two-layers">3. Two Layers</h2>
+<h3 id="31-data-layer">3.1 Data Layer</h3>
+<p>Built on <strong>JSON-RPC 2.0</strong>, defining message format and
+semantics:</p>
+<table>
+<thead>
+<tr>
+<th>Message type</th>
+<th>Has <code>id</code>?</th>
+<th>Expects reply?</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Request</strong></td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Initiate an operation</td>
+</tr>
+<tr>
+<td><strong>Response</strong></td>
+<td>Yes (matches Request)</td>
+<td>—</td>
+<td>Returns <code>result</code> or <code>error</code></td>
+</tr>
+<tr>
+<td><strong>Notification</strong></td>
+<td>No</td>
+<td>No</td>
+<td>One-way push, e.g. tool list changes</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-transport-layer">3.2 Transport Layer</h3>
+<p>The same JSON-RPC messages travel over different physical
+channels:</p>
+<table>
+<thead>
+<tr>
+<th>Transport</th>
+<th>Use case</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>stdio</strong></td>
+<td>Local subprocess</td>
+<td>Client spawns Server; JSON lines on
+<code>stdin</code>/<code>stdout</code>; no network overhead</td>
+</tr>
+<tr>
+<td><strong>Streamable HTTP</strong></td>
+<td>Remote services</td>
+<td>HTTP POST + optional SSE; OAuth and other auth</td>
+</tr>
+</tbody>
+</table>
+<p>Tact currently uses <strong>stdio</strong> only (see
+<code>McpClient::connect</code>).</p>
+<hr />
+<h2 id="4-protocol-flow-step-by-step">4. Protocol Flow: Step by
+Step</h2>
+<p>The following follows <strong>chronological order</strong>, from “not
+connected yet” to “the LLM actually invokes a tool”.</p>
+<h3 id="step-0-know-the-division-of-labor">Step 0: Know the division of
+labor</h3>
+<p>Before connecting, remember: <strong>Host owns the big picture,
+Client owns one connection, Server owns exposed
+capabilities</strong>.</p>
+<h3 id="step-1-configuration--tell-the-host-which-servers-to-connect">Step
+1: Configuration — tell the Host which Servers to connect</h3>
+<p>Before startup, the Host must know how to launch each Server. Tact
+reads <code>.claude-plugin/plugin.json</code>:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;demo&quot;</span><span class="fu">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;mcpServers&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;postgres&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;command&quot;</span><span class="fu">:</span> <span class="st">&quot;node&quot;</span><span class="fu">,</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;args&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;server.js&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;env&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;DATABASE_URL&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span> <span class="fu">}</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">}</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>Meaning: run <code>command</code> as a subprocess—that process is the
+MCP Server.</p>
+<p>Code: <code>PluginLoader::scan</code> scans directories, parses the
+manifest, and builds server names like <code>{plugin}__{server}</code>
+(e.g. <code>demo__postgres</code>).</p>
+<h3 id="step-2-transport--start-the-server-process">Step 2: Transport —
+start the Server process</h3>
+<pre><code>Client (Tact)                    Server (node server.js)
+    │                                    │
+    │  spawn subprocess                   │
+    │ ─────────────────────────────────► │
+    │  Client writes JSON → Server stdin │
+    │  Server writes JSON → Client stdout│
+    │ ◄───────────────────────────────── │</code></pre>
+<p>Code: <code>McpClient::connect</code> spawns via
+<code>TokioChildProcess</code>, then
+<code>handler.serve(transport)</code> establishes the rmcp session.</p>
+<p>At this point the process is running, but the <strong>protocol
+session is not ready yet</strong>.</p>
+<h3 id="step-3-handshake--initialize-and-capability-negotiation">Step 3:
+Handshake — <code>initialize</code> and capability negotiation</h3>
+<p>After the transport is up, the <strong>Client must send
+<code>initialize</code> first</strong>. You cannot call tools
+immediately.</p>
+<p><strong>Client → Server:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jsonrpc&quot;</span><span class="fu">:</span> <span class="st">&quot;2.0&quot;</span><span class="fu">,</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;method&quot;</span><span class="fu">:</span> <span class="st">&quot;initialize&quot;</span><span class="fu">,</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;params&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;protocolVersion&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-06-18&quot;</span><span class="fu">,</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;capabilities&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;elicitation&quot;</span><span class="fu">:</span> <span class="fu">{}</span> <span class="fu">},</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;clientInfo&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;tact&quot;</span><span class="fu">,</span> <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.19.0&quot;</span> <span class="fu">}</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Server → Client:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jsonrpc&quot;</span><span class="fu">:</span> <span class="st">&quot;2.0&quot;</span><span class="fu">,</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;result&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;protocolVersion&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-06-18&quot;</span><span class="fu">,</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;capabilities&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;tools&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;listChanged&quot;</span><span class="fu">:</span> <span class="kw">true</span> <span class="fu">},</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;resources&quot;</span><span class="fu">:</span> <span class="fu">{}</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>    <span class="fu">},</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;serverInfo&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;postgres-server&quot;</span><span class="fu">,</span> <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;1.0.0&quot;</span> <span class="fu">}</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Client → Server (Notification, no
+<code>id</code>):</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jsonrpc&quot;</span><span class="fu">:</span> <span class="st">&quot;2.0&quot;</span><span class="fu">,</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;method&quot;</span><span class="fu">:</span> <span class="st">&quot;notifications/initialized&quot;</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>The handshake accomplishes three things:</p>
+<ol type="1">
+<li><strong>protocolVersion</strong> — both sides must be
+compatible</li>
+<li><strong>capabilities</strong> — declare supported features (tools,
+resources, whether <code>list_changed</code> notifications are
+supported, …)</li>
+<li><strong>clientInfo / serverInfo</strong> — identity for
+debugging</li>
+</ol>
+<p>In Tact this happens inside rmcp’s <code>serve()</code>; application
+code does not write the JSON directly.</p>
+<h3 id="step-4-tool-discovery--toolslist">Step 4: Tool discovery —
+<code>tools/list</code></h3>
+<p>Once the handshake completes, the Client asks the Server:
+<strong>what tools do you expose?</strong></p>
+<p><strong>Request:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jsonrpc&quot;</span><span class="fu">:</span> <span class="st">&quot;2.0&quot;</span><span class="fu">,</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="dv">2</span><span class="fu">,</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;method&quot;</span><span class="fu">:</span> <span class="st">&quot;tools/list&quot;</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Response (excerpt):</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jsonrpc&quot;</span><span class="fu">:</span> <span class="st">&quot;2.0&quot;</span><span class="fu">,</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="dv">2</span><span class="fu">,</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;result&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tools&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>      <span class="fu">{</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;query&quot;</span><span class="fu">,</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;description&quot;</span><span class="fu">:</span> <span class="st">&quot;Run a SQL query&quot;</span><span class="fu">,</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>        <span class="dt">&quot;inputSchema&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>          <span class="dt">&quot;type&quot;</span><span class="fu">:</span> <span class="st">&quot;object&quot;</span><span class="fu">,</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>          <span class="dt">&quot;properties&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;sql&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;type&quot;</span><span class="fu">:</span> <span class="st">&quot;string&quot;</span> <span class="fu">}</span> <span class="fu">},</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>          <span class="dt">&quot;required&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;sql&quot;</span><span class="ot">]</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>        <span class="fu">}</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>      <span class="fu">}</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>    <span class="ot">]</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>Each tool includes:</p>
+<ul>
+<li><strong>name</strong> — unique within the Server</li>
+<li><strong>description</strong> — shown to the LLM</li>
+<li><strong>inputSchema</strong> — JSON Schema for arguments</li>
+</ul>
+<p>Code: <code>McpClient::fetch_tools</code> →
+<code>service.peer().list_all_tools()</code>.</p>
+<h3 id="step-5-register-with-the-agent--the-llm-facing-tool-list">Step
+5: Register with the Agent — the LLM-facing tool list</h3>
+<p>After listing tools, the Host <strong>merges them into the Agent’s
+tool table</strong>. Tact prefixes names to avoid collisions across
+Servers:</p>
+<pre><code>mcp__&lt;plugin&gt;__&lt;server&gt;__&lt;tool&gt;</code></pre>
+<p>Example: <code>mcp__demo__postgres__query</code></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co">// build_tool_specs</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>name<span class="op">:</span> <span class="pp">format!</span>(<span class="st">&quot;mcp__{server_name}__{}&quot;</span><span class="op">,</span> tool<span class="op">.</span>name)<span class="op">,</span></span></code></pre></div>
+<p>On startup the Agent merges native tools + MCP tools:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>cached_tool_specs <span class="op">=</span> native_tools <span class="op">+</span> mcp_router<span class="op">.</span>all_tools()</span></code></pre></div>
+<p>The LLM now “knows” these tools exist, but has not called any
+yet.</p>
+<h3 id="step-6-the-llm-decides-to-call--the-agent-loop-takes-over">Step
+6: The LLM decides to call — the Agent loop takes over</h3>
+<p>After the user sends a message, the Agent enters its main loop:</p>
+<pre><code>User message
+  → send to LLM (with all tool specs)
+  → LLM returns tool_use blocks (name + arguments)
+  → Agent executes tools
+  → write results back into the conversation
+  → send to LLM again (until no more tool calls)</code></pre>
+<p>The LLM might return:</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;mcp__demo__postgres__query&quot;</span><span class="fu">,</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;input&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;sql&quot;</span><span class="fu">:</span> <span class="st">&quot;SELECT 1&quot;</span> <span class="fu">}</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>If the name starts with <code>mcp__</code>, the Agent routes through
+MCP instead of native tools.</p>
+<h3 id="step-7-execute--toolscall">Step 7: Execute —
+<code>tools/call</code></h3>
+<p>The Agent parses the tool name, finds the right Client, and sends
+JSON-RPC.</p>
+<p><strong>Client → Server:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jsonrpc&quot;</span><span class="fu">:</span> <span class="st">&quot;2.0&quot;</span><span class="fu">,</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="dv">3</span><span class="fu">,</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;method&quot;</span><span class="fu">:</span> <span class="st">&quot;tools/call&quot;</span><span class="fu">,</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;params&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;query&quot;</span><span class="fu">,</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;arguments&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;sql&quot;</span><span class="fu">:</span> <span class="st">&quot;SELECT 1&quot;</span> <span class="fu">}</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>Note: <code>params.name</code> is the <strong>Server-internal
+name</strong> (<code>query</code>), not the Agent-side
+<code>mcp__demo__postgres__query</code>.</p>
+<p>Name parsing (<code>rsplit_once(&quot;__&quot;)</code> splits from the
+right):</p>
+<pre><code>mcp__demo__postgres__query
+       └─ server ─┘  └ tool ┘</code></pre>
+<p><strong>Server → Client:</strong></p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jsonrpc&quot;</span><span class="fu">:</span> <span class="st">&quot;2.0&quot;</span><span class="fu">,</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="dv">3</span><span class="fu">,</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;result&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;content&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>      <span class="fu">{</span> <span class="dt">&quot;type&quot;</span><span class="fu">:</span> <span class="st">&quot;text&quot;</span><span class="fu">,</span> <span class="dt">&quot;text&quot;</span><span class="fu">:</span> <span class="st">&quot;[{</span><span class="ch">\&quot;</span><span class="st">?column?</span><span class="ch">\&quot;</span><span class="st">: 1}]&quot;</span> <span class="fu">}</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    <span class="ot">]</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><code>content</code> is an array that can mix text, image, resource,
+and other types. Tact joins it with <code>join_mcp_content</code> and
+writes the string back as the tool result.</p>
+<h3 id="step-8-feed-results-back-to-the-llm">Step 8: Feed results back
+to the LLM</h3>
+<p>The Agent appends the tool result to message history and calls the
+LLM again. Full path:</p>
+<pre><code>User: &quot;Query the database&quot;
+  ↓
+LLM: call mcp__demo__postgres__query
+  ↓
+Agent → MCP Client → Server (tools/call)
+  ↓
+Server runs SQL, returns result
+  ↓
+Agent writes to context → LLM produces final answer</code></pre>
+<p>Each LLM request includes the latest tool list
+(<code>with_tools(self.all_tool_specs())</code>), so updates take effect
+on the next turn.</p>
+<h3 id="step-9-optional-resources-and-prompts">Step 9 (optional):
+Resources and Prompts</h3>
+<p>Besides Tools, MCP defines two more primitives:</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th>Purpose</th>
+<th>Typical methods</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Resources</strong></td>
+<td>Read-only context (files, schemas, API data)</td>
+<td><code>resources/list</code>, <code>resources/read</code></td>
+</tr>
+<tr>
+<td><strong>Prompts</strong></td>
+<td>Reusable prompt templates</td>
+<td><code>prompts/list</code>, <code>prompts/get</code></td>
+</tr>
+</tbody>
+</table>
+<p>Tact primarily uses the <strong>Tools</strong> path today. Resources
+and Prompts exist in the protocol; whether a Host exposes them to the
+LLM depends on the implementation.</p>
+<h3 id="step-10-notifications--server-pushes-updates">Step 10:
+Notifications — Server pushes updates</h3>
+<p>When a Server’s tool list changes, it can push without waiting for
+the Client to ask:</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;jsonrpc&quot;</span><span class="fu">:</span> <span class="st">&quot;2.0&quot;</span><span class="fu">,</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;method&quot;</span><span class="fu">:</span> <span class="st">&quot;notifications/tools/list_changed&quot;</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>The Client should re-run <code>tools/list</code> and refresh the
+Agent’s tool table.</p>
+<p><strong>Tact implementation (startup only today):</strong></p>
+<ol type="1">
+<li>At connect time, <code>McpClient::fetch_tools</code> calls
+<code>list_all_tools()</code> once and builds <code>tool_specs</code>
+(<code>mcp/mod.rs</code>)</li>
+<li><code>Agent::new</code> merges native + MCP specs into
+<code>cached_tool_specs</code> — <strong>fixed for the
+session</strong></li>
+<li><strong>Not implemented yet:</strong>
+<code>notifications/tools/list_changed</code> handler,
+<code>TactMcpClientHandler</code>, or
+<code>refresh_mcp_tools_if_changed()</code> in <code>agent_loop</code>.
+Dynamic server-side tool changes after connect are not picked up until
+restart.</li>
+</ol>
+<div class="sourceCode" id="cb19"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="co">// crates/tact/src/mcp/mod.rs — connect uses rmcp with () handler (no ClientHandler)</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>()<span class="op">.</span>serve(transport)<span class="op">.</span><span class="kw">await</span><span class="op">?;</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="co">// tools fetched once:</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>service<span class="op">.</span>peer()<span class="op">.</span>list_all_tools()<span class="op">.</span><span class="kw">await</span><span class="op">?;</span></span></code></pre></div>
+<div class="sourceCode" id="cb20"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="co">// crates/tact/src/agent/mod.rs — tool list is cached at Agent construction</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> cached_tool_specs <span class="op">=</span> tools<span class="op">.</span>native_specs()</span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>chain(mcp_router<span class="op">.</span>all_tools())</span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>collect()<span class="op">;</span></span></code></pre></div>
+<h3 id="step-11-close-the-connection">Step 11: Close the connection</h3>
+<p>When the session ends, disconnect gracefully instead of letting the
+parent exit and the OS kill child processes.</p>
+<p><strong>Tact implementation:</strong></p>
+<ul>
+<li><code>McpClient::shutdown</code> —
+<code>service.cancel().await</code></li>
+<li><code>MCPToolRouter::disconnect_all</code> — drain all clients and
+shut down each one</li>
+<li><code>Agent::shutdown_mcp</code> — called from <code>tact-ui</code>
+on exit (<code>run_headless</code> / <code>run_interactive</code>) to
+invoke <code>disconnect_all</code></li>
+</ul>
+<hr />
+<h2 id="5-end-to-end-sequence-diagram">5. End-to-End Sequence
+Diagram</h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant User as User
+    participant Host as Host (Tact Agent)
+    participant Client as MCP Client
+    participant Server as MCP Server
+
+    Note over Host,Server: Startup
+    Host-&gt;&gt;Client: create Client
+    Client-&gt;&gt;Server: spawn subprocess (stdio)
+    Client-&gt;&gt;Server: initialize
+    Server--&gt;&gt;Client: capabilities + serverInfo
+    Client-&gt;&gt;Server: notifications/initialized
+    Client-&gt;&gt;Server: tools/list
+    Server--&gt;&gt;Client: tools[]
+    Host-&gt;&gt;Host: register mcp__* tools
+
+    Note over User,Server: Conversation
+    User-&gt;&gt;Host: user message
+    Host-&gt;&gt;Host: LLM returns tool_use
+    Host-&gt;&gt;Client: route mcp__demo__postgres__query
+    Client-&gt;&gt;Server: tools/call(name=query, args=...)
+    Server--&gt;&gt;Client: content[]
+    Client--&gt;&gt;Host: tool result
+    Host-&gt;&gt;Host: write to context, continue LLM
+    Host--&gt;&gt;User: final answer
+
+    Note over Host,Server: Optional: dynamic update (not implemented in Tact yet)
+    Server--&gt;&gt;Client: notifications/tools/list_changed
+    Note over Host: would re-list tools + refresh cached_tool_specs
+    Note over Host,Server: Shutdown
+    Host-&gt;&gt;Client: Agent::shutdown_mcp → disconnect_all</code></pre>
+<hr />
+<h2 id="6-tact-code-map">6. Tact Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>Module</th>
+<th>File</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Config scan</td>
+<td><code>crates/tact/src/mcp/mod.rs</code> —
+<code>PluginLoader</code></td>
+<td>Read <code>.claude-plugin/plugin.json</code></td>
+</tr>
+<tr>
+<td>Connect &amp; handshake</td>
+<td><code>McpClient::connect</code></td>
+<td>stdio spawn + rmcp <code>serve()</code></td>
+</tr>
+<tr>
+<td>Tool discovery</td>
+<td><code>McpClient::fetch_tools</code></td>
+<td><code>tools/list</code></td>
+</tr>
+<tr>
+<td>Tool execution</td>
+<td><code>McpClient::call_tool</code></td>
+<td><code>tools/call</code></td>
+</tr>
+<tr>
+<td>Dynamic updates</td>
+<td><em>(not implemented)</em></td>
+<td><code>tools/list_changed</code> notification + cache refresh</td>
+</tr>
+<tr>
+<td>Routing</td>
+<td><code>MCPToolRouter</code></td>
+<td>Route by <code>mcp__*</code> name to the right Server</td>
+</tr>
+<tr>
+<td>Agent integration</td>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td>Merge tool specs at <code>Agent::new</code>;
+<code>all_tool_specs()</code> per LLM turn</td>
+</tr>
+<tr>
+<td>Parallel scheduling</td>
+<td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
+<td>Same Server serial; different Servers parallel</td>
+</tr>
+<tr>
+<td>Entry point</td>
+<td><code>crates/tact-ui/src/headless.rs</code>,
+<code>interactive.rs</code></td>
+<td><code>load_mcp_router()</code> at startup</td>
+</tr>
+</tbody>
+</table>
+<h3 id="61-tool-naming-and-routing">6.1 Tool naming and routing</h3>
+<pre><code>mcp__demo__postgres__query
+  │      │        │      └── tool (Server-internal name)
+  │      │        └── server (key in manifest mcpServers)
+  │      └── plugin (manifest name)
+  └── fixed prefix marking an MCP tool</code></pre>
+<p><code>MCPToolRouter::call</code> parses the name → finds the client →
+sends <code>tools/call</code> with the Server-internal tool name.</p>
+<h3 id="62-parallel-vs-serial">6.2 Parallel vs serial</h3>
+<p>MCP tools on the same Server share one stdio connection, so:</p>
+<ul>
+<li>Multiple tools on the <strong>same Server</strong>:
+<strong>serial</strong> (avoid connection races)</li>
+<li>Tools on <strong>different Servers</strong>: <strong>may run in
+parallel</strong></li>
+</ul>
+<p>See <code>mcp_tool_resources</code> and related tests in
+<code>crates/tact/src/agent/tool_schedule.rs</code>.</p>
+<hr />
+<h2 id="7-minimal-mcp-server-sketch">7. Minimal MCP Server Sketch</h2>
+<p>Any language works as long as it speaks JSON-RPC over stdio.
+Pseudocode:</p>
+<pre><code>1. Read JSON lines from stdin
+2. On initialize → reply with capabilities (include tools.listChanged: true)
+3. On notifications/initialized → ignore (Notifications have no response)
+4. On tools/list → reply with tools array
+5. On tools/call → run logic, reply with content
+6. (Optional) On tool change → write notifications/tools/list_changed to stdout</code></pre>
+<p>On the Tact side, declare <code>command</code> / <code>args</code> /
+<code>env</code> in <code>plugin.json</code> to plug it in.</p>
+<hr />
+<h2 id="8-faq">8. FAQ</h2>
+<h3 id="q-why-cant-i-find-initialize-in-tact-source">Q: Why can’t I find
+<code>initialize</code> in Tact source?</h3>
+<p>The handshake lives inside the <strong>rmcp</strong> SDK’s
+<code>serve()</code>. Application code only spawns the process and calls
+<code>handler.serve(transport).await</code>.</p>
+<h3 id="q-when-does-the-tool-list-change">Q: When does the tool list
+change?</h3>
+<ul>
+<li><strong>Static</strong> tools at Server startup → fetch once at Step
+4 (current Tact behavior)</li>
+<li><strong>Dynamic</strong> tools at runtime → Step 10 Notification +
+refresh (<strong>not implemented</strong> — restart required)</li>
+</ul>
+<h3 id="q-how-do-mcp-tools-differ-from-native-tools">Q: How do MCP tools
+differ from native tools?</h3>
+<p>To the LLM, they are the same—both are function-calling tools. The
+Agent uses the <code>mcp__</code> prefix to choose
+<code>MCPToolRouter</code> vs <code>ToolRouter</code>.</p>
+<h3 id="q-why-not-http-transport">Q: Why not HTTP transport?</h3>
+<p>stdio fits local plugins: zero config, low latency. Remote MCP
+services can use Streamable HTTP; Tact does not implement that path yet,
+but rmcp can be extended.</p>
+<hr />
+<h2 id="9-quick-reference-11-steps">9. Quick Reference (11 Steps)</h2>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Action</th>
+<th>JSON-RPC method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Read config</td>
+<td>(Host-local)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Start Server process</td>
+<td>(stdio transport)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Handshake</td>
+<td><code>initialize</code> +
+<code>notifications/initialized</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Discover tools</td>
+<td><code>tools/list</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Register for LLM</td>
+<td>(Host-local)</td>
+</tr>
+<tr>
+<td>6</td>
+<td>LLM chooses a tool</td>
+<td>(LLM returns tool_use)</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Execute</td>
+<td><code>tools/call</code></td>
+</tr>
+<tr>
+<td>8</td>
+<td>Feed back results</td>
+<td>(Host writes to context)</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Optional: resources / prompts</td>
+<td><code>resources/*</code>, <code>prompts/*</code></td>
+</tr>
+<tr>
+<td>10</td>
+<td>Optional: live updates</td>
+<td>Notification</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Shutdown</td>
+<td><code>close</code> / disconnect</td>
+</tr>
+</tbody>
+</table>
+<p><strong>In one line:</strong> MCP = stateful JSON-RPC session +
+capability negotiation + three primitives (tools / resources / prompts),
+over stdio or HTTP, letting a Host plug in external Servers written in
+any language.</p>
+<hr />
+<h2 id="10-current-gaps">10. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>No <code>tools/list_changed</code> handling</strong></td>
+<td>Tool list fixed at connect; no <code>ClientHandler</code> or loop
+refresh</td>
+</tr>
+<tr>
+<td><strong>Resources / prompts</strong></td>
+<td>Protocol primitives exist; Tact only wires Tools today</td>
+</tr>
+<tr>
+<td><strong>HTTP transport</strong></td>
+<td>stdio only via <code>TokioChildProcess</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-further-reading">11. Further Reading</h2>
+<ul>
+<li><a href="https://modelcontextprotocol.io/docs/learn/architecture">MCP
+architecture overview</a></li>
+<li><a href="https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle">MCP
+specification — Lifecycle</a></li>
+<li>Tact source: <code>crates/tact/src/mcp/mod.rs</code></li>
+<li>rmcp (Rust SDK): <code>rmcp = &quot;0.17&quot;</code> in the project
+<code>Cargo.toml</code></li>
+</ul>
+</body>
+</html>

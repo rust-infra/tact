@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="configuration">Configuration</h1>
+<blockquote>
+<p>Language: <a href="./21_chapter_config.html">English</a> · <a href="./21_chapter_config_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter describes how Tact loads, merges, and installs runtime
+settings before any agent work begins. Configuration is the
+<strong>bootstrap layer</strong> that wires LLM credentials, agent
+limits, UI theme, tool keys, and permission mode into a process-global
+<code>ResolvedConfig</code>.</p>
+<p>Implementation: <code>crates/tact/src/config/</code>
+(<code>mod.rs</code>, <code>cli.rs</code>, <code>load.rs</code>,
+<code>resolve.rs</code>, <code>types.rs</code>).</p>
+<hr />
+<h2 id="1-what-configuration-owns">1. What Configuration Owns</h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Resolved field</th>
+<th>Primary consumers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LLM credentials</td>
+<td><code>ResolvedConfig::llm</code> →
+<code>tact_llm::init_provider</code></td>
+<td><a href="./22_chapter_llm.html">Ch 22 LLM</a>,
+<code>Agent::stream_message</code></td>
+</tr>
+<tr>
+<td>Agent limits</td>
+<td><code>agent.*</code></td>
+<td><a href="./05_chapter_compact.html">Ch 5 Compact</a>, <a href="./04_chapter_prompt.html">Ch 4 Prompt</a>, <a href="./17_chapter_notify.html">Ch 17 Notify</a></td>
+</tr>
+<tr>
+<td>Permission mode string</td>
+<td><code>permission_mode: Option&lt;String&gt;</code></td>
+<td>Headless only — see <a href="#6-current-gaps">§6 Gaps</a></td>
+</tr>
+<tr>
+<td>UI theme</td>
+<td><code>ui.theme</code></td>
+<td><a href="./23_chapter_tui.html">Ch 23 TUI</a></td>
+</tr>
+<tr>
+<td>Debug</td>
+<td><code>tokio_console</code></td>
+<td><code>tact-ui</code> <code>main()</code></td>
+</tr>
+</tbody>
+</table>
+<p>Every binary entry point should call
+<code>tact::config::init()</code> (or <code>init_config()</code>)
+<strong>once</strong> at startup.</p>
+<hr />
+<h2 id="2-startup-flow">2. Startup Flow</h2>
+<pre class="mermaid"><code>flowchart LR
+    CLI[CliArgs::parse] --&gt; Load[load_toml_config]
+    Load --&gt; Merge[resolve_config]
+    Merge --&gt; Install[config::install]
+    Install --&gt; LLM[tact_llm::init_provider]
+    Install --&gt; Global[SETTINGS OnceLock]</code></pre>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> init() <span class="op">-&gt;</span> <span class="pp">anyhow::</span><span class="dt">Result</span><span class="op">&lt;</span>CliArgs<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    init_config()</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> init_config() <span class="op">-&gt;</span> <span class="pp">anyhow::</span><span class="dt">Result</span><span class="op">&lt;</span>CliArgs<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> args <span class="op">=</span> <span class="pp">CliArgs::</span>parse()<span class="op">;</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> toml_cfg <span class="op">=</span> <span class="pp">load::</span>load_toml_config(args<span class="op">.</span>config<span class="op">.</span>as_ref())<span class="op">?;</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> args<span class="op">.</span>list_sessions <span class="op">{</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>        install_without_llm(<span class="pp">resolve::</span>resolve_non_llm_settings(<span class="op">&amp;</span>args<span class="op">,</span> <span class="op">&amp;</span>toml_cfg))<span class="op">;</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="cn">Ok</span>(args)<span class="op">;</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> resolved <span class="op">=</span> <span class="pp">resolve::</span>resolve_config(<span class="op">&amp;</span>args<span class="op">,</span> <span class="op">&amp;</span>toml_cfg)<span class="op">?;</span></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>    install(resolved)<span class="op">;</span></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>    <span class="cn">Ok</span>(args)</span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>install()</code> does two things:</p>
+<ol type="1">
+<li><strong><code>tact_llm::init_provider(config.llm.provider_info())</code></strong>
+— stores <code>ProviderInfo</code> for <code>get_llm_client()</code> (<a href="./22_chapter_llm.html">Ch 22</a>).</li>
+<li><strong><code>SETTINGS.set(config)</code></strong> — makes
+<code>config::settings()</code> available for the rest of the
+process.</li>
+</ol>
+<p><code>install_without_llm()</code> skips provider init for commands
+like <code>--list-sessions</code>, <code>tact upgrade</code>, or the
+plugin CLI that never call the model.</p>
+<hr />
+<h2 id="3-config-sources-and-priority">3. Config Sources and
+Priority</h2>
+<h3 id="toml-search-order">TOML search order</h3>
+<p>When <code>--config</code> is <strong>not</strong> passed,
+<code>load_toml_config</code> scans in order and uses the <strong>first
+file that exists</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Order</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>./.tact/config.toml</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>./config.toml</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>~/.tact/config.toml</code></td>
+</tr>
+</tbody>
+</table>
+<p>If none exist, tact-ui writes a copy of
+<code>config.example.toml</code> to <code>~/.tact/config.toml</code> on
+first run (the embedded template stays in sync with the checked-in
+example) and prints a hint to edit it and add the API key. Only the
+user-global location is auto-created — project directories are never
+polluted. If the template cannot be written (unknown/unwritable HOME),
+an empty <code>TactTomlConfig::default()</code> is used and the normal
+&quot;not configured&quot; resolve error guides the user.</p>
+<p>Explicit <code>--config /path/to/file.toml</code> bypasses the search
+list; a missing explicit path is an error (never auto-created).</p>
+<h3 id="merge-rule-cli--toml-entry--toml-global--defaults">Merge rule:
+CLI &gt; TOML entry &gt; TOML global &gt; defaults</h3>
+<p><code>llm.provider</code> (or <code>--provider</code>) selects the
+active <code>ProviderKind</code> and looks up
+<code>llm.providers.&lt;name&gt;</code>. For that entry:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_key</code> / <code>model</code></td>
+<td>CLI → entry (required)</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td>CLI → entry → <code>ProviderKind::default_base_url()</code></td>
+</tr>
+<tr>
+<td><code>max_tokens</code> / <code>thinking_budget</code></td>
+<td>CLI → entry → <code>[llm]</code> global → code defaults</td>
+</tr>
+<tr>
+<td><code>protocol</code></td>
+<td>entry → <code>chat_completions</code> default</td>
+</tr>
+<tr>
+<td><code>reasoning_effort</code></td>
+<td>entry (openai / deepseek / kimi / custom) → provider default
+(model-dependent)</td>
+</tr>
+</tbody>
+</table>
+<p>Required: <strong><code>llm.provider</code></strong>, plus
+<strong><code>api_key</code></strong> and
+<strong><code>model</code></strong> on the active entry.
+<code>anthropic</code> has no default <code>base_url</code> and must set
+one explicitly. Missing active entries error at resolve time.</p>
+<p>Any provider name not in the built-in list
+(<code>anthropic | openai | deepseek | kimi</code>) is accepted as a
+<strong>custom OpenAI-compatible provider</strong>: it reuses the OpenAI
+protocol (<code>chat_completions</code> by default,
+<code>responses</code> opt-in), has no default <code>base_url</code>
+(must be set explicitly on its entry), and supports
+<code>reasoning_effort</code>. Example:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode toml"><code class="sourceCode toml"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[llm]</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="dt">provider</span> <span class="op">=</span> <span class="st">&quot;moonshot&quot;</span>   <span class="co"># any name works</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="kw">[llm.providers.moonshot]</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="dt">api_key</span> <span class="op">=</span> <span class="st">&quot;sk-...&quot;</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="dt">base_url</span> <span class="op">=</span> <span class="st">&quot;https://api.moonshot.cn/v1&quot;</span>   <span class="co"># required for custom providers</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="dt">model</span> <span class="op">=</span> <span class="st">&quot;kimi-k2.5&quot;</span></span></code></pre></div>
+<hr />
+<h2 id="4-toml-schema">4. TOML Schema</h2>
+<p>Top-level sections in <code>TactTomlConfig</code>:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode toml"><code class="sourceCode toml"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[llm]</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="dt">provider</span> <span class="op">=</span> <span class="st">&quot;kimi&quot;</span>          <span class="co"># active ProviderKind: anthropic | openai | deepseek | kimi | any custom name</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="dt">max_tokens</span> <span class="op">=</span> <span class="dv">32000</span>         <span class="co"># optional global default</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="dt">thinking_budget</span> <span class="op">=</span> <span class="dv">32000</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Optional per-model thinking parameter options (model id → selectable tiers).</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="co"># The /model second step shows only these tiers for the picked model.</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="co"># [llm.model_profiles.&quot;gpt-5.6&quot;]</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="co"># reasoning_efforts = [&quot;low&quot;, &quot;medium&quot;, &quot;high&quot;]</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="co"># [llm.model_profiles.&quot;claude-sonnet-4-20250514&quot;]</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="co"># thinking_budgets = [0, 8000, 32000]</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="kw">[llm.providers.kimi]</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="dt">api_key</span> <span class="op">=</span> <span class="st">&quot;sk-...&quot;</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a><span class="dt">model</span> <span class="op">=</span> <span class="st">&quot;kimi-k2.5&quot;</span></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a><span class="dt">models</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;kimi-k2.5&quot;</span><span class="op">,</span> <span class="st">&quot;kimi-for-coding&quot;</span><span class="op">]</span>   <span class="co"># optional; used by TUI /model picker</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="co"># base_url defaults to https://api.moonshot.cn/v1</span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="co"># max_tokens = 64000       # optional per-provider override</span></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a><span class="kw">[llm.providers.openai]</span></span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a><span class="dt">api_key</span> <span class="op">=</span> <span class="st">&quot;sk-...&quot;</span></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a><span class="dt">model</span> <span class="op">=</span> <span class="st">&quot;gpt-4o&quot;</span></span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a><span class="dt">protocol</span> <span class="op">=</span> <span class="st">&quot;responses&quot;</span>    <span class="co"># chat_completions (default) | responses</span></span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a><span class="dt">reasoning_effort</span> <span class="op">=</span> <span class="st">&quot;high&quot;</span> <span class="co"># none | minimal | low | medium | high | xhigh | max</span></span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a><span class="kw">[llm.providers.anthropic]</span></span>
+<span id="cb4-27"><a href="#cb4-27" aria-hidden="true" tabindex="-1"></a><span class="dt">api_key</span> <span class="op">=</span> <span class="st">&quot;sk-ant-...&quot;</span></span>
+<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a><span class="dt">model</span> <span class="op">=</span> <span class="st">&quot;claude-sonnet-4-20250514&quot;</span></span>
+<span id="cb4-29"><a href="#cb4-29" aria-hidden="true" tabindex="-1"></a><span class="dt">base_url</span> <span class="op">=</span> <span class="st">&quot;https://api.anthropic.com&quot;</span>   <span class="co"># required for anthropic</span></span>
+<span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-31"><a href="#cb4-31" aria-hidden="true" tabindex="-1"></a><span class="kw">[permission]</span></span>
+<span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a><span class="dt">mode</span> <span class="op">=</span> <span class="st">&quot;default&quot;</span>           <span class="co"># default | plan | auto</span></span>
+<span id="cb4-33"><a href="#cb4-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-34"><a href="#cb4-34" aria-hidden="true" tabindex="-1"></a><span class="kw">[agent]</span></span>
+<span id="cb4-35"><a href="#cb4-35" aria-hidden="true" tabindex="-1"></a><span class="dt">model_context_window</span> <span class="op">=</span> <span class="dv">200000</span></span>
+<span id="cb4-36"><a href="#cb4-36" aria-hidden="true" tabindex="-1"></a><span class="dt">notifications_enabled</span> <span class="op">=</span> <span class="cn">true</span></span>
+<span id="cb4-37"><a href="#cb4-37" aria-hidden="true" tabindex="-1"></a><span class="dt">snapshot_max_items</span> <span class="op">=</span> <span class="dv">80</span></span>
+<span id="cb4-38"><a href="#cb4-38" aria-hidden="true" tabindex="-1"></a><span class="dt">micro_compact_enabled</span> <span class="op">=</span> <span class="cn">true</span></span>
+<span id="cb4-39"><a href="#cb4-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-40"><a href="#cb4-40" aria-hidden="true" tabindex="-1"></a><span class="kw">[ui]</span></span>
+<span id="cb4-41"><a href="#cb4-41" aria-hidden="true" tabindex="-1"></a><span class="dt">theme</span> <span class="op">=</span> <span class="st">&quot;ink&quot;</span></span>
+<span id="cb4-42"><a href="#cb4-42" aria-hidden="true" tabindex="-1"></a><span class="co"># Attached images (`@file.png`, `![alt](path)`); compress only reduces tokens —</span></span>
+<span id="cb4-43"><a href="#cb4-43" aria-hidden="true" tabindex="-1"></a><span class="co"># the model/endpoint must still support vision (see Ch 22 / Ch 23).</span></span>
+<span id="cb4-44"><a href="#cb4-44" aria-hidden="true" tabindex="-1"></a><span class="co"># vision_image.compress = true</span></span>
+<span id="cb4-45"><a href="#cb4-45" aria-hidden="true" tabindex="-1"></a><span class="co"># vision_image.max_edge = 1280</span></span>
+<span id="cb4-46"><a href="#cb4-46" aria-hidden="true" tabindex="-1"></a><span class="co"># vision_image.jpeg_quality = 80</span></span>
+<span id="cb4-47"><a href="#cb4-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-48"><a href="#cb4-48" aria-hidden="true" tabindex="-1"></a><span class="kw">[voice]</span></span>
+<span id="cb4-49"><a href="#cb4-49" aria-hidden="true" tabindex="-1"></a><span class="co"># Independent from [llm.providers.*]; disabled by default.</span></span>
+<span id="cb4-50"><a href="#cb4-50" aria-hidden="true" tabindex="-1"></a><span class="co"># enabled = false</span></span>
+<span id="cb4-51"><a href="#cb4-51" aria-hidden="true" tabindex="-1"></a><span class="co"># provider = &quot;openai&quot;</span></span>
+<span id="cb4-52"><a href="#cb4-52" aria-hidden="true" tabindex="-1"></a><span class="co"># api_key = &quot;&quot;</span></span>
+<span id="cb4-53"><a href="#cb4-53" aria-hidden="true" tabindex="-1"></a><span class="co"># base_url = &quot;https://api.openai.com/v1&quot;</span></span>
+<span id="cb4-54"><a href="#cb4-54" aria-hidden="true" tabindex="-1"></a><span class="co"># model = &quot;gpt-4o-mini-transcribe&quot;</span></span>
+<span id="cb4-55"><a href="#cb4-55" aria-hidden="true" tabindex="-1"></a><span class="co"># language = &quot;zh&quot;</span></span>
+<span id="cb4-56"><a href="#cb4-56" aria-hidden="true" tabindex="-1"></a><span class="co"># max_duration_secs = 300</span></span>
+<span id="cb4-57"><a href="#cb4-57" aria-hidden="true" tabindex="-1"></a><span class="co"># Optional keyboard toggle: &quot;ctrl+&lt;char&gt;&quot; (e.g. &quot;ctrl+g&quot;); mouse-only when unset.</span></span>
+<span id="cb4-58"><a href="#cb4-58" aria-hidden="true" tabindex="-1"></a><span class="co"># voice_keybind = &quot;ctrl+g&quot;</span></span>
+<span id="cb4-59"><a href="#cb4-59" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-60"><a href="#cb4-60" aria-hidden="true" tabindex="-1"></a><span class="kw">[tools]</span></span>
+<span id="cb4-61"><a href="#cb4-61" aria-hidden="true" tabindex="-1"></a><span class="co"># Bash wall-clock timeout in seconds (default: 1800; 0 disables timeout)</span></span>
+<span id="cb4-62"><a href="#cb4-62" aria-hidden="true" tabindex="-1"></a><span class="dt">bash_timeout_secs</span> <span class="op">=</span> <span class="dv">1800</span></span></code></pre></div>
+<p>Optional <code>models</code> is the <strong>primary</strong>
+candidate list for the TUI <code>/model</code> slash command (same
+provider only). On first <code>/model</code> in a session,
+OpenAI-compatible providers (<code>openai</code> / <code>deepseek</code>
+/ <code>kimi</code>) also call <code>GET {base_url}/models</code> and
+append ids not already listed in config (config order and duplicate ids
+win). The API result is cached for the process for that
+<code>(base_url, api_key)</code>. If both config and API yield no
+candidates, <code>/model</code> prints a hint instead of opening the
+picker. Choosing a model applies immediately; you can optionally write
+it back to this provider’s <code>model</code> field in the loaded config
+file.</p>
+<p>Optional <code>protocol</code> defaults to
+<code>chat_completions</code>. <code>responses</code> is valid for the
+<code>openai</code> and <code>deepseek</code> providers; configuration
+resolution rejects it for Anthropic or Kimi. DeepSeek with
+<code>responses</code> uses the same Responses adapter as OpenAI against
+its configured <code>base_url</code> (automatic
+<code>context_management</code> compaction and reasoning effort
+included; explicit <code>/responses/compact</code> support depends on
+the endpoint — DeepSeek currently does not implement it, so explicit
+compaction falls back to the local summary pipeline). There is no CLI
+override for this field.</p>
+<p>Optional <code>reasoning_effort</code> is accepted for
+<code>openai</code>, <code>deepseek</code> and <code>kimi</code>
+providers and accepts <code>none</code>, <code>minimal</code>,
+<code>low</code>, <code>medium</code>, <code>high</code>,
+<code>xhigh</code>, or <code>max</code>. Availability is
+model-dependent. An explicit value is forwarded unchanged on the wire
+(per request); when omitted, the provider default applies (e.g. OpenAI
+medium, DeepSeek enabled + high, Kimi K3 high). There is no CLI override
+for this field. Anthropic rejects it (native thinking budget, no effort
+field).</p>
+<p>Optional <code>[llm.model_profiles.&quot;&lt;model&gt;&quot;]</code> entries
+list the selectable tiers for that model in the <code>/model</code>
+second step: <code>reasoning_efforts</code> for effort-semantic models
+(openai / deepseek / kimi k3、k3-256k), <code>thinking_budgets</code>
+for budget-semantic models (anthropic / kimi coding 系). Both fields are
+optional arrays; an empty entry for a model falls back to the provider
+defaults. TOML entries override the built-in defaults per model / per
+field (see <code>tact::config::builtin_model_profiles</code>).
+Cross-dimension entries (e.g. <code>thinking_budgets</code> on an
+effort-semantic model) are ignored, not errors.</p>
+<p>Resolved runtime still exposes a flat
+<code>LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option&lt;OpenAiReasoningEffort&gt;, model_profiles, … }</code>
+for the hot path. See <code>types.rs</code> for serde structs and unit
+tests.</p>
+<hr />
+<h2 id="5-resolved-defaults">5. Resolved Defaults</h2>
+<p>After merge, <code>resolve_config</code> applies these defaults when
+neither CLI nor TOML set a value:</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Kimi K2.x override</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_tokens</code></td>
+<td>8_000</td>
+<td>32_000</td>
+</tr>
+<tr>
+<td><code>thinking_budget</code></td>
+<td>32_000</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>model_context_window</code></td>
+<td>200_000</td>
+<td>— (tokens; global; model→window mapping overrides file config, see
+below)</td>
+</tr>
+<tr>
+<td><code>notifications_enabled</code></td>
+<td><code>true</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>snapshot_max_items</code></td>
+<td>80</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>micro_compact_enabled</code></td>
+<td><code>true</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>tools.bash_timeout_secs</code></td>
+<td><code>1_800</code> (<code>0</code> disables)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>ui.theme</code></td>
+<td><code>&quot;ink&quot;</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>ui.vision_image.compress</code></td>
+<td><code>true</code></td>
+<td>— (token size only; does not enable vision)</td>
+</tr>
+<tr>
+<td><code>ui.vision_image.max_edge</code></td>
+<td><code>1280</code> (clamped 256–4096)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>ui.vision_image.jpeg_quality</code></td>
+<td><code>80</code> (clamped 1–100)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.enabled</code></td>
+<td><code>false</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.provider</code></td>
+<td><code>openai</code></td>
+<td><code>openai</code> / <code>google</code> /
+<code>whisper_cpp</code></td>
+</tr>
+<tr>
+<td><code>voice.base_url</code></td>
+<td><code>https://api.openai.com/v1</code> (openai) /
+<code>https://speech.googleapis.com/v1</code> (google) /
+<code>http://127.0.0.1:8080</code> (whisper_cpp)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.model</code></td>
+<td><code>gpt-4o-mini-transcribe</code> (openai) /
+<code>latest_short</code> (google) / empty (whisper_cpp)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.language</code></td>
+<td><code>zh</code></td>
+<td>Google examples: <code>zh-CN</code>, <code>en-US</code></td>
+</tr>
+<tr>
+<td><code>voice.max_duration_secs</code></td>
+<td><code>300</code> (openai/whisper_cpp, valid <code>1..=600</code>) /
+<code>60</code> (google, valid <code>1..=60</code>)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.voice_keybind</code></td>
+<td>unset (mouse-only)</td>
+<td><code>ctrl+&lt;char&gt;</code> (e.g. <code>ctrl+g</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="voice--speech-to-text-input-macos-first"><code>[voice]</code> —
+speech-to-text input (macOS-first)</h3>
+<p>Independent API key and endpoint from <code>[llm.providers.*]</code>.
+<code>provider = &quot;openai&quot;</code> (default) sends audio to
+<code>{base_url}/audio/transcriptions</code> and requires
+<code>api_key</code>. <code>provider = &quot;google&quot;</code> sends short WAV
+audio to Google&#39;s synchronous <code>{base_url}/speech:recognize</code>
+endpoint using <code>voice.api_key</code> as the query API key; its
+default model is <code>latest_short</code>, language examples are
+<code>zh-CN</code> and <code>en-US</code>, and
+<code>max_duration_secs</code> must be <code>1..=60</code>. Enable the
+Cloud Speech-to-Text API in the Google Cloud project. Google API-key
+mode does not support Service Accounts, OAuth, long-running recognition,
+streaming, or automatic segmentation.
+<code>provider = &quot;whisper_cpp&quot;</code> sends to
+<code>{base_url}/inference</code> with no auth and no <code>model</code>
+field, for use with a local <a href="https://github.com/ggerganov/whisper.cpp">whisper.cpp</a> server.
+Transcripts are inserted into the input box for review (never
+auto-submitted). <code>enabled = false</code> hides the centered
+title-bar button. <code>enabled = true</code> without
+<code>api_key</code> (openai only) still shows the button and reports
+<code>[voice].api_key</code> on click. Optional
+<code>voice_keybind = &quot;ctrl+&lt;char&gt;&quot;</code> toggles recording from
+any input mode; only an exact match consumes the key event (other keys
+still reach Insert/Normal). Unset keeps mouse-only control. The
+configured shortcut appears in the help panel (<code>Ctrl+?</code>).
+Empty, multi-character, or non-<code>ctrl</code> keybinds fail at config
+resolution. Credentials are not logged or written to session
+history.</p>
+<p>Kimi K2.x detection uses <code>provider_info.is_kimi_k2x()</code> at
+resolve time (<a href="./22_chapter_llm.html">Ch 22</a>).</p>
+<p><code>model_context_window</code> resolves with a three-tier priority
+(highest first):</p>
+<ol type="1">
+<li><strong>Model→window mapping</strong> — a built-in lookup keyed on
+the resolved model id, following official model docs (2026-08):
+<ul>
+<li>OpenAI: <code>gpt-5.6</code> / <code>gpt-5.6-luna</code> /
+<code>gpt-5.6-terra</code> / <code>gpt-5.6-sol</code> /
+<code>gpt-5.5</code> → <code>1_050_000</code>; <code>gpt-5.4</code> →
+<code>1_000_000</code>; <code>gpt-5</code> / <code>gpt-5.1</code> /
+<code>gpt-5.2</code> / <code>gpt-5.3</code> / <code>gpt-5.3-codex</code>
+/ <code>gpt-5.4-mini</code> → <code>400_000</code>; <code>gpt-4o</code>
+/ <code>gpt-4o-mini</code> → <code>128_000</code>.</li>
+<li>Anthropic (API and Claude Code): <code>claude-sonnet-5</code> /
+<code>claude-fable-5</code> / <code>claude-opus-5</code> /
+<code>claude-opus-4-8</code> / <code>claude-opus-4-7</code> /
+<code>claude-opus-4-6</code> / <code>claude-sonnet-4-6</code> →
+<code>1_000_000</code>; <code>claude-opus-4-20250514</code> /
+<code>claude-sonnet-4-20250514</code> / <code>claude-haiku-4-5</code> /
+<code>claude-haiku-4-20250514</code> → <code>200_000</code>.</li>
+<li>DeepSeek: <code>deepseek-v4-pro</code> /
+<code>deepseek-v4-flash</code> / <code>deepseek-reasoner</code> →
+<code>1_000_000</code>; Kimi: <code>k3-256k</code> →
+<code>256_000</code>. A match overrides both the CLI flag and the TOML
+file, so a stale manual window can never under-report a well-known model
+(which would trigger premature auto-compaction).</li>
+</ul></li>
+<li><strong>CLI <code>--model-context-window</code> / TOML
+<code>[agent].model_context_window</code></strong>.</li>
+<li><strong>Default <code>200_000</code></strong>.</li>
+</ol>
+<p>After merging CLI and TOML values, configuration fails fast when a
+nonzero <code>model_context_window</code> is less than or equal to
+<code>max_tokens</code>: the output reservation must leave room for
+input. A zero window keeps the existing &quot;disabled/unknown window&quot;
+behavior and skips this validation. <code>thinking_budget</code> is not
+added separately because providers map it differently (a thinking
+configuration or reasoning-effort band), rather than exposing one
+portable extra-output reservation.</p>
+<p>CLI-only overrides:</p>
+<ul>
+<li><code>--no-notifications</code> forces notifications off.</li>
+<li><code>--no-micro-compact</code> forces micro-compaction off.</li>
+<li><code>--tokio-console</code> enables the tokio-console subscriber in
+<code>tact-ui</code>.</li>
+</ul>
+<hr />
+<h2 id="6-cli-surface">6. CLI Surface</h2>
+<p><code>CliArgs</code> (clap) mirrors most TOML fields:</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Maps to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--provider</code></td>
+<td>selects active <code>llm.providers.*</code> entry
+(<code>ProviderKind</code>)</td>
+</tr>
+<tr>
+<td><code>--model</code>, <code>--api-key</code>,
+<code>--base-url</code></td>
+<td>override that entry’s fields</td>
+</tr>
+<tr>
+<td><code>--max-tokens</code>, <code>--thinking-budget</code></td>
+<td>CLI → entry → <code>[llm]</code> global → defaults</td>
+</tr>
+<tr>
+<td><code>-m</code> / <code>--permission-mode</code></td>
+<td><code>[permission].mode</code></td>
+</tr>
+<tr>
+<td><code>--model-context-window</code>,
+<code>--snapshot-max-items</code></td>
+<td><code>[agent]</code></td>
+</tr>
+<tr>
+<td><code>--notifications</code> / <code>--no-notifications</code></td>
+<td><code>[agent].notifications_enabled</code></td>
+</tr>
+<tr>
+<td><code>--theme</code></td>
+<td><code>[ui].theme</code></td>
+</tr>
+<tr>
+<td><code>--brave-search-api-key</code></td>
+<td><code>[tools]</code></td>
+</tr>
+<tr>
+<td><code>--session</code>, <code>--resume-last</code>,
+<code>--list-sessions</code></td>
+<td>session store (not in TOML). <code>--resume-last</code> and
+<code>--list-sessions</code> pass
+<code>list_sessions(Some(root_dir))</code> so only sessions for the
+current workdir appear.</td>
+</tr>
+<tr>
+<td><code>--config</code></td>
+<td>explicit TOML path</td>
+</tr>
+</tbody>
+</table>
+<p>Subcommand:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">tact-ui</span> headless <span class="st">&quot;Summarize this repo&quot;</span></span></code></pre></div>
+<p>Both entry points read <code>permission_mode</code> via
+<code>permission_mode_from_config()</code> in
+<code>crates/tact-ui/src/permission.rs</code>.</p>
+<p><code>tools.bash_timeout_secs</code> is TOML-only in v1. Resolution
+preserves <code>0</code> as &quot;disabled&quot; and otherwise carries the value
+through <code>ToolSettings</code> into each <code>ToolContext</code>;
+there is no CLI flag for it.</p>
+<hr />
+<h2 id="7-accessing-settings-at-runtime">7. Accessing Settings at
+Runtime</h2>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">tact::</span>config<span class="op">;</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="pp">config::</span>init()<span class="op">?;</span>                          <span class="co">// once in main</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> max <span class="op">=</span> <span class="pp">config::</span>settings()<span class="op">.</span>agent<span class="op">.</span>max_tokens<span class="op">;</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> theme <span class="op">=</span> <span class="pp">config::</span>settings()<span class="op">.</span>ui<span class="op">.</span>theme<span class="op">.</span>clone()<span class="op">;</span></span></code></pre></div>
+<p><code>settings()</code> panics if <code>init()</code> was not called
+— intentional fail-fast for miswired binaries.</p>
+<p>Agent loop reads <code>model_context_window</code>,
+<code>max_tokens</code>, and <code>thinking_budget</code> from
+<code>settings()</code> when building each LLM request (<a href="./18_chapter_agent_loop.html">Ch 18</a>).</p>
+<p><strong>Breaking rename:</strong>
+<code>agent.context_limit_chars</code> /
+<code>--context-limit-chars</code> →
+<code>agent.model_context_window</code> /
+<code>--model-context-window</code> (tokens, default 200_000). There is
+<strong>no silent alias</strong> for the old TOML key — update existing
+configs.</p>
+<hr />
+<h2 id="8-code-map">8. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>config/mod.rs</code></td>
+<td><code>init</code>, <code>install</code>, <code>settings</code>,
+public re-exports</td>
+</tr>
+<tr>
+<td><code>config/cli.rs</code></td>
+<td><code>CliArgs</code>, <code>CliCommand::Headless</code></td>
+</tr>
+<tr>
+<td><code>config/load.rs</code></td>
+<td>TOML discovery and parse</td>
+</tr>
+<tr>
+<td><code>config/resolve.rs</code></td>
+<td>CLI + TOML merge, Kimi-aware defaults</td>
+</tr>
+<tr>
+<td><code>config/types.rs</code></td>
+<td><code>TactTomlConfig</code>, <code>ResolvedConfig</code>, section
+structs</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/main.rs</code></td>
+<td>Calls <code>config::init()</code> in <code>main()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/permission.rs</code></td>
+<td>Reads resolved <code>permission_mode</code> for both entry
+points</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-current-gaps">9. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>No env-var layer</strong></td>
+<td>Only CLI and TOML; no <code>TACT_*</code> or provider env fallbacks
+in <code>resolve.rs</code></td>
+</tr>
+<tr>
+<td><strong><code>anthropic</code> requires explicit
+<code>base_url</code></strong></td>
+<td>Unlike OpenAI-compatible providers, no default Anthropic URL in
+<code>default_base_url()</code></td>
+</tr>
+<tr>
+<td><strong>Secrets in plain TOML</strong></td>
+<td><code>api_key</code> stored as text; no keychain integration</td>
+</tr>
+<tr>
+<td><strong><code>list-sessions</code> stub LLM block</strong></td>
+<td><code>resolve_non_llm_settings</code> fills empty LLM fields —
+callers must not invoke <code>get_llm_client()</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./22_chapter_llm.html">LLM Providers</a> — what
+<code>install()</code> initializes</li>
+<li><a href="./18_chapter_agent_loop.html">Agent Main Loop</a> — runtime
+consumer of agent settings</li>
+<li><a href="./10_chapter_permission.html">Permission Model</a> — mode
+string vs TUI wiring</li>
+<li><a href="./23_chapter_tui.html">TUI</a> — theme and channel
+bootstrap</li>
+</ul>
+</body>
+</html>

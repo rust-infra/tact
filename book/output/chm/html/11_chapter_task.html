@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="tasks-and-tool-scheduling">Tasks and Tool Scheduling</h1>
+<blockquote>
+<p>Language: <a href="./11_chapter_task.html">English</a> · <a href="./11_chapter_task_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter walks through what happens after the LLM decides to act:
+how Tact turns a set of <code>ToolUse</code> blocks into executed
+commands, results, and the next conversation turn.</p>
+<p><strong>Not to be confused with</strong> <a href="./19_chapter_persistent_tasks.html">Persistent Task Manager</a>
+(<code>task_create</code> / <code>task_list</code> tools) or the <a href="./12_chapter_subagent.html">Subagents</a>
+<code>spawn_subagent</code> spawn tool.</p>
+<hr />
+<h2 id="1-a-task-is-a-turn-of-the-agent-loop">1. A Task Is a Turn of the
+Agent Loop</h2>
+<p>In Tact, a <strong>task</strong> is the work performed in one
+iteration of <code>Agent::agent_loop</code>
+(<code>crates/tact/src/agent/mod.rs</code>):</p>
+<pre class="text"><code>┌─────────────┐    LLM call    ┌─────────────────────┐
+│ User prompt │ ─────────────► │ assistant response  │
+└─────────────┘                │ (text + ToolUses)   │
+                               └─────────────────────┘
+                                         │
+                                         ▼
+                               ┌─────────────────────┐
+│                              │ execute_tool_call() │
+│                              └─────────────────────┘
+│                                         │
+│          ┌──────────────────────────────┼──────────────────────────────┐
+│          ▼                              ▼                              ▼
+│    pre-flight                    parallel execution              post-processing
+│    (sequential)                  (waves)                          (sequential)
+│          │                              │                              │
+│          ▼                              ▼                              ▼
+│   permission + hooks            tool calls run                results + hooks
+│                                 concurrently where safe       appended to context
+└────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+                               next LLM call</code></pre>
+<p>The loop keeps running until the model stops, asks the user, or hits
+a completion condition.</p>
+<hr />
+<h2 id="2-the-three-phase-pipeline">2. The Three-Phase Pipeline</h2>
+<p><code>Agent::execute_tool_call</code>
+(<code>crates/tact/src/agent/tool_dispatch.rs</code>) splits every turn
+into three phases.</p>
+<h3 id="phase-1--pre-flight-sequential">Phase 1 — Pre-flight
+(sequential)</h3>
+<p>Run once per tool, in the order the model emitted them:</p>
+<ol type="1">
+<li>Emit <code>StepAdded</code> / <code>StepStarted</code> UI
+events.</li>
+<li>Run the <code>PreToolUse</code> hook.</li>
+<li>Check permissions via <code>PermissionManager</code>.</li>
+<li>If permission is denied, produce a blocked result without running
+the tool.</li>
+</ol>
+<p>This phase must stay sequential because permission prompts can be
+interactive and hooks need <code>&amp;mut self</code>.</p>
+<h3 id="phase-2--execution-parallel-by-wave">Phase 2 — Execution
+(parallel by wave)</h3>
+<p>All tools that cleared pre-flight are handed to the scheduler in
+<code>crates/tact/src/agent/tool_schedule.rs</code>:</p>
+<ul>
+<li>Independent reads run together.</li>
+<li>Conflicting reads/writes or writes/writes are serialized.</li>
+<li><code>bash</code>, MCP, subagents, and unknown tools are
+<strong>barriers</strong> — they run alone.</li>
+</ul>
+<p>The scheduler assigns each tool a <strong>wave number</strong>:</p>
+<pre class="text"><code>wave[i] = max( wave[j] + 1  for every j &lt; i that conflicts with i ), else 0</code></pre>
+<p>Waves execute in order; tools inside the same wave run
+concurrently.</p>
+<h3 id="phase-3--post-processing-sequential">Phase 3 — Post-processing
+(sequential)</h3>
+<p>After all waves finish:</p>
+<ol type="1">
+<li>Run the <code>PostToolUse</code> hook.</li>
+<li>Emit <code>StepFinished</code> UI events in the model&#39;s original
+order.</li>
+<li>Update bookkeeping: recent files, stats, compaction triggers.</li>
+<li>Append tool results to <code>runtime.context</code>.</li>
+</ol>
+<hr />
+<h2 id="3-conflict-model-and-safety">3. Conflict Model and Safety</h2>
+<p><code>tool_schedule.rs</code> decides which tools can overlap. Each
+known tool declares the workspace resources it touches:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Resource</th>
+<th>Mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read_file</code></td>
+<td><code>input.path</code></td>
+<td>read</td>
+</tr>
+<tr>
+<td><code>write_file</code>, <code>edit_file</code></td>
+<td><code>input.path</code></td>
+<td>write</td>
+</tr>
+<tr>
+<td><code>task_create</code>, <code>task_update</code>,
+<code>task_get</code>, <code>task_list</code></td>
+<td><code>__tact_tasks__</code></td>
+<td>write (serialize with each other)</td>
+</tr>
+<tr>
+<td><code>sleep</code></td>
+<td>—</td>
+<td>independent</td>
+</tr>
+<tr>
+<td><code>bash</code>, <code>apply_patch</code>, subagent, MCP,
+unknown</td>
+<td>—</td>
+<td>barrier</td>
+</tr>
+</tbody>
+</table>
+<p>Paths are normalised to absolute and rooted at <code>work_dir</code>.
+Two paths overlap if they are equal or one is an ancestor of the other,
+so a write to <code>src/foo.rs</code> conflicts with a search scoped to
+<code>src/</code>.</p>
+<h3 id="example">Example</h3>
+<p>Model returns, in order:</p>
+<ol type="1">
+<li><code>read A</code></li>
+<li><code>read B</code></li>
+<li><code>write A</code></li>
+<li><code>read C</code></li>
+<li><code>read A</code></li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Wave</th>
+<th>Tools</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>read A</code>, <code>read B</code>, <code>read C</code></td>
+<td>run together</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>write A</code></td>
+<td>waits for the first <code>read A</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>read A</code></td>
+<td>waits for the write</td>
+</tr>
+</tbody>
+</table>
+<p><code>read B</code> and <code>read C</code> are unaffected and stay
+in wave 0.</p>
+<h3 id="barrier-by-default">Barrier-by-default</h3>
+<p>Unknown tools are treated as barriers. Adding a new tool can never
+accidentally introduce unsafe parallelism; you must explicitly opt it in
+by updating <code>tool_resources</code> in
+<code>tool_schedule.rs</code>.</p>
+<hr />
+<h2 id="4-permissions-and-hooks">4. Permissions and Hooks</h2>
+<p>Before a tool enters scheduling, <code>PermissionManager</code>
+classifies its intent:</p>
+<ul>
+<li><strong>Read-only</strong>: generally allowed.</li>
+<li><strong>Write</strong>: asks in Default mode (unless allowlisted);
+auto-approved in Auto mode; denied in Plan mode.</li>
+<li><strong>High-risk</strong>: always asks (even if allowlisted);
+includes <code>spawn_subagent</code>, destructive tool names, and
+dangerous bash patterns.</li>
+</ul>
+<p>See <a href="./10_chapter_permission.html">Permission Model</a> for
+classification rules, modes, and the TUI approval flow.</p>
+<p>Hooks (<code>PreToolUse</code>, <code>PostToolUse</code>) live in
+<code>crates/tact/src/hook/mod.rs</code> and can inspect or modify tool
+input/output. They run sequentially around the parallel core. See <a href="./09_chapter_hook.html">Agent Lifecycle Hooks</a> for the full
+design.</p>
+<hr />
+<h2 id="5-what-goes-back-to-the-llm">5. What Goes Back to the LLM</h2>
+<p>Each finished tool produces a <code>ToolResult</code> with JSON
+content. These are appended to <code>runtime.context</code> as
+<code>Role::User</code> messages, preserving the model&#39;s original
+tool-call order. The agent loop then sends the updated context to the
+LLM for the next turn.</p>
+<hr />
+<h2 id="6-observability-tool-schedule-summary">6. Observability: Tool
+Schedule Summary</h2>
+<p>After execution, <code>persist_tool_schedule</code> records a
+<code>ToolScheduleSummary</code> into the same <code>token_usages</code>
+row as the LLM call. The row is matched by <code>last_message_id</code>
+captured at <strong><code>persist_llm_call</code> time</strong>
+(<code>llm_call_last_message_id</code> — the last message sent to the
+model, before the assistant response row is appended).</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;tool_count&quot;</span><span class="fu">:</span> <span class="dv">5</span><span class="fu">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;wave_count&quot;</span><span class="fu">:</span> <span class="dv">3</span><span class="fu">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;max_parallelism&quot;</span><span class="fu">:</span> <span class="dv">3</span><span class="fu">,</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;waves&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;wave&quot;</span><span class="fu">:</span> <span class="dv">0</span><span class="fu">,</span> <span class="dt">&quot;tools&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;read_file&quot;</span><span class="ot">,</span> <span class="st">&quot;read_file&quot;</span><span class="ot">,</span> <span class="st">&quot;read_file&quot;</span><span class="ot">]</span><span class="fu">,</span> <span class="dt">&quot;barrier&quot;</span><span class="fu">:</span> <span class="kw">false</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;wave&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span> <span class="dt">&quot;tools&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;write_file&quot;</span><span class="ot">]</span><span class="fu">,</span> <span class="dt">&quot;barrier&quot;</span><span class="fu">:</span> <span class="kw">false</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;wave&quot;</span><span class="fu">:</span> <span class="dv">2</span><span class="fu">,</span> <span class="dt">&quot;tools&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;read_file&quot;</span><span class="ot">]</span><span class="fu">,</span> <span class="dt">&quot;barrier&quot;</span><span class="fu">:</span> <span class="kw">false</span> <span class="fu">}</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>This links scheduling strategy to token cost for later analysis.</p>
+<hr />
+<h2 id="7-customizing-scheduling">7. Customizing Scheduling</h2>
+<p>To make a new native tool parallel-safe:</p>
+<ol type="1">
+<li>Add its resource pattern to <code>tool_resources()</code> in
+<code>crates/tact/src/agent/tool_schedule.rs</code>.</li>
+<li>Return the correct <code>ToolResourceMode</code> (<code>Read</code>,
+<code>Write</code>, or <code>Independent</code>).</li>
+<li>Avoid side effects outside the declared resources.</li>
+</ol>
+<p>If a tool has global side effects (shell commands, subagents, MCP
+state), leave it as a barrier.</p>
+<hr />
+<h2 id="8-code-map">8. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>Agent::agent_loop</code>, <code>stream_message</code>, session
+helpers</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>execute_tool_call</code>, three-phase orchestration</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
+<td>Resource model, conflict detection, wave scheduler,
+<code>ToolScheduleSummary</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td>Intent classification and permission decisions</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/hook/mod.rs</code></td>
+<td><code>PreToolUse</code> / <code>PostToolUse</code> hooks</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolRouter</code>, tool registration, native tool
+dispatch</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/</code></td>
+<td><code>record_tool_schedule</code> — persists schedule summary</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./10_chapter_permission.html">Permission Model</a></li>
+<li><a href="./07_chapter_tool.html">Tool System</a> —
+<code>ToolRouter</code> and native tool dispatch</li>
+<li><a href="./05_chapter_compact.html">Context Compaction</a> —
+<code>persist_large_output</code> and manual <code>compact</code>
+detection in dispatch</li>
+<li><a href="./13_chapter_background.html">Background Tasks</a> — async
+counterpart to synchronous <code>bash</code> steps</li>
+<li><a href="./12_chapter_subagent.html">Subagents</a> — nested
+<code>spawn_subagent</code> tool and scheduling barrier</li>
+<li><a href="../docs/parallel_tool_execution.html">Parallel Tool
+Execution</a></li>
+<li><a href="../docs/tool_rendering.html">Tool Rendering</a></li>
+<li><a href="../docs/token_usage_schema.html">Token Usage
+Schema</a></li>
+</ul>
+</body>
+</html>

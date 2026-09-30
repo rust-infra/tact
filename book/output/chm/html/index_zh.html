@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="agent-开发教程中文">Agent 开发教程（中文）</h1>
+<blockquote>
+<p>语言：<a href="./index_zh.html">中文</a> · <a href="./index.html">English</a></p>
+</blockquote>
+<p>本目录收集 Tact 及相关 agent
+运行时的设计说明与动手教程。英文为权威全文；中文章节与英文结构对齐，便于双开对照。</p>
+<hr />
+<h2 id="中文命名约定">中文命名约定</h2>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>英文（权威）</th>
+<th>中文</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>首页</td>
+<td><code>index.md</code></td>
+<td><code>index_zh.md</code></td>
+</tr>
+<tr>
+<td>章节</td>
+<td><code>NN_chapter_&lt;slug&gt;.md</code></td>
+<td><code>NN_chapter_&lt;slug&gt;_zh.md</code></td>
+</tr>
+</tbody>
+</table>
+<p>示例：<code>05_chapter_compact.md</code> ↔︎
+<code>05_chapter_compact_zh.md</code>。</p>
+<ul>
+<li>章内顶部有语言切换链接。</li>
+<li>CHM / HTML 构建自动收录所有 <code>*_zh.md</code>；目录见
+<code>scripts/build-chm.sh</code>。</li>
+<li>视频流水线：<code>./book/scripts/generate.sh &lt;slug&gt;_zh --all</code>（如
+<code>compact_zh</code>）。</li>
+</ul>
+<hr />
+<h2 id="目录">目录</h2>
+<p>章节顺序跟随 <strong><code>Agent::agent_loop</code>
+执行路径</strong>：会话 → prompt 输入 → 压缩 → LLM 恢复 → 工具管线 →
+领域工具 → 旁路系统。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>章节</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><a href="./01_chapter_store_zh.html">存储与持久化</a></td>
+<td><code>StoreRoot</code> / JSON 文件存储、SQLite 会话库、领域消费者与
+agent 持久化挂钩</td>
+</tr>
+<tr>
+<td>2</td>
+<td><a href="./02_chapter_skill_zh.html">Skill 注册表</a></td>
+<td><code>SKILL.md</code> 多根发现、prompt
+摘要、<code>load_skill</code>、TUI
+slash（<code>$ARGUMENTS</code>）、<code>&lt;skill&gt;</code> 标签</td>
+</tr>
+<tr>
+<td>3</td>
+<td><a href="./03_chapter_memory_zh.html">持久记忆</a></td>
+<td><code>.tact/memory/</code> Markdown
+记忆、类型、系统提示注入、<code>save_memory</code>、<code>MEMORY.md</code>
+索引</td>
+</tr>
+<tr>
+<td>4</td>
+<td><a href="./04_chapter_prompt_zh.html">系统提示</a></td>
+<td>从 role / skills / guidelines / memory /
+动态上下文组装系统提示，以及跨回合的缓存友好性</td>
+</tr>
+<tr>
+<td>5</td>
+<td><a href="./05_chapter_compact_zh.html">上下文压缩</a></td>
+<td><code>micro_compact</code> stub、<code>compact_history</code>
+摘要、transcript / 大输出落盘</td>
+</tr>
+<tr>
+<td>6</td>
+<td><a href="./06_chapter_recovery_zh.html">错误恢复</a></td>
+<td><code>RecoveryState</code>、传输退避重试、prompt-too-long
+压缩、输出截断续写</td>
+</tr>
+<tr>
+<td>7</td>
+<td><a href="./07_chapter_tool_zh.html">工具系统</a></td>
+<td><code>Tool</code>
+trait、<code>ToolRouter</code>、<code>registry.rs</code>、<code>ToolContext</code>、路径安全、<code>#[tool]</code>
+宏</td>
+</tr>
+<tr>
+<td>8</td>
+<td><a href="./08_chapter_mcp_zh.html">MCP 协议与集成</a></td>
+<td>MCP 基础、协议流程、Tact 中的配置 / 握手 / 工具调用 / 动态更新 /
+优雅关闭</td>
+</tr>
+<tr>
+<td>9</td>
+<td><a href="./09_chapter_hook_zh.html">Agent 生命周期 Hooks</a></td>
+<td>PreToolUse / PostToolUse、<code>HookControl</code>、注册
+API、在工具管线中的位置</td>
+</tr>
+<tr>
+<td>10</td>
+<td><a href="./10_chapter_permission_zh.html">权限模型</a></td>
+<td>能力风险分级、权限模式、白名单、TUI 审批流、shell 高风险检测</td>
+</tr>
+<tr>
+<td>11</td>
+<td><a href="./11_chapter_task_zh.html">任务与工具调度</a></td>
+<td><strong>工具</strong>并行调度（waves/barriers）— 非 <a href="./19_chapter_persistent_tasks_zh.html">Ch 19 持久任务</a></td>
+</tr>
+<tr>
+<td>12</td>
+<td><a href="./12_chapter_subagent_zh.html">子 Agent</a></td>
+<td><code>spawn_subagent</code> 工具：嵌套
+<code>agent_loop</code>、受限工具集、静态
+prompt、权限继承、摘要返回</td>
+</tr>
+<tr>
+<td>13</td>
+<td><a href="./13_chapter_background_zh.html">后台任务</a></td>
+<td><code>background_run</code> / <code>check_background</code>、tokio
+spawn、超时、启动修复</td>
+</tr>
+<tr>
+<td>14</td>
+<td><a href="./14_chapter_team_zh.html">团队协作</a></td>
+<td><code>.tact/team/</code> 队友名册、JSONL 收件箱、广播、计划审批 /
+关机协议</td>
+</tr>
+<tr>
+<td>15</td>
+<td><a href="./15_chapter_worktree_zh.html">Worktree 泳道</a></td>
+<td>隔离 <code>git worktree</code>：<code>create</code> /
+<code>list</code> / <code>status</code> / <code>run</code> /
+<code>events</code>、索引与审计日志</td>
+</tr>
+<tr>
+<td>17</td>
+<td><a href="./17_chapter_notify_zh.html">桌面通知</a></td>
+<td>macOS 原生通知（任务完成 / 步骤失败）、配置开关、平台缺口</td>
+</tr>
+<tr>
+<td>18</td>
+<td><a href="./18_chapter_agent_loop_zh.html">Agent 主循环</a></td>
+<td>收束章：<code>agent_loop</code>
+回合、流式、<code>cancel_flag</code>、<code>AgentUpdate</code>、TUI
+<code>TaskComplete</code></td>
+</tr>
+<tr>
+<td>19</td>
+<td><a href="./19_chapter_persistent_tasks_zh.html">持久任务管理器</a></td>
+<td><code>TaskManager</code>、<code>task_create</code> /
+<code>get</code> / <code>list</code> /
+<code>update</code>、<code>.tact/tasks/</code> 依赖</td>
+</tr>
+<tr>
+<td>20</td>
+<td><a href="./20_chapter_hallucination_zh.html">Agent
+循环中的幻觉</a></td>
+<td>LLM
+编造文件、摘要和工具结果；压缩摘要编造案例；截断占位符引发的内容编造；缓解策略</td>
+</tr>
+<tr>
+<td>21</td>
+<td><a href="./21_chapter_config_zh.html">配置</a></td>
+<td>TOML/CLI 合并、<code>ResolvedConfig</code>、<code>init()</code> →
+<code>tact_llm::init_provider</code></td>
+</tr>
+<tr>
+<td>22</td>
+<td><a href="./22_chapter_llm_zh.html">LLM Providers</a></td>
+<td><code>tact_llm</code>
+适配器、流式、thinking、<code>user_id</code>、余额查询</td>
+</tr>
+<tr>
+<td>23</td>
+<td><a href="./23_chapter_tui_zh.html">终端 UI</a></td>
+<td><code>tui</code> crate、<code>AgentUpdate</code> /
+<code>UserCommand</code> 通道、<code>tact-ui</code> 接线</td>
+</tr>
+<tr>
+<td>24</td>
+<td><a href="./24_chapter_testing_zh.html">测试策略</a></td>
+<td>Mock LLM、tact-ui driver、TUI TestBackend、CI</td>
+</tr>
+<tr>
+<td>25</td>
+<td><a href="./25_chapter_protocol_zh.html">Agent–TUI 协议</a></td>
+<td><code>tact_protocol</code>
+消息类型、计划步骤生命周期、任务级状态迁移</td>
+</tr>
+<tr>
+<td>26</td>
+<td><a href="./26_chapter_issue_zh.html">工程问题与优化日志</a></td>
+<td>已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针）</td>
+</tr>
+</tbody>
+</table>
+<p>英文目录与架构总览见 <a href="./index.html">index.md</a>。</p>
+<hr />
+<h2 id="总览架构">总览架构</h2>
+<pre class="mermaid"><code>graph TB
+    subgraph UI
+        TUI[tact-ui TUI]
+    end
+
+    subgraph Runtime[&quot;tact runtime&quot;]
+        Agent[Agent / agent_loop]
+        Prompt[System Prompt]
+        Dispatch[Tool Dispatch]
+        Permissions[Permission Manager]
+        Hooks[Pre/Post Tool Hooks]
+    end
+
+    subgraph Tools
+        Native[Native Tools]
+        MCP[MCP ToolRouter]
+    end
+
+    subgraph Providers
+        LLM[tact_llm → LLM APIs]
+    end
+
+    subgraph Store
+        SQLite[(SQLite Session Store)]
+        Files[(.tact/ Store)]
+    end
+
+    MCPSrv[MCP Servers]
+
+    TUI --&gt;|user input| Agent
+    Agent --&gt;|updates| TUI
+    Agent --&gt; Prompt
+    Agent --&gt;|stream| LLM
+    Agent --&gt; Dispatch
+    Dispatch --&gt; Hooks
+    Dispatch --&gt; Permissions
+    Dispatch --&gt; Native
+    Dispatch --&gt; MCP
+    MCP --&gt; MCPSrv
+    Agent --&gt;|messages &amp; tokens| SQLite
+    Agent --&gt;|skills, memory, tasks| Files</code></pre>
+<hr />
+<h2 id="如何阅读">如何阅读</h2>
+<ul>
+<li><strong>优先读 <code>_zh</code>
+稿</strong>；常量、代码地图以中英对齐为准。</li>
+<li><strong>运行时顺序</strong>：第 1–11 章跟随 <code>agent_loop</code>
+一回合；12–15 为工具族；<strong>Ch 18</strong>
+收束主循环；<strong>19</strong> 深挖 TaskManager；<strong>20</strong>
+幻觉模式；<strong>21–22</strong> 为启动与 UI；<strong>24</strong>
+测试；<strong>25</strong> 协议状态机；<strong>26</strong> 为工程优化 /
+bugfix日志（有行为变更时按 <code>AGENTS.md</code> 追加）。</li>
+<li><strong>压缩与恢复</strong>：<a href="./05_chapter_compact_zh.html">上下文压缩</a>、<a href="./06_chapter_recovery_zh.html">错误恢复</a>。</li>
+</ul>
+<hr />
+<h2 id="相关资源">相关资源</h2>
+<ul>
+<li>英文全书入口：<a href="./index.html">index.md</a></li>
+<li>思维导图：<a href="./mindmap.html">mindmap.html</a></li>
+<li>压缩调参：<a href="../docs/compaction.html">docs/compaction.md</a></li>
+<li>CHM / 视频流水线：<a href="./scripts/README.html">scripts/README.md</a></li>
+<li>项目架构：<a href="../ARCHITECTURE.html">ARCHITECTURE.md</a></li>
+</ul>
+</body>
+</html>

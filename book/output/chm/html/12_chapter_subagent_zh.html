@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="子-agentsubagents">子 Agent（Subagents）</h1>
+<blockquote>
+<p>语言：<a href="./12_chapter_subagent_zh.html">中文</a> · <a href="./12_chapter_subagent.html">English</a></p>
+</blockquote>
+<p>本章说明 Tact 如何通过 <code>spawn_subagent</code> 工具 spawn
+<strong>隔离的工作
+agent</strong>：全新对话循环、受限工具集、共享文件系统与
+<code>ToolContext</code> 服务，但无父级历史、hook 或 MCP 工具。每个子
+agent 有自己的 SQLite session 行，经 <code>sessions.ref_id</code>
+挂到父会话。</p>
+<p>实现：<code>crates/tact/src/tool/subagent.rs</code>。工具集装配：<code>subagent_toolset()</code>
+在 <code>crates/tact/src/tool/registry.rs</code>。</p>
+<p>勿与 <a href="./14_chapter_team_zh.html">团队协调</a> 混淆 ——
+<code>spawn_teammate</code> 仅写入 roster/inbox
+记录；<code>spawn_subagent</code> 实际运行嵌套的
+<code>Agent::agent_loop</code>。</p>
+<hr />
+<h2 id="1-子-agent-是什么">1. 子 Agent 是什么</h2>
+<table>
+<thead>
+<tr>
+<th>属性</th>
+<th>主 Agent</th>
+<th>子 Agent（<code>spawn_subagent</code> 工具）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>入口</td>
+<td>TUI / headless <code>agent_loop</code></td>
+<td>父级在工具执行期间调用 <code>spawn_subagent</code></td>
+</tr>
+<tr>
+<td>对话历史</td>
+<td>完整会话 context</td>
+<td>仅单条 user prompt（无父级消息）</td>
+</tr>
+<tr>
+<td>System prompt</td>
+<td>动态 Tera 模板（skills、memory、CLAUDE.md）</td>
+<td>固定静态字符串</td>
+</tr>
+<tr>
+<td>Native 工具</td>
+<td><code>toolset()</code>（约 40 个）</td>
+<td><code>subagent_toolset()</code>（6 个）</td>
+</tr>
+<tr>
+<td>MCP 工具</td>
+<td>自 config 加载</td>
+<td><strong>无</strong>（<code>MCPToolRouter::new()</code>）</td>
+</tr>
+<tr>
+<td>Hook</td>
+<td>父级已注册 hook</td>
+<td>空 hook 列表</td>
+</tr>
+<tr>
+<td>Session SQLite</td>
+<td>有（在 <code>tui.rs</code> 接线时）</td>
+<td><strong>有</strong> — 新建子 session；<code>sessions.ref_id</code> =
+父 id（父无 session 时为 <code>&#39;&#39;</code>）</td>
+</tr>
+<tr>
+<td>Permission manager</td>
+<td>父级模式</td>
+<td>新 manager，始终 <code>PermissionMode::Default</code></td>
+</tr>
+<tr>
+<td>TUI 通道</td>
+<td>父级 <code>ui_tx</code></td>
+<td><strong>打标</strong> — 流式/步骤进 Subagent
+sticky；<code>RequestSelect*</code> 透传</td>
+</tr>
+<tr>
+<td>Cancel 标志</td>
+<td>主 runtime 共享</td>
+<td><strong>独立</strong> — 用户对父级 Cancel 不会停止进行中的子
+agent</td>
+</tr>
+<tr>
+<td>返回父级</td>
+<td>N/A</td>
+<td>最后一条 assistant 文本块作为 tool result 字符串</td>
+</tr>
+</tbody>
+</table>
+<p>子 agent 共享 <code>ToolContext</code>（克隆）：相同
+<code>work_dir</code>，以及 background/team/worktree/memory/skills 等
+manager。这些服务在内存中存在，但多数不可达，因为暴露它们的工具未在子
+agent router 上注册。</p>
+<hr />
+<h2 id="2-spawn_subagent-工具">2. <code>spawn_subagent</code> 工具</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>derive<span class="at">(</span><span class="bu">Debug</span><span class="op">,</span> Deserialize<span class="op">,</span> JsonSchema<span class="at">)]</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> SubagentInput <span class="op">{</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> prompt<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> description<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>tool<span class="at">(</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    name <span class="op">=</span> <span class="st">&quot;spawn_subagent&quot;</span><span class="op">,</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    description <span class="op">=</span> <span class="st">&quot;Spawn a subagent with fresh context. It shares the filesystem but not conversation history.&quot;</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="at">)]</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">async</span> <span class="kw">fn</span> spawn_subagent(ctx<span class="op">:</span> ToolContext<span class="op">,</span> input<span class="op">:</span> SubagentInput) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td>成为子 agent 的唯一 user 消息</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>仅 schema 提示给模型；<strong>handler 不读取</strong></td>
+</tr>
+</tbody>
+</table>
+<p>仅主 agent 的 <code>toolset()</code> 注册
+<code>SpawnSubagentTool</code>。子 agent 不能 spawn 嵌套子 agent ——
+<code>subagent_toolset()</code> 中无 <code>spawn_subagent</code>。</p>
+<hr />
+<h2 id="3-spawn-生命周期">3. Spawn 生命周期</h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant Parent as Main Agent
+    participant Task as task tool
+    participant Sub as Subagent
+    participant LLM as LLM API
+    participant Tools as subagent_toolset
+
+    Parent-&gt;&gt;Task: ToolUse(name=task, input)
+    Note over Parent,Task: PreToolUse + permission (High risk)
+    Task-&gt;&gt;Sub: Agent::new(static prompt, subagent_toolset, empty MCP)
+    Task-&gt;&gt;Sub: ensure_session_row(child_id, ref_id) + with_session
+    Task-&gt;&gt;Sub: with_ui_channel(tagged) if present
+    Task-&gt;&gt;Sub: agent_loop(Some(prompt))
+
+    loop until stop ≠ ToolUse
+        Sub-&gt;&gt;LLM: stream_message + 6 tool specs
+        LLM--&gt;&gt;Sub: assistant blocks
+        alt ToolUse
+            Sub-&gt;&gt;Tools: execute_tool_call (hooks empty, Default permissions)
+            Tools--&gt;&gt;Sub: ToolResult → context
+        else end_turn
+            Sub--&gt;&gt;Task: loop exits
+        end
+    end
+
+    Task-&gt;&gt;Task: extract last Assistant text
+    Task--&gt;&gt;Parent: Ok(summary) as ToolResult</code></pre>
+<p><strong>阻塞语义：</strong> <code>spawn_subagent</code> 为
+<code>async</code> 并 await 完整子 agent 循环。从父级视角它是一个 tool
+call，内部可能运行多轮 LLM。父级 <code>agent_loop</code> 在 summary
+字符串返回前暂停。</p>
+<p><strong>消息播种：</strong> handler 调用
+<code>agent_loop(Some(user_prompt))</code>，经 <code>push_message</code>
+写入并持久化到子 session。循环前 <code>spawn_subagent</code> 分配子
+session id，将 <code>ref_id</code> 设为父 session id（或
+<code>&#39;&#39;</code>），并调用 <code>with_session</code>。UI 使用打标
+<code>ui_tx</code>（<code>with_ui_channel</code> 同步
+<code>tool_context.ui_tx</code>，使 <code>ToolProgress</code>
+也被打标）。</p>
+<hr />
+<h2 id="4-受限工具集">4. 受限工具集</h2>
+<p><code>subagent_toolset()</code> 恰好注册五个工具：</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bash</code></td>
+<td>Shell 命令（受 <code>validate_shell_command</code> 约束）</td>
+</tr>
+<tr>
+<td><code>read_file</code></td>
+<td>读工作区文件</td>
+</tr>
+<tr>
+<td><code>write_file</code></td>
+<td>创建或覆盖文件</td>
+</tr>
+<tr>
+<td><code>edit_file</code></td>
+<td>精确字符串替换（first 或 all）</td>
+</tr>
+<tr>
+<td><code>sleep</code></td>
+<td>计时 / 轮询</td>
+</tr>
+</tbody>
+</table>
+<p>与主 agent 相比 notable <strong>省略</strong>：</p>
+<ul>
+<li>无
+<code>spawn_subagent</code>、<code>load_skill</code>、<code>save_memory</code>、<code>compact</code>、web
+工具、LSP、<code>apply_patch</code>、batch 工具</li>
+<li>无 team、worktree 或持久任务管理工具</li>
+<li>无 MCP 前缀工具</li>
+</ul>
+<p><code>subagent_toolset()</code> 上方模块注释仍写「四个工具」——上文
+<code>route()</code> 列表为准（单元测试
+<code>subagent_toolset_includes_core_file_tools</code> 亦强制）。</p>
+<hr />
+<h2 id="5-system-prompt-与-context">5. System Prompt 与 Context</h2>
+<p>子 agent 使用 <code>AgentSystemPrompt::Static</code>：</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> system_prompt <span class="op">=</span> <span class="pp">format!</span>(</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;You are a coding subagent at {}. Complete the given task, then summarize your findings.&quot;</span><span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    ctx<span class="op">.</span>work_dir<span class="op">.</span>display()</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>)<span class="op">;</span></span></code></pre></div>
+<p><code>build_system_prompt()</code> 每轮 verbatim 返回该字符串 —— 无
+skill 摘要、memory 注入、CLAUDE.md 或目录快照。主 agent 差异见 <a href="./04_chapter_prompt_zh.html">System Prompt</a>。</p>
+<p>压缩与恢复 <strong>仍</strong> 在子 agent 循环内运行（<a href="./05_chapter_compact_zh.html">上下文压缩</a>、<a href="./06_chapter_recovery_zh.html">错误恢复</a>）：<code>micro_compact</code>、<code>compact_history</code>、transport
+重试与 continuation 消息适用于子 agent 私有
+<code>runtime.context</code>。</p>
+<hr />
+<h2 id="6-权限与-ui">6. 权限与 UI</h2>
+<p><code>spawn_subagent</code> 在
+<code>PermissionManager::classify_risk</code> 中分类为
+<strong>High</strong> 风险 —— Default 模式始终触发 Ask，即使
+allowlist，因其将完整 shell 与文件系统访问委托给嵌套 agent。</p>
+<p>子 agent 构造 <strong>自己的</strong>
+<code>PermissionManager::try_new(PermissionMode::Default)?</code>。不继承父级
+Plan/Auto 模式或 allowlist。</p>
+<p>若父级有 TUI 通道，子 agent
+使用<strong>打标</strong>通道（<code>tagged_ui_channel</code>）：流式、步骤、思考与
+token 用量变为 <code>AgentUpdate::Subagent</code>，渲染在 sticky 的
+<strong>Subagent</strong> tab。<code>RequestSelect</code> /
+<code>RequestMultiSelect</code> 仍透传，权限弹窗走主 TUI。见 <a href="./10_chapter_permission_zh.html">权限模型</a> 与 <a href="./23_chapter_tui_zh.html">TUI</a>。</p>
+<hr />
+<h2 id="7-调度交互">7. 调度交互</h2>
+<p>在 <code>crates/tact/src/agent/tool_schedule.rs</code>
+中，<code>spawn_subagent</code> 落入默认
+<code>_ =&gt; ToolResources::barrier()</code>
+分支。<code>spawn_subagent</code> 调用 never 与同一 wave
+中任何其他工具并行 —— 见 <a href="./11_chapter_task_zh.html">任务与工具调度</a>。</p>
+<hr />
+<h2 id="8-返回值">8. 返回值</h2>
+<p><code>agent_loop</code> 完成后，handler 反向扫描
+<code>runtime.context</code> 找最后一条 <code>Role::Assistant</code>
+消息，经 <code>extract_text</code> 提取纯文本：</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> summary <span class="op">=</span> subagent</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>runtime</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>context</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>iter()</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>rev()</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>find(<span class="op">|</span>message<span class="op">|</span> <span class="pp">matches!</span>(message<span class="op">.</span>role<span class="op">,</span> <span class="pp">Role::</span>Assistant))</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>map(<span class="op">|</span>message<span class="op">|</span> extract_text(<span class="op">&amp;</span>message<span class="op">.</span>content))</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>filter(<span class="op">|</span>text<span class="op">|</span> <span class="op">!</span>text<span class="op">.</span>is_empty())</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>unwrap_or_else(<span class="op">||</span> <span class="st">&quot;(no summary)&quot;</span><span class="op">.</span>to_string())<span class="op">;</span></span></code></pre></div>
+<p>含义：</p>
+<ul>
+<li>Thinking 块与 tool-use 元数据被剥离；仅 text 块计数。</li>
+<li>若模型在 tool-use 轮结束而无最终文本回复，父级可能收到
+<code>(no summary)</code>。</li>
+<li>中间 assistant 推理不返回 —— 仅最后 assistant 文本快照。</li>
+</ul>
+<p>该字符串成为 <code>spawn_subagent</code> 工具的 JSON/text
+结果，作为普通 <code>ToolResult</code> 追加到 <strong>父级</strong>
+context。</p>
+<hr />
+<h2 id="9-子-agent-vs-teammate">9. 子 Agent vs Teammate</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>spawn_subagent</code>（子 agent）</th>
+<th><code>spawn_teammate</code>（team）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>运行 LLM 循环</td>
+<td>是，嵌套 <code>agent_loop</code></td>
+<td>否 — 仅 roster 条目</td>
+</tr>
+<tr>
+<td>隔离</td>
+<td>全新 context，6 个工具</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td>持久化</td>
+<td>独立 SQLite session（<code>ref_id</code>→父）</td>
+<td><code>.tact/team/</code> JSON</td>
+</tr>
+<tr>
+<td>用例</td>
+<td>委托聚焦的编码工作</td>
+<td>多 agent 协调协议</td>
+</tr>
+</tbody>
+</table>
+<p>见 <a href="./14_chapter_team_zh.html">团队协调</a>。</p>
+<hr />
+<h2 id="10-代码地图">10. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/tool/subagent.rs</code></td>
+<td><code>spawn_subagent</code> 工具 handler — spawn、循环、summary
+提取</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>SpawnSubagentTool</code> 实现</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>toolset()</code> 中的
+<code>SpawnSubagentTool</code>；<code>subagent_toolset()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>Agent::new</code>、<code>agent_loop</code>、<code>build_system_prompt</code>、<code>ensure_session</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td><code>spawn_subagent</code> → <code>CapabilityRisk::High</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
+<td><code>spawn_subagent</code> 作为调度 barrier</td>
+</tr>
+<tr>
+<td><code>ARCHITECTURE.md</code></td>
+<td>工具表中的一行摘要</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-当前缺口">11. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无嵌套 <code>spawn_subagent</code></td>
+<td>工具集设计如此，限制分解深度</td>
+</tr>
+<tr>
+<td>子 agent 无 MCP</td>
+<td>worker 内不可用外部工具</td>
+</tr>
+<tr>
+<td>无父级 hook</td>
+<td>PreToolUse / PostToolUse 策略不包裹子 agent 工具</td>
+</tr>
+<tr>
+<td>仅静态 prompt</td>
+<td>无 skills/memory/CLAUDE.md，除非父级复制进 <code>prompt</code></td>
+</tr>
+<tr>
+<td><code>description</code> 被忽略</td>
+<td>JSON 字段无运行时效果</td>
+</tr>
+<tr>
+<td>独立 cancel 标志</td>
+<td>父级 Cancel 可能无法中止长时间运行的子 agent</td>
+</tr>
+<tr>
+<td>列表隐藏子会话</td>
+<td><code>--list-sessions</code> / resume 只显示
+<code>ref_id = &#39;&#39;</code>；删父会级联删子</td>
+</tr>
+<tr>
+<td>Summary 启发式</td>
+<td>仅最后 assistant 文本；纯 tool 结尾返回
+<code>(no summary)</code></td>
+</tr>
+<tr>
+<td>模块注释过时</td>
+<td><code>subagent_toolset</code> 文档写四个工具；实际注册五个</td>
+</tr>
+<tr>
+<td>相同 LLM client</td>
+<td><code>get_llm_client()</code> — worker 无 model 覆盖</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="12-实战案例底部栏视觉优化">12. 实战案例：底部栏视觉优化</h2>
+<p><code>feat/web</code> 分支上的 3 任务 SDD
+会话。计划：<code>docs/superpowers/plans/2026-07-24-bottom-bar-polish.md</code>。
+数据：6 个子代理（3 实现 + 2 评审 + 1 修复），400 测试，5 个 commit
+推送。</p>
+<h3 id="121-任务依赖为什么串行">12.1 任务依赖——为什么串行</h3>
+<pre class="mermaid"><code>flowchart LR
+    T1[&quot;Task 1: 纯格式化函数 + i18n 清理&lt;br/&gt;产出: 6 个 icon 常量 + 5 个格式化函数&quot;] --&gt; T2
+    T2[&quot;Task 2: 重写 render_bottom_bar&lt;br/&gt;引用: T1 的 helper + Span + DropGroup&quot;] --&gt; T3
+    T3[&quot;Task 3: 文档 + Ch 26 日志&lt;br/&gt;反映: 最终代码状态&quot;]</code></pre>
+<p>三个任务都改 <code>crates/tui/src/render/bar.rs</code>。SDD
+禁止对共享文件并行 dispatch——控制器层面强制。</p>
+<h3 id="122-文件传递不走会话历史">12.2 文件传递（不走会话历史）</h3>
+<pre><code>.superworks/sdd/
+├── progress.md                          # 进度锚点（compaction 后存活）
+├── task-1-brief.md                      # 从计划提取的需求
+├── task-1-report.md                     # 实现者产出
+├── review-task-1.diff                   # 评审用 git diff
+├── review-task-1-v2.diff                # 修复后重新评审
+├── task-2-brief.md / task-2-report.md   # 同样模式
+├── ...
+└── final-review.diff                    # 全局评审用完整分支 diff</code></pre>
+<p>每个 dispatch prompt 只有 5 行——brief
+文件是<strong>唯一的需求来源</strong>：</p>
+<pre><code>┌── dispatch ─────────────────────────────────────────────────┐
+│ 实现 Task 1。                                               │
+│ 先读这个文件: .superworks/sdd/task-1-brief.md               │
+│ 工作目录: /Users/rg/Projects/tact, 分支 feat/web            │
+│ 验证: cargo check -p tact-tui; 然后 cargo test -p tact-ui   │
+│ 报告写入: .superworks/sdd/task-1-report.md                  │
+└─────────────────────────────────────────────────────────────┘</code></pre>
+<p><strong>brief
+文件里直接包含要写的代码</strong>——不是文字描述。实现者照抄、写测试、commit。没有上下文继承，没有历史污染：</p>
+<pre><code>.superworks/sdd/task-1-brief.md（缩略）
+├── Part A: i18n.rs — 从 struct + 中英文构造器删除 7 个字段
+├── Part B: bar.rs — 添加 6 个 icon 常量
+├── Part C: bar.rs — 添加 5 个纯格式化函数（代码块已提供）
+├── Part D: bar.rs — 添加 10 个单元测试（代码块已提供）
+└── Commit: &quot;feat(tui): add bottom-bar pure formatters ...&quot;</code></pre>
+<p><strong>report
+文件记录实际发生了什么</strong>——子代理退出后控制器读取：</p>
+<pre><code>.superworks/sdd/task-1-report.md（缩略）
+├── Status: DONE
+├── Commits: 3a8a186
+├── 测试结果: cargo check 失败（预期——T2 会修复 bar.rs）
+├── 变更: Part A 完成, Part B 完成, Part C 完成, Part D 完成
+└── 注意事项: WindowEntry 不存在 → 改用 UsageQuotaWindow</code></pre>
+<p>如果不走文件传递，每个子代理的代码和报告都会永久膨胀控制器的上下文。用文件传递，控制器只读
+SHA 和状态行——其余的都存在磁盘上。</p>
+<h3 id="123-评审循环每任务一个门禁">12.3 评审循环——每任务一个门禁</h3>
+<pre class="mermaid"><code>flowchart LR
+    I[&quot;实现者&quot;] --&gt;|DONE| C[&quot;控制器&quot;]
+    C --&gt;|&quot;git diff BASE..HEAD&quot;| D[&quot;task-N.diff&quot;]
+    C --&gt;|&quot;dispatch brief + report + diff&quot;| R[&quot;评审者&quot;]
+    R --&gt;|&quot;2 个 verdict&quot;| C
+    C --&gt;|&quot;Critical&quot;| F[&quot;修复者&quot;]
+    F --&gt;|&quot;修复 + amend&quot;| C
+    C --&gt;|&quot;重新 dispatch&quot;| R
+    R --&gt;|&quot;✅&quot;| C
+    C --&gt;|&quot;追加到 progress.md&quot;| N[&quot;下一个任务&quot;]</code></pre>
+<p>每个评审者产出两个 verdict，每个二值：</p>
+<table>
+<thead>
+<tr>
+<th>Verdict</th>
+<th>通过条件</th>
+<th>不通过 →</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Spec compliance</strong></td>
+<td>brief 所有要求满足。无多余功能 (YAGNI)。</td>
+<td>修复者 dispatch</td>
+</tr>
+<tr>
+<td><strong>Task quality</strong></td>
+<td>测试覆盖边界。非测试代码无 unwrap。无死 import。</td>
+<td>修复者 dispatch</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Severity 决定处理方式：</strong></p>
+<table>
+<thead>
+<tr>
+<th>等级</th>
+<th>含义</th>
+<th>行动</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Critical</td>
+<td>阻止正确性，逻辑 bug</td>
+<td>必须修复，必须重新评审</td>
+</tr>
+<tr>
+<td>Important</td>
+<td>可维护性风险，测试缺口</td>
+<td>建议修复</td>
+</tr>
+<tr>
+<td>Minor</td>
+<td>风格、命名</td>
+<td>记录在 ledger，终审时处理</td>
+</tr>
+</tbody>
+</table>
+<h3 id="124-task-1-评审发现critical">12.4 Task 1
+评审发现（Critical）</h3>
+<pre><code>format_quota_window_with_pct  期望值 &quot;75%&quot;
+                              实际值   &quot;25%&quot;
+usage_pct() = (limit - remaining) / limit * 100
+            = (200 - 150) / 200 * 100
+            = 25    ← 不是 75</code></pre>
+<p>Brief 指定了不存在的 <code>WindowEntry</code>。实现者正确适配到
+<code>UsageQuotaWindow</code>，但复制了 brief 里错误的期望值。修复：1
+行测试改动，<code>git commit --amend</code>，重新评审通过。</p>
+<p>如果没有这个门禁：测试在第一次 CI 运行失败 → 开发者标注 flaky →
+永远不被发现。</p>
+<h3 id="125-计划-现实适配">12.5 计划-现实适配</h3>
+<p>Plan 引用了 <code>FocusedPanel::Plan</code> 和
+<code>focus_plan</code> / <code>bottom_focus_log_plan</code> 等 i18n
+字段。实际代码没有 <code>Plan</code> 变体——之前的重构已删除。</p>
+<pre class="mermaid"><code>flowchart LR
+    P[&quot;Plan 文档: FocusedPanel::Plan 存在&quot;] --&gt;|过时| A
+    C[&quot;仓库: 只有 FocusedPanel::Log, plan.rs 已删除&quot;] --&gt;|现实| A
+    A[&quot;实现者适配: FocusedPanel::Log =&gt; \&quot;[Log]\&quot;&quot;]
+    A --&gt; R[&quot;评审者: ✅ 适配正确&quot;]</code></pre>
+<p>实现者不是机械代码生成器——他们阅读真实代码库，检测偏差，适配。控制器判断适配是否可接受。</p>
+<h3 id="126-全局评审分支级门禁">12.6 全局评审——分支级门禁</h3>
+<p>全分支
+diff（<code>git merge-base main HEAD</code>..<code>HEAD</code>）：<strong>5455
+行，37 个文件</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>发现</th>
+<th>等级</th>
+<th>行动</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>expect()</code> 锁——poison 时会 panic</td>
+<td>Important</td>
+<td>暂缓</td>
+</tr>
+<tr>
+<td><code>display_width()</code> 用 <code>chars().count()</code> 不是
+Unicode 宽度</td>
+<td>Important</td>
+<td>暂缓</td>
+</tr>
+<tr>
+<td>Row 1 丢弃顺序是 path→uptime，规格要求 uptime→path</td>
+<td>Important</td>
+<td><strong>立即修复</strong></td>
+</tr>
+</tbody>
+</table>
+<p>结论：<strong>Ready to merge</strong>。drop-order
+修复最可行；其余两个风险较低。</p>
+<h3 id="127-关键经验">12.7 关键经验</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>经验</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>串行是必须的——同 crate 依赖阻止并行</td>
+<td>3 个任务都改 <code>bar.rs</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Brief 文件是唯一来源——不是 prompt 文本</td>
+<td>Dispatch 5 行；brief 200 行代码</td>
+</tr>
+<tr>
+<td>3</td>
+<td>评审门禁抓到 CI 抓不到的 Critical bug</td>
+<td>75%→25% 测试会到达生产环境</td>
+</tr>
+<tr>
+<td>4</td>
+<td>BASE commit 必须是任务前的 SHA，不是 <code>HEAD~1</code></td>
+<td>多 commit 任务会被截断</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>.superworks/sdd/progress.md</code> 在 compaction 后存活</td>
+<td>compaction 后: <code>cat progress.md</code> + <code>git log</code> →
+继续</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>toolset</code> vs
+<code>subagent_toolset</code>、<code>ToolContext</code></li>
+<li><a href="./11_chapter_task_zh.html">任务与工具调度</a> — barrier
+语义</li>
+<li><a href="./10_chapter_permission_zh.html">权限模型</a> — 高风险
+<code>spawn_subagent</code>、继承 <code>ui_tx</code></li>
+<li><a href="./04_chapter_prompt_zh.html">System Prompt</a> — 主 agent
+动态 prompt</li>
+<li><a href="./02_chapter_skill_zh.html">Skill Registry</a> — 子 agent
+不可用 <code>load_skill</code></li>
+<li><a href="./14_chapter_team_zh.html">团队协调</a> — 仅 roster 的
+teammate</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> —
+工作区工具表</li>
+</ul>
+</body>
+</html>

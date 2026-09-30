@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="agent-生命周期钩子agent-lifecycle-hooks">Agent
+生命周期钩子（Agent Lifecycle Hooks）</h1>
+<blockquote>
+<p>语言：<a href="./09_chapter_hook_zh.html">中文</a> · <a href="./09_chapter_hook.html">English</a></p>
+</blockquote>
+<p>本章说明 Tact 如何在工具执行前后注入自定义逻辑：调用前检查或改写 tool
+输入，完成后改写输出，以及（通过注册 API）在会话开始前准备状态。</p>
+<p>Hooks 是 <strong>agent
+循环</strong>与<strong>工具调度器</strong>之间的扩展点。它们顺序执行，可通过返回
+<code>HookControl::Block</code> <strong>否决</strong>操作。</p>
+<hr />
+<h2 id="1-为什么需要-hooks">1. 为什么需要 Hooks</h2>
+<p>并非每种策略都适合写在 tool 实现或 <code>PermissionManager</code>
+里：</p>
+<ul>
+<li><strong>横切防护</strong> — 在任何 tool
+运行前拦截危险参数模式。</li>
+<li><strong>输入规范化</strong> —
+改写路径、注入默认值，或去掉模型常写错的字段。</li>
+<li><strong>输出整形</strong> — 截断、脱敏，或在结果进入 context
+前附加元数据。</li>
+<li><strong>集成</strong> — 发指标、审计日志或同步外部系统，而无需 fork
+每个 tool。</li>
+</ul>
+<p>Hooks 把这些关注点移出核心调度器，仍在流水线可预测的位置运行。</p>
+<hr />
+<h2 id="2-三种-hook-类型">2. 三种 Hook 类型</h2>
+<p>定义于 <code>crates/tact/src/hook/mod.rs</code>：</p>
+<table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>注册</th>
+<th>今天是否调用</th>
+<th>可否变更</th>
+<th>可否否决</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SessionStart</code></td>
+<td><code>Agent::session_start</code></td>
+<td><strong>否</strong> — 已注册但 <code>agent_loop</code> 尚未调用</td>
+<td>对 <code>LoopState</code>（<code>Agent</code>）只读</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>PreToolUse</code></td>
+<td><code>Agent::pre_tool</code></td>
+<td>是 — 权限检查之前，按 tool 顺序</td>
+<td><code>ToolUse</code> 输入（<code>name</code>、<code>input</code>
+JSON）</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>PostToolUse</code></td>
+<td><code>Agent::post_tool</code></td>
+<td>是 — 每个 tool 完成后，随结果流入</td>
+<td><code>ToolResult</code> content</td>
+<td>是</td>
+</tr>
+</tbody>
+</table>
+<p><code>LoopState</code> 是 <code>Agent</code> 的类型别名，因此 session
+hook 看到与循环相同的运行时（context、stats、tool router 等）。</p>
+<hr />
+<h2 id="3-控制流hookcontrol">3. 控制流：<code>HookControl</code></h2>
+<p>每个 hook 返回其一：</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> HookControl <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    Continue<span class="op">,</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    Block(<span class="dt">String</span>)<span class="op">,</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>结果</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Continue</code></td>
+<td>运行同类型下一个 hook，然后继续流水线。</td>
+</tr>
+<tr>
+<td><code>Block(reason)</code></td>
+<td>立即停止 hook 链；该 tool 步骤视为失败，原因为
+<code>reason</code>。</td>
+</tr>
+</tbody>
+</table>
+<p>对 <code>PreToolUse</code>，block
+会跳过执行与权限提示——模型仍会收到解释为何被拦的
+<code>ToolResult</code>。</p>
+<p>对 <code>PostToolUse</code>，block 会在结果写入 context
+前，用失败消息替换成功的 tool 输出。</p>
+<p>若 hook 返回 <code>Err(...)</code>，agent 视为
+block，附带通用失败消息（<code>PreToolUse hook failed: …</code> /
+<code>PostToolUse hook failed: …</code>）。</p>
+<hr />
+<h2 id="4-hooks-在轮次流水线中的位置">4. Hooks 在轮次流水线中的位置</h2>
+<p>Hooks 包裹 <a href="./11_chapter_task.html">任务与工具调度</a>（英文）所述的并行核心：</p>
+<pre class="text"><code>对 assistant 消息中每个 ToolUse（Phase 1 — 顺序）：
+  StepAdded / StepStarted
+  ──► PreToolUse hooks（顺序，可改 input 或 Block）
+  ──► PermissionManager
+  ──► 标记 tool 为 Run 或 Resolved（blocked/denied）
+
+Phase 2 — 并行波次（此处无 hooks）
+
+对每个完成的 tool（仍按完成顺序）：
+  ──► PostToolUse hooks（顺序，可改 content 或 Block）
+  ──► StepFinished UI 事件
+  ──► 追加 ToolResult 到 context（Phase 3）</code></pre>
+<p>要点：</p>
+<ol type="1">
+<li><strong>PreToolUse 在权限之前</strong> — hooks 可改写权限随后评估的
+input。</li>
+<li><strong>PreToolUse 严格有序</strong> — 一次一个
+tool，按模型发出顺序。</li>
+<li><strong>PostToolUse 按每个完成的 tool 运行</strong> — 波次中每个
+future resolve 时，而非整波 join 之后。Hooks 仍在 agent task
+上逐个完成顺序执行。</li>
+<li><strong>并行 tool 不共享 hook 状态</strong> — 每次调用有独立的
+<code>ToolUse</code> / <code>ToolResult</code> 副本。</li>
+</ol>
+<hr />
+<h2 id="5-核心类型">5. 核心类型</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> ToolUse <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> id<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> name<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> input<span class="op">:</span> <span class="pp">serde_json::</span>Value<span class="op">,</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> ToolResult <span class="op">{</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tool_use_id<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> content<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Hooks 以 trait object 存在 agent 上：</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> Hook <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    SessionStart(<span class="dt">Box</span><span class="op">&lt;</span><span class="kw">dyn</span> SessionStartFn<span class="op">&gt;</span>)<span class="op">,</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    PreToolUse(<span class="dt">Box</span><span class="op">&lt;</span><span class="kw">dyn</span> PreToolUseFn<span class="op">&gt;</span>)<span class="op">,</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    PostToolUse(<span class="dt">Box</span><span class="op">&lt;</span><span class="kw">dyn</span> PostToolUseFn<span class="op">&gt;</span>)<span class="op">,</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>可直接注册闭包——任何签名正确的 <code>Send + Sync</code>
+异步闭包都实现对应 trait。</p>
+<hr />
+<h2 id="6-注册-hooks">6. 注册 Hooks</h2>
+<p>在 <code>Agent</code>
+上（<code>crates/tact/src/agent/mod.rs</code>）：</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>agent<span class="op">.</span>pre_tool(<span class="op">|</span>agent<span class="op">,</span> tool_use<span class="op">|</span> <span class="op">{</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="dt">Box</span><span class="pp">::</span>pin(<span class="kw">async</span> <span class="kw">move</span> <span class="op">{</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> tool_use<span class="op">.</span>name <span class="op">==</span> <span class="st">&quot;bash&quot;</span> <span class="op">{</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>            <span class="kw">let</span> cmd <span class="op">=</span> tool_use<span class="op">.</span>input<span class="op">.</span>get(<span class="st">&quot;command&quot;</span>)<span class="op">.</span>and_then(<span class="op">|</span>v<span class="op">|</span> v<span class="op">.</span>as_str())<span class="op">.</span>unwrap_or(<span class="st">&quot;&quot;</span>)<span class="op">;</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> cmd<span class="op">.</span>contains(<span class="st">&quot;curl&quot;</span>) <span class="op">{</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="cn">Ok</span>(<span class="pp">HookControl::</span>Block(<span class="st">&quot;curl is disabled in this workspace&quot;</span><span class="op">.</span>into()))<span class="op">;</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Ok</span>(<span class="pp">HookControl::</span>Continue)</span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)</span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>agent<span class="op">.</span>post_tool(<span class="op">|</span>_agent<span class="op">,</span> tool_use<span class="op">,</span> tool_result<span class="op">|</span> <span class="op">{</span></span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a>    <span class="dt">Box</span><span class="pp">::</span>pin(<span class="kw">async</span> <span class="kw">move</span> <span class="op">{</span></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> tool_use<span class="op">.</span>name <span class="op">==</span> <span class="st">&quot;bash&quot;</span> <span class="op">&amp;&amp;</span> tool_result<span class="op">.</span>content<span class="op">.</span>len() <span class="op">&gt;</span> <span class="dv">50_000</span> <span class="op">{</span></span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a>            tool_result<span class="op">.</span>content<span class="op">.</span>truncate(<span class="dv">50_000</span>)<span class="op">;</span></span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>            tool_result<span class="op">.</span>content<span class="op">.</span>push_str(<span class="st">&quot;</span><span class="sc">\n</span><span class="st">… (truncated by hook)&quot;</span>)<span class="op">;</span></span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Ok</span>(<span class="pp">HookControl::</span>Continue)</span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)</span>
+<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a><span class="op">}</span>)<span class="op">;</span></span></code></pre></div>
+<p>Hooks 按注册顺序追加到
+<code>Agent.hooks</code>，每次调用按该顺序执行。</p>
+<p>同类型多个 hook 组合：全部须 <code>Continue</code>，除非某个
+<code>Block</code>（首个 block 生效）。</p>
+<hr />
+<h2 id="7-invoke_hooks-宏">7. <code>invoke_hooks!</code> 宏</h2>
+<p>定义于 <code>crates/tact/src/hook/mod.rs</code>，在 crate
+根导出：</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="pp">invoke_hooks!</span>(PreToolUse<span class="op">,</span> <span class="kw">self</span><span class="op">,</span> <span class="op">&amp;</span><span class="kw">mut</span> tool_use)</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="pp">invoke_hooks!</span>(PostToolUse<span class="op">,</span> <span class="kw">self</span><span class="op">,</span> <span class="op">&amp;</span>tool_use<span class="op">,</span> <span class="op">&amp;</span><span class="kw">mut</span> tool_result)</span></code></pre></div>
+<p>行为：</p>
+<ol type="1">
+<li>从 <code>HookControl::Continue</code> 开始。</li>
+<li>过滤 <code>self.hooks</code> 到请求的 <code>HookTypes</code>
+变体。</li>
+<li>按注册顺序 await 每个 hook。</li>
+<li>首个 <code>Block</code> 时停止并返回该控制值。</li>
+<li>用 <code>?</code> 传播错误。</li>
+</ol>
+<p>调用点在 <code>crates/tact/src/agent/tool_dispatch.rs</code> 的
+<code>Agent::execute_tool_call</code> 内。</p>
+<hr />
+<h2 id="8-pretooluse-详解">8. PreToolUse 详解</h2>
+<p><strong>时机：</strong> <code>execute_tool_call</code> 的 Phase
+1，每个 <code>ContentBlock::ToolUse</code> 一次。</p>
+<p><strong>相对其他预检工作的顺序：</strong></p>
+<pre class="text"><code>stats.tool_counts += 1
+cancel 检查
+StepAdded / StepStarted
+PreToolUse  ◄── hooks
+PermissionManager::check
+PreparedState::Run | Resolved(blocked message)</code></pre>
+<p><strong>变更 input：</strong> 因 <code>tool_use</code> 是
+<code>&amp;mut ToolUse</code>，hook 可在权限与执行看到之前改
+<code>input</code>。被调度的 JSON 与日志用的是变更后的版本。</p>
+<p><strong>Blocking：</strong> <code>Block</code> 时 agent 设
+<code>PreparedState::Resolved(msg)</code> — tool
+不会进入调度器。模型仍会收到匹配的 <code>ToolResult</code>
+以满足协议。</p>
+<hr />
+<h2 id="9-posttooluse-详解">9. PostToolUse 详解</h2>
+<p><strong>时机：</strong> 在 wave 执行循环内，原生或 MCP tool
+返回后、发出 <code>StepFinished</code> 之前。</p>
+<p><strong>典型用途：</strong></p>
+<ul>
+<li>从命令输出中脱敏 API key 或 token。</li>
+<li>为模型规范化错误字符串。</li>
+<li>附加结构化前缀（<code>[cached]</code>、<code>[retry 2/3]</code>
+等）。</li>
+</ul>
+<p><strong>成功后 block：</strong> 若 tool 返回
+<code>StepStatus::Success</code> 但 hook block，UI 与 context
+会看到失败步骤及 hook 原因。</p>
+<hr />
+<h2 id="10-sessionstart当前-api">10. SessionStart（当前 API）</h2>
+<p><code>Agent::session_start</code> 接受签名如下的 hooks：</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="bu">Fn</span>(<span class="op">&amp;</span>LoopState) <span class="op">-&gt;</span> Pin<span class="op">&lt;</span><span class="dt">Box</span><span class="op">&lt;</span><span class="kw">dyn</span> <span class="bu">Future</span><span class="op">&lt;</span>Output <span class="op">=</span> <span class="dt">Result</span><span class="op">&lt;</span>HookControl<span class="op">&gt;&gt;</span> <span class="op">+</span> <span class="bu">Send</span> <span class="op">+</span> <span class="ot">&#39;_</span><span class="op">&gt;&gt;</span></span></code></pre></div>
+<p>预期调用点是<strong>每个会话一次</strong>，在 <code>agent_loop</code>
+中第一次 LLM 请求之前（<code>ensure_session</code> 之后、主
+<code>loop</code> 体之前）。</p>
+<p>截至本文写作时，<strong><code>agent_loop</code> 尚未调用
+<code>invoke_hooks!(SessionStart, …)</code></strong>。今天可以注册
+session hooks，但要接上调用才会运行。PreToolUse 与 PostToolUse
+已完全生效。</p>
+<p>接上后，session hooks 适合一次性
+setup：预热缓存、校验工作区不变量或注入遥测 context。</p>
+<hr />
+<h2 id="11-设计约束">11. 设计约束</h2>
+<table>
+<thead>
+<tr>
+<th>约束</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hooks 在 agent task 上运行</td>
+<td>经 <code>LoopState</code> 间接持有
+<code>&amp;mut Agent</code>；工作宜短或在内部 spawn。</td>
+</tr>
+<tr>
+<td>并行波次内无 hooks</td>
+<td>tool 不可变借用 router 时，避免共享 agent 状态的数据竞争。</td>
+</tr>
+<tr>
+<td>首个 <code>Block</code> 生效</td>
+<td>可预测、易推理的否决语义。</td>
+</tr>
+<tr>
+<td>错误即步骤失败</td>
+<td>hook bug 表现为 tool 失败，而非静默 no-op。</td>
+</tr>
+<tr>
+<td>注册顺序 = 运行顺序</td>
+<td>堆叠多个插件时文档化 hook 优先级。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>不要</strong>在 hooks 里做权限 UI——用
+<code>PermissionManager</code> 与现有 <code>RequestSelect</code>
+流程。</p>
+<hr />
+<h2 id="12-代码地图">12. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/hook/mod.rs</code></td>
+<td>类型、trait、<code>Hook</code> 枚举、<code>invoke_hooks!</code>
+宏</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>pre_tool</code>、<code>post_tool</code>、<code>session_start</code>、<code>hooks_by_type</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>execute_tool_call</code> 中的 PreToolUse / PostToolUse
+调用</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td>PreToolUse 之后运行；与 hooks 分离</td>
+</tr>
+<tr>
+<td><code>docs/state_machines.md</code></td>
+<td>Hook 控制枚举与流水线摘要</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./10_chapter_permission.html">权限模型</a> — 流水线中紧接
+PreToolUse 之后（英文）</li>
+<li><a href="./11_chapter_task.html">任务与工具调度</a> — hooks
+所包裹的三阶段 tool 流水线（英文）</li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> — 原生工具与
+dispatch</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — Hook Engine
+章节</li>
+<li><a href="../docs/tool_rendering.html">Tool Rendering</a> — TUI 中
+blocked/failed 步骤如何显示</li>
+<li><a href="../docs/parallel_tool_execution.html">Parallel Tool
+Execution</a> — hooks <strong>不</strong>运行的位置</li>
+</ul>
+</body>
+</html>

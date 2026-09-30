@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="skill-registry">Skill Registry</h1>
+<blockquote>
+<p>Language: <a href="./02_chapter_skill.html">English</a> · <a href="./02_chapter_skill_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains how Tact loads <strong>custom instruction
+files</strong> (skills) from disk: scanning <code>SKILL.md</code> files,
+exposing summaries in the system prompt, loading full bodies on demand
+through the <code>load_skill</code> tool, and invoking them from the TUI
+via slash commands.</p>
+<p>Skills are related to but distinct from <a href="./03_chapter_memory.html">Persistent Memory</a> — skills are
+author-written playbooks; memories are facts learned during
+conversations.</p>
+<hr />
+<h2 id="1-what-skills-are-for">1. What Skills Are For</h2>
+<p>A skill is a Markdown document that teaches the agent how to perform
+a specialized task (coding standards, deployment steps, domain
+workflows). Tact does <strong>not</strong> inject full skill bodies into
+every prompt — that would bloat context. Instead:</p>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>What the model sees</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Every turn (system prompt)</td>
+<td>Skill <strong>names and descriptions</strong> via
+<code>describe_available()</code></td>
+</tr>
+<tr>
+<td>On demand (<code>load_skill</code> tool)</td>
+<td>Full body wrapped in <code>&lt;skill&gt;</code> XML tags (tool
+result)</td>
+</tr>
+<tr>
+<td>TUI slash <code>/skill-name</code></td>
+<td>Same <code>&lt;skill&gt;</code> wrap injected into the <strong>user
+task</strong> on invoke (see <a href="#7-tui-slash-invocation">§7</a>
+and <a href="./23_chapter_tui.html">TUI</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>Summaries at startup; full content when the model calls
+<code>load_skill</code> or the user invokes a skill via slash. The
+Responses adapter adds a more restrictive skill-loading policy; see <a "href="./22_chapter_llm.html#62-responses-api">LLM Provider Layer</a>.</p>
+<hr />
+<h2 id="2-architecture-overview">2. Architecture Overview</h2>
+<pre class="mermaid"><code>graph TB
+    subgraph Disk[&quot;Skill roots&quot;]
+        T[&quot;workdir/.tact/skills/*/SKILL.md&quot;]
+        U[&quot;~/.tact/skills/*/SKILL.md&quot;]
+        A[&quot;~/.agents/skills/*/SKILL.md&quot;]
+        P[&quot;workdir/.claude/skills/*/SKILL.md&quot;]
+        C[&quot;agent.skill_dirs from config&quot;]
+        I[&quot;~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md&quot;]
+    end
+
+    subgraph Startup[&quot;Session startup&quot;]
+        TP[TactPath.skill_search_dirs]
+        SR[SkillRegistry.load_skills]
+        TP --&gt; SR
+        Disk --&gt; SR
+        I --&gt; SR
+    end
+
+    subgraph Prompt[&quot;Each task&quot;]
+        BSP[build_system_prompt]
+        DA[describe_available]
+        BSP --&gt; DA
+        DA --&gt; SP[&quot;# Available skills&quot;]
+    end
+
+    subgraph Tool[&quot;On demand&quot;]
+        LS[load_skill tool]
+        LFT[load_full_text]
+        LS --&gt; LFT
+        LFT --&gt; Ctx[&quot;Tool result → conversation&quot;]
+    end
+
+    subgraph Tui[&quot;TUI slash&quot;]
+        SE[SkillEntry list]
+        INV[handlers/skills.rs invoke]
+        SUB[submit_user_task]
+        SE --&gt; INV
+        INV --&gt; SUB
+        SUB --&gt; UserMsg[&quot;User message → agent loop&quot;]
+    end
+
+    SR --&gt; DA
+    SR --&gt; LFT
+    SR --&gt; SE</code></pre>
+<p>Discovery roots:</p>
+<table>
+<thead>
+<tr>
+<th>Root</th>
+<th>Path</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Project-local</td>
+<td><code>&lt;workdir&gt;/.tact/skills/</code></td>
+<td>Per-repo tact skills</td>
+</tr>
+<tr>
+<td>User</td>
+<td><code>~/.tact/skills/</code></td>
+<td>Personal skills across projects</td>
+</tr>
+<tr>
+<td>Global agents</td>
+<td><code>~/.agents/skills/</code></td>
+<td>Shared agents skills</td>
+</tr>
+<tr>
+<td>Project (Claude)</td>
+<td><code>&lt;workdir&gt;/.claude/skills/</code></td>
+<td>Team / repo skills (Claude-compatible)</td>
+</tr>
+<tr>
+<td>Config extras</td>
+<td><code>[agent].skill_dirs</code></td>
+<td>Extra roots from TOML (relative to workdir; <code>~</code> ok)</td>
+</tr>
+<tr>
+<td>Installed plugin</td>
+<td><code>~/.tact/plugins/cache/&lt;marketplace&gt;/&lt;plugin&gt;/&lt;revision&gt;/skills/</code></td>
+<td>Installed plugin playbooks</td>
+</tr>
+</tbody>
+</table>
+<p>Load order: project-local → user → global agents → Claude project →
+<strong>config <code>skill_dirs</code></strong> → installed plugins.
+<strong>Same standalone name: later wins</strong>. Installed plugin
+skills always use a <code>plugin:skill</code> name, so they cannot
+replace standalone skills.</p>
+<hr />
+<h2 id="3-data-model">3. Data Model</h2>
+<h3 id="skillmanifest">SkillManifest</h3>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> SkillManifest <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> name<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> description<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> path<span class="op">:</span> <span class="dt">PathBuf</span><span class="op">,</span>   <span class="co">// path to SKILL.md on disk</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="skilldocument">SkillDocument</h3>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> SkillDocument <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> manifest<span class="op">:</span> SkillManifest<span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> body<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>    <span class="co">// markdown after frontmatter</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="display-format-full-load">Display format (full load)</h3>
+<p>When rendered via <code>Display</code> or returned from
+<code>load_full_text</code>:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode xml"><code class="sourceCode xml"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>&lt;<span class="kw">skill</span> <span class="ot">name=</span><span class="st">&quot;demo&quot;</span>&gt;</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>Skill body content here.</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>&lt;/<span class="kw">skill</span>&gt;</span></code></pre></div>
+<p>TUI slash invoke uses the same wrap around the rendered body (after
+<code>$ARGUMENTS</code> handling).</p>
+<hr />
+<h2 id="4-skillmd-file-format">4. SKILL.md File Format</h2>
+<p>Optional YAML frontmatter (aligned with the <a href="https://agentskills.io/specification">Agent Skills</a> open format
+for <code>name</code> / <code>description</code>):</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="an">name:</span><span class="co"> rust-skills</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="an">description:</span><span class="co"> Comprehensive Rust coding guidelines</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="fu"># Rust guidelines</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>…</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Fallback</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>Parent directory name of <code>SKILL.md</code></td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td><code>&quot;No description&quot;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Files <strong>without</strong> frontmatter still load — the entire
+file becomes the body (after trim). CRLF line endings are
+normalized.</p>
+<p>The open Agent Skills spec does <strong>not</strong> define argument
+placeholders. Tact’s TUI matches Claude Code: bare
+<code>$ARGUMENTS</code> substitution at invoke time; if absent, append
+<code>ARGUMENTS: …</code> inside the skill body (see <a href="#7-tui-slash-invocation">§7</a>). Framing is client-side; the
+system prompt tells the model how to interpret slash-invoked
+<code>&lt;skill&gt;</code> / <code>ARGUMENTS:</code>.</p>
+<h3 id="discovery-rules">Discovery rules</h3>
+<p><code>SkillRegistry::load_skills()</code>:</p>
+<ul>
+<li>Walks each root in <code>skill_search_dirs()</code>
+(<code>WalkDir</code>)</li>
+<li>Matches files named exactly <code>SKILL.md</code></li>
+<li>Inserts into <code>HashMap&lt;String, SkillDocument&gt;</code> keyed
+by skill name</li>
+</ul>
+<p><code>get_skill_registry()</code> then loads validated installed
+plugin roots after the project roots, prefixing each local skill name
+with its plugin ID (<code>plugin:skill</code>).</p>
+<p>Duplicate standalone names: later roots <strong>overwrite</strong>
+earlier ones — no warning. Within a single root, later walk entries also
+overwrite. Plugin skills occupy their own <code>plugin:skill</code>
+namespace.</p>
+<hr />
+<h2 id="5-skillregistry-api">5. SkillRegistry API</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>new(skill_dirs)</code></td>
+<td>Empty registry over one or more roots</td>
+</tr>
+<tr>
+<td><code>load_skills()</code></td>
+<td>Scan all roots and populate map</td>
+</tr>
+<tr>
+<td><code>describe_available()</code></td>
+<td>Sorted <code>&quot;- name: description&quot;</code> list for system
+prompt</td>
+</tr>
+<tr>
+<td><code>load_full_text(name)</code></td>
+<td>Full <code>&lt;skill&gt;</code> block or error string listing
+available names</td>
+</tr>
+<tr>
+<td><code>skills()</code></td>
+<td>Read-only map access</td>
+</tr>
+</tbody>
+</table>
+<p>Convenience constructor:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> get_skill_registry(workdir<span class="op">:</span> <span class="kw">impl</span> <span class="bu">AsRef</span><span class="op">&lt;</span><span class="dt">Path</span><span class="op">&gt;</span>) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>SkillRegistry<span class="op">&gt;</span></span></code></pre></div>
+<p>Used in <code>interactive.rs</code> / <code>headless.rs</code> at
+startup; result wrapped in <code>Arc&lt;SkillRegistry&gt;</code> on
+<code>ToolContext</code>. Interactive mode also maps registry entries to
+<code>SkillEntry { name, description, body }</code> for the TUI.</p>
+<hr />
+<h2 id="6-integration-points">6. Integration Points</h2>
+<h3 id="system-prompt">System prompt</h3>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="op">.</span>skills_available(<span class="kw">self</span><span class="op">.</span>tool_context<span class="op">.</span>skill_registry<span class="op">.</span>describe_available())</span></code></pre></div>
+<p>Rendered under <code># Available skills</code> in the template. See
+<a href="./04_chapter_prompt.html">System Prompt</a> — this section is
+above the dynamic boundary (mostly stable unless skills are added on
+disk mid-session without reload).</p>
+<h3 id="load_skill-tool">load_skill tool</h3>
+<p><code>crates/tact/src/tool/load_skill.rs</code>:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>tool<span class="at">(</span>name <span class="op">=</span> <span class="st">&quot;load_skill&quot;</span><span class="op">,</span> description <span class="op">=</span> <span class="st">&quot;Load the full body of a named skill…&quot;</span><span class="at">)]</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">async</span> <span class="kw">fn</span> load_skill(ctx<span class="op">:</span> ToolContext<span class="op">,</span> input<span class="op">:</span> LoadSkillInput) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="cn">Ok</span>(ctx<span class="op">.</span>skill_registry<span class="op">.</span>load_full_text(<span class="op">&amp;</span>input<span class="op">.</span>name))</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Unknown skills return a plain-text error (not <code>Err</code>)
+listing available names — the model sees this as tool output.</p>
+<h3 id="toolcontext">ToolContext</h3>
+<div class="sourceCode" id="cb9"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> skill_registry<span class="op">:</span> Arc<span class="op">&lt;</span>Mutex<span class="op">&lt;</span>SkillRegistry<span class="op">&gt;&gt;,</span> <span class="co">// SharedSkillRegistry</span></span></code></pre></div>
+<p>Shared across main agent, sub-agents, and the interactive TUI (so
+<code>/skill-reload</code> stays consistent). Sub-agents can call
+<code>load_skill</code> if their toolset included it — today
+<code>subagent_toolset()</code> does <strong>not</strong> register
+<code>load_skill</code>; only the main agent&#39;s <code>toolset()</code>
+does.</p>
+<hr />
+<h2 id="7-tui-slash-invocation">7. TUI Slash Invocation</h2>
+<p>Discovered skills appear in the Insert-mode <code>/</code> popup and
+Normal-mode command palette as <code>/{name}</code> with the frontmatter
+description. Built-in slash commands <strong>win</strong> over a
+same-named skill (colliding skills are omitted from the skill list).</p>
+<table>
+<thead>
+<tr>
+<th>Skill kind</th>
+<th>Registry name</th>
+<th>Slash invocation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Standalone</td>
+<td><code>skill</code></td>
+<td><code>/skill</code></td>
+</tr>
+<tr>
+<td>Installed plugin</td>
+<td><code>plugin:skill</code></td>
+<td><code>/plugin:skill</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Slash popup Enter on a <strong>skill</strong></td>
+<td><strong>Invoke</strong> immediately</td>
+</tr>
+<tr>
+<td>Slash popup <strong>Tab</strong> on a skill</td>
+<td>Autocomplete to <code>/name </code> only</td>
+</tr>
+<tr>
+<td>Second Enter after Tab (with optional args)</td>
+<td><strong>Invoke</strong> via <code>handlers/skills.rs</code></td>
+</tr>
+<tr>
+<td>Palette Enter on a skill</td>
+<td>Switch to Insert with <code>/name </code> prefilled (+ undo
+checkpoint)</td>
+</tr>
+<tr>
+<td>Built-in Enter</td>
+<td>Execute immediately (<code>/quit</code>, <code>/cancel</code>, …);
+<code>/plugin</code> still autocompletes</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Invoke payload for the agent</strong></p>
+<ol type="1">
+<li>Log / history show the slash line the user typed (e.g.
+<code>/demo foo</code>).</li>
+<li>Agent task body is
+<code>&lt;skill name=&quot;…&quot;&gt;…&lt;/skill&gt;</code> (Claude
+Code–compatible):
+<ul>
+<li>If the skill body contains a bare <code>$ARGUMENTS</code> (not
+<code>$ARGUMENTS[N]</code>): substitute with the args string (may be
+empty).</li>
+<li>Else if args are non-empty: append
+<code>\n\nARGUMENTS: {args}</code> inside the skill body.</li>
+<li>Else: body as-is.</li>
+</ul></li>
+<li>The system prompt <code># Available skills</code> section explains
+slash-invoked <code>&lt;skill&gt;</code> / <code>ARGUMENTS:</code> so
+models do not confuse them with <code>load_skill</code> metadata.</li>
+<li>Shared <code>submit_user_task</code> drives Planning / user bubble /
+history the same as a normal Enter submit.</li>
+</ol>
+<p><code>/skill-reload</code> rescans skill roots into the
+<strong>shared</strong>
+<code>Arc&lt;Mutex&lt;SkillRegistry&gt;&gt;</code> used by both the TUI
+and the agent <code>ToolContext</code>, refreshes the TUI
+<code>SkillEntry</code> list, and bumps visual cache. The next task’s
+system prompt skill summary (and <code>load_skill</code>) therefore see
+the new registry without restarting.</p>
+<p>Successful
+<code>/plugin install &lt;plugin&gt;@&lt;marketplace&gt;</code> and
+<code>/plugin reload</code> operations perform the same shared refresh
+after their worker completes. Failed operations leave the registry
+unchanged. Plugin-provided names may contain <code>:</code> (for example
+<code>/superpowers:brainstorming</code>) and remain ordinary slash
+skills after refresh.</p>
+<p>Highlighting: <code>/skill-name</code> uses accent+bold; trailing
+args use theme foreground (<code>render/slash_style.rs</code>), in both
+the input box and user log lines. Names that collide with built-in
+commands are omitted from highlighting (same as the palette).</p>
+<p>Separate from the model calling <code>load_skill</code> mid-turn.</p>
+<hr />
+<h2 id="8-comparison-skills-vs-memory">8. Comparison: Skills vs
+Memory</h2>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Skills</th>
+<th>Memory</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Location</td>
+<td><code>.tact/skills/</code> + <code>~/.tact/skills/</code> +
+<code>.claude/skills/</code> (+ optional <code>skill_dirs</code>)</td>
+<td><code>&lt;workdir&gt;/.tact/memory/</code></td>
+</tr>
+<tr>
+<td>Format</td>
+<td><code>SKILL.md</code> + optional frontmatter</td>
+<td><code>{name}.md</code> + required frontmatter</td>
+</tr>
+<tr>
+<td>Prompt injection</td>
+<td>Summaries always; body on demand / slash</td>
+<td>Full content every turn (dynamic section)</td>
+</tr>
+<tr>
+<td>Write path</td>
+<td>Edit files on disk (no agent tool)</td>
+<td><code>save_memory</code> tool</td>
+</tr>
+<tr>
+<td>Typical author</td>
+<td>Developer / team</td>
+<td>Agent during conversation</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-code-map">9. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/skill/mod.rs</code></td>
+<td><code>SkillRegistry</code>, parsing,
+<code>describe_available</code>, <code>load_full_text</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>tact_skills_dir()</code>,
+<code>skill_search_dirs()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/load_skill.rs</code></td>
+<td><code>load_skill</code> native tool</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>describe_available()</code> in
+<code>build_system_prompt</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.skill_registry</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>LoadSkillTool</code> in <code>toolset()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/interactive.rs</code></td>
+<td><code>get_skill_registry()</code> → <code>SkillEntry</code> for
+TUI</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/skills.rs</code></td>
+<td>Slash invoke, <code>$ARGUMENTS</code>,
+<code>submit_user_task</code></td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/insert.rs</code></td>
+<td>Slash popup Enter / Tab autocomplete</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/palette.rs</code></td>
+<td>Palette skill → Insert prefills</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/slash_style.rs</code></td>
+<td>Skill vs args highlighting</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/input.rs</code>,
+<code>log.rs</code></td>
+<td>Apply slash highlighting</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-current-gaps">10. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No <code>save_skill</code> tool</td>
+<td>Skills are not writable by the agent at runtime</td>
+</tr>
+<tr>
+<td>Duplicate name overwrite</td>
+<td>Silent last-wins behavior during scan</td>
+</tr>
+<tr>
+<td>Sub-agents lack <code>load_skill</code></td>
+<td>Restricted toolset cannot load skills in isolated workers</td>
+</tr>
+<tr>
+<td>No validation of body size</td>
+<td>Very large skills can flood context when loaded (slash invoke
+too)</td>
+</tr>
+<tr>
+<td>No glob / enable list</td>
+<td>All discovered skills appear in <code>describe_available()</code>
+and the slash palette</td>
+</tr>
+<tr>
+<td><code>$ARGUMENTS[N]</code> unused</td>
+<td>Indexed placeholders are left literally (Claude-compatible bare
+<code>$ARGUMENTS</code> only)</td>
+</tr>
+</tbody>
+</table>
+<p><code>/skill-reload</code> mutates the shared registry immediately;
+the next <code>build_system_prompt</code> / <code>load_skill</code> call
+reads the updated map.</p>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./04_chapter_prompt.html">System Prompt</a> —
+<code># Available skills</code> section and cache boundary</li>
+<li><a href="./07_chapter_tool.html">Tool System</a> —
+<code>load_skill</code> and <code>ToolContext</code></li>
+<li><a href="./03_chapter_memory.html">Persistent Memory</a> —
+complementary persistence model</li>
+<li><a href="./23_chapter_tui.html">TUI</a> — slash popup, palette,
+highlighting</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — skills in
+prompt assembly table</li>
+</ul>
+</body>
+</html>

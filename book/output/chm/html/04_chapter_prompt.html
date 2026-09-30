@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="system-prompt-in-tact">System Prompt in Tact</h1>
+<blockquote>
+<p>Language: <a href="./04_chapter_prompt.html">English</a> · <a href="./04_chapter_prompt_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains how Tact builds the <strong>system
+prompt</strong>—the initial instruction given to the LLM before any user
+message—and how its structure is designed to stay cache-friendly while
+still reflecting fresh memory and project context every turn.</p>
+<hr />
+<h2 id="1-why-a-structured-system-prompt-matters">1. Why a Structured
+System Prompt Matters</h2>
+<p>The system prompt is not a single string of rules. It is an assembly
+of several information sources:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Role</strong></td>
+<td>Who the agent is (e.g., &quot;You are a coding agent operating in
+/path/to/project&quot;).</td>
+</tr>
+<tr>
+<td><strong>Skills</strong></td>
+<td>What capabilities are available right now.</td>
+</tr>
+<tr>
+<td><strong>Guidelines</strong></td>
+<td>Soft best practices for completing the task well (e.g., understand
+the goal before acting).</td>
+</tr>
+<tr>
+<td><strong>Constraints</strong></td>
+<td>Hard operational limits the agent must follow (e.g., use tools
+instead of guessing, when to stop).</td>
+</tr>
+<tr>
+<td><strong>CLAUDE.md</strong> / <strong>AGENTS.md</strong></td>
+<td>Optional project instruction files from the workspace (default:
+<code>AGENTS.md</code> only; see
+<code>[agent].instruction_sources</code>).</td>
+</tr>
+<tr>
+<td><strong>Memory</strong></td>
+<td>Persistent facts learned from previous conversations.</td>
+</tr>
+<tr>
+<td><strong>Dynamic context</strong></td>
+<td>Freshly computed project snapshot (file tree, recent changes,
+etc.).</td>
+</tr>
+</tbody>
+</table>
+<p>If all of this is thrown at the model as one noisy paragraph, the LLM
+has a harder time following the important rules. A predictable,
+sectioned layout makes behavior more consistent across models (Claude,
+OpenAI, Kimi, DeepSeek, …).</p>
+<hr />
+<h2 id="2-template-layout">2. Template Layout</h2>
+<p>The template lives in:</p>
+<pre class="text"><code>crates/tact/src/prompt/system_prompt_template.md</code></pre>
+<p>It is rendered by <a href="https://keats.github.io/tera/">Tera</a>
+from the data assembled in
+<code>crates/tact/src/prompt/mod.rs</code>.</p>
+<p>The final output follows this order:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu"># Your role</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="fu"># Available skills</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="fu"># Guidelines you need to follow</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>...</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="fu"># Constraints that must be adhered to</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>...</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="fu"># Memory guidance</span></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a><span class="fu"># Additional context</span></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a><span class="dt">&lt;</span><span class="kw">claude_md</span><span class="dt">&gt;</span>    {# optional #}</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a><span class="dt">&lt;</span><span class="kw">additional</span><span class="dt">&gt;</span>   {# AGENTS.md #}</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a>=<span class="al">== DYNAMIC_BOUNDARY ==</span>=</span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a><span class="fu">## Memory</span></span>
+<span id="cb2-24"><a href="#cb2-24" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a><span class="fu">## Dynamic context</span></span>
+<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a>...</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Source</th>
+<th>Stability</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>role</code></td>
+<td>hard-coded agent identity</td>
+<td>static</td>
+</tr>
+<tr>
+<td><code>skills_available</code></td>
+<td>skill registry</td>
+<td>mostly static</td>
+</tr>
+<tr>
+<td><code>claude_md</code></td>
+<td><code>CLAUDE.md</code> (optional; under
+<code># Additional context</code>)</td>
+<td>static per session</td>
+</tr>
+<tr>
+<td><code>guidelines</code> / <code>constraints</code></td>
+<td>agent defaults</td>
+<td>static</td>
+</tr>
+<tr>
+<td><code>memory_guidance</code></td>
+<td>constant prompt text</td>
+<td>static</td>
+</tr>
+<tr>
+<td><code>additional</code></td>
+<td><code>AGENTS.md</code> (default; under
+<code># Additional context</code>)</td>
+<td>static per session</td>
+</tr>
+<tr>
+<td><code>memory</code></td>
+<td><code>MemoryManager</code></td>
+<td>dynamic</td>
+</tr>
+<tr>
+<td><code>dynamic_context</code></td>
+<td>directory snapshot / recent files</td>
+<td>dynamic</td>
+</tr>
+</tbody>
+</table>
+<p>Sections above <code>=== DYNAMIC_BOUNDARY ===</code> change rarely.
+Sections below it may change every turn.</p>
+<hr />
+<h2 id="3-code-map">3. Code Map</h2>
+<h3 id="31-template-and-rendering">3.1 Template and rendering</h3>
+<ul>
+<li><code>crates/tact/src/prompt/system_prompt_template.md</code> — the
+Tera template.</li>
+<li><code>crates/tact/src/prompt/mod.rs</code> —
+<code>SystemPrompt</code> builder, <code>Prompt</code> wrapper, and
+<code>render()</code>.</li>
+</ul>
+<p><code>SystemPrompt</code> is a builder:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> prompt <span class="op">=</span> <span class="pp">SystemPrompt::</span>builder()</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>role(<span class="st">&quot;You are a coding agent operating in /home/xxxx/Projects/tact.&quot;</span>)</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>skills_available(<span class="st">&quot;- rust-skills: Comprehensive Rust coding guidelines&quot;</span>)</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>add_guideline(<span class="st">&quot;Think before you act&quot;</span>)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>add_constraint(<span class="st">&quot;Never expose secrets&quot;</span>)</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>memory(<span class="st">&quot;User prefers Rust over Python&quot;</span>)</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>dynamic_context(<span class="st">&quot;Current file tree ...&quot;</span>)</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>build()<span class="op">?;</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> rendered <span class="op">=</span> prompt<span class="op">.</span>to_prompt()<span class="op">.</span>render()<span class="op">?;</span></span></code></pre></div>
+<h3 id="32-wiring-into-the-agent">3.2 Wiring into the agent</h3>
+<p>The actual content is assembled in
+<code>Agent::build_system_prompt</code>
+(<code>crates/tact/src/agent/mod.rs</code>):</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> prompt <span class="op">=</span> <span class="pp">SystemPrompt::</span>builder()</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>role(<span class="pp">format!</span>(<span class="st">&quot;You are a coding agent operating in {}.&quot;</span><span class="op">,</span> workdir<span class="op">.</span>display()))</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>guidelines([<span class="op">...</span>])</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>constraints([<span class="op">...</span>])</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>skills_available(<span class="kw">self</span><span class="op">.</span>tool_context<span class="op">.</span>skill_registry<span class="op">.</span>describe_available())</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>memory(<span class="kw">self</span><span class="op">.</span>load_memory_prompt()<span class="op">?</span>)</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>claude_md(cached_md_section(<span class="op">&amp;</span><span class="kw">mut</span> cached_claude_md<span class="op">,</span> <span class="op">||</span> assemble_claude_md_prompt(workdir<span class="op">,</span> <span class="op">&amp;</span>instruction_sources)))</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>additional(cached_md_section(<span class="op">&amp;</span><span class="kw">mut</span> cached_agents_md<span class="op">,</span> <span class="op">||</span> assemble_agents_md_prompt(workdir<span class="op">,</span> <span class="op">&amp;</span>instruction_sources)))</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>dynamic_context(load_dynamic_context(workdir<span class="op">,</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span><span class="op">.</span>runtime<span class="op">.</span>cached_dir_snapshot))</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>memory_guidance(MEMORY_GUIDANCE<span class="op">.</span>trim())</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>build()<span class="op">?;</span></span></code></pre></div>
+<p><code>build_system_prompt()</code> is called <strong>once per
+task</strong>, at the top of <code>agent_loop</code> before the turn
+loop starts. The same rendered string is reused for every LLM request
+within that task, keeping the prompt byte-stable across turns for prefix
+KV-caching. <code>memory</code> and <code>dynamic_context</code> are
+re-evaluated at the start of the next task; enabled instruction files
+(<code>AGENTS.md</code> / <code>CLAUDE.md</code>) and the directory
+snapshot are assembled <strong>once per session</strong> and cached.</p>
+<h3 id="33-instruction-file-sources-instruction_sources">3.3 Instruction
+file sources (<code>instruction_sources</code>)</h3>
+<p>By default only <strong><code>AGENTS.md</code></strong> is injected.
+<code>CLAUDE.md</code> is opt-in via <code>config.toml</code>. Both
+render inside the same <code># Additional context</code> section (CLAUDE
+block first when enabled, then AGENTS).</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode toml"><code class="sourceCode toml"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[agent]</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Default — AGENTS.md only</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="dt">instruction_sources</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;agents_md&quot;</span><span class="op">]</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Claude Code style — both file families</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="dt">instruction_sources</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;agents_md&quot;</span><span class="op">,</span> <span class="st">&quot;claude_md&quot;</span><span class="op">]</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Fine-grained CLAUDE paths</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="dt">instruction_sources</span> <span class="op">=</span> <span class="op">[</span><span class="st">&quot;agents_md&quot;</span><span class="op">,</span> <span class="st">&quot;claude_md_user&quot;</span><span class="op">,</span> <span class="st">&quot;claude_md_project&quot;</span><span class="op">]</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Files</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agents_md</code></td>
+<td><code>&lt;workdir&gt;/AGENTS.md</code>, optional
+<code>&lt;cwd&gt;/AGENTS.md</code></td>
+</tr>
+<tr>
+<td><code>claude_md</code></td>
+<td>All three CLAUDE paths below</td>
+</tr>
+<tr>
+<td><code>claude_md_user</code></td>
+<td><code>~/.claude/CLAUDE.md</code></td>
+</tr>
+<tr>
+<td><code>claude_md_project</code></td>
+<td><code>&lt;workdir&gt;/CLAUDE.md</code></td>
+</tr>
+<tr>
+<td><code>claude_md_subdir</code></td>
+<td><code>&lt;cwd&gt;/CLAUDE.md</code> when cwd ≠ workdir</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-static-vs-dynamic-modes">4. Static vs. Dynamic Modes</h2>
+<p><code>AgentSystemPrompt</code> has two variants:</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Behavior</th>
+<th>Use case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Static</code></td>
+<td>Returns the same string every time</td>
+<td>Tests, demos, or when you want full manual control</td>
+</tr>
+<tr>
+<td><code>Dynamic</code></td>
+<td>Re-renders the template at the start of each task</td>
+<td>Normal operation; keeps context and memory fresh</td>
+</tr>
+</tbody>
+</table>
+<p>In normal Tact usage (<code>tact-ui</code> / headless), the agent
+starts in <code>Dynamic</code> mode.</p>
+<hr />
+<h2 id="5-the-dynamic-boundary-and-kv-cache">5. The Dynamic Boundary and
+KV-Cache</h2>
+<p>LLM providers can <strong>cache</strong> the prefix of a long prompt
+across calls. The stable sections at the top of the system prompt (role,
+guidelines, constraints, CLAUDE.md) are perfect for caching.</p>
+<p>The line:</p>
+<pre class="text"><code>=== DYNAMIC_BOUNDARY ===</code></pre>
+<p>is a visual marker inside the system prompt. Everything above it
+should stay identical across tasks so the provider can reuse the cached
+prefix. Everything below it (<code>memory</code>,
+<code>dynamic_context</code>) is allowed to change.</p>
+<p>Because <code>build_system_prompt()</code> runs at each task start,
+only the suffix from the boundary onward needs to be re-evaluated. If
+the provider supports prompt caching, you get fresh context without
+paying full cost for the entire instruction block.</p>
+<hr />
+<h2 id="6-customizing-the-system-prompt">6. Customizing the System
+Prompt</h2>
+<h3 id="61-adding-guidelines-or-constraints">6.1 Adding guidelines or
+constraints</h3>
+<p>Use the builder methods in
+<code>Agent::build_system_prompt</code>:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="op">.</span>constraints([</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;Always run cargo check after editing Rust files&quot;</span><span class="op">,</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;Prefer edit_file over write_file for small changes&quot;</span><span class="op">,</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>])</span></code></pre></div>
+<h3 id="62-injecting-extra-markdown-agentsmd">6.2 Injecting extra
+markdown (<code>AGENTS.md</code>)</h3>
+<p><code>Agent::build_system_prompt</code> loads project
+<code>AGENTS.md</code> (and a cwd-relative copy when cwd ≠ workdir) into
+the template <code>additional</code> slot on the <strong>first</strong>
+render of a session, then reuses the cached string for later turns.</p>
+<p>You can also append arbitrary markdown via the builder:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="op">.</span>additional(<span class="st">&quot;# Project conventions</span><span class="sc">\n\n</span><span class="st">Use anyhow::Result everywhere.&quot;</span>)</span></code></pre></div>
+<h3 id="63-replacing-the-entire-template">6.3 Replacing the entire
+template</h3>
+<p>Pass a custom template string when constructing
+<code>SystemPrompt</code>:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="pp">SystemPrompt::</span>from(<span class="pp">include_str!</span>(<span class="st">&quot;my_template.md&quot;</span>))</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>role(<span class="st">&quot;...&quot;</span>)</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>build()<span class="op">?</span></span></code></pre></div>
+<p>Keep the <code>=== DYNAMIC_BOUNDARY ===</code> convention if you want
+to benefit from prefix caching.</p>
+<hr />
+<h2 id="7-example-output">7. Example Output</h2>
+<p>A real session snapshot (default
+<code>instruction_sources = [&quot;agents_md&quot;]</code>, project
+<code>AGENTS.md</code> present, five skills discovered, several
+<code>[feedback]</code> memories):</p>
+<ul>
+<li><strong>role</strong> — coding agent in
+<code>/Users/rg/Projects/tact</code></li>
+<li><strong>skills_available</strong> — five skill summaries + slash /
+<code>load_skill</code> note</li>
+<li><strong>guidelines</strong> / <strong>constraints</strong> — tact
+built-in defaults</li>
+<li><strong>memory_guidance</strong> — when to call
+<code>save_memory</code></li>
+<li><strong>additional</strong> — project <code>AGENTS.md</code>
+(rendered under <code># Additional context</code>)</li>
+<li><strong>memory</strong> — persistent <code>.tact/memory/*.md</code>
+content</li>
+<li><strong>dynamic_context</strong> — date, workdir, model, platform,
+directory snapshot</li>
+</ul>
+<p>The rendered prompt looks like:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="fu"># Your role</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>You are a coding agent operating in /Users/rg/Projects/tact.</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="fu"># Available skills</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>code-reviewer: Code review specialist</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>demo-test: Test skill loading</span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>echo-args: Test skill for slash arguments — echoes $ARGUMENTS back and replies briefly</span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>english-tutor: English tutoring assistant</span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>shell-master: Shell command specialist</span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>When a user message already contains a <span class="in">`&lt;skill name=&quot;…&quot;&gt;…&lt;/skill&gt;`</span> block, the user slash-invoked that skill — follow those instructions directly and do not call <span class="in">`load_skill`</span> for the same skill. If the block includes an <span class="in">`ARGUMENTS:`</span> line (Claude Code convention when the skill has no <span class="in">`$ARGUMENTS`</span> placeholder), that line is the user&#39;s slash-command arguments for this invocation; apply the skill to fulfill them.</span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a><span class="fu"># Guidelines you need to follow</span></span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Try to understand how to complete the task well before completing it.</span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a><span class="fu"># Constraints that must be adhered to</span></span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Think step by step</span>
+<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Think before you act; respond with your thoughts before calling tools</span>
+<span id="cb10-23"><a href="#cb10-23" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Do not make up any assumptions, use tools to get the information you need</span>
+<span id="cb10-24"><a href="#cb10-24" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Use the provided tools to interact with the system and accomplish the task</span>
+<span id="cb10-25"><a href="#cb10-25" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>If you are stuck, or otherwise cannot complete the task, respond with your thoughts and stop</span>
+<span id="cb10-26"><a href="#cb10-26" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.</span>
+<span id="cb10-27"><a href="#cb10-27" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>When editing files, always re-read the file first if its content may have changed since you last read it</span>
+<span id="cb10-28"><a href="#cb10-28" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>For multi-line changes, prefer apply_patch; for exact string replacements, use edit_file (replace_all=true to change every occurrence in the file)</span>
+<span id="cb10-29"><a href="#cb10-29" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)</span>
+<span id="cb10-30"><a href="#cb10-30" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites</span>
+<span id="cb10-31"><a href="#cb10-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-32"><a href="#cb10-32" aria-hidden="true" tabindex="-1"></a><span class="fu"># Memory guidance</span></span>
+<span id="cb10-33"><a href="#cb10-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-34"><a href="#cb10-34" aria-hidden="true" tabindex="-1"></a>When to save memories:</span>
+<span id="cb10-35"><a href="#cb10-35" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>User states a preference (&quot;I like tabs&quot;, &quot;always use pytest&quot;) -&gt; type: user</span>
+<span id="cb10-36"><a href="#cb10-36" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>User corrects you (&quot;don&#39;t do X&quot;, &quot;that was wrong because...&quot;) -&gt; type: feedback</span>
+<span id="cb10-37"><a href="#cb10-37" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>You learn a project fact that is not easy to infer from current code alone</span>
+<span id="cb10-38"><a href="#cb10-38" aria-hidden="true" tabindex="-1"></a>  (for example: a rule exists because of compliance, or a legacy module must</span>
+<span id="cb10-39"><a href="#cb10-39" aria-hidden="true" tabindex="-1"></a>  stay untouched for business reasons) -&gt; type: project</span>
+<span id="cb10-40"><a href="#cb10-40" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>You learn where an external resource lives (ticket board, dashboard, docs URL)</span>
+<span id="cb10-41"><a href="#cb10-41" aria-hidden="true" tabindex="-1"></a>  -&gt; type: reference</span>
+<span id="cb10-42"><a href="#cb10-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-43"><a href="#cb10-43" aria-hidden="true" tabindex="-1"></a>When NOT to save:</span>
+<span id="cb10-44"><a href="#cb10-44" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Anything easily derivable from code (function signatures, file structure, directory layout)</span>
+<span id="cb10-45"><a href="#cb10-45" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Temporary task state (current branch, open PR numbers, current TODOs)</span>
+<span id="cb10-46"><a href="#cb10-46" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Secrets or credentials (API keys, passwords)</span>
+<span id="cb10-47"><a href="#cb10-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-48"><a href="#cb10-48" aria-hidden="true" tabindex="-1"></a><span class="fu"># Additional context</span></span>
+<span id="cb10-49"><a href="#cb10-49" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-50"><a href="#cb10-50" aria-hidden="true" tabindex="-1"></a><span class="fu">## AGENTS.md instructions</span></span>
+<span id="cb10-51"><a href="#cb10-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-52"><a href="#cb10-52" aria-hidden="true" tabindex="-1"></a><span class="fu">### From project root (AGENTS.md)</span></span>
+<span id="cb10-53"><a href="#cb10-53" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-54"><a href="#cb10-54" aria-hidden="true" tabindex="-1"></a><span class="fu"># Tact agent notes</span></span>
+<span id="cb10-55"><a href="#cb10-55" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-56"><a href="#cb10-56" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Run tests with <span class="in">`cargo test -p tact`</span> / <span class="in">`cargo test -p tui`</span> for focused crates.</span>
+<span id="cb10-57"><a href="#cb10-57" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Prefer <span class="in">`edit_file`</span> for small changes; use <span class="in">`apply_patch`</span> for multi-line hunks.</span>
+<span id="cb10-58"><a href="#cb10-58" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Book chapters live under <span class="in">`book/`</span>; keep <span class="in">`04_chapter_prompt.md`</span> aligned with <span class="in">`system_prompt_template.md`</span>.</span>
+<span id="cb10-59"><a href="#cb10-59" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>User-facing docs and examples are English unless the task asks otherwise.</span>
+<span id="cb10-60"><a href="#cb10-60" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-61"><a href="#cb10-61" aria-hidden="true" tabindex="-1"></a>=<span class="al">== DYNAMIC_BOUNDARY ==</span>=</span>
+<span id="cb10-62"><a href="#cb10-62" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-63"><a href="#cb10-63" aria-hidden="true" tabindex="-1"></a><span class="fu">## Memory</span></span>
+<span id="cb10-64"><a href="#cb10-64" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-65"><a href="#cb10-65" aria-hidden="true" tabindex="-1"></a><span class="fu"># Memories (persistent across sessions)</span></span>
+<span id="cb10-66"><a href="#cb10-66" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-67"><a href="#cb10-67" aria-hidden="true" tabindex="-1"></a><span class="fu">## [feedback]</span></span>
+<span id="cb10-68"><a href="#cb10-68" aria-hidden="true" tabindex="-1"></a><span class="fu">### batch_edit_min_files: batch_edit should only be used when editing 3+ distinct files</span></span>
+<span id="cb10-69"><a href="#cb10-69" aria-hidden="true" tabindex="-1"></a>batch_edit should only be used when the edits span 3 or more distinct files. For edits touching fewer than 3 different files, prefer individual edit_file calls instead. This avoids the overhead of batch validation when simple single-file edits suffice.</span>
+<span id="cb10-70"><a href="#cb10-70" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-71"><a href="#cb10-71" aria-hidden="true" tabindex="-1"></a>This rule is also documented in <span class="in">`docs/agent_guidelines.md`</span>.</span>
+<span id="cb10-72"><a href="#cb10-72" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-73"><a href="#cb10-73" aria-hidden="true" tabindex="-1"></a><span class="fu">### edit_file_lazy_diff_feedback: edit_file diff preview should be opt-in and lazy-loaded</span></span>
+<span id="cb10-74"><a href="#cb10-74" aria-hidden="true" tabindex="-1"></a>User feedback: <span class="in">`edit_file`</span> should support a <span class="in">`show_diff`</span> (or similar) parameter so the user can opt in to a diff preview card. The card should lazy-load: show a clickable placeholder first; on click, run <span class="in">`git diff`</span> and open/expand the result, instead of running diff automatically on every edit.</span>
+<span id="cb10-75"><a href="#cb10-75" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-76"><a href="#cb10-76" aria-hidden="true" tabindex="-1"></a><span class="fu">### edit_file_lazy_diff_feedback_v2: edit_file diff preview uses new_text, lazy-loads git diff on click</span></span>
+<span id="cb10-77"><a href="#cb10-77" aria-hidden="true" tabindex="-1"></a>User feedback: <span class="in">`edit_file`</span> should support <span class="in">`show_diff`</span> (or similar) for optional diff preview. Suggested UX: preview the card with <span class="in">`new_text`</span> (already in args, no extra cost); on click, open/expand and run <span class="in">`git diff`</span> for the full diff, avoiding automatic diff on every edit.</span>
+<span id="cb10-78"><a href="#cb10-78" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-79"><a href="#cb10-79" aria-hidden="true" tabindex="-1"></a><span class="fu">### log_selection_should_be_character_level: Log text selection should be character-level, not line-only</span></span>
+<span id="cb10-80"><a href="#cb10-80" aria-hidden="true" tabindex="-1"></a>Log panel selection is currently line-based: <span class="in">`log_selection`</span> stores <span class="in">`(start_line, end_line)`</span>, highlights whole lines, and copies full lines. That prevents selecting part of a line (e.g. mid-line to mid-line on another row) and feels awkward when drag-selecting while scrolling. User wants character/column-level selection.</span>
+<span id="cb10-81"><a href="#cb10-81" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-82"><a href="#cb10-82" aria-hidden="true" tabindex="-1"></a><span class="fu">### tool_card_double_click_detail_area_only: Tool card double-click popup should be limited to the detail card area</span></span>
+<span id="cb10-83"><a href="#cb10-83" aria-hidden="true" tabindex="-1"></a>Tool Card double-click to open a popup should only apply inside the detail card (bordered preview: title, preview body, bottom hint). Clicks on the header status/title rows (the two header lines) should not open the popup.</span>
+<span id="cb10-84"><a href="#cb10-84" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-85"><a href="#cb10-85" aria-hidden="true" tabindex="-1"></a><span class="fu">## Dynamic context</span></span>
+<span id="cb10-86"><a href="#cb10-86" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-87"><a href="#cb10-87" aria-hidden="true" tabindex="-1"></a>Current date: 2026-07-15</span>
+<span id="cb10-88"><a href="#cb10-88" aria-hidden="true" tabindex="-1"></a>Working directory: /Users/rg/Projects/tact</span>
+<span id="cb10-89"><a href="#cb10-89" aria-hidden="true" tabindex="-1"></a>Model: deepseek-v4-pro</span>
+<span id="cb10-90"><a href="#cb10-90" aria-hidden="true" tabindex="-1"></a>Platform: macos</span>
+<span id="cb10-91"><a href="#cb10-91" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-92"><a href="#cb10-92" aria-hidden="true" tabindex="-1"></a><span class="fu">## Project structure</span></span>
+<span id="cb10-93"><a href="#cb10-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-94"><a href="#cb10-94" aria-hidden="true" tabindex="-1"></a>  book/</span>
+<span id="cb10-95"><a href="#cb10-95" aria-hidden="true" tabindex="-1"></a>  crates/</span>
+<span id="cb10-96"><a href="#cb10-96" aria-hidden="true" tabindex="-1"></a>  docs/</span>
+<span id="cb10-97"><a href="#cb10-97" aria-hidden="true" tabindex="-1"></a>  scripts/</span>
+<span id="cb10-98"><a href="#cb10-98" aria-hidden="true" tabindex="-1"></a>  skills/</span>
+<span id="cb10-99"><a href="#cb10-99" aria-hidden="true" tabindex="-1"></a>book</span>
+<span id="cb10-100"><a href="#cb10-100" aria-hidden="true" tabindex="-1"></a>  output/</span>
+<span id="cb10-101"><a href="#cb10-101" aria-hidden="true" tabindex="-1"></a>  prompts/</span>
+<span id="cb10-102"><a href="#cb10-102" aria-hidden="true" tabindex="-1"></a>  scripts/</span>
+<span id="cb10-103"><a href="#cb10-103" aria-hidden="true" tabindex="-1"></a>  templates/</span>
+<span id="cb10-104"><a href="#cb10-104" aria-hidden="true" tabindex="-1"></a>book/output</span>
+<span id="cb10-105"><a href="#cb10-105" aria-hidden="true" tabindex="-1"></a>  chm/</span>
+<span id="cb10-106"><a href="#cb10-106" aria-hidden="true" tabindex="-1"></a>  mcp/</span>
+<span id="cb10-107"><a href="#cb10-107" aria-hidden="true" tabindex="-1"></a>book/output/chm</span>
+<span id="cb10-108"><a href="#cb10-108" aria-hidden="true" tabindex="-1"></a>  html/</span>
+<span id="cb10-109"><a href="#cb10-109" aria-hidden="true" tabindex="-1"></a>book/scripts</span>
+<span id="cb10-110"><a href="#cb10-110" aria-hidden="true" tabindex="-1"></a>  chm/</span>
+<span id="cb10-111"><a href="#cb10-111" aria-hidden="true" tabindex="-1"></a>  lib/</span>
+<span id="cb10-112"><a href="#cb10-112" aria-hidden="true" tabindex="-1"></a>crates</span>
+<span id="cb10-113"><a href="#cb10-113" aria-hidden="true" tabindex="-1"></a>  protocol/</span>
+<span id="cb10-114"><a href="#cb10-114" aria-hidden="true" tabindex="-1"></a>  tact-ui/</span>
+<span id="cb10-115"><a href="#cb10-115" aria-hidden="true" tabindex="-1"></a>  tact/</span>
+<span id="cb10-116"><a href="#cb10-116" aria-hidden="true" tabindex="-1"></a>  tact_llm/</span>
+<span id="cb10-117"><a href="#cb10-117" aria-hidden="true" tabindex="-1"></a>  tool_refactor_macros/</span>
+<span id="cb10-118"><a href="#cb10-118" aria-hidden="true" tabindex="-1"></a>  tui/</span>
+<span id="cb10-119"><a href="#cb10-119" aria-hidden="true" tabindex="-1"></a>crates/protocol</span>
+<span id="cb10-120"><a href="#cb10-120" aria-hidden="true" tabindex="-1"></a>  src/</span>
+<span id="cb10-121"><a href="#cb10-121" aria-hidden="true" tabindex="-1"></a>crates/tact</span>
+<span id="cb10-122"><a href="#cb10-122" aria-hidden="true" tabindex="-1"></a>  src/</span>
+<span id="cb10-123"><a href="#cb10-123" aria-hidden="true" tabindex="-1"></a>crates/tact-ui</span>
+<span id="cb10-124"><a href="#cb10-124" aria-hidden="true" tabindex="-1"></a>  src/</span>
+<span id="cb10-125"><a href="#cb10-125" aria-hidden="true" tabindex="-1"></a>  tests/</span>
+<span id="cb10-126"><a href="#cb10-126" aria-hidden="true" tabindex="-1"></a>crates/tact-ui/tests</span>
+<span id="cb10-127"><a href="#cb10-127" aria-hidden="true" tabindex="-1"></a>  harness/</span>
+<span id="cb10-128"><a href="#cb10-128" aria-hidden="true" tabindex="-1"></a>crates/tact/src</span>
+<span id="cb10-129"><a href="#cb10-129" aria-hidden="true" tabindex="-1"></a>  agent/</span>
+<span id="cb10-130"><a href="#cb10-130" aria-hidden="true" tabindex="-1"></a>  config/</span>
+<span id="cb10-131"><a href="#cb10-131" aria-hidden="true" tabindex="-1"></a>  hook/</span>
+<span id="cb10-132"><a href="#cb10-132" aria-hidden="true" tabindex="-1"></a>  lsp/</span>
+<span id="cb10-133"><a href="#cb10-133" aria-hidden="true" tabindex="-1"></a>  mcp/</span>
+<span id="cb10-134"><a href="#cb10-134" aria-hidden="true" tabindex="-1"></a>  memory/</span>
+<span id="cb10-135"><a href="#cb10-135" aria-hidden="true" tabindex="-1"></a>  notifications/</span>
+<span id="cb10-136"><a href="#cb10-136" aria-hidden="true" tabindex="-1"></a>  permission/</span>
+<span id="cb10-137"><a href="#cb10-137" aria-hidden="true" tabindex="-1"></a>  prompt/</span>
+<span id="cb10-138"><a href="#cb10-138" aria-hidden="true" tabindex="-1"></a>  skill/</span>
+<span id="cb10-139"><a href="#cb10-139" aria-hidden="true" tabindex="-1"></a>  store/</span>
+<span id="cb10-140"><a href="#cb10-140" aria-hidden="true" tabindex="-1"></a>  task/</span>
+<span id="cb10-141"><a href="#cb10-141" aria-hidden="true" tabindex="-1"></a>  tool/</span>
+<span id="cb10-142"><a href="#cb10-142" aria-hidden="true" tabindex="-1"></a>  worktree/</span>
+<span id="cb10-143"><a href="#cb10-143" aria-hidden="true" tabindex="-1"></a>crates/tact_llm</span>
+<span id="cb10-144"><a href="#cb10-144" aria-hidden="true" tabindex="-1"></a>  src/</span>
+<span id="cb10-145"><a href="#cb10-145" aria-hidden="true" tabindex="-1"></a>crates/tool_refactor_macros</span>
+<span id="cb10-146"><a href="#cb10-146" aria-hidden="true" tabindex="-1"></a>  src/</span>
+<span id="cb10-147"><a href="#cb10-147" aria-hidden="true" tabindex="-1"></a>crates/tui</span>
+<span id="cb10-148"><a href="#cb10-148" aria-hidden="true" tabindex="-1"></a>  src/</span>
+<span id="cb10-149"><a href="#cb10-149" aria-hidden="true" tabindex="-1"></a>crates/tui/src</span>
+<span id="cb10-150"><a href="#cb10-150" aria-hidden="true" tabindex="-1"></a>  handlers/</span>
+<span id="cb10-151"><a href="#cb10-151" aria-hidden="true" tabindex="-1"></a>  render/</span>
+<span id="cb10-152"><a href="#cb10-152" aria-hidden="true" tabindex="-1"></a>  widgets/</span>
+<span id="cb10-153"><a href="#cb10-153" aria-hidden="true" tabindex="-1"></a>docs</span>
+<span id="cb10-154"><a href="#cb10-154" aria-hidden="true" tabindex="-1"></a>  superpowers/</span>
+<span id="cb10-155"><a href="#cb10-155" aria-hidden="true" tabindex="-1"></a>docs/superpowers</span>
+<span id="cb10-156"><a href="#cb10-156" aria-hidden="true" tabindex="-1"></a>  plans/</span>
+<span id="cb10-157"><a href="#cb10-157" aria-hidden="true" tabindex="-1"></a>  specs/</span>
+<span id="cb10-158"><a href="#cb10-158" aria-hidden="true" tabindex="-1"></a>skills</span>
+<span id="cb10-159"><a href="#cb10-159" aria-hidden="true" tabindex="-1"></a>  demo-test/</span></code></pre></div>
+<p>This is then attached to the LLM request via
+<code>CreateMessageParams::with_system(&amp;system)</code>, followed by
+the conversation history.</p>
+<hr />
+<h2 id="8-testing">8. Testing</h2>
+<p>The prompt module has unit tests covering:</p>
+<ul>
+<li>all sections render when populated,</li>
+<li>empty sections are omitted,</li>
+<li>static sections appear before
+<code>=== DYNAMIC_BOUNDARY ===</code>,</li>
+<li>no XML tags are emitted for dynamic context.</li>
+</ul>
+<p>Run them with:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> test <span class="at">-p</span> tact prompt</span></code></pre></div>
+<hr />
+<h2 id="related-files">Related Files</h2>
+<ul>
+<li>Template:
+<code>[crates/tact/src/prompt/system_prompt_template.md](../crates/tact/src/prompt/system_prompt_template.md)</code></li>
+<li>Builder / render logic:
+<code>[crates/tact/src/prompt/mod.rs](../crates/tact/src/prompt/mod.rs)</code></li>
+<li>Agent wiring:
+<code>[crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)</code>
+(<code>Agent::build_system_prompt</code>)</li>
+<li>Memory manager:
+<code>[crates/tact/src/memory/mod.rs](../crates/tact/src/memory/mod.rs)</code>
+— see <a href="./03_chapter_memory.html">Persistent Memory</a></li>
+<li>Skill registry:
+<code>[crates/tact/src/skill/mod.rs](../crates/tact/src/skill/mod.rs)</code>
+— see <a href="./02_chapter_skill.html">Skill Registry</a></li>
+<li>Dynamic context loader:
+<code>[crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)</code>
+(<code>fn load_dynamic_context</code>)</li>
+</ul>
+</body>
+</html>

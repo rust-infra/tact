@@ -1,0 +1,67 @@
+[OPTIONS]
+Compatibility=1.1 or later
+Compiled file=tact-book.chm
+Contents file=tact-book.hhc
+Default Topic=html/index.html
+Title=Tact Agent Development Tutorials
+Language=0x409 English (United States)
+
+[FILES]
+html/01_chapter_store_zh.html
+html/01_chapter_store.html
+html/02_chapter_skill_zh.html
+html/02_chapter_skill.html
+html/03_chapter_memory_zh.html
+html/03_chapter_memory.html
+html/04_chapter_prompt_zh.html
+html/04_chapter_prompt.html
+html/05_chapter_compact_zh.html
+html/05_chapter_compact.html
+html/06_chapter_recovery_zh.html
+html/06_chapter_recovery.html
+html/07_chapter_tool_zh.html
+html/07_chapter_tool.html
+html/08_chapter_mcp_zh.html
+html/08_chapter_mcp.html
+html/09_chapter_hook_zh.html
+html/09_chapter_hook.html
+html/10_chapter_permission_zh.html
+html/10_chapter_permission.html
+html/11_chapter_task_zh.html
+html/11_chapter_task.html
+html/12_chapter_subagent_zh.html
+html/12_chapter_subagent.html
+html/13_chapter_background_zh.html
+html/13_chapter_background.html
+html/14_chapter_team_zh.html
+html/14_chapter_team.html
+html/15_chapter_worktree_zh.html
+html/15_chapter_worktree.html
+html/16_chapter_cron.html
+html/17_chapter_notify_zh.html
+html/17_chapter_notify.html
+html/18_chapter_agent_loop_zh.html
+html/18_chapter_agent_loop.html
+html/19_chapter_persistent_tasks_zh.html
+html/19_chapter_persistent_tasks.html
+html/20_chapter_hallucination_zh.html
+html/20_chapter_hallucination.html
+html/20_chapter_lsp.html
+html/21_chapter_config_zh.html
+html/21_chapter_config.html
+html/22_chapter_llm_zh.html
+html/22_chapter_llm.html
+html/23_chapter_tui_zh.html
+html/23_chapter_tui.html
+html/24_chapter_testing_zh.html
+html/24_chapter_testing.html
+html/25_chapter_protocol_zh.html
+html/25_chapter_protocol.html
+html/26_chapter_issue_zh.html
+html/26_chapter_issue.html
+html/index_zh.html
+html/index.html
+html/mindmap-interactive.html
+html/mindmap-overview.html
+html/mindmap.html
+html/mindmap.png

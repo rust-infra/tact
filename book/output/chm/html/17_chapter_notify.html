@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="desktop-notifications">Desktop Notifications</h1>
+<blockquote>
+<p>Language: <a href="./17_chapter_notify.html">English</a> · <a href="./17_chapter_notify_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains how Tact sends <strong>native desktop
+notifications</strong> when key agent lifecycle events occur — primarily
+task completion and tool-step failures. The module is small and
+platform-specific: it is fully implemented on macOS and is a no-op
+elsewhere.</p>
+<p>Notifications are orthogonal to the TUI log panel. They fire even
+when the terminal is not focused, so long-running headless or background
+sessions can alert the user on macOS.</p>
+<hr />
+<h2 id="1-what-notifications-do">1. What Notifications Do</h2>
+<p><code>crates/tact/src/notifications/mod.rs</code> wraps a single
+primitive:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> notify(title<span class="op">:</span> <span class="op">&amp;</span><span class="dt">str</span><span class="op">,</span> message<span class="op">:</span> <span class="op">&amp;</span><span class="dt">str</span>) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>()<span class="op">&gt;;</span></span></code></pre></div>
+<p>Higher-level helpers format common events:</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Title</th>
+<th>When used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>notify_task_complete(summary)</code></td>
+<td><code>Tact — Task Complete</code></td>
+<td>Agent finishes successfully</td>
+</tr>
+<tr>
+<td><code>notify_step_failed(step_idx, error)</code></td>
+<td><code>Tact — Step Failed</code></td>
+<td>A tool step fails</td>
+</tr>
+<tr>
+<td><code>notify_info(summary)</code></td>
+<td><code>Tact — Info</code></td>
+<td><strong>Defined but not called anywhere today</strong></td>
+</tr>
+</tbody>
+</table>
+<p>All paths respect the global enable flag before doing any work.</p>
+<hr />
+<h2 id="2-platform-behavior">2. Platform Behavior</h2>
+<pre class="mermaid"><code>flowchart TD
+    Call[&quot;notify(title, message)&quot;] --&gt; Enabled{&quot;is_enabled()?&quot;}
+    Enabled -- No --&gt; Skip[&quot;Ok(()) — no-op&quot;]
+    Enabled -- Yes --&gt; OS{&quot;target_os?&quot;}
+
+    OS -- macOS --&gt; Script[&quot;osascript -e display notification&quot;]
+    Script --&gt; Result[&quot;Ok or osascript error&quot;]
+
+    OS -- other --&gt; NoOp[&quot;Ok(()) — silently skipped&quot;]</code></pre>
+<h3 id="macos">macOS</h3>
+<p>Uses AppleScript via <code>osascript</code>:</p>
+<pre class="applescript"><code>display notification &quot;{message}&quot; with title &quot;{title}&quot;</code></pre>
+<p>Double quotes in title and message are escaped. Failure to spawn
+<code>osascript</code> returns <code>Err</code>.</p>
+<h3 id="non-macos">Non-macOS</h3>
+<p>The function returns <code>Ok(())</code> immediately. No fallback (no
+<code>notify-send</code>, no Windows toast API).</p>
+<hr />
+<h2 id="3-configuration">3. Configuration</h2>
+<p>Notifications are <strong>enabled by default</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Setting</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TOML</td>
+<td><code>[agent] notifications_enabled = false</code></td>
+</tr>
+<tr>
+<td>CLI</td>
+<td><code>--no-notifications</code></td>
+</tr>
+</tbody>
+</table>
+<p>Resolved in <code>config/resolve.rs</code> and read at runtime
+via:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> is_enabled() <span class="op">-&gt;</span> <span class="dt">bool</span> <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">crate</span><span class="pp">::config::</span>settings()<span class="op">.</span>agent<span class="op">.</span>notifications_enabled</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>When disabled, every public function returns <code>Ok(())</code>
+without spawning subprocesses.</p>
+<hr />
+<h2 id="4-integration-in-the-agent">4. Integration in the Agent</h2>
+<p>Notifications are triggered from <code>Agent::emit_update</code>
+(<code>crates/tact/src/agent/mod.rs</code>), <strong>before</strong> the
+update is forwarded to the TUI channel:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">match</span> <span class="op">&amp;</span>update <span class="op">{</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="pp">AgentUpdate::</span>TaskComplete(text) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> summary <span class="op">=</span> text<span class="op">.</span>chars()<span class="op">.</span>take(<span class="dv">200</span>)<span class="op">.</span><span class="pp">collect::</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;</span>()<span class="op">;</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> _ <span class="op">=</span> <span class="kw">crate</span><span class="pp">::notifications::</span>notify_task_complete(<span class="op">&amp;</span>summary)<span class="op">;</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    <span class="pp">AgentUpdate::</span>StepFailed(idx<span class="op">,</span> _<span class="op">,</span> msg) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> _ <span class="op">=</span> <span class="kw">crate</span><span class="pp">::notifications::</span>notify_step_failed(<span class="op">*</span>idx<span class="op">,</span> msg)<span class="op">;</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>    _ <span class="op">=&gt;</span> <span class="op">{}</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<pre class="mermaid"><code>sequenceDiagram
+    participant TUI as tact-ui driver
+    participant Agent
+    participant Notify as notifications::
+    participant UI as TUI
+
+    TUI-&gt;&gt;Agent: emit_update(TaskComplete)&lt;br/&gt;(after agent_loop Ok, not cancelled)
+    Agent-&gt;&gt;Notify: notify_task_complete (≤200 chars)
+    Note over Notify: macOS only; errors ignored
+    Agent-&gt;&gt;UI: ui_tx.send(update)
+
+    Agent-&gt;&gt;Agent: emit_update(StepFailed)
+    Agent-&gt;&gt;Notify: notify_step_failed (error ≤120 chars)
+    Agent-&gt;&gt;UI: ui_tx.send(update)</code></pre>
+<h3 id="headless-path">Headless path</h3>
+<p>Headless runs set <code>ui_tx: None</code>, so
+<code>agent_loop</code> never sends
+<code>AgentUpdate::TaskComplete</code> to a TUI. Completion is notified
+<strong>once</strong>: <code>run_headless</code> calls
+<code>notify_task_complete</code> directly after printing final text to
+stdout (<code>tui.rs</code>). There is no duplicate notification from
+<code>emit_update</code> during the loop.</p>
+<p>Interactive runs differ: <code>interactive.rs</code> emits
+<code>TaskComplete</code> after a successful, non-cancelled
+<code>agent_loop</code> return, and <code>emit_update</code> triggers
+<code>notify_task_complete</code> from that update.</p>
+<p>Errors from notification calls are discarded (<code>let _ = …</code>)
+everywhere — a failed <code>osascript</code> does not fail the
+agent.</p>
+<hr />
+<h2 id="5-what-does-not-trigger-notifications">5. What Does <em>Not</em>
+Trigger Notifications</h2>
+<p>These <code>AgentUpdate</code> variants do <strong>not</strong>
+notify:</p>
+<ul>
+<li><code>StepStarted</code>, <code>StepFinished</code>,
+<code>StepAdded</code></li>
+<li><code>Info</code>, <code>ModelInfo</code>, streaming tokens</li>
+<li>Permission prompts (<code>RequestSelect</code>)</li>
+<li>Thinking blocks</li>
+</ul>
+<p>There is no notification for session start, compaction, or MCP
+connection events.</p>
+<hr />
+<h2 id="6-code-map">6. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/notifications/mod.rs</code></td>
+<td><code>notify</code>, helpers, <code>is_enabled</code>, platform
+cfg</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>emit_update</code> — TaskComplete and StepFailed hooks</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code></td>
+<td>Headless completion notification after stdout</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/config/types.rs</code></td>
+<td><code>AgentTomlConfig.notifications_enabled</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/config/resolve.rs</code></td>
+<td>CLI <code>--no-notifications</code> override</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-current-gaps">7. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>macOS only</td>
+<td>Linux and Windows users get no desktop alerts</td>
+</tr>
+<tr>
+<td><code>notify_info</code> unused</td>
+<td>No call sites in the codebase</td>
+</tr>
+<tr>
+<td>Errors swallowed</td>
+<td><code>osascript</code> failures are ignored; no TUI fallback
+message</td>
+</tr>
+<tr>
+<td>Interactive-only <code>TaskComplete</code> notify</td>
+<td>Headless skips <code>emit_update(TaskComplete)</code>; only direct
+<code>notify_task_complete</code></td>
+</tr>
+<tr>
+<td>No rate limiting</td>
+<td>Rapid step failures could spam notifications</td>
+</tr>
+<tr>
+<td>No custom titles per session</td>
+<td>All notifications use fixed &quot;Tact — …&quot; prefixes</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./11_chapter_task.html">Tasks and Tool Scheduling</a> —
+when <code>StepFailed</code> is emitted</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — agent update
+flow overview</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="subagents">Subagents</h1>
+<blockquote>
+<p>Language: <a href="./12_chapter_subagent.html">English</a> · <a href="./12_chapter_subagent_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains how Tact spawns <strong>isolated worker
+agents</strong> through the <code>spawn_subagent</code> tool: a fresh
+conversation loop with a restricted tool set, shared filesystem and
+<code>ToolContext</code> services, but no parent history, hooks, or MCP
+tools. Each subagent gets its own SQLite session row linked via
+<code>sessions.ref_id</code>.</p>
+<p>Implementation: <code>crates/tact/src/tool/subagent.rs</code>.
+Tool-set wiring: <code>subagent_toolset()</code> in
+<code>crates/tact/src/tool/registry.rs</code>.</p>
+<p>Do not confuse this with <a href="./14_chapter_team.html">Team
+Coordination</a> — <code>spawn_teammate</code> only writes roster/inbox
+records; <code>spawn_subagent</code> actually runs a nested
+<code>Agent::agent_loop</code>.</p>
+<hr />
+<h2 id="1-what-a-subagent-is">1. What a Subagent Is</h2>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Main agent</th>
+<th>Subagent (<code>spawn_subagent</code> tool)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Entry</td>
+<td>TUI / headless <code>agent_loop</code></td>
+<td>Parent calls <code>spawn_subagent</code> during tool execution</td>
+</tr>
+<tr>
+<td>Conversation history</td>
+<td>Full session context</td>
+<td>Single user prompt only (no parent messages)</td>
+</tr>
+<tr>
+<td>System prompt</td>
+<td>Dynamic Tera template (skills, memory, CLAUDE.md)</td>
+<td>Fixed static string</td>
+</tr>
+<tr>
+<td>Native tools</td>
+<td><code>toolset()</code> (~40 tools)</td>
+<td><code>subagent_toolset()</code> (6 tools)</td>
+</tr>
+<tr>
+<td>MCP tools</td>
+<td>Loaded from config</td>
+<td><strong>None</strong> (<code>MCPToolRouter::new()</code>)</td>
+</tr>
+<tr>
+<td>Hooks</td>
+<td>Parent&#39;s registered hooks</td>
+<td>Empty hook list</td>
+</tr>
+<tr>
+<td>Session SQLite</td>
+<td>Yes (when wired in <code>tui.rs</code>)</td>
+<td><strong>Yes</strong> — new child session;
+<code>sessions.ref_id</code> = parent id (or <code>&#39;&#39;</code> if parent
+has none)</td>
+</tr>
+<tr>
+<td>Permission manager</td>
+<td>Parent&#39;s mode</td>
+<td>New manager, always <code>PermissionMode::Default</code></td>
+</tr>
+<tr>
+<td>TUI channel</td>
+<td>Parent&#39;s <code>ui_tx</code></td>
+<td><strong>Tagged</strong> — stream/steps go to Subagent sticky;
+<code>RequestSelect*</code> passthrough</td>
+</tr>
+<tr>
+<td>Cancel flag</td>
+<td>Shared on main runtime</td>
+<td><strong>Separate</strong> — user Cancel on parent does not stop an
+in-flight subagent</td>
+</tr>
+<tr>
+<td>Return to parent</td>
+<td>N/A</td>
+<td>Last assistant text block as tool result string</td>
+</tr>
+</tbody>
+</table>
+<p>The subagent shares <code>ToolContext</code> (cloned): same
+<code>work_dir</code>, managers for
+background/team/worktree/memory/skills, etc. Those services exist in
+memory, but most are unreachable because the tools that expose them are
+not registered on the subagent router.</p>
+<hr />
+<h2 id="2-the-spawn_subagent-tool">2. The <code>spawn_subagent</code>
+Tool</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>derive<span class="at">(</span><span class="bu">Debug</span><span class="op">,</span> Deserialize<span class="op">,</span> JsonSchema<span class="at">)]</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> SubagentInput <span class="op">{</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> prompt<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> description<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>tool<span class="at">(</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    name <span class="op">=</span> <span class="st">&quot;spawn_subagent&quot;</span><span class="op">,</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    description <span class="op">=</span> <span class="st">&quot;Spawn a subagent with fresh context. It shares the filesystem but not conversation history.&quot;</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="at">)]</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">async</span> <span class="kw">fn</span> spawn_subagent(ctx<span class="op">:</span> ToolContext<span class="op">,</span> input<span class="op">:</span> SubagentInput) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td>Becomes the subagent&#39;s sole user message</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>Schema-only hint for the model; <strong>not read by the
+handler</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Only the main agent&#39;s <code>toolset()</code> registers
+<code>SpawnSubagentTool</code>. Subagents cannot spawn nested subagents
+— <code>spawn_subagent</code> is absent from
+<code>subagent_toolset()</code>.</p>
+<hr />
+<h2 id="3-spawn-lifecycle">3. Spawn Lifecycle</h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant Parent as Main Agent
+    participant Task as task tool
+    participant Sub as Subagent
+    participant LLM as LLM API
+    participant Tools as subagent_toolset
+
+    Parent-&gt;&gt;Task: ToolUse(name=task, input)
+    Note over Parent,Task: PreToolUse + permission (High risk)
+    Task-&gt;&gt;Sub: Agent::new(static prompt, subagent_toolset, empty MCP)
+    Task-&gt;&gt;Sub: ensure_session_row(child_id, ref_id) + with_session
+    Task-&gt;&gt;Sub: with_ui_channel(tagged) if present
+    Task-&gt;&gt;Sub: agent_loop(Some(prompt))
+
+    loop until stop ≠ ToolUse
+        Sub-&gt;&gt;LLM: stream_message + 6 tool specs
+        LLM--&gt;&gt;Sub: assistant blocks
+        alt ToolUse
+            Sub-&gt;&gt;Tools: execute_tool_call (hooks empty, Default permissions)
+            Tools--&gt;&gt;Sub: ToolResult → context
+        else end_turn
+            Sub--&gt;&gt;Task: loop exits
+        end
+    end
+
+    Task-&gt;&gt;Task: extract last Assistant text
+    Task--&gt;&gt;Parent: Ok(summary) as ToolResult</code></pre>
+<p><strong>Blocking semantics:</strong> <code>spawn_subagent</code> is
+<code>async</code> and awaits the full subagent loop. From the parent&#39;s
+perspective it is one tool call that may run many LLM turns internally.
+The parent&#39;s <code>agent_loop</code> is paused until the summary string
+returns.</p>
+<p><strong>Message seeding:</strong> the handler calls
+<code>agent_loop(Some(user_prompt))</code> so the seed user turn is
+appended via <code>push_message</code> and persisted under the child
+session. Before the loop, <code>spawn_subagent</code> allocates a child
+session id, sets <code>ref_id</code> to the parent session id (or
+<code>&#39;&#39;</code>), and calls <code>with_session</code>. UI traffic uses a
+tagged <code>ui_tx</code> (<code>with_ui_channel</code> also syncs
+<code>tool_context.ui_tx</code> so <code>ToolProgress</code> is
+tagged).</p>
+<hr />
+<h2 id="4-restricted-tool-set">4. Restricted Tool Set</h2>
+<p><code>subagent_toolset()</code> registers exactly five tools:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bash</code></td>
+<td>Shell commands (subject to <code>validate_shell_command</code>)</td>
+</tr>
+<tr>
+<td><code>read_file</code></td>
+<td>Read workspace files</td>
+</tr>
+<tr>
+<td><code>write_file</code></td>
+<td>Create or overwrite files</td>
+</tr>
+<tr>
+<td><code>edit_file</code></td>
+<td>Exact string replace (first or all)</td>
+</tr>
+<tr>
+<td><code>sleep</code></td>
+<td>Timing / polling</td>
+</tr>
+</tbody>
+</table>
+<p>Notable <strong>omissions</strong> compared to the main agent:</p>
+<ul>
+<li>No <code>spawn_subagent</code>, <code>load_skill</code>,
+<code>save_memory</code>, <code>compact</code>, web tools, LSP,
+apply_patch, batch tools</li>
+<li>No team, worktree, or persistent-task management tools</li>
+<li>No MCP-prefixed tools</li>
+</ul>
+<p>The module comment above <code>subagent_toolset()</code> still says
+&quot;four tools&quot; — the <code>route()</code> list above is authoritative
+(also enforced by unit test
+<code>subagent_toolset_includes_core_file_tools</code>).</p>
+<hr />
+<h2 id="5-system-prompt-and-context">5. System Prompt and Context</h2>
+<p>Subagents use <code>AgentSystemPrompt::Static</code>:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> system_prompt <span class="op">=</span> <span class="pp">format!</span>(</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;You are a coding subagent at {}. Complete the given task, then summarize your findings.&quot;</span><span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    ctx<span class="op">.</span>work_dir<span class="op">.</span>display()</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>)<span class="op">;</span></span></code></pre></div>
+<p><code>build_system_prompt()</code> returns this string verbatim every
+turn — no skill summaries, memory injection, CLAUDE.md, or directory
+snapshot. See <a href="./04_chapter_prompt.html">System Prompt</a> for
+how the main agent differs.</p>
+<p>Compaction and recovery <strong>do</strong> still run inside the
+subagent loop (<a href="./05_chapter_compact.html">Context
+Compaction</a>, <a href="./06_chapter_recovery.html">Error
+Recovery</a>): <code>micro_compact</code>, <code>compact_history</code>,
+transport retries, and continuation messages apply to the subagent&#39;s
+private <code>runtime.context</code>.</p>
+<hr />
+<h2 id="6-permissions-and-ui">6. Permissions and UI</h2>
+<p><code>spawn_subagent</code> is classified as <strong>High</strong>
+risk in <code>PermissionManager::classify_risk</code> — it always
+triggers Ask in Default mode, even if allowlisted, because it delegates
+full shell and filesystem access to a nested agent.</p>
+<p>The subagent constructs its <strong>own</strong>
+<code>PermissionManager::try_new(PermissionMode::Default)?</code>. It
+does not inherit the parent&#39;s Plan/Auto mode or allowlist.</p>
+<p>If the parent has a TUI channel, the subagent gets a
+<strong>tagged</strong> channel (<code>tagged_ui_channel</code>):
+stream, steps, thinking, and token usage become
+<code>AgentUpdate::Subagent</code> and render in the sticky
+<strong>Subagent</strong> tab. <code>RequestSelect</code> /
+<code>RequestMultiSelect</code> still pass through so permission popups
+work on the main TUI. See <a href="./10_chapter_permission.html">Permission Model</a> and <a href="./23_chapter_tui.html">TUI</a>.</p>
+<hr />
+<h2 id="7-scheduling-interaction">7. Scheduling Interaction</h2>
+<p>In <code>crates/tact/src/agent/tool_schedule.rs</code>,
+<code>spawn_subagent</code> falls through to the default
+<code>_ =&gt; ToolResources::barrier()</code> branch. A
+<code>spawn_subagent</code> call never runs in parallel with any other
+tool in the same wave — see <a href="./11_chapter_task.html">Tasks and
+Tool Scheduling</a>.</p>
+<hr />
+<h2 id="8-return-value">8. Return Value</h2>
+<p>After <code>agent_loop</code> completes, the handler scans
+<code>runtime.context</code> in reverse for the last
+<code>Role::Assistant</code> message and extracts plain text via
+<code>extract_text</code>:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> summary <span class="op">=</span> subagent</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>runtime</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>context</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>iter()</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>rev()</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>find(<span class="op">|</span>message<span class="op">|</span> <span class="pp">matches!</span>(message<span class="op">.</span>role<span class="op">,</span> <span class="pp">Role::</span>Assistant))</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>map(<span class="op">|</span>message<span class="op">|</span> extract_text(<span class="op">&amp;</span>message<span class="op">.</span>content))</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>filter(<span class="op">|</span>text<span class="op">|</span> <span class="op">!</span>text<span class="op">.</span>is_empty())</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">.</span>unwrap_or_else(<span class="op">||</span> <span class="st">&quot;(no summary)&quot;</span><span class="op">.</span>to_string())<span class="op">;</span></span></code></pre></div>
+<p>Implications:</p>
+<ul>
+<li>Thinking blocks and tool-use metadata are stripped; only text blocks
+count.</li>
+<li>If the model ends on a tool-use turn without a final text reply, the
+parent may receive <code>(no summary)</code>.</li>
+<li>Intermediate assistant reasoning is not returned — only the last
+assistant text snapshot.</li>
+</ul>
+<p>That string becomes the <code>spawn_subagent</code> tool&#39;s JSON/text
+result and is appended to the <strong>parent</strong> context as a
+normal <code>ToolResult</code>.</p>
+<hr />
+<h2 id="9-subagent-vs-teammate">9. Subagent vs Teammate</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>spawn_subagent</code> (subagent)</th>
+<th><code>spawn_teammate</code> (team)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Runs LLM loop</td>
+<td>Yes, nested <code>agent_loop</code></td>
+<td>No — roster entry only</td>
+</tr>
+<tr>
+<td>Isolation</td>
+<td>Fresh context, 6 tools</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td>Persistence</td>
+<td>Own SQLite session (<code>ref_id</code> → parent)</td>
+<td><code>.tact/team/</code> JSON</td>
+</tr>
+<tr>
+<td>Use case</td>
+<td>Delegate focused coding work</td>
+<td>Multi-agent coordination protocol</td>
+</tr>
+</tbody>
+</table>
+<p>See <a href="./14_chapter_team.html">Team Coordination</a>.</p>
+<hr />
+<h2 id="10-code-map">10. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/tool/subagent.rs</code></td>
+<td><code>spawn_subagent</code> tool handler — spawn, loop, summary
+extraction</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>SpawnSubagentTool</code> implementation</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>SpawnSubagentTool</code> in <code>toolset()</code>;
+<code>subagent_toolset()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>Agent::new</code>, <code>agent_loop</code>,
+<code>build_system_prompt</code>, <code>ensure_session</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td><code>spawn_subagent</code> → <code>CapabilityRisk::High</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
+<td><code>spawn_subagent</code> as scheduling barrier</td>
+</tr>
+<tr>
+<td><code>ARCHITECTURE.md</code></td>
+<td>One-line summary in tools table</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-current-gaps">11. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No nested <code>spawn_subagent</code></td>
+<td>By design in toolset, but limits decomposition depth</td>
+</tr>
+<tr>
+<td>No MCP on subagents</td>
+<td>External tools unavailable inside workers</td>
+</tr>
+<tr>
+<td>No parent hooks</td>
+<td>PreToolUse / PostToolUse policies do not wrap subagent tools</td>
+</tr>
+<tr>
+<td>Static prompt only</td>
+<td>No skills/memory/CLAUDE.md unless the parent copies them into
+<code>prompt</code></td>
+</tr>
+<tr>
+<td><code>description</code> ignored</td>
+<td>JSON field has no runtime effect</td>
+</tr>
+<tr>
+<td>Separate cancel flag</td>
+<td>Parent Cancel may not abort a long-running subagent</td>
+</tr>
+<tr>
+<td>Child sessions hidden from list</td>
+<td><code>--list-sessions</code> / resume only show
+<code>ref_id = &#39;&#39;</code>; delete parent cascades children</td>
+</tr>
+<tr>
+<td>Summary heuristic</td>
+<td>Last assistant text only; tool-only endings return
+<code>(no summary)</code></td>
+</tr>
+<tr>
+<td>Stale module comment</td>
+<td><code>subagent_toolset</code> doc says four tools; five are
+registered</td>
+</tr>
+<tr>
+<td>Same LLM client</td>
+<td><code>get_llm_client()</code> — no model override for workers</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="12-real-world-case-study-bottom-bar-visual-polish">12.
+Real-World Case Study: Bottom Bar Visual Polish</h2>
+<p>A 3-task SDD session on <code>feat/web</code>. Plan:
+<code>docs/superpowers/plans/2026-07-24-bottom-bar-polish.md</code>.
+Stats: 6 subagents (3 implementers + 2 reviewers + 1 fixer), 400 tests,
+5 commits pushed.</p>
+<h3 id="121-task-dependency--why-serial">12.1 Task Dependency — Why
+Serial</h3>
+<pre class="mermaid"><code>flowchart LR
+    T1[&quot;Task 1: Pure formatters + i18n cleanup&lt;br/&gt;adds: 6 icon consts + 5 format fns&quot;] --&gt; T2
+    T2[&quot;Task 2: Rewrite render_bottom_bar&lt;br/&gt;uses: T1&#39;s helpers + Span + DropGroup&quot;] --&gt; T3
+    T3[&quot;Task 3: Docs + Ch 26 log&lt;br/&gt;reflects: final code state&quot;]</code></pre>
+<p>All three tasks modify <code>crates/tui/src/render/bar.rs</code>. SDD
+prohibits parallel dispatch on shared files — enforced at the controller
+level.</p>
+<h3 id="122-file-based-handoff-not-conversation-history">12.2 File-Based
+Handoff (not conversation history)</h3>
+<pre><code>.superworks/sdd/
+├── progress.md                          # Recovery anchor (survives compaction)
+├── task-1-brief.md                      # Requirements extracted from plan
+├── task-1-report.md                     # Implementer&#39;s output
+├── review-task-1.diff                   # git diff for reviewer
+├── review-task-1-v2.diff                # Re-review after fix
+├── task-2-brief.md / task-2-report.md   # Same pattern
+├── ...
+└── final-review.diff                    # Whole-branch diff for final review</code></pre>
+<p>Each dispatch prompt is a 5-line template — the brief file is the
+<strong>single source of requirements</strong>:</p>
+<pre><code>┌── dispatch ───────────────────────────────────────────────────────┐
+│ You are implementing Task 1.                                      │
+│ Read this file: .superworks/sdd/task-1-brief.md                  │
+│ Work in: /Users/rg/Projects/tact, branch feat/web                │
+│ Verify: cargo check -p tact-tui; then cargo test -p tact-ui      │
+│ Report to: .superworks/sdd/task-1-report.md                      │
+└──────────────────────────────────────────────────────────────────┘</code></pre>
+<p><strong>A brief file contains exact code to write</strong> — not
+prose instructions. The implementer copies verbatim, writes tests,
+commits. No context to inherit, no history to pollute:</p>
+<pre><code>.superworks/sdd/task-1-brief.md  (abbreviated)
+├── Part A: i18n.rs — delete 7 fields from struct + both locales
+├── Part B: bar.rs — add 6 icon constants
+├── Part C: bar.rs — add 5 pure helpers (code block provided)
+├── Part D: bar.rs — add 10 unit tests (code block provided)
+└── Commit: &quot;feat(tui): add bottom-bar pure formatters ...&quot;</code></pre>
+<p><strong>A report file captures what happened</strong> — the
+controller reads this after the subagent exits:</p>
+<pre><code>.superworks/sdd/task-1-report.md  (abbreviated)
+├── Status: DONE
+├── Commits: 3a8a186
+├── Test results: cargo check fails (expected — T2 fixes bar.rs)
+├── Changes: Part A done, Part B done, Part C done, Part D done
+└── Concerns: WindowEntry doesn&#39;t exist → used UsageQuotaWindow</code></pre>
+<p>Without file handoff, every subagent&#39;s code and report would inflate
+the controller&#39;s context permanently. With it, the controller reads only
+the SHA and status line — the rest lives on disk.</p>
+<h3 id="123-review-loop--gate-per-task">12.3 Review Loop — Gate Per
+Task</h3>
+<pre class="mermaid"><code>flowchart LR
+    I[&quot;Implementer&quot;] --&gt;|DONE| C[&quot;Controller&quot;]
+    C --&gt;|&quot;git diff BASE..HEAD&quot;| D[&quot;task-N.diff&quot;]
+    C --&gt;|&quot;dispatch brief + report + diff&quot;| R[&quot;Reviewer&quot;]
+    R --&gt;|&quot;2 verdicts&quot;| C
+    C --&gt;|&quot;Critical&quot;| F[&quot;Fixer&quot;]
+    F --&gt;|&quot;fixed + amend&quot;| C
+    C --&gt;|&quot;re-dispatch&quot;| R
+    R --&gt;|&quot;✅&quot;| C
+    C --&gt;|&quot;append to progress.md&quot;| N[&quot;Next task&quot;]</code></pre>
+<p>Two verdicts, each binary:</p>
+<table>
+<thead>
+<tr>
+<th>Verdict</th>
+<th>Pass if</th>
+<th>Fail →</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Spec compliance</strong></td>
+<td>Every brief requirement present. No extras (YAGNI).</td>
+<td>Fixer dispatched</td>
+</tr>
+<tr>
+<td><strong>Task quality</strong></td>
+<td>Tests cover edge cases. No unwrap in non-test. No dead imports.</td>
+<td>Fixer dispatched</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Severity determines response:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Severity</th>
+<th>Meaning</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Critical</td>
+<td>Blocks correctness, bug in logic</td>
+<td>Must fix, must re-review</td>
+</tr>
+<tr>
+<td>Important</td>
+<td>Maintainability risk, test gap</td>
+<td>Recommend fix</td>
+</tr>
+<tr>
+<td>Minor</td>
+<td>Style, naming</td>
+<td>Record in ledger, triage at final review</td>
+</tr>
+</tbody>
+</table>
+<h3 id="124-what-task-1s-review-caught-critical">12.4 What Task 1&#39;s
+Review Caught (Critical)</h3>
+<pre><code>format_quota_window_with_pct  expects &quot;75%&quot;
+                              actual   &quot;25%&quot;
+usage_pct() = (limit - remaining) / limit * 100
+            = (200 - 150) / 200 * 100
+            = 25    ← not 75</code></pre>
+<p>The brief specified <code>WindowEntry</code> (doesn&#39;t exist).
+Implementer correctly adapted to <code>UsageQuotaWindow</code> but
+copied the brief&#39;s wrong expected value. Fix: 1-line test change,
+<code>git commit --amend</code>, re-review passes.</p>
+<p>Without this gate: test fails on first CI run → developer marks flaky
+→ never caught.</p>
+<h3 id="125-plan-reality-adaptation">12.5 Plan-Reality Adaptation</h3>
+<p>Plan referenced <code>FocusedPanel::Plan</code> and
+<code>focus_plan</code> / <code>bottom_focus_log_plan</code> i18n
+fields. Actual code has no <code>Plan</code> variant — deleted in a
+previous refactor.</p>
+<pre class="mermaid"><code>flowchart LR
+    P[&quot;Plan doc: FocusedPanel::Plan exists&quot;] --&gt;|stale| A
+    C[&quot;Repo: only FocusedPanel::Log, plan.rs deleted&quot;] --&gt;|reality| A
+    A[&quot;Implementer adapts: FocusedPanel::Log =&gt; \&quot;[Log]\&quot;&quot;]
+    A --&gt; R[&quot;Reviewer: ✅ adaptation correct&quot;]</code></pre>
+<p>Implementers are not mechanical code generators — they read the real
+codebase, detect drift, and adapt. The controller adjudicates whether
+the adaptation is acceptable.</p>
+<h3 id="126-final-review--branch-level-gate">12.6 Final Review —
+Branch-Level Gate</h3>
+<p>Whole-branch diff
+(<code>git merge-base main HEAD</code>..<code>HEAD</code>): <strong>5455
+lines, 37 files</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Severity</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>expect()</code> on mutex — will panic if poisoned</td>
+<td>Important</td>
+<td>Deferred</td>
+</tr>
+<tr>
+<td><code>display_width()</code> uses <code>chars().count()</code> not
+Unicode width</td>
+<td>Important</td>
+<td>Deferred</td>
+</tr>
+<tr>
+<td>Row 1 drop-order is path→uptime, spec says uptime→path</td>
+<td>Important</td>
+<td><strong>Fixed immediately</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Verdict: <strong>Ready to merge</strong>. The fixed drop-order was
+the most actionable; the other two are lower risk.</p>
+<h3 id="127-key-takeaways">12.7 Key Takeaways</h3>
+<pre class="mermaid"><code>flowchart TD
+    subgraph &quot;SDD workflow&quot;
+        F1[&quot;File handoff: briefs + reports on disk&lt;br/&gt;controller context stays compact&quot;]
+        F2[&quot;Review gate per task&lt;br/&gt;each catches real bugs&quot;]
+        F3[&quot;Implementers adapt to reality&lt;br/&gt;not bound by stale plan text&quot;]
+        F4[&quot;Final review catches cross-task issues&lt;br/&gt;even after per-task gates pass&quot;]
+    end</code></pre>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Lesson</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Serial is required — same-crate deps prevent parallel</td>
+<td>All 3 tasks touch <code>bar.rs</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Brief file is the single source — not prompt text</td>
+<td>Dispatch is 5 lines; brief has 200 lines of code</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Review gate catches Critical bugs that CI wouldn&#39;t</td>
+<td>75%→25% test would have shipped</td>
+</tr>
+<tr>
+<td>4</td>
+<td>BASE commit must be pre-task SHA, not <code>HEAD~1</code></td>
+<td>Multi-commit tasks would be truncated</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>.superworks/sdd/progress.md</code> survives compaction</td>
+<td>After compaction: <code>cat progress.md</code> +
+<code>git log</code> → resume</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./07_chapter_tool.html">Tool System</a> —
+<code>toolset</code> vs <code>subagent_toolset</code>,
+<code>ToolContext</code></li>
+<li><a href="./11_chapter_task.html">Tasks and Tool Scheduling</a> —
+barrier semantics</li>
+<li><a href="./10_chapter_permission.html">Permission Model</a> —
+High-risk <code>spawn_subagent</code>, inherited <code>ui_tx</code></li>
+<li><a href="./04_chapter_prompt.html">System Prompt</a> — dynamic
+main-agent prompt</li>
+<li><a href="./02_chapter_skill.html">Skill Registry</a> —
+<code>load_skill</code> unavailable to subagents</li>
+<li><a href="./14_chapter_team.html">Team Coordination</a> — roster-only
+teammates</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — workspace tool
+table</li>
+</ul>
+</body>
+</html>

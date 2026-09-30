@@ -248,6 +248,13 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
             inspection.filtered.join(", "),
         ));
     }
+    // Same reasoning for the server's own guidance: "sent nothing" and "sent
+    // something we dropped" must not look alike.
+    if let Some(chars) = inspection.instructions_chars {
+        lines.push(format!(
+            "  instructions  {chars} chars (injected into the system prompt)"
+        ));
+    }
     lines.join("\n")
 }
 
@@ -708,6 +715,7 @@ mod tests {
             status: McpServerStatus::Connected,
             tools: vec!["read_note".to_string()],
             filtered: vec!["delete_note".to_string()],
+            instructions_chars: None,
         };
 
         let text = render_server_detail(&inspection);
@@ -717,6 +725,33 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("delete_note"), "{text}");
+    }
+
+    #[test]
+    fn the_detail_view_reports_server_instructions() {
+        let inspection = mcp::McpServerInspection {
+            server: configured("basic-memory", false),
+            status: McpServerStatus::Connected,
+            tools: vec!["read_note".to_string()],
+            filtered: Vec::new(),
+            instructions_chars: Some(2_043),
+        };
+        let text = render_server_detail(&inspection);
+        assert!(
+            text.contains("instructions  2043 chars (injected into the system prompt)"),
+            "{text}"
+        );
+
+        // A server that sent nothing must not look like one whose guidance was
+        // dropped, so absence stays silent — only a real payload gets a line.
+        let quiet = mcp::McpServerInspection {
+            instructions_chars: None,
+            ..inspection
+        };
+        assert!(
+            !render_server_detail(&quiet).contains("instructions"),
+            "{quiet:?}"
+        );
     }
 
     #[test]
@@ -860,6 +895,7 @@ mod tests {
             status: McpServerStatus::Connected,
             tools: vec!["get_file".into(), "list_files".into()],
             filtered: Vec::new(),
+            instructions_chars: None,
         };
 
         let text = render_server_detail(&inspection);
@@ -883,6 +919,7 @@ mod tests {
             status: McpServerStatus::PendingAuthorization,
             tools: Vec::new(),
             filtered: Vec::new(),
+            instructions_chars: None,
         };
         let report = McpLoadReport {
             configured: vec![configured("linear", true)],
@@ -901,6 +938,7 @@ mod tests {
             status: McpServerStatus::Failed("connection refused".into()),
             tools: Vec::new(),
             filtered: Vec::new(),
+            instructions_chars: None,
         };
         let report = McpLoadReport {
             configured: vec![configured("broken", false)],
@@ -917,6 +955,7 @@ mod tests {
             status: McpServerStatus::Connected,
             tools: Vec::new(),
             filtered: Vec::new(),
+            instructions_chars: None,
         };
         let text = render_server_detail(&connected);
         assert!(text.contains("reports no tools"), "{text}");

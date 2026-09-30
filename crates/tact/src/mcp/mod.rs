@@ -68,6 +68,14 @@ const MCP_LIST_TOOLS_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// only stops an unbounded hang from wedging the agent loop.
 const MCP_CALL_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Ceiling on one server's `InitializeResult.instructions`.
+///
+/// The handshake is the one place a server can hand over arbitrary prose that
+/// reaches the *trusted* half of the system prompt, so the size is bounded per
+/// server rather than trusted. Truncation is marked, never silent — a server
+/// whose guidance matters will notice it is being cut.
+const MCP_INSTRUCTIONS_MAX_CHARS: usize = 16_384;
+
 use anyhow::{Context, Result, bail};
 use futures_util::{
     StreamExt,
@@ -462,6 +470,12 @@ pub struct McpServerInspection {
     /// Reported so a filtered server cannot be mistaken for one that simply
     /// lacks those tools.
     pub filtered: Vec<String>,
+    /// Length of the server's `InitializeResult.instructions`, in characters.
+    ///
+    /// `None` when the server sent none. Reported so a server whose guidance is
+    /// silently dropped is distinguishable from one that never sent any —
+    /// the same reason `filtered` exists.
+    pub instructions_chars: Option<usize>,
 }
 
 /// What one connection attempt produced.
@@ -1203,20 +1217,44 @@ pub trait McpService: Send + Sync + 'static {
     fn cancel(&self) -> BoxFuture<'_, ()> {
         std::future::ready(()).boxed()
     }
+
+    /// The `instructions` string the server returned during `initialize`.
+    ///
+    /// This is the MCP spec's channel for "what this server is and how to use
+    /// it", and the only thing a newly connected model gets *for free* — the
+    /// resources and tool descriptions behind it need a deliberate fetch. A
+    /// default of `None` keeps every test double compiling; only the real
+    /// client answers.
+    fn instructions(&self) -> Option<String> {
+        None
+    }
 }
 
-struct RealMcpService(tokio::sync::RwLock<Option<RunningService<RoleClient, ()>>>);
+struct RealMcpService {
+    service: tokio::sync::RwLock<Option<RunningService<RoleClient, ()>>>,
+    /// Snapshotted at construction: `peer_info()` is only readable while the
+    /// service is alive, and `McpService::instructions` is synchronous.
+    instructions: Option<String>,
+}
 
 impl RealMcpService {
     fn new(service: RunningService<RoleClient, ()>) -> Self {
-        Self(tokio::sync::RwLock::new(Some(service)))
+        // Snapshotted at construction: `peer_info()` is only readable while the
+        // service is alive, and `McpService::instructions` is synchronous.
+        let instructions = service
+            .peer_info()
+            .and_then(|info| info.instructions.clone());
+        Self {
+            service: tokio::sync::RwLock::new(Some(service)),
+            instructions,
+        }
     }
 }
 
 impl McpService for RealMcpService {
     fn list_all_tools(&self) -> BoxFuture<'_, Result<Vec<McpTool>, ServiceError>> {
         async move {
-            let guard = self.0.read().await;
+            let guard = self.service.read().await;
             match guard.as_ref() {
                 Some(service) => service.list_all_tools().await,
                 None => Err(ServiceError::TransportClosed),
@@ -1230,7 +1268,7 @@ impl McpService for RealMcpService {
         params: CallToolRequestParams,
     ) -> BoxFuture<'_, Result<CallToolResult, ServiceError>> {
         async move {
-            let guard = self.0.read().await;
+            let guard = self.service.read().await;
             match guard.as_ref() {
                 Some(service) => service.call_tool(params).await,
                 None => Err(ServiceError::TransportClosed),
@@ -1241,12 +1279,16 @@ impl McpService for RealMcpService {
 
     fn cancel(&self) -> BoxFuture<'_, ()> {
         async move {
-            let mut guard = self.0.write().await;
+            let mut guard = self.service.write().await;
             if let Some(service) = guard.take() {
                 let _ = service.cancel().await;
             }
         }
         .boxed()
+    }
+
+    fn instructions(&self) -> Option<String> {
+        self.instructions.clone()
     }
 }
 
@@ -1260,6 +1302,19 @@ where
 {
     let mut lines = reader.lines();
     while lines.next_line().await.ok().flatten().is_some() {}
+}
+
+/// Bounds one server's instructions, marking the cut.
+///
+/// The truncation marker is part of the injected text on purpose: a silent cut
+/// would leave the model with guidance that stops mid-sentence and no way to
+/// know it is incomplete.
+fn cap_instructions(text: &str) -> String {
+    if text.chars().count() <= MCP_INSTRUCTIONS_MAX_CHARS {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(MCP_INSTRUCTIONS_MAX_CHARS).collect();
+    format!("{kept}\n… (truncated at {MCP_INSTRUCTIONS_MAX_CHARS} characters)")
 }
 
 pub struct McpClient {
@@ -1278,6 +1333,12 @@ pub struct McpClient {
     /// once per server, and an unboxed policy doubled the variant's size
     /// (`clippy::large_enum_variant`).
     policy: Box<McpServerPolicy>,
+    /// The server's `InitializeResult.instructions`, normalized and capped.
+    ///
+    /// `None` when the server sent none (or only whitespace). Capped at
+    /// [`MCP_INSTRUCTIONS_MAX_CHARS`] here, once, so every consumer — the
+    /// prompt block and `mcp get` — reports the same length.
+    instructions: Option<String>,
 }
 
 impl McpClient {
@@ -1346,6 +1407,14 @@ impl McpClient {
         }
         hidden.sort();
         let tool_specs = build_tool_specs(&server_name, &exposed);
+        // Read the server's prose before the service is moved into the client.
+        // Normalizing here (not in the transport) keeps the mock and the real
+        // client on one path: a whitespace-only payload means "sent nothing".
+        let instructions = service
+            .instructions()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .map(|text| cap_instructions(&text));
         Self {
             server_name,
             service,
@@ -1353,7 +1422,13 @@ impl McpClient {
             tool_specs,
             hidden,
             policy: Box::new(policy),
+            instructions,
         }
+    }
+
+    /// The server's `initialize` instructions, capped and trimmed.
+    pub fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
     }
 
     pub fn list_tools(&self) -> &[McpTool] {
@@ -1490,6 +1565,7 @@ pub struct MockMcpService {
     tools: Vec<McpTool>,
     handler: McpToolHandler,
     calls: std::sync::Mutex<Vec<(String, Value)>>,
+    instructions: Option<String>,
 }
 
 impl MockMcpService {
@@ -1504,7 +1580,15 @@ impl MockMcpService {
             tools,
             handler: Arc::new(handler),
             calls: std::sync::Mutex::new(Vec::new()),
+            instructions: None,
         }
+    }
+
+    /// Adds an `InitializeResult.instructions` payload for this server.
+    #[must_use]
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
+        self
     }
 
     /// Return every `(tool_name, arguments)` pair received so far.
@@ -1535,6 +1619,10 @@ impl McpService for MockMcpService {
             .push((name, args));
         let handler = self.handler.clone();
         std::future::ready(handler(&params)).boxed()
+    }
+
+    fn instructions(&self) -> Option<String> {
+        self.instructions.clone()
     }
 }
 
@@ -1660,6 +1748,37 @@ impl MCPToolRouter {
             .collect::<Vec<_>>();
         summaries.sort_by(|a, b| a.0.cmp(&b.0));
         summaries
+    }
+
+    /// The `InitializeResult.instructions` of every connected server, as one
+    /// markdown body for the system prompt — empty when no server sent any.
+    ///
+    /// Servers are emitted in name order so the block is deterministic (the
+    /// system prompt sits before the KV-cache boundary; an unstable body would
+    /// invalidate the cached prefix on every render).
+    ///
+    /// A server whose tools are all filtered out is skipped: its guidance is
+    /// about tools the agent cannot call, and `mcp list` already reports the
+    /// filter. A server that sends no tools at all is skipped for the same
+    /// reason.
+    pub fn instructions_block(&self) -> String {
+        let mut servers: Vec<(&str, &str)> = self
+            .clients
+            .values()
+            .filter(|client| !client.tools.is_empty())
+            .filter_map(|client| {
+                client
+                    .instructions()
+                    .map(|text| (client.server_name.as_str(), text))
+            })
+            .collect();
+        servers.sort_by(|a, b| a.0.cmp(b.0));
+
+        let mut sections = Vec::with_capacity(servers.len());
+        for (server, text) in servers {
+            sections.push(format!("## {server}\n\n{text}"));
+        }
+        sections.join("\n\n")
     }
 
     pub async fn disconnect_all(&mut self) {
@@ -2084,30 +2203,37 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
             status: McpServerStatus::Disabled,
             tools: Vec::new(),
             filtered: Vec::new(),
+            instructions_chars: None,
         }));
     }
-    let (status, tools, filtered) = match connect_server(server_name, transport, policy).await {
-        ConnectOutcome::Connected(client) => {
-            let tools = client
-                .list_tools()
-                .iter()
-                .map(|tool| tool.name.to_string())
-                .collect();
-            let filtered = client.hidden_tools().to_vec();
-            (McpServerStatus::Connected, tools, filtered)
-        }
-        ConnectOutcome::NeedsAuthorization => (
-            McpServerStatus::PendingAuthorization,
-            Vec::new(),
-            Vec::new(),
-        ),
-        ConnectOutcome::Failed(error) => (McpServerStatus::Failed(error), Vec::new(), Vec::new()),
-    };
+    let (status, tools, filtered, instructions_chars) =
+        match connect_server(server_name, transport, policy).await {
+            ConnectOutcome::Connected(client) => {
+                let tools = client
+                    .list_tools()
+                    .iter()
+                    .map(|tool| tool.name.to_string())
+                    .collect();
+                let filtered = client.hidden_tools().to_vec();
+                let chars = client.instructions().map(|text| text.chars().count());
+                (McpServerStatus::Connected, tools, filtered, chars)
+            }
+            ConnectOutcome::NeedsAuthorization => (
+                McpServerStatus::PendingAuthorization,
+                Vec::new(),
+                Vec::new(),
+                None,
+            ),
+            ConnectOutcome::Failed(error) => {
+                (McpServerStatus::Failed(error), Vec::new(), Vec::new(), None)
+            }
+        };
     Ok(Some(McpServerInspection {
         server,
         status,
         tools,
         filtered,
+        instructions_chars,
     }))
 }
 
@@ -2178,12 +2304,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ApprovalMode, MCPToolRouter, McpAuthConfig, McpClient, McpConfigFile, McpLiveStatus,
-        McpLoadReport, McpProjectConfig, McpServerConfig, McpServerPolicy, McpToolConfig,
-        McpToolName, McpTransportConfig, MockMcpService, PluginDirs, PluginManifest, PluginRoot,
-        RealMcpService, SourcedServer, UnmodelledKeys, collect_plugin_mcp_servers,
-        collect_sourced_servers, describe_resolved, drain_mcp_stderr, installed_plugin_mcp_servers,
-        plugin_manifest_mcp_servers, prepare_plugin_entry, resolve_servers,
+        ApprovalMode, MCP_INSTRUCTIONS_MAX_CHARS, MCPToolRouter, McpAuthConfig, McpClient,
+        McpConfigFile, McpLiveStatus, McpLoadReport, McpProjectConfig, McpServerConfig,
+        McpServerPolicy, McpToolConfig, McpToolName, McpTransportConfig, MockMcpService,
+        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, UnmodelledKeys,
+        cap_instructions, collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved,
+        drain_mcp_stderr, installed_plugin_mcp_servers, plugin_manifest_mcp_servers,
+        prepare_plugin_entry, resolve_servers,
     };
 
     use crate::{
@@ -2673,6 +2800,118 @@ mod tests {
         assert_eq!(
             router.server_summaries(),
             vec![("demo".to_string(), 1), ("other".to_string(), 1)]
+        );
+    }
+
+    /// A client whose service carries `instructions`, for the prompt-block tests.
+    fn client_with_instructions(
+        server: &str,
+        tools: Vec<McpTool>,
+        instructions: &str,
+    ) -> McpClient {
+        let service = MockMcpService::new(tools, |_| {
+            Ok(CallToolResult::success(vec![Content::text("ok")]))
+        })
+        .with_instructions(instructions);
+        McpClient::with_service(server, service.tools.clone(), Arc::new(service))
+    }
+
+    #[test]
+    fn instructions_are_captured_from_the_service_and_trimmed() {
+        let client = client_with_instructions("demo", vec![echo_tool()], "  Use me well.\n");
+        assert_eq!(client.instructions(), Some("Use me well."));
+    }
+
+    #[test]
+    fn whitespace_only_instructions_are_absent_not_empty() {
+        // A server that sends `""` is indistinguishable from one that sends
+        // nothing; a fenced empty section would only cost tokens.
+        let client = client_with_instructions("demo", vec![echo_tool()], "   \n\t ");
+        assert_eq!(client.instructions(), None);
+        assert_eq!(MCPToolRouter::new().instructions_block(), "");
+    }
+
+    #[test]
+    fn the_instructions_block_is_server_sorted_and_headed() {
+        let mut router = MCPToolRouter::new();
+        router.register_client(client_with_instructions(
+            "zeta",
+            vec![echo_tool()],
+            "Zeta guidance.",
+        ));
+        router.register_client(client_with_instructions(
+            "alpha",
+            vec![echo_tool()],
+            "Alpha guidance.",
+        ));
+
+        assert_eq!(
+            router.instructions_block(),
+            "## alpha\n\nAlpha guidance.\n\n## zeta\n\nZeta guidance."
+        );
+    }
+
+    #[test]
+    fn a_server_with_every_tool_filtered_contributes_no_instructions() {
+        // The guidance describes tools the agent cannot call, and `mcp list`
+        // already reports the filter.
+        let service = MockMcpService::new(vec![echo_tool()], |_| {
+            Ok(CallToolResult::success(Vec::new()))
+        })
+        .with_instructions("You can echo things.");
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","enabled_tools":["other"]}"#).unwrap();
+        let client = McpClient::with_service_and_policy(
+            "demo",
+            vec![echo_tool()],
+            Arc::new(service),
+            McpServerPolicy::from_config(&config),
+        );
+        assert_eq!(client.instructions(), Some("You can echo things."));
+
+        let mut router = MCPToolRouter::new();
+        router.register_client(client);
+        assert_eq!(router.instructions_block(), "");
+    }
+
+    #[test]
+    fn oversized_instructions_are_capped_with_a_marker() {
+        let long = "x".repeat(MCP_INSTRUCTIONS_MAX_CHARS + 10);
+        let capped = cap_instructions(&long);
+
+        assert!(capped.starts_with(&"x".repeat(64)));
+        assert!(capped.ends_with(&format!(
+            "… (truncated at {MCP_INSTRUCTIONS_MAX_CHARS} characters)"
+        )));
+        // The kept prefix is exactly the ceiling — not one character more.
+        assert_eq!(
+            capped
+                .lines()
+                .next()
+                .unwrap()
+                .chars()
+                .filter(|c| *c == 'x')
+                .count(),
+            MCP_INSTRUCTIONS_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn instructions_at_the_cap_are_left_alone() {
+        let exact = "y".repeat(MCP_INSTRUCTIONS_MAX_CHARS);
+        assert_eq!(cap_instructions(&exact), exact);
+        assert!(!cap_instructions(&exact).contains("truncated"));
+    }
+
+    #[test]
+    fn capping_counts_characters_not_bytes() {
+        // A multi-byte payload must not be sliced mid-codepoint.
+        let cjk = "記".repeat(MCP_INSTRUCTIONS_MAX_CHARS + 5);
+        let capped = cap_instructions(&cjk);
+        assert!(capped.ends_with("characters)"));
+        assert_eq!(
+            capped.lines().next().unwrap().chars().count(),
+            MCP_INSTRUCTIONS_MAX_CHARS
         );
     }
 

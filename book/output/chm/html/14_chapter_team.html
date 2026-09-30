@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="team-coordination">Team Coordination</h1>
+<blockquote>
+<p>Language: <a href="./14_chapter_team.html">English</a> · <a href="./14_chapter_team_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains Tact&#39;s <strong>multi-agent team
+primitives</strong>: a persistent roster of named teammates and a
+SQLite-backed inbox system supporting point-to-point messages,
+broadcasts, and structured protocol requests (plan approval, shutdown).
+The implementation lives in <code>crates/tact/src/team.rs</code> with
+tool wrappers in <code>crates/tact/src/tool/team.rs</code>.</p>
+<p>Important framing up front: today this is a <strong>coordination data
+layer</strong>, not an orchestration engine. &quot;Spawning&quot; a teammate
+creates a roster record — it does not start a second agent process. See
+<a href="#8-current-gaps">Current Gaps</a>.</p>
+<hr />
+<h2 id="1-what-the-team-layer-provides">1. What the Team Layer
+Provides</h2>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Tool</th>
+<th>Backing call</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Register a teammate</td>
+<td><code>spawn_teammate</code></td>
+<td><code>TeammateManager::spawn_teammate</code></td>
+</tr>
+<tr>
+<td>List the roster</td>
+<td><code>list_teammates</code></td>
+<td><code>list_teammates</code></td>
+</tr>
+<tr>
+<td>Point-to-point message</td>
+<td><code>send_message</code></td>
+<td><code>send_message</code></td>
+</tr>
+<tr>
+<td>Message everyone</td>
+<td><code>broadcast</code></td>
+<td><code>broadcast</code></td>
+</tr>
+<tr>
+<td>Read an inbox</td>
+<td><code>read_inbox</code></td>
+<td><code>read_inbox</code></td>
+</tr>
+<tr>
+<td>Plan approval request</td>
+<td><code>plan_approval</code></td>
+<td><code>protocol_request(kind = &quot;plan_approval&quot;)</code></td>
+</tr>
+<tr>
+<td>Shutdown handshake</td>
+<td><code>shutdown_request</code> / <code>shutdown_response</code></td>
+<td><code>protocol_request(kind = &quot;shutdown_request&quot; / &quot;shutdown_response&quot;)</code></td>
+</tr>
+</tbody>
+</table>
+<p>All eight tools are registered in the main agent&#39;s
+<code>toolset()</code>; none are in <code>subagent_toolset()</code>.</p>
+<hr />
+<h2 id="2-data-model">2. Data Model</h2>
+<h3 id="roster">Roster</h3>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> TeammateRecord <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> name<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> role<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> status<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>   <span class="co">// always &quot;idle&quot; today</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="inbox-messages">Inbox messages</h3>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> InboxMessage <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> from<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> to<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> body<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> kind<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>     <span class="co">// &quot;message&quot; | &quot;plan_approval&quot; | &quot;shutdown_request&quot; | &quot;shutdown_response&quot;</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> created_at<span class="op">:</span> DateTime<span class="op">&lt;</span>Utc<span class="op">&gt;,</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>kind</code> distinguishes plain chat from protocol traffic; the
+storage path is identical for both.</p>
+<hr />
+<h2 id="3-storage-layout">3. Storage Layout</h2>
+<p><code>TeammateManager</code> is backed by the SQLite
+<code>TeamStore</code> from <a href="./01_chapter_store.html">Store and
+Persistence</a>:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>store<span class="op">:</span> <span class="dt">Box</span><span class="op">&lt;</span><span class="kw">dyn</span> TeamStore<span class="op">&gt;,</span>   <span class="co">// tact.db → teammates + inbox_messages tables</span></span></code></pre></div>
+<p>Schema (<code>crates/tact/src/store/team_store/sqlite.rs</code>):</p>
+<pre class="text"><code>teammates(name TEXT PRIMARY KEY, role TEXT NOT NULL, status TEXT NOT NULL DEFAULT &#39;idle&#39;)
+inbox_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,
+               owner TEXT NOT NULL, from_name TEXT NOT NULL, to_name TEXT NOT NULL,
+               body TEXT NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL)
+-- index: idx_inbox_messages_owner ON inbox_messages(owner)</code></pre>
+<p>Messages are <strong>appended</strong> (insertion order preserved by
+the autoincrement <code>id</code>) — inboxes only grow; there is no
+read-cursor, ack, or delete. The legacy <code>team/config.json</code> +
+<code>team/inbox/*.json</code> files are no longer read and are left on
+disk.</p>
+<hr />
+<h2 id="4-message-flow">4. Message Flow</h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant Lead as Agent (lead)
+    participant TM as TeammateManager
+    participant DB as .tact/tact.db (teammates, inbox_messages)
+
+    Lead-&gt;&gt;TM: spawn_teammate(&quot;alice&quot;, &quot;reviewer&quot;)
+    TM-&gt;&gt;DB: INSERT INTO teammates (alice, reviewer, idle)
+
+    Lead-&gt;&gt;TM: broadcast(from: &quot;lead&quot;, body: &quot;Standup in 5&quot;)
+    loop each teammate in roster
+        TM-&gt;&gt;DB: INSERT INTO inbox_messages (owner=name, …)
+    end
+
+    Lead-&gt;&gt;TM: plan_approval(from: &quot;lead&quot;, to: &quot;alice&quot;, body: &quot;Approve plan v2&quot;)
+    TM-&gt;&gt;DB: INSERT INTO inbox_messages (owner=alice, kind: plan_approval)
+
+    Lead-&gt;&gt;TM: read_inbox(&quot;alice&quot;)
+    TM-&gt;&gt;DB: SELECT … WHERE owner=&#39;alice&#39; ORDER BY id
+    TM--&gt;&gt;Lead: pretty-printed JSON array</code></pre>
+<p>Notes on the semantics:</p>
+<ul>
+<li><code>spawn_teammate</code> rejects duplicate names
+(<code>teammate {name} already exists</code>; the UNIQUE
+<code>name</code> key is the backstop).</li>
+<li><code>broadcast</code> iterates the roster and calls
+<code>send_message</code> per teammate — a sender who is also on the
+roster receives their own broadcast.</li>
+<li><code>read_inbox</code> returns the <strong>entire</strong> inbox as
+pretty-printed JSON, or <code>&quot;Inbox is empty.&quot;</code>.</li>
+<li><code>protocol_request</code> is <code>send_message</code> with a
+caller-chosen <code>kind</code> — no state machine validates that a
+<code>shutdown_response</code> follows a
+<code>shutdown_request</code>.</li>
+</ul>
+<hr />
+<h2 id="5-concurrency-wrapper">5. Concurrency Wrapper</h2>
+<p><code>SharedTeammateManager</code> follows the same pattern as the
+task and background managers:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> SharedTeammateManager <span class="op">{</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    inner<span class="op">:</span> Arc<span class="op">&lt;</span>TeammateManager<span class="op">&gt;,</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Every public method delegates to the async facade. The shared handle
+sits on <code>ToolContext.teammate_manager</code> and is constructed
+once at startup in <code>tui.rs</code>:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> teammate_manager <span class="op">=</span> <span class="pp">SharedTeammateManager::</span>new(<span class="pp">TeammateManager::</span>new(<span class="op">&amp;</span>tact_path<span class="op">.</span>session_db_path())<span class="op">.</span><span class="kw">await</span><span class="op">?</span>)<span class="op">;</span></span></code></pre></div>
+<p>No mutex is needed: the SQLite pool serializes writes, and the
+connection pool (with <code>busy_timeout</code>) also serializes
+cross-process access to the same workdir.</p>
+<hr />
+<h2 id="6-who-is-a-teammate-really">6. Who Is a &quot;Teammate&quot;, Really?</h2>
+<p>The model is free-form by design: <code>from</code> and
+<code>to</code> are plain strings supplied by the LLM. Nothing verifies
+that:</p>
+<ul>
+<li>the sender exists on the roster,</li>
+<li>the recipient exists (sending to an unknown name silently creates
+<code>inbox/{name}.json</code>),</li>
+<li>a teammate ever reads its inbox.</li>
+</ul>
+<p>The intended pattern is that a coordinating agent uses the roster as
+shared state and inboxes as durable mailboxes for whatever worker
+abstraction eventually consumes them (<a href="./07_chapter_tool.html">sub-agents</a> run via the
+<code>spawn_subagent</code> tool are the closest existing analogue, but
+they are not wired to inboxes today).</p>
+<hr />
+<h2 id="7-code-map">7. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/team.rs</code></td>
+<td><code>TeammateManager</code>, <code>SharedTeammateManager</code>,
+<code>InboxMessage</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/mod.rs</code></td>
+<td><code>TeamStore</code> trait (async:
+create_teammate/list_teammates/append_message/read_inbox)</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/sqlite.rs</code></td>
+<td><code>SqliteTeamStore</code> — <code>teammates</code> +
+<code>inbox_messages</code> tables</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/team.rs</code></td>
+<td>The eight <code>#[tool]</code> wrappers</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.teammate_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td>Team tools in <code>toolset()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code>,
+<code>interactive.rs</code></td>
+<td>Manager constructed from <code>tact.db</code> at startup</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-current-gaps">8. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No actual agent processes</td>
+<td><code>spawn_teammate</code> records a name; no runtime, LLM loop, or
+inbox polling is started</td>
+</tr>
+<tr>
+<td>Status never changes</td>
+<td>Every teammate is <code>&quot;idle&quot;</code> forever; no API mutates
+<code>status</code></td>
+</tr>
+<tr>
+<td>No sender/recipient validation</td>
+<td>Messages to unknown names create orphan inbox rows silently</td>
+</tr>
+<tr>
+<td>Inboxes grow unboundedly</td>
+<td>Append-only rows with no read-cursor, ack, or pruning</td>
+</tr>
+<tr>
+<td>Protocol kinds are convention only</td>
+<td><code>plan_approval</code> / <code>shutdown_*</code> have no
+enforced request-response pairing</td>
+</tr>
+<tr>
+<td>No teammate removal</td>
+<td>There is no <code>remove_teammate</code>; the roster can only
+grow</td>
+</tr>
+<tr>
+<td>No cross-process locking</td>
+<td>Concurrent tact processes can interleave roster writes</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./01_chapter_store.html">Store and Persistence</a> — the
+<code>teammates</code> / <code>inbox_messages</code> SQLite tables</li>
+<li><a href="./07_chapter_tool.html">Tool System</a> —
+<code>ToolContext</code> plumbing and sub-agent toolsets</li>
+<li><a href="./12_chapter_subagent.html">Subagents</a> —
+<code>spawn_subagent</code> runs a real nested agent; teammates do
+not</li>
+<li><a href="./15_chapter_worktree.html">Worktree Lanes</a> — the
+isolation primitive a real multi-agent team would pair with</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — §7 sub-agents,
+team, tasks, worktrees</li>
+</ul>
+</body>
+</html>

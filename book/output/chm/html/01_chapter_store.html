@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="store-and-persistence">Store and Persistence</h1>
+<blockquote>
+<p>Language: <a href="./01_chapter_store.html">English</a> · <a href="./01_chapter_store_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains Tact&#39;s <strong>on-disk persistence
+layers</strong>: the JSON file store under <code>.tact/</code> and the
+SQLite database. Together they hold conversation history, domain state
+(worktrees, …), and observability data.</p>
+<p>Memory (<a href="./03_chapter_memory.html">Persistent Memory</a>)
+uses Markdown files in <code>.tact/memory/</code> and is
+<strong>not</strong> part of the JSON store API.</p>
+<hr />
+<h2 id="1-two-persistence-layers">1. Two Persistence Layers</h2>
+<p>Tact deliberately splits concerns:</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Location</th>
+<th>API</th>
+<th>Primary use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>JSON store</strong></td>
+<td><code>&lt;workdir&gt;/.tact/</code></td>
+<td><code>StoreRoot</code>, <code>Store&lt;T&gt;</code>,
+<code>CollectionStore&lt;T&gt;</code></td>
+<td>Generic JSON persistence (no active domain consumers)</td>
+</tr>
+<tr>
+<td><strong>SQLite store</strong></td>
+<td><code>&lt;workdir&gt;/.tact/tact.db</code></td>
+<td><code>SessionStore</code> + <code>TaskStore</code> +
+<code>BackgroundStore</code> + <code>TeamStore</code> +
+<code>WorktreeStore</code> traits</td>
+<td>Messages, token usage, tasks, background, team, worktrees, input
+history</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid"><code>graph TB
+    subgraph Workdir[&quot;&lt;workdir&gt;&quot;]
+        Tact[&quot;.tact/&quot;]
+        Tact[&quot;.tact/&quot;]
+        Skills[&quot;skills/ (not StoreRoot)&quot;]
+    end
+
+    subgraph Tact
+        DB[&quot;tact.db — SQLite (messages, token usage, tasks, background, team, worktrees, …)&quot;]
+    end
+
+    subgraph Claude
+        Mem[&quot;memory/*.md — separate module&quot;]
+    end
+
+    SR[StoreRoot] --&gt; Mem
+
+    SS[SessionStore + TaskStore + BackgroundStore + TeamStore + WorktreeStore] --&gt; DB</code></pre>
+<p>Both are initialized at session startup in <code>main.rs</code>:
+<code>StoreRoot::new(tact_path.tact_dir())</code> and
+<code>open_sqlite_session_store(&amp;tact_path.session_db_path())</code>.</p>
+<hr />
+<h2 id="2-storeroot-safe-path-resolution">2. StoreRoot: Safe Path
+Resolution</h2>
+<p><code>StoreRoot</code> (<code>crates/tact/src/store/mod.rs</code>) is
+the entry point for all JSON persistence.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> StoreRoot <span class="op">{</span> root<span class="op">:</span> <span class="dt">PathBuf</span> <span class="op">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Relative paths only</td>
+<td>Absolute paths are rejected</td>
+</tr>
+<tr>
+<td>Traversal blocked</td>
+<td>Resolved path must stay under canonicalized root</td>
+</tr>
+<tr>
+<td>Auto-create</td>
+<td>Root directory created on <code>StoreRoot::new()</code></td>
+</tr>
+<tr>
+<td>Missing files</td>
+<td>Allowed when opening new paths
+(<code>allow_missing: true</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Factory methods:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>root<span class="op">.</span><span class="pp">collection::</span><span class="op">&lt;</span>T<span class="op">&gt;</span>(<span class="st">&quot;tasks&quot;</span>)<span class="op">?</span>                   <span class="co">// CollectionStore&lt;T&gt;  (legacy tasks — no longer read)</span></span></code></pre></div>
+<hr />
+<h2 id="3-storet-single-json-file">3. Store&lt;T&gt;: Single JSON
+File</h2>
+<p>Typed wrapper around one JSON document (pretty-printed with trailing
+newline).</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read()</code></td>
+<td>Deserialize entire file; error if missing or invalid JSON</td>
+</tr>
+<tr>
+<td><code>write(value)</code></td>
+<td>Create parent dirs; overwrite file</td>
+</tr>
+<tr>
+<td><code>update(f)</code></td>
+<td>Read-modify-write</td>
+</tr>
+<tr>
+<td><code>append(value)</code></td>
+<td>Append one JSON line (JSONL)</td>
+</tr>
+<tr>
+<td><code>read_all()</code></td>
+<td>Parse all non-empty lines as <code>Vec&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>delete()</code></td>
+<td>Remove file; report whether it existed</td>
+</tr>
+<tr>
+<td><code>exists()</code></td>
+<td>Path check</td>
+</tr>
+</tbody>
+</table>
+<p>Used for <strong>index files</strong> and <strong>single-document
+registries</strong> — a generic persistence primitive (no domain module
+uses it today; all domain state lives in SQLite).</p>
+<hr />
+<h2 id="4-collectionstoret-keyed-json-files">4.
+CollectionStore&lt;T&gt;: Keyed JSON Files</h2>
+<p>One <code>{key}.json</code> file per record inside a directory.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read(key)</code> / <code>write(key, value)</code></td>
+<td>Per-key file I/O</td>
+</tr>
+<tr>
+<td><code>append(key, value)</code></td>
+<td>JSONL append on that key&#39;s file</td>
+</tr>
+<tr>
+<td><code>read_all_from(key)</code></td>
+<td>All lines from one key&#39;s file</td>
+</tr>
+<tr>
+<td><code>delete(key)</code></td>
+<td>Remove <code>{key}.json</code></td>
+</tr>
+<tr>
+<td><code>list()</code></td>
+<td>Read every <code>*.json</code> in the directory (except
+<code>index.json</code>)</td>
+</tr>
+<tr>
+<td><code>exists(key)</code></td>
+<td>Check <code>{key}.json</code></td>
+</tr>
+</tbody>
+</table>
+<p>Invalid keys (<code>/</code>, <code>\</code>, <code>.</code>,
+<code>..</code>) are rejected.</p>
+<h3 id="example-background-jobs-legacy">Example: background jobs
+(legacy)</h3>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>root<span class="op">.</span><span class="pp">collection::</span><span class="op">&lt;</span>BackgroundRecord<span class="op">&gt;</span>(<span class="st">&quot;background/tasks&quot;</span>)<span class="op">?</span>   <span class="co">// background/tasks/{id}.json (legacy)</span></span></code></pre></div>
+<p>Tasks, background, team, and worktree state no longer use the JSON
+store — they live in SQLite (see §6).</p>
+<hr />
+<h2 id="5-domain-consumers">5. Domain Consumers</h2>
+<table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Store paths</th>
+<th>Pattern</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task/</code></td>
+<td><code>tact.db</code> → <code>tasks</code>,
+<code>task_dependencies</code> tables</td>
+<td><code>TaskStore</code> (SQLite)</td>
+</tr>
+<tr>
+<td><code>background.rs</code> (<a href="./13_chapter_background.html">Background Tasks</a>)</td>
+<td><code>tact.db</code> → <code>background_tasks</code> table</td>
+<td><code>BackgroundStore</code> (SQLite)</td>
+</tr>
+<tr>
+<td><code>team.rs</code> (<a href="./14_chapter_team.html">Team
+Coordination</a>)</td>
+<td><code>tact.db</code> → <code>teammates</code>,
+<code>inbox_messages</code> tables</td>
+<td><code>TeamStore</code> (SQLite)</td>
+</tr>
+<tr>
+<td><code>worktree/</code> (<a href="./15_chapter_worktree.html">Worktree Lanes</a>)</td>
+<td><code>tact.db</code> → <code>worktrees</code>,
+<code>worktree_events</code> tables</td>
+<td><code>WorktreeStore</code> (SQLite)</td>
+</tr>
+</tbody>
+</table>
+<p>Each domain module wraps the raw store (e.g.
+<code>SharedTaskManager</code> / <code>SharedBackgroundManager</code> /
+<code>SharedTeammateManager</code> / <code>SharedWorktreeManager</code>
+over <code>Arc&lt;…&gt;</code> — the SQLite pool already serializes
+writes) and exposes tool-facing APIs — callers should not manipulate
+<code>CollectionStore</code> directly.</p>
+<p>All SQLite stores share a single connection pool per database file:
+<code>store::sqlite::open_pool</code> opens (and caches) the pool on
+first use and hands each store a reference-counted handle
+(<code>PoolRef</code>), so one process uses exactly one pool for
+<code>&lt;workdir&gt;/.tact/tact.db</code>; the pool is closed when the
+last store holding it is dropped.</p>
+<hr />
+<h2 id="6-session-store-sqlite">6. Session Store (SQLite)</h2>
+<p>Defined in <code>crates/tact/src/store/session_store/</code>. The
+trait is async; the default implementation is
+<code>SqliteSessionStore</code>.</p>
+<h3 id="database-location">Database location</h3>
+<pre class="text"><code>&lt;workdir&gt;/.tact/tact.db</code></pre>
+<p>Opened in <code>main.rs</code> via
+<code>open_sqlite_session_store</code> at
+<code>&lt;workdir&gt;/.tact/tact.db</code>. At session start,
+<code>SessionLockGuard</code>
+(<code>crates/tact-ui/src/session_lock.rs</code>) retries
+<code>try_lock_session</code> on contention, sets <code>locked_by</code>
++ <code>lock_epoch</code> (process start identity); <code>0</code>/empty
+means unlocked. <code>main</code> installs SIGINT/SIGTERM listeners that
+release the lock and exit the process
+(<code>130</code>/<code>143</code>) on abnormal termination.</p>
+<h3 id="tables">Tables</h3>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sessions</code></td>
+<td>Session id, <code>root_dir</code>, <code>ref_id</code> (parent
+session id; <code>&#39;&#39;</code> = top-level), <code>locked_by</code> +
+<code>lock_epoch</code> (process lock), timestamps</td>
+</tr>
+<tr>
+<td><code>messages</code></td>
+<td>Serialized <code>MessageContent</code> JSON, ordinal ordering</td>
+</tr>
+<tr>
+<td><code>token_usages</code></td>
+<td>Per-LLM-call token counts, optional <code>request_body</code> blob,
+optional <code>tool_schedule</code> JSON</td>
+</tr>
+<tr>
+<td><code>input_history</code></td>
+<td>User input strings for TUI recall (max 100 per session)</td>
+</tr>
+<tr>
+<td><code>tasks</code></td>
+<td>Task records: <code>subject</code>, <code>description</code>,
+<code>session_id</code>, <code>status</code> (CHECK-constrained),
+<code>owner</code>, millisecond timestamps</td>
+</tr>
+<tr>
+<td><code>task_dependencies</code></td>
+<td>One row per edge (<code>blocker_id</code>, <code>blocked_id</code>),
+composite PK, no foreign keys — application-managed cleanup</td>
+</tr>
+<tr>
+<td><code>background_tasks</code></td>
+<td>Background jobs: <code>status</code> (CHECK-constrained),
+<code>command</code>, <code>session_id</code>,
+<code>started_at</code>/<code>finished_at</code>, <code>output</code>,
+<code>output_path</code> (full-output log file)</td>
+</tr>
+<tr>
+<td><code>teammates</code></td>
+<td>Roster: <code>name</code> (PK), <code>role</code>,
+<code>status</code></td>
+</tr>
+<tr>
+<td><code>inbox_messages</code></td>
+<td>Inbox entries: <code>owner</code>, <code>from_name</code>,
+<code>to_name</code>, <code>body</code>, <code>kind</code>,
+<code>created_at</code>; autoincrement <code>id</code> preserves
+insertion order</td>
+</tr>
+<tr>
+<td><code>worktrees</code></td>
+<td>Worktree lanes: <code>name</code> (UNIQUE), <code>path</code>,
+<code>branch</code>, <code>task_id</code>, <code>status</code>,
+<code>session_id</code>, <code>created_at</code></td>
+</tr>
+<tr>
+<td><code>worktree_events</code></td>
+<td>Lane audit log: <code>event</code>, <code>created_at</code>;
+<code>id</code> is the ordering key</td>
+</tr>
+</tbody>
+</table>
+<h3 id="agent-integration">Agent integration</h3>
+<table>
+<thead>
+<tr>
+<th>Agent method</th>
+<th>SessionStore call</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ensure_session()</code></td>
+<td><code>ensure_session_row</code>, <code>load_session</code> → restore
+<code>runtime.context</code></td>
+</tr>
+<tr>
+<td><code>tact-ui</code> session start</td>
+<td><code>ensure_session_row</code> → <code>try_lock_session</code> →
+<code>touch_session</code> (metadata only after lock held)</td>
+</tr>
+<tr>
+<td><code>persist_message()</code></td>
+<td><code>append_message</code> after each context push</td>
+</tr>
+<tr>
+<td><code>persist_llm_call()</code></td>
+<td><code>record_token_usage</code> (snapshots
+<code>llm_call_last_message_id</code> = <code>last_message_db_id</code>
+<strong>before</strong> assistant row is written)</td>
+</tr>
+<tr>
+<td><code>compact_history()</code></td>
+<td><code>replace_session_messages</code> — rewrite SQLite
+<code>messages</code> to match post-compaction context</td>
+</tr>
+<tr>
+<td><code>execute_tool_call</code> (post-schedule)</td>
+<td><code>record_tool_schedule</code> on the token row keyed by
+<code>llm_call_last_message_id</code></td>
+</tr>
+</tbody>
+</table>
+<p>If no session store is attached (<code>with_session</code> not
+called), persistence methods no-op — useful for tests.
+<code>list_sessions</code> returns only top-level rows
+(<code>ref_id = &#39;&#39;</code>); <code>delete_session</code> cascades to
+children with <code>ref_id = that id</code> and their dependent
+tables.</p>
+<h3 id="input-history-trimming">Input history trimming</h3>
+<p><code>MAX_INPUT_HISTORY</code> = 100. When loading exceeds the cap,
+oldest rows are deleted in a trim pass.</p>
+<hr />
+<h2 id="7-lifecycle-diagram">7. Lifecycle Diagram</h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant TUI as tact-ui
+    participant Agent
+    participant JSON as StoreRoot / domains
+    participant SQL as SqliteSessionStore
+
+    TUI-&gt;&gt;JSON: StoreRoot::new(.tact/)
+    TUI-&gt;&gt;SQL: open_sqlite_session_store(tact.db)
+    TUI-&gt;&gt;SQL: TaskManager / BackgroundManager / TeammateManager / WorktreeManager (same tact.db)
+    TUI-&gt;&gt;Agent: with_session(id, store)
+
+    loop agent_loop
+        Agent-&gt;&gt;SQL: append_message (user/assistant/tool)
+        Agent-&gt;&gt;SQL: record_token_usage (last_message_id = pre-assistant window)
+        Agent-&gt;&gt;SQL: task_* / background_* / team_* / worktree_* tools read/write (SQLite stores)
+        Agent-&gt;&gt;SQL: record_tool_schedule (same last_message_id anchor)
+        Agent-&gt;&gt;SQL: replace_session_messages (on compact_history)
+    end</code></pre>
+<hr />
+<h2 id="8-code-map">8. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/store/mod.rs</code></td>
+<td><code>StoreRoot</code>, <code>Store&lt;T&gt;</code>,
+<code>CollectionStore&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/mod.rs</code></td>
+<td><code>SessionStore</code> trait, <code>DynSessionStore</code>,
+<code>open_sqlite_session_store</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/sqlite.rs</code></td>
+<td>Greenfield schema (<code>CREATE TABLE IF NOT EXISTS</code>),
+<code>SqliteSessionStore</code> impl</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/task_store/mod.rs</code></td>
+<td><code>TaskStore</code> trait (async:
+create/get/update/list/delete)</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/task_store/sqlite.rs</code></td>
+<td><code>SqliteTaskStore</code> — <code>tasks</code> +
+<code>task_dependencies</code> tables, <code>BEGIN IMMEDIATE</code>
+transactions, <code>busy_timeout</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/background_store/mod.rs</code></td>
+<td><code>BackgroundStore</code> trait (async: upsert/get/list)</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/background_store/sqlite.rs</code></td>
+<td><code>SqliteBackgroundStore</code> — <code>background_tasks</code>
+table, upsert + <code>CHECK</code>-constrained status</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/mod.rs</code></td>
+<td><code>TeamStore</code> trait (async:
+create_teammate/list_teammates/append_message/read_inbox)</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/sqlite.rs</code></td>
+<td><code>SqliteTeamStore</code> — <code>teammates</code> +
+<code>inbox_messages</code> tables</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/worktree_store/mod.rs</code></td>
+<td><code>WorktreeStore</code> trait (async:
+create_worktree/find_worktree/list_worktrees/append_event/recent_events)</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/worktree_store/sqlite.rs</code></td>
+<td><code>SqliteWorktreeStore</code> — <code>worktrees</code> +
+<code>worktree_events</code> tables</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>ensure_session</code>, <code>persist_message</code>,
+<code>persist_llm_call</code>,
+<code>replace_persisted_context</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_lock.rs</code></td>
+<td><code>SessionLockGuard</code>, SIGINT/SIGTERM release + process
+exit</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>TactPath::session_db_path()</code> →
+<code>&lt;workdir&gt;/.tact/tact.db</code>;
+<code>TactPath::workdir()</code> stored as
+<code>sessions.root_dir</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/main.rs</code></td>
+<td>Opens SQLite session store; headless/interactive attach domain
+managers</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/task/mod.rs</code></td>
+<td><code>TaskManager</code> facade over
+<code>Box&lt;dyn TaskStore&gt;</code> +
+<code>SharedTaskManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/background.rs</code></td>
+<td><code>BackgroundManager</code> facade over
+<code>Arc&lt;dyn BackgroundStore&gt;</code> +
+<code>SharedBackgroundManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/team.rs</code></td>
+<td><code>TeammateManager</code> facade over
+<code>Box&lt;dyn TeamStore&gt;</code> +
+<code>SharedTeammateManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/worktree/mod.rs</code></td>
+<td><code>WorktreeManager</code> facade over
+<code>Box&lt;dyn WorktreeStore&gt;</code> +
+<code>SharedWorktreeManager</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-current-gaps">9. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No cross-process locking on JSON store</td>
+<td>JSON files use read-modify-write without file locks (SQLite sessions
+use process lock)</td>
+</tr>
+<tr>
+<td><code>CollectionStore::list()</code> order</td>
+<td>Unsorted directory iteration — order is filesystem-dependent</td>
+</tr>
+<tr>
+<td>Greenfield SQLite schema</td>
+<td>Mostly <code>CREATE TABLE IF NOT EXISTS</code>;
+<code>sessions.ref_id</code> is added via <code>PRAGMA</code> +
+<code>ALTER TABLE</code> for older DBs</td>
+</tr>
+<tr>
+<td>Session store optional</td>
+<td>Tests and some callers may run without SQLite attached</td>
+</tr>
+<tr>
+<td>Session DB per workdir</td>
+<td>SQLite lives at <code>&lt;workdir&gt;/.tact/tact.db</code> today;
+<code>sessions.root_dir</code> records the project path for a future
+shared <code>$HOME/.tact/tact.db</code></td>
+</tr>
+<tr>
+<td>Legacy JSON files</td>
+<td><code>tasks/*.json</code>, <code>background/tasks/*.json</code>,
+<code>team/config.json</code>, <code>team/inbox/*.json</code>,
+<code>worktrees/index.json</code> are no longer read after the SQLite
+migrations; left on disk, removed manually</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./11_chapter_task.html">Ch 11 Tool Scheduling</a> —
+wave/barrier model (includes <code>spawn_subagent</code> tool as
+barrier, not TaskManager API)</li>
+<li><a href="./03_chapter_memory.html">Persistent Memory</a> — Markdown
+memories (not JSON store)</li>
+<li><a "href="../ARCHITECTURE.html#12-configuration">ARCHITECTURE.md</a> —
+session store and token usage notes</li>
+<li><a href="../docs/token_usage_schema.html">docs/token_usage_schema.md</a> —
+<code>token_usages</code> column details</li>
+</ul>
+</body>
+</html>

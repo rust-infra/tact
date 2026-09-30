@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="persistent-task-manager">Persistent Task Manager</h1>
+<blockquote>
+<p>Language: <a href="./19_chapter_persistent_tasks.html">English</a> ·
+<a href="./19_chapter_persistent_tasks_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter covers Tact&#39;s <strong>durable work-item
+tracker</strong>: the <code>task/</code> module, SQLite storage in
+<code>.tact/tact.db</code>, and the four agent tools
+<code>task_create</code>, <code>task_get</code>, <code>task_list</code>,
+and <code>task_update</code>.</p>
+<p>This is <strong>not</strong> the same as:</p>
+<ul>
+<li><a href="./11_chapter_task.html">Ch 11 Tool Scheduling</a> —
+parallel <strong>tool</strong> wave execution in one LLM turn</li>
+<li><a href="./12_chapter_subagent.html">Ch 12 Subagents</a> — the
+<code>spawn_subagent</code> <strong>tool</strong> that spawns a nested
+agent</li>
+</ul>
+<p>Implementation: <code>crates/tact/src/task/mod.rs</code>, tool
+wrappers in <code>crates/tact/src/tool/task.rs</code>.</p>
+<hr />
+<h2 id="1-purpose">1. Purpose</h2>
+<p>The TaskManager gives the LLM a <strong>persistent checklist</strong>
+across turns and sessions:</p>
+<ul>
+<li>Create items with subject / optional description</li>
+<li>Track status: Pending → InProgress → Completed / Deleted</li>
+<li>Assign an <code>owner</code> string (convention for teammates — not
+enforced)</li>
+<li>Model <strong>dependencies</strong> via <code>blockedBy</code> /
+<code>blocks</code> edges</li>
+</ul>
+<p>Storage uses the SQLite <a "href="./01_chapter_store.html#6-session-store-sqlite">TaskStore</a> in the
+same <code>tact.db</code> as the session store (tables
+<code>tasks</code> + <code>task_dependencies</code>). Background tasks
+use the SQLite <code>background_tasks</code> table as well (see <a href="./13_chapter_background.html">Ch 13</a>).</p>
+<hr />
+<h2 id="2-data-model">2. Data Model</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> TaskStatus <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    Pending<span class="op">,</span>      <span class="co">// marker [ ]</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    InProgress<span class="op">,</span>   <span class="co">// marker [&gt;]</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    Completed<span class="op">,</span>    <span class="co">// marker [x]</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    Deleted<span class="op">,</span>      <span class="co">// marker [-]</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> TaskRecord <span class="op">{</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> id<span class="op">:</span> <span class="dt">u64</span><span class="op">,</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> subject<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> description<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> session_id<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>   <span class="co">// owning agent session; &#39;&#39; outside a session</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> status<span class="op">:</span> TaskStatus<span class="op">,</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> blocked_by<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span><span class="dt">u64</span><span class="op">&gt;,</span> <span class="co">// serialized as blockedBy</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> blocks<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span><span class="dt">u64</span><span class="op">&gt;,</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> owner<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>IDs are assigned by SQLite
+<code>INTEGER PRIMARY KEY AUTOINCREMENT</code> (no reuse, starts at 1).
+<code>task_create</code> fills <code>session_id</code> from the tool
+context session. The legacy JSON layout (<code>.tact/tasks/*.json</code>
++ <code>index.json</code>) is no longer read.</p>
+<hr />
+<h2 id="3-storage-layout">3. Storage Layout</h2>
+<p>SQLite tables in <code>&lt;workdir&gt;/.tact/tact.db</code> (schema
+created by <code>SqliteTaskStore::new</code>):</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">TABLE</span> tasks (</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">id</span>           <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span> AUTOINCREMENT,</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    subject      TEXT    <span class="kw">NOT</span> <span class="kw">NULL</span>,</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    description  TEXT,</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    session_id   TEXT    <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">DEFAULT</span> <span class="st">&#39;&#39;</span>,</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    status       TEXT    <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">DEFAULT</span> <span class="st">&#39;pending&#39;</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>                 <span class="kw">CHECK</span> (status <span class="kw">IN</span> (<span class="st">&#39;pending&#39;</span>,<span class="st">&#39;in_progress&#39;</span>,<span class="st">&#39;completed&#39;</span>,<span class="st">&#39;deleted&#39;</span>)),</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    owner        TEXT    <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">DEFAULT</span> <span class="st">&#39;&#39;</span>,</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    created_at   <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span>,</span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    started_at   <span class="dt">INTEGER</span>,</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    completed_at <span class="dt">INTEGER</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>);</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">INDEX</span> idx_tasks_session_id <span class="kw">ON</span> tasks(session_id);</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">TABLE</span> task_dependencies (</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>    blocker_id <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span>,</span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>    blocked_id <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span>,</span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">PRIMARY</span> <span class="kw">KEY</span> (blocker_id, blocked_id)</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>);</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">INDEX</span> idx_task_deps_blocked <span class="kw">ON</span> task_dependencies(blocked_id);</span></code></pre></div>
+<p>No foreign keys — dependency edges are cleaned up by the application
+(same convention as the session store). Connection PRAGMAs:
+<code>busy_timeout = 5000</code> for cross-process writers.</p>
+<hr />
+<h2 id="4-lifecycle-operations">4. Lifecycle Operations</h2>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create(subject, description, session_id)</code></td>
+<td>Inserts record as <code>Pending</code>, id auto-assigned</td>
+</tr>
+<tr>
+<td><code>get(id)</code></td>
+<td>Loads single record</td>
+</tr>
+<tr>
+<td><code>list()</code></td>
+<td>Loads all records, sorted by id</td>
+</tr>
+<tr>
+<td><code>update(id, TaskUpdate)</code></td>
+<td>Patches status, owner, dependency edges</td>
+</tr>
+<tr>
+<td><code>delete(id)</code></td>
+<td>Sets status to <code>Deleted</code> (soft delete)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dependency-updates">Dependency updates</h3>
+<p>Edges live only in <code>task_dependencies</code> (no mirrored
+fields). <code>add_blocks: [B]</code> on task A inserts one row
+<code>(A, B)</code> inside a <code>BEGIN IMMEDIATE</code> transaction;
+the reverse edge is derived when reading. When a task is marked
+<strong><code>Completed</code></strong>, the same transaction deletes
+all its edges
+(<code>DELETE ... WHERE blocker_id = ? OR blocked_id = ?</code>) — no
+full scan, no ghost edges.</p>
+<hr />
+<h2 id="5-agent-tools">5. Agent Tools</h2>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Input highlights</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task_create</code></td>
+<td><code>subject</code>, optional <code>description</code></td>
+<td>Pretty JSON of new record</td>
+</tr>
+<tr>
+<td><code>task_get</code></td>
+<td><code>task_id</code></td>
+<td>Pretty JSON</td>
+</tr>
+<tr>
+<td><code>task_list</code></td>
+<td>(empty object)</td>
+<td>Human-readable list with markers</td>
+</tr>
+<tr>
+<td><code>task_update</code></td>
+<td><code>task_id</code>, optional <code>status</code>,
+<code>owner</code>, <code>addBlockedBy</code>,
+<code>addBlocks</code></td>
+<td>Pretty JSON</td>
+</tr>
+</tbody>
+</table>
+<p>Status strings for <code>task_update</code>: <code>pending</code>,
+<code>in_progress</code>, <code>completed</code>, <code>deleted</code>
+(snake_case via <code>strum</code>).</p>
+<p>Example list line:</p>
+<pre class="text"><code>[&gt;] #3: Implement auth owner=alice (blocked by: [1])</code></pre>
+<p>Empty list returns <code>&quot;No tasks.&quot;</code>.</p>
+<hr />
+<h2 id="6-wiring">6. Wiring</h2>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co">// tui.rs startup (async)</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> task_manager <span class="op">=</span> <span class="pp">SharedTaskManager::</span>new(<span class="pp">TaskManager::</span>new(<span class="op">&amp;</span>tact_path<span class="op">.</span>session_db_path())<span class="op">.</span><span class="kw">await</span><span class="op">?</span>)<span class="op">;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="co">// ToolContext</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> task_manager<span class="op">:</span> SharedTaskManager<span class="op">,</span></span></code></pre></div>
+<p><code>SharedTaskManager</code> wraps
+<code>Arc&lt;TaskManager&gt;</code> — the SQLite pool already serializes
+writes, so no mutex is needed. All four tools share the same manager
+through <code>ToolContext</code>.</p>
+<p>Registered in main <code>toolset()</code> only — <strong>not</strong>
+in <code>subagent_toolset()</code>.</p>
+<p>Scheduling: all four tools share a synthetic write scope
+(<code>__tact_tasks__</code>) in
+<code>crates/tact/src/agent/tool_schedule.rs</code>, so they
+<strong>serialize with each other</strong> in one LLM turn (no parallel
+<code>task_update</code> races) while still allowing overlap with
+unrelated file reads.</p>
+<hr />
+<h2 id="7-rendering-helpers">7. Rendering Helpers</h2>
+<div class="sourceCode" id="cb5"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> render_task_json(task<span class="op">:</span> <span class="op">&amp;</span>TaskRecord) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;;</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> render_task_list(tasks<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>TaskRecord<span class="op">&gt;</span>) <span class="op">-&gt;</span> <span class="dt">String</span><span class="op">;</span></span></code></pre></div>
+<p>Tools return these strings directly as tool results (JSON for
+create/get/update, text list for <code>task_list</code>).</p>
+<p>Successful <code>task_create</code> / <code>task_update</code> also
+emit <a href="./25_chapter_protocol.html"><code>AgentUpdate::TasksChanged</code></a>
+(filtered non-deleted snapshots) so the TUI can refresh a sticky
+progress strip under the Log and append a Log detail card.
+<code>task_get</code> / <code>task_list</code> do not emit. Spec:
+<code>docs/superpowers/specs/2026-07-24-task-progress-panel-design.md</code>.</p>
+<hr />
+<h2 id="8-code-map">8. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/task/mod.rs</code></td>
+<td><code>TaskManager</code> facade over
+<code>Box&lt;dyn TaskStore&gt;</code>, <code>TaskRecord</code>, render
+helpers</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/task_store/mod.rs</code></td>
+<td><code>TaskStore</code> trait</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/task_store/sqlite.rs</code></td>
+<td><code>SqliteTaskStore</code> — schema, transactions, edge
+queries</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/task.rs</code></td>
+<td>Four <code>#[tool]</code> handlers</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.task_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td>Task tools in <code>toolset()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/</code></td>
+<td><code>CollectionStore</code>, <code>Store</code> primitives</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-current-gaps">9. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>No <code>task_delete</code> tool</strong></td>
+<td>Soft delete exists on manager API but no exposed tool (use
+<code>status: deleted</code> via update)</td>
+</tr>
+<tr>
+<td><strong>Owner is opaque string</strong></td>
+<td>Not linked to <a href="./14_chapter_team.html">Team</a> roster
+validation</td>
+</tr>
+<tr>
+<td><strong>No automatic unblocking rules</strong></td>
+<td>Only completion clears edges; deleted blockers leave stale
+edges</td>
+</tr>
+<tr>
+<td><strong>List order fixed by id</strong></td>
+<td>No priority or due date fields</td>
+</tr>
+<tr>
+<td><strong>Ch 1 cross-link was misleading</strong></td>
+<td>Previously pointed at Ch 11 scheduling — now corrected in store
+chapter</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./01_chapter_store.html">Store and Persistence</a> —
+<code>CollectionStore</code> / <code>Store</code> backing</li>
+<li><a href="./11_chapter_task.html">Tasks and Tool Scheduling</a> —
+unrelated parallel tool waves</li>
+<li><a href="./12_chapter_subagent.html">Subagents</a> —
+<code>spawn_subagent</code> runs a nested agent; finishing it does
+<strong>not</strong> complete a task record</li>
+<li><a href="./14_chapter_team.html">Team Coordination</a> — optional
+owner naming convention</li>
+<li><a href="./15_chapter_worktree.html">Worktree Lanes</a> — optional
+<code>task_id</code> link on worktree create</li>
+</ul>
+</body>
+</html>

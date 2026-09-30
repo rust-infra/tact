@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="permission-model">Permission Model</h1>
+<blockquote>
+<p>Language: <a href="./10_chapter_permission.html">English</a> · <a href="./10_chapter_permission_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains how Tact decides whether each tool call may
+run: intent classification by risk, three permission modes, an
+in-session allowlist, and interactive approval through the TUI.</p>
+<p>Every native and MCP tool passes through the same gate in Phase 1 of
+<code>Agent::execute_tool_call</code> — after <code>PreToolUse</code>
+hooks and before parallel execution. See <a href="./09_chapter_hook.html">Agent Lifecycle Hooks</a> for hook
+ordering.</p>
+<hr />
+<h2 id="1-what-the-permission-model-does">1. What the Permission Model
+Does</h2>
+<p><code>PermissionManager</code>
+(<code>crates/tact/src/permission/mod.rs</code>) answers one question
+per tool call:</p>
+<blockquote>
+<p>Given this tool name and input, should we <strong>allow</strong>,
+<strong>deny</strong>, or <strong>ask the user</strong>?</p>
+</blockquote>
+<p>It does <strong>not</strong> execute tools. It classifies intent,
+applies the active mode and allowlist, and returns a
+<code>PermissionDecision</code>. The agent in
+<code>crates/tact/src/agent/tool_dispatch.rs</code> turns that into
+either scheduling the tool or synthesizing a blocked
+<code>ToolResult</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PermissionPolicy::resolve()</code></td>
+<td>Classify native tool input → <code>CapabilityRisk</code></td>
+</tr>
+<tr>
+<td><code>PermissionManager::check()</code></td>
+<td>Map risk + mode + settings + allowlist →
+<code>PermissionBehavior</code></td>
+</tr>
+<tr>
+<td><code>tool_dispatch.rs</code></td>
+<td>Handle <code>Ask</code> via TUI <code>RequestSelect</code> or
+headless <code>ask_user(risk)</code></td>
+</tr>
+<tr>
+<td><code>bash</code> tool + <code>shell.rs</code></td>
+<td>Hard-block a subset of dangerous shell commands at execution
+time</td>
+</tr>
+</tbody>
+</table>
+<p>Shell commands get <strong>two</strong> defenses: high-risk patterns
+trigger permission prompts; a smaller set is rejected outright inside
+the <code>bash</code> tool even after approval.</p>
+<hr />
+<h2 id="2-intent-classification">2. Intent Classification</h2>
+<h3 id="core-types">Core types</h3>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> CapabilitySource <span class="op">{</span> Native<span class="op">,</span> Mcp <span class="op">}</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> CapabilityRisk <span class="op">{</span> <span class="bu">Read</span><span class="op">,</span> <span class="bu">Write</span><span class="op">,</span> High <span class="op">}</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> CapabilityIntent <span class="op">{</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> source<span class="op">:</span> CapabilitySource<span class="op">,</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> server<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span>  <span class="co">// MCP server segment, if any</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tool<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>              <span class="co">// short tool name after parsing</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> risk<span class="op">:</span> CapabilityRisk<span class="op">,</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>normalize_capability(tool_name, tool_input)</code> is the
+single entry point. It parses the tool name, then calls
+<code>classify_risk()</code>.</p>
+<h3 id="native-vs-mcp-tool-names">Native vs MCP tool names</h3>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Example</th>
+<th>Parsed result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Native</td>
+<td><code>read_file</code></td>
+<td><code>source = Native</code>, <code>tool = &quot;read_file&quot;</code></td>
+</tr>
+<tr>
+<td>MCP</td>
+<td><code>mcp__demo__db__query</code></td>
+<td><code>source = Mcp</code>, <code>server = Some(&quot;demo__db&quot;)</code>,
+<code>tool = &quot;query&quot;</code></td>
+</tr>
+</tbody>
+</table>
+<p>MCP names use the prefix <code>mcp__</code>, then
+<code>server__tool</code> with the <strong>rightmost</strong>
+<code>__</code> split (so server IDs may contain underscores).</p>
+<h3 id="risk-rules">Risk rules</h3>
+<p>Classification is heuristic — based on tool name prefixes and, for
+<code>bash</code>, the command string:</p>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Read</strong></td>
+<td>Tools with <code>PermissionPolicy::Read</code> (e.g.
+<code>read_file</code>); shell commands that are provably read-only (see
+<a href="#7-shell-high-risk-detection">§7</a>)</td>
+</tr>
+<tr>
+<td><strong>Write</strong></td>
+<td>Tools with <code>PermissionPolicy::Write</code>; shell tools
+(<code>bash</code> / <code>background_run</code> /
+<code>worktree_run</code>) for commands that cannot be proven
+read-only</td>
+</tr>
+<tr>
+<td><strong>High</strong></td>
+<td>Tools with <code>PermissionPolicy::High</code> (e.g.
+<code>spawn_subagent</code>); shell commands starting with
+<code>sudo </code> or <code>su </code></td>
+</tr>
+</tbody>
+</table>
+<p>A separate hard-block list in <code>shell.rs</code> still rejects a
+subset of dangerous commands at execution time (see <a href="#7-shell-high-risk-detection">§7</a>), even after permission
+approval.</p>
+<p>MCP tools use their own metadata / defaults; unknown tools are
+treated as <strong>High</strong> at the dispatch gate.</p>
+<hr />
+<h2 id="3-permissionbehavior-allow-deny-ask">3. PermissionBehavior:
+Allow, Deny, Ask</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> PermissionBehavior <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    Allow<span class="op">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    Deny<span class="op">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    Ask<span class="op">,</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> PermissionDecision <span class="op">{</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> behavior<span class="op">:</span> PermissionBehavior<span class="op">,</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> reason<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Behavior</th>
+<th>Meaning in <code>tool_dispatch.rs</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Allow</strong></td>
+<td>Tool enters Phase 2 (parallel execution)</td>
+</tr>
+<tr>
+<td><strong>Deny</strong></td>
+<td><code>PreparedState::Resolved</code> with
+<code>&quot;Permission denied: …&quot;</code>; model receives a failed tool
+result</td>
+</tr>
+<tr>
+<td><strong>Ask</strong></td>
+<td>Interactive prompt (TUI), or headless <code>ask_user</code> defaults
+(allow Write/Read, deny High); see <a href="#6-tui-requestselect-flow">§6 TUI RequestSelect flow</a></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-permission-modes">4. Permission Modes</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> PermissionMode <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="bu">Default</span><span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    Plan<span class="op">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    Auto<span class="op">,</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Display labels (from <code>PermissionMode</code>&#39;s
+<code>Display</code> impl):</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Label</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Default</code></td>
+<td><code>default - ask for writes</code></td>
+<td>Read allowed; Write asks unless settings/allowlist match; High asks
+unless a settings <strong>allow</strong> rule matches</td>
+</tr>
+<tr>
+<td><code>Plan</code></td>
+<td><code>plan - read only</code></td>
+<td>Read allowed (including provably read-only shell commands —
+<code>ls</code>, <code>grep</code>, <code>git status</code>, …); Write
+and High <strong>denied</strong> without prompting</td>
+</tr>
+<tr>
+<td><code>Auto</code></td>
+<td><code>auto - allow non-high operations</code></td>
+<td>All risks auto-approved (including High)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="decision-order-in-permissionmanagercheck">Decision order in
+<code>PermissionManager::check()</code></h3>
+<p>The checks run in this fixed order:</p>
+<pre class="text"><code>1. Read risk?                         → Allow (all modes)
+2. Plan mode + non-Read?              → Deny
+3. Auto mode?                         → Allow (all risks)
+4. Settings deny rule?                → Deny
+5. Settings allow rule?               → Allow (including High)
+6. Settings ask rule (non-High)?      → Ask
+7. High risk (no Deny/Allow rule)?    → Ask (skips in-session allowlist)
+8. In-session always_allowed match?   → Allow
+9. Default                            → Ask</code></pre>
+<pre class="mermaid"><code>flowchart TD
+    TC[&quot;ToolUse { name, input }&quot;] --&gt; Risk[&quot;PermissionPolicy::resolve()&quot;]
+    Risk -- Read --&gt; Allow[&quot;Allow&quot;]
+    Risk -- Write / High --&gt; Plan{&quot;Plan mode?&quot;}
+
+    Plan -- Yes --&gt; Deny[&quot;Deny&quot;]
+    Plan -- No --&gt; Auto{&quot;Auto mode?&quot;}
+
+    Auto -- Yes --&gt; Allow
+    Auto -- No --&gt; Settings{&quot;Settings rule?&quot;}
+
+    Settings -- Deny --&gt; Deny
+    Settings -- Allow --&gt; Allow
+    Settings -- Ask / none --&gt; High{&quot;High risk?&quot;}
+
+    High -- Yes --&gt; Ask[&quot;Ask user&quot;]
+    High -- No --&gt; AllowList{&quot;always_allowed_tools?&quot;}
+
+    AllowList -- Yes --&gt; Allow
+    AllowList -- No --&gt; Ask</code></pre>
+<p><strong>High-risk vs allowlists:</strong> the in-session bare-name
+allowlist (<code>allow_tool</code>) does <strong>not</strong> bypass
+High — those calls still <code>Ask</code>. A matching project settings
+<strong>allow</strong> rule (including rules persisted by &quot;Always allow
+this tool&quot; via <code>allow_tool_with_input</code>) <strong>does</strong>
+allow High for that input pattern.</p>
+<hr />
+<h2 id="5-allowlist-and-consecutive-denials">5. Allowlist and
+Consecutive Denials</h2>
+<h3 id="in-session-allowlist">In-session allowlist</h3>
+<p><code>PermissionManager</code> holds
+<code>always_allowed_tools: Vec&lt;String&gt;</code>. On construction
+(<code>try_new</code>), it is seeded with <code>&quot;read_file&quot;</code>.</p>
+<p>When the user picks <strong>&quot;Always allow this tool&quot;</strong> in the
+TUI, <code>allow_tool(tool_name)</code> appends the exact tool name
+(e.g. <code>edit_file</code>, <code>bash</code>). Future
+<strong>Write</strong>-risk calls to that name skip the Default-mode
+prompt.</p>
+<p>The allowlist is <strong>in-memory only</strong> — it is not
+persisted to SQLite or TOML between sessions.</p>
+<h3 id="consecutive-denials">Consecutive denials</h3>
+<p>Each user <strong>Deny</strong> increments
+<code>consecutive_denials</code>. Allow-once and always-allow reset it
+to zero.</p>
+<p>After <code>max_consecutive_denials</code> (default
+<strong>3</strong>) denials, <code>should_suggest_plan_mode()</code>
+returns true. In non-interactive mode, <code>ask_user()</code> prints a
+hint to stderr:</p>
+<pre class="text"><code>[3 consecutive denials -- consider switching to plan mode]</code></pre>
+<p>There is no automatic mode switch today — the message is advisory
+only.</p>
+<hr />
+<h2 id="6-tui-requestselect-flow">6. TUI RequestSelect Flow</h2>
+<p>When <code>check()</code> returns <code>Ask</code> and the agent has
+a UI channel (<code>runtime.ui_tx</code>), <code>tool_dispatch.rs</code>
+sends:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="pp">AgentUpdate::</span>RequestSelect <span class="op">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    prompt<span class="op">,</span>      <span class="co">// e.g. &quot;Allow bash: {\&quot;command\&quot;:\&quot;npm test\&quot;}&quot;</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    options<span class="op">,</span>     <span class="co">// [&quot;Allow once&quot;, &quot;Deny&quot;, &quot;Always allow this tool&quot;]</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    respond<span class="op">,</span>     <span class="co">// oneshot channel back to the agent</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>The TUI (<code>crates/tui/src/widgets/state/app/agent.rs</code>)
+switches to <code>InputMode::Select</code> and renders the select popup
+(<code>log_confirm = false</code> so the choice does not clutter the
+log).</p>
+<table>
+<thead>
+<tr>
+<th>User choice</th>
+<th>Index</th>
+<th>Agent action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Allow once</td>
+<td>0</td>
+<td>Run tool; set <code>permission_label = &quot;Allow once&quot;</code> on
+<code>StepFinished</code></td>
+</tr>
+<tr>
+<td>Deny</td>
+<td>1 (default)</td>
+<td><code>PreparedState::Resolved</code>; <code>StepFailed</code> with
+deny message</td>
+</tr>
+<tr>
+<td>Always allow this tool</td>
+<td>2</td>
+<td><code>allow_tool(name)</code>; run tool;
+<code>permission_label = &quot;Always allow this tool&quot;</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <code>permission_label</code> is attached to
+<code>StepResult</code> and shown on the tool meta row in the TUI. See
+<a href="../docs/tool_rendering.html">Tool Rendering</a>.</p>
+<h3 id="headless--no-ui-channel">Headless / no UI channel</h3>
+<p>If <code>ui_tx</code> is absent, the agent calls
+<code>permission_manager.ask_user(tool, risk)</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Non-interactive default</th>
+<th>stderr</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>High</strong></td>
+<td>Deny</td>
+<td><code>[permission] non-interactive: denying high-risk &lt;tool&gt;</code></td>
+</tr>
+<tr>
+<td><strong>Write</strong> / <strong>Read</strong></td>
+<td>Allow once</td>
+<td><code>[permission] non-interactive: allowing &lt;tool&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Use <code>--auto</code> (Auto mode) when unattended runs must also
+approve High-risk tools without a TUI. Settings allow/deny rules still
+apply before <code>ask_user</code> is reached.</p>
+<hr />
+<h2 id="7-shell-high-risk-detection">7. Shell High-Risk Detection</h2>
+<p>Shared logic lives in <code>crates/tact/src/shell.rs</code>:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> is_high_risk_shell_command(command<span class="op">:</span> <span class="op">&amp;</span><span class="dt">str</span>) <span class="op">-&gt;</span> <span class="dt">bool</span><span class="op">;</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> validate_shell_command(command<span class="op">:</span> <span class="op">&amp;</span><span class="dt">str</span>) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>()<span class="op">&gt;;</span></span></code></pre></div>
+<p><code>is_high_risk_shell_command</code> lowercases the command and
+checks for blocked substrings:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudo</code>, <code>shutdown</code>, <code>reboot</code></td>
+<td>High risk</td>
+</tr>
+<tr>
+<td><code>&gt; /dev/</code>, <code>&gt;&gt; /dev/</code></td>
+<td>High risk</td>
+</tr>
+<tr>
+<td><code>rm -rf /</code>, <code>rm -fr /</code>,
+<code>rm -rf /*</code>, …</td>
+<td>High risk</td>
+</tr>
+<tr>
+<td><code>rm -rf ~</code>, <code>rm -fr $home</code>, …</td>
+<td>High risk</td>
+</tr>
+</tbody>
+</table>
+<h3 id="read-only-shell-command-classification">Read-only shell command
+classification</h3>
+<p>Since 2026-08-13, <code>PermissionPolicy::ShellCommand</code>
+classifies a shell command string as <strong>Read</strong> when — and
+only when — it is provably read-only. The logic lives in
+<code>crates/tact/src/tool/readonly_shell.rs</code> and runs in two
+stages:</p>
+<ol type="1">
+<li><strong>Plain-command split</strong> — the string must be
+whitespace-separated words (bare words or single/double-quoted segments)
+with no shell metacharacters:
+<code>; &amp; | &gt; &lt; $ backtick \</code>, globs, braces,
+parentheses, <code>!</code>. Redirections, pipes, command substitution
+and escapes are rejected outright, so the classification cannot disagree
+with what <code>sh -c</code> actually runs. Bare <code>\n</code> /
+<code>\r</code> are <strong>command separators</strong> to
+<code>sh -c</code>, not whitespace — a newline-separated multi-command
+string (e.g. <code>ls\nrm file</code>, CRLF included) is rejected as a
+whole; a literal newline inside quotes is a word character and stays
+accepted. A leading <code>~</code> and embedded single-quoted segments
+are accepted (both are literal).</li>
+<li><strong>Safelist match</strong> — the first word must be a program
+whose options alone cannot write:
+<ul>
+<li>Always safe:
+<code>cat cd cut echo expr false grep head id ls nl paste pwd rev seq stat tail tr true uname uniq wc which whoami</code></li>
+<li><code>base64</code> — except <code>-o</code> /
+<code>--output</code>; <code>find</code> — except
+<code>-exec -execdir -ok -okdir -delete -fls -fprint -fprint0 -fprintf</code>;
+<code>rg</code> — except
+<code>--pre --hostname-bin --search-zip -z</code></li>
+<li><code>git</code> — only
+<code>status / log / diff / show / branch</code>, with unsafe global
+options (<code>-C -c --git-dir --paginate</code> and friends) and
+output/exec options (<code>--output --ext-diff --textconv --exec</code>)
+rejected; <code>git branch</code> additionally rejects any argument that
+could create, rename, or delete a branch</li>
+<li><code>sed</code> — only <code>sed -n {N|M,N}p</code>
+print-line-range forms</li>
+</ul></li>
+</ol>
+<p>The safelist and option rules mirror OpenAI Codex&#39;s
+<code>is_known_safe_command</code>
+(<code>codex-rs/shell-command/src/command_safety/is_safe_command.rs</code>).
+The classifier is deliberately conservative: a false negative only costs
+an approval prompt, while a false positive would run a mutation silently
+under plan mode — so anything ambiguous stays <strong>Write</strong>.
+Net effect: in plan mode <code>ls</code>, <code>grep -rn x .</code>,
+<code>git status</code> run without prompting; <code>cargo test</code>,
+pipes, redirections, and unknown programs are still denied.</p>
+<h3 id="two-layers">Two layers</h3>
+<pre class="mermaid"><code>sequenceDiagram
+    participant Agent
+    participant Perm as PermissionManager
+    participant TUI
+    participant Bash as bash tool
+
+    Agent-&gt;&gt;Perm: check(&quot;bash&quot;, {command})
+    alt High risk (e.g. sudo)
+        Perm--&gt;&gt;Agent: Ask
+        Agent-&gt;&gt;TUI: RequestSelect
+        TUI--&gt;&gt;Agent: Allow once
+    else Write risk (e.g. npm test)
+        Perm--&gt;&gt;Agent: Ask or Allow (mode/allowlist)
+    end
+
+    Agent-&gt;&gt;Bash: call(command)
+    alt validate_shell_command fails
+        Bash--&gt;&gt;Agent: Error: Dangerous command blocked
+    else OK
+        Bash--&gt;&gt;Agent: stdout/stderr
+    end</code></pre>
+<ol type="1">
+<li><strong>Permission layer</strong> — <code>classify_risk</code> uses
+<code>is_high_risk_shell_command</code> to mark High risk → always
+<code>Ask</code> (except Read-only bash).</li>
+<li><strong>Execution layer</strong> — <code>bash</code> and
+<code>background_run</code> call <code>validate_shell_command</code>
+before spawning. A blocked command fails even if the user approved
+it.</li>
+</ol>
+<p>Benign destructive paths are allowed at execution but may still
+prompt: e.g. <code>rm -rf ./build</code> passes
+<code>validate_shell_command</code> but is classified as
+<strong>Write</strong>, so Default mode asks first.</p>
+<p>Read-only bash detection rejects commands with shell metacharacters —
+<code>ls; rm -rf /</code> is <strong>Write</strong>, not Read. A bare
+newline is likewise a command separator, so <code>ls\nrm file</code> is
+<strong>Write</strong>, not Read.</p>
+<hr />
+<h2 id="8-integration-in-the-tool-pipeline">8. Integration in the Tool
+Pipeline</h2>
+<p>Permissions run in <strong>Phase 1</strong> of
+<code>execute_tool_call</code>
+(<code>crates/tact/src/agent/tool_dispatch.rs</code>), strictly after
+hooks:</p>
+<pre class="text"><code>For each ToolUse (sequential):
+  stats · cancel check
+  StepAdded / StepStarted
+  PreToolUse hooks          ← can mutate input or Block
+  PermissionManager::check  ← this chapter
+  Ask → RequestSelect (if needed)
+  PreparedState::Run | Resolved
+
+Phase 2: parallel waves (no permission re-check)
+Phase 3: build ToolResult blocks in model order</code></pre>
+<pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant LLM
+    participant Agent
+    participant Hook as PreToolUse
+    participant Perm as PermissionManager
+    participant TUI
+    participant Tool as ToolRouter / MCP
+
+    LLM-&gt;&gt;Agent: ToolUse blocks
+    Agent-&gt;&gt;Hook: invoke_hooks!(PreToolUse)
+    alt HookControl::Block
+        Hook--&gt;&gt;Agent: blocked message
+    else Continue
+        Agent-&gt;&gt;Perm: check(name, input)
+        alt Allow
+            Perm--&gt;&gt;Agent: Allow
+            Agent-&gt;&gt;Tool: execute (Phase 2)
+        else Deny
+            Perm--&gt;&gt;Agent: Deny
+            Agent--&gt;&gt;LLM: ToolResult (permission denied)
+        else Ask
+            Perm--&gt;&gt;Agent: Ask
+            Agent-&gt;&gt;TUI: RequestSelect
+            TUI--&gt;&gt;Agent: user choice
+            opt approved
+                Agent-&gt;&gt;Tool: execute
+            end
+        end
+    end</code></pre>
+<p><code>PermissionManager</code> lives on <code>AgentRuntime</code>
+(<code>crates/tact/src/agent/mod.rs</code>), not on
+<code>ToolContext</code>. Sub-agents created by the
+<code>spawn_subagent</code> tool get their own manager (always
+<code>PermissionMode::Default</code>) but inherit the main agent&#39;s
+<code>ui_tx</code> so permission popups still work.</p>
+<hr />
+<h2 id="9-configuration">9. Configuration</h2>
+<h3 id="toml">TOML</h3>
+<div class="sourceCode" id="cb12"><pre class="sourceCode toml"><code class="sourceCode toml"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[permission]</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="dt">mode</span> <span class="op">=</span> <span class="st">&quot;default&quot;</span>   <span class="co"># &quot;default&quot; | &quot;plan&quot; | &quot;auto&quot;</span></span></code></pre></div>
+<p>Defined in <code>PermissionTomlConfig</code>
+(<code>crates/tact/src/config/types.rs</code>). Default when omitted:
+<code>&quot;default&quot;</code>.</p>
+<h3 id="cli">CLI</h3>
+<p><code>--permission-mode</code> / <code>-m</code> overrides TOML via
+<code>config/resolve.rs</code> →
+<code>ResolvedConfig.permission_mode</code>.</p>
+<h3 id="startup-behavior-today">Startup behavior today</h3>
+<table>
+<thead>
+<tr>
+<th>Entry point</th>
+<th>Mode used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tact-ui headless</code></td>
+<td><code>permission_mode_from_config()</code> — reads TOML / CLI;
+unknown values fall through to <strong>Auto</strong></td>
+</tr>
+<tr>
+<td><code>tact-ui</code> (interactive TUI)</td>
+<td>Same as headless — <code>permission_mode_from_config()</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-code-map">10. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td><code>CapabilityRisk</code>, <code>PermissionManager</code>,
+<code>normalize_capability</code>, classification heuristics</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/shell.rs</code></td>
+<td>Shared high-risk shell patterns; <code>validate_shell_command</code>
+for execution-time block</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td>Pre-flight permission check; <code>RequestSelect</code> handling;
+<code>permission_label</code> on <code>StepFinished</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>AgentRuntime.permission_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/bash.rs</code></td>
+<td>Calls <code>validate_shell_command</code> before spawning shell</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/background.rs</code></td>
+<td>Same validation for background shell commands</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/subagent.rs</code></td>
+<td>Sub-agent uses <code>Default</code> mode; inherits
+<code>ui_tx</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/permission.rs</code></td>
+<td><code>permission_mode_from_config()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code>,
+<code>interactive.rs</code></td>
+<td>Construct <code>PermissionManager</code> at session start</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/config/types.rs</code></td>
+<td><code>[permission] mode</code> TOML schema</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/widgets/state/app/agent.rs</code></td>
+<td>Handles <code>AgentUpdate::RequestSelect</code></td>
+</tr>
+<tr>
+<td><code>crates/protocol/src/lib.rs</code></td>
+<td><code>AgentUpdate::RequestSelect</code>,
+<code>StepResult.permission_label</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-current-gaps">11. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Allowlist not persisted</td>
+<td>&quot;Always allow this tool&quot; lasts only for the current process</td>
+</tr>
+<tr>
+<td>No runtime mode switch API</td>
+<td>User must restart with a different mode; stderr only suggests Plan
+after repeated denials</td>
+</tr>
+<tr>
+<td>Headless High still needs Auto or settings allow</td>
+<td>Non-interactive <code>ask_user</code> allows Write/Read Ask, but
+denies High unless a settings allow rule already returned Allow</td>
+</tr>
+<tr>
+<td><code>PlanStep.need_approval</code> deprecated</td>
+<td>Field marked <code>#[deprecated(since = &quot;0.19.0&quot;)]</code>; use
+<code>PlanStep::new()</code> — permission is driven by
+<code>PermissionManager</code></td>
+</tr>
+<tr>
+<td>Permission vs hook overlap</td>
+<td>Both can block tools; hooks run first and skip permission on
+<code>Block</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./11_chapter_task.html">Tasks and Tool Scheduling</a> —
+three-phase pipeline permissions sit inside</li>
+<li><a href="./12_chapter_subagent.html">Subagents</a> —
+<code>spawn_subagent</code> High risk, separate
+<code>PermissionManager</code>, inherited <code>ui_tx</code></li>
+<li><a href="./09_chapter_hook.html">Agent Lifecycle Hooks</a> —
+PreToolUse runs immediately before permission check</li>
+<li><a "href="../ARCHITECTURE.html#3-permission-system">ARCHITECTURE.md</a>
+— architecture diagram and mode table</li>
+<li><a href="../docs/state_machines.html">docs/state_machines.md</a> —
+permission decision state machine</li>
+<li><a href="../docs/tool_rendering.html">docs/tool_rendering.md</a> —
+how <code>permission_label</code> appears in the TUI</li>
+<li><a href="../docs/parallel_tool_execution.html">docs/parallel_tool_execution.md</a>
+— why pre-flight stays sequential</li>
+</ul>
+</body>
+</html>

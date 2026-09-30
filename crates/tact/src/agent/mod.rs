@@ -2447,6 +2447,7 @@ impl Agent {
             .additional(cached_md_section(&mut self.runtime.cached_agents_md, || {
                 assemble_agents_md_prompt(workdir, &self.agent_settings.instruction_sources)
             }))
+            .mcp_instructions(self.mcp_router.instructions_block())
             .dynamic_context(load_dynamic_context(
                 workdir,
                 &mut self.runtime.cached_dir_snapshot,
@@ -2846,6 +2847,77 @@ mod tests {
         assert!(names.contains(&"bash"));
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
+    }
+
+    /// A one-tool MCP client whose server sent `instructions`.
+    fn mcp_client_with_instructions(server: &str, instructions: &str) -> crate::mcp::McpClient {
+        use std::borrow::Cow;
+        use std::sync::Arc;
+
+        use rmcp::model::{Content, JsonObject, Tool as McpTool};
+        use serde_json::json;
+
+        let tool = McpTool {
+            name: Cow::Borrowed("recall"),
+            title: None,
+            description: Some(Cow::Borrowed("Recall a note")),
+            input_schema: Arc::new(JsonObject::from_iter([(
+                "type".to_string(),
+                json!("object"),
+            )])),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        };
+        let service = crate::mcp::MockMcpService::new(vec![tool.clone()], |_| {
+            Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+                "ok",
+            )]))
+        })
+        .with_instructions(instructions);
+        crate::mcp::McpClient::with_service(server, vec![tool], Arc::new(service))
+    }
+
+    #[test]
+    fn the_system_prompt_carries_mcp_server_instructions() {
+        ensure_config();
+        let mut mcp = crate::mcp::MCPToolRouter::new();
+        mcp.register_client(mcp_client_with_instructions(
+            "basic-memory",
+            "Call recent_activity to orient yourself.",
+        ));
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            test_context("mcp_instructions_prompt"),
+            crate::tool::toolset(),
+            mcp,
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Dynamic,
+        );
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(prompt.contains("# MCP server instructions"), "{prompt}");
+        assert!(prompt.contains("## basic-memory"), "{prompt}");
+        assert!(
+            prompt.contains("Call recent_activity to orient yourself."),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn an_agent_without_mcp_servers_has_no_instructions_section() {
+        ensure_config();
+        let mut agent = chat_completions_test_agent("no_mcp_instructions");
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(!prompt.contains("# MCP server instructions"), "{prompt}");
     }
 
     fn chat_completions_test_agent(context_name: &str) -> Agent {

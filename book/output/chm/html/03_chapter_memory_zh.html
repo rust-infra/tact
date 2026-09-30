@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="持久化记忆">持久化记忆</h1>
+<blockquote>
+<p>语言：<a href="./03_chapter_memory_zh.html">中文</a> · <a href="./03_chapter_memory.html">English</a></p>
+</blockquote>
+<p>本章说明 Tact
+如何在对话上下文之外存储<strong>长期事实</strong>：用户偏好、纠正、项目约束与参考
+URL。记忆是 <code>.tact/memory/</code> 下带 YAML frontmatter 的 Markdown
+文件。每轮注入系统提示词，并可通过 <code>save_memory</code>
+原生工具在运行时写入。</p>
+<p>记忆如何融入提示词组装与动态边界，见 <a href="./04_chapter_prompt_zh.html">系统提示词</a>。写入工具见 <a href="./07_chapter_tool_zh.html">工具系统</a>。</p>
+<hr />
+<h2 id="1-memory-的用途">1. Memory 的用途</h2>
+<p>Memory 回答：<em>跨会话 agent
+应记住什么，且无法从当前代码库直接看出？</em></p>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>示例</th>
+<th>何时保存</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user</code></td>
+<td>「我偏好 tab 而非 space」</td>
+<td>用户陈述偏好</td>
+</tr>
+<tr>
+<td><code>feedback</code></td>
+<td>「库代码不要用 unwrap」</td>
+<td>用户纠正 agent</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td>「遗留 billing 模块不能动」</td>
+<td>难以从代码推断的硬事实</td>
+</tr>
+<tr>
+<td><code>reference</code></td>
+<td>「设计文档在 https://…」</td>
+<td>外部资源位置</td>
+</tr>
+</tbody>
+</table>
+<p>静态字符串
+<code>MEMORY_GUIDANCE</code>（<code>crates/tact/src/memory/mod.rs</code>）注入系统提示词（动态边界之上），教模型<strong>何时保存</strong>与<strong>何时不要</strong>——例如不要存密钥、临时分支名，或可从仓库轻易推导的内容。</p>
+<hr />
+<h2 id="2-架构概览">2. 架构概览</h2>
+<pre class="mermaid"><code>graph TB
+    subgraph Startup[&quot;会话启动 (tui.rs)&quot;]
+        TP[TactPath.memory_dir]
+        MM[MemoryManager]
+        TP --&gt; MM
+        MM --&gt;|load_all| Files[&quot;.tact/memory/*.md&quot;]
+    end
+
+    subgraph Agent[&quot;每个 LLM 回合&quot;]
+        BSP[build_system_prompt]
+        MM2[MemoryManager.load_memory_prompt]
+        BSP --&gt; MM2
+        MM2 --&gt; SP[&quot;系统提示词 § Memory&quot;]
+    end
+
+    subgraph Tools[&quot;运行时写入&quot;]
+        SM[save_memory 工具]
+        SM --&gt;|save_memory + rebuild_index| Files
+        SM --&gt; MM
+    end
+
+    Files --&gt; MM2</code></pre>
+<p>启动时，<code>get_memory_manager(tact_path.memory_dir())</code> 构造
+<code>MemoryManager</code>，扫描 <code>.tact/memory/</code>，将所有合法
+<code>.md</code> 载入内存 <code>HashMap</code>。同一
+<code>Arc&lt;Mutex&lt;MemoryManager&gt;&gt;</code> 经
+<code>ToolContext</code> 共享，供提示词渲染与 <code>save_memory</code>
+使用。</p>
+<hr />
+<h2 id="3-数据模型">3. 数据模型</h2>
+<h3 id="memorytype">MemoryType</h3>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> MemoryType <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    User<span class="op">,</span>       <span class="co">// YAML: user</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    Feedback<span class="op">,</span>   <span class="co">// feedback</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    Project<span class="op">,</span>    <span class="co">// project</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    Reference<span class="op">,</span>  <span class="co">// reference</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>从 YAML <code>type</code> 字段经
+<code>strum</code>（<code>snake_case</code>）解析。非法类型在加载或保存解析时失败。</p>
+<h3 id="memoryentry">MemoryEntry</h3>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> MemoryEntry <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> name<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> description<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> memory_type<span class="op">:</span> MemoryType<span class="op">,</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> content<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="磁盘格式">磁盘格式</h3>
+<p>每条记忆一个文件 <code>{sanitized_name}.md</code>：</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="an">name:</span><span class="co"> Prefer Tabs</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="an">description:</span><span class="co"> Indent with tabs</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="an">type:</span><span class="co"> user</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>Use tabs by default.</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>来源</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>frontmatter，或省略时用文件 stem</td>
+<td>显示名；文件名为 sanitized（小写，仅
+<code>_</code>/<code>-</code>）</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>frontmatter</td>
+<td>一行摘要</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td>frontmatter</td>
+<td>缺失时默认为 <code>project</code></td>
+</tr>
+<tr>
+<td>body</td>
+<td>闭合 <code>---</code> 之后</td>
+<td>完整记忆内容</td>
+</tr>
+</tbody>
+</table>
+<p><strong>无</strong>合法 YAML frontmatter（<code>---</code> …
+<code>---</code>）的文件在加载时<strong>跳过</strong>——不视为记忆。</p>
+<hr />
+<h2 id="4-memorymanager-生命周期">4. MemoryManager 生命周期</h2>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load_all()</code></td>
+<td>扫描 <code>memory_dir</code>（仅 depth 1）；解析 frontmatter；填充
+<code>HashMap</code></td>
+</tr>
+<tr>
+<td><code>load_memory_prompt()</code></td>
+<td>为系统模板渲染分组提示块</td>
+</tr>
+<tr>
+<td><code>save_memory(name, description, type, content)</code></td>
+<td>写文件、更新 map、重建索引</td>
+</tr>
+<tr>
+<td><code>describe_memories()</code></td>
+<td>紧凑列表供调试（<code>[type] name: description</code>）</td>
+</tr>
+<tr>
+<td><code>memories()</code></td>
+<td>只读访问内存 map</td>
+</tr>
+</tbody>
+</table>
+<h3 id="提示词渲染">提示词渲染</h3>
+<p><code>load_memory_prompt()</code> 产出：</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu"># Memories (persistent across sessions)</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="fu">## [user]</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="fu">### Prefer Tabs: Indent with tabs</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>Use tabs by default.</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="fu">## [project]</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>...</span></code></pre></div>
+<p>条目按 <code>MemoryType</code>（enum
+顺序）分组，组内按名称排序。无记忆时返回空字符串。</p>
+<h3 id="索引文件">索引文件</h3>
+<p>每次 <code>save_memory</code> 时，<code>rebuild_index()</code> 写入
+<code>MEMORY.md</code>——人类可读索引，上限
+<code>MAX_INDEX_LINES</code>（200）行，超出则附截断说明。</p>
+<hr />
+<h2 id="5-集成点">5. 集成点</h2>
+<h3 id="系统提示词">系统提示词</h3>
+<p><code>Agent::build_system_prompt</code>（<code>crates/tact/src/agent/mod.rs</code>）：</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="op">.</span>memory(<span class="kw">self</span><span class="op">.</span>load_memory_prompt()<span class="op">?</span>)</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="op">.</span>memory_guidance(MEMORY_GUIDANCE<span class="op">.</span>trim())</span></code></pre></div>
+<p>二者在 agent loop 内每轮执行。记忆内容出现在
+<code>=== DYNAMIC_BOUNDARY ===</code>
+<strong>之下</strong>（动态节）。见 <a href="./04_chapter_prompt_zh.html">系统提示词</a>。</p>
+<h3 id="toolcontext">ToolContext</h3>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> memory_manager<span class="op">:</span> Arc<span class="op">&lt;</span><span class="pp">std::sync::</span>Mutex<span class="op">&lt;</span>MemoryManager<span class="op">&gt;&gt;,</span></span></code></pre></div>
+<p>在 <code>tui.rs</code> 中与其他会话服务一并构造。子 agent 通过其
+<code>ToolContext</code> 继承同一 manager。</p>
+<h3 id="save_memory-工具">save_memory 工具</h3>
+<p><code>crates/tact/src/tool/memory.rs</code> —
+<code>#[tool(name = &quot;save_memory&quot;, …)]</code> 锁定 manager 并调用
+<code>save_memory()</code>。非法 <code>type</code> 字符串返回错误。</p>
+<hr />
+<h2 id="6-存储布局">6. 存储布局</h2>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&lt;workdir&gt;/.tact/memory/</code></td>
+<td>记忆目录（<code>TactPath::memory_dir()</code>）</td>
+</tr>
+<tr>
+<td><code>&lt;workdir&gt;/.tact/memory/{name}.md</code></td>
+<td>单条记忆文件</td>
+</tr>
+<tr>
+<td><code>&lt;workdir&gt;/.tact/memory/MEMORY.md</code></td>
+<td>自动生成索引（不作为记忆加载）</td>
+</tr>
+</tbody>
+</table>
+<p>记忆<strong>直接使用 Markdown 文件</strong>，而非 <a href="./01_chapter_store_zh.html">存储与持久化</a> 中的 JSON
+<code>Store</code> 层。</p>
+<hr />
+<h2 id="7-代码地图">7. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/memory/mod.rs</code></td>
+<td><code>MemoryType</code>、<code>MemoryEntry</code>、<code>MemoryManager</code>、<code>MEMORY_GUIDANCE</code>、frontmatter
+解析</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/memory.rs</code></td>
+<td><code>save_memory</code> 原生工具</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>load_memory_prompt()</code>、系统提示词接线</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.memory_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code>、<code>interactive.rs</code></td>
+<td>会话启动时 <code>get_memory_manager()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>TactPath::memory_dir()</code> → <code>.tact/memory</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-当前缺口">8. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无删除或编辑工具</td>
+<td>仅有 <code>save_memory</code>；覆盖使用同名</td>
+</tr>
+<tr>
+<td>会话中不从磁盘 reload</td>
+<td>外部编辑 <code>.md</code> 需重启才生效</td>
+</tr>
+<tr>
+<td>浅层扫描</td>
+<td><code>load_all()</code> 使用
+<code>max_depth(1)</code>——忽略嵌套子目录</td>
+</tr>
+<tr>
+<td>必需 frontmatter</td>
+<td>无 <code>---</code> 头的文件静默跳过</td>
+</tr>
+<tr>
+<td>无去重</td>
+<td>相同显示名不同 sanitize 理论上可能文件名冲突</td>
+</tr>
+<tr>
+<td>热路径 Mutex</td>
+<td>每轮与每次 save 都锁 <code>memory_manager</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./04_chapter_prompt_zh.html">系统提示词</a> —
+动态边界与记忆节位置</li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>save_memory</code> 与 <code>ToolContext</code></li>
+<li><a href="./01_chapter_store_zh.html">存储与持久化</a> — JSON store
+层（记忆独立）</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> —
+提示词组装中的记忆高层说明</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,1534 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="llm-providers">LLM Providers</h1>
+<blockquote>
+<p>Language: <a href="./22_chapter_llm.html">English</a> · <a href="./22_chapter_llm_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter covers the <code>tact_llm</code> crate: provider
+selection, adapter construction, streaming and non-streaming calls,
+token usage, session-scoped cache keys, and balance queries for DeepSeek
+and Kimi.</p>
+<p>Configuration that feeds this layer is resolved in <a href="./21_chapter_config.html">Ch 21 Configuration</a>. The agent loop
+consumes the client via <code>Agent::stream_message</code> (<a href="./18_chapter_agent_loop.html">Ch 18 Agent Main Loop</a>).</p>
+<p>Implementation: <code>crates/tact_llm/src/</code>
+(<code>lib.rs</code>, <code>client.rs</code>, <code>provider.rs</code>,
+<code>profile.rs</code>, <code>auth.rs</code>,
+<code>transport.rs</code>, <code>types.rs</code>,
+<code>content.rs</code>, <code>anthropic/</code>, <code>openai/</code>,
+<code>convert.rs</code>).</p>
+<hr />
+<h2 id="1-architecture-overview">1. Architecture Overview</h2>
+<pre class="mermaid"><code>flowchart TB
+    Config[config::install → init_provider] --&gt; PI[ProviderInfo RwLock]
+    Config --&gt; Cred[Credentials RwLock]
+    PI --&gt; Get[get_llm_client]
+    Cred --&gt; Get
+    Get --&gt; Build[Client::new]
+    Build --&gt; LP{LlmProvider enum}
+    LP --&gt; Anthropic[AnthropicAdapter]
+    LP --&gt; ChatCompletions[ChatCompletionsAdapter]
+    LP --&gt; Responses[OpenAiResponsesAdapter]
+    Anthropic --&gt; API1[Messages API SSE]
+    ChatCompletions --&gt; API2[Chat Completions SSE]
+    Responses --&gt; API3[Responses API SSE]
+    Agent[Agent::stream_message] --&gt; LlmClient[LlmClient trait]
+    LlmClient --&gt; LP
+    LlmClient --&gt; TUI[AgentUpdate on ui_tx]</code></pre>
+<p>Three adapter families share one trait:</p>
+<table>
+<thead>
+<tr>
+<th>Adapter</th>
+<th>Providers</th>
+<th>HTTP API</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AnthropicAdapter</code></td>
+<td><code>anthropic</code></td>
+<td>Anthropic Messages (<code>/messages</code>)</td>
+</tr>
+<tr>
+<td><code>ChatCompletionsAdapter</code></td>
+<td><code>openai</code>, <code>deepseek</code>, <code>kimi</code>,
+<code>custom</code></td>
+<td>OpenAI-compatible Chat Completions</td>
+</tr>
+<tr>
+<td><code>OpenAiResponsesAdapter</code></td>
+<td>any OpenAI-compatible entry with
+<code>protocol = &quot;responses&quot;</code></td>
+<td>OpenAI Responses (<code>/responses</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>DeepSeek and Kimi are not separate adapters:
+<code>ProviderProfile::dialect_for(model)</code> selects a
+<code>ChatCompletionsDialect</code> (<code>Standard</code> /
+<code>DeepSeek</code> / <code>Kimi</code>) per request, and the
+corresponding body hook shapes the wire JSON.</p>
+<hr />
+<h2 id="2-configuration-profile-and-credentials">2. Configuration,
+Profile, and Credentials</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> ProviderKind <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    Anthropic<span class="op">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    OpenAi<span class="op">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    DeepSeek<span class="op">,</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    Kimi<span class="op">,</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    Custom(<span class="dt">String</span>)<span class="op">,</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> OpenAiProtocol <span class="op">{</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    ChatCompletions<span class="op">,</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    Responses<span class="op">,</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> ProviderInfo <span class="op">{</span></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> api_key<span class="op">:</span> <span class="dt">String</span><span class="op">,</span> <span class="co">// compatibility snapshot; adapters no longer read this</span></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> base_url<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> model<span class="op">:</span> <span class="dt">String</span><span class="op">,</span> <span class="co">// static configured model (config-level heuristics)</span></span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> provider<span class="op">:</span> ProviderKind<span class="op">,</span></span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> protocol<span class="op">:</span> OpenAiProtocol<span class="op">,</span></span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> responses_compact_threshold<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">u32</span><span class="op">&gt;,</span></span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> ProviderProfile <span class="op">{</span></span>
+<span id="cb2-24"><a href="#cb2-24" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> provider<span class="op">:</span> ProviderKind<span class="op">,</span></span>
+<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> base_url<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> model<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> protocol<span class="op">:</span> OpenAiProtocol<span class="op">,</span></span>
+<span id="cb2-28"><a href="#cb2-28" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> responses_compact_threshold<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">u32</span><span class="op">&gt;,</span></span>
+<span id="cb2-29"><a href="#cb2-29" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb2-30"><a href="#cb2-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-31"><a href="#cb2-31" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">trait</span> CredentialProvider<span class="op">:</span> <span class="bu">Send</span> <span class="op">+</span> <span class="bu">Sync</span> <span class="op">{</span></span>
+<span id="cb2-32"><a href="#cb2-32" aria-hidden="true" tabindex="-1"></a>    <span class="kw">async</span> <span class="kw">fn</span> resolve(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>SecretString<span class="op">,</span> LlmError<span class="op">&gt;;</span></span>
+<span id="cb2-33"><a href="#cb2-33" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>ProviderKind</code> is the single identity type for config, CLI
+(<code>FromStr</code>), and <code>Client::new</code> (exhaustive match).
+TOML names are lowercase: <code>anthropic</code> | <code>openai</code> |
+<code>deepseek</code> | <code>kimi</code>; any other name becomes
+<code>Custom(String)</code> and reuses the OpenAI protocol with an
+explicit <code>base_url</code>.</p>
+<p>Configuration and authentication are orthogonal.
+<code>ProviderProfile</code> is the credential-free snapshot passed to
+adapters, account queries, and model queries.
+<code>CredentialProvider</code> resolves credentials at request time,
+which is the extension point for a future browser-OAuth flow;
+<code>ApiKeyProvider</code> is the current static API-key
+implementation.</p>
+<p>Installed at startup (and re-init under test overrides). The provider
+is a <strong>static snapshot</strong>: <code>/model</code> picks no
+longer mutate it. Per-agent model lives in
+<code>AgentSettings.model</code> (updated via
+<code>UserCommand::SetModel</code>), per-request in
+<code>CreateMessageParams.model</code> — wire shape heuristics
+(<code>is_kimi_k2x</code>, body hook selection) read the
+<em>request</em> model so <code>/model</code> picks change the wire
+without rebuilding the client.
+<code>RwLock&lt;Option&lt;ProviderInfo&gt;&gt;</code> is retained for
+test-support overrides; production install runs once.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co">// crates/tact/src/config/mod.rs</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> install(config<span class="op">:</span> ResolvedConfig) <span class="op">{</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="pp">tact_llm::</span>init_provider(config<span class="op">.</span>llm<span class="op">.</span>provider_info())<span class="op">;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>SETTINGS<span class="op">.</span>write()<span class="op">.</span>expect(<span class="st">&quot;tact config lock poisoned&quot;</span>) <span class="op">=</span> <span class="cn">Some</span>(config)<span class="op">;</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Runtime access:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> <span class="kw">mut</span> client <span class="op">=</span> <span class="pp">tact_llm::</span>get_llm_client()<span class="op">.</span><span class="kw">await</span><span class="op">?;</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>client<span class="op">.</span>set_user_id(<span class="op">&amp;</span>session_id)<span class="op">;</span>   <span class="co">// DeepSeek per-session KV cache isolation</span></span></code></pre></div>
+<p>The runtime entry is <code>get_llm_client()</code> (async): it clones
+the active <code>ProviderProfile</code>, takes the process-global
+<code>CredentialProvider</code> installed by <code>init_provider</code>
+/ <code>init_provider_with_credentials</code>, and delegates to
+<code>Client::new(profile, credentials)</code>.
+<code>ProviderInfo::build_client()</code> remains a synchronous
+compatibility/test layer that wraps
+<code>Client::new(profile, Arc::new(ApiKeyProvider::new(api_key)))</code>.
+The flattened <code>LlmProvider</code> has exactly four variants:
+<code>Anthropic</code>, <code>ChatCompletions</code>,
+<code>OpenAiResponses</code>, and <code>Mock</code>.
+<code>anthropic</code> builds <code>AnthropicAdapter</code>; any
+OpenAI-compatible entry with <code>protocol = &quot;responses&quot;</code> builds
+<code>OpenAiResponsesAdapter</code>; everything else builds
+<code>ChatCompletionsAdapter</code>. The protocol defaults to
+<code>chat_completions</code>.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant Init as config::init
+    participant Resolve as resolve_config
+    participant Install as config::install
+    participant State as SETTINGS / PROVIDER RwLock
+    participant LlmInit as tact_llm::init_provider
+    participant Cred as Credentials RwLock
+    participant Get as get_llm_client
+    participant Build as Client::new(profile, credentials)
+    participant Provider as LlmProvider
+
+    Init-&gt;&gt;Resolve: merge TOML and CLI (no env layer)
+    Resolve--&gt;&gt;Init: ResolvedConfig
+    Init-&gt;&gt;Install: install(config)
+    Install-&gt;&gt;LlmInit: provider_info()
+    LlmInit-&gt;&gt;State: set ProviderInfo (static)
+    LlmInit-&gt;&gt;Cred: set CredentialProvider
+    Install-&gt;&gt;State: set ResolvedConfig
+    Note over State: `/model` updates AgentSettings.model (per-agent), never PROVIDER
+    Get-&gt;&gt;State: clone ProviderInfo snapshot
+    Get-&gt;&gt;Cred: active CredentialProvider
+    Get-&gt;&gt;Build: Client::new(profile, credentials)
+    Build--&gt;&gt;Provider: flattened provider adapter</code></pre>
+<p>Provider initialization flows from Ch 21&#39;s resolved configuration
+into <code>tact_llm</code>. The active <code>ProviderInfo</code> is a
+<strong>static snapshot</strong>; mid-session <code>/model</code>
+switches update <code>AgentSettings.model</code> (per-agent), and the
+request model travels in <code>CreateMessageParams.model</code>.</p>
+<hr />
+<h2 id="3-kimi--deepseek-detection-helpers">3. Kimi / DeepSeek Detection
+Helpers</h2>
+<p>Heuristic helpers on <code>ProviderProfile</code> (also exported at
+crate root):</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>is_kimi()</code></td>
+<td><code>provider == Kimi</code>, <strong>or</strong> base URL / model
+contains moonshot/kimi</td>
+</tr>
+<tr>
+<td><code>is_kimi_k2x()</code></td>
+<td>K2.x family — drives the <strong>32k max_tokens</strong> default and
+Kimi thinking wire shape</td>
+</tr>
+<tr>
+<td><code>is_kimi_k27()</code></td>
+<td>K2.7-code / <code>kimi-for-coding</code> /
+<code>api.kimi.com/coding</code></td>
+</tr>
+<tr>
+<td><code>is_deepseek()</code></td>
+<td><code>provider == DeepSeek</code>, <strong>or</strong> URL/model
+contains deepseek</td>
+</tr>
+<tr>
+<td><code>is_deepseek_balance_supported()</code></td>
+<td>official HTTPS <code>api.deepseek.com</code> only (no proxy
+fallback)</td>
+</tr>
+<tr>
+<td><code>is_kimi_balance_supported()</code></td>
+<td>official HTTPS <code>api.moonshot.cn</code> /
+<code>api.moonshot.ai</code> only</td>
+</tr>
+<tr>
+<td><code>is_kimi_usage_supported()</code></td>
+<td>official HTTPS <code>api.kimi.com/coding</code> only (no proxy
+fallback)</td>
+</tr>
+</tbody>
+</table>
+<p>So <code>provider = openai</code> + a Moonshot-compatible
+<code>base_url</code> still behaves as Kimi for thinking injection.
+Balance polling is enabled only for the official HTTPS
+<code>api.moonshot.cn</code> / <code>api.moonshot.ai</code> hosts (Kimi)
+and <code>api.deepseek.com</code> (DeepSeek); Kimi Code usage quota only
+on <code>api.kimi.com/coding</code>. Custom proxies never forward their
+credentials to an official balance / usage endpoint. Prefer a dedicated
+<code>[llm.providers.kimi]</code> entry.</p>
+<hr />
+<h2 id="4-llmclient-trait">4. LlmClient Trait</h2>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>async_trait<span class="at">]</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">trait</span> LlmClient<span class="op">:</span> <span class="bu">Send</span> <span class="op">+</span> <span class="bu">Sync</span> <span class="op">{</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">async</span> <span class="kw">fn</span> stream_message(</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>        <span class="op">&amp;</span><span class="kw">self</span><span class="op">,</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>        request<span class="op">:</span> <span class="op">&amp;</span>CreateMessageParams<span class="op">,</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>        ui_tx<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>UnboundedSender<span class="op">&lt;</span>AgentUpdate<span class="op">&gt;&gt;,</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>    ) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>(<span class="dt">Vec</span><span class="op">&lt;</span>ContentBlock<span class="op">&gt;,</span> <span class="dt">Option</span><span class="op">&lt;</span>StopReason<span class="op">&gt;,</span> <span class="dt">Option</span><span class="op">&lt;</span>TokenUsageInfo<span class="op">&gt;,</span> <span class="dt">Option</span><span class="op">&lt;</span>LlmRequestBody<span class="op">&gt;</span>)<span class="op">,</span> LlmError<span class="op">&gt;;</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">async</span> <span class="kw">fn</span> create_message(</span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>        <span class="op">&amp;</span><span class="kw">self</span><span class="op">,</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a>        request<span class="op">:</span> <span class="op">&amp;</span>CreateMessageParams<span class="op">,</span></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>    ) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>(<span class="op">...</span>)<span class="op">,</span> LlmError<span class="op">&gt;;</span></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Used by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>stream_message</code></strong></td>
+<td><code>Agent::agent_loop</code> — emits <code>StreamChunk</code>,
+<code>ThinkingChunk</code>, <code>ModelInfo</code>,
+<code>TokenUsage</code></td>
+</tr>
+<tr>
+<td><strong><code>create_message</code></strong></td>
+<td><code>compact_history</code> — non-streaming summarization (<a href="./05_chapter_compact.html">Ch 5</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>Both return the serialized request body (<code>LlmRequestBody</code>)
+for session-store debugging.</p>
+<p>Errors unify as <code>LlmError::Anthropic</code>,
+<code>LlmError::OpenAi</code>, or <code>LlmError::Other</code>.</p>
+<h3 id="stopreason-provider-agnostic">StopReason
+(provider-agnostic)</h3>
+<p><code>StopReason</code> is owned by <code>tact_llm</code>
+(<code>types.rs</code>) — <strong>not</strong> re-exported from the
+Anthropic SDK. Adapters normalize provider-native strings at the
+boundary, so the agent loop never matches on raw API values:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> StopReason <span class="op">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    EndTurn<span class="op">,</span>          <span class="co">// anthropic end_turn / openai stop</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    MaxTokens<span class="op">,</span>        <span class="co">// max_tokens, model_context_window_exceeded / length</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    StopSequence<span class="op">,</span>     <span class="co">// stop_sequence / content_filter</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>    ToolUse<span class="op">,</span>          <span class="co">// tool_use / tool_calls, function_call (legacy)</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    Refusal<span class="op">,</span>          <span class="co">// anthropic refusal (safety classifier, HTTP 200)</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    PauseTurn<span class="op">,</span>        <span class="co">// anthropic pause_turn (server-tool loop paused)</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>    Unknown(<span class="dt">String</span>)<span class="op">,</span>  <span class="co">// unrecognized value — raw string kept for diagnostics</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Constructor</th>
+<th>Input</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>StopReason::from_anthropic</code></td>
+<td>Messages API <code>stop_reason</code> string</td>
+<td><code>model_context_window_exceeded</code> → <code>MaxTokens</code>
+(treat as truncation)</td>
+</tr>
+<tr>
+<td><code>StopReason::from_openai</code></td>
+<td>Chat Completions <code>finish_reason</code> string</td>
+<td>legacy <code>function_call</code> → <code>ToolUse</code>;
+<code>content_filter</code> → <code>StopSequence</code></td>
+</tr>
+</tbody>
+</table>
+<p>Unknown values become <code>Unknown(raw)</code> instead of parse
+failures, so new provider values degrade gracefully. How each variant
+drives the loop (continue / tools / error) is defined in <a "href="./18_chapter_agent_loop.html#4-stop-reasons-and-loop-exit">Ch 18
+§4</a>.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant AgentLoop as Agent::agent_loop
+    participant Agent as Agent::stream_message
+    participant Client as LlmClient::stream_message
+    participant Adapter as Provider Adapter
+    participant API as Provider API (SSE)
+    participant UI as ui_tx (optional)
+    participant TUI as TUI
+    participant Store as Session Store
+
+    AgentLoop-&gt;&gt;Agent: stream_message(params)
+    Agent-&gt;&gt;Client: request + ui_tx
+    Client-&gt;&gt;Adapter: convert/build provider request
+    Adapter-&gt;&gt;API: HTTP POST stream=true
+    loop SSE deltas
+        API--&gt;&gt;Adapter: text / thinking / metadata / usage
+        opt ui_tx present
+            Adapter--&gt;&gt;UI: AgentUpdate::StreamChunk
+            Adapter--&gt;&gt;UI: AgentUpdate::ThinkingChunk
+            Adapter--&gt;&gt;UI: AgentUpdate::ModelInfo
+            Adapter--&gt;&gt;UI: AgentUpdate::TokenUsage
+            UI--&gt;&gt;TUI: render live turn
+        end
+        Adapter-&gt;&gt;Adapter: parse and aggregate deltas
+    end
+    Adapter--&gt;&gt;Agent: ContentBlocks + StopReason + TokenUsageInfo + request body
+    Agent--&gt;&gt;AgentLoop: assistant turn result
+    AgentLoop-&gt;&gt;Store: persist_llm_call(...)</code></pre>
+<p>The streaming turn is the hot path from <a href="./18_chapter_agent_loop.html">Ch 18</a>: adapters translate the
+shared request, stream provider-specific SSE, optionally emit UI
+updates, and return normalized assistant content to the loop.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant Compact as compact_history
+    participant Client as LlmClient::create_message
+    participant Adapter as Provider Adapter
+    participant API as Provider API
+    participant Context as Runtime Context
+
+    Compact-&gt;&gt;Compact: build summarization request
+    Compact-&gt;&gt;Client: create_message(request)
+    Client-&gt;&gt;Adapter: convert/build non-streaming request
+    Adapter-&gt;&gt;API: HTTP POST stream=false
+    API--&gt;&gt;Adapter: complete assistant message
+    Adapter--&gt;&gt;Client: summary content blocks + usage
+    Client--&gt;&gt;Compact: normalized summary blocks
+    Compact-&gt;&gt;Context: replace in-memory context with compacted summary
+    Compact-&gt;&gt;Store: replace_session_messages (SQLite matches summary)</code></pre>
+<p>Compaction uses the same provider adapters without SSE; conceptually
+this is the Ch 5 summarization path running beside the streaming
+loop.</p>
+<hr />
+<h2 id="5-anthropic-adapter">5. Anthropic Adapter</h2>
+<p><code>anthropic/mod.rs</code> uses direct HTTP + SSE
+(<code>reqwest-eventsource</code>) instead of the SDK streaming client
+so new <code>stop_reason</code> values can be mapped into Tact’s own <a href="../crates/tact_llm/src/types.rs"><code>StopReason</code></a>
+without waiting on the Anthropic SDK enum.</p>
+<p>Streaming path:</p>
+<ol type="1">
+<li>POST JSON to <code>{base_url}/messages</code> with
+<code>stream: true</code>.</li>
+<li>Parse SSE events into <code>ContentBlockDelta</code> variants.</li>
+<li>Forward text/thinking to <code>ui_tx</code> as
+<code>AgentUpdate::StreamChunk</code> /
+<code>ThinkingChunk::{Started,Delta,Finished}</code>.</li>
+<li>Emit <code>AgentUpdate::ModelInfo</code> with model name and
+generation limits.</li>
+<li>Aggregate final blocks, <code>StopReason</code>, and
+<code>TokenUsageInfo</code>.</li>
+</ol>
+<p>The Anthropic adapter does not attach the session
+<code>user_id</code> to request metadata.</p>
+<hr />
+<h2 id="6-openai-apis-and-compatible-adapters">6. OpenAI APIs and
+Compatible Adapters</h2>
+<h3 id="61-chat-completions-and-compatible-providers">6.1 Chat
+Completions and compatible providers</h3>
+<p><code>openai/mod.rs</code> provides the shared Chat Completions
+HTTP/SSE transport, and <code>openai/multi_model.rs</code> exposes
+<code>ChatCompletionsAdapter</code>. DeepSeek and Kimi are not separate
+adapters: <code>ProviderProfile::dialect_for(model)</code> selects a
+<code>ChatCompletionsDialect</code> (<code>Standard</code> /
+<code>DeepSeek</code> / <code>Kimi</code>) per request, and the
+corresponding body hook in <code>openai/body.rs</code> shapes the JSON
+after the common request conversion.</p>
+<p>Notable behaviors:</p>
+<ul>
+<li><strong>SSE parsing</strong> via <code>eventsource-stream</code>
+(handles <code>\n\n</code> / <code>\r\n\r\n</code> correctly).</li>
+<li><strong><code>reasoning_content</code> field</strong> mapped to
+<code>ThinkingChunk::{Started, Delta, Finished}</code> (synthesized
+lifecycle) for DeepSeek/Kimi reasoning models.</li>
+<li><strong>Tool call deltas</strong> reassembled by <code>index</code>
+across stream events.</li>
+<li><strong><code>StreamUsage</code></strong> captures prompt/completion
+tokens, cache hit/miss (DeepSeek), and
+<code>reasoning_tokens</code>.</li>
+<li><strong><code>set_user_id</code></strong> adds
+<code>&quot;user_id&quot;</code> only when the selected body hook is
+DeepSeek.</li>
+</ul>
+<p><code>convert.rs</code> builds provider-specific request JSON from
+shared <code>CreateMessageParams</code> (Anthropic message shape used
+internally throughout Tact).</p>
+<p><strong>Tools, not legacy functions:</strong> requests use the
+current <code>tools</code> / <code>tool_choice</code> API (parallel
+<code>tool_calls</code>, <code>role: &quot;tool&quot;</code> results). The
+deprecated 2023-era <code>functions</code> / <code>function_call</code>
+fields are always sent as <code>None</code> (struct literal requires
+them); only the <em>response</em> value
+<code>finish_reason=function_call</code> is still accepted and mapped to
+<code>StopReason::ToolUse</code> for older OpenAI-compatible
+services.</p>
+<p><strong>User image attachments (de-inlined):</strong> TUI/headless
+keeps <code>@file.png</code> / <code>![alt](path)</code> as <strong>path
+text</strong> in the user message rather than base64-inlining it. The
+model reads the reference on demand with the <code>read_image</code>
+tool (image) or <code>read_file</code> tool (text); see the
+<code>read_image</code> paragraph below. Previously the attach step
+base64-decoded the image into an inline
+<code>ContentBlock::Image</code>; that path was removed so image bytes
+only enter the request when the model asks for them. A text-only Chat
+Completions API that still receives an inline <code>image_url</code>
+part rejects it with HTTP 400.</p>
+<p><strong><code>read_image</code> tool (Harness-style):</strong> the
+agent toolset includes <code>read_image</code> (a model-callable tool
+over <code>file_path</code>). It gates on the current model declaring
+image input (<code>tact_llm::supports_vision</code>), reads a
+PNG/JPEG/WebP/GIF, re-encodes to a bounded JPEG, and returns a
+<code>ToolCallResult</code> carrying both a text envelope
+(<code>&lt;path&gt;…&lt;/path&gt;</code>, media type, dimensions, bytes)
+and an adjacent <code>ContentBlock::Image</code>. Because Chat
+Completions <code>role:tool</code> content is string-only,
+<code>messages_to_openai</code> folds a tool-result image into a
+following <code>role:user</code> message
+(<code>[{type:&quot;text&quot;, text:&quot;Attached image(s) from tool result:&quot;}, {type:&quot;image_url&quot;,…}]</code>),
+mirroring DeepSeek Harness <code>serializeMessagesWithImages</code>.
+This keeps text-only tool results on <code>role:tool</code> and lets a
+vision model consume the image from the user message without changing
+<code>ContentBlock::ToolResult</code>.</p>
+<p><strong>Kimi reasoning replay:</strong>
+<code>messages_to_openai</code> returns a <code>reasoning</code> vector
+aligned <strong>one-to-one</strong> with emitted OpenAI messages (not
+Anthropic source messages). When a user turn splits into multiple
+tool-result messages, each gets <code>None</code>; assistant thinking is
+attached only to the matching assistant row.
+<code>inject_reasoning_content</code> uses that parallel vector for
+Kimi/Moonshot.</p>
+<p><strong>Incomplete tool calls:</strong> stream and non-stream parsers
+skip tool-call slots with empty <code>id</code> or <code>name</code> so
+truncated SSE does not insert phantom <code>ToolUse</code> blocks.</p>
+<p><strong>Empty assistant sanitization:</strong> because thinking
+blocks are dropped when targeting non-Kimi OpenAI-compatible APIs, an
+assistant turn that contains only thinking (or only orphaned tool calls
+after truncation) would serialize as
+<code>{ &quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: null, &quot;tool_calls&quot;: null }</code>
+and be rejected with 400. <code>sanitize_assistant_messages</code> in
+<code>convert.rs</code> stubs such messages and strips orphaned
+<code>tool_calls</code> on every request. See <a href="./06_chapter_recovery.html">Error Recovery</a> for the full
+context.</p>
+<h3 id="62-responses-api">6.2 Responses API</h3>
+<p>An OpenAI provider entry opts in explicitly:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode toml"><code class="sourceCode toml"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">[llm.providers.openai]</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="dt">api_key</span> <span class="op">=</span> <span class="st">&quot;sk-...&quot;</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="dt">model</span> <span class="op">=</span> <span class="st">&quot;gpt-4o&quot;</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="dt">protocol</span> <span class="op">=</span> <span class="st">&quot;responses&quot;</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="dt">reasoning_effort</span> <span class="op">=</span> <span class="st">&quot;high&quot;</span></span></code></pre></div>
+<p><code>openai/responses/</code> uses <code>async-openai</code> 0.41.1
+through a dependency alias; the existing Chat Completions types remain
+on 0.20 so the non-standard Kimi and DeepSeek wire shapes do not change.
+The adapter implements both <code>stream_message</code> and
+non-streaming <code>create_message</code> behind the same
+provider-independent contract. The alias enables the SDK&#39;s
+<code>byot</code> extension: request construction still starts from SDK
+types, while final JSON dispatch allows the current <code>max</code>
+effort value that the SDK enum does not yet expose. Responses and stream
+events remain SDK-typed.</p>
+<p>Tact remains the conversation owner. Every request sends the
+persisted protocol baseline plus the newly uncovered logical messages
+with <code>store: false</code>; it does not use Conversations or
+<code>previous_response_id</code>. Conversion maps system instructions,
+user/assistant text, image data URLs, function calls, function outputs,
+function tools, tool choice, sampling fields, and
+<code>max_tokens → max_output_tokens</code>. <code>top_k</code> and stop
+sequences are omitted because the Responses request type has no matching
+fields.</p>
+<p>Responses requests include <code>reasoning.encrypted_content</code>.
+A returned reasoning item becomes <code>ContentBlock::Thinking</code>:
+summary text is stored in <code>thinking</code>, while
+<code>signature</code> stores a versioned opaque envelope containing the
+complete reasoning item and related <code>fc_*</code> function-call item
+ids. The next request reconstructs the original <code>rs_*</code> /
+<code>fc_*</code> identities; a thinking block without an encrypted
+payload is display-only and is not sent back.</p>
+<p>Responses uses its own
+<code>responses_system_prompt_template.md</code>, leaving other provider
+templates unchanged. Its skill-loading policy forbids
+<code>load_skill</code> for greetings, small talk, and ordinary
+questions; a skill must be explicitly slash-invoked or explicitly
+requested, and a skill description cannot make its own invocation
+mandatory.</p>
+<p>Streaming deltas drive live UI updates and retain visible output text
+as a fallback. Reasoning summary/text deltas map to
+<code>ThinkingChunk</code>, visible output/refusal deltas map to
+<code>StreamChunk</code>, and the terminal
+<code>response.completed</code> / <code>response.incomplete</code>
+object is authoritative for final blocks, tool calls, usage, and stop
+reason when it includes the completed output. Some compatible endpoints
+omit the final message from that object; in that case, already received
+output text deltas are restored as the final text block. If a compatible
+endpoint closes the stream without any terminal event (no
+<code>response.completed</code> / <code>response.incomplete</code> /
+<code>response.failed</code>), a clean EOF is treated as terminal when
+the output sequence is complete (all announced
+<code>output_item.done</code> events received) or visible text was
+streamed: the adapter synthesizes a minimal completed response and
+reconstructs output from the done sequence / streamed text; a missing
+compaction boundary or an empty stream remains a hard protocol error.
+This avoids duplicating content found in both delta and terminal events.
+The stream adapter deserializes only the event types it consumes;
+unrelated or newer provider events are ignored. For terminal events from
+compatible endpoints, missing response/output-item IDs receive internal
+placeholder values solely to satisfy the SDK schema; Tact does not treat
+those placeholders as provider identities. Missing terminal-response,
+output-message, and function-call statuses are inferred from the
+terminal event type. Requests with tools explicitly send
+<code>tool_choice: &quot;auto&quot;</code> unless the caller selected another
+policy, avoiding provider-specific defaults that disable tool use. When
+replaying assistant history, Tact serializes text as a completed
+Responses output message (<code>output_text</code> with a stable local
+item ID), rather than an assistant <code>input_text</code> message; this
+is required by strict compatible endpoints on multi-turn requests.
+Input/cache/output/reasoning token counts map to the existing
+<code>TokenUsageInfo</code> fields. Usage counters are <strong>checked
+conversions</strong>: a required token field that is missing, not an
+unsigned integer, or larger than <code>u32</code> is a hard protocol
+error — values are never truncated, wrapped, or clamped.</p>
+<p>Unsupported in this adapter: background responses, Conversations, and
+<code>previous_response_id</code>. Native compaction is supported:
+ordinary requests carry <code>context_management</code> when a compact
+threshold is resolved, and <code>compact()</code> sends an explicit
+<code>POST /responses/compact</code> request (<a href="./05_chapter_compact.html">Ch 5</a>). Endpoints that do not
+implement <code>/responses/compact</code> (HTTP 404/405) produce a clear
+<code>unsupported response state: endpoint does not support POST /responses/compact …</code>
+error naming the base URL, instead of dumping the HTML error page.</p>
+<h4 id="621-conversion-pipeline-message--responses-input">6.2.1
+Conversion pipeline: <code>Message</code> → <code>/responses</code>
+input</h4>
+<p>The Responses adapter receives the same shared
+<code>CreateMessageParams</code> used by other providers. The critical
+difference is that it emits a heterogeneous <code>/responses</code>
+<code>input</code> array rather than a chat-style list of role/content
+messages.</p>
+<p><code>create_response</code> performs these steps:</p>
+<ol type="1">
+<li>Take the persisted state baseline (<code>input_items</code>)
+verbatim when a valid <code>ResponsesConversationState</code> is
+supplied; otherwise start empty.</li>
+<li>Walk the uncovered suffix of <code>request.messages</code> (beyond
+the state&#39;s <code>logical_message_count</code>) and call
+<code>message_to_input</code>.</li>
+<li>Flatten the returned <code>InputItem</code>s into the final
+<code>input</code> array after the baseline items.</li>
+<li>Add request-level fields: <code>instructions</code>,
+<code>tools</code>, <code>tool_choice</code>, <code>reasoning</code>,
+<code>temperature</code>, <code>top_p</code>,
+<code>max_output_tokens</code>, <code>store: false</code>, and
+<code>context_management</code>
+(<code>[{ &quot;type&quot;: &quot;compaction&quot;, &quot;compact_threshold&quot;: N }]</code>) when a
+compact threshold is configured.</li>
+<li>Normalize assistant history items so prior assistant text becomes a
+completed Responses output message with stable local ids and
+<code>output_text</code> content.</li>
+</ol>
+<p>The per-message mapping is:</p>
+<table>
+<thead>
+<tr>
+<th>Shared Tact content</th>
+<th>Responses item emitted</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Message::Text(User)</code></td>
+<td><code>message(role=user, content=text)</code></td>
+</tr>
+<tr>
+<td><code>Message::Text(Assistant)</code></td>
+<td>assistant <code>message</code>, later normalized to completed output
+form</td>
+</tr>
+<tr>
+<td><code>ContentBlock::Text</code></td>
+<td><code>input_text</code> inside the current message</td>
+</tr>
+<tr>
+<td><code>ContentBlock::Image</code></td>
+<td><code>input_image</code> with a data URL</td>
+</tr>
+<tr>
+<td><code>ContentBlock::Thinking</code> with decodable signature</td>
+<td>standalone <code>reasoning</code> item</td>
+</tr>
+<tr>
+<td><code>ContentBlock::ToolUse</code></td>
+<td>standalone <code>function_call</code> item</td>
+</tr>
+<tr>
+<td><code>ContentBlock::ToolResult</code></td>
+<td>standalone <code>function_call_output</code> item</td>
+</tr>
+<tr>
+<td><code>ContentBlock::RedactedThinking</code></td>
+<td>omitted</td>
+</tr>
+</tbody>
+</table>
+<p>Two details matter for multi-turn correctness:</p>
+<ul>
+<li><code>flush_message_content</code> emits accumulated text/image
+parts as one message <strong>before</strong> emitting standalone
+reasoning or tool items, preserving the order required by the Responses
+API.</li>
+<li><code>normalize_assistant_history_items</code> rewrites assistant
+history into completed output messages because some compatible endpoints
+reject prior assistant turns if they are replayed as plain assistant
+input text.</li>
+</ul>
+<h4 id="6211-hosted-tools-native-web-search">6.2.1.1 Hosted tools:
+native web search</h4>
+<p>Hosted web search is a <strong>Responses-protocol
+capability</strong>, independent of the endpoint/provider behind the
+protocol. Choosing <code>protocol = &quot;responses&quot;</code> automatically
+injects a <code>Tool::WebSearch</code> alongside the function tools on
+every ordinary <code>/responses</code> request
+(<code>create_response(..., native_web_search = true)</code>) — for
+OpenAI, DeepSeek, and custom OpenAI-compatible endpoints alike. There is
+no per-provider switch and no capability negotiation: the protocol is
+the contract. The Provider executes the search server-side and returns a
+thin <code>web_search_call</code> marker item followed by an assistant
+message whose text already embeds the results as inline markdown links
+with <code>url_citation</code> annotations.</p>
+<p>Design rules:</p>
+<ul>
+<li><strong>Injection, not replacement.</strong>
+<code>native_web_search</code> only <em>adds</em> a hosted tool. An
+MCP-provided <code>web_search</code> function tool (if any) is left
+untouched as <code>Tool::Function</code>; the two mechanisms can
+coexist.</li>
+<li><strong>Provider-only execution.</strong> The
+<code>web_search_call</code> output item is surfaced as a <strong>tool
+card</strong> through the existing <code>StepStarted</code> /
+<code>StepFinished</code> / <code>StepFailed</code> events (mapping
+<code>WebSearchToolCallStatus</code>), not as a
+<code>ContentBlock::ToolUse</code>. The stream adapter emits a running
+card on <code>output_item.added</code> (status <code>in_progress</code>
+/ <code>searching</code>, query may be empty because the provider
+populates <code>action</code> only later) and the terminal card on
+<code>output_item.done</code> (completed → success with sources as
+detail, failed → <code>StepFailed</code>). The terminal stop reason
+remains <code>completed</code> (not <code>tool_use</code>), so the agent
+loop finishes normally and never dispatches the call through
+<code>execute_tool_call</code>.</li>
+<li><strong>Wire compatibility.</strong> Some compatible endpoints emit
+the search action with a <code>queries</code> array instead of the
+singular <code>query</code> (async-openai 0.41.x models
+<code>query</code> only).
+<code>wire::normalize_web_search_call_query</code> fills
+<code>query</code> from <code>queries</code> for typed parsing; the raw
+item JSON is preserved verbatim for same-model follow-up turns. When the
+request model changes, the outgoing baseline rewrites only this action
+to the target model&#39;s <code>query</code> or <code>queries</code>
+spelling.</li>
+<li><strong>Protocol, not endpoint.</strong> The adapter injects the
+hosted tool on every ordinary Responses request regardless of provider
+kind. Kimi never reaches this adapter (it has its own Chat Completions
+adapter); a custom OpenAI-compatible gateway speaking the Responses
+protocol gets the hosted tool too.</li>
+<li><strong>Compaction path.</strong> <code>/responses/compact</code>
+requests pass <code>native_web_search = false</code>: the compact
+endpoint accepts no tools.</li>
+</ul>
+<h4 id="622-compaction-interaction-where-responses-differs">6.2.2
+Compaction interaction: where Responses differs</h4>
+<p>For <code>protocol = &quot;responses&quot;</code>, compaction is
+<strong>native</strong>: there is no local summary rebuild, and the
+logical context (<code>runtime.context</code>) is never rewritten by
+<code>compact_history</code> (<a href="./05_chapter_compact.html">Ch
+5</a>). The Responses adapter owns the exact <strong>conversion/state
+boundaries</strong>:</p>
+<ul>
+<li><strong>State baseline</strong> —
+<code>ResponsesConversationState</code> holds the opaque protocol
+baseline: <code>input_items</code> (verbatim JSON from previous terminal
+outputs, including <code>compaction</code> and <code>reasoning</code>
+items), <code>compaction_id</code>, <code>is_compacted</code>,
+<code>logical_message_count</code>, and
+<code>logical_context_hash</code>.</li>
+<li><strong>Validation</strong> — before reuse,
+<code>validate_conversion_state</code> checks the state version/provider
+and logical-message prefix hash, while the adapter checks provider and
+base URL. Those mismatches remain hard protocol errors. A model mismatch
+is allowed and only triggers hosted web-search <code>query</code> /
+<code>queries</code> adaptation in the outgoing baseline; Tact does not
+rebuild the logical history.</li>
+<li><strong>Incremental conversion</strong> —
+<code>create_response</code> sends the state baseline verbatim plus only
+the newly uncovered logical messages converted to
+<code>/responses</code> items. With no state, every logical message is
+converted.</li>
+<li><strong><code>context_management</code></strong> — when a compact
+threshold is configured (or derived), every ordinary
+<code>/responses</code> request carries
+<code>context_management: [{ &quot;type&quot;: &quot;compaction&quot;, &quot;compact_threshold&quot;: N }]</code>,
+so the endpoint may compact the baseline automatically inside a normal
+stream. A derived threshold is resolved per agent: a subagent derives it
+from the <strong>subagent&#39;s own <code>max_tokens</code></strong> budget
+(with the shared context window and 10% headroom), never from the main
+agent&#39;s budget.</li>
+<li><strong>Explicit <code>/responses/compact</code></strong> — when
+Tact decides to compact, the agent calls <code>compact()</code> on the
+adapter: a real <code>POST /responses/compact</code> request carrying
+the current baseline plus uncovered messages. The returned compact
+resource replaces the baseline; <code>focus</code> text has no meaning
+and is ignored. Persisting the explicit call&#39;s usage row
+(<code>responses_compact</code>) is <strong>not</strong> best-effort: if
+that row cannot be written, the compaction fails with an error
+<strong>before</strong> any new messages/provider state are committed,
+so the old committed state stays fully intact and no compaction is
+recorded.</li>
+<li><strong>State update</strong> — every call returns
+<code>LlmResponse</code> with a
+<code>state_update: ProviderStateUpdate</code>
+(<code>Replace(new state)</code> or <code>Unchanged</code>). For
+ordinary terminal responses the replacement baseline already contains
+the request input <strong>plus</strong> the terminal output, so
+<code>logical_message_count</code> and <code>logical_context_hash</code>
+are anchored to the <strong>post-assistant</strong> logical context
+(request messages plus the assistant message the agent pushes); the next
+turn then converts only the new user/tool suffix and never duplicates
+assistant/reasoning/function-call items or ids. Only when a terminal
+response carries no output items at all (the compatible-endpoint
+visible-text recovery path) does the anchor stay at the request prefix,
+so the assistant message is converted next turn instead of being
+dropped. The agent commits the assistant message and the state baseline
+in <strong>one transaction</strong> before any further LLM call or tool
+execution.</li>
+</ul>
+<h4 id="llmresponse-and-terminal-response-authority"><code>LlmResponse</code>
+and terminal response authority</h4>
+<p><code>LlmResponse</code> is the adapter&#39;s single return contract:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>blocks</code></td>
+<td>Final <code>ContentBlock</code>s for the TUI/agent</td>
+</tr>
+<tr>
+<td><code>stop_reason</code></td>
+<td>Terminal stop reason</td>
+</tr>
+<tr>
+<td><code>usage</code></td>
+<td>Token usage (when reported)</td>
+</tr>
+<tr>
+<td><code>request_body</code></td>
+<td>Serialized JSON body actually sent (for session debugging)</td>
+</tr>
+<tr>
+<td><code>state_update</code></td>
+<td><code>ProviderStateUpdate::Replace(…)</code> or
+<code>Unchanged</code></td>
+</tr>
+</tbody>
+</table>
+<p>The terminal <code>response.completed</code> /
+<code>response.incomplete</code> object is
+<strong>authoritative</strong> for final blocks, tool calls, usage, and
+stop reason when it includes the completed output. Streamed deltas are
+used for live UI only; for compatible endpoints that omit the final
+message from the terminal object, already received output-text deltas
+are restored as the final text block, and missing
+output-message/function-call statuses are inferred from the terminal
+event type. Placeholder ids injected for such endpoints are never
+treated as provider identities.</p>
+<h4 id="the-compaction-item-round-trip">The <code>compaction</code> item
+round-trip</h4>
+<p>A compaction item appears either in an explicit
+<code>/responses/compact</code> resource or in the terminal output of an
+ordinary request after automatic <code>context_management</code>
+compaction. In both cases it round-trips as <strong>opaque
+state</strong>, not content:</p>
+<ol type="1">
+<li><code>normalize_response</code> retains every terminal output item
+as JSON in output order (<code>output_items</code>), including
+<code>compaction</code> items and every item type known to the typed SDK
+(unmapped types such as file/web search produce no
+<code>ContentBlock</code> but are retained). A terminal response may
+carry at most one compaction item, and its
+<code>encrypted_content</code> must be non-empty. A truly unknown future
+item type is rejected by the typed SDK boundary (async-openai
+<code>OutputItem</code> has no <code>Unknown</code> variant): a hard
+protocol error, never a silent drop or fallback.</li>
+<li><code>state_update</code> packages those items into the next
+request&#39;s <code>input_items</code> baseline, and
+<code>create_response</code> replays them <strong>verbatim</strong> on
+the next call.</li>
+<li>The item is <strong>never</strong> mapped to a
+<code>ContentBlock</code>: <code>encrypted_content</code> is opaque
+provider state, not assistant text. It must not surface in TUI
+rendering, <code>AgentUpdate::Info</code> messages, <code>tracing</code>
+output, or error strings. User-facing diagnostics show only a
+<strong>bounded compaction-id prefix</strong>; the full id is retained
+inside the provider state and SQLite metadata only.</li>
+</ol>
+<p>A compaction item that is announced in the stream
+(<code>output_item.added</code>) but never completed is a <strong>hard
+protocol error</strong> in the stream adapter&#39;s <code>finish()</code>:
+neither the done-sequence reconstruction nor visible-text recovery may
+run, because both would silently drop the compaction boundary and lose
+the compacted baseline for the next turn. The stream fails loudly; it
+never &quot;recovers&quot; by treating the streamed output text as the final
+result.</p>
+<p>Why not a <code>ContentBlock</code>? Because a
+<code>ContentBlock</code> is logical content the agent loop renders,
+persists, and may tool-dispatch over. A <code>compaction</code> item is
+protocol plumbing: it exists only to tell the endpoint that the baseline
+was compacted and carries an opaque payload Tact cannot interpret.
+Treating it as content would leak encrypted provider state into the UI
+and would break the round-trip (the exact JSON must be replayed, not
+reconstructed from visible fields).</p>
+<h4 id="623-reasoning-history-replay">6.2.3 Reasoning-history
+replay</h4>
+<p>Responses reasoning items are not re-derived from visible text.
+Instead, Tact persists a versioned opaque signature
+(<code>openai-responses-v1:...</code>) inside
+<code>ContentBlock::Thinking</code>. The payload stores:</p>
+<ul>
+<li>the full <code>ReasoningItem</code></li>
+<li>a map from local tool call ids to provider
+<code>function_call</code> item ids</li>
+</ul>
+<p>On a later request, <code>history::decode</code> can recover that
+state so <code>message_to_input</code> can emit:</p>
+<ul>
+<li>a proper standalone <code>reasoning</code> item</li>
+<li><code>function_call</code> items carrying the matching provider item
+ids when available</li>
+</ul>
+<p>This is why a compacted conversation can still replay
+Responses-native reasoning/function-call history even though the adapter
+rebuilds every request from the persisted baseline plus local messages
+rather than a server-side <code>previous_response_id</code> chain.</p>
+<p><strong>Encrypted boundary.</strong> The reasoning
+<code>encrypted_content</code> may exist <strong>only</strong> inside
+this internal, non-renderable signature envelope: never in the visible
+<code>thinking</code> summary text, never in a renderable
+<code>ContentBlock::Text</code>, never in persisted output text, and
+never in error strings or <code>Info</code> diagnostics. This is the
+same &quot;encrypted data stays opaque&quot; rule as compaction payloads, but the
+carriers differ: compaction <code>encrypted_content</code> never enters
+any <code>ContentBlock</code> (it is <strong>provider state
+only</strong>, kept in the protocol baseline and request body), while
+reasoning encrypted data is carried by the internal signature of a
+<code>Thinking</code> block so it can be replayed as a native
+<code>reasoning</code> item.</p>
+<h3 id="63-shared-thinking-configuration">6.3 Shared thinking
+configuration</h3>
+<p><strong>Thinking / reasoning injection:</strong> the internal request
+carries Anthropic-shaped <code>Thinking { budget_tokens }</code> plus an
+explicit per-request <code>reasoning_effort</code>
+(<code>CreateMessageParams.reasoning_effort</code>). Provider body hooks
+rewrite that into each wire protocol. The budget→effort band mapping is
+<strong>removed</strong>: <code>reasoning_effort = None</code> means
+omit the field (provider default applies); <code>Some</code> is
+forwarded as-is.</p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>When effort/thinking is set</th>
+<th>Wire field</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Anthropic</td>
+<td>always (native Messages type)</td>
+<td><code>thinking: { type, budget_tokens }</code></td>
+</tr>
+<tr>
+<td>Kimi K2.5</td>
+<td>budget &gt; 0</td>
+<td><code>thinking: { type: &quot;enabled&quot; }</code>; otherwise
+<code>disabled</code></td>
+</tr>
+<tr>
+<td>Kimi K2.6</td>
+<td>budget &gt; 0</td>
+<td><code>thinking: { type: &quot;enabled&quot;, keep: &quot;all&quot; }</code>; otherwise
+<code>disabled</code></td>
+</tr>
+<tr>
+<td>Kimi K2.7 / coding</td>
+<td>skipped</td>
+<td><em>(thinking always on server-side)</em></td>
+</tr>
+<tr>
+<td>Kimi K3 / K3-256k</td>
+<td><code>Some(low|high|max)</code></td>
+<td><code>thinking: { type: &quot;enabled&quot; }</code> +
+<code>reasoning_effort</code> 原值; <code>None</code> → omit (server
+default enabled + high)</td>
+</tr>
+<tr>
+<td>DeepSeek</td>
+<td><code>Some(low|high|xhigh|max)</code></td>
+<td><code>thinking: { type: &quot;enabled&quot; }</code> +
+<code>reasoning_effort</code> 原值（服务端按模型映射 flash/pro）;
+<code>None</code> → omit (default ON + high)</td>
+</tr>
+<tr>
+<td>OpenAI Chat Completions</td>
+<td><code>Some(...)</code></td>
+<td><code>reasoning_effort: minimal|low|medium|high|xhigh|max</code>;
+<code>None</code> → omit (default medium)</td>
+</tr>
+<tr>
+<td>OpenAI Responses</td>
+<td><code>Some(...)</code></td>
+<td><code>reasoning: { effort, summary: auto }</code>; <code>None</code>
+→ omit</td>
+</tr>
+</tbody>
+</table>
+<p>Effort is <strong>per request</strong>: it travels in
+<code>CreateMessageParams.reasoning_effort</code> from the agent&#39;s own
+<code>AgentSettings.reasoning_effort</code> (main agent and subagents
+are independent — no global effort state). The
+<code>[llm.providers.*].reasoning_effort</code> config value seeds the
+main agent snapshot; <code>/model</code> effort picks update it at
+runtime via <code>UserCommand::SetReasoningEffort</code>.
+<code>ModelCallParams.reasoning_effort</code> reports the session value
+to the TUI. Exact support is model-dependent; see the <a href="https://developers.openai.com/api/docs/guides/reasoning">OpenAI
+reasoning guide</a>, <a href="https://api-docs.deepseek.com/zh-cn/guides/thinking_mode">DeepSeek
+thinking mode</a>, and <a href="https://www.kimi.com/code/docs/kimi-code/models.html">Kimi Code
+models</a>.</p>
+<p><strong><code>/model</code> second step</strong> branches by the
+picked model&#39;s semantics (<code>tact_llm::model_uses_effort</code>,
+following the same heuristics as the body hooks): effort-semantic models
+(openai / deepseek / kimi k3、k3-256k) open an effort picker;
+budget-semantic models (anthropic / kimi coding 系) keep the budget
+picker. The selectable tiers come from
+<code>[llm.model_profiles.&quot;&lt;model&gt;&quot;]</code> (or built-in defaults)
+when present, else provider defaults (openai 6 tiers, deepseek/kimi k3 3
+tiers, budget 5 tiers).</p>
+<hr />
+<h2 id="7-streaming--tui-events">7. Streaming → TUI Events</h2>
+<p>During <code>stream_message</code>, adapters push to the optional
+<code>ui_tx</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th><code>AgentUpdate</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Text token</td>
+<td><code>StreamChunk(String)</code></td>
+</tr>
+<tr>
+<td>Reasoning / thinking</td>
+<td><code>ThinkingChunk::{Started, Delta, Finished}</code></td>
+</tr>
+<tr>
+<td>Request metadata</td>
+<td><code>ModelInfo(ModelCallParams)</code></td>
+</tr>
+<tr>
+<td>Usage at end of stream</td>
+<td><code>TokenUsage { ... }</code></td>
+</tr>
+</tbody>
+</table>
+<p>The agent persists token usage via <code>persist_llm_call</code>
+after each successful stream (<a href="./01_chapter_store.html">Ch 1
+Store</a>).</p>
+<p>Recovery around transport failures is handled in the agent loop, not
+inside adapters (<a href="./06_chapter_recovery.html">Ch 6
+Recovery</a>).</p>
+<hr />
+<h2 id="8-session-user_id">8. Session <code>user_id</code></h2>
+<p>When a session is attached in <code>Agent::with_session</code>:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">self</span><span class="op">.</span>runtime<span class="op">.</span>client<span class="op">.</span>set_user_id(<span class="op">&amp;</span>session_id)<span class="op">;</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Adapter</th>
+<th>Injection site</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ChatCompletionsAdapter</code> with DeepSeek dialect</td>
+<td>Top-level <code>&quot;user_id&quot;</code> in request JSON</td>
+</tr>
+<tr>
+<td>Anthropic / Responses / other Chat Completions dialects / Mock</td>
+<td>Not injected</td>
+</tr>
+</tbody>
+</table>
+<p>Intent: per-session KV cache isolation on DeepSeek (and compatible
+proxies), reducing cross-session cache pollution.</p>
+<hr />
+<h2 id="9-balance-queries">9. Balance Queries</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Endpoint</th>
+<th>When used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>query_deepseek_balance()</code></td>
+<td><code>GET https://api.deepseek.com/user/balance</code></td>
+<td>TUI startup + periodic timer + <code>/balance</code> command</td>
+</tr>
+<tr>
+<td><code>query_kimi_balance()</code></td>
+<td><code>GET .../v1/users/me/balance</code> on
+<code>api.moonshot.cn</code> or <code>api.moonshot.ai</code></td>
+<td>Same</td>
+</tr>
+<tr>
+<td><code>query_kimi_code_usage()</code></td>
+<td><code>GET https://api.kimi.com/coding/v1/usages</code></td>
+<td>Kimi Code subscription quota</td>
+</tr>
+</tbody>
+</table>
+<p><code>query_*_balance()</code> returns
+<code>tact_protocol::BalanceInfo</code>, routed on the separate account
+channel as <code>AccountUpdate::Balance</code>. Kimi Code usage returns
+<code>UsageQuotaInfo</code> as
+<code>AccountUpdate::UsageQuota</code>.</p>
+<p>Each query also has an explicit entry
+(<code>query_deepseek_balance_for</code>,
+<code>query_kimi_balance_for</code>,
+<code>query_kimi_code_usage_for</code>) taking
+<code>(&amp;ProviderProfile, &amp;dyn CredentialProvider, &amp;SharedHttpClient)</code>.
+The zero-argument names in the table remain as compatibility wrappers
+that read the global provider snapshot and the process-global credential
+provider. Endpoint support is checked before credentials resolve, so
+unsupported proxies never trigger an authorization flow or send the key;
+requests resolve credentials at request time through the shared
+transport.</p>
+<p><strong>Kimi Code endpoint:</strong> <code>api.kimi.com/coding</code>
+has no balance REST API. Use <code>query_kimi_code_usage()</code>
+instead; surfaced as <code>AccountUpdate::UsageQuota</code> on the
+bottom bar (<code>week</code> + <code>5h</code> windows). The usage API
+is official-endpoint only (HTTPS, exact host <code>api.kimi.com</code>,
+<code>/coding</code> path): custom proxies serving
+<code>kimi-for-coding</code> are treated as unsupported and their API
+keys are never sent to <code>api.kimi.com</code>.</p>
+<p><strong>DeepSeek endpoint:</strong> the balance API exists only on
+the official host. <code>query_deepseek_balance()</code> is enabled
+exclusively when <code>base_url</code> uses HTTPS with the exact host
+<code>api.deepseek.com</code> (a <code>/v1</code> suffix is fine; an
+empty base URL resolves to the official default). Custom
+OpenAI-compatible proxies targeting DeepSeek models are treated as
+unsupported and their API keys are never sent to
+<code>api.deepseek.com</code>.</p>
+<p><strong>Credential boundary:</strong> Kimi balance polling is enabled
+only when <code>base_url</code> uses HTTPS with the exact host
+<code>api.moonshot.cn</code> or <code>api.moonshot.ai</code>. Custom
+OpenAI-compatible proxies are treated as unsupported and their API keys
+are never sent to an official Moonshot balance endpoint. The same
+boundary applies to DeepSeek (<code>api.deepseek.com</code>) and Kimi
+Code usage (<code>api.kimi.com/coding</code>).</p>
+<p><strong>Polling:</strong> <code>interactive.rs</code> performs one
+startup query and starts <code>account::spawn_poller</code> only when
+<code>account::is_supported()</code> is true. The <code>/balance</code>
+command uses the same <code>query_once</code> path through the command
+driver. On failure the poller backs off (10 s → 20 s → … → 5 min) and
+forwards only the <strong>first</strong>
+<code>AccountUpdate::Error</code> of a consecutive outage; later retries
+stay silent until a query succeeds again, so a single outage shows one
+flash message instead of one per backoff tick.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant Poller as account poller
+    participant Cmd as UserCommand::QueryBalance
+    participant Service as account::query_once
+    participant TUI as TUI account receiver
+    participant DeepSeek as query_deepseek_balance
+    participant Kimi as query_kimi_balance
+    participant API as Provider API
+    participant Update as AccountUpdate
+
+    alt periodic refresh
+        Poller-&gt;&gt;Service: periodic query
+    else user command
+        Cmd-&gt;&gt;Service: query_once()
+    end
+    alt DeepSeek provider
+        Service-&gt;&gt;DeepSeek: query_deepseek_balance()
+        DeepSeek-&gt;&gt;API: GET /user/balance
+        API--&gt;&gt;DeepSeek: BalanceInfo
+        DeepSeek--&gt;&gt;TUI: BalanceInfo
+    else Kimi provider
+        Service-&gt;&gt;Kimi: query_kimi_balance()
+        Kimi-&gt;&gt;API: GET /users/me/balance
+        API--&gt;&gt;Kimi: BalanceInfo
+        Kimi--&gt;&gt;TUI: BalanceInfo
+    end
+    Service-&gt;&gt;Update: Balance / UsageQuota
+    Update--&gt;&gt;TUI: render account data</code></pre>
+<p>Balance checks stay outside <code>Agent::agent_loop</code>; the TUI
+owns the timer and command path, then renders the provider-specific
+result through the normal update handler.</p>
+<hr />
+<h2 id="10-code-map">10. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tact_llm/src/types.rs</code></td>
+<td><code>ProviderKind</code>, <code>OpenAiProtocol</code>, request
+types, and provider-agnostic <code>StopReason</code></td>
+</tr>
+<tr>
+<td><code>tact_llm/src/content.rs</code></td>
+<td>Owned <code>ContentBlock</code>, <code>Message</code>,
+<code>ContentBlockDelta</code>, <code>StreamUsage</code>, …</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/profile.rs</code></td>
+<td>Credential-free <code>ProviderProfile</code> plus endpoint/model
+heuristics</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/auth.rs</code></td>
+<td><code>Credential</code>, <code>CredentialProvider</code>,
+<code>ApiKeyProvider</code></td>
+</tr>
+<tr>
+<td><code>tact_llm/src/transport.rs</code></td>
+<td>Process-wide shared reqwest client
+(<code>SharedHttpClient</code>)</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/client.rs</code></td>
+<td><code>LlmClient</code>, flattened <code>LlmProvider</code> variants,
+session user-id routing</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/provider.rs</code></td>
+<td><code>ProviderInfo</code> compatibility snapshot, global init +
+credentials, <code>Client::new</code></td>
+</tr>
+<tr>
+<td><code>tact_llm/src/account.rs</code></td>
+<td>DeepSeek balance and Kimi balance/quota queries</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/models.rs</code></td>
+<td><code>/models</code> picker cache with explicit credential/transport
+entry</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/anthropic/mod.rs</code></td>
+<td>Messages API streaming + non-streaming</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/openai/</code></td>
+<td>Chat Completions transport plus the isolated Responses converter,
+normalizer, and stream state</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/openai/body.rs</code></td>
+<td><code>ChatCompletionsDialect</code> body hooks
+(<code>Standard</code> / <code>DeepSeek</code> / <code>Kimi</code>)</td>
+</tr>
+<tr>
+<td><code>tact_llm/src/convert.rs</code></td>
+<td>Request translation, Image → <code>image_url</code>, Kimi thinking
+blocks</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>stream_message</code> wrapper, <code>set_user_id</code> in
+<code>with_session</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/compact/mod.rs</code></td>
+<td><code>create_message</code> for summarization</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-current-gaps">11. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Built-ins plus <code>Custom(String)</code></strong></td>
+<td><code>ProviderKind</code> recognizes <code>anthropic</code> /
+<code>openai</code> / <code>deepseek</code> / <code>kimi</code>;
+arbitrary names become OpenAI-compatible custom providers with an
+explicit <code>base_url</code></td>
+</tr>
+<tr>
+<td><strong>No retry in adapters</strong></td>
+<td>Transport retry/backoff lives in agent recovery, not
+<code>tact_llm</code></td>
+</tr>
+<tr>
+<td><strong>No Anthropic SDK dependency</strong></td>
+<td>Conversation, request, stop, stream-delta, and error types are all
+owned by <code>tact_llm</code>; Anthropic is spoken via custom HTTP +
+SSE only</td>
+</tr>
+<tr>
+<td><strong>Adapter rebuilt per <code>get_llm_client()</code>
+call</strong></td>
+<td>New adapter instance each call; for DeepSeek,
+<code>set_user_id</code> mutates the copy held on
+<code>Agent</code></td>
+</tr>
+<tr>
+<td><strong>API key only today</strong></td>
+<td><code>CredentialProvider</code> is the seam for browser OAuth, but
+<code>ApiKeyProvider</code> is currently the only implementation</td>
+</tr>
+<tr>
+<td><strong>No vision capability gate</strong></td>
+<td>Attached images are always sent as multimodal parts; text-only
+models/proxies may return 400 on <code>image_url</code></td>
+</tr>
+<tr>
+<td><strong>Responses core subset only</strong></td>
+<td>No Conversations, <code>previous_response_id</code>, or background
+mode; hosted web search is injected on any
+<code>protocol = &quot;responses&quot;</code> endpoint (native compaction is
+supported)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="protocol-compatibility-gaps-internal-anthropic-shape--wire">Protocol
+compatibility gaps (internal Anthropic shape → wire)</h3>
+<p><code>tact_llm</code> owns <a href="../crates/tact_llm/src/types.rs"><code>CreateMessageParams</code></a>
+(same Anthropic <em>wire shape</em> for serde, but no longer the SDK
+type). Each adapter must translate fields. The table below describes the
+Chat Completions path; Responses mappings are documented in §6.2.
+Several Chat Completions differences are <strong>not</strong> handled
+yet:</p>
+<table>
+<thead>
+<tr>
+<th>Internal / intent</th>
+<th>Anthropic</th>
+<th>DeepSeek / Kimi (OpenAI-compat)</th>
+<th>Native OpenAI Chat Completions</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Enable extended thinking</td>
+<td><code>thinking.budget_tokens</code> (internal)</td>
+<td>Anthropic: <code>thinking.budget_tokens</code>; DeepSeek/Kimi hooks:
+<code>thinking.type</code> (±effort/keep)</td>
+<td>OpenAI: <code>reasoning_effort</code></td>
+<td>OK — body hooks map by API wire shape</td>
+</tr>
+<tr>
+<td>Thinking / effort knob</td>
+<td><code>thinking_budget</code> plus optional OpenAI
+<code>reasoning_effort</code></td>
+<td>mapped to <code>budget_tokens</code></td>
+<td>explicit effort, otherwise <code>reasoning_effort_from_budget</code>
+bands</td>
+<td>OK (explicit effort wins)</td>
+</tr>
+<tr>
+<td>Max output</td>
+<td><code>max_tokens</code></td>
+<td><code>max_tokens</code></td>
+<td>o-series often want <code>max_completion_tokens</code>; some reject
+<code>max_tokens</code></td>
+<td>not remapped</td>
+</tr>
+<tr>
+<td>System prompt</td>
+<td>top-level <code>system</code></td>
+<td>first <code>role: system</code> message</td>
+<td>same; some reasoning models prefer <code>developer</code></td>
+<td>always <code>system</code></td>
+</tr>
+<tr>
+<td>Tool definitions</td>
+<td><code>tools</code> (Anthropic schema)</td>
+<td><code>tools</code> + <code>type: function</code></td>
+<td>same modern tools API</td>
+<td>OK (<code>convert.rs</code>)</td>
+</tr>
+<tr>
+<td>Stop / finish reason</td>
+<td><code>stop_reason</code> string</td>
+<td><code>finish_reason</code> string</td>
+<td><code>finish_reason</code> (+ legacy
+<code>function_call</code>)</td>
+<td>OK (<code>StopReason::from_*</code>)</td>
+</tr>
+<tr>
+<td>Refusal detail</td>
+<td><code>stop_details</code></td>
+<td>n/a</td>
+<td>n/a</td>
+<td>not parsed</td>
+</tr>
+<tr>
+<td>Cache / user scoping</td>
+<td>not sent</td>
+<td>DeepSeek: top-level <code>user_id</code>; Kimi: not sent</td>
+<td>not sent</td>
+<td>DeepSeek only</td>
+</tr>
+<tr>
+<td>Stream usage</td>
+<td>event usage</td>
+<td><code>stream_options.include_usage</code></td>
+<td>same</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>Vision parts</td>
+<td><code>image</code> + base64 source</td>
+<td><code>image_url</code> data URL</td>
+<td><code>image_url</code></td>
+<td>OK for vision models; no capability gate</td>
+</tr>
+<tr>
+<td>Temperature / top_p</td>
+<td>optional</td>
+<td>optional</td>
+<td>many reasoning models reject non-default sampling</td>
+<td>passed through blindly</td>
+</tr>
+</tbody>
+</table>
+<p>Remaining OpenAI-native gaps above
+(<code>max_completion_tokens</code>, <code>developer</code> role,
+sampling restrictions) are still open; the former
+<code>reasoning_effort</code> gap is fixed.</p>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./21_chapter_config.html">Configuration</a> — credentials
+and defaults</li>
+<li><a href="./18_chapter_agent_loop.html">Agent Main Loop</a> —
+streaming integration</li>
+<li><a href="./05_chapter_compact.html">Context Compaction</a> —
+non-streaming <code>create_message</code></li>
+<li><a href="./06_chapter_recovery.html">Error Recovery</a> — LLM
+failure handling</li>
+<li><a href="./23_chapter_tui.html">TUI</a> — balance display and stream
+rendering</li>
+</ul>
+</body>
+</html>

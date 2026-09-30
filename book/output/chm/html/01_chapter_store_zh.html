@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="存储与持久化">存储与持久化</h1>
+<blockquote>
+<p>语言：<a href="./01_chapter_store_zh.html">中文</a> · <a href="./01_chapter_store.html">English</a></p>
+</blockquote>
+<p>本章说明 Tact 的<strong>磁盘持久化层</strong>：<code>.tact/</code>
+下的 JSON 文件存储，以及独立的 SQLite
+会话数据库。二者共同保存对话历史、领域状态（background、队友等）与可观测性数据。</p>
+<p>记忆（<a href="./03_chapter_memory_zh.html">持久化记忆</a>）使用
+<code>.tact/memory/</code> 下的 Markdown 文件，<strong>不属于</strong>
+JSON store API。</p>
+<hr />
+<h2 id="1-两层持久化">1. 两层持久化</h2>
+<p>Tact 刻意拆分职责：</p>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>位置</th>
+<th>API</th>
+<th>主要用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>JSON store</strong></td>
+<td><code>&lt;workdir&gt;/.tact/</code></td>
+<td><code>StoreRoot</code>、<code>Store&lt;T&gt;</code>、<code>CollectionStore&lt;T&gt;</code></td>
+<td>通用 JSON 持久化（当前无领域消费者）</td>
+</tr>
+<tr>
+<td><strong>SQLite store</strong></td>
+<td><code>&lt;workdir&gt;/.tact/tact.db</code></td>
+<td><code>SessionStore</code> + <code>TaskStore</code> +
+<code>BackgroundStore</code> + <code>TeamStore</code> +
+<code>WorktreeStore</code> trait</td>
+<td>消息、token 用量、任务、background、team、worktrees、输入历史</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid"><code>graph TB
+    subgraph Workdir[&quot;&lt;workdir&gt;&quot;]
+        Tact[&quot;.tact/&quot;]
+        Tact[&quot;.tact/&quot;]
+        Skills[&quot;skills/（非 StoreRoot）&quot;]
+    end
+
+    subgraph Tact
+        DB[&quot;tact.db — SQLite（消息、token 用量、任务、background、team、worktrees 等）&quot;]
+    end
+
+    subgraph Claude
+        Mem[&quot;memory/*.md — 独立模块&quot;]
+    end
+
+    SR[StoreRoot] --&gt; Mem
+
+    SS[SessionStore + TaskStore + BackgroundStore + TeamStore + WorktreeStore] --&gt; DB</code></pre>
+<p>二者均在会话启动时在 <code>main.rs</code>
+中初始化：<code>StoreRoot::new(tact_path.tact_dir())</code> 与
+<code>open_sqlite_session_store(&amp;tact_path.session_db_path())</code>。</p>
+<hr />
+<h2 id="2-storeroot安全路径解析">2. StoreRoot：安全路径解析</h2>
+<p><code>StoreRoot</code>（<code>crates/tact/src/store/mod.rs</code>）是所有
+JSON 持久化的入口。</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> StoreRoot <span class="op">{</span> root<span class="op">:</span> <span class="dt">PathBuf</span> <span class="op">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>规则</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>仅相对路径</td>
+<td>绝对路径会被拒绝</td>
+</tr>
+<tr>
+<td>禁止穿越</td>
+<td>解析后的路径必须留在规范化 root 之下</td>
+</tr>
+<tr>
+<td>自动创建</td>
+<td><code>StoreRoot::new()</code> 时创建 root 目录</td>
+</tr>
+<tr>
+<td>缺失文件</td>
+<td>打开新路径时允许缺失（<code>allow_missing: true</code>）</td>
+</tr>
+</tbody>
+</table>
+<p>工厂方法：</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>root<span class="op">.</span><span class="pp">collection::</span><span class="op">&lt;</span>T<span class="op">&gt;</span>(<span class="st">&quot;tasks&quot;</span>)<span class="op">?</span>                   <span class="co">// CollectionStore&lt;T&gt;  （遗留 tasks — 不再读取）</span></span></code></pre></div>
+<hr />
+<h2 id="3-storet单-json-文件">3. Store&lt;T&gt;：单 JSON 文件</h2>
+<p>对单个 JSON 文档的类型化封装（pretty-print，末尾带换行）。</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read()</code></td>
+<td>反序列化整个文件；缺失或 JSON 无效则报错</td>
+</tr>
+<tr>
+<td><code>write(value)</code></td>
+<td>创建父目录；覆盖文件</td>
+</tr>
+<tr>
+<td><code>update(f)</code></td>
+<td>读-改-写</td>
+</tr>
+<tr>
+<td><code>append(value)</code></td>
+<td>追加一行 JSON（JSONL）</td>
+</tr>
+<tr>
+<td><code>read_all()</code></td>
+<td>将所有非空行解析为 <code>Vec&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>delete()</code></td>
+<td>删除文件；返回是否曾存在</td>
+</tr>
+<tr>
+<td><code>exists()</code></td>
+<td>路径检查</td>
+</tr>
+</tbody>
+</table>
+<p>用于<strong>索引文件</strong>与<strong>单文档注册表</strong>——通用持久化原语（当前无领域模块使用；所有领域状态都在
+SQLite）。</p>
+<hr />
+<h2 id="4-collectionstoret按键分文件的-json">4.
+CollectionStore&lt;T&gt;：按键分文件的 JSON</h2>
+<p>目录内每个记录对应一个 <code>{key}.json</code> 文件。</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read(key)</code> / <code>write(key, value)</code></td>
+<td>按 key 读写文件</td>
+</tr>
+<tr>
+<td><code>append(key, value)</code></td>
+<td>对该 key 的文件做 JSONL 追加</td>
+</tr>
+<tr>
+<td><code>read_all_from(key)</code></td>
+<td>读取某 key 文件的全部行</td>
+</tr>
+<tr>
+<td><code>delete(key)</code></td>
+<td>删除 <code>{key}.json</code></td>
+</tr>
+<tr>
+<td><code>list()</code></td>
+<td>读取目录中所有 <code>*.json</code>（<code>index.json</code>
+除外）</td>
+</tr>
+<tr>
+<td><code>exists(key)</code></td>
+<td>检查 <code>{key}.json</code></td>
+</tr>
+</tbody>
+</table>
+<p>非法
+key（<code>/</code>、<code>\</code>、<code>.</code>、<code>..</code>）会被拒绝。</p>
+<h3 id="示例后台任务遗留">示例：后台任务（遗留）</h3>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>root<span class="op">.</span><span class="pp">collection::</span><span class="op">&lt;</span>BackgroundRecord<span class="op">&gt;</span>(<span class="st">&quot;background/tasks&quot;</span>)<span class="op">?</span>   <span class="co">// background/tasks/{id}.json（遗留）</span></span></code></pre></div>
+<p>任务、background、team、worktree 已不再使用 JSON store——它们存放在
+SQLite 中（见 §6）。</p>
+<hr />
+<h2 id="5-领域消费者">5. 领域消费者</h2>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>Store 路径</th>
+<th>模式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task/</code></td>
+<td><code>tact.db</code> →
+<code>tasks</code>、<code>task_dependencies</code> 表</td>
+<td><code>TaskStore</code>（SQLite）</td>
+</tr>
+<tr>
+<td><code>background.rs</code>（<a href="./13_chapter_background_zh.html">后台任务</a>）</td>
+<td><code>tact.db</code> → <code>background_tasks</code> 表</td>
+<td><code>BackgroundStore</code>（SQLite）</td>
+</tr>
+<tr>
+<td><code>team.rs</code>（<a href="./14_chapter_team_zh.html">团队协调</a>）</td>
+<td><code>tact.db</code> →
+<code>teammates</code>、<code>inbox_messages</code> 表</td>
+<td><code>TeamStore</code>（SQLite）</td>
+</tr>
+<tr>
+<td><code>worktree/</code>（<a href="./15_chapter_worktree_zh.html">Worktree 泳道</a>）</td>
+<td><code>tact.db</code> →
+<code>worktrees</code>、<code>worktree_events</code> 表</td>
+<td><code>WorktreeStore</code>（SQLite）</td>
+</tr>
+</tbody>
+</table>
+<p>各领域模块包装原始 store（如 <code>SharedTaskManager</code> /
+<code>SharedBackgroundManager</code> /
+<code>SharedTeammateManager</code> / <code>SharedWorktreeManager</code>
+包 <code>Arc&lt;…&gt;</code>——SQLite
+连接池已串行化写入），并暴露面向工具的 API——调用方不应直接操作
+<code>CollectionStore</code>。</p>
+<p>所有 SQLite store
+按数据库文件共享同一个连接池：<code>store::sqlite::open_pool</code>
+首次使用时打开并缓存连接池，向每个 store
+分发一个引用计数句柄（<code>PoolRef</code>），因此单个进程对
+<code>&lt;workdir&gt;/.tact/tact.db</code>
+只使用一个连接池；最后一个持有它的 store 被释放时连接池随之关闭。</p>
+<hr />
+<h2 id="6-session-storesqlite">6. Session Store（SQLite）</h2>
+<p>定义于 <code>crates/tact/src/store/session_store/</code>。trait 为
+async；默认实现为 <code>SqliteSessionStore</code>。</p>
+<h3 id="数据库位置">数据库位置</h3>
+<pre class="text"><code>&lt;workdir&gt;/.tact/tact.db</code></pre>
+<p>在 <code>main.rs</code> 中通过 <code>open_sqlite_session_store</code>
+于 <code>&lt;workdir&gt;/.tact/tact.db</code>
+打开。会话启动时，<code>SessionLockGuard</code>（<code>crates/tact-ui/src/session_lock.rs</code>）在争用时重试
+<code>try_lock_session</code>，设置 <code>locked_by</code> +
+<code>lock_epoch</code>（进程启动标识）；<code>0</code>/空表示未锁定。<code>main</code>
+安装 SIGINT/SIGTERM 监听，异常终止时释放锁并以
+<code>130</code>/<code>143</code> 退出进程。</p>
+<h3 id="表">表</h3>
+<table>
+<thead>
+<tr>
+<th>表</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sessions</code></td>
+<td>会话 id、<code>root_dir</code>、<code>ref_id</code>（父会话
+id；<code>&#39;&#39;</code> = 顶层）、<code>locked_by</code> +
+<code>lock_epoch</code>（进程锁）、时间戳</td>
+</tr>
+<tr>
+<td><code>messages</code></td>
+<td>序列化的 <code>MessageContent</code> JSON、序号排序</td>
+</tr>
+<tr>
+<td><code>token_usages</code></td>
+<td>每次 LLM 调用的 token 计数、可选 <code>request_body</code>
+blob、可选 <code>tool_schedule</code> JSON</td>
+</tr>
+<tr>
+<td><code>input_history</code></td>
+<td>TUI 召回用的用户输入字符串（每会话最多 100 条）</td>
+</tr>
+<tr>
+<td><code>tasks</code></td>
+<td>任务记录：<code>subject</code>、<code>description</code>、<code>session_id</code>、<code>status</code>（CHECK
+约束）、<code>owner</code>、毫秒时间戳</td>
+</tr>
+<tr>
+<td><code>task_dependencies</code></td>
+<td>每条依赖边一行（<code>blocker_id</code>、<code>blocked_id</code>），复合主键，无外键——由应用层清理</td>
+</tr>
+<tr>
+<td><code>background_tasks</code></td>
+<td>后台任务：<code>status</code>（CHECK
+约束）、<code>command</code>、<code>session_id</code>、<code>started_at</code>/<code>finished_at</code>、<code>output</code>、<code>output_path</code>（全量输出日志文件）</td>
+</tr>
+<tr>
+<td><code>teammates</code></td>
+<td>roster：<code>name</code>（PK）、<code>role</code>、<code>status</code></td>
+</tr>
+<tr>
+<td><code>inbox_messages</code></td>
+<td>inbox
+条目：<code>owner</code>、<code>from_name</code>、<code>to_name</code>、<code>body</code>、<code>kind</code>、<code>created_at</code>；自增
+<code>id</code> 保持插入顺序</td>
+</tr>
+<tr>
+<td><code>worktrees</code></td>
+<td>worktree
+泳道：<code>name</code>（UNIQUE）、<code>path</code>、<code>branch</code>、<code>task_id</code>、<code>status</code>、<code>session_id</code>、<code>created_at</code></td>
+</tr>
+<tr>
+<td><code>worktree_events</code></td>
+<td>泳道审计日志：<code>event</code>、<code>created_at</code>；<code>id</code>
+为排序键</td>
+</tr>
+</tbody>
+</table>
+<h3 id="agent-集成">Agent 集成</h3>
+<table>
+<thead>
+<tr>
+<th>Agent 方法</th>
+<th>SessionStore 调用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ensure_session()</code></td>
+<td><code>ensure_session_row</code>、<code>load_session</code> → 恢复
+<code>runtime.context</code></td>
+</tr>
+<tr>
+<td><code>tact-ui</code> 会话启动</td>
+<td><code>ensure_session_row</code> → <code>try_lock_session</code> →
+<code>touch_session</code>（持锁后仅更新元数据）</td>
+</tr>
+<tr>
+<td><code>persist_message()</code></td>
+<td>每次 context push 后 <code>append_message</code></td>
+</tr>
+<tr>
+<td><code>persist_llm_call()</code></td>
+<td><code>record_token_usage</code>（在写入 assistant
+行<strong>之前</strong>快照 <code>llm_call_last_message_id</code> =
+<code>last_message_db_id</code>）</td>
+</tr>
+<tr>
+<td><code>compact_history()</code></td>
+<td><code>replace_session_messages</code> — 重写 SQLite
+<code>messages</code> 以匹配压缩后的 context</td>
+</tr>
+<tr>
+<td><code>execute_tool_call</code>（调度后）</td>
+<td>在由 <code>llm_call_last_message_id</code> 定位的 token 行上
+<code>record_tool_schedule</code></td>
+</tr>
+</tbody>
+</table>
+<p>若未附加 session store（未调用
+<code>with_session</code>），持久化方法为
+no-op——便于测试。<code>list_sessions</code> 只返回
+<code>ref_id = &#39;&#39;</code> 的顶层会话；<code>delete_session</code>
+会级联删除 <code>ref_id = 该 id</code> 的子会话及其附属表。</p>
+<h3 id="输入历史裁剪">输入历史裁剪</h3>
+<p><code>MAX_INPUT_HISTORY</code> = 100。加载超过上限时，在 trim
+阶段删除最旧行。</p>
+<hr />
+<h2 id="7-生命周期图">7. 生命周期图</h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant TUI as tact-ui
+    participant Agent
+    participant JSON as StoreRoot / 领域模块
+    participant SQL as SqliteSessionStore
+
+    TUI-&gt;&gt;JSON: StoreRoot::new(.tact/)
+    TUI-&gt;&gt;SQL: open_sqlite_session_store(tact.db)
+    TUI-&gt;&gt;SQL: TaskManager / BackgroundManager / TeammateManager / WorktreeManager（同一 tact.db）
+    TUI-&gt;&gt;Agent: with_session(id, store)
+
+    loop agent_loop
+        Agent-&gt;&gt;SQL: append_message (user/assistant/tool)
+        Agent-&gt;&gt;SQL: record_token_usage (last_message_id = assistant 前窗口)
+        Agent-&gt;&gt;SQL: task_* / background_* / team_* / worktree_* 工具读写（SQLite stores）
+        Agent-&gt;&gt;SQL: record_tool_schedule (同一 last_message_id 锚点)
+        Agent-&gt;&gt;SQL: replace_session_messages (compact_history 时)
+    end</code></pre>
+<hr />
+<h2 id="8-代码地图">8. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/store/mod.rs</code></td>
+<td><code>StoreRoot</code>、<code>Store&lt;T&gt;</code>、<code>CollectionStore&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/mod.rs</code></td>
+<td><code>SessionStore</code>
+trait、<code>DynSessionStore</code>、<code>open_sqlite_session_store</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/sqlite.rs</code></td>
+<td>全新
+schema（<code>CREATE TABLE IF NOT EXISTS</code>）、<code>SqliteSessionStore</code>
+实现</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/task_store/mod.rs</code></td>
+<td><code>TaskStore</code>
+trait（async：create/get/update/list/delete）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/task_store/sqlite.rs</code></td>
+<td><code>SqliteTaskStore</code> — <code>tasks</code> +
+<code>task_dependencies</code> 表、<code>BEGIN IMMEDIATE</code>
+事务、<code>busy_timeout</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/background_store/mod.rs</code></td>
+<td><code>BackgroundStore</code> trait（async：upsert/get/list）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/background_store/sqlite.rs</code></td>
+<td><code>SqliteBackgroundStore</code> — <code>background_tasks</code>
+表、upsert + <code>CHECK</code> 约束 status</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/mod.rs</code></td>
+<td><code>TeamStore</code>
+trait（async：create_teammate/list_teammates/append_message/read_inbox）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/sqlite.rs</code></td>
+<td><code>SqliteTeamStore</code> — <code>teammates</code> +
+<code>inbox_messages</code> 表</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/worktree_store/mod.rs</code></td>
+<td><code>WorktreeStore</code>
+trait（async：create_worktree/find_worktree/list_worktrees/append_event/recent_events）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/worktree_store/sqlite.rs</code></td>
+<td><code>SqliteWorktreeStore</code> — <code>worktrees</code> +
+<code>worktree_events</code> 表</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>ensure_session</code>、<code>persist_message</code>、<code>persist_llm_call</code>、<code>replace_persisted_context</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_lock.rs</code></td>
+<td><code>SessionLockGuard</code>、SIGINT/SIGTERM 释放 + 进程退出</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>TactPath::session_db_path()</code> →
+<code>&lt;workdir&gt;/.tact/tact.db</code>；<code>TactPath::workdir()</code>
+存为 <code>sessions.root_dir</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/main.rs</code></td>
+<td>打开 SQLite session store；headless/交互模式附加领域 manager</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/task/mod.rs</code></td>
+<td><code>TaskManager</code>
+门面（<code>Box&lt;dyn TaskStore&gt;</code>）+
+<code>SharedTaskManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/background.rs</code></td>
+<td><code>BackgroundManager</code>
+门面（<code>Arc&lt;dyn BackgroundStore&gt;</code>）+
+<code>SharedBackgroundManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/team.rs</code></td>
+<td><code>TeammateManager</code>
+门面（<code>Box&lt;dyn TeamStore&gt;</code>）+
+<code>SharedTeammateManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/worktree/mod.rs</code></td>
+<td><code>WorktreeManager</code>
+门面（<code>Box&lt;dyn WorktreeStore&gt;</code>）+
+<code>SharedWorktreeManager</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-当前缺口">9. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JSON store 无跨进程锁</td>
+<td>JSON 文件读-改-写无文件锁（SQLite 会话使用进程锁）</td>
+</tr>
+<tr>
+<td><code>CollectionStore::list()</code> 顺序</td>
+<td>目录迭代未排序——顺序依赖文件系统</td>
+</tr>
+<tr>
+<td>全新 SQLite schema</td>
+<td>主要为 <code>CREATE TABLE IF NOT EXISTS</code>；旧库通过
+<code>PRAGMA</code> + <code>ALTER TABLE</code> 补上
+<code>sessions.ref_id</code></td>
+</tr>
+<tr>
+<td>Session store 可选</td>
+<td>测试与部分调用方可不附加 SQLite</td>
+</tr>
+<tr>
+<td>每 workdir 一个 Session DB</td>
+<td>SQLite 当前位于
+<code>&lt;workdir&gt;/.tact/tact.db</code>；<code>sessions.root_dir</code>
+记录项目路径，供未来共享 <code>$HOME/.tact/tact.db</code></td>
+</tr>
+<tr>
+<td>遗留 JSON 文件</td>
+<td><code>tasks/*.json</code>、<code>background/tasks/*.json</code>、<code>team/config.json</code>、<code>team/inbox/*.json</code>、<code>worktrees/index.json</code>
+在 SQLite 迁移后不再读取；留在磁盘上，手动清理</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./11_chapter_task_zh.html">第 11 章 工具调度</a> —
+wave/barrier 模型（含 <code>spawn_subagent</code> 工具作为 barrier，非
+TaskManager API）</li>
+<li><a href="./03_chapter_memory_zh.html">持久化记忆</a> — Markdown
+记忆（非 JSON store）</li>
+<li><a "href="../ARCHITECTURE.html#12-configuration">ARCHITECTURE.md</a> —
+session store 与 token 用量说明</li>
+<li><a href="../docs/token_usage_schema.html">docs/token_usage_schema.md</a> —
+<code>token_usages</code> 列详情</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,1476 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="context-compaction">Context Compaction</h1>
+<blockquote>
+<p>Language: <a href="./05_chapter_compact.html">English</a> · <a href="./05_chapter_compact_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains how Tact keeps a long-running conversation
+<strong>inside the model&#39;s context window</strong>: cheap in-place
+truncation every turn (<code>micro_compact</code>), full LLM-generated
+summarization when the limit is reached (<code>compact_history</code>,
+non-Responses providers), native <code>/responses/compact</code> for
+OpenAI Responses, and disk spill for both transcripts and oversized tool
+outputs. The primitives live in
+<code>crates/tact/src/compact/mod.rs</code>; the orchestration lives in
+<code>Agent::compact_history</code> in
+<code>crates/tact/src/agent/mod.rs</code>.</p>
+<p>Compaction is also a <strong>recovery strategy</strong>: when the
+provider rejects a request as too long, the agent compacts and retries.
+See <a href="./06_chapter_recovery.html">Error Recovery</a>.</p>
+<hr />
+<h2 id="0-why-compaction-exists">0. Why Compaction Exists</h2>
+<p>A coding agent accumulates messages every turn: user text, assistant
+reasoning, tool calls, and especially <strong>tool results</strong>
+(file contents, command logs, search hits). Context growth has three
+costs:</p>
+<table>
+<thead>
+<tr>
+<th>Cost</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hard limit</td>
+<td>Provider returns prompt-too-long → turn fails without recovery</td>
+</tr>
+<tr>
+<td>Soft cost</td>
+<td>Longer prompts → slower TTFT, higher $ / tokens</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>Distant tool dumps dilute the signal the model needs
+<em>now</em></td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid"><code>flowchart LR
+    subgraph Growth[&quot;Context growth over a long task&quot;]
+        U1[user] --&gt; A1[assistant]
+        A1 --&gt; T1[tool results × N]
+        T1 --&gt; U2[user]
+        U2 --&gt; A2[assistant]
+        A2 --&gt; T2[more tools…]
+        T2 --&gt; Huge[&quot;usage → model_context_window&quot;]
+    end
+    Huge --&gt;|without compaction| Fail[API reject / degraded quality]
+    Huge --&gt;|with compaction| Fit[fit + continue]</code></pre>
+<p>Tact’s answer is <strong>progressive defense</strong>: free local
+stubs first, then one paid summarization call only when needed, plus
+opportunistic spill of single huge outputs so they never enter the
+window at full size.</p>
+<hr />
+<h2 id="1-three-levels-of-defense">1. Three Levels of Defense</h2>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Mechanism</th>
+<th>Cost</th>
+<th>When</th>
+<th>What is lost from <em>context</em></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>persist_large_output</code></td>
+<td>Free (disk I/O)</td>
+<td>Every successful native or MCP result &gt; 30,000 chars
+<strong>except <code>read_file</code></strong></td>
+<td>Full output (kept on disk + preview)</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>micro_compact</code></td>
+<td>Free</td>
+<td>Start of every LLM turn</td>
+<td>Old tool-result bodies (stub left behind)</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>compact_history</code></td>
+<td>One extra LLM call (local) / native <code>/responses/compact</code>
+for Responses</td>
+<td>80% threshold, prompt-too-long, or <code>compact</code> tool</td>
+<td>Assistant/tool history (recent real users + summary remain; full
+JSONL on disk)</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid"><code>flowchart TB
+    subgraph L1[&quot;Level 1 — spill one result&quot;]
+        Bash[successful tool returns] --&gt; Big{&gt; 30k chars?}
+        Big --&gt;|yes| Disk1[&quot;write .tact/tool-results/id.txt&quot;]
+        Disk1 --&gt; Env[&quot;replace with &amp;lt;persisted-output&amp;gt;&quot;]
+        Big --&gt;|no| Keep[keep full output]
+    end
+
+    subgraph L2[&quot;Level 2 — stub old results&quot;]
+        Turn[each agent_loop turn] --&gt; MC[micro_compact]
+        MC --&gt; Stub[&quot;old ToolResult &gt; 120 chars → stub&lt;br/&gt;keep last 12 intact&quot;]
+    end
+
+    subgraph L3[&quot;Level 3 — summarize everything&quot;]
+        Est{estimate &gt; limit?} --&gt;|yes| CH[compact_history]
+        Err[prompt-too-long] --&gt; CH
+        Manual[compact tool] --&gt; CH
+        CH --&gt; Disk2[JSONL transcript]
+        CH --&gt; Sum[LLM summary ≤ 2k tokens]
+        Sum --&gt; One[context ← recent users + summary]
+    end
+
+    L1 -.-&gt;|prevents floods| L2
+    L2 --&gt; Est
+    Est --&gt;|no| Prompt[build prompt / call LLM]
+    One --&gt; Prompt</code></pre>
+<p><strong>Mental model:</strong> Level 1 protects <em>this turn’s</em>
+stdout; Level 2 protects <em>history shape</em> without an LLM; Level 3
+resets the conversation when even stubs are not enough.</p>
+<hr />
+<h2 id="2-where-compaction-sits-in-the-agent-loop">2. Where Compaction
+Sits in the Agent Loop</h2>
+<p>Compaction is not a separate daemon — it is woven into
+<code>Agent::agent_loop</code>. For non-Responses providers, Tact
+compacts <strong>old</strong> history before pushing the current user
+turn so the latest prompt remains verbatim instead of being absorbed
+into a summary. For <strong>OpenAI Responses</strong>-style providers
+the same entry-path trigger runs before the turn is pushed, but native
+compaction only shrinks the wire baseline — the logical context is never
+rewritten, and the current turn is sent as newly uncovered
+<code>/responses</code> input items.</p>
+<p>Reading the loop top-to-bottom:</p>
+<pre class="mermaid"><code>flowchart TD
+    Entry([agent_loop start]) --&gt; EntrySize{&quot;should_auto_compact?&lt;br/&gt;reserve incoming turn&quot;}
+    EntrySize --&gt;|yes| EntryAuto[&quot;emit [auto compact]&lt;br/&gt;compact_history(None)&quot;]
+    EntryAuto --&gt; Push[push user_turn_message]
+    EntrySize --&gt;|no| Push
+    Push --&gt; Start([loop iteration])
+    Start --&gt; Cancel{cancelled?}
+    Cancel --&gt;|yes| Exit([return])
+    Cancel --&gt;|no| MC[micro_compact context]
+    MC --&gt; Size{&quot;should_auto_compact?&lt;br/&gt;incoming = 0&quot;}
+    Size --&gt;|yes| Auto[&quot;emit [auto compact]&lt;br/&gt;compact_history(None)&quot;]
+    Auto --&gt; Build
+    Size --&gt;|no| Build[build CreateMessageParams]
+    Build --&gt; Stream[stream_message]
+    Stream --&gt;|Ok| Assist[push assistant message]
+    Stream --&gt;|prompt too long| Rec[&quot;[Recovery] compact&lt;br/&gt;compact_history(None)&quot;]
+    Rec --&gt; Start
+    Stream --&gt;|transient| Backoff[sleep + retry]
+    Backoff --&gt; Start
+    Assist --&gt; Tools{tool_use blocks?}
+    Tools --&gt;|yes| Exec[execute_tool_call]
+    Exec --&gt; Persist[push tool_result user message]
+    Persist --&gt; Man{&quot;manual_compact?&lt;br/&gt;only if compact tool succeeded&quot;}
+    Man --&gt;|yes| MC2[&quot;[manual compact]&lt;br/&gt;compact_history(focus)&quot;]
+    MC2 --&gt; Start
+    Man --&gt;|no| Start
+    Tools --&gt;|no| Done{stop / continue?}</code></pre>
+<p>Key ordering facts:</p>
+<ol type="1">
+<li><strong>Entry path</strong> — before the user turn is pushed,
+<code>should_auto_compact</code> reserves
+<code>estimate(user_turn)</code> so a large prompt cannot overflow
+immediately after append.</li>
+<li><strong>Each loop iteration</strong> — <code>micro_compact</code>
+then <code>should_auto_compact(incoming = 0)</code> run
+<strong>before</strong> the model request (including continuations after
+tools / recovery).</li>
+<li><strong>After tool execution</strong> — only a
+<strong>successful</strong> <code>compact</code> tool sets
+<code>manual_compact</code>; that path calls
+<code>compact_history(focus)</code> then returns to the loop top. Failed
+/ rejected compact invocations leave history intact.</li>
+<li><strong>Prompt-too-long recovery</strong> runs
+<code>compact_history</code> then <code>continue</code>s the loop (same
+turn, new context). Cap: <code>MAX_RECOVERY_ATTEMPTS</code> (3). Details
+in <a href="./06_chapter_recovery.html">Error Recovery</a>.</li>
+<li><strong>Manual <code>compact</code> tool</strong> cannot rewrite
+context <em>inside</em> the tool handler (API validity). Dispatch
+records a flag only on success; <code>compact_history</code> runs
+<strong>after</strong> tool results are appended.</li>
+</ol>
+<hr />
+<h2 id="3-micro-compaction">3. Micro-Compaction</h2>
+<p><code>micro_compact(messages, enabled)</code> runs before each model
+request (disable via config, see §9). It only touches
+<strong>user-role</strong> messages that contain
+<code>ContentBlock::ToolResult</code>. Full auto-compact also runs at
+this point (<code>incoming = 0</code>); the entry path separately
+reserves the incoming user turn before push.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> KEEP_RECENT_TOOL_RESULTS<span class="op">:</span> <span class="dt">usize</span> <span class="op">=</span> <span class="dv">12</span><span class="op">;</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> COMPACTED_TOOL_RESULT<span class="op">:</span> <span class="op">&amp;</span><span class="dt">str</span> <span class="op">=</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]&quot;</span><span class="op">;</span></span></code></pre></div>
+<h3 id="algorithm">Algorithm</h3>
+<pre class="mermaid"><code>flowchart TD
+    A[scan messages] --&gt; B[collect ToolResult positions&lt;br/&gt;in chronological order]
+    B --&gt; C{count ≤ 12?}
+    C --&gt;|yes| Z[no-op]
+    C --&gt;|no| D[&quot;compact_until = count − 12&quot;]
+    D --&gt; E[for each of the oldest compact_until results]
+    E --&gt; F{chars &gt; 120?}
+    F --&gt;|yes| G[replace body with COMPACTED_TOOL_RESULT]
+    F --&gt;|no| H[leave short result alone]</code></pre>
+<h3 id="before--after-conceptual">Before / after (conceptual)</h3>
+<pre class="mermaid"><code>flowchart LR
+    subgraph Before[&quot;Before micro_compact&quot;]
+        R1[&quot;TR#1 long log&quot;]
+        R2[&quot;TR#2 file dump&quot;]
+        R3[&quot;…&quot;]
+        R12[&quot;TR#12&quot;]
+        R13[&quot;TR#13 recent&quot;]
+        R14[&quot;TR#14 newest&quot;]
+    end
+
+    subgraph After[&quot;After — keep last 12&quot;]
+        S1[&quot;stub&quot;]
+        S2[&quot;stub&quot;]
+        S3[&quot;…&quot;]
+        K12[&quot;TR#12 intact&quot;]
+        K13[&quot;TR#13 intact&quot;]
+        K14[&quot;TR#14 intact&quot;]
+    end
+
+    Before --&gt; After</code></pre>
+<p>Rules of thumb encoded in the constants:</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Keep last <strong>12</strong> results</td>
+<td>Current workflow usually needs recent tool I/O</td>
+</tr>
+<tr>
+<td>Stub only if <strong>&gt; 120</strong> chars</td>
+<td>Short oks / errors are dense; stubbing saves nothing</td>
+</tr>
+<tr>
+<td>Never touch assistant / thinking / user text</td>
+<td>Only tool dumps are the bulk offenders</td>
+</tr>
+</tbody>
+</table>
+<p>The stub text is deliberate: it tells the model <strong>how to
+recover</strong> (<code>read_file</code> / re-run tools). The system
+prompt reinforces the same idea:</p>
+<blockquote>
+<p>If a tool result was truncated and you need the details, re-run the
+relevant tool (e.g., <code>read_file</code>)</p>
+</blockquote>
+<hr />
+<h2 id="4-auto-trigger-and-size-estimation">4. Auto Trigger and Size
+Estimation</h2>
+<p>The shared threshold is
+<strong><code>agent.model_context_window</code></strong> — the model
+context window in <strong>tokens</strong> (default
+<strong>200,000</strong>). The same value drives auto-compaction and the
+TUI bottom-bar usage meter.</p>
+<h3 id="decision-or">Decision (OR)</h3>
+<p><code>should_auto_compact</code> fires when <strong>either</strong>
+condition holds (optionally reserving an <em>incoming</em> user turn not
+yet in context and the next <code>max_tokens</code> output):</p>
+<pre class="text"><code>last_token_total &gt; 0
+  &amp;&amp; last_token_total + estimate_message_tokens(incoming_turn) + max_tokens &gt;= 80% of model_context_window
+  || estimate_context_tokens(context) + estimate_message_tokens(incoming_turn) + max_tokens &gt;= 80% of model_context_window</code></pre>
+<p>Both sides of the OR compare against the same <strong>token</strong>
+window and both reserve the model&#39;s output budget
+(<code>max_tokens</code>) so compaction triggers early enough for the
+LLM to fit its response. Serialized content is estimated by counting
+ASCII at roughly four characters per token and non-ASCII conservatively
+at one character per token.</p>
+<ul>
+<li><strong>Entry (<code>agent_loop</code>)</strong>: compact
+<strong>old</strong> history first with
+<code>incoming_turn_tokens = estimate(user_turn)</code>, then
+<code>push</code> the turn verbatim.</li>
+<li><strong>Loop / recovery / manual</strong>: turn already in context →
+<code>incoming_turn_tokens = 0</code>.</li>
+</ul>
+<p>Rebuild after summarize (Codex-style):
+<strong><code>[recent real User messages…] + [&lt;context-handoff&gt; summary cell]</code></strong>,
+not a single summary-only message. The handoff is a
+<code>User</code>-role message framed with
+<code>&lt;context-handoff&gt;</code> …
+<code>&lt;/context-handoff&gt;</code> and marked
+<code>MessageKind::Summary</code> in memory so it is a first-class cell:
+detected by type (with a <code>SUMMARY_PREFIX</code> string fallback for
+reloaded sessions), never mistaken for a real user turn, and safely
+distinguishable even if a provider merges consecutive user messages. The
+rebuild has three stages:</p>
+<ol type="1">
+<li><strong><code>collect_user_messages</code></strong> — walks the
+entire context, extracting real user turns via
+<code>is_real_user_message</code> (excludes tool-result-only blocks,
+prior summaries, and non-User roles).</li>
+<li><strong><code>retained_user_message_token_budget</code></strong> —
+budget =
+<code>min(20k estimated tokens, model_context_window - max_tokens - estimate(system + tools + summary) - 20% headroom)</code>.</li>
+<li><strong><code>build_compacted_history</code></strong> — keeps real
+user messages from the tail up to the budget; a block turn is kept
+verbatim when it fits, an oversized one falls back to its text tail, or
+an omission marker when it contains only images. Base64 is never sliced.
+A summary message is appended last.</li>
+</ol>
+<p>The legacy single-summary path remains as
+<code>compact_history_legacy</code>.</p>
+<p>Two distinct percentages apply in different phases:</p>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Headroom</th>
+<th>Used in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Summarizer <strong>input</strong> budget</td>
+<td><strong>10%</strong> of window</td>
+<td><code>compact_history_with_mode</code> — reserves space so the
+summary instructions + history tail fit before calling the LLM</td>
+</tr>
+<tr>
+<td>Rebuild <strong>final-request</strong> guard</td>
+<td><strong>20%</strong> of window</td>
+<td><code>compact_rebuild_headroom_tokens</code> — ensures the
+post-compact request (system + tools + retained users + summary +
+max_output) does not overflow after reconstruction</td>
+</tr>
+</tbody>
+</table>
+<p>For a 200,000-token window, the summarizer input headroom is 10% =
+20,000 tokens, and the rebuild guard is 20% = 40,000 tokens. Both absorb
+estimation error, JSON serialization overhead, and differences between
+the conservative estimate and the provider tokenizer. Percentages are
+rounded up, so the reserve is never rounded down.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> estimate_context_tokens(messages<span class="op">:</span> <span class="op">&amp;</span>[Message]) <span class="op">-&gt;</span> <span class="dt">usize</span> <span class="op">{</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">match</span> <span class="pp">serde_json::</span>to_string(messages) <span class="op">{</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Ok</span>(serialized) <span class="op">=&gt;</span> approx_text_tokens(<span class="op">&amp;</span>serialized)<span class="op">,</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Err</span>(_) <span class="op">=&gt;</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span><span class="op">,</span> <span class="co">// prefer compact over underestimating</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<pre class="mermaid"><code>flowchart TD
+    MC[micro_compact] --&gt; Tok{tokens (+ incoming) ≥ 80% window?}
+    Tok --&gt;|yes| Auto[auto compact_history]
+    Tok --&gt;|no| Est[&quot;estimated context + incoming tokens&lt;br/&gt;≥ 80% window?&quot;]
+    Est --&gt;|yes| Auto
+    Est --&gt;|no| Call[LLM call]</code></pre>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent.model_context_window</code></td>
+<td><strong>200,000</strong></td>
+<td>Tokens; CLI <code>--model-context-window</code> / TOML. Breaking
+rename from <code>context_limit_chars</code> — <strong>no silent
+alias</strong>. Resolution: built-in model→window mapping (e.g.
+<code>deepseek-v4-pro</code>, <code>claude-opus-4-7</code>,
+<code>gpt-5.6-sol</code> → 1M) overrides CLI/TOML, then default
+200,000.</td>
+</tr>
+</tbody>
+</table>
+<p>After compaction, <code>last_token_total</code> is <strong>reset to
+0</strong> (the summarizer call&#39;s usage reflects a large history prompt,
+not the replacement context size); the next main-loop LLM call writes a
+fresh value. See §11.</p>
+<hr />
+<h2 id="5-full-compaction-compact_history">5. Full Compaction:
+<code>compact_history</code></h2>
+<p><code>Agent::compact_history(focus: Option&lt;&amp;str&gt;)</code> is
+the expensive path. It never “deletes” work permanently: the pre-compact
+context is always written to a transcript first.</p>
+<h3 id="two-rebuild-strategies">Two rebuild strategies</h3>
+<p>Tact has <strong>two</strong> compaction rebuild modes. Both share
+the same summarization pipeline (transcript → select recent messages →
+LLM summary), but differ in <strong>how context is replaced after the
+summary is produced</strong>:</p>
+<ul>
+<li><strong>Codex-style</strong> (<code>compact_history</code>,
+production default): rebuilds via <code>collect_user_messages</code> +
+<code>build_compacted_history</code>. Context after:
+<code>[real User…] + [&lt;context-handoff&gt; summary cell]</code>. Real
+user turns are preserved verbatim from the tail (budget permitting).
+Current turn survives loop compaction because
+<code>collect_user_messages</code> recovers it from the full
+context.</li>
+<li><strong>Legacy</strong> (<code>compact_history_legacy</code>,
+rollback only): replaces the entire context with
+<code>compacted_context(summary)</code> — a single user message. All
+user turns are lost; the current turn in loop compaction is eaten into
+the summary.</li>
+</ul>
+<p>Only Codex is called by production call sites; Legacy exists as
+<code>#[allow(dead_code)]</code> for reference.</p>
+<h3 id="end-to-end-sequence">End-to-end sequence</h3>
+<pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant AgentLoop as agent_loop
+    participant CH as compact_history
+    participant Disk as filesystem
+    participant LLM as create_message
+    participant Store as SessionStore
+
+    AgentLoop-&gt;&gt;CH: compact_history(focus?)
+    CH-&gt;&gt;Disk: write transcript to .tact/transcripts/transcript_ts.jsonl
+    CH--&gt;&gt;AgentLoop: Info &quot;[transcript saved: …]&quot;
+    CH-&gt;&gt;CH: select recent messages within a 20k-token cap
+    CH-&gt;&gt;CH: build summarize prompt + optional focus + recent_files
+    CH-&gt;&gt;LLM: create_message with window-aware input/output budgets
+    LLM--&gt;&gt;CH: validated complete non-empty text summary
+    CH-&gt;&gt;CH: reset message-id window (first/last/llm_call ids = 0)
+    CH-&gt;&gt;CH: append &quot;Recently accessed files…&quot; to summary
+    CH-&gt;&gt;CH: users = collect_user_messages(old context)
+    CH-&gt;&gt;CH: budget = retained_user_message_token_budget(window, max_tokens, …)
+    CH-&gt;&gt;CH: context = build_compacted_history(users, summary, budget)
+    CH-&gt;&gt;CH: shrink loop: if oversize → reduce budget → rebuild
+    CH-&gt;&gt;Store: replace_session_messages (SQLite matches new context)
+    CH-&gt;&gt;CH: stats.compactions += 1</code></pre>
+<h3 id="step-details">Step details</h3>
+<p><strong>1. Transcript spill</strong> — <code>write_transcript</code>
+atomically creates a unique
+<code>.tact/transcripts/transcript_&lt;unix_nanos&gt;_&lt;collision&gt;.jsonl</code>,
+one JSON message per line. TUI shows <code>[transcript saved: …]</code>.
+Full history is recoverable offline; the model is <strong>not</strong>
+automatically pointed at this path in the summary message (gap in
+§11).</p>
+<p><strong>2. Recent-window selection</strong> — walk
+<code>context</code> <strong>from the end</strong> within both the
+model-window budget and a <strong>20,000 estimated-token cap</strong>.
+An oversized message is converted to a valid text-only view; images
+become omission markers, so base64 is never cut. No message is forced in
+when it cannot fit. Earlier turns survive only via transcript + whatever
+the summary can infer.</p>
+<pre class="mermaid"><code>flowchart LR
+    subgraph Context[&quot;Full context (oldest → newest)&quot;]
+        Old[… early turns …]
+        Mid[middle]
+        New[recent ≤ 20k estimated tokens]
+    end
+    Old -.-&gt;|not sent to summarizer| X[omitted]
+    Mid -.-&gt;|not sent| X
+    New --&gt;|serialized into prompt| SumLLM[summarization LLM]</code></pre>
+<p><strong>3. Summarization call</strong> — a fresh non-streaming
+<code>create_message</code> (no tools) reserves output and 10% safety
+headroom before selecting input. The summary <strong>text</strong> keeps
+the classic <code>min(20% × window, 2,000)</code> output budget. The
+summarizer <strong>never enables thinking</strong>: no Claude-style
+thinking budget and no explicit reasoning effort are forwarded, because
+thinking adds little value to a handoff summary and would consume output
+tokens. The only exception is the <strong>server-default reasoning
+reserve</strong>: DeepSeek / Kimi K3 default thinking ON + effort high
+server-side even when the request omits effort, and they count reasoning
+tokens inside the same <code>max_tokens</code> envelope as the text — so
+a fixed 75% reserve is added <strong>on top</strong> for them
+(<code>max_tokens</code> = text + 75% × text); without it their forced
+reasoning would starve the summary text and force truncation
+continuations. OpenAI / Anthropic get no reserve (full text budget).
+Since no thinking is enabled, nothing is subtracted from the input
+reservation. If the fixed summary instructions alone exceed the input
+limit, compaction fails early because no valid summary request can be
+constructed, even after removing all history. Transient transport
+failures get up to three retries with backoff. A <code>MaxTokens</code>
+summary is <strong>continued</strong> (up to three times): the partial
+summary is appended as an assistant message plus a continuation prompt
+(<code>[compact continue n/3]</code>), mirroring the main loop&#39;s
+output-limit recovery; when continuations are exhausted the partial
+summary is accepted as best-effort (the Codex-style rebuild keeps recent
+real user messages anyway). Refusal / other abnormal stop reasons and
+empty text are still rejected without replacing the old context. The
+prompt asks the model to preserve:</p>
+<ol type="1">
+<li>Current goal and accomplishments</li>
+<li>Findings, decisions, architectural insights</li>
+<li>Files read/changed (types, signatures, APIs when relevant)</li>
+<li>Remaining work / next steps</li>
+<li>User constraints and preferences</li>
+<li>Errors and causes</li>
+</ol>
+<p>Optional appendages:</p>
+<ul>
+<li><code>Focus to preserve next: {focus}</code> — from the manual
+<code>compact</code> tool</li>
+<li><code>Recent files to reopen if needed:</code> — from
+<code>CompactState.recent_files</code></li>
+</ul>
+<h3 id="openai-responses-native-compaction-no-local-summary-fallback">OpenAI
+Responses: native compaction (no local summary fallback)</h3>
+<p>For <code>protocol = &quot;responses&quot;</code>, compaction is
+<strong>native</strong>: Tact manages the protocol baseline through the
+Responses API instead of running a local summarizer. The local pipeline
+above (steps 1–4, <code>compact_history_local</code>) remains the path
+for <strong>non-Responses</strong> providers (Anthropic, DeepSeek, Kimi,
+Chat Completions); it is <strong>never</strong> used as a fallback for
+OpenAI Responses. DeepSeek and Kimi Responses configurations are
+currently rejected during config resolution until their endpoints pass
+the same native-compaction and state-continuation verification.</p>
+<p>The native path has seven properties:</p>
+<ol type="1">
+<li><strong>Ordinary request + <code>context_management</code></strong>
+— every <code>/responses</code> request built by
+<code>create_response</code> carries
+<code>context_management: [{ &quot;type&quot;: &quot;compaction&quot;, &quot;compact_threshold&quot;: N }]</code>
+when a threshold is resolved. The endpoint may therefore compact the
+baseline automatically mid-conversation <strong>without</strong> a
+second HTTP call; a <code>compaction</code> item then appears in the
+terminal response output and is retained as opaque protocol state (never
+mapped to a <code>ContentBlock</code>).</li>
+<li><strong>Tact threshold + <code>/responses/compact</code></strong> —
+the threshold is <code>responses_compact_threshold</code> (config) or
+derived from <code>agent.model_context_window</code> /
+<code>max_tokens</code> with 10% headroom; a subagent&#39;s derived
+threshold uses the <strong>subagent&#39;s own
+<code>max_tokens</code></strong> budget, not the main agent&#39;s. When Tact
+decides to compact (auto trigger, recovery, or <code>/compact</code>),
+it sends a real <code>POST /responses/compact</code> request carrying
+the current protocol baseline (<code>input</code> items) plus any
+logical messages not yet covered, and replaces the baseline with the
+returned compact resource.</li>
+<li><strong>User <code>/compact</code> without a model compact
+tool</strong> — Responses model-facing tool specs exclude the local
+<code>compact</code> tool; the <code>/compact</code> command dispatches
+to the native <code>/responses/compact</code> endpoint instead.</li>
+<li><strong>Opaque provider state</strong> — the baseline lives in
+<code>ResponsesConversationState</code> as opaque JSON
+(<code>input_items</code>, including the <code>encrypted_content</code>
+of compaction items) plus <code>compaction_id</code> and
+<code>logical_context_hash</code>. Tact never interprets the encrypted
+payload: it is replayed verbatim to the endpoint and never rendered or
+logged. Compaction <code>encrypted_content</code> remains
+<strong>provider state only</strong>; reasoning encrypted data may exist
+<strong>only</strong> inside the internal, non-renderable
+<code>Thinking.signature</code> envelope (never in a renderable
+<code>ContentBlock</code>).</li>
+<li><strong>Atomic messages/state persistence</strong> — assistant
+messages and the provider state baseline are committed in <strong>one
+transaction</strong>; native compaction replaces the persisted context
+and baseline atomically, then updates the runtime fields. Failures leave
+the old committed state intact.</li>
+<li><strong>No fallback</strong> — Responses endpoints lacking native
+compaction are unsupported (a hard protocol error, never a silent local
+summary). Tact resets <code>last_token_total</code> to 0 after native
+compaction because the next request&#39;s input is the compacted baseline,
+not the pre-compact prompt.</li>
+<li><strong>Raw item preservation</strong> — the adapter parses the
+response envelope before typed normalization. Known items feed Tact
+content/state logic; unknown input/output items remain raw JSON in the
+protocol baseline and are replayed on the next request. Unknown harmless
+stream events are ignored, while an incomplete protocol-state item still
+fails the response.</li>
+</ol>
+<p><strong>Provider availability note</strong> — The generic adapter can
+still be constructed by lower-level tests for endpoint experiments, but
+normal configuration keeps DeepSeek and Kimi Responses disabled until
+their endpoint capabilities are verified.</p>
+<p><strong>Protocol contract and verification status</strong> — the
+automatic-compaction replacement baseline (the single
+<code>compaction</code> item first, followed by the response&#39;s
+non-compaction output items) is derived from the sanitized fixture
+captured from the target endpoint during design
+(<code>crates/tact_llm/src/openai/responses/fixtures/automatic_compact.json</code>);
+it has <strong>not</strong> been verified against a live endpoint. Hard
+validation remains in force: zero or multiple <code>compaction</code>
+items and empty <code>encrypted_content</code> are protocol errors, and
+a malformed known output item is rejected by the typed normalizer. A
+truly unknown output item is retained by the raw wire boundary and
+replayed on the next request (see <a "href="./22_chapter_llm.html#the-compaction-item-round-trip">Ch 22
+§6.2.2</a>). An endpoint whose compaction contract differs from the
+fixture fails loudly with a protocol error rather than being papered
+over.</p>
+<p>An <strong>incomplete streamed compaction</strong> — a
+<code>compaction</code> item announced in the stream but never completed
+— is also a hard error: the stream adapter refuses to fall back to
+visible-text recovery, because that would silently drop the compaction
+boundary and lose the compacted baseline for the next turn. Persisting
+the explicit <code>/responses/compact</code> usage row is
+<strong>not</strong> best-effort either: if the
+<code>responses_compact</code> row cannot be written, compaction fails
+with an error before the new messages/provider state are committed, and
+the old committed state stays fully intact. Success diagnostics show
+only a <strong>bounded compaction-id prefix</strong>
+(<code>[responses compacted: items=N, id=…]</code>); the full id lives
+in the provider state and SQLite metadata only.</p>
+<p>A simplified native timeline:</p>
+<pre class="text"><code>old baseline (input_items) + logical context
+→ auto trigger / recovery / user /compact → &quot;[native compact]&quot;
+→ POST /responses/compact (baseline + uncovered messages)
+→ compact resource → new baseline (items + compaction id)
+→ replace persisted context + state atomically (one transaction)
+→ next POST /responses (context_management + compacted baseline)</code></pre>
+<p>The <code>focus</code> text of the local <code>compact</code> tool
+has no meaning for the native endpoint and is ignored.</p>
+<h3 id="design-rationale-summarizer-input-vs-rebuilt-context">Design
+rationale: summarizer input vs rebuilt context</h3>
+<p>The compaction pipeline has <strong>two</strong> message selection
+phases with very different goals.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Summarizer input (step 2–3)</th>
+<th>Rebuilt context (step 4)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Goal</strong></td>
+<td>Produce a good handoff summary</td>
+<td>Agent continues working after compact</td>
+</tr>
+<tr>
+<td><strong>Who reads it</strong></td>
+<td>The summarizer LLM (one-shot)</td>
+<td>The main agent (every turn until next compact)</td>
+</tr>
+<tr>
+<td><strong>Roles</strong></td>
+<td>User + Assistant + ToolResult</td>
+<td><strong>User only</strong></td>
+</tr>
+<tr>
+<td><strong>Message types</strong></td>
+<td>All, with <code>summary_message_fallback</code> compression</td>
+<td>Only &quot;real user&quot; (skips pure tool-result blocks, prior summaries,
+non-User)</td>
+</tr>
+<tr>
+<td><strong>User text</strong></td>
+<td>Fed into summarizer, not preserved verbatim</td>
+<td>✅ Preserved verbatim (from tail, budget permitting)</td>
+</tr>
+<tr>
+<td><strong>Assistant / Thinking</strong></td>
+<td>Fed into summarizer</td>
+<td>❌ Dropped (summary already covers it)</td>
+</tr>
+<tr>
+<td><strong>ToolUse</strong></td>
+<td>Compressed to <code>[Tool call: {name}]</code></td>
+<td>❌ Dropped</td>
+</tr>
+<tr>
+<td><strong>ToolResult</strong></td>
+<td>Full text (compressed via fallback)</td>
+<td>❌ Dropped</td>
+</tr>
+<tr>
+<td><strong>Budget</strong></td>
+<td><code>min(20k, summary_input_limit - prompt)</code></td>
+<td><code>min(20k, window - output - system - tools - summary - 20%)</code></td>
+</tr>
+</tbody>
+</table>
+<p>The asymmetry is intentional:</p>
+<ul>
+<li><p><strong>Summarizer sees everything</strong> because it needs the
+full context to write an accurate handoff. A tool result containing a
+file&#39;s full text tells the summarizer which functions were modified; a
+test log tells it whether tests passed. Without these, the summary would
+be vague. <code>summary_message_fallback</code> compresses the data
+(omits base64 images, truncates from tail) but does <strong>not</strong>
+skip entire messages.</p></li>
+<li><p><strong>Rebuilt context keeps only real user intent</strong>
+because the agent needs the original task framing verbatim — &quot;add an 80%
+trigger to the compact module&quot; — to continue working. Everything else
+(assistant reasoning, tool calls, tool results) has already been
+condensed into the handoff summary. Keeping assistant/tool content would
+waste the limited window on redundant detail. The
+<code>is_real_user_message</code> filter excludes pure tool-result
+blocks (no user intent), prior summaries (no stacking), and non-User
+roles, while keeping every message that carries the user&#39;s own
+words.</p></li>
+</ul>
+<h3 id="compaction-failure-behavior">Compaction failure behavior</h3>
+<p>The context is replaced only after the summary has been validated and
+the rebuilt request fits the model window. If summary generation fails,
+returns empty text, uses an invalid stop reason (a truncated
+<code>MaxTokens</code> summary is continued first; only non-continuable
+failures count), or the rebuilt request cannot fit, the original
+in-memory context remains in place. If persisting the rebuilt context to
+SQLite fails, the replacement is rolled back as well. The transcript
+written at the start of compaction remains available for diagnosis or
+offline recovery. The current agent loop then propagates the error and
+normally ends the task; it does not blindly retry the same oversized
+context. Transient summary transport errors are the exception: they are
+retried up to three times before failing.</p>
+<p><strong>5. Bookkeeping</strong></p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>has_compacted = true</code>, store
+<code>last_summary</code></td>
+<td>Session knows compaction occurred</td>
+</tr>
+<tr>
+<td>Reset <code>first_message_db_id</code> /
+<code>last_message_db_id</code> /
+<code>llm_call_last_message_id</code></td>
+<td>New message-id window after rewrite</td>
+</tr>
+<tr>
+<td><code>last_token_total = 0</code></td>
+<td>Summarizer usage is a large prompt, not the new context; avoids
+re-triggering compact every turn</td>
+</tr>
+<tr>
+<td><code>replace_session_messages</code></td>
+<td>Reopening the session must <strong>not</strong> resurrect
+pre-compaction SQLite rows</td>
+</tr>
+<tr>
+<td><code>stats.compactions += 1</code></td>
+<td>Observability</td>
+</tr>
+</tbody>
+</table>
+<h3 id="compactstate-and-recent-files">CompactState and recent
+files</h3>
+<div class="sourceCode" id="cb13"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> CompactState <span class="op">{</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> has_compacted<span class="op">:</span> <span class="dt">bool</span><span class="op">,</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> last_summary<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> recent_files<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span>   <span class="co">// last 5 read_file paths, deduped, LRU</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<pre class="mermaid"><code>flowchart TD
+    RF[read_file succeeds] --&gt; Remember[remember_recent_file]
+    Remember --&gt; Dedup[drop existing same path]
+    Dedup --&gt; Push[push to end]
+    Push --&gt; Cap{len &gt; 5?}
+    Cap --&gt;|yes| Drain[drain oldest]
+    Cap --&gt;|no| Ok[keep]
+    Ok --&gt; Use1[listed in summarization prompt]
+    Drain --&gt; Use1
+    Use1 --&gt; Use2[appended to final summary message]</code></pre>
+<p><code>remember_recent_file</code> is fed only by successful final
+tool results for <code>read_file</code>, <code>write_file</code>,
+<code>edit_file</code>, and non-dry-run <code>apply_patch</code>. It
+keeps the last five deduplicated paths as “amnesia insurance.”</p>
+<h3 id="before--after-comparison">Before / After Comparison</h3>
+<p>The most visible effect of <code>compact_history</code> is removing
+assistant/tool history while preserving recent real user turns and
+appending one handoff summary. Let’s walk through a concrete
+example.</p>
+<h4 id="before-selfruntimecontext-vecmessage">Before:
+<code>self.runtime.context</code> (<code>Vec&lt;Message&gt;</code>)</h4>
+<p>The full conversation grows with the task — a mix of roles and
+content:</p>
+<pre class="text"><code>[0] User      &quot;Add an early 80% trigger to the compact module&quot;
+[1] Assistant  reasoning + tool_use(read_file compact/mod.rs)
+[2] User       ToolResult(full compact/mod.rs, ~5k chars)
+[3] Assistant  tool_use(read_file agent/mod.rs)
+[4] User       ToolResult(mod.rs excerpt, ~8k chars)
+[5] Assistant  tool_use(bash cargo test)
+[6] User       ToolResult(test log, ~40k chars)
+[7] Assistant  tool_use(edit_file compact/mod.rs)
+[8] User       ToolResult(&quot;edit applied&quot;)
+ …             (dozens of entries, potentially hundreds of thousands
+                of chars / approaching the window)
+[N] Assistant  &quot;Threshold updated, moving on to tests&quot;</code></pre>
+<p>Characteristics: complete <code>tool_use</code> /
+<code>ToolResult</code> pairs, per-step reasoning, and intermediate
+artifacts are all retained — which is exactly where the bulk comes
+from.</p>
+<h4 id="after-selfruntimecontext">After:
+<code>self.runtime.context</code></h4>
+<p>Recent real user turns remain within budget, followed by the handoff
+summary:</p>
+<pre class="text"><code>[0] User  &quot;Add an early 80% trigger to the compact module&quot;
+[1] User  &quot;&lt;context-handoff&gt;
+           This conversation was compacted so the agent can continue working.
+
+           &lt;LLM summary, organized around the 6 points:&gt;
+           1. Current goal: add an early 80% trigger to the compact module
+           2. Key finding: should_auto_compact uses reported and estimated tokens
+           3. Files involved: crates/tact/src/compact/mod.rs (should_auto_compact),
+              crates/tact/src/agent/mod.rs (compact_history)
+           4. Remaining work: add unit tests, run cargo test
+           5. User preference: add TODOs first, optimize later
+           6. Errors: none so far
+
+           Recently accessed files (re-read if you need their contents):
+           - crates/tact/src/compact/mod.rs
+           - crates/tact/src/agent/mod.rs
+           &lt;/context-handoff&gt;&quot;</code></pre>
+<p>Every <code>tool_use</code> / <code>ToolResult</code> / reasoning
+block from <code>[1]</code>–<code>[N]</code> is <strong>no longer in the
+window</strong> — it survives in only two places: the
+<code>transcript_&lt;ts&gt;.jsonl</code> written before compaction, and
+whatever the model chose to keep in this summary.</p>
+<h4 id="item-by-item-changes">Item-by-Item Changes</h4>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Before</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Message count</td>
+<td>N messages</td>
+<td>Recent real users + <strong>1 summary</strong></td>
+</tr>
+<tr>
+<td>Role structure</td>
+<td>User / Assistant / ToolResult interleaved</td>
+<td><strong>User</strong> turns only</td>
+</tr>
+<tr>
+<td><code>tool_use</code> / <code>ToolResult</code></td>
+<td>Fully retained</td>
+<td><strong>All dropped</strong> (disk transcript only)</td>
+</tr>
+<tr>
+<td>Reasoning / thinking</td>
+<td>Retained</td>
+<td>Dropped (summarizer produces no thinking)</td>
+</tr>
+<tr>
+<td>Size</td>
+<td>Up to hundreds of thousands of chars</td>
+<td>Budgeted users + summary ≤ 2k output tokens + file list</td>
+</tr>
+<tr>
+<td>Raw details</td>
+<td>Directly readable</td>
+<td>Recoverable via <code>recent_files</code> hints +
+<code>read_file</code></td>
+</tr>
+<tr>
+<td>Disk transcript</td>
+<td>—</td>
+<td><code>.tact/transcripts/transcript_&lt;ts&gt;.jsonl</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="runtime-fields-reset-alongside">Runtime Fields Reset
+Alongside</h4>
+<p>Besides <code>context</code> itself, <code>compact_history</code>
+also resets the message-id window and flips the compaction state:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Before</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>first_message_db_id</code></td>
+<td>some value &gt; 0</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>last_message_db_id</code></td>
+<td>some value &gt; 0</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>llm_call_last_message_id</code></td>
+<td>some value &gt; 0</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>last_token_total</code></td>
+<td>pre-compact / summarizer usage</td>
+<td><code>0</code> (rewritten on next main-loop call)</td>
+</tr>
+<tr>
+<td><code>compact_state.has_compacted</code></td>
+<td>possibly <code>false</code></td>
+<td><code>true</code></td>
+</tr>
+<tr>
+<td><code>compact_state.last_summary</code></td>
+<td>old value / <code>None</code></td>
+<td>this summary text</td>
+</tr>
+<tr>
+<td><code>stats.compactions</code></td>
+<td><code>k</code></td>
+<td><code>k + 1</code></td>
+</tr>
+</tbody>
+</table>
+<p>SQLite stays in sync: <code>replace_persisted_context</code> rewrites
+the <code>messages</code> table with the rebuilt context, guaranteeing
+that <strong>reopening the session cannot resurrect</strong>
+pre-compaction rows.</p>
+<pre class="mermaid"><code>flowchart LR
+    subgraph Before[&quot;context before&quot;]
+        B0[&quot;User goal&quot;]
+        B1[&quot;Assistant tool_use&quot;]
+        B2[&quot;ToolResult 5k&quot;]
+        B3[&quot;Assistant tool_use&quot;]
+        B4[&quot;ToolResult 40k&quot;]
+        B5[&quot;… N entries …&quot;]
+    end
+
+    subgraph After[&quot;context after&quot;]
+        A0[&quot;recent real Users&lt;br/&gt;+ summary + recent_files&quot;]
+    end
+
+    subgraph Disk[&quot;disk (not in context)&quot;]
+        D0[&quot;transcript_&amp;lt;ts&amp;gt;.jsonl&lt;br/&gt;full pre-compaction history&quot;]
+    end
+
+    Before --&gt;|write_transcript| D0
+    Before --&gt;|LLM summary| A0</code></pre>
+<p><strong>In one sentence:</strong> after compaction the model sees
+recent user intent plus a <strong>handover memo it wrote itself</strong>
+and a file list; assistant/tool detail retreats to disk.</p>
+<hr />
+<h2 id="6-manual-compaction-the-compact-tool">6. Manual Compaction: the
+<code>compact</code> Tool</h2>
+<p>The model can request compaction via <code>compact</code>
+(<code>crates/tact/src/tool/compact.rs</code>).</p>
+<pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant Model
+    participant AgentLoop as agent_loop
+    participant Dispatch as execute_tool_call
+    participant Tool as compact tool fn
+    participant CH as compact_history
+
+    Model-&gt;&gt;AgentLoop: assistant message with tool_use name=compact
+    AgentLoop-&gt;&gt;Dispatch: execute_tool_call
+    Dispatch-&gt;&gt;Tool: call compact(focus?)
+    Tool--&gt;&gt;Dispatch: &quot;Compacting conversation…&quot;
+    Note over Dispatch: set manual_compact only if tool succeeded
+    Dispatch--&gt;&gt;AgentLoop: tool_result blocks + flag
+    AgentLoop-&gt;&gt;AgentLoop: push tool_result user message + persist
+    AgentLoop-&gt;&gt;CH: compact_history(Some(focus))
+    Note over CH: real rewrite happens here after results are appended</code></pre>
+<p>Why the tool body is nearly a no-op: rewriting
+<code>runtime.context</code> <strong>inside</strong> a tool call would
+leave the conversation mid-flight (assistant <code>tool_use</code>
+without matching results, or a half-applied summary). The dispatcher
+pattern keeps the wire protocol valid, then runs Level 3 afterward.
+Optional <code>focus</code> steers what the summarizer must keep.</p>
+<p>The dispatcher sets <code>manual_compact = Some(focus)</code> only
+when the compact invocation <strong>succeeded</strong> — rejected calls
+(bad arguments, hook blocks, etc.) must not rewrite history so the model
+can recover next turn. A string <code>focus</code> is copied into the
+flag; a missing or non-string <code>focus</code> becomes
+<code>Some(&quot;&quot;)</code>. That empty value still means “perform manual
+compaction,” but it supplies no extra instruction and is ignored by
+<code>compact_history</code>. <code>None</code> means that this tool was
+not requested or failed. In the normal sequence, the tool result is
+first appended and persisted, then
+<code>compact_history(Some(focus))</code> performs the actual
+rewrite.</p>
+<hr />
+<h2 id="7-large-output-spill-persist_large_output">7. Large Output Spill
+(<code>persist_large_output</code>)</h2>
+<p>Independent of history compaction, a <strong>single</strong>
+oversized tool result must not enter the context at full size. Dispatch
+applies this to every successful native and MCP call <strong>except
+<code>read_file</code></strong> (which already returns a bounded PARTIAL
+page):</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> name <span class="op">!=</span> <span class="st">&quot;read_file&quot;</span> <span class="op">{</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    persist_large_output(<span class="op">&amp;</span>tact_path<span class="op">,</span> tool_use_id<span class="op">,</span> <span class="op">&amp;</span>output)</span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Constant</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PERSIST_THRESHOLD</code></td>
+<td>30,000 chars</td>
+</tr>
+<tr>
+<td><code>PREVIEW_CHARS</code></td>
+<td>2,000 chars</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid"><code>flowchart TD
+    Out[successful tool output] --&gt; Th{chars &gt; 30_000?}
+    Th --&gt;|no| Full[return unchanged]
+    Th --&gt;|yes| Write[&quot;fs::write .tact/tool-results/&amp;lt;tool_use_id&amp;gt;.txt&quot;]
+    Write --&gt; Prev[&quot;take first 2_000 chars&quot;]
+    Prev --&gt; Wrap[&quot;wrap in &amp;lt;persisted-output&amp;gt; envelope&quot;]
+    Wrap --&gt; TR[ToolResult content in context]</code></pre>
+<p>Replacement shape:</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode xml"><code class="sourceCode xml"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a>&lt;<span class="kw">persisted-output</span>&gt;</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>Full output saved to: .tact/tool-results/&lt;<span class="kw">tool_use_id</span>&gt;.txt</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>Preview:</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>[first 2000 characters…]</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>&lt;/<span class="kw">persisted-output</span>&gt;</span></code></pre></div>
+<p>Persistence failure changes the tool step to failed instead of
+reporting a successful result whose full output was lost.</p>
+<h3 id="why-persisted-output-tags">Why
+<code>&lt;persisted-output&gt;</code> tags</h3>
+<p>The tags are <strong>for the model, not for runtime parsing</strong>
+— nothing in the codebase matches them back out. They mark the whole
+block as a <strong>system-generated envelope</strong>, so the LLM can
+tell:</p>
+<ul>
+<li>“Full output saved to …” / “Preview:” are framework metadata, not
+tool output</li>
+<li>this turn’s result was intentionally spilled (not silent
+truncation)</li>
+<li>full text is recoverable via <code>read_file</code> on the path</li>
+</ul>
+<p>Without the wrapper, those lines blend into ordinary tool-result
+text. Same lightweight XML-ish convention as other prompt markers (e.g.
+<code>&lt;skill&gt;</code>).</p>
+<h3 id="stub-vs-envelope">Stub vs envelope</h3>
+<pre class="mermaid"><code>flowchart TB
+    subgraph Micro[&quot;micro_compact stub&quot;]
+        M1[Older ToolResult in history]
+        M2[&quot;[Earlier tool result compacted. …]&quot;]
+        M1 --&gt; M2
+    end
+
+    subgraph Spill[&quot;persist_large_output envelope&quot;]
+        S1[This turn&#39;s huge tool output]
+        S2[&quot;&amp;lt;persisted-output&amp;gt; path + preview&quot;]
+        S1 --&gt; S2
+    end</code></pre>
+<table>
+<thead>
+<tr>
+<th>Marker</th>
+<th>When</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[Earlier tool result compacted. …]</code></td>
+<td>Level 2, old history</td>
+<td>Body gone from context; re-read / re-run</td>
+</tr>
+<tr>
+<td><code>&lt;persisted-output&gt;…&lt;/persisted-output&gt;</code></td>
+<td>Level 1, this turn</td>
+<td>Full body on disk; preview + path in context</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-on-disk-layout">8. On-Disk Layout</h2>
+<p>Compaction spills two kinds of artifacts under the workdir (via
+<code>TactPath</code>):</p>
+<pre class="mermaid"><code>flowchart TB
+    WD[&quot;&amp;lt;workdir&amp;gt;&quot;]
+    WD --&gt; Tact[&quot;.tact/&quot;]
+    Claude --&gt; TR[&quot;transcripts/&lt;br/&gt;transcript_&amp;lt;unix_nanos&amp;gt;_&amp;lt;n&amp;gt;.jsonl&quot;]
+    Claude --&gt; OR[&quot;tool-results/&lt;br/&gt;&amp;lt;tool_use_id&amp;gt;.txt&quot;]
+    WD --&gt; Tact[&quot;.tact/tact.db&quot;]
+    Tact --&gt; Msg[&quot;messages table&lt;br/&gt;(rewritten on full compact)&quot;]</code></pre>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Writer</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.tact/transcripts/transcript_&lt;ts&gt;.jsonl</code></td>
+<td><code>write_transcript</code></td>
+<td>Full pre-compact conversation</td>
+</tr>
+<tr>
+<td><code>.tact/tool-results/&lt;id&gt;.txt</code></td>
+<td><code>persist_large_output</code></td>
+<td>Full oversized native/MCP output</td>
+</tr>
+<tr>
+<td><code>.tact/tact.db</code> messages</td>
+<td><code>replace_session_messages</code></td>
+<td>Post-compact retained-users + summary context</td>
+</tr>
+</tbody>
+</table>
+<p>After each write, each spill directory keeps at most the 100 newest
+files; older regular files are removed by modification time.</p>
+<hr />
+<h2 id="9-configuration">9. Configuration</h2>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent.model_context_window</code>
+(<code>--model-context-window</code>)</td>
+<td>200,000</td>
+<td>Token window: auto-compact at 80% + TUI usage meter; when nonzero it
+must exceed <code>max_tokens</code>. Model→window mapping (e.g.
+<code>deepseek-v4-pro</code> → 1M) overrides CLI/TOML</td>
+</tr>
+<tr>
+<td><code>agent.micro_compact_enabled</code>
+(<code>--no-micro-compact</code>)</td>
+<td><code>true</code></td>
+<td>Enables the per-turn stub pass</td>
+</tr>
+</tbody>
+</table>
+<p>Resolved through layered config in
+<code>crates/tact/src/config/</code> (CLI &gt; TOML &gt; default).
+Compile-time constants (<code>KEEP_RECENT_TOOL_RESULTS</code>,
+<code>PERSIST_THRESHOLD</code>, …) are <strong>not</strong> configurable
+yet.</p>
+<hr />
+<h2 id="10-code-map">10. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/compact/mod.rs</code></td>
+<td><code>micro_compact</code>, <code>should_auto_compact</code>,
+<code>estimate_context_tokens</code>,
+<code>collect_user_messages</code>,
+<code>build_compacted_history</code>, <code>write_transcript</code>,
+<code>persist_large_output</code>, <code>compacted_context</code>,
+<code>CompactState</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td>Loop triggers; <code>compact_history</code> /
+<code>compact_history_legacy</code>; <code>remember_recent_file</code>;
+<code>replace_persisted_context</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>persist_large_output</code> for native/MCP results;
+<code>manual_compact</code> flag; recent-file tracking</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/compact.rs</code></td>
+<td><code>compact</code> tool stub + <code>focus</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/recovery.rs</code></td>
+<td>Prompt-too-long classification → compaction</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>transcript_dir()</code>, <code>tool_results_dir()</code></td>
+</tr>
+<tr>
+<td><code>docs/compaction.md</code></td>
+<td>Behavior / tuning companion</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid"><code>flowchart LR
+    Loop[agent/mod.rs loop] --&gt; Compact[compact/mod.rs]
+    Loop --&gt; Dispatch[tool_dispatch.rs]
+    Dispatch --&gt; Compact
+    Dispatch --&gt; CompactTool[tool/compact.rs]
+    Loop --&gt; Recovery[recovery.rs]
+    Recovery --&gt; Loop
+    Compact --&gt; Paths[consts::TactPath]
+    Loop --&gt; Store[session store replace]</code></pre>
+<hr />
+<h2 id="11-current-gaps">11. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cold-start / post-tool token estimate</td>
+<td>ASCII uses ~4 chars/token and non-ASCII uses a conservative 1
+char/token. Still OR&#39;d with reported token total to cover growth after
+tool results are appended</td>
+</tr>
+<tr>
+<td>Simple usage %</td>
+<td>Meter is <code>used / model_context_window</code> (no Codex 12K
+baseline / effective-window math yet)</td>
+</tr>
+<tr>
+<td>Only recent 20k estimated tokens summarized</td>
+<td>Early turns live in transcript; model is not told that path in the
+replacement message</td>
+</tr>
+<tr>
+<td>Fixed stub thresholds</td>
+<td>12 / 120 / 30k are compile-time constants</td>
+</tr>
+</tbody>
+</table>
+<h3 id="111-micro-compact-known-issues">11.1 Micro Compact Known
+Issues</h3>
+<p>The micro-compact stub (Tier 2) trades context size for availability,
+but has several side-effects:</p>
+<table>
+<thead>
+<tr>
+<th>Issue</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Model memory loss</strong></td>
+<td>A tool result that was read earlier and referenced later vanishes
+from context, replaced by a stub. If the model doesn&#39;t notice the stub,
+it may fabricate the content from memory</td>
+</tr>
+<tr>
+<td><strong>False context mismatch</strong></td>
+<td>Diff/patch operations fail because the model lacks the real file
+content but thinks it knows it — the stub says &quot;re-run the tool&quot; but the
+patch logic doesn&#39;t always trigger a re-read</td>
+</tr>
+<tr>
+<td><strong>Unnecessary re-reads</strong></td>
+<td>The model must <code>read_file</code> again to recover truncated
+content, wasting tokens that the stub was supposed to save</td>
+</tr>
+<tr>
+<td><strong>Silent correctness risk</strong></td>
+<td>Most dangerous: the model doesn&#39;t realize information is missing and
+continues reasoning confidently on incomplete premises</td>
+</tr>
+<tr>
+<td><strong>Crude selection</strong></td>
+<td>The truncation policy is purely recency+length based (keep last 12,
+stub older results &gt; 120 chars). A critical config file at position
+13 is stubbed, while 12 trivial <code>ls</code> outputs are kept</td>
+</tr>
+<tr>
+<td><strong>Prefix cache pollution</strong></td>
+<td>On models with automatic prefix caching (OpenAI, DeepSeek), stub
+replacement changes the content at a given position, causing the cached
+prefix to break. The entire prefix after the first stubbed result is
+invalidated, forcing a cache miss on the next request — the tokens
+&quot;saved&quot; by truncation are dwarfed by the cost of rebuilding the cache.
+See: <a href="https://platform.openai.com/docs/guides/prompt-caching">OpenAI
+Prompt Caching</a>, <a href="https://api-docs.deepseek.com/guides/kv_cache">DeepSeek KV
+Cache</a>. Claude is less affected because its <a href="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching">prompt
+caching</a> uses explicit <code>cache_control</code> breakpoints that
+typically sit before tool results</td>
+</tr>
+</tbody>
+</table>
+<h3 id="112-planned-optimizations">11.2 Planned Optimizations</h3>
+<table>
+<thead>
+<tr>
+<th>Idea</th>
+<th>Description</th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Context-window-gated trigger</strong></td>
+<td>Only run micro_compact when the current context usage exceeds a
+threshold (e.g., 50% of <code>model_context_window</code>), not on every
+turn. This preserves the prefix cache for most of the session and only
+truncates when memory pressure is real</td>
+<td>High</td>
+</tr>
+<tr>
+<td><strong>Selective tool truncation</strong></td>
+<td>Exclude already-bounded tools from truncation (e.g.,
+<code>read_file</code> pages) since their outputs are likely to be
+referenced again. Only truncate transient tools like <code>ls</code>,
+<code>echo</code>, <code>bash</code> with ephemeral output. Also
+protects the prefix cache from frequent invalidation</td>
+<td>High</td>
+</tr>
+<tr>
+<td><strong>Semantic importance</strong></td>
+<td>Score tool results by importance (e.g., was the output referenced in
+a subsequent turn?) and keep important ones even if old</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td><strong>Configurable thresholds</strong></td>
+<td>Make <code>KEEP_RECENT_TOOL_RESULTS</code> and the 120-char stub
+threshold configurable at runtime rather than compile-time
+constants</td>
+<td>Low</td>
+</tr>
+<tr>
+<td><strong>Stub-aware prompt</strong></td>
+<td>Improve system prompt guidance so the model consistently re-reads
+truncated content instead of guessing</td>
+<td>Medium</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./06_chapter_recovery.html">Error Recovery</a> — compaction
+as the prompt-too-long strategy</li>
+<li><a href="./18_chapter_agent_loop.html">Agent Main Loop</a> — full
+loop structure around these hooks</li>
+<li><a href="./04_chapter_prompt.html">System Prompt</a> — rebuilt every
+turn; includes compacted-tool guidance</li>
+<li><a href="./01_chapter_store.html">Store and Persistence</a> —
+session message rewrite after compact</li>
+<li><a href="./11_chapter_task.html">Tasks and Tool Scheduling</a> —
+where <code>manual_compact</code> is detected in dispatch</li>
+<li><a href="../docs/compaction.html">docs/compaction.md</a> — tuning
+notes</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — §6 context
+compaction</li>
+</ul>
+</body>
+</html>

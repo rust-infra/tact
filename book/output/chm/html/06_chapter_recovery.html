@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="error-recovery">Error Recovery</h1>
+<blockquote>
+<p>Language: <a href="./06_chapter_recovery.html">English</a> · <a href="./06_chapter_recovery_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains how Tact&#39;s agent loop <strong>survives failures
+without losing the session</strong>: transient transport errors are
+retried with exponential back-off, oversized prompts trigger context
+compaction, and truncated model output is continued mid-sentence. The
+classification logic lives in <code>crates/tact/src/recovery.rs</code>;
+the decisions are wired into <code>agent_loop</code> in
+<code>crates/tact/src/agent/mod.rs</code>.</p>
+<p>For the full loop structure see <a href="./18_chapter_agent_loop.html">Agent Main Loop</a>.</p>
+<p>Recovery works hand-in-hand with <a href="./05_chapter_compact.html">Context Compaction</a> — one of the
+three strategies <em>is</em> compaction.</p>
+<hr />
+<h2 id="1-three-recovery-strategies">1. Three Recovery Strategies</h2>
+<p>Every failure the loop can recover from falls into one of three
+categories, each with its own attempt counter in
+<code>RecoveryState</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Trigger</th>
+<th>Action</th>
+<th>Counter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Compact</strong></td>
+<td>LLM error matching <code>is_prompt_too_long_error</code></td>
+<td><code>compact_history()</code> then retry the turn</td>
+<td><code>compact_attempts</code></td>
+</tr>
+<tr>
+<td><strong>Backoff</strong></td>
+<td>LLM error matching <code>is_transient_transport_error</code></td>
+<td>Sleep <code>backoff_delay(attempt)</code> then retry</td>
+<td><code>transport_attempts</code></td>
+</tr>
+<tr>
+<td><strong>Continue</strong></td>
+<td>Stream succeeded but <code>stop_reason = MaxTokens</code></td>
+<td>Append <code>CONTINUATION_MESSAGE</code> as a user turn</td>
+<td><code>continuation_attempts</code></td>
+</tr>
+</tbody>
+</table>
+<p>All three share the same cap:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">const</span> MAX_RECOVERY_ATTEMPTS<span class="op">:</span> <span class="dt">u32</span> <span class="op">=</span> <span class="dv">3</span><span class="op">;</span></span></code></pre></div>
+<p>When a counter exceeds the cap (or the error matches no category),
+<code>agent_loop</code> returns the error and the turn fails for
+real.</p>
+<hr />
+<h2 id="2-data-model">2. Data Model</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>derive<span class="at">(</span><span class="bu">Debug</span><span class="op">,</span> <span class="bu">Default</span><span class="at">)]</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> RecoveryState <span class="op">{</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> continuation_attempts<span class="op">:</span> <span class="dt">u32</span><span class="op">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> compact_attempts<span class="op">:</span> <span class="dt">u32</span><span class="op">,</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> transport_attempts<span class="op">:</span> <span class="dt">u32</span><span class="op">,</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>RecoveryState</code> lives on <code>AgentRuntime</code> next to
+<code>CompactState</code> and is <strong>reset to default at the start
+of every <code>agent_loop</code> call</strong> — counters do not carry
+over between user tasks.</p>
+<p>Counter reset rules <em>within</em> a loop:</p>
+<table>
+<thead>
+<tr>
+<th>Counter</th>
+<th>Reset when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>transport_attempts</code></td>
+<td>Any successful <code>stream_message</code> call</td>
+</tr>
+<tr>
+<td><code>continuation_attempts</code></td>
+<td>Any response that did <strong>not</strong> stop on
+<code>MaxTokens</code></td>
+</tr>
+<tr>
+<td><code>compact_attempts</code></td>
+<td>Never reset mid-loop (only on next <code>agent_loop</code>)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-error-classification">3. Error Classification</h2>
+<p>Both classifiers work on the <strong>lowercased error string</strong>
+(<code>error.to_string().to_lowercase()</code>), not on typed errors —
+the LLM layer surfaces provider failures as text.</p>
+<h3 id="prompt-too-long">Prompt too long</h3>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> is_prompt_too_long_error(error_text<span class="op">:</span> <span class="op">&amp;</span><span class="dt">str</span>) <span class="op">-&gt;</span> <span class="dt">bool</span> <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    (error_text<span class="op">.</span>contains(<span class="st">&quot;prompt&quot;</span>) <span class="op">&amp;&amp;</span> error_text<span class="op">.</span>contains(<span class="st">&quot;long&quot;</span>))</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>        <span class="op">||</span> error_text<span class="op">.</span>contains(<span class="st">&quot;overlong_prompt&quot;</span>)</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>        <span class="op">||</span> error_text<span class="op">.</span>contains(<span class="st">&quot;too many tokens&quot;</span>)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>        <span class="op">||</span> error_text<span class="op">.</span>contains(<span class="st">&quot;context length&quot;</span>)</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="transient-transport">Transient transport</h3>
+<p>Matches any of these substrings: <code>timeout</code>,
+<code>timed out</code>, <code>rate limit</code>,
+<code>too many requests</code>, <code>unavailable</code>,
+<code>connection</code>, <code>overloaded</code>,
+<code>temporarily</code>, <code>econnreset</code>,
+<code>broken pipe</code>.</p>
+<p>Classification order matters: prompt-too-long is checked
+<strong>first</strong>, so an error that mentions both context length
+and a connection issue compacts rather than retries.</p>
+<hr />
+<h2 id="4-backoff-delay">4. Backoff Delay</h2>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> backoff_delay(attempt<span class="op">:</span> <span class="dt">u32</span>) <span class="op">-&gt;</span> Duration <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// min(1s × 2^attempt, 30s) + random(0..1s)</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Attempt</th>
+<th>Base delay</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>1s</td>
+</tr>
+<tr>
+<td>1</td>
+<td>2s</td>
+</tr>
+<tr>
+<td>2</td>
+<td>4s</td>
+</tr>
+<tr>
+<td>…</td>
+<td>capped at 30s</td>
+</tr>
+</tbody>
+</table>
+<p>The jitter component is derived from the system clock&#39;s sub-second
+milliseconds — cheap, no RNG dependency, but not cryptographically
+random (it doesn&#39;t need to be).</p>
+<hr />
+<h2 id="5-recovery-flow-in-agent_loop">5. Recovery Flow in
+agent_loop</h2>
+<pre class="mermaid"><code>flowchart TB
+    Send[stream_message] --&gt;|Ok| Reset[transport_attempts = 0]
+    Send --&gt;|Err| Classify{classify error text}
+
+    Classify --&gt;|prompt too long&lt;br/&gt;attempts &lt; 3| Compact[compact_history]
+    Compact --&gt; Retry([continue loop])
+
+    Classify --&gt;|transient transport&lt;br/&gt;attempts &lt; 3| Sleep[sleep backoff_delay]
+    Sleep --&gt; Retry
+
+    Classify --&gt;|neither, or&lt;br/&gt;attempts exhausted| Fail([return Err])
+
+    Reset --&gt; Stop{stop_reason?}
+    Stop --&gt;|MaxTokens&lt;br/&gt;attempts &lt; 3| Cont[run pending tools,&lt;br/&gt;select continuation prompt]
+    Cont --&gt; Retry
+    Stop --&gt;|ToolUse| Tools[execute_tool_call]
+    Tools --&gt; Retry
+    Stop --&gt;|refusal| Refuse([return Err])
+    Stop --&gt;|end_turn / stop_sequence| Done([return Ok])</code></pre>
+<p>Each recovery emits an <code>AgentUpdate::Info</code> line visible in
+the TUI, e.g.:</p>
+<pre class="text"><code>[Recovery] compact (1/3): context too large
+[Recovery] backoff (2/3): retrying in 4.3s — http request failed: error sending request for url
+[Recovery] continue (1/3): output truncated</code></pre>
+<p>The <code>backoff</code> and <code>compact retry</code> lines append
+the underlying error (collapsed to one line, truncated at 200 chars via
+<code>error_summary</code>), so a retry says <em>why</em> it is
+retrying, not just when.</p>
+<p>For output-limit recovery, attempt 1 uses the direct-resume prompt.
+If the model is truncated again, attempts 2 and 3 switch to a
+convergence prompt that stops expansion and requests only a concise
+structured result containing the conclusion, verified issues, and
+minimal fixes. The attempt counter and three-attempt cap are
+unchanged.</p>
+<hr />
+<h2 id="6-output-limit-continuation">6. Output-Limit Continuation</h2>
+<p>When the model stops on <code>MaxTokens</code>, the response is
+truncated but already pushed into context. Before continuing, the loop
+handles a subtle correctness issue: <strong>pending tool calls</strong>.
+OpenAI-style APIs require every assistant <code>tool_calls</code>
+message to be immediately followed by tool results, so any tool-use
+blocks that arrived before the cutoff are executed and their results
+appended <em>first</em>. Only then does the loop push:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">const</span> CONTINUATION_MESSAGE<span class="op">:</span> <span class="op">&amp;</span><span class="dt">str</span> <span class="op">=</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;Output limit hit. Continue directly from where you stopped. </span><span class="sc">\</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="st">No recap, no repetition. Pick up mid-sentence if needed.&quot;</span><span class="op">;</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">const</span> CONVERGENCE_CONTINUATION_MESSAGE<span class="op">:</span> <span class="op">&amp;</span><span class="dt">str</span> <span class="op">=</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;Your response has been truncated repeatedly. Stop expanding the analysis and </span><span class="sc">\</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="st">do not revisit the same scenarios. Return only the final actionable result in a </span><span class="sc">\</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="st">concise structured format: conclusion, verified issues, and minimal fixes. </span><span class="sc">\</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a><span class="st">Do not recap, repeat, or speculate.&quot;</span><span class="op">;</span></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> continuation_message(attempt<span class="op">:</span> <span class="dt">u32</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span><span class="ot">&#39;static</span> <span class="dt">str</span> <span class="op">{</span></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> attempt <span class="op">&lt;=</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>        CONTINUATION_MESSAGE</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a>        CONVERGENCE_CONTINUATION_MESSAGE</span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>The continuation message is persisted to the session store like any
+user message, so restored sessions replay correctly, including the phase
+change.</p>
+<h3 id="a-subtle-400-risk-empty-assistant-messages">A subtle 400 risk:
+empty assistant messages</h3>
+<p>Truncation is not the only way continuation can fail. The internal
+context stores Anthropic-shaped messages; when they are converted to
+OpenAI format in <code>crates/tact_llm/src/convert.rs</code>,
+<strong>thinking blocks are dropped for non-Kimi providers</strong>. If
+the truncated turn (or even a normal turn) contained only a thinking
+block and no text or tool calls, the resulting assistant message
+becomes:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span> <span class="dt">&quot;role&quot;</span><span class="fu">:</span> <span class="st">&quot;assistant&quot;</span><span class="fu">,</span> <span class="dt">&quot;content&quot;</span><span class="fu">:</span> <span class="kw">null</span><span class="fu">,</span> <span class="dt">&quot;tool_calls&quot;</span><span class="fu">:</span> <span class="kw">null</span> <span class="fu">}</span></span></code></pre></div>
+<p>OpenAI-compatible APIs reject this. The same invalid shape appears
+when a truncated turn includes orphaned <code>tool_calls</code> that are
+not followed by matching tool-result messages.</p>
+<p>The current workaround is <code>sanitize_assistant_messages</code> in
+<code>convert.rs</code>:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Ensure the assistant message is not empty. This can happen when the</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="co">// only content was a thinking block that gets dropped for non-Kimi</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="co">// providers, or when the response was truncated before emitting text.</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="op">!</span>has_tool_calls_now <span class="op">&amp;&amp;</span> assistant<span class="op">.</span>content<span class="op">.</span>as_deref()<span class="op">.</span>unwrap_or(<span class="st">&quot;&quot;</span>)<span class="op">.</span>is_empty() <span class="op">{</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    assistant<span class="op">.</span>content <span class="op">=</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Some</span>(<span class="st">&quot;[Assistant response was empty or truncated. Continuing...]&quot;</span><span class="op">.</span>to_string())<span class="op">;</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>It stubs empty assistant messages and strips orphaned tool calls on
+<strong>every</strong> outgoing request, not only during recovery. A
+cleaner long-term fix would be to avoid adding empty assistant turns to
+<code>context</code> in <code>agent_loop</code> rather than patching
+them at request time. See the <code>REVIEW</code> comments in
+<code>crates/tact/src/agent/mod.rs</code> and
+<code>crates/tact_llm/src/convert.rs</code>.</p>
+<hr />
+<h2 id="7-code-map">7. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/recovery.rs</code></td>
+<td><code>RecoveryState</code>, classifiers, <code>backoff_delay</code>,
+<code>CONTINUATION_MESSAGE</code>,
+<code>MAX_RECOVERY_ATTEMPTS</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td>Recovery branches in <code>agent_loop</code>; counter resets;
+<code>compact_history</code> invocation</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/compact/mod.rs</code></td>
+<td>Compaction primitives used by the compact strategy</td>
+</tr>
+<tr>
+<td><code>docs/state_machines.md</code></td>
+<td>State-machine diagrams including recovery transitions</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-current-gaps">8. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>String-based classification</td>
+<td>Matching on lowercased error text is fragile; a provider rewording
+breaks detection</td>
+</tr>
+<tr>
+<td>Broad transport patterns</td>
+<td><code>&quot;connection&quot;</code> matches many unrelated errors (e.g. a tool
+error echoed into an LLM failure)</td>
+</tr>
+<tr>
+<td><code>compact_attempts</code> never resets mid-loop</td>
+<td>Three prompt-too-long errors anywhere in a long session exhaust the
+budget permanently for that loop</td>
+</tr>
+<tr>
+<td>Empty assistant workaround is post-hoc</td>
+<td><code>sanitize_assistant_messages</code> patches empty assistant
+messages after they are already in context; the real fix is to avoid
+persisting them in <code>agent_loop</code></td>
+</tr>
+<tr>
+<td>No retry for <code>create_message</code></td>
+<td><code>compact_history</code>&#39;s own summarization call has no
+recovery — a transient failure there aborts the loop</td>
+</tr>
+<tr>
+<td>Clock-based jitter</td>
+<td>Sub-second timestamp is deterministic under some schedulers;
+simultaneous retries may collide</td>
+</tr>
+<tr>
+<td>No user-configurable cap</td>
+<td><code>MAX_RECOVERY_ATTEMPTS</code> and delays are compile-time
+constants</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./05_chapter_compact.html">Context Compaction</a> — what
+<code>compact_history</code> actually does</li>
+<li><a href="./01_chapter_store.html">Store and Persistence</a> — how
+continuation messages are persisted</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — §6 recovery
+mechanisms table</li>
+<li><a href="../docs/state_machines.html">docs/state_machines.md</a> —
+recovery state diagrams</li>
+</ul>
+</body>
+</html>

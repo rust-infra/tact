@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="background-tasks">Background Tasks</h1>
+<blockquote>
+<p>Language: <a href="./13_chapter_background.html">English</a> · <a href="./13_chapter_background_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter explains Tact&#39;s <strong>asynchronous shell
+execution</strong>: the <code>background_run</code> tool starts a
+command on a <code>tokio::spawn</code> task and returns immediately;
+<code>check_background</code> polls status later. Every task is
+persisted to disk, so results survive polling order — but not process
+restarts (see §5). The implementation lives in
+<code>crates/tact/src/background.rs</code> with tool wrappers in
+<code>crates/tact/src/tool/background_run.rs</code>.</p>
+<p>Background tasks are the &quot;fire-and-forget&quot; counterpart to the
+synchronous <code>bash</code> tool: same shell, same validation, but the
+agent&#39;s turn does not block on completion.</p>
+<hr />
+<h2 id="1-tool-surface">1. Tool Surface</h2>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Input</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>background_run</code></td>
+<td><code>command: String</code></td>
+<td><code>&quot;Background task &lt;id&gt; started: &lt;command&gt;&quot;</code></td>
+</tr>
+<tr>
+<td><code>check_background</code></td>
+<td><code>task_id: Option&lt;String&gt;</code></td>
+<td>One task as pretty JSON, or a one-line-per-task listing</td>
+</tr>
+</tbody>
+</table>
+<p>Both tools are in the main <code>toolset()</code> only.
+<code>check_background</code> with no <code>task_id</code> lists all
+known tasks sorted by start time; with an unknown id it returns an error
+(<code>Unknown background task &lt;id&gt;</code>).</p>
+<p>TUI users do not need the model to call a tool to see background
+jobs: the <strong><code>/background</code></strong> slash command lists
+all tasks, and <strong><code>/background &lt;id&gt;</code></strong>
+shows a single task (pretty JSON). It sends
+<code>UserCommand::QueryBackground(Option&lt;String&gt;)</code> to the
+command driver, which calls the same
+<code>SharedBackgroundManager::check</code> and renders the result into
+the log as Markdown (<code>AgentUpdate::MdInfo</code>) — see <a href="./23_chapter_tui.html">Ch 23</a> §3.</p>
+<p><strong>Live output (bash-like).</strong> While a task runs, its
+stdout/stderr stream into the <code>background_run</code> tool card in
+real time (throttled to ~50 ms batches, last ~4 KB kept for the live
+preview), exactly like the synchronous <code>bash</code> card. The card
+stays in a running state even though the invocation already returned,
+and closes with ✓/✗, elapsed time, and the final output when the process
+exits (see §3 and §6).</p>
+<hr />
+<h2 id="2-data-model">2. Data Model</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">enum</span> BackgroundTaskStatus <span class="op">{</span> Running<span class="op">,</span> Completed<span class="op">,</span> <span class="bu">Error</span> <span class="op">}</span>   <span class="co">// snake_case in JSON</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> BackgroundTaskRecord <span class="op">{</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> id<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>                        <span class="co">// 8-hex-digit counter, seeded from epoch millis</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> status<span class="op">:</span> BackgroundTaskStatus<span class="op">,</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> command<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> session_id<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>                <span class="co">// owning agent session; &quot;&quot; outside a session</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> started_at<span class="op">:</span> DateTime<span class="op">&lt;</span>Utc<span class="op">&gt;,</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> finished_at<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>DateTime<span class="op">&lt;</span>Utc<span class="op">&gt;&gt;,</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> output<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>                    <span class="co">// combined stdout + stderr, capped</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> output_path<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span>       <span class="co">// &lt;workdir&gt;/.tact/background/&lt;id&gt;.log, full output</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong>Hybrid output storage.</strong> The DB record keeps the
+metadata plus the first 50,000 chars of output (bounded, cheap to poll),
+while the <strong>full</strong> stdout+stderr stream is appended as it
+arrives to <code>&lt;workdir&gt;/.tact/background/&lt;id&gt;.log</code>.
+The <code>output_path</code> field points at that file, so the agent —
+or a human — can <code>tail</code> / <code>grep</code> the full log with
+the <code>bash</code> tool instead of pulling a 50k JSON blob into
+context. File creation is best-effort: if it fails the task still runs
+and the DB record still holds the capped output.</p>
+<p><code>BackgroundManager</code> holds the store and the id source:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>records<span class="op">:</span> Arc<span class="op">&lt;</span><span class="kw">dyn</span> BackgroundStore<span class="op">&gt;,</span>   <span class="co">// .tact/tact.db → background_tasks table</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>next_id<span class="op">:</span> AtomicU64<span class="op">,</span>                  <span class="co">// monotonically increasing id source</span></span></code></pre></div>
+<p>There is <strong>no in-memory mirror</strong>: the SQLite pool
+serializes writes and the database is the single source of truth, so
+<code>SharedBackgroundManager</code> wraps
+<code>Arc&lt;BackgroundManager&gt;</code> with no interior mutex — the
+spawned tokio task writes results back through a cloned store
+handle.</p>
+<hr />
+<h2 id="3-execution-lifecycle">3. Execution Lifecycle</h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant Agent
+    participant BM as BackgroundManager
+    participant Task as tokio::spawn
+    participant TUI as TUI card
+    participant DB as .tact/tact.db (background_tasks)
+
+    Agent-&gt;&gt;BM: background_run(&quot;cargo build&quot;)
+    BM-&gt;&gt;BM: validate_shell_command (blocks sudo, rm -rf /, …)
+    BM-&gt;&gt;DB: upsert record (status: running)
+    BM-&gt;&gt;Task: spawn sh -c &quot;cargo build&quot; (cwd = work_dir)
+    BM--&gt;&gt;Agent: &quot;Background task 018f3a2c started&quot;
+
+    Note over Task: runs concurrently with the agent loop
+
+    loop stdout/stderr streaming
+        Task-&gt;&gt;TUI: ToolProgress (throttled ~50ms)
+    end
+    Task-&gt;&gt;Task: await exit (timeout 120s, kill_on_drop)
+    Task-&gt;&gt;TUI: BackgroundTaskFinished (✓/✗ + final output)
+    Task-&gt;&gt;DB: upsert record (completed/error + output)
+
+    Agent-&gt;&gt;BM: check_background(&quot;018f3a2c&quot;)
+    BM-&gt;&gt;DB: read record by id
+    BM--&gt;&gt;Agent: record as pretty JSON</code></pre>
+<p>Details worth knowing:</p>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Shell</td>
+<td><code>sh -c &lt;command&gt;</code>, cwd =
+<code>ToolContext.work_dir</code></td>
+</tr>
+<tr>
+<td>Validation</td>
+<td><code>crate::shell::validate_shell_command</code> — same hard
+blocklist as <code>bash</code> (<code>sudo</code>,
+<code>rm -rf /</code>, …)</td>
+</tr>
+<tr>
+<td>Timeout</td>
+<td>Fixed 120 seconds; on expiry status becomes <code>Error</code> with
+<code>&quot;Error: Timeout (120s)&quot;</code></td>
+</tr>
+<tr>
+<td>Live streaming</td>
+<td>stdout/stderr are read incrementally and pushed as
+<code>AgentUpdate::ToolProgress</code> (≈50 ms batches, last ~4 KB kept
+in the live preview); no output is buffered until completion</td>
+</tr>
+<tr>
+<td>Output cap</td>
+<td>First 50,000 chars of stdout+stderr are persisted in the record; the
+<strong>full</strong> output is appended to
+<code>&lt;workdir&gt;/.tact/background/&lt;id&gt;.log</code> (see
+<code>output_path</code>)</td>
+</tr>
+<tr>
+<td>Exit code</td>
+<td>Non-zero exit → <code>Error</code>; the code itself is not
+recorded</td>
+</tr>
+<tr>
+<td>Process cleanup</td>
+<td><code>kill_on_drop(true)</code> — the child is killed if the future
+is dropped</td>
+</tr>
+</tbody>
+</table>
+<p>The spawned task&#39;s final <code>save_record</code> result is discarded
+(<code>let _ =</code>); a disk failure at that point loses the outcome
+silently.</p>
+<hr />
+<h2 id="4-id-generation">4. ID Generation</h2>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>next_id<span class="op">:</span> <span class="pp">AtomicU64::</span>new(<span class="pp">Utc::</span>now()<span class="op">.</span>timestamp_millis() <span class="kw">as</span> <span class="dt">u64</span>)</span></code></pre></div>
+<p>IDs are the lower 32 bits of an atomic counter formatted as 8 hex
+digits (<code>{:08x}</code>), seeded from the current epoch milliseconds
+at manager construction. Sequential within a process, unique enough
+across restarts in practice — but not guaranteed collision-free if two
+managers start within the same millisecond or the counter wraps.</p>
+<hr />
+<h2 id="5-crash-recovery-on-startup">5. Crash Recovery on Startup</h2>
+<p><code>BackgroundManager::new</code> (called at session startup in
+<code>headless.rs</code> / <code>interactive.rs</code>) scans the
+<code>background_tasks</code> table and repairs orphans: any record
+still marked <code>running</code> belongs to a process that no longer
+exists, so it is rewritten as:</p>
+<pre class="text"><code>status: error
+output: &quot;Process interrupted (agent restarted)&quot;</code></pre>
+<p>This is covered by the
+<code>marks_stale_running_tasks_on_startup</code> unit test. The
+consequence: background tasks <strong>do not survive restarts</strong> —
+the manager assumes a fresh process means all previous children are dead
+(true, since they were spawned in-process with
+<code>kill_on_drop</code>).</p>
+<hr />
+<h2 id="6-interaction-with-the-agent-loop">6. Interaction with the Agent
+Loop</h2>
+<p><code>background_run</code> returns immediately, so from the
+scheduler&#39;s perspective (<a href="./11_chapter_task.html">Tasks and Tool
+Scheduling</a>) it is a cheap call — but note that as a shell-adjacent
+tool it takes its permission classification from the <a href="./10_chapter_permission.html">Permission Model</a> under the name
+<code>background_run</code>, not <code>bash</code>.</p>
+<p><strong>The TUI gets live progress + a completion event.</strong> The
+spawned task pushes <code>AgentUpdate::ToolProgress</code> into the
+invocation&#39;s tool card while it runs, then
+<code>AgentUpdate::BackgroundTaskFinished</code> when it exits (see <a href="./25_chapter_protocol.html">Ch 25</a> for the keep-live card
+contract). The <strong>model/agent</strong> still has no completion
+push: it must poll <code>check_background</code> to see the result in
+context. A typical pattern the model discovers on its own is
+<code>background_run</code> → continue other work →
+<code>check_background</code> before finishing the turn. The <a href="./07_chapter_tool.html">sleep tool</a> exists partly to make that
+polling loop possible.</p>
+<p>Unlike synchronous <code>bash</code> output, background output is
+<strong>not</strong> routed through <code>persist_large_output</code>
+(<a href="./05_chapter_compact.html">Context Compaction</a>) — the
+record is hard-capped at 50k chars, and the full JSON lands in context
+when polled. The <strong>full</strong> stream is written to disk
+instead: polled JSON carries <code>output_path</code>, and the agent can
+<code>bash tail &lt;path&gt;</code> /
+<code>grep error &lt;path&gt;</code> for deep inspection. The listing
+form of <code>check_background</code> (no <code>task_id</code>) appends
+<code>(log: &lt;path&gt;)</code> to each line so the path is
+discoverable without a per-task call.</p>
+<hr />
+<h2 id="7-code-map">7. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/store/background_store/mod.rs</code></td>
+<td><code>BackgroundStore</code> trait (async: upsert/get/list)</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/background_store/sqlite.rs</code></td>
+<td><code>SqliteBackgroundStore</code> — <code>background_tasks</code>
+table</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/background.rs</code></td>
+<td><code>BackgroundManager</code>,
+<code>SharedBackgroundManager</code>, record types, spawn logic, startup
+repair</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/background_run.rs</code></td>
+<td><code>background_run</code> / <code>check_background</code>
+tools</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/shell.rs</code></td>
+<td><code>validate_shell_command</code> blocklist shared with
+<code>bash</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.background_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td>Background tools in <code>toolset()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code>,
+<code>interactive.rs</code></td>
+<td>Manager constructed from <code>tact.db</code> at startup</td>
+</tr>
+<tr>
+<td><code>docs/state_machines.md</code></td>
+<td>Background job state diagram</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-current-gaps">8. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fixed 120s timeout</td>
+<td>Not configurable; long builds or test suites always die as
+<code>Error: Timeout</code></td>
+</tr>
+<tr>
+<td>No model completion push</td>
+<td>The TUI card gets <code>BackgroundTaskFinished</code>, but the
+<strong>model</strong> still has no completion push and must poll
+<code>check_background</code></td>
+</tr>
+<tr>
+<td>No cancellation tool</td>
+<td>A running task cannot be killed by the model; only timeout or
+process exit ends it</td>
+</tr>
+<tr>
+<td>Output interleaving lost</td>
+<td>stdout and stderr are concatenated after completion, not merged by
+time</td>
+</tr>
+<tr>
+<td>Exit code discarded</td>
+<td>Failure reason beyond the combined output text is unavailable</td>
+</tr>
+<tr>
+<td>Log file is best-effort</td>
+<td>If <code>&lt;workdir&gt;/.tact/background/&lt;id&gt;.log</code>
+cannot be created, only the capped DB record remains</td>
+</tr>
+<tr>
+<td>Log files accumulate</td>
+<td><code>.tact/background/*.log</code> is never pruned (same lifecycle
+as the <code>background_tasks</code> table)</td>
+</tr>
+<tr>
+<td>Records accumulate</td>
+<td><code>background_tasks</code> table is never pruned</td>
+</tr>
+<tr>
+<td>DB record still caps at 50k</td>
+<td>Polled JSON <code>output</code> is truncated; the full text lives
+only in the log file</td>
+</tr>
+<tr>
+<td>ID collisions possible</td>
+<td>32-bit hex counter seeded by wall clock; no uniqueness check against
+disk</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./07_chapter_tool.html">Tool System</a> —
+<code>ToolContext</code>, <code>toolset()</code>, and the synchronous
+<code>bash</code> counterpart</li>
+<li><a href="./10_chapter_permission.html">Permission Model</a> — how
+<code>background_run</code> is gated</li>
+<li><a href="./05_chapter_compact.html">Context Compaction</a> — the
+output-spill mechanism background tasks bypass</li>
+<li><a href="./01_chapter_store.html">Store and Persistence</a> — the
+<code>background_tasks</code> SQLite table</li>
+<li><a href="../docs/state_machines.html">docs/state_machines.md</a> —
+background job states</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — §7 background
+tasks row</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="worktree-泳道lanes">Worktree 泳道（Lanes）</h1>
+<blockquote>
+<p>语言：<a href="./15_chapter_worktree_zh.html">中文</a> · <a href="./15_chapter_worktree.html">English</a></p>
+</blockquote>
+<p>本章说明 Tact 的 <strong>git worktree 泳道</strong>：用
+<code>git worktree add</code> 创建的隔离工作目录，在 JSON
+索引中跟踪，并通过五个 agent 工具驱动。实现位于
+<code>crates/tact/src/worktree/mod.rs</code>，工具封装在
+<code>crates/tact/src/tool/worktree.rs</code>。</p>
+<p>「泳道」（lane）是 Tact 对一条命名 worktree
+的称呼：其目录、专用分支、可选的持久化任务链接，以及状态字符串。泳道让
+agent 在独立分支上运行命令或实验，而不干扰主 checkout。</p>
+<hr />
+<h2 id="1-工具面">1. 工具面</h2>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>底层调用</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>worktree_create</code></td>
+<td><code>WorktreeManager::create</code></td>
+<td><code>git worktree add -b wt/&lt;name&gt; .worktrees/&lt;name&gt; &lt;base_ref&gt;</code></td>
+</tr>
+<tr>
+<td><code>worktree_list</code></td>
+<td><code>list</code></td>
+<td>每条泳道一行 <code>name branch path</code></td>
+</tr>
+<tr>
+<td><code>worktree_status</code></td>
+<td><code>status</code></td>
+<td>在泳道内运行 <code>git status</code>，返回 stdout</td>
+</tr>
+<tr>
+<td><code>worktree_run</code></td>
+<td><code>run</code></td>
+<td>在泳道内运行一条 <code>sh -c</code> 命令，返回 stdout+stderr</td>
+</tr>
+<tr>
+<td><code>worktree_events</code></td>
+<td><code>events</code></td>
+<td>审计日志最后 N 行（默认 20）</td>
+</tr>
+</tbody>
+</table>
+<p>省略时 <code>base_ref</code> 默认为
+<code>HEAD</code>；<code>task_id</code>
+可选，将泳道链接到任务管理器中的记录（<a href="./11_chapter_task.html">任务与工具调度</a>）。</p>
+<hr />
+<h2 id="2-数据模型">2. 数据模型</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> WorktreeRecord <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> name<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> path<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>          <span class="co">// &lt;repo_root&gt;/.worktrees/&lt;name&gt;</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> branch<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>        <span class="co">// &quot;wt/&lt;name&gt;&quot;</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> task_id<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">u64</span><span class="op">&gt;,</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> status<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>        <span class="co">// 目前始终为 &quot;active&quot;</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>记录 <strong>与</strong> 审计日志存放在
+SQLite（<code>tact.db</code>），而非单个 JSON 文档：</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>store<span class="op">:</span> <span class="dt">Box</span><span class="op">&lt;</span><span class="kw">dyn</span> WorktreeStore<span class="op">&gt;,</span>   <span class="co">// tact.db → worktrees + worktree_events 表</span></span></code></pre></div>
+<p>磁盘上有两个位置需要区分：</p>
+<pre class="text"><code>&lt;repo_root&gt;/
+├── .worktrees/&lt;name&gt;/          # 实际的 git worktree（checkout）
+└── .tact/
+    └── tact.db                 # worktrees + worktree_events 表</code></pre>
+<p>Schema（<code>crates/tact/src/store/worktree_store/sqlite.rs</code>）：</p>
+<pre class="text"><code>worktrees(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, path TEXT,
+          branch TEXT, task_id INTEGER, status TEXT DEFAULT &#39;active&#39;,
+          session_id TEXT DEFAULT &#39;&#39;, created_at INTEGER)
+worktree_events(id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT, created_at INTEGER)
+-- 索引：idx_worktrees_session_id ON worktrees(session_id)</code></pre>
+<p>自增 <code>id</code> 保持插入顺序（遗留 <code>index.json</code>
+向量语义）；<code>worktrees.name</code> UNIQUE 作为并发兜底。</p>
+<hr />
+<h2 id="3-泳道生命周期">3. 泳道生命周期</h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant Agent
+    participant WM as WorktreeManager
+    participant Git as git CLI
+    participant DB as .tact/tact.db (worktrees, worktree_events)
+
+    Agent-&gt;&gt;WM: worktree_create(&quot;fix-auth&quot;, base_ref: &quot;main&quot;)
+    WM-&gt;&gt;WM: 若名称已在 DB 中则拒绝
+    WM-&gt;&gt;Git: git worktree add -b wt/fix-auth .worktrees/fix-auth main
+    Git--&gt;&gt;WM: 退出状态（失败时含 stderr）
+    WM-&gt;&gt;DB: INSERT worktrees 记录 + worktree_events 行
+    WM--&gt;&gt;Agent: 格式化 JSON 记录
+
+    Agent-&gt;&gt;WM: worktree_run(&quot;fix-auth&quot;, &quot;cargo test&quot;)
+    WM-&gt;&gt;Git: sh -c &quot;cargo test&quot;（cwd = 泳道路径）
+    Git--&gt;&gt;Agent: 合并的 stdout + stderr
+
+    Agent-&gt;&gt;WM: worktree_status(&quot;fix-auth&quot;)
+    WM-&gt;&gt;Git: git status（cwd = 泳道路径）
+    Git--&gt;&gt;Agent: stdout</code></pre>
+<p><code>create</code> 中的失败处理：若 <code>git worktree add</code>
+非零退出，会返回裁剪后的
+stderr（<code>git worktree add failed: &lt;stderr&gt;</code>），且
+<strong>不会写入 DB</strong>——创建失败不会留下记录。</p>
+<p>分支命名固定：每条泳道得到
+<code>wt/&lt;name&gt;</code>。若分支已存在而创建泳道（例如手动
+<code>git worktree remove</code> 后分支仍在），会在 git 层失败。</p>
+<hr />
+<h2 id="4-事件审计日志">4. 事件审计日志</h2>
+<p>每次成功的 <code>create</code> 会向 <code>worktree_events</code>
+追加一行：</p>
+<pre class="text"><code>2026-07-06 21:14:03.512 UTC worktree.create fix-auth</code></pre>
+<p><code>worktree_events</code> 按时间顺序返回最近 <code>limit</code>
+条。目前 <code>create</code> 是 <strong>唯一</strong>
+写入者——<code>run</code>、<code>status</code>、<code>list</code>
+不记日志，因此「审计日志」实质上是创建日志。</p>
+<hr />
+<h2 id="5-并发与接线">5. 并发与接线</h2>
+<p><code>SharedWorktreeManager</code> 包装
+<code>Arc&lt;WorktreeManager&gt;</code>——无 mutex，SQLite
+连接池串行化写入（与 task/background/team manager 一致）。在
+<code>tui.rs</code> 启动时构造：</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> worktree_manager <span class="op">=</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="pp">SharedWorktreeManager::</span>new(<span class="pp">WorktreeManager::</span>new(<span class="op">&amp;</span>tact_path<span class="op">.</span>session_db_path()<span class="op">,</span> work_dir<span class="op">.</span>clone())<span class="op">.</span><span class="kw">await</span><span class="op">?</span>)<span class="op">;</span></span></code></pre></div>
+<p>注意 <code>repo_root</code> 就是会话的工作目录——Tact
+不会验证它是否真的是 git 仓库，直到第一次 <code>git worktree add</code>
+失败。</p>
+<p>五个工具都只在主 <code>toolset()</code> 中注册；子 agent
+不能管理泳道。</p>
+<p>一个行为细节：<code>WorktreeManager::run</code> <strong>同步</strong>
+执行 git 和 shell 命令（<code>std::process::Command</code>），位于 async
+工具内部。长时间的 <code>worktree_run</code> 会阻塞 tokio worker
+线程直到结束（不再持有 manager 锁，其他 worktree
+工具调用保持响应）。</p>
+<hr />
+<h2 id="6-与权限和-shell-安全性的交互">6. 与权限和 Shell
+安全性的交互</h2>
+<p><code>worktree_run</code> 执行任意 shell 字符串，但
+<strong>不</strong> 经过 <code>validate_shell_command</code>（与
+<code>bash</code>、<code>background_run</code> 不同），其权限分类由 <a href="./10_chapter_permission_zh.html">权限模型</a> 赋予
+<code>worktree_run</code>
+工具名——嵌入的命令字符串不会被检查高风险模式。将泳道视为与
+<code>bash</code> 相同的爆炸半径。</p>
+<hr />
+<h2 id="7-代码地图">7. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/worktree/mod.rs</code></td>
+<td><code>WorktreeManager</code>、<code>SharedWorktreeManager</code>、create/list/status/run/events</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/worktree_store/mod.rs</code></td>
+<td><code>WorktreeStore</code>
+trait（async：create_worktree/find_worktree/list_worktrees/append_event/recent_events）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/worktree_store/sqlite.rs</code></td>
+<td><code>SqliteWorktreeStore</code> — <code>worktrees</code> +
+<code>worktree_events</code> 表</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/worktree.rs</code></td>
+<td>五个 <code>#[tool]</code> 封装</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.worktree_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>toolset()</code> 中的 worktree 工具</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code>、<code>interactive.rs</code></td>
+<td>从 <code>tact.db</code> + workdir 构造 manager</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-当前缺口">8. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无 remove/cleanup</td>
+<td>没有 <code>worktree_remove</code>；泳道和 <code>wt/*</code>
+分支会累积，直到手动删除</td>
+</tr>
+<tr>
+<td>状态永不变化</td>
+<td>每条泳道永远是 <code>&quot;active&quot;</code>；无 done/merged/abandoned
+转换</td>
+</tr>
+<tr>
+<td>无合并回主分支流程</td>
+<td>没有帮助将泳道分支（diff、merge、PR）集成到 base 分支</td>
+</tr>
+<tr>
+<td>索引可能与 git 脱节</td>
+<td>手动 <code>git worktree remove/prune</code> 会留下陈旧记录；表从不
+reconcile</td>
+</tr>
+<tr>
+<td><code>worktree_run</code> 绕过 shell 校验</td>
+<td><code>bash</code> 中拦截的高风险命令子串在此允许</td>
+</tr>
+<tr>
+<td>阻塞执行</td>
+<td>长时间 <code>run</code>/<code>status</code> 阻塞 async
+线程（不再持有 manager 锁）</td>
+</tr>
+<tr>
+<td>稀疏审计日志</td>
+<td>只有 <code>create</code> 写事件；<code>run</code> 调用不记录</td>
+</tr>
+<tr>
+<td><code>task_id</code> 未强制</td>
+<td>可选链接从不与任务管理器校验</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./11_chapter_task.html">任务与工具调度</a> —
+<code>task_id</code> 所指的 task 记录</li>
+<li><a href="./14_chapter_team.html">团队协调</a> — worktree
+设计与之配对的协调层</li>
+<li><a href="./10_chapter_permission.html">权限模型</a> —
+<code>worktree_run</code> 如何（以及未如何）被门控</li>
+<li><a href="./01_chapter_store_zh.html">Store 与持久化</a> —
+<code>worktrees</code> / <code>worktree_events</code> SQLite 表</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — §7 子
+agent、团队、任务、worktree</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="cron-scheduling">Cron Scheduling</h1>
+<p>This chapter explains how Tact lets the agent <strong>register
+scheduled prompts</strong>: cron expressions, prompt text, and metadata
+persisted under <code>.claude/cron/</code>. The model can create, list,
+and delete these records through native tools; the storage layer is
+wired into every main-agent session via <code>ToolContext</code>.</p>
+<p><strong>Important scope note:</strong> as of this writing, Tact
+persists scheduled tasks but does <strong>not</strong> yet run a
+background tick loop that evaluates cron expressions and injects prompts
+into <code>agent_loop</code>. The <code>recurring</code> and
+<code>durable</code> flags are stored and shown in listings; they are
+reserved for future runtime behaviour. See <a href="#8-current-gaps">§8
+Current Gaps</a>.</p>
+<hr />
+<h2 id="1-what-cron-scheduling-is-for">1. What Cron Scheduling Is
+For</h2>
+<p>Cron in Tact is <strong>not</strong> a shell job runner (that is <a href="../crates/tact/src/background.rs">background tasks</a> via
+<code>background_run</code> / <code>check_background</code>). It is a
+registry of <strong>prompts the agent should receive on a
+schedule</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Meaning in code</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cron</code></td>
+<td>Cron expression string (stored as-is; not validated or parsed
+today)</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td>User message text to inject when the schedule fires</td>
+</tr>
+<tr>
+<td><code>recurring</code></td>
+<td><code>true</code> → recurring schedule; <code>false</code> →
+one-shot (metadata only today)</td>
+</tr>
+<tr>
+<td><code>durable</code></td>
+<td><code>true</code> → survive session restarts; <code>false</code> →
+session-scoped (metadata only today)</td>
+</tr>
+</tbody>
+</table>
+<p>The agent uses <code>cron_create</code> during a turn when the user
+asks for reminders, daily check-ins, or other time-based follow-ups.
+Until a runtime scheduler exists, those entries are durable
+<strong>records</strong> the agent (or a future daemon) can query with
+<code>cron_list</code>.</p>
+<hr />
+<h2 id="2-architecture-overview">2. Architecture Overview</h2>
+<pre class="mermaid"><code>graph TB
+    subgraph Entry[&quot;Session startup (tui.rs)&quot;]
+        SR[StoreRoot .claude/]
+        CS[CronScheduler]
+        SCS[SharedCronScheduler]
+        SR --&gt; CS
+        CS --&gt; SCS
+    end
+
+    subgraph Agent[&quot;Main agent loop&quot;]
+        TC[ToolContext.cron_scheduler]
+        TR[ToolRouter]
+        SCS --&gt; TC
+        TC --&gt; TR
+    end
+
+    subgraph Tools[&quot;Native tools&quot;]
+        CC[cron_create]
+        CL[cron_list]
+        CD[cron_delete]
+        TR --&gt; CC
+        TR --&gt; CL
+        TR --&gt; CD
+    end
+
+    subgraph Store[&quot;On disk&quot;]
+        JSON[&quot;cron/scheduled_tasks.json&quot;]
+        CC --&gt; JSON
+        CL --&gt; JSON
+        CD --&gt; JSON
+    end
+
+    subgraph Missing[&quot;Not implemented yet&quot;]
+        TICK[Scheduler tick / cron parser]
+        LOOP[Inject prompt into agent_loop]
+    end
+
+    JSON -.-&gt; TICK
+    TICK -.-&gt; LOOP</code></pre>
+<p>Sub-agents (<code>subagent_toolset</code>) do <strong>not</strong>
+receive cron tools — only the main agent&#39;s full <code>toolset()</code>
+includes them.</p>
+<hr />
+<h2 id="3-data-model">3. Data Model</h2>
+<p>Defined in <code>crates/tact/src/cron/mod.rs</code>:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> ScheduledTaskRecord <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> id<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> cron<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> prompt<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> recurring<span class="op">:</span> <span class="dt">bool</span><span class="op">,</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> durable<span class="op">:</span> <span class="dt">bool</span><span class="op">,</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> created_at<span class="op">:</span> <span class="dt">i64</span><span class="op">,</span>  <span class="co">// Unix timestamp (UTC)</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> ScheduledTaskIndex <span class="op">{</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tasks<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>ScheduledTaskRecord<span class="op">&gt;,</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> next_id<span class="op">:</span> <span class="dt">u64</span><span class="op">,</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>All tasks live in a single JSON index file. IDs are monotonic hex
+strings (<code>format!(&quot;{id_num:08x}&quot;)</code>) assigned from
+<code>next_id</code> on each create.</p>
+<hr />
+<h2 id="4-persistence">4. Persistence</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Store root</td>
+<td><code>.claude/</code>
+(<code>StoreRoot::new(tact_path.claude_dir())</code>)</td>
+</tr>
+<tr>
+<td>Index file</td>
+<td><code>cron/scheduled_tasks.json</code></td>
+</tr>
+<tr>
+<td>Backend</td>
+<td><code>Store&lt;ScheduledTaskIndex&gt;</code> — read/modify/write
+whole file</td>
+</tr>
+<tr>
+<td>Init</td>
+<td>If the file is missing on first open, an empty index is written</td>
+</tr>
+</tbody>
+</table>
+<p>The path helper <code>TactPath::cron_dir()</code> resolves
+<code>&lt;workdir&gt;/.claude/cron</code> in
+<code>crates/tact/src/consts.rs</code>; the scheduler uses the store
+layer&#39;s relative path <code>cron/scheduled_tasks.json</code> under the
+same root.</p>
+<p>Example on-disk shape:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;tasks&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;00000000&quot;</span><span class="fu">,</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;cron&quot;</span><span class="fu">:</span> <span class="st">&quot;0 9 * * *&quot;</span><span class="fu">,</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;prompt&quot;</span><span class="fu">:</span> <span class="st">&quot;Daily standup summary&quot;</span><span class="fu">,</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;recurring&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;durable&quot;</span><span class="fu">:</span> <span class="kw">false</span><span class="fu">,</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;created_at&quot;</span><span class="fu">:</span> <span class="dv">1717654321</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">}</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;next_id&quot;</span><span class="fu">:</span> <span class="dv">1</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<hr />
+<h2 id="5-scheduler-lifecycle">5. Scheduler Lifecycle</h2>
+<h3 id="construction">Construction</h3>
+<p>Both <code>crates/tact-ui/src/headless.rs</code> and
+<code>interactive.rs</code> build the scheduler once per process:</p>
+<pre class="text"><code>store_root = StoreRoot::new(.claude/)
+cron_scheduler = SharedCronScheduler::new(CronScheduler::new(&amp;store_root)?)
+tool_context = ToolContext { cron_scheduler, work_dir, … }
+agent = Agent::new(client, tool_context, toolset(), …)</code></pre>
+<p>There is no separate cron daemon or tokio task spawned today. The
+scheduler exists for the lifetime of the agent process and is shared
+across all tool calls through <code>ToolContext</code> (cloneable via
+<code>Arc&lt;Mutex&lt;…&gt;&gt;</code> inside
+<code>SharedCronScheduler</code>).</p>
+<h3 id="cronscheduler-vs-sharedcronscheduler"><code>CronScheduler</code>
+vs <code>SharedCronScheduler</code></h3>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CronScheduler</code></td>
+<td>Single-threaded CRUD against
+<code>Store&lt;ScheduledTaskIndex&gt;</code></td>
+</tr>
+<tr>
+<td><code>SharedCronScheduler</code></td>
+<td><code>Arc&lt;Mutex&lt;CronScheduler&gt;&gt;</code>; tools and tests
+call through <code>with_scheduler</code></td>
+</tr>
+</tbody>
+</table>
+<p>Lock poisoning surfaces as
+<code>&quot;cron scheduler lock poisoned&quot;</code>.</p>
+<hr />
+<h2 id="6-agent-tools">6. Agent Tools</h2>
+<p>Implemented in <code>crates/tact/src/tool/cron.rs</code> and
+registered in <code>toolset()</code>
+(<code>crates/tact/src/tool/registry.rs</code>).</p>
+<h3 id="cron_create"><code>cron_create</code></h3>
+<p><strong>Input:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cron</code></td>
+<td>string</td>
+<td>required</td>
+<td>Cron expression</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td>string</td>
+<td>required</td>
+<td>Prompt to inject when the schedule fires</td>
+</tr>
+<tr>
+<td><code>recurring</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Recurring vs one-shot</td>
+</tr>
+<tr>
+<td><code>durable</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Durable vs session-scoped</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Output:</strong> Pretty-printed JSON of the new
+<code>ScheduledTaskRecord</code>.</p>
+<h3 id="cron_list"><code>cron_list</code></h3>
+<p><strong>Input:</strong> empty object.</p>
+<p><strong>Output:</strong> One line per task (sorted by id), or
+<code>&quot;No scheduled tasks.&quot;</code>:</p>
+<pre class="text"><code>00000000 0 9 * * * [recurring/session]: Daily standup summary</code></pre>
+<p>Tags in brackets: <code>recurring</code> or <code>one-shot</code>,
+plus <code>/durable</code> or <code>/session</code>.</p>
+<h3 id="cron_delete"><code>cron_delete</code></h3>
+<p><strong>Input:</strong> <code>{ &quot;id&quot;: &quot;&lt;task id&gt;&quot; }</code>.</p>
+<p><strong>Output:</strong> <code>&quot;Deleted scheduled task {id}&quot;</code>,
+or error if id not found.</p>
+<p>These tools are <strong>independent</strong> barriers in the tool
+scheduler (no file-path conflicts). They do not touch
+<code>work_dir</code> directly — only the JSON store under
+<code>.claude/cron/</code>.</p>
+<hr />
+<h2 id="7-cron-vs-background-tasks">7. Cron vs Background Tasks</h2>
+<p>Both are workspace-scoped managers injected through
+<code>ToolContext</code>, but they solve different problems:</p>
+<pre class="mermaid"><code>flowchart LR
+    subgraph Cron[&quot;Cron (this chapter)&quot;]
+        C1[Store prompt + cron expr]
+        C2[CRUD via agent tools]
+        C3[No runtime executor yet]
+    end
+
+    subgraph BG[&quot;Background tasks&quot;]
+        B1[Run shell command async]
+        B2[tokio::spawn + poll]
+        B3[check_background for output]
+    end</code></pre>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Cron</th>
+<th>Background</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Module</td>
+<td><code>cron/mod.rs</code></td>
+<td><code>background.rs</code></td>
+</tr>
+<tr>
+<td>Persists</td>
+<td>Scheduled prompts</td>
+<td>Shell commands + stdout/stderr</td>
+</tr>
+<tr>
+<td>Executes today</td>
+<td>No</td>
+<td>Yes (<code>background_run</code>)</td>
+</tr>
+<tr>
+<td>Sub-agent access</td>
+<td>No</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-current-gaps">8. Current Gaps</h2>
+<p>The following are <strong>not</strong> in the codebase yet;
+documenting them avoids confusion with README marketing copy:</p>
+<ol type="1">
+<li><strong>No cron evaluator</strong> — expressions are opaque strings;
+nothing parses or validates them.</li>
+<li><strong>No tick loop</strong> — no task wakes up on a timer to call
+<code>agent_loop</code> with stored prompts.</li>
+<li><strong><code>recurring</code> / <code>durable</code> unused at
+runtime</strong> — only persisted and displayed by
+<code>cron_list</code>.</li>
+<li><strong>No integration with session store</strong> — firing a prompt
+would need new wiring (TUI event, headless trigger, or sidecar
+process).</li>
+<li><strong>No automatic cleanup</strong> — one-shot tasks are not
+removed after a hypothetical fire.</li>
+</ol>
+<p>When a runtime is added, likely touch points are: a tokio interval in
+<code>tui.rs</code> or a dedicated module reading
+<code>ScheduledTaskIndex</code>, plus a path to enqueue user messages
+into the active agent (similar to user input in interactive mode).</p>
+<hr />
+<h2 id="9-code-map">9. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/cron/mod.rs</code></td>
+<td><code>ScheduledTaskRecord</code>, <code>CronScheduler</code>,
+<code>SharedCronScheduler</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/cron.rs</code></td>
+<td><code>cron_create</code>, <code>cron_list</code>,
+<code>cron_delete</code> tool handlers</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.cron_scheduler</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td>Cron tools in <code>toolset()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code>,
+<code>interactive.rs</code></td>
+<td>Construct scheduler and pass it into <code>Agent</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/mod.rs</code></td>
+<td><code>Store&lt;T&gt;</code> persistence layer</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>TactPath::cron_dir()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/test_support.rs</code></td>
+<td>Test <code>ToolContext</code> with in-memory store root</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — Sub-agents,
+team, tasks, worktrees table (Cron row)</li>
+<li><a href="./11_chapter_task.html">Tasks and Tool Scheduling</a> — how
+tool calls run once the model acts (orthogonal to cron firing)</li>
+<li><a href="../crates/tact/tact.html">crates/tact/tact.md</a> — domain
+managers and <code>.claude/</code> layout</li>
+<li><a href="../docs/state_machines.html">docs/state_machines.md</a> —
+background task lifecycle (contrast with cron)</li>
+</ul>
+</body>
+</html>

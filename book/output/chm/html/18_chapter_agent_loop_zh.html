@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="agent-主循环">Agent 主循环</h1>
+<blockquote>
+<p>语言：<a href="./18_chapter_agent_loop_zh.html">中文</a> · <a href="./18_chapter_agent_loop.html">English</a></p>
+</blockquote>
+<p>本章是第 1–11 章的 <strong>收官篇</strong>：描述
+<code>Agent::agent_loop</code>——将 session 存储、prompt 组装、压缩、LLM
+调用、恢复和工具 dispatch 绑成一轮循环的流式对话循环。</p>
+<p>实现：<code>crates/tact/src/agent/mod.rs</code>（<code>Agent</code>、<code>AgentRuntime</code>、<code>agent_loop</code>、<code>stream_message</code>、<code>build_system_prompt</code>）。工具执行细节见
+<a href="./11_chapter_task.html">第 11 章 工具调度</a>。</p>
+<hr />
+<h2 id="1-agent_loop-负责什么">1. <code>agent_loop</code> 负责什么</h2>
+<table>
+<thead>
+<tr>
+<th>关注点</th>
+<th>循环中的位置</th>
+<th>专章</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session 恢复 / 持久化</td>
+<td><code>ensure_session</code>、<code>push_message</code>、<code>persist_message</code></td>
+<td><a href="./01_chapter_store_zh.html">第 1 章 Store</a></td>
+</tr>
+<tr>
+<td>系统 prompt</td>
+<td>每个 task 一次，在 turn 循环前
+<code>build_system_prompt()</code></td>
+<td><a href="./04_chapter_prompt.html">第 4 章 Prompt</a></td>
+</tr>
+<tr>
+<td>上下文大小</td>
+<td><code>micro_compact</code>、可选 <code>compact_history</code></td>
+<td><a href="./05_chapter_compact_zh.html">第 5 章 Compact</a></td>
+</tr>
+<tr>
+<td>LLM 流式</td>
+<td><code>stream_message</code></td>
+<td>本章</td>
+</tr>
+<tr>
+<td>失败恢复</td>
+<td>compact / backoff / continue 分支</td>
+<td><a href="./06_chapter_recovery_zh.html">第 6 章 Recovery</a></td>
+</tr>
+<tr>
+<td>工具执行</td>
+<td><code>execute_tool_call</code></td>
+<td><a href="./09_chapter_hook.html">第 9–11 章 Hooks / Permission /
+Scheduling</a></td>
+</tr>
+<tr>
+<td>UI 事件</td>
+<td><code>emit_update(AgentUpdate::…)</code></td>
+<td>本章</td>
+</tr>
+</tbody>
+</table>
+<p>循环 <strong>本身不</strong> 发出
+<code>TaskComplete</code>——<code>tact-ui</code> 在
+<code>agent_loop</code> 成功返回后发送（见 <a href="#7-tui-集成">§7 TUI
+集成</a>）。</p>
+<hr />
+<h2 id="2-入口与设置">2. 入口与设置</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">async</span> <span class="kw">fn</span> agent_loop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span><span class="op">,</span> initial_user_message<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>Message<span class="op">&gt;</span>) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>()<span class="op">&gt;</span></span></code></pre></div>
+<p>进入时：</p>
+<ol type="1">
+<li><strong><code>RecoveryState</code> 重置</strong> — 计数器为本 task
+调用重新开始。</li>
+<li><strong><code>ensure_session()</code></strong> — 当
+<code>session_store</code> 已接线时创建或恢复 SQLite 历史（<a href="./01_chapter_store_zh.html">第 1 章</a>）。</li>
+<li><strong><code>client.set_user_id(session_id)</code></strong> —
+provider 特定的 cache 隔离（DeepSeek KV）。</li>
+<li><strong>初始用户消息</strong> — 提供时 push 并通过
+<code>push_message</code> 持久化。</li>
+</ol>
+<p>子 agent 调用 <code>agent_loop(None)</code>，上下文已预填；见 <a href="./12_chapter_subagent.html">第 12 章 Subagents</a>。</p>
+<hr />
+<h2 id="3-一次迭代llm-turn">3. 一次迭代（LLM Turn）</h2>
+<pre class="mermaid"><code>flowchart TD
+    Prompt[build_system_prompt&lt;br/&gt;每个 task 一次] --&gt; Start
+    Start([循环顶]) --&gt; Cancel{cancel_flag?}
+    Cancel -- yes --&gt; ExitCancel[return Ok]
+    Cancel -- no --&gt; Micro[micro_compact]
+    Micro --&gt; Limit{context &gt; limit?}
+    Limit -- yes --&gt; AutoCompact[compact_history]
+    Limit -- no --&gt; Stream[stream_message + tools + thinking]
+    AutoCompact --&gt; Stream
+    Stream --&gt;|Err| Recovery[recovery 分支]
+    Recovery --&gt; Stream
+    Stream --&gt;|Ok| PersistA[persist assistant message]
+    PersistA --&gt; MaxTok{stop = MaxTokens?}
+    MaxTok -- yes --&gt; Cont[continue recovery 路径]
+    Cont --&gt; Stream
+    MaxTok -- no --&gt; EndTurn{stop ≠ ToolUse?}
+    EndTurn -- yes --&gt; ExitOk[return Ok]
+    EndTurn -- no --&gt; Tools[execute_tool_call]
+    Tools --&gt; PersistT[persist tool results]
+    PersistT --&gt; Start</code></pre>
+<h3 id="llm-前步骤">LLM 前步骤</h3>
+<ul>
+<li><strong><code>micro_compact</code></strong> — 在内存中 stub 旧 tool
+结果（<a href="./05_chapter_compact_zh.html">第 5 章</a>）。</li>
+<li><strong>自动 compact</strong> — 当 <code>should_auto_compact</code>
+触发（<code>last_token_total &gt;= model_context_window</code>，或冷启动时用
+<code>estimate_context_size</code> 对比同一窗口）时，运行
+<code>compact_history</code> 并通过 <code>AgentUpdate::Info</code> 发出
+<code>[auto compact]</code>（<a href="./05_chapter_compact_zh.html">第 5
+章</a>）。</li>
+<li><strong><code>build_system_prompt</code></strong> — 子 agent 用动态
+Tera 渲染或静态字符串；每个 task 在 turn
+循环前运行一次，渲染字符串在每轮复用（<a href="./04_chapter_prompt.html">第 4 章</a>）。</li>
+<li><strong>请求组装</strong> — <code>CreateMessageParams</code> 含
+<code>all_tool_specs()</code>（原生 + MCP）、流式，以及 config 中的
+thinking budget。</li>
+</ul>
+<h3 id="流式">流式</h3>
+<p><code>stream_message</code> 将 chunk 转发到 TUI：</p>
+<table>
+<thead>
+<tr>
+<th>流事件</th>
+<th><code>AgentUpdate</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文本 delta</td>
+<td><code>StreamChunk</code></td>
+</tr>
+<tr>
+<td>Thinking 生命周期</td>
+<td><code>ThinkingChunk::{Started, Delta, Finished}</code></td>
+</tr>
+<tr>
+<td>模型元数据</td>
+<td><code>ModelInfo</code></td>
+</tr>
+<tr>
+<td>Token 计数</td>
+<td><code>TokenUsage</code></td>
+</tr>
+</tbody>
+</table>
+<p>Stats（<code>SessionStats</code>）累积 prompt/response/thinking
+大小和 LLM 调用时长。在 <code>persist_llm_call</code> 之前，agent 快照
+<code>llm_call_last_message_id = last_message_db_id</code>（<strong>发送</strong>
+给模型的最后一条消息）。Token 用量与之后的
+<code>record_tool_schedule</code> 都 keyed 于该 id。</p>
+<hr />
+<h2 id="4-停止原因与循环退出">4. 停止原因与循环退出</h2>
+<p>成功流式后，assistant 消息追加到 <code>runtime.context</code>
+并持久化。</p>
+<table>
+<thead>
+<tr>
+<th><code>StopReason</code></th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>ToolUse</code></strong></td>
+<td>运行 <code>execute_tool_call</code>，追加 tool
+结果，<strong>再次循环</strong></td>
+</tr>
+<tr>
+<td><strong><code>EndTurn</code></strong> /
+<strong><code>StopSequence</code></strong> /
+<strong><code>PauseTurn</code></strong></td>
+<td><strong><code>return Ok(())</code></strong> — task
+结束（<code>PauseTurn</code> 是 Anthropic 服务端工具暂停；Tact
+尚未使用那些工具）</td>
+</tr>
+<tr>
+<td><strong><code>MaxTokens</code></strong></td>
+<td>恢复：可选先运行 pending tool calls，追加
+<code>CONTINUATION_MESSAGE</code>，重试（最多 3 次）— <a href="./06_chapter_recovery_zh.html">第 6 章</a>。用尽尝试仍以
+<code>Ok</code> 结束</td>
+</tr>
+<tr>
+<td><strong><code>Refusal</code></strong></td>
+<td>发出 Info 更新并 <strong><code>return Err</code></strong>，让 TUI
+显示明确拒答而非虚假
+<code>TaskComplete</code>。改写请求或换模型；尚无自动多模型回退（<a href="https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons">Anthropic
+文档</a>）</td>
+</tr>
+<tr>
+<td><strong><code>Unknown</code></strong></td>
+<td>发出带原始 provider 字符串的 Info，然后以 <code>Ok</code> 结束</td>
+</tr>
+</tbody>
+</table>
+<p><code>StopReason</code> 由 <code>tact_llm</code> 拥有（<a href="../crates/tact_llm/src/stop_reason.rs"><code>stop_reason.rs</code></a>），不是
+Anthropic SDK。适配器将 provider
+原生字符串（<code>end_turn</code>、<code>finish_reason=length</code>
+等）映射到此 enum；<code>model_context_window_exceeded</code> 映射到
+<code>MaxTokens</code>。</p>
+<p><strong>取消：</strong> 每次迭代顶部以及工具执行前检查
+<code>cancel_flag</code>。同一个 <code>Arc&lt;AtomicBool&gt;</code>
+也传入 <code>ToolContext</code>，因此执行中的 <code>bash</code>
+会观察到取消，在 Unix 终止 child process group，并在 agent loop 返回前
+flush 已读输出。Driver 仅在该返回之后发出
+<code>TaskCancelled</code>。新的 <code>SubmitTask</code> 在再次调用
+<code>agent_loop</code> 前清除 <code>cancel_flag</code>。</p>
+<hr />
+<h2 id="5-agentupdate-与通知">5. <code>AgentUpdate</code> 与通知</h2>
+<p><code>emit_update</code> 在可选 <code>ui_tx</code>
+通道上发送事件，并为以下触发桌面通知：</p>
+<ul>
+<li><code>TaskComplete</code> → <code>notify_task_complete</code>（<a href="./17_chapter_notify_zh.html">第 17 章</a>）</li>
+<li><code>StepFailed</code> → <code>notify_step_failed</code></li>
+</ul>
+<p>大多数生命周期事件（<code>StepAdded</code>、<code>StepStarted</code>、<code>StepFinished</code>、
+<code>RequestSelect</code> 等）来自 <code>tool_dispatch.rs</code> 中的
+<code>execute_tool_call</code>。执行中的工具 可在
+<code>StepStarted</code> 与终态 <code>StepFinished</code> /
+<code>StepFailed</code> 之间发出信息性的
+<code>ToolProgress</code>；它本身不表示完成。</p>
+<hr />
+<h2 id="6-关键结构体">6. 关键结构体</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> Agent <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> runtime<span class="op">:</span> AgentRuntime<span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tool_context<span class="op">:</span> ToolContext<span class="op">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tools<span class="op">:</span> ToolRouter<span class="op">,</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> mcp_router<span class="op">:</span> MCPToolRouter<span class="op">,</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> hooks<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>Hook<span class="op">&gt;,</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> system_prompt<span class="op">:</span> AgentSystemPrompt<span class="op">,</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tool_use_counter<span class="op">:</span> <span class="dt">usize</span><span class="op">,</span>  <span class="co">// TUI 的 StepAdded 索引</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    cached_tool_specs<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>ToolSpec<span class="op">&gt;,</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> AgentRuntime <span class="op">{</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> client<span class="op">:</span> LlmProvider<span class="op">,</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> context<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>Message<span class="op">&gt;,</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> compact_state<span class="op">:</span> CompactState<span class="op">,</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> recovery_state<span class="op">:</span> RecoveryState<span class="op">,</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> permission_manager<span class="op">:</span> PermissionManager<span class="op">,</span></span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> stats<span class="op">:</span> SessionStats<span class="op">,</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> ui_tx<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>UnboundedSender<span class="op">&lt;</span>AgentUpdate<span class="op">&gt;&gt;,</span></span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> cancel_flag<span class="op">:</span> Arc<span class="op">&lt;</span>AtomicBool<span class="op">&gt;,</span></span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> session_store<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>DynSessionStore<span class="op">&gt;,</span></span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> session_id<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span></span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> first_message_db_id<span class="op">:</span> <span class="dt">i64</span><span class="op">,</span></span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> last_message_db_id<span class="op">:</span> <span class="dt">i64</span><span class="op">,</span></span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a>    <span class="co">/// `persist_llm_call` 运行时的 `last_message_db_id`（assistant 行之前）。</span></span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> llm_call_last_message_id<span class="op">:</span> <span class="dt">i64</span><span class="op">,</span></span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true" tabindex="-1"></a>    <span class="co">// … cached_dir_snapshot, cached_claude_md, cached_agents_md</span></span>
+<span id="cb3-28"><a href="#cb3-28" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>构造辅助：<code>Agent::new</code>、<code>with_ui_channel</code>、<code>with_session</code>。Hook
+注册：<code>pre_tool_use</code>、<code>post_tool_use</code>、<code>session_start</code>——但见下方缺口。</p>
+<hr />
+<h2 id="7-tui-集成">7. TUI 集成</h2>
+<p>在
+<code>crates/tact-ui/src/interactive.rs</code>（<code>UserCommand::SubmitTask</code>
+处理器）：</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="pp">UserCommand::</span>SubmitTask(task) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    agent<span class="op">.</span>tool_use_counter <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    agent<span class="op">.</span>runtime<span class="op">.</span>cancel_flag<span class="op">.</span>store(<span class="cn">false</span><span class="op">,</span> <span class="pp">Ordering::</span>Relaxed)<span class="op">;</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">match</span> agent<span class="op">.</span>agent_loop(<span class="cn">Some</span>(task_message))<span class="op">.</span><span class="kw">await</span> <span class="op">{</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Ok</span>(()) <span class="cf">if</span> <span class="op">!</span>agent<span class="op">.</span>runtime<span class="op">.</span>cancel_flag<span class="op">.</span>load(<span class="pp">Ordering::</span>Relaxed) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">let</span> <span class="cn">Some</span>(last) <span class="op">=</span> agent<span class="op">.</span>runtime<span class="op">.</span>context<span class="op">.</span>last() <span class="op">{</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>                agent<span class="op">.</span>emit_update(<span class="pp">AgentUpdate::</span>TaskComplete(extract_text(<span class="op">&amp;</span>last<span class="op">.</span>content)))<span class="op">;</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>                <span class="cn">Ok</span>(()) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>                    <span class="co">// 已取消 — 发出 TaskCancelled，让 TUI 离开 Planning/Executing</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>                    agent<span class="op">.</span>emit_update(<span class="pp">AgentUpdate::</span>TaskCancelled)<span class="op">;</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>                <span class="op">}</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Err</span>(e) <span class="op">=&gt;</span> agent<span class="op">.</span>emit_update(<span class="pp">AgentUpdate::</span><span class="bu">Error</span>(<span class="op">...</span>))<span class="op">,</span></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="pp">UserCommand::</span>Cancel <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>    agent<span class="op">.</span>runtime<span class="op">.</span>cancel_flag<span class="op">.</span>store(<span class="cn">true</span><span class="op">,</span> <span class="op">...</span>)<span class="op">;</span></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong><code>TaskComplete</code></strong> 仅在
+<code>agent_loop</code> 返回 <code>Ok(())</code> <strong>且</strong>
+用户未取消时发出。取消时 driver 改为发出
+<strong><code>TaskCancelled</code></strong>，使 TUI 回到
+<code>Idle</code> 并接受新 prompt。<code>TaskComplete</code>
+的摘要文本来自 <strong>最后一条 context 消息</strong>（常为 tool
+结果，不一定是最后 assistant turn）。错误以
+<code>AgentUpdate::Error</code> 呈现。</p>
+<hr />
+<h2 id="8-代码地图">8. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>agent_loop</code>、<code>stream_message</code>、<code>build_system_prompt</code>、session
+辅助</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>execute_tool_call</code>、三阶段流水线</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/interactive.rs</code></td>
+<td>在 <code>SubmitTask</code> 上 spawn 循环，设置
+<code>TaskComplete</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/recovery.rs</code></td>
+<td>错误分类与 continuation 消息</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/compact/mod.rs</code></td>
+<td>Turn 前 compact 钩子</td>
+</tr>
+<tr>
+<td><code>tact_protocol</code></td>
+<td><code>AgentUpdate</code>、<code>UserCommand</code> 线型类型</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-当前缺口">9. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>SessionStart</code> 未调用</strong></td>
+<td>可通过 <code>session_start()</code> 注册 hook，但
+<code>agent_loop</code> 从不运行它们（<a href="./09_chapter_hook.html">第 9 章</a>）</td>
+</tr>
+<tr>
+<td><strong><code>TaskComplete</code> 启发式</strong></td>
+<td>TUI 在未取消时用 context 中最后一条消息；非显式最后 assistant
+文本</td>
+</tr>
+<tr>
+<td><strong>Headless 路径</strong></td>
+<td>无 <code>ui_tx</code>；无 <code>TaskComplete</code> emit — stdout
+后单次直接 <code>notify_task_complete</code>（<a href="./17_chapter_notify_zh.html">第 17 章</a>）</td>
+</tr>
+<tr>
+<td><strong>Agent 上无专用 cancel API</strong></td>
+<td>只有 atomic flag；子 agent 有独立 flag</td>
+</tr>
+<tr>
+<td><strong><code>PlanGenerated</code> 已弃用</strong></td>
+<td><code>#[deprecated(since = &quot;0.19.0&quot;)]</code>；TUI 处理器保留 — plan
+面板由 <code>StepAdded</code> 驱动</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./01_chapter_store_zh.html">Store 与持久化</a> —
+循环开始时的 session</li>
+<li><a href="./05_chapter_compact_zh.html">上下文压缩</a> — LLM 前
+compact</li>
+<li><a href="./06_chapter_recovery_zh.html">错误恢复</a> —
+流失败处理</li>
+<li><a href="./11_chapter_task.html">任务与工具调度</a> —
+循环的工具分支</li>
+<li><a href="./12_chapter_subagent.html">Subagents</a> — 嵌套
+<code>agent_loop</code></li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — §2 Agent Task
+Execution Flow</li>
+<li><a href="./21_chapter_config.html">Configuration</a> —
+<code>max_tokens</code>、<code>model_context_window</code>、<code>thinking_budget</code></li>
+<li><a href="./22_chapter_llm.html">LLM Providers</a> —
+<code>stream_message</code> 适配器</li>
+<li><a href="./23_chapter_tui.html">Terminal UI</a> —
+<code>TaskComplete</code> 与通道接线</li>
+</ul>
+</body>
+</html>

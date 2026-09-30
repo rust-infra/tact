@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="hallucination-in-agent-loops">Hallucination in Agent Loops</h1>
+<blockquote>
+<p>Language: <a href="./20_chapter_hallucination.html">English</a> · <a href="./20_chapter_hallucination_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter catalogs <strong>LLM hallucination patterns</strong>
+that occur inside a coding-agent loop — where the model fabricates
+files, function signatures, conversation history, or tool outputs that
+never existed. Understanding these patterns is critical for building
+robust agent systems, because a hallucination in the prompt (not just
+the response) can <strong>poison subsequent turns</strong> and derail
+the entire task.</p>
+<p>The primitives shown here correlate to
+<code>crates/tact/src/compact/mod.rs</code>,
+<code>crates/tact/src/agent/mod.rs</code> (specifically the prompt
+builder and compaction logic), and the <code>tact_llm</code> provider
+adapters.</p>
+<hr />
+<h2 id="0-why-hallucination-matters-inside-the-loop">0. Why
+Hallucination Matters Inside the Loop</h2>
+<p>A coding agent is an LLM <strong>prompted by code</strong>. Every
+turn the agent constructs a prompt from real data — file contents, tool
+results, conversation history. When the LLM hallucinates <strong>into
+the prompt</strong> (not just its output), the error becomes part of the
+next turn&#39;s input, creating a self-reinforcing feedback loop:</p>
+<pre class="mermaid"><code>sequenceDiagram
+    participant Agent as Agent
+    participant LLM as LLM
+    participant Context as Prompt Context
+
+    Note over Agent,Context: Normal flow
+    Agent-&gt;&gt;Context: Real file content, real tool results
+    Context-&gt;&gt;LLM: Build prompt from real data
+    LLM-&gt;&gt;Agent: Reasoning on real premises → correct work
+
+    Note over Agent,Context: Hallucination flow
+    Agent-&gt;&gt;Context: Hallucinated summary injected
+    Context-&gt;&gt;LLM: Build prompt on fabricated premises
+    LLM-&gt;&gt;Agent: Reasoning on false premises → wrong work
+    Agent-&gt;&gt;Context: More hallucinated content
+    Note over Agent,Context: Loop amplifies error</code></pre>
+<p>Unlike output hallucinations (which the user can visually reject),
+<strong>prompt hallucinations</strong> are invisible to the user — the
+model sees a fabricated world and acts within it, producing work that
+looks correct but operates on nonexistent entities.</p>
+<hr />
+<h2 id="1-scenario-compaction-summary-fabrication">1. Scenario:
+Compaction Summary Fabrication</h2>
+<p>This is the most impactful hallucination pattern in Tact, because the
+compacted summary replaces the bulk of the conversation history and
+directly feeds the next LLM turn.</p>
+<h3 id="11-trigger-condition">1.1 Trigger Condition</h3>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Action</strong></td>
+<td>LLM is asked to summarize a conversation for compaction</td>
+</tr>
+<tr>
+<td><strong>Prompt</strong></td>
+<td><code>&quot;Summarize this coding-agent conversation so work can continue. Preserve: 1. The current goal and what has been accomplished ...&quot;</code></td>
+</tr>
+<tr>
+<td><strong>Context given</strong></td>
+<td>Only the most recent messages (within token budget)</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>DeepSeek v4 Flash (observed), potentially any model with strong
+completion bias</td>
+</tr>
+</tbody>
+</table>
+<h3 id="12-the-specific-case">1.2 The Specific Case</h3>
+<p>In the observed incident (session <code>479d01ce</code>, 2026-07-23),
+the conversation sent to the summarizer contained <strong>only three
+messages</strong>:</p>
+<pre><code>[user]   call compact tool
+[assistant]  thinking + tool_use compact
+[user]   tool_result: &quot;Compacting conversation...&quot;</code></pre>
+<p>There was no prior coding task, no files read, no goals — the entire
+&quot;conversation to summarize&quot; was the act of calling <code>compact</code>
+itself. The LLM was asked to produce a summary with concrete details
+about goals, files, and next steps, but the input contained none.</p>
+<p><strong>The LLM hallucinated an entire Python search
+system:</strong></p>
+<pre><code>Goal: Implement a scalable search system over LLM conversation datasets...
+Key Files:
+- search/__init__.py — SearchResult(doc_id, doc_path, query_snippet)...
+- search/search.py — MiniSearch(MiniSearchClient)...
+- index/ module — PositionalPostingList, IndexWriter, WildcardQuery...
+Remaining Work:
+1. Query Engine (DAAT)
+2. Result Ranking/Snippet Generation
+3. Integration/Testing</code></pre>
+<p>None of these files existed. None of these classes existed. The
+project is pure Rust.</p>
+<h3 id="13-downstream-damage">1.3 Downstream Damage</h3>
+<ol type="1">
+<li>The hallucinated summary was injected as message ordinal 2 in the
+rebuilt context</li>
+<li>The agent read the summary and believed it was working on a Python
+search system</li>
+<li>It ran <code>find . -name &quot;*.py&quot;</code> — found nothing</li>
+<li>It searched for Python files — found nothing in this Rust
+project</li>
+<li>It became confused, repeatedly confirming the project language and
+trying to reconcile the summary with reality</li>
+<li>User had to explain the compaction hallucination to reset the
+context</li>
+</ol>
+<pre class="mermaid"><code>flowchart RL
+    subgraph Prompt[&quot;Compaction prompt sent to LLM&quot;]
+        PromptText[&quot;Summarize this conversation...&quot;] --&gt; ContextInput[&quot;Messages: only &#39;call compact tool&#39; + response&quot;]
+    end
+    Prompt --&gt; LLM --&gt; Output[&quot;Hallucinated summary: Python search system&quot;]
+    Output --&gt; Injected[&quot;Injected into context as real history&quot;]
+    Injected --&gt; Agent[&quot;Agent acts on fabricated premises&quot;]
+    Agent --&gt; Bash[&quot;find . -name &#39;*.py&#39; → empty&quot;]
+    Agent --&gt; Confused[&quot;Agent confusion: &#39;This is a Rust project...&#39;&quot;]</code></pre>
+<h3 id="14-root-cause">1.4 Root Cause</h3>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>Why it contributed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>No minimum content check</strong></td>
+<td>Compaction ran on a session with only 3 trivial messages, none
+containing meaningful work</td>
+</tr>
+<tr>
+<td><strong>LLM completion bias</strong></td>
+<td>DeepSeek/OpenAI models strongly prefer to produce a detailed answer
+rather than admit &quot;there is nothing to summarize&quot;</td>
+</tr>
+<tr>
+<td><strong>Prompt demands concrete detail</strong></td>
+<td>The instruction explicitly asks for goal, files, signatures —
+pressuring the model to fabricate when absent</td>
+</tr>
+<tr>
+<td><strong>No factual consistency check</strong></td>
+<td>The summary is accepted as-is; no validation that mentioned
+files/paths actually exist</td>
+</tr>
+<tr>
+<td><strong>New session boundary</strong></td>
+<td>The new session started clean, so the only context was the compact
+tool invocation itself — no prior work carried over</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-scenario-stub-induced-content-fabrication">2. Scenario:
+Stub-Induced Content Fabrication</h2>
+<h3 id="21-trigger-condition">2.1 Trigger Condition</h3>
+<p>After <code>micro_compact</code> truncates old tool results, a stub
+replaces the original content:</p>
+<pre><code>[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]</code></pre>
+<h3 id="22-behavior">2.2 Behavior</h3>
+<p>When the LLM encounters this stub and later needs the content (e.g.,
+to construct an <code>apply_patch</code> call), it has two choices:</p>
+<ol type="1">
+<li><strong>Re-read the file</strong> (correct, costs tokens)</li>
+<li><strong>Fabricate the content from memory</strong> (incorrect, but
+common)</li>
+</ol>
+<p>Many models, especially under time pressure or token budgets, choose
+option 2. They produce diffs or patches based on recalled (and often
+inaccurate) content, leading to:</p>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Why it fails</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>apply_patch</code> context mismatch</td>
+<td>The fabricated line numbers or context strings don&#39;t match the real
+file</td>
+</tr>
+<tr>
+<td>Silent wrong edits</td>
+<td>The model produces plausible-looking but incorrect code</td>
+</tr>
+<tr>
+<td>Cascading errors</td>
+<td>Each wrong edit produces more tool results that may get truncated,
+compounding the error</td>
+</tr>
+</tbody>
+</table>
+<h3 id="23-mitigation-gap">2.3 Mitigation Gap</h3>
+<p>The stub itself says &quot;re-run the tool&quot; but the system prompt guidance
+is insufficient to enforce re-reading. Models with strong autoregressive
+completion bias may ignore the instruction and proceed with fabricated
+content.</p>
+<hr />
+<h2 id="3-scenario-tool-result-hallucination">3. Scenario: Tool Result
+Hallucination</h2>
+<h3 id="31-trigger-condition">3.1 Trigger Condition</h3>
+<p>The agent calls a tool (e.g., <code>bash</code>,
+<code>read_file</code>) and the tool returns an error or is interrupted.
+In the next turn, the LLM may fabricate a successful result.</p>
+<h3 id="32-example">3.2 Example</h3>
+<pre><code>[user]    tool_use: bash(&quot;cat /etc/os-release&quot;)
+[assistant]  thinks about what to do
+[user]    tool_result: [Tool execution error: command timed out after 30s]
+
+Next turn:
+[assistant]  &quot;I found the OS is Ubuntu 22.04 from /etc/os-release&quot;</code></pre>
+<p>The LLM &quot;remembers&quot; what the command <em>should</em> output and
+substitutes it for the failed result. This is particularly dangerous
+because:</p>
+<ul>
+<li>The error may indicate a real problem (network, permission, missing
+tool)</li>
+<li>The fabricated output may be plausible but wrong</li>
+<li>Subsequent work built on this output compounds the error</li>
+</ul>
+<hr />
+<h2 id="4-scenario-identity-confusion">4. Scenario: Identity
+Confusion</h2>
+<h3 id="41-trigger-condition">4.1 Trigger Condition</h3>
+<p>When context is compacted or restructured, the model may confuse
+<strong>whose voice</strong> a message belongs to. A tool result
+attributed to the <code>user</code> role (as Tact does for the Messages
+API) may be mistaken for a user instruction.</p>
+<h3 id="42-example">4.2 Example</h3>
+<p>After compaction, the rebuilt context has:</p>
+<pre><code>[user]    This conversation was compacted so the agent can continue working.
+          [summary text ...]
+
+[user]    tool_result: { &quot;some previous output&quot; }</code></pre>
+<p>The model may interpret the tool result content as a new user
+directive, especially if the summary is vague. This leads to:</p>
+<ul>
+<li>Repeating work that was already done</li>
+<li>Acting on old command output as if it were current</li>
+<li>Confusing system-generated stubs with user requests</li>
+</ul>
+<hr />
+<h2 id="5-mitigation-strategies">5. Mitigation Strategies</h2>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Description</th>
+<th>Where to implement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Minimum content threshold</strong></td>
+<td>Skip LLM-based compaction if fewer than N meaningful messages exist;
+use a hardcoded fallback summary</td>
+<td><code>compact_history_with_mode</code> in
+<code>agent/mod.rs</code></td>
+</tr>
+<tr>
+<td><strong>Factual consistency check</strong></td>
+<td>After compaction, scan the summary for file/function references and
+verify they exist in the codebase; reject if too many references are
+fabricated</td>
+<td>Post-compaction validation step</td>
+</tr>
+<tr>
+<td><strong>Summary fallback for empty content</strong></td>
+<td>When the conversation has nothing substantive, return a minimal
+factual stub like &quot;(no significant work to summarize)&quot; instead of
+calling the LLM</td>
+<td><code>compact_history_with_mode</code></td>
+</tr>
+<tr>
+<td><strong>Force re-read on stub</strong></td>
+<td>Improve system prompt to explicitly require <code>read_file</code>
+before any <code>apply_patch</code> or edit when stubs are present</td>
+<td>System prompt template</td>
+</tr>
+<tr>
+<td><strong>Improve stub message</strong></td>
+<td>Make the stub more salient (e.g.,
+<code>[⚠ CONTENT TRUNCATED — re-read the file before editing]</code>) to
+reduce the chance the model ignores it</td>
+<td><code>COMPACTED_TOOL_RESULT</code> in
+<code>compact/mod.rs</code></td>
+</tr>
+<tr>
+<td><strong>Model-specific tuning</strong></td>
+<td>Some models hallucinate less with lower temperature; use a lower
+temperature for compaction calls</td>
+<td><code>CreateMessageParams</code> for summarizer</td>
+</tr>
+<tr>
+<td><strong>Verification step</strong></td>
+<td>After major edits, verify the change was applied correctly by
+re-reading the file; if it doesn&#39;t match the intended edit, flag
+hallucination</td>
+<td>Tool post-hook</td>
+</tr>
+<tr>
+<td><strong>Session continuity flag</strong></td>
+<td>Detect when compaction runs on a nearly-empty session (no prior
+work) and skip the LLM call entirely</td>
+<td><code>compact_history_with_mode</code></td>
+</tr>
+<tr>
+<td><strong>User-facing warning</strong></td>
+<td>When compaction occurs, inform the user that the conversation was
+compressed; provide the transcript path for manual review</td>
+<td><code>AgentUpdate::Info</code> in compact flow</td>
+</tr>
+</tbody>
+</table>
+<h3 id="51-priority-order">5.1 Priority Order</h3>
+<table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>Strategy</th>
+<th>Effort</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0</td>
+<td>Minimum content threshold</td>
+<td>Low (add a counter check)</td>
+<td>High (prevents the exact bug observed)</td>
+</tr>
+<tr>
+<td>P0</td>
+<td>Summary fallback for empty content</td>
+<td>Low (branch before LLM call)</td>
+<td>High (eliminates empty-context fabrication)</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>Force re-read on stub</td>
+<td>Medium (system prompt change)</td>
+<td>High (reduces stub-induced fabrication)</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>Factual consistency check</td>
+<td>High (requires file-system scan)</td>
+<td>Medium (catches fabrication, but expensive)</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>Verification step</td>
+<td>Medium (post-tool hook)</td>
+<td>Medium (catches downstream errors)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./05_chapter_compact.html">Context Compaction</a> — the
+mechanism that triggers scenario 1 and 2</li>
+<li><a href="./06_chapter_recovery.html">Error Recovery</a> — compaction
+as the prompt-too-long recovery</li>
+<li><a href="./18_chapter_agent_loop.html">Agent Main Loop</a> — where
+the context is rebuilt after compaction</li>
+<li><a href="./04_chapter_prompt.html">System Prompt</a> — where stub
+guidance lives</li>
+<li><a href="./07_chapter_tool.html">Tool System</a> — tool post-hooks
+for verification</li>
+<li><code>crates/tact/src/agent/mod.rs</code> —
+<code>compact_history_with_mode</code> implementation</li>
+<li><code>crates/tact/src/compact/mod.rs</code> —
+<code>COMPACTED_TOOL_RESULT</code> and <code>micro_compact</code></li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="agent-main-loop">Agent Main Loop</h1>
+<blockquote>
+<p>Language: <a href="./18_chapter_agent_loop.html">English</a> · <a href="./18_chapter_agent_loop_zh.html">中文</a></p>
+</blockquote>
+<p>This chapter is the <strong>capstone</strong> for chapters 1–11: it
+describes <code>Agent::agent_loop</code> — the streaming conversation
+loop that ties session storage, prompt assembly, compaction, LLM calls,
+recovery, and tool dispatch into one turn cycle.</p>
+<p>Implementation: <code>crates/tact/src/agent/mod.rs</code>
+(<code>Agent</code>, <code>AgentRuntime</code>, <code>agent_loop</code>,
+<code>stream_message</code>, <code>build_system_prompt</code>). Tool
+execution details live in <a href="./11_chapter_task.html">Ch 11 Tool
+Scheduling</a>.</p>
+<hr />
+<h2 id="1-what-agent_loop-owns">1. What <code>agent_loop</code>
+Owns</h2>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Where in the loop</th>
+<th>Dedicated chapter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session restore / persist</td>
+<td><code>ensure_session</code>, <code>push_message</code>,
+<code>persist_message</code></td>
+<td><a href="./01_chapter_store.html">Ch 1 Store</a></td>
+</tr>
+<tr>
+<td>System prompt</td>
+<td><code>build_system_prompt()</code> once per task, before the turn
+loop</td>
+<td><a href="./04_chapter_prompt.html">Ch 4 Prompt</a></td>
+</tr>
+<tr>
+<td>Context size</td>
+<td><code>micro_compact</code>, optional
+<code>compact_history</code></td>
+<td><a href="./05_chapter_compact.html">Ch 5 Compact</a></td>
+</tr>
+<tr>
+<td>LLM streaming</td>
+<td><code>stream_message</code></td>
+<td>this chapter</td>
+</tr>
+<tr>
+<td>Failure recovery</td>
+<td>compact / backoff / continue branches</td>
+<td><a href="./06_chapter_recovery.html">Ch 6 Recovery</a></td>
+</tr>
+<tr>
+<td>Tool execution</td>
+<td><code>execute_tool_call</code></td>
+<td><a href="./09_chapter_hook.html">Ch 9–11 Hooks / Permission /
+Scheduling</a></td>
+</tr>
+<tr>
+<td>UI events</td>
+<td><code>emit_update(AgentUpdate::…)</code></td>
+<td>this chapter</td>
+</tr>
+</tbody>
+</table>
+<p>The loop does <strong>not</strong> emit <code>TaskComplete</code>
+itself — <code>tact-ui</code> sends that after <code>agent_loop</code>
+returns successfully (see <a href="#7-tui-integration">§7 TUI
+integration</a>).</p>
+<hr />
+<h2 id="2-entry-and-setup">2. Entry and Setup</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">async</span> <span class="kw">fn</span> agent_loop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span><span class="op">,</span> initial_user_message<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>Message<span class="op">&gt;</span>) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>()<span class="op">&gt;</span></span></code></pre></div>
+<p>On entry:</p>
+<ol type="1">
+<li><strong><code>RecoveryState</code> reset</strong> — counters start
+fresh for this task invocation.</li>
+<li><strong><code>ensure_session()</code></strong> — create or restore
+SQLite history when <code>session_store</code> is wired (<a href="./01_chapter_store.html">Ch 1</a>).</li>
+<li><strong><code>client.set_user_id(session_id)</code></strong> —
+provider-specific cache isolation (DeepSeek KV).</li>
+<li><strong>Initial user message</strong> — pushed when provided and
+persisted via <code>push_message</code>.</li>
+</ol>
+<p>Subagents call <code>agent_loop(None)</code> with context pre-seeded;
+see <a href="./12_chapter_subagent.html">Ch 12 Subagents</a>.</p>
+<hr />
+<h2 id="3-one-iteration-llm-turn">3. One Iteration (LLM Turn)</h2>
+<pre class="mermaid"><code>flowchart TD
+    Prompt[build_system_prompt&lt;br/&gt;once per task] --&gt; Start
+    Start([loop top]) --&gt; Cancel{cancel_flag?}
+    Cancel -- yes --&gt; ExitCancel[return Ok]
+    Cancel -- no --&gt; Micro[micro_compact]
+    Micro --&gt; Limit{context &gt; limit?}
+    Limit -- yes --&gt; AutoCompact[compact_history]
+    Limit -- no --&gt; Stream[stream_message + tools + thinking]
+    AutoCompact --&gt; Stream
+    Stream --&gt;|Err| Recovery[recovery branches]
+    Recovery --&gt; Stream
+    Stream --&gt;|Ok| PersistA[persist assistant message]
+    PersistA --&gt; MaxTok{stop = MaxTokens?}
+    MaxTok -- yes --&gt; Cont[continue recovery path]
+    Cont --&gt; Stream
+    MaxTok -- no --&gt; EndTurn{stop ≠ ToolUse?}
+    EndTurn -- yes --&gt; ExitOk[return Ok]
+    EndTurn -- no --&gt; Tools[execute_tool_call]
+    Tools --&gt; PersistT[persist tool results]
+    PersistT --&gt; Start</code></pre>
+<h3 id="pre-llm-steps">Pre-LLM steps</h3>
+<ul>
+<li><strong><code>micro_compact</code></strong> — stub old tool results
+in memory (<a href="./05_chapter_compact.html">Ch 5</a>).</li>
+<li><strong>Auto compact</strong> — when
+<code>should_auto_compact</code> fires
+(<code>last_token_total &gt;= model_context_window</code>, or cold-start
+<code>estimate_context_size</code> vs the same window), runs
+<code>compact_history</code> and emits <code>[auto compact]</code> via
+<code>AgentUpdate::Info</code> (<a href="./05_chapter_compact.html">Ch
+5</a>).</li>
+<li><strong><code>build_system_prompt</code></strong> — dynamic Tera
+render or static string for subagents; runs once per task before the
+turn loop, and the rendered string is reused for every turn (<a href="./04_chapter_prompt.html">Ch 4</a>).</li>
+<li><strong>Request assembly</strong> — <code>CreateMessageParams</code>
+with <code>all_tool_specs()</code> (native + MCP), streaming, and
+thinking budget from config.</li>
+</ul>
+<h3 id="streaming">Streaming</h3>
+<p><code>stream_message</code> forwards chunks to the TUI:</p>
+<table>
+<thead>
+<tr>
+<th>Stream event</th>
+<th><code>AgentUpdate</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Text delta</td>
+<td><code>StreamChunk</code></td>
+</tr>
+<tr>
+<td>Thinking lifecycle</td>
+<td><code>ThinkingChunk::{Started, Delta, Finished}</code></td>
+</tr>
+<tr>
+<td>Model metadata</td>
+<td><code>ModelInfo</code></td>
+</tr>
+<tr>
+<td>Token counts</td>
+<td><code>TokenUsage</code></td>
+</tr>
+</tbody>
+</table>
+<p>Stats (<code>SessionStats</code>) accumulate prompt/response/thinking
+sizes and LLM call durations. Before <code>persist_llm_call</code>, the
+agent snapshots
+<code>llm_call_last_message_id = last_message_db_id</code> (the last
+message <strong>sent</strong> to the model). Token usage and later
+<code>record_tool_schedule</code> both key off that id.</p>
+<hr />
+<h2 id="4-stop-reasons-and-loop-exit">4. Stop Reasons and Loop Exit</h2>
+<p>After a successful stream, the assistant message is appended to
+<code>runtime.context</code> and persisted.</p>
+<table>
+<thead>
+<tr>
+<th><code>StopReason</code></th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>ToolUse</code></strong></td>
+<td>Run <code>execute_tool_call</code>, append tool results,
+<strong>loop again</strong></td>
+</tr>
+<tr>
+<td><strong><code>EndTurn</code></strong> /
+<strong><code>StopSequence</code></strong> /
+<strong><code>PauseTurn</code></strong></td>
+<td><strong><code>return Ok(())</code></strong> — task finished
+(<code>PauseTurn</code> is Anthropic server-tool pause; Tact does not
+use those tools yet)</td>
+</tr>
+<tr>
+<td><strong><code>MaxTokens</code></strong></td>
+<td>Recovery: optionally run pending tool calls first, append
+<code>CONTINUATION_MESSAGE</code>, retry (up to 3) — <a href="./06_chapter_recovery.html">Ch 6</a>. Exhausted attempts still
+finish with <code>Ok</code></td>
+</tr>
+<tr>
+<td><strong><code>Refusal</code></strong></td>
+<td>Emit an Info update and <strong><code>return Err</code></strong> so
+the TUI shows a clear refusal instead of a false
+<code>TaskComplete</code>. Rephrase the request or switch models; no
+automatic multi-model fallback yet (<a href="https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons">Anthropic
+docs</a>)</td>
+</tr>
+<tr>
+<td><strong><code>Unknown</code></strong></td>
+<td>Emit Info with the raw provider string, then finish with
+<code>Ok</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>StopReason</code> is owned by <code>tact_llm</code> (<a href="../crates/tact_llm/src/stop_reason.rs"><code>stop_reason.rs</code></a>),
+not the Anthropic SDK. Adapters map provider-native strings
+(<code>end_turn</code>, <code>finish_reason=length</code>, …) into this
+enum; <code>model_context_window_exceeded</code> maps to
+<code>MaxTokens</code>.</p>
+<p><strong>Cancellation:</strong> <code>cancel_flag</code> is checked at
+the top of each iteration and again before tool execution. The same
+<code>Arc&lt;AtomicBool&gt;</code> is carried into
+<code>ToolContext</code>, so an in-flight <code>bash</code> command
+observes cancellation, terminates its child process group on Unix, and
+flushes already-read output before the agent loop returns. The driver
+emits <code>TaskCancelled</code> only after that return. A new
+<code>SubmitTask</code> clears <code>cancel_flag</code> before calling
+<code>agent_loop</code> again.</p>
+<hr />
+<h2 id="5-agentupdate-and-notifications">5. <code>AgentUpdate</code> and
+Notifications</h2>
+<p><code>emit_update</code> sends events on the optional
+<code>ui_tx</code> channel and triggers desktop notifications for:</p>
+<ul>
+<li><code>TaskComplete</code> → <code>notify_task_complete</code> (<a href="./17_chapter_notify.html">Ch 17</a>)</li>
+<li><code>StepFailed</code> → <code>notify_step_failed</code></li>
+</ul>
+<p>Most lifecycle events (<code>StepAdded</code>,
+<code>StepStarted</code>, <code>StepFinished</code>,
+<code>RequestSelect</code>, etc.) originate from
+<code>execute_tool_call</code> in <code>tool_dispatch.rs</code>.
+In-flight tools may emit informational <code>ToolProgress</code> between
+<code>StepStarted</code> and the terminal <code>StepFinished</code> /
+<code>StepFailed</code>; it does not itself signal completion.</p>
+<hr />
+<h2 id="6-key-structs">6. Key Structs</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> Agent <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> runtime<span class="op">:</span> AgentRuntime<span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tool_context<span class="op">:</span> ToolContext<span class="op">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tools<span class="op">:</span> ToolRouter<span class="op">,</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> mcp_router<span class="op">:</span> MCPToolRouter<span class="op">,</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> hooks<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>Hook<span class="op">&gt;,</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> system_prompt<span class="op">:</span> AgentSystemPrompt<span class="op">,</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> tool_use_counter<span class="op">:</span> <span class="dt">usize</span><span class="op">,</span>  <span class="co">// StepAdded index for TUI</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    cached_tool_specs<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>ToolSpec<span class="op">&gt;,</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> AgentRuntime <span class="op">{</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> client<span class="op">:</span> LlmProvider<span class="op">,</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> context<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>Message<span class="op">&gt;,</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> compact_state<span class="op">:</span> CompactState<span class="op">,</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> recovery_state<span class="op">:</span> RecoveryState<span class="op">,</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> permission_manager<span class="op">:</span> PermissionManager<span class="op">,</span></span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> stats<span class="op">:</span> SessionStats<span class="op">,</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> ui_tx<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>UnboundedSender<span class="op">&lt;</span>AgentUpdate<span class="op">&gt;&gt;,</span></span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> cancel_flag<span class="op">:</span> Arc<span class="op">&lt;</span>AtomicBool<span class="op">&gt;,</span></span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> session_store<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>DynSessionStore<span class="op">&gt;,</span></span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> session_id<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;,</span></span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> first_message_db_id<span class="op">:</span> <span class="dt">i64</span><span class="op">,</span></span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> last_message_db_id<span class="op">:</span> <span class="dt">i64</span><span class="op">,</span></span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a>    <span class="co">/// `last_message_db_id` captured when `persist_llm_call` runs (before assistant row).</span></span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> llm_call_last_message_id<span class="op">:</span> <span class="dt">i64</span><span class="op">,</span></span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true" tabindex="-1"></a>    <span class="co">// … cached_dir_snapshot, cached_claude_md, cached_agents_md</span></span>
+<span id="cb3-28"><a href="#cb3-28" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Construction helpers: <code>Agent::new</code>,
+<code>with_ui_channel</code>, <code>with_session</code>. Hook
+registration: <code>pre_tool_use</code>, <code>post_tool_use</code>,
+<code>session_start</code> — but see gaps below.</p>
+<hr />
+<h2 id="7-tui-integration">7. TUI Integration</h2>
+<p>In <code>crates/tact-ui/src/interactive.rs</code>
+(<code>UserCommand::SubmitTask</code> handler):</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="pp">UserCommand::</span>SubmitTask(task) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    agent<span class="op">.</span>tool_use_counter <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    agent<span class="op">.</span>runtime<span class="op">.</span>cancel_flag<span class="op">.</span>store(<span class="cn">false</span><span class="op">,</span> <span class="pp">Ordering::</span>Relaxed)<span class="op">;</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">match</span> agent<span class="op">.</span>agent_loop(<span class="cn">Some</span>(task_message))<span class="op">.</span><span class="kw">await</span> <span class="op">{</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Ok</span>(()) <span class="cf">if</span> <span class="op">!</span>agent<span class="op">.</span>runtime<span class="op">.</span>cancel_flag<span class="op">.</span>load(<span class="pp">Ordering::</span>Relaxed) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">let</span> <span class="cn">Some</span>(last) <span class="op">=</span> agent<span class="op">.</span>runtime<span class="op">.</span>context<span class="op">.</span>last() <span class="op">{</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>                agent<span class="op">.</span>emit_update(<span class="pp">AgentUpdate::</span>TaskComplete(extract_text(<span class="op">&amp;</span>last<span class="op">.</span>content)))<span class="op">;</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>                <span class="cn">Ok</span>(()) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>                    <span class="co">// cancelled — emit TaskCancelled so TUI leaves Planning/Executing</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>                    agent<span class="op">.</span>emit_update(<span class="pp">AgentUpdate::</span>TaskCancelled)<span class="op">;</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>                <span class="op">}</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>        <span class="cn">Err</span>(e) <span class="op">=&gt;</span> agent<span class="op">.</span>emit_update(<span class="pp">AgentUpdate::</span><span class="bu">Error</span>(<span class="op">...</span>))<span class="op">,</span></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="pp">UserCommand::</span>Cancel <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>    agent<span class="op">.</span>runtime<span class="op">.</span>cancel_flag<span class="op">.</span>store(<span class="cn">true</span><span class="op">,</span> <span class="op">...</span>)<span class="op">;</span></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><strong><code>TaskComplete</code></strong> is emitted only when
+<code>agent_loop</code> returns <code>Ok(())</code> <strong>and</strong>
+the user did not cancel. On cancel, the driver emits
+<strong><code>TaskCancelled</code></strong> instead so the TUI returns
+to <code>Idle</code> and accepts a new prompt. The summary text for
+<code>TaskComplete</code> comes from the <strong>last context
+message</strong> (often a tool result, not strictly the last assistant
+turn). Errors surface as <code>AgentUpdate::Error</code> instead.</p>
+<hr />
+<h2 id="8-code-map">8. Code Map</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>agent_loop</code>, <code>stream_message</code>,
+<code>build_system_prompt</code>, session helpers</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>execute_tool_call</code>, three-phase pipeline</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/interactive.rs</code></td>
+<td>Spawns loop on <code>SubmitTask</code>, sets
+<code>TaskComplete</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/recovery.rs</code></td>
+<td>Error classification and continuation message</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/compact/mod.rs</code></td>
+<td>Pre-turn compaction hooks</td>
+</tr>
+<tr>
+<td><code>tact_protocol</code></td>
+<td><code>AgentUpdate</code>, <code>UserCommand</code> wire types</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-current-gaps">9. Current Gaps</h2>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>SessionStart</code> not invoked</strong></td>
+<td>Hooks can be registered via <code>session_start()</code> but
+<code>agent_loop</code> never runs them (<a href="./09_chapter_hook.html">Ch 9</a>)</td>
+</tr>
+<tr>
+<td><strong><code>TaskComplete</code> heuristic</strong></td>
+<td>TUI uses last message in context when not cancelled; not explicitly
+last assistant text</td>
+</tr>
+<tr>
+<td><strong>Headless path</strong></td>
+<td>No <code>ui_tx</code>; no <code>TaskComplete</code> emit — single
+direct <code>notify_task_complete</code> after stdout (<a href="./17_chapter_notify.html">Ch 17</a>)</td>
+</tr>
+<tr>
+<td><strong>No dedicated cancel API on Agent</strong></td>
+<td>Only atomic flag; subagents have separate flags</td>
+</tr>
+<tr>
+<td><strong><code>PlanGenerated</code> deprecated</strong></td>
+<td><code>#[deprecated(since = &quot;0.19.0&quot;)]</code>; TUI handler retained —
+internal plan step store driven by <code>StepAdded</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./01_chapter_store.html">Store and Persistence</a> —
+session at loop start</li>
+<li><a href="./05_chapter_compact.html">Context Compaction</a> — pre-LLM
+compaction</li>
+<li><a href="./06_chapter_recovery.html">Error Recovery</a> — stream
+failure handling</li>
+<li><a href="./11_chapter_task.html">Tasks and Tool Scheduling</a> —
+tool branch of the loop</li>
+<li><a href="./12_chapter_subagent.html">Subagents</a> — nested
+<code>agent_loop</code></li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> — §2 Agent Task
+Execution Flow</li>
+<li><a href="./21_chapter_config.html">Configuration</a> —
+<code>max_tokens</code>, <code>model_context_window</code>,
+<code>thinking_budget</code></li>
+<li><a href="./22_chapter_llm.html">LLM Providers</a> —
+<code>stream_message</code> adapters</li>
+<li><a href="./23_chapter_tui.html">Terminal UI</a> —
+<code>TaskComplete</code> and channel wiring</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Tact Agent Development Tutorials</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: 1.5em;}
+div.column{flex: auto;}
+@media screen {
+div.columns{gap: min(4vw, 1.5em);}
+div.column{overflow-x: auto;}
+}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+body {
+font-family: "Segoe UI", Tahoma, sans-serif;
+font-size: 10pt;
+line-height: 1.5;
+margin: 1.2em 1.5em;
+color: #1a1a1a;
+max-width: 52em;
+}
+h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 1.4em; }
+h3 { font-size: 1.1em; }
+a { color: #0563c1; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.1em 0.25em; }
+pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8em 1em; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #ccc; padding: 0.35em 0.6em; text-align: left; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
+img { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Tact Agent Development Tutorials</h1>
+</header>
+<h1 id="skill-注册表">Skill 注册表</h1>
+<blockquote>
+<p>语言：<a href="./02_chapter_skill_zh.html">中文</a> · <a href="./02_chapter_skill.html">English</a></p>
+</blockquote>
+<p>本章说明 Tact
+如何从磁盘加载<strong>自定义指令文件</strong>（skills）：扫描
+<code>SKILL.md</code>、在系统提示词中暴露摘要、通过
+<code>load_skill</code> 工具按需加载全文，以及从 TUI
+用斜杠命令调用。</p>
+<p>Skills 与 <a href="./03_chapter_memory_zh.html">持久化记忆</a>
+相关但不同——skills 是作者编写的 playbook；memories
+是对话中学到的事实。</p>
+<hr />
+<h2 id="1-skills-的用途">1. Skills 的用途</h2>
+<p>Skill 是一份 Markdown 文档，教 agent
+如何完成专项任务（编码规范、部署步骤、领域工作流）。Tact
+<strong>不会</strong>把完整 skill
+正文注入每一轮提示——那会撑爆上下文。而是：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>模型看到的内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每轮（系统提示词）</td>
+<td>通过 <code>describe_available()</code> 得到的 skill
+<strong>名称与描述</strong></td>
+</tr>
+<tr>
+<td>按需（<code>load_skill</code> 工具）</td>
+<td>包在 <code>&lt;skill&gt;</code> XML 标签中的全文（工具结果）</td>
+</tr>
+<tr>
+<td>TUI 斜杠 <code>/skill-name</code></td>
+<td>调用时在<strong>用户任务</strong>中注入同样的
+<code>&lt;skill&gt;</code> 包装（见 <a href="#7-tui-斜杠调用">§7</a> 与
+<a href="./23_chapter_tui_zh.html">TUI</a>）</td>
+</tr>
+</tbody>
+</table>
+<p>启动时只有摘要；模型调用 <code>load_skill</code>
+或用户通过斜杠调用时才加载全文。Responses adapter 额外施加更严格的 skill
+加载策略；见 <a "href="./22_chapter_llm_zh.html#62-responses-api">LLM
+Provider Layer</a>。</p>
+<hr />
+<h2 id="2-架构概览">2. 架构概览</h2>
+<pre class="mermaid"><code>graph TB
+    subgraph Disk[&quot;Skill 根目录&quot;]
+        T[&quot;workdir/.tact/skills/*/SKILL.md&quot;]
+        U[&quot;~/.tact/skills/*/SKILL.md&quot;]
+        A[&quot;~/.agents/skills/*/SKILL.md&quot;]
+        P[&quot;workdir/.claude/skills/*/SKILL.md&quot;]
+        C[&quot;agent.skill_dirs 配置&quot;]
+        I[&quot;~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md&quot;]
+    end
+
+    subgraph Startup[&quot;会话启动&quot;]
+        TP[TactPath.skill_search_dirs]
+        SR[SkillRegistry.load_skills]
+        TP --&gt; SR
+        Disk --&gt; SR
+        I --&gt; SR
+    end
+
+    subgraph Prompt[&quot;每个任务&quot;]
+        BSP[build_system_prompt]
+        DA[describe_available]
+        BSP --&gt; DA
+        DA --&gt; SP[&quot;# Available skills&quot;]
+    end
+
+    subgraph Tool[&quot;按需&quot;]
+        LS[load_skill 工具]
+        LFT[load_full_text]
+        LS --&gt; LFT
+        LFT --&gt; Ctx[&quot;工具结果 → 对话&quot;]
+    end
+
+    subgraph Tui[&quot;TUI 斜杠&quot;]
+        SE[SkillEntry 列表]
+        INV[handlers/skills.rs invoke]
+        SUB[submit_user_task]
+        SE --&gt; INV
+        INV --&gt; SUB
+        SUB --&gt; UserMsg[&quot;用户消息 → agent loop&quot;]
+    end
+
+    SR --&gt; DA
+    SR --&gt; LFT
+    SR --&gt; SE</code></pre>
+<p>发现根目录：</p>
+<table>
+<thead>
+<tr>
+<th>根</th>
+<th>路径</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>项目本地</td>
+<td><code>&lt;workdir&gt;/.tact/skills/</code></td>
+<td>仓库内 tact skills</td>
+</tr>
+<tr>
+<td>User</td>
+<td><code>~/.tact/skills/</code></td>
+<td>跨项目的个人 skills</td>
+</tr>
+<tr>
+<td>Global agents</td>
+<td><code>~/.agents/skills/</code></td>
+<td>共享 agents skills</td>
+</tr>
+<tr>
+<td>Project（Claude）</td>
+<td><code>&lt;workdir&gt;/.claude/skills/</code></td>
+<td>团队/仓库 skills（Claude 兼容）</td>
+</tr>
+<tr>
+<td>配置额外目录</td>
+<td><code>[agent].skill_dirs</code></td>
+<td>TOML 额外根（相对 workdir；支持 <code>~</code>）</td>
+</tr>
+<tr>
+<td>Installed plugin</td>
+<td><code>~/.tact/plugins/cache/&lt;marketplace&gt;/&lt;plugin&gt;/&lt;revision&gt;/skills/</code></td>
+<td>已安装插件的 playbook</td>
+</tr>
+</tbody>
+</table>
+<p>加载顺序：项目本地 → user → global agents → Claude project →
+<strong>配置 <code>skill_dirs</code></strong> →
+已安装插件。<strong>同名的独立 skill 以后者覆盖</strong>。已安装插件的
+skill 始终使用 <code>plugin:skill</code> 名称，因此不能替换独立
+skill。</p>
+<hr />
+<h2 id="3-数据模型">3. 数据模型</h2>
+<h3 id="skillmanifest">SkillManifest</h3>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> SkillManifest <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> name<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> description<span class="op">:</span> <span class="dt">String</span><span class="op">,</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> path<span class="op">:</span> <span class="dt">PathBuf</span><span class="op">,</span>   <span class="co">// 磁盘上 SKILL.md 的路径</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="skilldocument">SkillDocument</h3>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> SkillDocument <span class="op">{</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> manifest<span class="op">:</span> SkillManifest<span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> body<span class="op">:</span> <span class="dt">String</span><span class="op">,</span>    <span class="co">// frontmatter 之后的 markdown</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="展示格式完整加载">展示格式（完整加载）</h3>
+<p>通过 <code>Display</code> 或 <code>load_full_text</code> 渲染时：</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode xml"><code class="sourceCode xml"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>&lt;<span class="kw">skill</span> <span class="ot">name=</span><span class="st">&quot;demo&quot;</span>&gt;</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>Skill body content here.</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>&lt;/<span class="kw">skill</span>&gt;</span></code></pre></div>
+<p>TUI 斜杠调用在 <code>$ARGUMENTS</code>
+处理后的渲染正文外使用相同包装。</p>
+<hr />
+<h2 id="4-skillmd-文件格式">4. SKILL.md 文件格式</h2>
+<p>可选 YAML frontmatter（与 <a href="https://agentskills.io/specification">Agent Skills</a> 开放格式的
+<code>name</code> / <code>description</code> 对齐）：</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="an">name:</span><span class="co"> rust-skills</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="an">description:</span><span class="co"> Comprehensive Rust coding guidelines</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="fu"># Rust guidelines</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>…</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>回退</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td><code>SKILL.md</code> 的父目录名</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td><code>&quot;No description&quot;</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>无</strong> frontmatter 的文件仍可加载——整文件作为正文（trim
+后）。CRLF 行尾会规范化。</p>
+<p>开放 Agent Skills 规范<strong>未</strong>定义参数占位符。Tact 的 TUI
+与 Claude Code 一致：调用时用裸 <code>$ARGUMENTS</code> 替换；若缺失则在
+skill 正文内追加 <code>ARGUMENTS: …</code>（见 <a href="#7-tui-斜杠调用">§7</a>）。包装在客户端侧完成；系统提示词告诉模型如何理解斜杠调用的
+<code>&lt;skill&gt;</code> / <code>ARGUMENTS:</code>。</p>
+<h3 id="发现规则">发现规则</h3>
+<p><code>SkillRegistry::load_skills()</code>：</p>
+<ul>
+<li>遍历 <code>skill_search_dirs()</code>
+中的每个根（<code>WalkDir</code>）</li>
+<li>匹配文件名恰好为 <code>SKILL.md</code> 的文件</li>
+<li>插入以 skill 名称为 key 的
+<code>HashMap&lt;String, SkillDocument&gt;</code></li>
+</ul>
+<p>随后，<code>get_skill_registry()</code>
+会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill
+名称添加前缀（<code>plugin:skill</code>）。</p>
+<p>重名的独立
+skill：后扫描的根<strong>覆盖</strong>先前的——无警告。同一根内，后遍历到的条目也会覆盖。插件
+skill 位于独立的 <code>plugin:skill</code> 命名空间中。</p>
+<hr />
+<h2 id="5-skillregistry-api">5. SkillRegistry API</h2>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>new(skill_dirs)</code></td>
+<td>在一个或多个根上创建空注册表</td>
+</tr>
+<tr>
+<td><code>load_skills()</code></td>
+<td>扫描所有根并填充 map</td>
+</tr>
+<tr>
+<td><code>describe_available()</code></td>
+<td>排序后的 <code>&quot;- name: description&quot;</code>
+列表，供系统提示词使用</td>
+</tr>
+<tr>
+<td><code>load_full_text(name)</code></td>
+<td>完整 <code>&lt;skill&gt;</code> 块，或列出可用名称的错误字符串</td>
+</tr>
+<tr>
+<td><code>skills()</code></td>
+<td>只读 map 访问</td>
+</tr>
+</tbody>
+</table>
+<p>便捷构造函数：</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> get_skill_registry(workdir<span class="op">:</span> <span class="kw">impl</span> <span class="bu">AsRef</span><span class="op">&lt;</span><span class="dt">Path</span><span class="op">&gt;</span>) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span>SkillRegistry<span class="op">&gt;</span></span></code></pre></div>
+<p>在 <code>interactive.rs</code> / <code>headless.rs</code>
+启动时使用；结果包装为 <code>ToolContext</code> 上的
+<code>Arc&lt;SkillRegistry&gt;</code>。交互模式还将注册表条目映射为 TUI
+的 <code>SkillEntry { name, description, body }</code>。</p>
+<hr />
+<h2 id="6-集成点">6. 集成点</h2>
+<h3 id="系统提示词">系统提示词</h3>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="op">.</span>skills_available(<span class="kw">self</span><span class="op">.</span>tool_context<span class="op">.</span>skill_registry<span class="op">.</span>describe_available())</span></code></pre></div>
+<p>在模板中渲染为 <code># Available skills</code>。见 <a href="./04_chapter_prompt_zh.html">系统提示词</a>——该节在动态边界之上（除非会话中途在磁盘上增删
+skills 且未 reload，否则基本稳定）。</p>
+<h3 id="load_skill-工具">load_skill 工具</h3>
+<p><code>crates/tact/src/tool/load_skill.rs</code>：</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>tool<span class="at">(</span>name <span class="op">=</span> <span class="st">&quot;load_skill&quot;</span><span class="op">,</span> description <span class="op">=</span> <span class="st">&quot;Load the full body of a named skill…&quot;</span><span class="at">)]</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">async</span> <span class="kw">fn</span> load_skill(ctx<span class="op">:</span> ToolContext<span class="op">,</span> input<span class="op">:</span> LoadSkillInput) <span class="op">-&gt;</span> <span class="dt">Result</span><span class="op">&lt;</span><span class="dt">String</span><span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="cn">Ok</span>(ctx<span class="op">.</span>skill_registry<span class="op">.</span>load_full_text(<span class="op">&amp;</span>input<span class="op">.</span>name))</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>未知 skill 返回纯文本错误（非
+<code>Err</code>），并列出可用名称——模型将其视为工具输出。</p>
+<h3 id="toolcontext">ToolContext</h3>
+<div class="sourceCode" id="cb9"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> skill_registry<span class="op">:</span> Arc<span class="op">&lt;</span>Mutex<span class="op">&lt;</span>SkillRegistry<span class="op">&gt;&gt;,</span> <span class="co">// SharedSkillRegistry</span></span></code></pre></div>
+<p>在主 agent、子 agent 与交互 TUI 间共享（使 <code>/skill-reload</code>
+保持一致）。若子 agent 工具集包含 <code>load_skill</code> 则可调用——当前
+<code>subagent_toolset()</code> <strong>未</strong>注册
+<code>load_skill</code>；仅主 agent 的 <code>toolset()</code> 有。</p>
+<hr />
+<h2 id="7-tui-斜杠调用">7. TUI 斜杠调用</h2>
+<p>已发现的 skills 出现在 Insert 模式 <code>/</code> 弹出菜单与 Normal
+模式命令面板中，形式为 <code>/{name}</code>，附 frontmatter
+描述。内置斜杠命令<strong>优先于</strong>同名 skill（冲突的 skill
+不会出现在 skill 列表中）。</p>
+<table>
+<thead>
+<tr>
+<th>Skill 类型</th>
+<th>注册表名称</th>
+<th>Slash 调用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>独立 skill</td>
+<td><code>skill</code></td>
+<td><code>/skill</code></td>
+</tr>
+<tr>
+<td>已安装插件</td>
+<td><code>plugin:skill</code></td>
+<td><code>/plugin:skill</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>斜杠弹出菜单对 <strong>skill</strong> 按 Enter</td>
+<td><strong>立即 Invoke</strong></td>
+</tr>
+<tr>
+<td>斜杠弹出菜单对 skill 按 <strong>Tab</strong></td>
+<td>仅自动补全为 <code>/name </code></td>
+</tr>
+<tr>
+<td>Tab 后再 Enter（可带可选 args）</td>
+<td>经 <code>handlers/skills.rs</code> <strong>Invoke</strong></td>
+</tr>
+<tr>
+<td>面板对 skill 按 Enter</td>
+<td>切到 Insert 并预填 <code>/name </code>（+ undo checkpoint）</td>
+</tr>
+<tr>
+<td>内置命令 Enter</td>
+<td>立即执行（<code>/quit</code>、<code>/cancel</code>
+等）；<code>/plugin</code> 仍只补全</td>
+</tr>
+</tbody>
+</table>
+<p><strong>发给 agent 的载荷</strong></p>
+<ol type="1">
+<li>日志/历史显示用户输入的斜杠行（如 <code>/demo foo</code>）。</li>
+<li>Agent 任务正文为
+<code>&lt;skill name=&quot;…&quot;&gt;…&lt;/skill&gt;</code>（与 Claude Code
+兼容）：
+<ul>
+<li>若 skill 正文含裸 <code>$ARGUMENTS</code>（非
+<code>$ARGUMENTS[N]</code>）：替换为参数字符串（可为空）。</li>
+<li>否则若参数非空：在 skill 正文内追加
+<code>\n\nARGUMENTS: {args}</code>。</li>
+<li>否则：正文原样。</li>
+</ul></li>
+<li>系统提示词 <code># Available skills</code> 节说明斜杠调用的
+<code>&lt;skill&gt;</code> / <code>ARGUMENTS:</code>，避免模型与
+<code>load_skill</code> 元数据混淆。</li>
+<li>共享的 <code>submit_user_task</code> 与正常 Enter 提交一样驱动
+Planning / 用户气泡 / 历史。</li>
+</ol>
+<p><code>/skill-reload</code> 将 skill 根重新扫描到 TUI 与 agent
+<code>ToolContext</code> <strong>共享</strong>的
+<code>Arc&lt;Mutex&lt;SkillRegistry&gt;&gt;</code>，刷新 TUI
+<code>SkillEntry</code> 列表并 bump 视觉缓存。下一任务的系统提示词 skill
+摘要（及 <code>load_skill</code>）因此看到新注册表，无需重启。</p>
+<p>成功的
+<code>/plugin install &lt;plugin&gt;@&lt;marketplace&gt;</code> 与
+<code>/plugin reload</code> 会在 worker
+完成后执行相同的共享刷新。失败操作保持 registry
+不变。插件提供的名称可包含 <code>:</code>（例如
+<code>/superpowers:brainstorming</code>），刷新后仍按普通 slash skill
+调用。</p>
+<p>高亮：<code>/skill-name</code> 使用
+accent+bold；尾随参数使用主题前景色（<code>render/slash_style.rs</code>），输入框与用户日志行均如此。与内置命令冲突的名称不参与高亮（与面板一致）。</p>
+<p>与模型在回合中途调用 <code>load_skill</code> 不同。</p>
+<hr />
+<h2 id="8-对比skills-vs-memory">8. 对比：Skills vs Memory</h2>
+<table>
+<thead>
+<tr>
+<th>方面</th>
+<th>Skills</th>
+<th>Memory</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>位置</td>
+<td><code>.tact/skills/</code> + <code>~/.tact/skills/</code> +
+<code>.claude/skills/</code>（+ 可选 <code>skill_dirs</code>）</td>
+<td><code>&lt;workdir&gt;/.tact/memory/</code></td>
+</tr>
+<tr>
+<td>格式</td>
+<td><code>SKILL.md</code> + 可选 frontmatter</td>
+<td><code>{name}.md</code> + 必需 frontmatter</td>
+</tr>
+<tr>
+<td>提示词注入</td>
+<td>始终摘要；正文按需 / 斜杠</td>
+<td>每轮全文（动态节）</td>
+</tr>
+<tr>
+<td>写入路径</td>
+<td>编辑磁盘文件（无 agent 工具）</td>
+<td><code>save_memory</code> 工具</td>
+</tr>
+<tr>
+<td>典型作者</td>
+<td>开发者/团队</td>
+<td>对话中的 agent</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-代码地图">9. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/skill/mod.rs</code></td>
+<td><code>SkillRegistry</code>、解析、<code>describe_available</code>、<code>load_full_text</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>tact_skills_dir()</code>、<code>skill_search_dirs()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/load_skill.rs</code></td>
+<td><code>load_skill</code> 原生工具</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>build_system_prompt</code> 中的
+<code>describe_available()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.skill_registry</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>toolset()</code> 中的 <code>LoadSkillTool</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/interactive.rs</code></td>
+<td><code>get_skill_registry()</code> → TUI 的
+<code>SkillEntry</code></td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/skills.rs</code></td>
+<td>斜杠调用、<code>$ARGUMENTS</code>、<code>submit_user_task</code></td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/insert.rs</code></td>
+<td>斜杠弹出 Enter / Tab 自动补全</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/palette.rs</code></td>
+<td>面板 skill → Insert 预填</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/slash_style.rs</code></td>
+<td>skill 与参数高亮</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/input.rs</code>、<code>log.rs</code></td>
+<td>应用斜杠高亮</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-当前缺口">10. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无 <code>save_skill</code> 工具</td>
+<td>运行时 agent 不能写 skills</td>
+</tr>
+<tr>
+<td>重名静默覆盖</td>
+<td>扫描时 last-wins，无警告</td>
+</tr>
+<tr>
+<td>子 agent 无 <code>load_skill</code></td>
+<td>受限工具集无法在隔离 worker 中加载 skills</td>
+</tr>
+<tr>
+<td>无正文大小校验</td>
+<td>超大 skill 加载时会淹没上下文（斜杠调用亦然）</td>
+</tr>
+<tr>
+<td>无 glob / 启用列表</td>
+<td>所有发现的 skills 都出现在 <code>describe_available()</code>
+与斜杠面板</td>
+</tr>
+<tr>
+<td><code>$ARGUMENTS[N]</code> 未用</td>
+<td>索引占位符原样保留（仅 Claude 兼容的裸
+<code>$ARGUMENTS</code>）</td>
+</tr>
+</tbody>
+</table>
+<p><code>/skill-reload</code> 会立即变更共享注册表；下一次
+<code>build_system_prompt</code> / <code>load_skill</code> 读取更新后的
+map。</p>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./04_chapter_prompt_zh.html">系统提示词</a> —
+<code># Available skills</code> 节与缓存边界</li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>load_skill</code> 与 <code>ToolContext</code></li>
+<li><a href="./03_chapter_memory_zh.html">持久化记忆</a> —
+互补的持久化模型</li>
+<li><a href="./23_chapter_tui_zh.html">TUI</a> —
+斜杠弹出、面板、高亮</li>
+<li><a href="../ARCHITECTURE.html">ARCHITECTURE.md</a> —
+提示词组装表中的 skills</li>
+</ul>
+</body>
+</html>
