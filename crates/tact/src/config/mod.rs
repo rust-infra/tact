@@ -17,7 +17,9 @@ mod types;
 use std::sync::{LazyLock, RwLock};
 
 use clap::Parser;
-pub use cli::{CliArgs, CliCommand, MarketplaceSubcommand, McpSubcommand, PluginSubcommand};
+pub use cli::{
+    CliArgs, CliCommand, HooksSubcommand, MarketplaceSubcommand, McpSubcommand, PluginSubcommand,
+};
 pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
     AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, McpSettings, McpTomlConfig,
@@ -409,6 +411,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
     if args.list_sessions
         || matches!(args.command, Some(CliCommand::Plugin { .. }))
         || matches!(args.command, Some(CliCommand::Mcp { .. }))
+        || matches!(args.command, Some(CliCommand::Hooks { .. }))
         || matches!(args.command, Some(CliCommand::Upgrade { .. }))
     {
         install_without_llm(resolve::resolve_non_llm_settings(

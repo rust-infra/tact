@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — hook 来自文件、审核后才运行，并且能用 `exit 2` 阻断
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature + bugfix |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`collect_hook_sources`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`HookOutput::decided`、`exit_two_blocks`）、`crates/tact/src/hook/mod.rs`（`HookControl::Allow`、`InterruptFn`、`PermissionRequestFn`）、`crates/tact/src/agent/{mod,tool_dispatch}.rs`、`crates/tact/src/consts.rs`（`hooks.json`、`hooks-state.json`）、`crates/tact-ui/src/hooks_cli.rs`、`crates/tact-ui/src/{interactive,headless}.rs`；spec `docs/superpowers/specs/2026-09-30-hook-review-and-file-sources-design.md`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** 相对 Codex 的三处缺口，每一处都有实测支撑。（1）hook 只能来自已安装插件的 bundle，用户和仓库无处声明——于是写入 `~/.codex/hooks.json` 的 `bm hook install --harness codex` 对 Tact 完全是空操作。（2）安装插件是唯一的门禁：装完它的 hook 就无人值守地执行任意命令，而仓库自带的 hooks 文件在克隆时就会执行。（3）Codex 的 `exit 2` 契约（stderr 即理由）被忽略，以至于用最简方式写的策略 hook 静默失效：Tact 把任何非零退出都当作 fail-open。
+
+**决策：** 一个加载器、三个来源（已安装插件、`~/.tact/hooks.json`、`<workdir>/.tact/hooks.json`），所有匹配的 hook 都运行，并按该顺序注册，因此现有插件的 `SessionStart` 上下文顺序不可能被打乱。每个 hook 定义默认**未审核**，在获批前**绝不注册**：身份是对「来源标签 + 事件 + matcher + 命令」的 SHA-256（因此改动命令即作废批准），存储放在 `~/.tact/hooks-state.json` 而非 `config.toml`（手改配置不该能授予执行权），无法解析的存储等同空存储。用 `tact-ui hooks list|trust|forget` 审核；加载报告会在与 MCP 报告相同的两条通道上点名未审核的 hook。`run_process` 现在返回退出状态与 stderr，`exit 2` 按 Codex 的事件表生效（`PreToolUse`/`PermissionRequest` 阻断、`PostToolUse` 结果转失败、`Stop`/`SubagentStop`/`UserPromptSubmit` 携 stderr 继续），且 JSON 决定永远优先于裸退出码——`additionalContext` 与 `systemMessage` 算附加而非决定。Codex 的 `additionalContextLimit` 在 hook 边界限制单个 hook 注入的上下文。`HookControl` 新增 `Allow`（hook 自行回答审批询问）：只在 `PreToolUse` 与 `PermissionRequest` 上有意义，任何 hook 的 `Block` 无论顺序都优先，且 `PermissionRequest` **只**在 Tact 即将询问时运行。用户取消时 `Interrupt` 每轮触发一次。
+
+**之后的行为：** 仓库可以附带 `.tact/hooks.json`，但在人工逐条批准前什么都不运行；`hooks list` 明确显示会运行什么、什么还在等待。带理由 `exit 2` 的 hook 按 Codex 文档阻断工具调用，而打印 JSON 决定的 hook 仍被尊重。`PermissionRequest` 让策略 hook 直接回答询问，于是不再弹出提示。
+
+**指向：** `plugin::hooks::tests::{a_hook_identity_covers_every_field_a_reviewer_sees, an_unreviewed_hook_is_read_and_then_refused, approving_one_definition_admits_only_that_one_across_a_reload, exit_two_with_a_reason_blocks_a_tool_call, a_json_decision_outranks_a_bare_exit_two, a_permission_request_hook_is_registered_and_can_allow, an_interrupt_hook_is_registered_and_runs_once_per_turn}`、`hooks_cli::tests::*`。
+
+---
+
 ## 1. 2026-09-30 — Codex 的 MCP 单 server 字段从「只上报」变成「真支持」
 
 | 字段 | 值 |

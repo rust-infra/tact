@@ -29,10 +29,10 @@ use crate::{
     },
     config::{self, AgentSettings},
     hook::{
-        HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG, Hook, HookControl, HookTypes,
-        NotificationFn, PostCompactFn, PostToolUseFailureFn, PostToolUseFn, PreCompactFn,
-        PreToolUseFn, SessionEndFn, SessionStartContext, SessionStartFn, SessionStartSource,
-        StopFn, TaskCompletedFn, UserPromptSubmitFn,
+        HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG, Hook, HookControl, HookTypes, InterruptFn,
+        NotificationFn, PermissionRequestFn, PostCompactFn, PostToolUseFailureFn, PostToolUseFn,
+        PreCompactFn, PreToolUseFn, SessionEndFn, SessionStartContext, SessionStartFn,
+        SessionStartSource, StopFn, TaskCompletedFn, UserPromptSubmitFn,
     },
     invoke_hooks,
     mcp::{MCPToolRouter, McpLoadReport},
@@ -370,6 +370,11 @@ pub struct AgentRuntime {
     /// injecting during `dispatch_session_start_hooks` (which runs before the
     /// session is ensured) would suppress the history restore entirely.
     pub pending_session_context: Vec<String>,
+    /// Whether the `Interrupt` hooks have run for this turn.
+    ///
+    /// Cancellation is observed at several points in the loop; the hooks are
+    /// observational, so running them once per turn is what a plugin expects.
+    pub interrupt_hooks_fired: bool,
     /// Whether the `SessionStart` hooks still have to run.
     ///
     /// Startup no longer calls them: a plugin hook can take seconds (the
@@ -467,6 +472,7 @@ impl Agent {
         tool_context.cancel_flag = cancel_flag.clone();
         let mut agent = Self {
             runtime: AgentRuntime {
+                interrupt_hooks_fired: false,
                 client,
                 context: Vec::new(),
                 compact_state: CompactState::default(),
@@ -1060,6 +1066,7 @@ impl Agent {
     #[tracing::instrument(skip(self), name = "agent_loop")]
     pub async fn agent_loop(&mut self, user_turn_message: Option<Message>) -> Result<()> {
         self.runtime.recovery_state = RecoveryState::default();
+        self.runtime.interrupt_hooks_fired = false;
 
         // Restore history if the startup path left context empty.
         self.ensure_session().await?;
@@ -1103,7 +1110,7 @@ impl Agent {
             // (Claude Code `additionalContext`). Runs before the message is
             // pushed so hooks see the raw prompt; a Block drops the turn.
             match apply_user_prompt_hooks(self, &mut message).await? {
-                HookControl::Continue => {}
+                HookControl::Continue | HookControl::Allow => {}
                 HookControl::Block(reason) => {
                     self.emit_update(AgentUpdate::Info(format!(
                         "[User prompt blocked by hook] {reason}"
@@ -1134,6 +1141,7 @@ impl Agent {
             }
             if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                self.dispatch_interrupt_hooks().await?;
                 return Ok(());
             }
             // Micro-compaction truncates old tool results in the logical
@@ -1516,6 +1524,18 @@ impl Agent {
         self
     }
 
+    /// Registers a hook that answers the approval prompt.
+    pub fn with_permission_request(mut self, hook: impl PermissionRequestFn + 'static) -> Self {
+        self.hooks.push(Hook::PermissionRequest(Box::new(hook)));
+        self
+    }
+
+    /// Registers a hook that observes a user interrupt.
+    pub fn with_interrupt(mut self, hook: impl InterruptFn + 'static) -> Self {
+        self.hooks.push(Hook::Interrupt(Box::new(hook)));
+        self
+    }
+
     pub fn with_stop(mut self, hook: impl StopFn + 'static) -> Self {
         self.hooks.push(Hook::Stop(Box::new(hook)));
         self
@@ -1664,7 +1684,7 @@ impl Agent {
     /// Observational only: a `Block` is surfaced as info and ignored.
     pub async fn dispatch_task_completed_hooks(&mut self) -> Result<()> {
         match invoke_hooks!(TaskCompleted, self)? {
-            HookControl::Continue => Ok(()),
+            HookControl::Continue | HookControl::Allow => Ok(()),
             HookControl::Block(reason) => {
                 self.emit_update(AgentUpdate::Info(format!(
                     "[TaskCompleted hook blocked] {reason}"
@@ -1674,11 +1694,29 @@ impl Agent {
         }
     }
 
+    /// Runs [`Hook::Interrupt`] hooks once per turn, when the user cancels.
+    ///
+    /// Observational: a `Block` is surfaced as info, because the turn is being
+    /// abandoned anyway.
+    pub async fn dispatch_interrupt_hooks(&mut self) -> Result<()> {
+        if self.runtime.interrupt_hooks_fired {
+            return Ok(());
+        }
+        self.runtime.interrupt_hooks_fired = true;
+        match invoke_hooks!(Interrupt, self)? {
+            HookControl::Continue | HookControl::Allow => Ok(()),
+            HookControl::Block(reason) => {
+                self.emit_update(AgentUpdate::Info(format!("[Interrupt hook] {reason}")));
+                Ok(())
+            }
+        }
+    }
+
     /// Runs [`Hook::SessionEnd`] hooks at real teardown. Observational only:
     /// a `Block` is surfaced as info and ignored because the session is ending.
     pub async fn dispatch_session_end_hooks(&mut self) -> Result<()> {
         match invoke_hooks!(SessionEnd, self)? {
-            HookControl::Continue => Ok(()),
+            HookControl::Continue | HookControl::Allow => Ok(()),
             HookControl::Block(reason) => {
                 self.emit_update(AgentUpdate::Info(format!(
                     "[SessionEnd hook blocked] {reason}"
@@ -1734,7 +1772,7 @@ impl Agent {
     ) -> Result<()> {
         // PreCompact hooks may veto the compaction (Codex `should_stop`).
         match invoke_hooks!(PreCompact, self, trigger)? {
-            HookControl::Continue => {}
+            HookControl::Continue | HookControl::Allow => {}
             HookControl::Block(reason) => {
                 self.emit_update(AgentUpdate::Info(format!(
                     "[PreCompact hook vetoed compaction] {reason}"
@@ -1762,7 +1800,7 @@ impl Agent {
         // PostCompact hooks run once, only after a successful compaction.
         if result.is_ok() {
             match invoke_hooks!(PostCompact, self, trigger)? {
-                HookControl::Continue => {}
+                HookControl::Continue | HookControl::Allow => {}
                 HookControl::Block(reason) => {
                     self.emit_update(AgentUpdate::Info(format!(
                         "[PostCompact hook blocked] {reason}"

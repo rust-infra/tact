@@ -69,6 +69,13 @@ async fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        Some(CliCommand::Hooks { command }) => {
+            if let Err(e) = tact_ui::hooks_cli::run_hooks_cli(command) {
+                eprintln!("Error: {e:#}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         _ => {}
     }
 

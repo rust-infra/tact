@@ -336,7 +336,9 @@ async fn handle_user_command_with_account(
                                     "[Stop hook] continuation limit reached; stopping: {reason}"
                                 )));
                             }
-                            Ok(HookControl::Continue) | Err(_) => {}
+                            // An `allow` from a Stop hook means "nothing
+                            // to add", the same as `continue`.
+                            Ok(HookControl::Continue | HookControl::Allow) | Err(_) => {}
                         }
                         if let Some(last) = agent.runtime.context.last() {
                             let text = extract_text(&last.content);

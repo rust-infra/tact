@@ -53,6 +53,7 @@ Every hook returns one of:
 ```rust
 pub enum HookControl {
     Continue,
+    Allow,
     Block(String),
 }
 ```
@@ -60,7 +61,10 @@ pub enum HookControl {
 | Result | Meaning |
 |--------|---------|
 | `Continue` | Run the next hook of the same type, then proceed with the pipeline. |
+| `Allow` | The hook answered the approval prompt itself (Codex's `permissionDecision: "allow"`). Only `PreToolUse` and `PermissionRequest` act on it; every other event treats it as `Continue`. |
 | `Block(reason)` | Stop the hook chain immediately; the tool step is treated as failed with `reason`. |
+
+**A block always wins.** The macro keeps scanning after an `Allow` so a later hook can still refuse, and a refusal is never undone by another hook's approval — the same `deny > allow` precedence the permission rules use. For an event that has no prompt to answer, `Allow` is a no-op rather than an error, so one shared hook file can serve several events.
 
 For `PreToolUse`, a block skips execution and permission prompts — the model still receives a `ToolResult` explaining why the call was blocked.
 
@@ -159,15 +163,39 @@ Hooks are appended to `Agent.hooks` in registration order and executed in that o
 
 Multiple hooks of the same type compose: all must return `Continue` unless one `Block`s (first block wins).
 
-### Plugin command hooks
+### Command hooks
+
+A command hook comes from one of three places, and **all matching hooks run** — a higher layer never replaces a lower one, exactly as Codex layers user, project and managed hooks:
+
+| Origin | Path | `${PLUGIN_ROOT}` | `${PLUGIN_DATA}` |
+|---|---|---|---|
+| user file | `~/.tact/hooks.json` | the file's directory | `~/.tact` |
+| project file | `<workdir>/.tact/hooks.json` | the file's directory | `<workdir>/.tact` |
+| installed plugin | bundle `hooks/hooks.json`, or the manifest's inline `hooks` map | bundle root | the plugin's data directory |
+
+They are registered in that order — plugins, user file, project file — after any Rust closures, so adding the file entry points cannot reorder an existing plugin's `SessionStart` context.
+
+The file name is `hooks.json` (Codex's), not `.hooks.json`: a file copied out of `bm hook install --harness codex` works as-is. Tact still never reads `~/.codex/`.
+
+### Reviewing a hook before it runs
+
+A hook file is executable configuration, and a repository can ship `.tact/hooks.json` — so cloning a repo must not run its commands. Every hook definition starts **unreviewed**, and an unreviewed hook is **never registered**: the file is read, and then refused. This is Codex's `trusted_hash` model with Tact's own store.
+
+- **Identity** is the definition: source label, event, matcher and command, hashed with SHA-256. Editing the command invalidates the approval.
+- **The store** is `~/.tact/hooks-state.json` (`{"version":1,"trusted":{hash:description}}`). It is deliberately not `config.toml`: a hand-edited config must not be able to grant execution. A store that cannot be parsed is an empty one, so everything returns to review.
+- **Reviewing** is `tact-ui hooks list` (what is configured, and its status), then `tact-ui hooks trust --all` or `tact-ui hooks trust --source <label>`. `tact-ui hooks forget --all` revokes everything.
+- **Applying** happens when hooks are registered, so approval takes effect from the next session; a running session keeps the decisions it started with.
+- **Telling the reader** is never skipped: unreviewed hooks are named on the `AgentUpdate::Info` channel in the TUI and on stderr (`[hooks] …`) in headless mode, using the same two channels the MCP load report uses.
 
 The output contract is **Codex's** (`codex-rs/hooks`): `decision` / `reason`, `hookSpecificOutput.additionalContext`, `suppressOutput`, `continue`, and the `command` handler are what Tact models and honours. Claude-only outputs are deliberately not implemented — there is no `systemPrompt` handling here, because no plugin can legally emit one (Claude's SessionStart documents `additionalContext` / `initialUserMessage` / `watchPaths` / `sessionTitle` / `reloadSkills`, and Codex's schema has exactly `hookEventName` + `additionalContext`).
 
-Installed marketplace plugins can declare command hooks through `.codex-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks` (in `crates/tact/src/plugin/hooks.rs`) registers them on the `Agent` builder in `interactive.rs` / `headless.rs` for the thirteen mapped events:
+Installed marketplace plugins can declare command hooks through `.codex-plugin/plugin.json` (`"hooks": "./hooks/hooks.json"`). `apply_plugin_hooks_with_report` (in `crates/tact/src/plugin/hooks.rs`) registers the reviewed ones on the `Agent` builder in `interactive.rs` / `headless.rs` for fifteen mapped events:
 
 - `SessionStart` — matcher is matched against the real `source` (`startup` / `resume` / `compact`); `additionalContext` (JSON, or plain stdout — the shape the reference `basic-memory` plugin prints its briefing in) is recorded as a synthetic `<hook-context>` user message before the first turn; `continue: false` skips the turn, since that schema has no `decision`.
 - `UserPromptSubmit` — matcher against the prompt text; `additionalContext` output is appended to the user prompt.
-- `PreToolUse` — matcher against the tool name; `additionalContext` is recorded as conversation context before the next request; `block` prevents execution.
+- `PreToolUse` — matcher against the tool name; `additionalContext` is recorded as conversation context before the next request; `block` prevents execution, and `permissionDecision: "allow"` runs the call without asking.
+- `PermissionRequest` — runs only when Tact was **about to ask for approval** (matcher against the tool name), so a policy hook that approves does not pay for calls that need no approval: `allow` skips the prompt, `block` denies with its reason, anything else leaves the decision to the user.
+- `Interrupt` — observational, matcher against the literal `interrupt`; fires once per turn when the user cancels (`/cancel`), for logging or flushing.
 - `PostToolUse` — matcher against the tool name; `additionalContext` is recorded as conversation context before the next request; `suppressOutput` clears the result; `block` turns it into a failure.
 - `PostToolUseFailure` — matcher against the tool name; observational (`tool_name`, `tool_input`, `tool_use_id`, `error`).
 - `Notification` — matcher against the notification type (`permission_prompt`); observational (`notification_type`, `title`, `message`).
@@ -179,11 +207,24 @@ Installed marketplace plugins can declare command hooks through `.codex-plugin/p
 - `PreCompact` — matcher against the trigger string (`auto`/`manual`/`recovery`/`command`); a `block` vetoes the compaction.
 - `PostCompact` — matcher against the trigger string; observational.
 
-Each hook entry is a shell command (`sh -c` on Unix, `commandWindows` ignored for now) run with `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` env vars, the Claude input JSON on stdin (`session_id`, `transcript_path`, `cwd`, `hook_event_name`, event fields), and stdout JSON parsed in both the newer `decision` / `reason` / `additionalContext` format and the legacy `hookSpecificOutput` format. `timeout` defaults to 60s, `async: true` fire-and-forgets. Failures (non-zero exit, timeout, invalid JSON) log a warning and **continue** — they never block the agent loop (fail-open, matching Claude Code).
+Each hook entry is a shell command (`sh -c` on Unix, `commandWindows` ignored for now) run with `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` env vars, the Claude input JSON on stdin (`session_id`, `transcript_path`, `cwd`, `hook_event_name`, event fields), and stdout JSON parsed in both the newer `decision` / `reason` / `additionalContext` format and the legacy `hookSpecificOutput` format. `timeout` defaults to 60s, `async: true` fire-and-forgets, and `additionalContextLimit` bounds what one hook may inject (in tokens), applied where the context is produced rather than at whatever the session allows.
+
+**`exit 2` is the simple block contract.** The reason is the hook's **stderr** text, and what it blocks is per event, as Codex defines it:
+
+| Event | `exit 2` means |
+|---|---|
+| `PreToolUse`, `PermissionRequest` | block, `stderr` is the reason |
+| `PostToolUse` | the tool result becomes a failure carrying `stderr` |
+| `Stop`, `SubagentStop`, `UserPromptSubmit` | continue with `stderr` as the next prompt |
+| everything else | fail-open, but reported |
+
+A JSON decision always wins over a bare `exit 2`: a hook that printed one already said what it meant, and only a hook that decided *nothing* falls back to its exit status. `additionalContext` and `systemMessage` count as additions, not decisions, so they can ride along with `exit 2`.
+
+Every other failure — a timeout, a spawn error, a non-zero exit that is not `2`, JSON that looks like JSON but does not parse — still logs a warning, surfaces `[plugin hook <Event> failed] …`, and **continues** (fail-open, matching Claude Code).
 
 Hooks execute in declaration order after any Rust closures registered earlier; a `Block` short-circuits.
 
-Stacking several plugins makes that order concrete. Plugins are visited in `<marketplace>/<plugin>` key order — the order of `installed.json`'s `BTreeMap`, i.e. lexicographic, **not** installation time — and within one plugin in the order its hooks file (or inline manifest map) declares matchers for that event. There is no priority field: cross-plugin order is fixed by that key, while the order you control is the declaration order inside one plugin.
+Stacking several sources makes that order concrete. Plugins are visited in `<marketplace>/<plugin>` key order — the order of `installed.json`'s `BTreeMap`, i.e. lexicographic, **not** installation time — and within one plugin in the order its hooks file (or inline manifest map) declares matchers for that event. There is no priority field: cross-plugin order is fixed by that key, while the order you control is the declaration order inside one plugin.
 
 ---
 
@@ -292,7 +333,7 @@ Codex has exactly four such channels — `SessionStart` / `SubagentStart` (they 
 | `SubagentStart` | Appended to the child's system prompt (Claude Code semantics) |
 | `UserPromptSubmit` | Appended to the prompt text itself |
 
-The remaining nine events are control/observational only; their `additionalContext` is not a channel Codex defines either. In particular, `PreToolUse` context is **not** written into the tool arguments — an earlier `tool_use.input["_hook_context"]` key had no reader, so the context vanished and the field leaked into what the permission check and the tool itself saw.
+The remaining events are control/observational only; their `additionalContext` is not a channel Codex defines either. In particular, `PreToolUse` context is **not** written into the tool arguments — an earlier `tool_use.input["_hook_context"]` key had no reader, so the context vanished and the field leaked into what the permission check and the tool itself saw.
 
 Hooks are also the right place for one-time setup: warming caches, validating workspace invariants, or injecting telemetry context.
 
@@ -320,7 +361,20 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 | `crates/tact/src/agent/mod.rs` | `pre_tool`, `post_tool`, `session_start`, `hooks_by_type` |
 | `crates/tact/src/agent/tool_dispatch.rs` | PreToolUse / PostToolUse invocation in `execute_tool_call` |
 | `crates/tact/src/permission/mod.rs` | Runs after PreToolUse; separate from hooks |
+| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`, `admit_trusted`, `HookTrust`, `survey_hooks`, `trust_hooks`, `run_command_hook`, `build_payload` |
+| `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget`, and their renderers |
 | `docs/state_machines.md` | Hook control enum and pipeline summary |
+
+---
+
+## 13. Deliberate gaps
+
+| Gap | Why |
+|-----|-----|
+| `SessionStart` sources `clear` and `fork` | Codex reports them, but Tact has no history-clear command and no session fork, so the variants would be unreachable. The vocabulary is `startup` / `resume` / `compact` — the three Tact actually distinguishes. |
+| Inline `[hooks]` tables in `config.toml` | Codex accepts a third spelling; Tact deliberately has one, because the file entry point is what `bm hook install`-style tooling writes and a second spelling would need its own precedence rules. |
+| `mcp_tool` hook handlers | Codex hooks can invoke an MCP tool; Tact runs commands only. |
+| Managed / enterprise hooks, `bypass_trust` | An admin-managed hook bundle and a switch that disables review are both trust-model decisions with no consumer here yet. `tact-ui hooks trust --all` is the scriptable equivalent. |
 
 ---
 

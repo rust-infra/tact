@@ -163,9 +163,15 @@ async fn run_headless_locked(
     // `tools.rtk_filter` setting is enabled.
     agent = agent.with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
 
-    // Claude plugin command hooks (SessionStart / UserPromptSubmit /
-    // PreToolUse / PostToolUse) from every installed plugin.
-    agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
+    // Command hooks from installed plugins and the two `.tact/hooks.json`
+    // files. Headless has no UI channel, so an unreviewed hook is reported on
+    // stderr instead of silently skipped.
+    let (hooked, hook_report) =
+        tact::plugin::apply_plugin_hooks_with_report(agent, tact_path.workdir())?;
+    agent = hooked;
+    for line in hook_report.notice_lines() {
+        eprintln!("[hooks] {line}");
+    }
 
     // Restore any prior messages for resumed sessions.
     agent.ensure_session().await?;

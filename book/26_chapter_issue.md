@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — Hooks come from files, run only after review, and can block with `exit 2`
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature + bugfix |
+| **Related** | `crates/tact/src/plugin/hooks.rs` (`collect_hook_sources`, `admit_trusted`, `HookTrust`, `survey_hooks`, `trust_hooks`, `HookOutput::decided`, `exit_two_blocks`), `crates/tact/src/hook/mod.rs` (`HookControl::Allow`, `InterruptFn`, `PermissionRequestFn`), `crates/tact/src/agent/{mod,tool_dispatch}.rs`, `crates/tact/src/consts.rs` (`hooks.json`, `hooks-state.json`), `crates/tact-ui/src/hooks_cli.rs`, `crates/tact-ui/src/{interactive,headless}.rs`; spec `docs/superpowers/specs/2026-09-30-hook-review-and-file-sources-design.md`; [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** Three gaps against Codex, each measured. (1) Hooks could only come from an installed plugin bundle, so a user or a repository had nowhere to declare one — `bm hook install --harness codex`, which writes `~/.codex/hooks.json`, was a no-op for Tact. (2) Installing a plugin was the only gate: its hooks then ran arbitrary commands unattended, and a repository-supplied hooks file would have run on clone. (3) Codex's `exit 2` contract — stderr is the reason — was ignored, so a policy hook written the simple way silently did nothing: Tact treated every non-zero exit as fail-open.
+
+**Decision:** One loader with three origins (installed plugins, `~/.tact/hooks.json`, `<workdir>/.tact/hooks.json`), all matching hooks run, registered in that order so an existing plugin's `SessionStart` context cannot be reordered. Every hook definition starts **unreviewed** and is **never registered** until approved: identity is a SHA-256 over source label + event + matcher + command (so editing a command invalidates the approval), the store is `~/.tact/hooks-state.json` rather than `config.toml` (a hand-edited config must not grant execution), and an unparsable store is an empty one. `tact-ui hooks list|trust|forget` reviews it; the load report names unreviewed hooks on the same two channels the MCP report uses. `run_process` now returns the exit status and stderr, and `exit 2` blocks per Codex's per-event table (`PreToolUse`/`PermissionRequest` block, `PostToolUse` fails the result, `Stop`/`SubagentStop`/`UserPromptSubmit` continue with stderr), while a JSON decision always wins over a bare exit status — `additionalContext` and `systemMessage` count as additions, not decisions. `Codex`'s `additionalContextLimit` bounds one hook's injected context at the hook boundary. `HookControl` gained `Allow` (a hook answering the approval prompt): it is only meaningful on `PreToolUse` and `PermissionRequest`, a `Block` from any hook still wins whatever the order, and `PermissionRequest` runs *only* when Tact was about to ask. `Interrupt` fires once per turn when the user cancels.
+
+**Behavior after:** A repository can ship `.tact/hooks.json` and nothing runs until a human approves each definition; `hooks list` shows exactly what would run and what is waiting. A hook that exits 2 with a reason blocks a tool call as Codex documents, and one that prints a JSON decision is still honoured. `PermissionRequest` lets a policy hook answer the prompt so no prompt appears.
+
+**Pointers:** `plugin::hooks::tests::{a_hook_identity_covers_every_field_a_reviewer_sees, an_unreviewed_hook_is_read_and_then_refused, approving_one_definition_admits_only_that_one_across_a_reload, exit_two_with_a_reason_blocks_a_tool_call, a_json_decision_outranks_a_bare_exit_two, a_permission_request_hook_is_registered_and_can_allow, an_interrupt_hook_is_registered_and_runs_once_per_turn}`, `hooks_cli::tests::*`.
+
+---
+
 ## 1. 2026-09-30 — Codex's per-server MCP fields are honoured instead of merely reported
 
 | Field | Value |

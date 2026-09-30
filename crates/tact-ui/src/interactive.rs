@@ -350,6 +350,9 @@ async fn build_agent_for_interactive(
     } else {
         tact_llm::get_provider().provider
     };
+    // Kept because the builder chain below takes ownership of `agent_tx`, and
+    // the hook review notices are produced after it.
+    let hook_notice_tx = agent_tx.clone();
     let mut agent = Agent::new(
         client.clone(),
         tool_context,
@@ -364,9 +367,17 @@ async fn build_agent_for_interactive(
     .with_session_start(|_at, _ctx| Box::pin(async move { Ok(HookControl::Continue) }))
     .with_pre_tool(|_at, _tool_use| Box::pin(async move { Ok(HookControl::Continue) }))
     .with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
-    // Claude plugin command hooks (SessionStart / UserPromptSubmit /
-    // PreToolUse / PostToolUse) from every installed plugin.
-    agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
+    // Command hooks (SessionStart / UserPromptSubmit / PreToolUse /
+    // PostToolUse / …) from installed plugins, `~/.tact/hooks.json` and
+    // `.tact/hooks.json`. A hook whose definition has not been reviewed is not
+    // registered, and the report names it here — a repository that ships hooks
+    // must not be able to run them silently.
+    let (hooked, hook_report) =
+        tact::plugin::apply_plugin_hooks_with_report(agent, tact_path.workdir())?;
+    agent = hooked;
+    for line in hook_report.notice_lines() {
+        let _ = hook_notice_tx.send(AgentUpdate::Info(line));
+    }
     // `SessionStart` hooks run on the first turn (`Agent::agent_loop`), so a
     // slow plugin hook does not delay the first frame.
 

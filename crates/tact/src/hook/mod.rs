@@ -134,6 +134,12 @@ pub struct SubagentStopContext {
 pub enum HookControl {
     #[default]
     Continue,
+    /// The hook decided the call may proceed without asking.
+    ///
+    /// Codex's `permissionDecision: "allow"`. A `Block` from any hook still
+    /// wins, whatever the order: an explicit refusal must not be undone by
+    /// another hook's approval.
+    Allow,
     Block(String),
 }
 
@@ -165,6 +171,21 @@ pub trait SessionStartFn:
     for<'a> Fn(
         &'a LoopState,
         &'a mut SessionStartContext,
+    ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    + Send
+    + Sync
+{
+}
+
+/// A hook that answers the approval prompt Codex would otherwise show.
+///
+/// It receives the same tool call `PreToolUse` does, but only runs when Tact was
+/// actually about to ask — so a policy hook that only ever approves costs
+/// nothing on calls that need no approval.
+pub trait PermissionRequestFn:
+    for<'a> Fn(
+        &'a LoopState,
+        &'a mut ToolUse,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
@@ -240,6 +261,17 @@ pub trait SubagentStopFn:
 /// means "do not stop — continue the turn with the block reason as the next
 /// prompt" (Codex continuation-fragment semantics, inverted from the other
 /// hooks where `Block` vetoes).
+/// A hook that observes the turn being interrupted by the user.
+///
+/// Observational, like Codex's `Interrupt`: the cancellation has already been
+/// decided, so there is nothing to veto — a plugin uses it to log or to flush.
+pub trait InterruptFn:
+    for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    + Send
+    + Sync
+{
+}
+
 pub trait StopFn:
     for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
@@ -340,6 +372,16 @@ impl<F> SessionStartFn for F where
 {
 }
 
+impl<F> PermissionRequestFn for F where
+    F: for<'tool> Fn(
+            &'tool LoopState,
+            &'tool mut ToolUse,
+        ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'tool>>
+        + Send
+        + Sync
+{
+}
+
 impl<F> PreToolUseFn for F where
     F: for<'tool> Fn(
             &'tool LoopState,
@@ -385,6 +427,13 @@ impl<F> SubagentStopFn for F where
     F: for<'a> Fn(
             &'a mut SubagentStopContext,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+        + Send
+        + Sync
+{
+}
+
+impl<F> InterruptFn for F where
+    F: for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
         + Sync
 {
@@ -458,7 +507,9 @@ pub enum Hook {
     SessionStart(Box<dyn SessionStartFn>),
     UserPromptSubmit(Box<dyn UserPromptSubmitFn>),
     PreToolUse(Box<dyn PreToolUseFn>),
+    PermissionRequest(Box<dyn PermissionRequestFn>),
     PostToolUse(Box<dyn PostToolUseFn>),
+    Interrupt(Box<dyn InterruptFn>),
     Stop(Box<dyn StopFn>),
     SessionEnd(Box<dyn SessionEndFn>),
     PreCompact(Box<dyn PreCompactFn>),
@@ -477,6 +528,13 @@ macro_rules! invoke_hooks {
             if let $crate::hook::Hook::$hook_type(hook_fn) = hook {
                 match hook_fn($self_expr $(, $arg)*).await? {
                     $crate::hook::HookControl::Continue => {}
+                    // Keep scanning: a later hook may still block, and a block
+                    // always outranks an allow.
+                    $crate::hook::HookControl::Allow => {
+                        if matches!(control, $crate::hook::HookControl::Continue) {
+                            control = $crate::hook::HookControl::Allow;
+                        }
+                    }
                     $crate::hook::HookControl::Block(reason) => {
                         control = $crate::hook::HookControl::Block(reason);
                         break;

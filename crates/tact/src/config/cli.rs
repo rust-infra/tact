@@ -115,6 +115,45 @@ pub enum CliCommand {
         #[command(subcommand)]
         command: McpSubcommand,
     },
+    /// Review the command hooks that would run, and trust them
+    Hooks {
+        #[command(subcommand)]
+        command: HooksSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HooksSubcommand {
+    /// List every configured hook and whether it has been reviewed
+    ///
+    /// Reads installed plugins, `~/.tact/hooks.json` and `.tact/hooks.json`.
+    /// Nothing is executed and nothing is connected.
+    List,
+    /// Approve hooks so the next session runs them
+    ///
+    /// A hook definition that has not been approved is never registered, so a
+    /// repository that ships `.tact/hooks.json` cannot execute anything by
+    /// being cloned. Approving is keyed on the exact definition: editing a
+    /// command means it must be reviewed again.
+    ///
+    /// Examples: `tact-ui hooks trust --all`
+    ///           `tact-ui hooks trust --source ~/.tact/hooks.json`
+    Trust {
+        /// Approve every hook that still needs review
+        #[arg(long)]
+        all: bool,
+        /// Approve only this source, as `hooks list` names it
+        #[arg(long, value_name = "LABEL")]
+        source: Option<String>,
+    },
+    /// Forget every review decision
+    ///
+    /// Example: `tact-ui hooks forget --all`
+    Forget {
+        /// Required: revoking every approval is never implicit
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

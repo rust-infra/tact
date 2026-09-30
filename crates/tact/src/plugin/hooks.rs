@@ -63,10 +63,12 @@ pub enum HookEventKind {
     SubagentStart,
     SubagentStop,
     PreToolUse,
+    PermissionRequest,
     PostToolUse,
     PostToolUseFailure,
     Notification,
     TaskCompleted,
+    Interrupt,
     Stop,
     SessionEnd,
     PreCompact,
@@ -83,10 +85,12 @@ impl HookEventKind {
             Self::SubagentStart => "SubagentStart",
             Self::SubagentStop => "SubagentStop",
             Self::PreToolUse => "PreToolUse",
+            Self::PermissionRequest => "PermissionRequest",
             Self::PostToolUse => "PostToolUse",
             Self::PostToolUseFailure => "PostToolUseFailure",
             Self::Notification => "Notification",
             Self::TaskCompleted => "TaskCompleted",
+            Self::Interrupt => "Interrupt",
             Self::Stop => "Stop",
             Self::SessionEnd => "SessionEnd",
             Self::PreCompact => "PreCompact",
@@ -102,10 +106,12 @@ impl HookEventKind {
             "SubagentStart" => Some(Self::SubagentStart),
             "SubagentStop" => Some(Self::SubagentStop),
             "PreToolUse" => Some(Self::PreToolUse),
+            "PermissionRequest" => Some(Self::PermissionRequest),
             "PostToolUse" => Some(Self::PostToolUse),
             "PostToolUseFailure" => Some(Self::PostToolUseFailure),
             "Notification" => Some(Self::Notification),
             "TaskCompleted" => Some(Self::TaskCompleted),
+            "Interrupt" => Some(Self::Interrupt),
             "Stop" => Some(Self::Stop),
             "SessionEnd" => Some(Self::SessionEnd),
             "PreCompact" => Some(Self::PreCompact),
@@ -147,6 +153,14 @@ pub struct HookCommand {
     pub status_message: Option<String>,
     #[serde(default, rename = "async")]
     pub async_: Option<bool>,
+    /// Codex `additionalContextLimit`: a per-hook budget for the context this
+    /// hook injects, in tokens.
+    ///
+    /// An upper bound chosen by the hook's author, applied before the client's
+    /// own cap in `agent` — a chatty hook is bounded at its own declared size
+    /// rather than at whatever the session allows.
+    #[serde(default, rename = "additionalContextLimit")]
+    pub additional_context_limit: Option<usize>,
 }
 
 impl HooksFile {
@@ -202,6 +216,15 @@ impl HookOutput {
     fn continue_default() -> Self {
         Self::default()
     }
+
+    /// Whether the hook expressed a decision, as opposed to only extra context.
+    ///
+    /// `additionalContext` and `systemMessage` are additions, not decisions, so
+    /// a hook that prints only those still leaves `exit 2` free to block.
+    #[must_use]
+    fn decided(&self) -> bool {
+        !matches!(self.control, HookControl::Continue) || self.stop || self.suppress_output
+    }
 }
 
 /// Runs one command hook and returns its normalized output.
@@ -248,8 +271,53 @@ pub async fn run_command_hook(
     )
     .await
     {
-        Ok(stdout) => {
-            let output = parse_output(&stdout, input.hook_event_name);
+        Ok(run) => {
+            let mut output = parse_output(&run.stdout, input.hook_event_name);
+            // `exit 2` is Codex's simple block mechanism: the reason is the
+            // stderr text. A JSON decision always wins — a hook that printed one
+            // already said what it meant — so this only fills the gap a bare
+            // failure leaves.
+            if run.exit_code != Some(0) {
+                if run.exit_code == Some(2)
+                    && !run.stderr.is_empty()
+                    && exit_two_blocks(input.hook_event_name)
+                    && !output.decided()
+                {
+                    output.control = HookControl::Block(run.stderr.clone());
+                } else if !output.decided() {
+                    let detail = if run.stderr.is_empty() {
+                        format!("exited with {:?}", run.exit_code)
+                    } else {
+                        format!("exited with {:?}: {}", run.exit_code, run.stderr)
+                    };
+                    warn!("plugin hook command failed (continuing): {detail}");
+                    if let Some(agent) = agent {
+                        agent.emit_update(AgentUpdate::Info(format!(
+                            "[plugin hook {} failed] {detail}",
+                            input.hook_event_name
+                        )));
+                    }
+                }
+                // Otherwise the hook printed a decision: honour it. A JSON
+                // decision is the richer contract, so a bare exit status must
+                // not overwrite what it said.
+            }
+            // A per-hook budget, applied where the context is produced: the
+            // hook's author declared how much of it should reach the model.
+            // A let-chain, not a tuple pattern: in `if let (Some(limit),
+            // Some(context)) = …` the `take()` runs even when there is no
+            // limit, and the context is then dropped on the floor.
+            if let Some(limit) = command.additional_context_limit
+                && let Some(context) = output.additional_context.take()
+            {
+                let (trimmed, _) =
+                    crate::utils::truncate::truncate_middle_with_token_budget(&context, limit);
+                output.additional_context = Some(if trimmed == context {
+                    context
+                } else {
+                    format!("{trimmed}\n\n[truncated to {limit} tokens by additionalContextLimit]")
+                });
+            }
             // Codex records `systemMessage` as a warning entry; it never reaches
             // the conversation.
             if let Some(message) = &output.system_message
@@ -282,7 +350,7 @@ async fn run_process(
     dirs: &PluginDirs,
     payload: &Value,
     timeout_secs: Option<u64>,
-) -> Result<String> {
+) -> Result<HookRunOutput> {
     // Inject the hook-protocol env vars into the subprocess:
     //   - `CLAUDE_PLUGIN_ROOT` / `PLUGIN_ROOT` = absolute plugin cache root (the
     //     dir holding `.codex-plugin/`, `hooks/`, `skills/`, …). Hook scripts
@@ -341,14 +409,47 @@ async fn run_process(
         None => child.wait_with_output().await?,
     };
 
-    if !output.status.success() {
-        anyhow::bail!(
-            "hook command exited with {:?}: {}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    // A non-zero exit is reported to the caller instead of failing here: Codex
+    // gives `exit 2` a per-event meaning that only the caller can apply.
+    Ok(HookRunOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        exit_code: output.status.code(),
+    })
+}
+
+/// What one hook subprocess produced.
+///
+/// A non-zero exit is *not* an `Err` any more: Codex gives `exit 2` a meaning
+/// (block, with the reason on stderr), so the caller needs the status and the
+/// stderr to apply it. A spawn failure or a timeout is still an `Err`, because
+/// there is no status to interpret.
+struct HookRunOutput {
+    /// Trimmed stdout.
+    stdout: String,
+    /// Trimmed stderr — Codex reads a block reason from here.
+    stderr: String,
+    /// The exit code, when the process exited normally.
+    exit_code: Option<i32>,
+}
+
+/// Whether an `exit 2` from this event blocks anything.
+///
+/// Codex defines the contract per event: `PreToolUse` / `PermissionRequest`
+/// block a tool, `PostToolUse` fails a result, and `Stop` / `SubagentStop` /
+/// `UserPromptSubmit` continue with the stderr text as the next prompt. For
+/// every other event (`SessionStart`, `PreCompact`, `SessionEnd`, …) a bare
+/// `exit 2` has no meaning, so it stays fail-open — but it is still reported.
+fn exit_two_blocks(event_name: &str) -> bool {
+    matches!(
+        event_name,
+        "PreToolUse"
+            | "PermissionRequest"
+            | "PostToolUse"
+            | "Stop"
+            | "SubagentStop"
+            | "UserPromptSubmit"
+    )
 }
 
 /// Resolves a hook's timeout: an explicit `0` disables the timeout, `None`
@@ -432,8 +533,13 @@ fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
     };
 
     let legacy = raw.hook_specific_output.as_ref();
-    let blocked = raw.decision.as_deref() == Some("block")
-        || legacy.and_then(|l| l.permission_decision.as_deref()) == Some("deny");
+    let permission_decision = legacy.and_then(|l| l.permission_decision.as_deref());
+    let blocked = raw.decision.as_deref() == Some("block") || permission_decision == Some("deny");
+    // Codex's `permissionDecision: "allow"` is how a hook answers the approval
+    // prompt itself. It is only *meaningful* on `PreToolUse` /
+    // `PermissionRequest`; other events treat it as "nothing to say", which is
+    // what folding it into the macro's `Allow` arm already does.
+    let allowed = permission_decision == Some("allow");
     let reason = raw
         .reason
         .clone()
@@ -443,6 +549,8 @@ fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
     HookOutput {
         control: if blocked {
             HookControl::Block(reason)
+        } else if allowed {
+            HookControl::Allow
         } else {
             HookControl::Continue
         },
@@ -630,7 +738,7 @@ fn inline_hooks(manifest: &HookManifest) -> Option<HooksFile> {
 }
 
 /// Loads every installed plugin's hooks file.
-fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
+fn plugin_hook_sources(home: &PluginHome) -> Result<Vec<HookSource>> {
     let store = PluginStore::new(home.clone());
     let mut out = Vec::new();
     for root in store.installed_plugin_roots()? {
@@ -653,15 +761,153 @@ fn installed_hooks(home: &PluginHome) -> Result<Vec<InstalledHooks>> {
         let Some(hooks) = load_installed_hooks(&root.root, &manifest) else {
             continue;
         };
-        out.push(InstalledHooks {
-            dirs: PluginDirs {
-                data: home.plugin_data_dir(&root.marketplace, &root.plugin_id),
-                root: root.root,
-            },
+        let origin = HookOrigin::Plugin {
+            id: root.plugin_id.clone(),
+        };
+        let dirs = PluginDirs {
+            data: home.plugin_data_dir(&root.marketplace, &root.plugin_id),
+            root: root.root,
+        };
+        let label = match &origin {
+            HookOrigin::Plugin { id } => format!("plugin {id}"),
+            // Neither file origin is reachable from a plugin bundle.
+            HookOrigin::UserFile => "~/.tact/hooks.json".to_string(),
+            HookOrigin::ProjectFile => format!("{}/.tact/hooks.json", dirs.root.display()),
+        };
+        out.push(HookSource {
+            label,
+            origin,
+            dirs,
             hooks,
         });
     }
     Ok(out)
+}
+
+/// Reads one `.tact/hooks.json`.
+///
+/// A missing file is normal (most users have none). A file that cannot be read
+/// or parsed is reported and skipped rather than aborting startup: a repository
+/// can ship the project-scoped one, and one bad file must not stop Tact from
+/// starting in that directory — the same rule a project `.mcp.json` gets.
+fn hooks_file_source(
+    path: &Path,
+    label: String,
+    origin: HookOrigin,
+    dirs: PluginDirs,
+) -> Option<HookSource> {
+    if !path.is_file() {
+        return None;
+    }
+    match HooksFile::from_file(path) {
+        Ok(hooks) => Some(HookSource {
+            label,
+            origin,
+            dirs,
+            hooks,
+        }),
+        Err(error) => {
+            warn!("hooks at {} skipped: {error:#}", path.display());
+            None
+        }
+    }
+}
+
+/// Every hooks file Tact reads, in registration order.
+///
+/// Plugins first (their order is unchanged, so this cannot reorder an existing
+/// user's `SessionStart` context), then `~/.tact/hooks.json`, then
+/// `<workdir>/.tact/hooks.json`. Codex runs user, project and plugin hooks
+/// together rather than letting one layer replace another, and so does this.
+fn collect_hook_sources(home: Option<&PluginHome>, work_dir: &Path) -> Result<Vec<HookSource>> {
+    collect_hook_sources_with(home, crate::consts::TactPath::home_hooks_path(), work_dir)
+}
+
+/// [`collect_hook_sources`] with the user file named explicitly, so a test does
+/// not have to move the process-wide `HOME` (it would otherwise pick up the
+/// developer's real `~/.tact/hooks.json`).
+fn collect_hook_sources_with(
+    home: Option<&PluginHome>,
+    user_file: Option<PathBuf>,
+    work_dir: &Path,
+) -> Result<Vec<HookSource>> {
+    let mut out = match home {
+        Some(home) => plugin_hook_sources(home)?,
+        None => Vec::new(),
+    };
+
+    if let Some(path) = user_file {
+        // The user file's `${PLUGIN_ROOT}` is its own directory — there is no
+        // package — and `${PLUGIN_DATA}` is `~/.tact`, which outlives it.
+        let dirs = PluginDirs {
+            root: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            data: crate::consts::TactPath::home_tact_dir().unwrap_or_else(|| PathBuf::from(".")),
+        };
+        let label = "~/.tact/hooks.json".to_string();
+        if let Some(source) = hooks_file_source(&path, label, HookOrigin::UserFile, dirs) {
+            out.push(source);
+        }
+    }
+
+    let tact_dir = crate::consts::TactPath::new(work_dir).tact_dir();
+    let dirs = PluginDirs {
+        root: tact_dir.clone(),
+        data: tact_dir,
+    };
+    let project = crate::consts::TactPath::new(work_dir).hooks_path();
+    let label = project.display().to_string();
+    if let Some(source) = hooks_file_source(&project, label, HookOrigin::ProjectFile, dirs) {
+        out.push(source);
+    }
+
+    Ok(out)
+}
+
+/// Splits one source's hooks into the reviewed ones and the ones that still
+/// need review.
+///
+/// Returns a copy of the source's hooks containing only reviewed definitions, so
+/// the registration code runs unchanged and an unreviewed command is never even
+/// reachable — the file is read, and then refused.
+fn admit_trusted(source: &HookSource, trust: &HookTrust, report: &mut HookLoadReport) -> HooksFile {
+    let mut kept: HashMap<String, Vec<HookMatcher>> = HashMap::new();
+    for (event, matchers) in &source.hooks.hooks {
+        let mut kept_matchers = Vec::new();
+        for matcher in matchers {
+            let mut kept_commands = Vec::new();
+            for command in &matcher.hooks {
+                let command_text = command.command.as_deref().unwrap_or_default();
+                let summary = HookSummary {
+                    hash: hook_definition_hash(
+                        &source.label,
+                        event,
+                        matcher.matcher.as_deref(),
+                        command_text,
+                    ),
+                    source: source.label.clone(),
+                    event: event.clone(),
+                    matcher: matcher.matcher.clone(),
+                    command: command_text.to_string(),
+                };
+                if trust.is_trusted(&summary.hash) {
+                    report.trusted.push(summary);
+                    kept_commands.push(command.clone());
+                } else {
+                    report.pending.push(summary);
+                }
+            }
+            if !kept_commands.is_empty() {
+                kept_matchers.push(HookMatcher {
+                    matcher: matcher.matcher.clone(),
+                    hooks: kept_commands,
+                });
+            }
+        }
+        if !kept_matchers.is_empty() {
+            kept.insert(event.clone(), kept_matchers);
+        }
+    }
+    HooksFile { hooks: kept }
 }
 
 /// Loads one installed plugin's hooks, preferring an inline manifest map and
@@ -688,11 +934,249 @@ struct HookManifest {
     hooks: Option<serde_json::Value>,
 }
 
-struct InstalledHooks {
-    /// The plugin's two Agent Plugins directories: the unpacked package, and the
-    /// client-managed data directory that outlives it (§9.1).
-    dirs: PluginDirs,
-    hooks: HooksFile,
+/// Where a hooks file came from.
+///
+/// The origin decides two things: how the review prompt names the hook, and
+/// what `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` mean inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookOrigin {
+    /// An installed marketplace plugin's bundle.
+    Plugin { id: String },
+    /// `~/.tact/hooks.json`.
+    UserFile,
+    /// `<workdir>/.tact/hooks.json`.
+    ProjectFile,
+}
+
+/// One hooks file to register, whichever origin it came from.
+pub struct HookSource {
+    /// Human-readable origin, also half of every hook's identity hash.
+    pub label: String,
+    pub origin: HookOrigin,
+    /// The two directories a hook command may expand: for a plugin, its package
+    /// and data directory; for a `.tact/hooks.json`, the file's directory and
+    /// the `.tact` directory that holds it.
+    pub dirs: PluginDirs,
+    pub hooks: HooksFile,
+}
+
+/// One hook definition as the review surfaces describe it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookSummary {
+    /// [`hook_definition_hash`] of exactly these fields.
+    pub hash: String,
+    /// The source label (`plugin ponytail`, `~/.tact/hooks.json`, …).
+    pub source: String,
+    pub event: String,
+    pub matcher: Option<String>,
+    pub command: String,
+}
+
+impl HookSummary {
+    /// One line for `hooks list` and the review notice.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match &self.matcher {
+            Some(matcher) => format!(
+                "{}  {}  [{}]  {}",
+                self.source, self.event, matcher, self.command
+            ),
+            None => format!("{}  {}  {}", self.source, self.event, self.command),
+        }
+    }
+}
+
+/// Identifies a hook by its **definition**, so editing a command invalidates an
+/// earlier approval — the property Codex gets from its `trusted_hash`.
+///
+/// The source label is part of the identity: the same command in a plugin and in
+/// a repository's `.tact/hooks.json` are two different decisions, and approving
+/// one must not approve the other.
+#[must_use]
+pub fn hook_definition_hash(
+    source: &str,
+    event: &str,
+    matcher: Option<&str>,
+    command: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for part in [source, event, matcher.unwrap_or_default(), command] {
+        hasher.update(part.as_bytes());
+        // A separator that cannot appear in a JSON string, so `"ab" + "c"` and
+        // `"a" + "bc"` cannot hash the same.
+        hasher.update(b"\0");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// What one load decided about the configured hooks.
+#[derive(Debug, Clone, Default)]
+pub struct HookLoadReport {
+    /// Hooks whose definition has been reviewed; these run.
+    pub trusted: Vec<HookSummary>,
+    /// Hooks skipped because their definition is new or changed since review.
+    ///
+    /// Fail-closed: an unreviewed hook is never spawned. A repository that ships
+    /// `.tact/hooks.json` therefore cannot execute anything by being cloned.
+    pub pending: Vec<HookSummary>,
+}
+
+impl HookLoadReport {
+    /// True when nothing needs the reader's attention.
+    #[must_use]
+    pub fn is_quiet(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// One line per fact, for both the TUI notice and headless stderr.
+    #[must_use]
+    pub fn notice_lines(&self) -> Vec<String> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec![format!(
+            "{} hook(s) need review and were not run:",
+            self.pending.len()
+        )];
+        for hook in &self.pending {
+            lines.push(format!("  {}", hook.describe()));
+        }
+        lines.push(
+            "Review with `tact-ui hooks list`, then `tact-ui hooks trust --all` \
+             (or /hooks trust all)."
+                .to_string(),
+        );
+        lines
+    }
+}
+
+/// The user's hook review decisions, keyed by [`hook_definition_hash`].
+#[derive(Debug, Clone, Default)]
+pub struct HookTrust {
+    path: Option<PathBuf>,
+    trusted: HashMap<String, String>,
+    /// Test-only: approve every definition without touching the filesystem.
+    ///
+    /// A field rather than a constructor side effect, so the exception cannot
+    /// leak into a production `HookTrust::load`.
+    #[cfg(test)]
+    trust_everything: bool,
+}
+
+impl HookTrust {
+    /// Loads `~/.tact/hooks-state.json`. A missing or unreadable file is an
+    /// empty store, which means *nothing* runs until reviewed.
+    #[must_use]
+    pub fn load() -> Self {
+        match crate::consts::TactPath::home_hooks_state_path() {
+            Some(path) => Self::from_path(path),
+            None => Self::default(),
+        }
+    }
+
+    /// Loads the store at an explicit path (tests, and the CLI's `--home`).
+    #[must_use]
+    pub fn from_path(path: PathBuf) -> Self {
+        let mut trust = Self {
+            path: Some(path.clone()),
+            ..Self::default()
+        };
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return trust;
+        };
+        match serde_json::from_str::<HookStateFile>(&raw) {
+            Ok(parsed) => trust.trusted = parsed.trusted,
+            // A store that cannot be parsed must not be silently trusted: an
+            // empty map means everything goes back to needing review.
+            Err(error) => warn!("hook review store {} ignored: {error}", path.display()),
+        }
+        trust
+    }
+
+    /// A store that trusts every definition, for tests that are about hook
+    /// behaviour rather than about review.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn trusting_everything() -> Self {
+        Self {
+            trust_everything: true,
+            ..Self::default()
+        }
+    }
+
+    /// The store's file, for the CLI's messages.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// Whether this definition has been reviewed and approved.
+    #[must_use]
+    pub fn is_trusted(&self, hash: &str) -> bool {
+        #[cfg(test)]
+        if self.trust_everything {
+            return true;
+        }
+        self.trusted.contains_key(hash)
+    }
+
+    /// Records approval for `entries` and persists the store.
+    ///
+    /// Writing only happens when a path is configured: a `--home`-less store is
+    /// a read-only view, and silently discarding a decision would be worse than
+    /// reporting it.
+    pub fn trust(&mut self, entries: &[HookSummary]) -> Result<usize> {
+        for entry in entries {
+            self.trusted.insert(entry.hash.clone(), entry.describe());
+        }
+        self.persist()?;
+        Ok(entries.len())
+    }
+
+    /// Forgets every decision, so every hook needs review again.
+    pub fn forget_all(&mut self) -> Result<()> {
+        self.trusted.clear();
+        self.persist()
+    }
+
+    /// Every recorded decision, newest state, sorted for stable output.
+    #[must_use]
+    pub fn recorded(&self) -> Vec<(&str, &str)> {
+        let mut out: Vec<(&str, &str)> = self
+            .trusted
+            .iter()
+            .map(|(hash, label)| (hash.as_str(), label.as_str()))
+            .collect();
+        out.sort_by(|a, b| a.1.cmp(b.1));
+        out
+    }
+
+    fn persist(&self) -> Result<()> {
+        let Some(path) = self.path.as_deref() else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let body = serde_json::to_string_pretty(&HookStateFile {
+            version: 1,
+            trusted: self.trusted.clone(),
+        })?;
+        std::fs::write(path, body)
+            .with_context(|| format!("failed to write hook review store {}", path.display()))
+    }
+}
+
+/// On-disk shape of [`HookTrust`].
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+struct HookStateFile {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    trusted: HashMap<String, String>,
 }
 
 /// Builds `SubagentStart` command-hook closures for every installed plugin.
@@ -701,22 +1185,40 @@ struct InstalledHooks {
 /// invoked by `spawn_subagent`; `additionalContext` output is appended to the
 /// child's system prompt and a `block` decision fails the spawn.
 pub fn plugin_subagent_start_hooks(work_dir: &Path) -> Result<Vec<Arc<dyn SubagentStartFn>>> {
-    match PluginHome::from_environment() {
-        Some(home) => plugin_subagent_start_hooks_with_home(&home, work_dir),
-        None => Ok(Vec::new()),
-    }
+    let home = PluginHome::from_environment();
+    let sources = collect_hook_sources(home.as_ref(), work_dir)?;
+    let trust = HookTrust::load();
+    Ok(subagent_start_hooks_from(&sources, &trust, work_dir))
 }
 
-fn plugin_subagent_start_hooks_with_home(
+/// [`plugin_subagent_start_hooks`] against explicit sources and a store, so
+/// tests do not have to move the process-wide `HOME` or write the real review
+/// store.
+#[cfg(test)]
+fn subagent_start_hooks_with(
     home: &PluginHome,
+    trust: &HookTrust,
     work_dir: &Path,
 ) -> Result<Vec<Arc<dyn SubagentStartFn>>> {
+    let sources = collect_hook_sources(Some(home), work_dir)?;
+    Ok(subagent_start_hooks_from(&sources, trust, work_dir))
+}
+
+fn subagent_start_hooks_from(
+    sources: &[HookSource],
+    trust: &HookTrust,
+    work_dir: &Path,
+) -> Vec<Arc<dyn SubagentStartFn>> {
     let mut out: Vec<Arc<dyn SubagentStartFn>> = Vec::new();
-    for installed in installed_hooks(home)? {
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::SubagentStart) {
+    for source in sources {
+        // The pending list is reported once by the main load; here an
+        // unreviewed hook is simply not registered.
+        let mut report = HookLoadReport::default();
+        let hooks = admit_trusted(source, trust, &mut report);
+        for (matcher, command) in hooks.commands_for(HookEventKind::SubagentStart) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.to_path_buf();
             out.push(Arc::new(move |ctx: &mut SubagentStartContext| {
                 let command = command.clone();
@@ -760,7 +1262,7 @@ fn plugin_subagent_start_hooks_with_home(
             }));
         }
     }
-    Ok(out)
+    out
 }
 
 /// Builds `SubagentStop` command-hook closures for every installed plugin.
@@ -771,22 +1273,26 @@ fn plugin_subagent_start_hooks_with_home(
 /// returned), and the hook may not rewrite the summary in v1 — matching the
 /// observational SubagentStop contract.
 pub fn plugin_subagent_stop_hooks(work_dir: &Path) -> Result<Vec<Arc<dyn SubagentStopFn>>> {
-    match PluginHome::from_environment() {
-        Some(home) => plugin_subagent_stop_hooks_with_home(&home, work_dir),
-        None => Ok(Vec::new()),
-    }
+    let home = PluginHome::from_environment();
+    let sources = collect_hook_sources(home.as_ref(), work_dir)?;
+    let trust = HookTrust::load();
+    Ok(subagent_stop_hooks_from(&sources, &trust, work_dir))
 }
 
-fn plugin_subagent_stop_hooks_with_home(
-    home: &PluginHome,
+fn subagent_stop_hooks_from(
+    sources: &[HookSource],
+    trust: &HookTrust,
     work_dir: &Path,
-) -> Result<Vec<Arc<dyn SubagentStopFn>>> {
+) -> Vec<Arc<dyn SubagentStopFn>> {
     let mut out: Vec<Arc<dyn SubagentStopFn>> = Vec::new();
-    for installed in installed_hooks(home)? {
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::SubagentStop) {
+    for source in sources {
+        // Reported by the main load; see the start loader above.
+        let mut report = HookLoadReport::default();
+        let hooks = admit_trusted(source, trust, &mut report);
+        for (matcher, command) in hooks.commands_for(HookEventKind::SubagentStop) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.to_path_buf();
             out.push(Arc::new(move |ctx: &mut SubagentStopContext| {
                 let command = command.clone();
@@ -824,14 +1330,15 @@ fn plugin_subagent_stop_hooks_with_home(
             }));
         }
     }
-    Ok(out)
+    out
 }
 
-/// Applies every installed plugin's command hooks to an agent builder.
+/// Applies every command hook an agent may run: installed plugins, then
+/// `~/.tact/hooks.json`, then `<workdir>/.tact/hooks.json`.
 ///
-/// Hooks are appended after any existing Rust closures, per plugin in
-/// `<marketplace>/<plugin>` key order — the order of `installed.json`'s
-/// `BTreeMap`, not installation time.
+/// Hooks are appended after any existing Rust closures, per source in that
+/// order — plugin order is `<marketplace>/<plugin>` key order, the order of
+/// `installed.json`'s `BTreeMap`, not installation time.
 ///
 /// A `block` output from `PreToolUse` / `PostToolUse` /
 /// `Stop` / `PreCompact` propagates through [`HookControl`]; `UserPromptSubmit`
@@ -839,29 +1346,108 @@ fn plugin_subagent_stop_hooks_with_home(
 /// `additionalContext` is collected for injection before the first turn;
 /// `SessionEnd` / `PostCompact` / `SubagentStop` / `PostToolUseFailure` /
 /// `Notification` / `TaskCompleted` are observational.
+///
+/// Only hooks whose definition has been reviewed are registered; the returned
+/// report names the ones that were skipped. Prefer
+/// [`apply_plugin_hooks_with_report`] at an entry point so the reader learns
+/// about them.
 pub fn apply_plugin_hooks(agent: crate::Agent, work_dir: &Path) -> Result<crate::Agent> {
-    let Some(home) = PluginHome::from_environment() else {
-        return Ok(agent);
-    };
-    apply_plugin_hooks_with_home(&home, agent, work_dir)
+    Ok(apply_plugin_hooks_with_report(agent, work_dir)?.0)
 }
 
-/// [`apply_plugin_hooks`] against an explicit plugin home, so tests do not have
-/// to move the process-wide `HOME` (same split as
-/// [`plugin_subagent_start_hooks_with_home`]).
-fn apply_plugin_hooks_with_home(
-    home: &PluginHome,
+/// [`apply_plugin_hooks`], keeping the review report.
+pub fn apply_plugin_hooks_with_report(
     agent: crate::Agent,
     work_dir: &Path,
-) -> Result<crate::Agent> {
+) -> Result<(crate::Agent, HookLoadReport)> {
+    let home = PluginHome::from_environment();
+    let sources = collect_hook_sources(home.as_ref(), work_dir)?;
+    let trust = HookTrust::load();
+    Ok(apply_hook_sources(sources, &trust, agent, work_dir))
+}
+
+/// [`apply_hook_sources`] against an explicit plugin home and store, so tests do
+/// not have to move the process-wide `HOME` or write the real review store.
+#[cfg(test)]
+fn apply_hooks_with(
+    home: &PluginHome,
+    trust: &HookTrust,
+    agent: crate::Agent,
+    work_dir: &Path,
+) -> Result<(crate::Agent, HookLoadReport)> {
+    let sources = collect_hook_sources(Some(home), work_dir)?;
+    Ok(apply_hook_sources(sources, trust, agent, work_dir))
+}
+
+/// Every configured hook in `work_dir`, with its review status, without
+/// registering or running anything.
+///
+/// This is what `tact-ui hooks list` shows and what [`trust_hooks`] acts on; the
+/// split into `trusted` / `pending` is the same one the load path makes, so the
+/// listing cannot disagree with what actually runs.
+pub fn survey_hooks(work_dir: &Path) -> Result<HookLoadReport> {
+    let home = PluginHome::from_environment();
+    let sources = collect_hook_sources(home.as_ref(), work_dir)?;
+    let trust = HookTrust::load();
+    let mut report = HookLoadReport::default();
+    for source in &sources {
+        admit_trusted(source, &trust, &mut report);
+    }
+    Ok(report)
+}
+
+/// Marks hooks as reviewed, so the next session runs them.
+///
+/// `all` approves every pending hook; `source` narrows to one source label
+/// (`plugin ponytail`, `~/.tact/hooks.json`, …). One of the two is required:
+/// approving something by accident is the failure this command exists to avoid.
+///
+/// Trust is read when hooks are registered, so a running session keeps the
+/// decisions it started with.
+pub fn trust_hooks(work_dir: &Path, all: bool, source: Option<&str>) -> Result<Vec<HookSummary>> {
+    if !all && source.is_none() {
+        anyhow::bail!("pass --all, or --source <label> to approve one source");
+    }
+    let report = survey_hooks(work_dir)?;
+    let selected: Vec<HookSummary> = report
+        .pending
+        .into_iter()
+        .filter(|hook| all || source.is_some_and(|wanted| hook.source == wanted))
+        .collect();
+    if selected.is_empty() {
+        return Ok(selected);
+    }
+    let mut store = HookTrust::load();
+    store.trust(&selected)?;
+    Ok(selected)
+}
+
+/// Forgets every review decision, so every hook needs review again.
+pub fn forget_hook_trust() -> Result<()> {
+    HookTrust::load().forget_all()
+}
+
+/// Registers every reviewed hook from every source on the agent.
+///
+/// Fail-closed: a hook whose definition is not in the review store is not
+/// registered at all, so a repository that ships `.tact/hooks.json` cannot
+/// execute anything by being cloned — the file is read, and then refused.
+fn apply_hook_sources(
+    sources: Vec<HookSource>,
+    trust: &HookTrust,
+    agent: crate::Agent,
+    work_dir: &Path,
+) -> (crate::Agent, HookLoadReport) {
     let mut agent = agent;
     let work_dir = work_dir.to_path_buf();
+    let mut report = HookLoadReport::default();
 
-    for installed in installed_hooks(home)? {
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::SessionStart) {
+    for source in sources {
+        let hooks = admit_trusted(&source, trust, &mut report);
+        for (matcher, command) in hooks.commands_for(HookEventKind::SessionStart) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_session_start(
                 move |agent: &crate::Agent, context: &mut SessionStartContext| {
@@ -917,13 +1503,10 @@ fn apply_plugin_hooks_with_home(
             );
         }
 
-        for (matcher, command) in installed
-            .hooks
-            .commands_for(HookEventKind::UserPromptSubmit)
-        {
+        for (matcher, command) in hooks.commands_for(HookEventKind::UserPromptSubmit) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
                 agent.with_user_prompt_submit(move |agent: &crate::Agent, prompt: &mut String| {
@@ -956,10 +1539,10 @@ fn apply_plugin_hooks_with_home(
                 });
         }
 
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::PreToolUse) {
+        for (matcher, command) in hooks.commands_for(HookEventKind::PreToolUse) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_pre_tool(move |agent: &crate::Agent, tool_use: &mut ToolUse| {
                 let matcher = matcher.clone();
@@ -1007,10 +1590,48 @@ fn apply_plugin_hooks_with_home(
             });
         }
 
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::PostToolUse) {
+        for (matcher, command) in hooks.commands_for(HookEventKind::PermissionRequest) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
+            let work_dir = work_dir.clone();
+            agent = agent.with_permission_request(
+                move |agent: &crate::Agent, tool_use: &mut ToolUse| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let dirs = dirs.clone();
+                    let work_dir = work_dir.clone();
+                    Box::pin(async move {
+                        if !matcher_matches(matcher.as_deref(), &tool_use.name) {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_command_hook(
+                            &command,
+                            &dirs,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "PermissionRequest",
+                                event: json!({
+                                    "tool_name": tool_use.name,
+                                    "tool_input": tool_use.input,
+                                }),
+                            },
+                            Some(agent),
+                        )
+                        .await;
+                        // `allow` skips the prompt, `block` denies with the
+                        // reason, anything else leaves the user to decide.
+                        Ok(output.control)
+                    })
+                },
+            );
+        }
+
+        for (matcher, command) in hooks.commands_for(HookEventKind::PostToolUse) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_hook(
                 move |agent: &crate::Agent,
@@ -1064,13 +1685,10 @@ fn apply_plugin_hooks_with_home(
             );
         }
 
-        for (matcher, command) in installed
-            .hooks
-            .commands_for(HookEventKind::PostToolUseFailure)
-        {
+        for (matcher, command) in hooks.commands_for(HookEventKind::PostToolUseFailure) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_failure(
                 move |agent: &crate::Agent, tool_use: &ToolUse, error: &str| {
@@ -1112,10 +1730,10 @@ fn apply_plugin_hooks_with_home(
             );
         }
 
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::Notification) {
+        for (matcher, command) in hooks.commands_for(HookEventKind::Notification) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
                 agent.with_notification(move |agent: &crate::Agent, ctx: &NotificationContext| {
@@ -1155,10 +1773,10 @@ fn apply_plugin_hooks_with_home(
                 });
         }
 
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::TaskCompleted) {
+        for (matcher, command) in hooks.commands_for(HookEventKind::TaskCompleted) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_task_completed(move |agent: &crate::Agent| {
                 let matcher = matcher.clone();
@@ -1193,10 +1811,44 @@ fn apply_plugin_hooks_with_home(
             });
         }
 
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::Stop) {
+        for (matcher, command) in hooks.commands_for(HookEventKind::Interrupt) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
+            let work_dir = work_dir.clone();
+            agent = agent.with_interrupt(move |agent: &crate::Agent| {
+                let matcher = matcher.clone();
+                let command = command.clone();
+                let dirs = dirs.clone();
+                let work_dir = work_dir.clone();
+                Box::pin(async move {
+                    // Codex's `Interrupt` has no matcher subject, so a matcher
+                    // can only be a constant expression; `interrupt` is what it
+                    // is matched against.
+                    if !matcher_matches(matcher.as_deref(), "interrupt") {
+                        return Ok(HookControl::Continue);
+                    }
+                    let output = run_command_hook(
+                        &command,
+                        &dirs,
+                        &HookRunInput {
+                            session_id: String::new(),
+                            work_dir,
+                            hook_event_name: "Interrupt",
+                            event: json!({ "reason": "user_interrupt" }),
+                        },
+                        Some(agent),
+                    )
+                    .await;
+                    Ok(output.control)
+                })
+            });
+        }
+
+        for (matcher, command) in hooks.commands_for(HookEventKind::Stop) {
+            let matcher = matcher.matcher.clone();
+            let command = command.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_stop(move |agent: &crate::Agent| {
                 let matcher = matcher.clone();
@@ -1232,10 +1884,10 @@ fn apply_plugin_hooks_with_home(
             });
         }
 
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::SessionEnd) {
+        for (matcher, command) in hooks.commands_for(HookEventKind::SessionEnd) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_session_end(move |agent: &crate::Agent| {
                 let matcher = matcher.clone();
@@ -1266,10 +1918,10 @@ fn apply_plugin_hooks_with_home(
             });
         }
 
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::PreCompact) {
+        for (matcher, command) in hooks.commands_for(HookEventKind::PreCompact) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_pre_compact(move |agent: &crate::Agent, trigger: CompactTrigger| {
                 let matcher = matcher.clone();
@@ -1298,10 +1950,10 @@ fn apply_plugin_hooks_with_home(
             });
         }
 
-        for (matcher, command) in installed.hooks.commands_for(HookEventKind::PostCompact) {
+        for (matcher, command) in hooks.commands_for(HookEventKind::PostCompact) {
             let matcher = matcher.matcher.clone();
             let command = command.clone();
-            let dirs = installed.dirs.clone();
+            let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent =
                 agent.with_post_compact(move |agent: &crate::Agent, trigger: CompactTrigger| {
@@ -1333,7 +1985,7 @@ fn apply_plugin_hooks_with_home(
         }
     }
 
-    Ok(agent)
+    (agent, report)
 }
 
 #[cfg(test)]
@@ -1560,6 +2212,7 @@ mod tests {
             timeout: None,
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1591,6 +2244,7 @@ mod tests {
             timeout: None,
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1623,6 +2277,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1656,6 +2311,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1689,6 +2345,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1720,6 +2377,7 @@ mod tests {
             timeout: Some(5),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1752,6 +2410,7 @@ mod tests {
             timeout: None,
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let agent = crate::Agent::new(
@@ -1805,6 +2464,7 @@ mod tests {
             timeout: Some(1),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1834,6 +2494,7 @@ mod tests {
             timeout: Some(0),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1861,6 +2522,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1899,6 +2561,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1933,6 +2596,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1964,6 +2628,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -1995,6 +2660,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -2109,7 +2775,14 @@ mod tests {
             crate::AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
-        let mut agent = apply_plugin_hooks_with_home(&plugin_home, agent, home.path()).unwrap();
+        let mut agent = apply_hooks_with(
+            &plugin_home,
+            &HookTrust::trusting_everything(),
+            agent,
+            home.path(),
+        )
+        .unwrap()
+        .0;
         // The payload's `hook_event_name` carries the live session so a plugin
         // can correlate runs; callers used to pass an empty string.
         agent.runtime.session_id = Some("sess-1".to_string());
@@ -2221,7 +2894,14 @@ mod tests {
             .unwrap(),
             crate::AgentSystemPrompt::Static("test".to_string()),
         );
-        let agent = apply_plugin_hooks_with_home(&plugin_home, agent, home.path()).unwrap();
+        let agent = apply_hooks_with(
+            &plugin_home,
+            &HookTrust::trusting_everything(),
+            agent,
+            home.path(),
+        )
+        .unwrap()
+        .0;
 
         let mut tool_use = ToolUse {
             id: "t1".into(),
@@ -2355,6 +3035,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -2392,6 +3073,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -2424,6 +3106,7 @@ mod tests {
             timeout: Some(10),
             status_message: None,
             async_: None,
+            additional_context_limit: None,
         };
         let output = run_command_hook(
             &command,
@@ -2495,7 +3178,9 @@ mod tests {
             )
             .unwrap();
 
-        let hooks = plugin_subagent_start_hooks_with_home(&plugin_home, home.path()).unwrap();
+        let hooks =
+            subagent_start_hooks_with(&plugin_home, &HookTrust::trusting_everything(), home.path())
+                .unwrap();
         assert_eq!(
             hooks.len(),
             1,
@@ -2567,7 +3252,9 @@ mod tests {
             )
             .unwrap();
 
-        let hooks = plugin_subagent_start_hooks_with_home(&plugin_home, home.path()).unwrap();
+        let hooks =
+            subagent_start_hooks_with(&plugin_home, &HookTrust::trusting_everything(), home.path())
+                .unwrap();
         let mut ctx = SubagentStartContext {
             name: "child-1".into(),
             prompt: "p".into(),
@@ -2583,5 +3270,579 @@ mod tests {
             HookControl::Block("no subagents".to_string()),
             "SubagentStart block must propagate to spawn_subagent"
         );
+    }
+
+    // ── Review and file sources ──────────────────────────────────────────
+
+    /// A hooks file with one command per named event, for the review tests.
+    fn one_command_hooks(event: &str, commands: &[&str]) -> HooksFile {
+        let group = serde_json::json!({
+            "matcher": "startup|resume|compact",
+            "hooks": commands
+                .iter()
+                .map(|c| serde_json::json!({ "type": "command", "command": c }))
+                .collect::<Vec<_>>(),
+        });
+        // An event maps to an array of matcher groups; the key is dynamic, so it
+        // cannot be written inline in `json!`.
+        let mut events = serde_json::Map::new();
+        events.insert(event.to_string(), serde_json::json!([group]));
+        serde_json::from_value(serde_json::json!({ "hooks": events })).unwrap()
+    }
+
+    fn source_with(label: &str, dir: &Path, hooks: HooksFile) -> HookSource {
+        HookSource {
+            label: label.to_string(),
+            origin: HookOrigin::UserFile,
+            dirs: PluginDirs::root_only(dir),
+            hooks,
+        }
+    }
+
+    #[test]
+    fn a_hook_identity_covers_every_field_a_reviewer_sees() {
+        let base = hook_definition_hash("~/.tact/hooks.json", "PreToolUse", None, "run.sh");
+
+        // Same definition, same hash — the store would be useless otherwise.
+        assert_eq!(
+            base,
+            hook_definition_hash("~/.tact/hooks.json", "PreToolUse", None, "run.sh")
+        );
+        // Every other field changes the identity, because every other field is
+        // something the reviewer agreed to.
+        assert_ne!(
+            base,
+            hook_definition_hash("~/.tact/hooks.json", "PreToolUse", None, "run-2.sh")
+        );
+        assert_ne!(
+            base,
+            hook_definition_hash("plugin x", "PreToolUse", None, "run.sh")
+        );
+        assert_ne!(
+            base,
+            hook_definition_hash("~/.tact/hooks.json", "PostToolUse", None, "run.sh")
+        );
+        assert_ne!(
+            base,
+            hook_definition_hash("~/.tact/hooks.json", "PreToolUse", Some("Bash"), "run.sh")
+        );
+        // The NUL separator: concatenation must not collide.
+        assert_ne!(
+            hook_definition_hash("a", "b", None, "c"),
+            hook_definition_hash("ab", "", None, "c")
+        );
+    }
+
+    #[test]
+    fn an_unreviewed_hook_is_read_and_then_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = source_with(
+            "~/.tact/hooks.json",
+            dir.path(),
+            one_command_hooks("SessionStart", &["run.sh"]),
+        );
+        let trust = HookTrust::from_path(dir.path().join("hooks-state.json"));
+
+        let mut report = HookLoadReport::default();
+        let admitted = admit_trusted(&source, &trust, &mut report);
+
+        // The file was parsed (the hook is visible)…
+        assert_eq!(report.pending.len(), 1, "{report:?}");
+        assert_eq!(report.pending[0].command, "run.sh");
+        // …and nothing was admitted, so nothing can be registered or spawned.
+        assert!(admitted.hooks.is_empty());
+        assert!(report.trusted.is_empty());
+    }
+
+    #[test]
+    fn approving_one_definition_admits_only_that_one_across_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("hooks-state.json");
+        let source = source_with(
+            "~/.tact/hooks.json",
+            dir.path(),
+            one_command_hooks("SessionStart", &["approved.sh", "still-pending.sh"]),
+        );
+
+        // Review everything, then approve only the first pending entry.
+        let mut trust = HookTrust::from_path(state.clone());
+        let mut report = HookLoadReport::default();
+        admit_trusted(&source, &trust, &mut report);
+        assert_eq!(report.pending.len(), 2);
+        let approved = trust.trust(&report.pending[..1]).unwrap();
+        assert_eq!(approved, 1);
+
+        // A fresh load of the store — what the next session does.
+        let reloaded = HookTrust::from_path(state.clone());
+        let mut after = HookLoadReport::default();
+        let admitted = admit_trusted(&source, &reloaded, &mut after);
+
+        let admitted_commands: Vec<&str> = admitted
+            .commands_for(HookEventKind::SessionStart)
+            .iter()
+            .filter_map(|(_, command)| command.command.as_deref())
+            .collect();
+        assert_eq!(admitted_commands, ["approved.sh"]);
+        assert_eq!(after.pending.len(), 1);
+        assert_eq!(after.pending[0].command, "still-pending.sh");
+        // The store is a file the user can inspect and delete.
+        assert!(state.is_file());
+    }
+
+    #[test]
+    fn forgetting_puts_every_hook_back_into_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("hooks-state.json");
+        let source = source_with(
+            "~/.tact/hooks.json",
+            dir.path(),
+            one_command_hooks("Stop", &["run.sh"]),
+        );
+
+        let mut trust = HookTrust::from_path(state.clone());
+        let mut report = HookLoadReport::default();
+        admit_trusted(&source, &trust, &mut report);
+        trust.trust(&report.pending).unwrap();
+
+        let mut trusted = HookTrust::from_path(state.clone());
+        assert!(trusted.is_trusted(&hook_definition_hash(
+            "~/.tact/hooks.json",
+            "Stop",
+            Some("startup|resume|compact"),
+            "run.sh"
+        )));
+
+        trusted.forget_all().unwrap();
+        let emptied = HookTrust::from_path(state);
+        let mut report = HookLoadReport::default();
+        assert!(
+            admit_trusted(&source, &emptied, &mut report)
+                .hooks
+                .is_empty()
+        );
+        assert_eq!(report.pending.len(), 1);
+    }
+
+    #[test]
+    fn an_unparseable_store_reviews_everything_again() {
+        // Fail-closed: a store we cannot read must not be read as "trusted".
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("hooks-state.json");
+        std::fs::write(&state, "{ not json").unwrap();
+
+        let trust = HookTrust::from_path(state);
+        assert!(!trust.is_trusted("anything"));
+    }
+
+    #[test]
+    fn both_tact_hooks_files_are_sources_in_a_documented_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user-hooks.json");
+        std::fs::write(&user, r#"{"hooks":{"Stop":[{"hooks":[]}]}}"#).unwrap();
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            dir.path().join(".tact/hooks.json"),
+            r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"repo.sh"}]}]}}"#,
+        )
+        .unwrap();
+
+        let sources = collect_hook_sources_with(None, Some(user.clone()), dir.path()).unwrap();
+
+        let labels: Vec<&str> = sources.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels.len(), 2, "{labels:?}");
+        assert_eq!(labels[0], "~/.tact/hooks.json");
+        assert!(labels[1].ends_with(".tact/hooks.json"), "{labels:?}");
+        assert_eq!(sources[1].origin, HookOrigin::ProjectFile);
+        // The project file's `${PLUGIN_ROOT}` is its own directory.
+        assert_eq!(sources[1].dirs.root, dir.path().join(".tact"));
+    }
+
+    #[test]
+    fn a_repository_hook_file_that_cannot_be_parsed_is_skipped() {
+        // A cloned repo must not be able to stop Tact from starting.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(dir.path().join(".tact/hooks.json"), "{ not json").unwrap();
+
+        let sources = collect_hook_sources_with(None, None, dir.path()).unwrap();
+
+        assert!(sources.is_empty(), "{:?}", sources.len());
+    }
+
+    #[test]
+    fn the_load_report_says_how_to_review_and_stays_quiet_when_nothing_pends() {
+        let quiet = HookLoadReport {
+            trusted: vec![HookSummary {
+                hash: "h".into(),
+                source: "~/.tact/hooks.json".into(),
+                event: "Stop".into(),
+                matcher: None,
+                command: "run.sh".into(),
+            }],
+            pending: Vec::new(),
+        };
+        assert!(quiet.is_quiet());
+        assert!(quiet.notice_lines().is_empty());
+
+        let loud = HookLoadReport {
+            trusted: Vec::new(),
+            pending: vec![HookSummary {
+                hash: "h".into(),
+                source: "plugin ponytail".into(),
+                event: "SessionStart".into(),
+                matcher: Some("startup".into()),
+                command: "brief.sh".into(),
+            }],
+        };
+        let lines = loud.notice_lines();
+        assert!(!loud.is_quiet());
+        assert!(lines[0].contains("1 hook(s) need review"), "{lines:?}");
+        assert!(lines[1].contains("plugin ponytail"), "{lines:?}");
+        assert!(lines[1].contains("brief.sh"), "{lines:?}");
+        assert!(lines[2].contains("hooks trust --all"), "{lines:?}");
+    }
+
+    // ── exit 2: the simple block contract ────────────────────────────────
+
+    fn hook_command(script: &str) -> HookCommand {
+        HookCommand {
+            ty: Some("command".into()),
+            command: Some(script.into()),
+            command_windows: None,
+            timeout: Some(30),
+            status_message: None,
+            async_: None,
+            additional_context_limit: None,
+        }
+    }
+
+    fn hook_input(dir: &Path, event: &'static str) -> HookRunInput {
+        HookRunInput {
+            session_id: "s1".into(),
+            work_dir: dir.to_path_buf(),
+            hook_event_name: event,
+            event: json!({ "tool_name": "bash" }),
+        }
+    }
+
+    #[tokio::test]
+    async fn exit_two_with_a_reason_blocks_a_tool_call() {
+        let dir = tempdir().unwrap();
+        let command = hook_command("echo 'rm -rf is blocked' >&2; exit 2");
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &hook_input(dir.path(), "PreToolUse"),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            output.control,
+            HookControl::Block("rm -rf is blocked".to_string()),
+            "stderr is the reason the caller shows"
+        );
+    }
+
+    #[tokio::test]
+    async fn exit_two_without_a_reason_does_not_block() {
+        // Nothing to tell the user, so blocking would be an unexplained refusal.
+        let dir = tempdir().unwrap();
+        let command = hook_command("exit 2");
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &hook_input(dir.path(), "PreToolUse"),
+            None,
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+    }
+
+    #[tokio::test]
+    async fn exit_two_stays_fail_open_where_codex_gives_it_no_meaning() {
+        // `SessionStart` has `continue: false`, not a block decision; a hook that
+        // exits 2 there must not be able to refuse the session.
+        let dir = tempdir().unwrap();
+        let command = hook_command("echo 'not a veto' >&2; exit 2");
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &hook_input(dir.path(), "SessionStart"),
+            None,
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+    }
+
+    #[tokio::test]
+    async fn a_json_decision_outranks_a_bare_exit_two() {
+        let dir = tempdir().unwrap();
+        let command = hook_command(
+            "printf '{\"decision\":\"block\",\"reason\":\"json reason\"}'; \
+             echo 'stderr reason' >&2; exit 2",
+        );
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &hook_input(dir.path(), "PreToolUse"),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            output.control,
+            HookControl::Block("json reason".to_string()),
+            "the richer contract wins over the exit status"
+        );
+    }
+
+    #[tokio::test]
+    async fn exit_two_still_blocks_when_stdout_only_adds_context() {
+        // `additionalContext` is an addition, not a decision: it must survive,
+        // and the stderr reason must still block.
+        let dir = tempdir().unwrap();
+        let command = hook_command(
+            "printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\
+             \"additionalContext\":\"a note\"}}'; \
+             echo 'stderr reason' >&2; exit 2",
+        );
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &hook_input(dir.path(), "PreToolUse"),
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            output.control,
+            HookControl::Block("stderr reason".to_string())
+        );
+        assert_eq!(output.additional_context.as_deref(), Some("a note"));
+    }
+
+    #[tokio::test]
+    async fn a_non_two_failure_is_reported_and_continues() {
+        let dir = tempdir().unwrap();
+        let command = hook_command("echo 'something broke' >&2; exit 3");
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &hook_input(dir.path(), "PreToolUse"),
+            None,
+        )
+        .await;
+
+        assert_eq!(output.control, HookControl::Continue);
+    }
+
+    #[tokio::test]
+    async fn a_hook_context_limit_truncates_what_reaches_the_model() {
+        let dir = tempdir().unwrap();
+        let long = "x".repeat(4_000);
+        let mut command = hook_command(&format!(
+            "printf '{{\"hookSpecificOutput\":{{\"hookEventName\":\"SessionStart\",\
+             \"additionalContext\":\"{long}\"}}}}'"
+        ));
+        command.additional_context_limit = Some(10);
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &hook_input(dir.path(), "SessionStart"),
+            None,
+        )
+        .await;
+
+        let context = output.additional_context.expect("context is kept");
+        assert!(
+            context.contains("truncated to 10 tokens by additionalContextLimit"),
+            "{context}"
+        );
+        assert!(context.len() < long.len(), "the budget must bite");
+    }
+
+    #[tokio::test]
+    async fn a_context_inside_its_limit_is_left_exactly_as_written() {
+        let dir = tempdir().unwrap();
+        let mut command = hook_command(
+            "printf '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\
+             \"additionalContext\":\"short note\"}}'",
+        );
+        command.additional_context_limit = Some(1_000);
+
+        let output = run_command_hook(
+            &command,
+            dir.path(),
+            &hook_input(dir.path(), "SessionStart"),
+            None,
+        )
+        .await;
+
+        assert_eq!(output.additional_context.as_deref(), Some("short note"));
+    }
+
+    #[test]
+    fn a_permission_decision_allow_parses_as_an_allow() {
+        let allow = parse_output(
+            r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}"#,
+            "PermissionRequest",
+        );
+        assert_eq!(allow.control, HookControl::Allow);
+
+        // And a deny is still a deny, with its reason.
+        let deny = parse_output(
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"no"}}"#,
+            "PreToolUse",
+        );
+        assert_eq!(deny.control, HookControl::Block("no".to_string()));
+    }
+
+    /// A `PermissionRequest` hook registered from a file can answer the prompt.
+    #[tokio::test]
+    async fn a_permission_request_hook_is_registered_and_can_allow() {
+        crate::config::test_support::install_default();
+
+        let dir = tempdir().unwrap();
+        let user = dir.path().join("hooks.json");
+        std::fs::write(
+            &user,
+            r#"{"hooks":{"PermissionRequest":[{"matcher":"bash","hooks":[
+                {"type":"command","command":"printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"permissionDecision\":\"allow\"}}'"}
+            ]}]}}"#,
+        )
+        .unwrap();
+
+        let sources = collect_hook_sources_with(None, Some(user), dir.path()).unwrap();
+        let agent = crate::Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(Vec::new())),
+            crate::tool::test_support::test_context("permission_request"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            crate::AgentSystemPrompt::Static("test".to_string()),
+        );
+        let (agent, report) = apply_hook_sources(
+            sources,
+            &HookTrust::trusting_everything(),
+            agent,
+            dir.path(),
+        );
+        assert!(report.pending.is_empty(), "{report:?}");
+
+        let hooks = agent.hooks_by_type(crate::hook::HookTypes::PermissionRequest);
+        assert_eq!(hooks.len(), 1, "the event must be registered");
+        let crate::hook::Hook::PermissionRequest(hook) = hooks[0] else {
+            panic!("registered under the wrong event")
+        };
+
+        // The matcher is not `bash`, so the hook stays out of the way.
+        let mut other = ToolUse {
+            id: "t0".into(),
+            name: "read_file".into(),
+            input: json!({ "path": "a" }),
+        };
+        assert_eq!(
+            hook(&agent, &mut other).await.unwrap(),
+            HookControl::Continue
+        );
+
+        // A matching call gets an answer instead of a prompt.
+        let mut bash = ToolUse {
+            id: "t1".into(),
+            name: "bash".into(),
+            input: json!({ "command": "ls" }),
+        };
+        assert_eq!(hook(&agent, &mut bash).await.unwrap(), HookControl::Allow);
+    }
+
+    /// An `Interrupt` hook runs once per turn, and its message is surfaced.
+    #[tokio::test]
+    async fn an_interrupt_hook_is_registered_and_runs_once_per_turn() {
+        crate::config::test_support::install_default();
+
+        let dir = tempdir().unwrap();
+        let user = dir.path().join("hooks.json");
+        std::fs::write(
+            &user,
+            r#"{"hooks":{"Interrupt":[{"hooks":[
+                {"type":"command","command":"printf '{\"systemMessage\":\"interrupted, flushing\"}'"}
+            ]}]}}"#,
+        )
+        .unwrap();
+
+        let sources = collect_hook_sources_with(None, Some(user), dir.path()).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let agent = crate::Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(Vec::new())),
+            crate::tool::test_support::test_context("interrupt"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            crate::AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+        let (mut agent, _) = apply_hook_sources(
+            sources,
+            &HookTrust::trusting_everything(),
+            agent,
+            dir.path(),
+        );
+
+        assert_eq!(
+            agent.hooks_by_type(crate::hook::HookTypes::Interrupt).len(),
+            1
+        );
+
+        agent.dispatch_interrupt_hooks().await.unwrap();
+        // The second call is the same turn: the hooks must not run again.
+        agent.dispatch_interrupt_hooks().await.unwrap();
+
+        let mut messages = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::Info(text) = update {
+                messages.push(text);
+            }
+        }
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.contains("interrupted, flushing"))
+                .count(),
+            1,
+            "one notice per turn, got {messages:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_events_codex_documents_react_to_exit_two() {
+        for event in [
+            "PreToolUse",
+            "PermissionRequest",
+            "PostToolUse",
+            "Stop",
+            "SubagentStop",
+            "UserPromptSubmit",
+        ] {
+            assert!(exit_two_blocks(event), "{event} should block");
+        }
+        for event in ["SessionStart", "PreCompact", "PostCompact", "SessionEnd"] {
+            assert!(!exit_two_blocks(event), "{event} must stay fail-open");
+        }
     }
 }

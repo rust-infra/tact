@@ -617,88 +617,33 @@ impl Agent {
                             PreparedState::Resolved(msg)
                         }
                         PermissionBehavior::Ask => {
-                            let permit_prompt = match &resolved {
-                                ResolvedTool::Native { metadata } => metadata.permission_prompt,
-                                _ => crate::tool::PermissionPromptPolicy::Json,
-                            };
-                            let prompt = format_permission_prompt(
-                                stable_name,
-                                permit_prompt,
-                                &tool_use.input,
-                            );
-
-                            // `Notification` hooks fire when the agent surfaces
-                            // a user notification; a permission prompt is the
-                            // only kind Tact emits today. Observational.
-                            let notification = NotificationContext {
-                                notification_type: "permission_prompt".to_string(),
-                                title: stable_name.to_string(),
-                                message: prompt.clone(),
-                            };
-                            match invoke_hooks!(Notification, self, &notification) {
-                                Ok(HookControl::Continue) => {}
-                                Ok(HookControl::Block(reason)) => {
-                                    self.emit_update(AgentUpdate::Info(format!(
-                                        "[Notification hook blocked] {reason}"
-                                    )));
-                                }
-                                Err(error) => {
-                                    self.emit_update(AgentUpdate::Info(format!(
-                                        "[Notification hook failed] {error}"
-                                    )));
-                                }
-                            }
-
-                            let choice = if let Some(tx) = &self.runtime.ui_tx {
-                                let options = vec![
-                                    "Allow once".to_string(),
-                                    "Deny".to_string(),
-                                    "Always allow this tool".to_string(),
-                                ];
-                                let responder = self.tool_context.ui_responder.clone();
-                                // No artificial timeout: the popup is guaranteed
-                                // to stay rendered (see
-                                // `restore_pending_select_mode`), so the wait
-                                // ends on a real user answer or when the UI
-                                // closes (both route through the responder).
-                                let selection = responder
-                                    .request_select(tx, prompt, options, false)
-                                    .await
-                                    .ok()
-                                    .flatten();
-                                match selection {
-                                    Some(0) => Some("allow_once"),
-                                    Some(2) => Some("always_allow"),
-                                    _ => Some("deny"),
-                                }
-                            } else {
-                                let approved = self
-                                    .runtime
-                                    .permission_manager
-                                    .ask_user(stable_name, risk)?;
-                                if approved {
-                                    Some("allow_once")
-                                } else {
-                                    Some("deny")
-                                }
-                            };
-                            match choice {
-                                Some("allow_once") => {
-                                    permission_label = Some("Allow once".to_string());
+                            // Codex's `PermissionRequest`: runs only when a
+                            // prompt would actually appear, so a policy hook
+                            // answers it without paying for every call.
+                            // `allow` skips the prompt, `block` denies outright,
+                            // anything else leaves the decision to the user.
+                            let hook_control =
+                                match invoke_hooks!(PermissionRequest, self, &mut tool_use) {
+                                    Ok(control) => control,
+                                    Err(error) => {
+                                        // Fail-open, like every other hook failure:
+                                        // a broken policy hook must not block work.
+                                        self.emit_update(AgentUpdate::Info(format!(
+                                            "[PermissionRequest hook failed] {error}"
+                                        )));
+                                        HookControl::Continue
+                                    }
+                                };
+                            match hook_control {
+                                HookControl::Allow => {
+                                    permission_label =
+                                        Some("Allowed by PermissionRequest hook".to_string());
                                     PreparedState::Run
                                 }
-                                Some("always_allow") => {
-                                    permission_label = Some("Always allow this tool".to_string());
-                                    self.runtime.permission_manager.allow_tool_with_input(
-                                        stable_name,
-                                        permit_prompt,
-                                        &tool_use.input,
+                                HookControl::Block(reason) => {
+                                    let msg = format!(
+                                        "Permission denied by PermissionRequest hook: {reason}"
                                     );
-                                    PreparedState::Run
-                                }
-                                _ => {
-                                    let msg =
-                                        format!("Permission denied by user for {}", stable_name);
                                     self.emit_update(AgentUpdate::StepFailed {
                                         idx: step_idx,
                                         tool_id: id.clone(),
@@ -707,9 +652,114 @@ impl Agent {
                                     });
                                     PreparedState::Resolved(msg)
                                 }
+                                HookControl::Continue => {
+                                    let permit_prompt = match &resolved {
+                                        ResolvedTool::Native { metadata } => {
+                                            metadata.permission_prompt
+                                        }
+                                        _ => crate::tool::PermissionPromptPolicy::Json,
+                                    };
+                                    let prompt = format_permission_prompt(
+                                        stable_name,
+                                        permit_prompt,
+                                        &tool_use.input,
+                                    );
+
+                                    // `Notification` hooks fire when the agent surfaces
+                                    // a user notification; a permission prompt is the
+                                    // only kind Tact emits today. Observational.
+                                    let notification = NotificationContext {
+                                        notification_type: "permission_prompt".to_string(),
+                                        title: stable_name.to_string(),
+                                        message: prompt.clone(),
+                                    };
+                                    match invoke_hooks!(Notification, self, &notification) {
+                                        Ok(HookControl::Continue | HookControl::Allow) => {}
+                                        Ok(HookControl::Block(reason)) => {
+                                            self.emit_update(AgentUpdate::Info(format!(
+                                                "[Notification hook blocked] {reason}"
+                                            )));
+                                        }
+                                        Err(error) => {
+                                            self.emit_update(AgentUpdate::Info(format!(
+                                                "[Notification hook failed] {error}"
+                                            )));
+                                        }
+                                    }
+
+                                    let choice = if let Some(tx) = &self.runtime.ui_tx {
+                                        let options = vec![
+                                            "Allow once".to_string(),
+                                            "Deny".to_string(),
+                                            "Always allow this tool".to_string(),
+                                        ];
+                                        let responder = self.tool_context.ui_responder.clone();
+                                        // No artificial timeout: the popup is guaranteed
+                                        // to stay rendered (see
+                                        // `restore_pending_select_mode`), so the wait
+                                        // ends on a real user answer or when the UI
+                                        // closes (both route through the responder).
+                                        let selection = responder
+                                            .request_select(tx, prompt, options, false)
+                                            .await
+                                            .ok()
+                                            .flatten();
+                                        match selection {
+                                            Some(0) => Some("allow_once"),
+                                            Some(2) => Some("always_allow"),
+                                            _ => Some("deny"),
+                                        }
+                                    } else {
+                                        let approved = self
+                                            .runtime
+                                            .permission_manager
+                                            .ask_user(stable_name, risk)?;
+                                        if approved {
+                                            Some("allow_once")
+                                        } else {
+                                            Some("deny")
+                                        }
+                                    };
+                                    match choice {
+                                        Some("allow_once") => {
+                                            permission_label = Some("Allow once".to_string());
+                                            PreparedState::Run
+                                        }
+                                        Some("always_allow") => {
+                                            permission_label =
+                                                Some("Always allow this tool".to_string());
+                                            self.runtime.permission_manager.allow_tool_with_input(
+                                                stable_name,
+                                                permit_prompt,
+                                                &tool_use.input,
+                                            );
+                                            PreparedState::Run
+                                        }
+                                        _ => {
+                                            let msg = format!(
+                                                "Permission denied by user for {}",
+                                                stable_name
+                                            );
+                                            self.emit_update(AgentUpdate::StepFailed {
+                                                idx: step_idx,
+                                                tool_id: id.clone(),
+                                                arg_summary: String::new(),
+                                                error: msg.clone(),
+                                            });
+                                            PreparedState::Resolved(msg)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
+                }
+                // A hook that allows skips the permission check entirely: the
+                // decision was already made, and asking anyway would defeat the
+                // point of the hook.
+                Ok(HookControl::Allow) => {
+                    permission_label = Some("Allowed by PreToolUse hook".to_string());
+                    PreparedState::Run
                 }
                 Ok(HookControl::Block(reason)) => {
                     let msg = format!("Tool blocked by PreToolUse hook: {reason}");
@@ -877,7 +927,9 @@ impl Agent {
                     &mut tool_result,
                     exec_status
                 ) {
-                    Ok(HookControl::Continue) => (tool_result.content, exec_status),
+                    Ok(HookControl::Continue | HookControl::Allow) => {
+                        (tool_result.content, exec_status)
+                    }
                     Ok(HookControl::Block(reason)) => (
                         format!("Tool blocked by PostToolUse hook: {reason}"),
                         StepStatus::Failed,
@@ -897,7 +949,7 @@ impl Agent {
                 if matches!(exec_status, StepStatus::Failed) {
                     let error_text = exec_content;
                     match invoke_hooks!(PostToolUseFailure, self, &tool_use, error_text.as_str()) {
-                        Ok(HookControl::Continue) => {}
+                        Ok(HookControl::Continue | HookControl::Allow) => {}
                         Ok(HookControl::Block(reason)) => {
                             self.emit_update(AgentUpdate::Info(format!(
                                 "[PostToolUseFailure hook blocked] {reason}"
