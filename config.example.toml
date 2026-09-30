@@ -387,8 +387,20 @@ api_key = ""
 #         # auto-approve, not a lower risk: plan mode still blocks, and an
 #         # explicit deny/ask rule in .tact/settings.json still wins.
 #         "default_tools_approval_mode": "prompt",
+#         # Tact's OWN field (Codex has no per-tool risk). Risk for this
+#         # server's tools that declare none of their own; absent means "high",
+#         # which is what every MCP tool resolved to before this existed.
+#         #   read  — allowed in every mode, INCLUDING plan mode. This is the
+#         #           plan-mode bypass, so declare it only for a tool that
+#         #           genuinely cannot write. Never inferred.
+#         #   write — same as a native writing tool: plan mode blocks it, and
+#         #           one "always allow" then sticks. The tier to pick when a
+#         #           tool must work unattended.
+#         #   high  — plan mode blocks it, every call asks, and a non-
+#         #           interactive run denies it outright.
+#         "default_tool_risk": "write",
 #         "tools": {
-#           "search_notes": { "approval_mode": "auto" },
+#           "search_notes": { "approval_mode": "auto", "risk": "read" },
 #           # Result budget for one tool; an oversized result is spilled to
 #           # .tact/tool-results/ with a preview instead of filling the context.
 #           "build_context": { "output_token_limit": 4000 }
@@ -398,6 +410,12 @@ api_key = ""
 #   }
 #
 # Hidden tools are never silent: `tact-ui mcp list` prints a "Filtered tools"
-# section and `tact-ui mcp get <name>` prints a `hidden` line.
+# section and `tact-ui mcp get <name>` prints a `hidden` line. `mcp get` also
+# prints each tool's effective risk, marked `(declared)` or `(default)`, and
+# marks a tool the server itself calls read-only as "(server-declared
+# read-only)" — that hint is evidence for writing `risk`, never applied on its
+# own: rmcp says clients should never base tool decisions on annotations from
+# untrusted servers, and a read-only tool that also declares an open world is
+# an egress path, not a safe one.
 # `omit_tools_from` has no Tact equivalent, and `env_vars` has none on a `url`
 # entry: both are reported as unmodelled rather than silently ignored.

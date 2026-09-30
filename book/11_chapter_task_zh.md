@@ -127,7 +127,7 @@ Wave 按序执行；同一 wave 内工具并发运行。
 
 - **只读**：一般允许。
 - **Write**：Default 模式询问（除非 allowlist）；Auto 模式自动批准；Plan 模式拒绝。
-- **高风险**：始终询问（即使 allowlist）；包括 `spawn_subagent`、破坏性工具名与危险 bash 模式。
+- **高风险**：首次询问；此后仅当有显式允许覆盖该确切工具与输入时才放行。包括 `spawn_subagent`、破坏性工具名与危险 bash 模式。
 
 分类规则、模式与 TUI 审批流程见 [权限模型](./10_chapter_permission_zh.md)。
 

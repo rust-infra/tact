@@ -105,6 +105,7 @@ use tokio::process::Command;
 use crate::{
     ToolSpec,
     consts::{PluginDirs, PluginHome, TactPath},
+    permission::{CapabilityRisk, normalize_mcp_capability},
     plugin::{PluginRoot, PluginStore},
     tool::copy_tool_spec,
 };
@@ -590,6 +591,20 @@ pub struct McpServerInspection {
     /// cannot answer at all are different, and `list_mcp_resources` behaves
     /// differently for each.
     pub resources: Option<usize>,
+    /// Exposed tools the server marked `readOnlyHint: true`, sorted.
+    ///
+    /// Evidence for the human writing `tools.<name>.risk`, not an input to the
+    /// risk itself — reported so a server's claim is visible instead of being
+    /// silently dropped along with the rest of `Tool::annotations`.
+    pub declared_read_only: Vec<String>,
+    /// Tools whose entry declares a risk, with the tier it declares, sorted by
+    /// name.
+    ///
+    /// Only *declared* tiers appear. A tool absent from this list keeps Tact's
+    /// default (`high`), so an entry that declares a risk is never
+    /// indistinguishable from one that silently kept the default — the same
+    /// reason `filtered` and `declared_read_only` exist.
+    pub declared_risks: Vec<(String, CapabilityRisk)>,
 }
 
 /// What one connection attempt produced.
@@ -676,13 +691,74 @@ pub struct McpToolConfig {
     /// Codex `output_token_limit`: result budget for this tool.
     #[serde(default)]
     pub output_token_limit: Option<usize>,
+    /// **Tact's own** `risk`: `read` | `write` | `high`.
+    ///
+    /// Not a Codex field — Codex has no per-tool risk axis, which is why every
+    /// MCP tool used to resolve to `CapabilityRisk::High` and could only be
+    /// made usable unattended through `approval_mode: "auto"`.
+    ///
+    /// Kept as a string for the same reason as `approval_mode`: an unknown
+    /// value is warned about and ignored, never fatal. Modelled rather than
+    /// left to serde's unknown-field handling, so a declared risk cannot be
+    /// dropped in silence.
+    #[serde(default)]
+    pub risk: Option<String>,
+}
+
+/// Tact's per-tool risk declaration for an MCP tool.
+///
+/// The tiers are not steps on one knob — see [`Self::as_str`] and the chapter
+/// table. `Write` is the tier to reach for when a tool must be usable
+/// unattended; `Read` is the only one that bypasses plan mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolRisk {
+    /// Read-only: allowed in every mode, including plan mode.
+    Read,
+    /// Same risk as a native writing tool: blocked in plan mode, asks once.
+    Write,
+    /// The default when nothing is declared: blocked in plan mode, asks, and
+    /// denied outright in a non-interactive run.
+    High,
+}
+
+impl ToolRisk {
+    /// Parses a configured value. `None` for anything unrecognised.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::High => "high",
+        }
+    }
+
+    #[must_use]
+    pub fn to_capability(self) -> CapabilityRisk {
+        match self {
+            Self::Read => CapabilityRisk::Read,
+            Self::Write => CapabilityRisk::Write,
+            Self::High => CapabilityRisk::High,
+        }
+    }
 }
 
 /// Codex's MCP approval modes.
 ///
 /// Only [`ApprovalMode::Auto`] changes Tact's behaviour; it is an
-/// auto-**approve**, not a re-classification, so the tool stays
-/// `CapabilityRisk::High` everywhere it is displayed or reported.
+/// auto-**approve** on the *prompt* axis, never a re-classification. The
+/// risk a tool is reported and gated at comes from [`ToolRisk`] — the entry's
+/// `tools.<name>.risk` or `default_tool_risk`, and `CapabilityRisk::High` when
+/// the entry declares neither.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalMode {
     /// Run without asking.
@@ -722,13 +798,16 @@ impl ApprovalMode {
 struct McpToolPolicy {
     approval_mode: Option<ApprovalMode>,
     output_token_limit: Option<usize>,
+    /// Already resolved to a capability, so the resolver cannot hand out a
+    /// tier that has no meaning at the permission layer.
+    risk: Option<CapabilityRisk>,
 }
 
 /// What one `.mcp.json` entry declares about the server's tools.
 ///
 /// Empty by default: a plain `{"command": …, "args": […]}` entry exposes every
-/// tool, uses the global handshake timeout, and keeps every tool asking for
-/// approval (`CapabilityRisk::High`).
+/// tool, uses the global handshake timeout, keeps every tool asking for
+/// approval, and leaves every tool at `CapabilityRisk::High`.
 #[derive(Debug, Clone, Default)]
 pub struct McpServerPolicy {
     enabled_tools: Option<Vec<String>>,
@@ -736,6 +815,8 @@ pub struct McpServerPolicy {
     startup_timeout: Option<std::time::Duration>,
     tool_timeout: Option<std::time::Duration>,
     default_approval_mode: Option<ApprovalMode>,
+    /// The entry's `default_tool_risk`, already resolved.
+    default_risk: Option<CapabilityRisk>,
     tool_overrides: HashMap<String, McpToolPolicy>,
 }
 
@@ -766,6 +847,10 @@ impl McpServerPolicy {
                                     &format!("tools.{name}.approval_mode"),
                                 ),
                                 output_token_limit: raw.output_token_limit,
+                                risk: parse_tool_risk(
+                                    raw.risk.as_deref(),
+                                    &format!("tools.{name}.risk"),
+                                ),
                             },
                         )
                     })
@@ -782,6 +867,7 @@ impl McpServerPolicy {
                 config.default_tools_approval_mode.as_deref(),
                 "default_tools_approval_mode",
             ),
+            default_risk: parse_tool_risk(config.default_tool_risk.as_deref(), "default_tool_risk"),
             tool_overrides,
         }
     }
@@ -830,6 +916,19 @@ impl McpServerPolicy {
         mode == Some(ApprovalMode::Auto)
     }
 
+    /// The risk this entry declares for `tool`, if it declares one at all.
+    ///
+    /// A per-tool override wins over the entry's `default_tool_risk`. `None`
+    /// means the entry is silent, which the caller resolves to Tact's default
+    /// (`CapabilityRisk::High`) rather than to a guess.
+    #[must_use]
+    pub fn risk_for(&self, tool: &str) -> Option<CapabilityRisk> {
+        self.tool_overrides
+            .get(tool)
+            .and_then(|policy| policy.risk)
+            .or(self.default_risk)
+    }
+
     /// The per-tool result budget this entry declares, if any.
     #[must_use]
     pub fn output_token_limit(&self, tool: &str) -> Option<usize> {
@@ -849,6 +948,23 @@ fn parse_approval_mode(value: Option<&str>, field: &str) -> Option<ApprovalMode>
                 field,
                 value,
                 "unknown MCP approval_mode (expected auto|prompt|approve); ignoring it"
+            );
+            None
+        }
+    }
+}
+
+/// Parses a configured `risk`. An unknown value is reported and ignored, so a
+/// typo cannot fail the whole entry — the same rule `approval_mode` follows.
+fn parse_tool_risk(value: Option<&str>, field: &str) -> Option<CapabilityRisk> {
+    let value = value?;
+    match ToolRisk::parse(value) {
+        Some(risk) => Some(risk.to_capability()),
+        None => {
+            tracing::warn!(
+                field,
+                value,
+                "unknown MCP tool risk (expected read|write|high); ignoring it"
             );
             None
         }
@@ -934,6 +1050,14 @@ pub struct McpProjectConfig {
     /// Codex `default_tools_approval_mode`: server-wide approval default.
     #[serde(rename = "default_tools_approval_mode", default)]
     pub default_tools_approval_mode: Option<String>,
+    /// **Tact's own** `default_tool_risk`: risk for this server's tools that
+    /// name no `risk` of their own.
+    ///
+    /// Not a Codex field. Absent keeps Tact's historical default
+    /// (`CapabilityRisk::High`), so an entry that says nothing about risk
+    /// behaves exactly as it did before this field existed.
+    #[serde(rename = "default_tool_risk", default)]
+    pub default_tool_risk: Option<String>,
     /// Codex `tools`: per-tool `approval_mode` / `output_token_limit`.
     #[serde(rename = "tools", default)]
     pub tools: Option<HashMap<String, McpToolConfig>>,
@@ -972,6 +1096,7 @@ impl Default for McpProjectConfig {
             startup_timeout_ms: None,
             tool_timeout_sec: None,
             default_tools_approval_mode: None,
+            default_tool_risk: None,
             tools: None,
             extra: HashMap::new(),
         }
@@ -1501,12 +1626,21 @@ pub struct McpClient {
     /// Kept so the filtering can be *reported*: a configuration that removes a
     /// tool must not look identical to a server that never had it.
     hidden: Vec<String>,
-    /// The entry's per-tool policy (approval mode, output budget).
+    /// The entry's per-tool policy (approval mode, output budget, risk).
     ///
     /// Boxed so `ConnectOutcome::Connected` stays small: the enum is built
     /// once per server, and an unboxed policy doubled the variant's size
     /// (`clippy::large_enum_variant`).
     policy: Box<McpServerPolicy>,
+    /// Exposed tools the server itself marked `readOnlyHint: true`, sorted.
+    ///
+    /// Evidence, never authority: it is displayed by `mcp get` so a human can
+    /// decide whether to declare `tools.<name>.risk`, and it deliberately does
+    /// **not** reach [`McpServerPolicy::risk_for`]. A server that lies is the
+    /// case a permission system exists to survive, and even an honest
+    /// read-only tool can be an egress path when it also sets
+    /// `openWorldHint` — Tact has no data-flow axis to express that.
+    declared_read_only: Vec<String>,
     /// The server's `InitializeResult.instructions`, normalized and capped.
     ///
     /// `None` when the server sent none (or only whitespace). Capped at
@@ -1580,6 +1714,21 @@ impl McpClient {
             }
         }
         hidden.sort();
+        // Read the server's own read-only declarations off the tools we are
+        // about to keep. Only *exposed* tools matter: a tool the entry filtered
+        // away is not something the human can be asked to declare a risk for.
+        let mut declared_read_only: Vec<String> = exposed
+            .iter()
+            .filter(|tool| {
+                tool.annotations
+                    .as_ref()
+                    .and_then(|a| a.read_only_hint)
+                    .unwrap_or(false)
+            })
+            .map(|tool| tool.name.to_string())
+            .collect();
+        declared_read_only.sort();
+        declared_read_only.dedup();
         let tool_specs = build_tool_specs(&server_name, &exposed);
         // Read the server's prose before the service is moved into the client.
         // Normalizing here (not in the transport) keeps the mock and the real
@@ -1596,6 +1745,7 @@ impl McpClient {
             tool_specs,
             hidden,
             policy: Box::new(policy),
+            declared_read_only,
             instructions,
         }
     }
@@ -1612,6 +1762,14 @@ impl McpClient {
     /// Tool names hidden by this entry's `enabled_tools` / `disabled_tools`.
     pub fn hidden_tools(&self) -> &[String] {
         &self.hidden
+    }
+
+    /// The server's own `readOnlyHint: true` declarations, sorted.
+    ///
+    /// Display-only evidence — see the field's own note. Never consulted by
+    /// [`McpServerPolicy::risk_for`].
+    pub fn declared_read_only(&self) -> &[String] {
+        &self.declared_read_only
     }
 
     /// This server's resolved tool policy.
@@ -1936,6 +2094,21 @@ impl MCPToolRouter {
         self.clients
             .get(server)
             .is_some_and(|client| client.policy().is_auto_approved(tool))
+    }
+
+    /// The risk to report for one of this server's tools.
+    ///
+    /// `self.clients.get(server).and_then(risk_for)` when the entry declares a
+    /// tier, and [`normalize_mcp_capability`] otherwise — so "the entry is
+    /// silent" and "the entry said high" end up the same, while only an
+    /// explicit declaration can lower it. An unknown server or tool keeps the
+    /// default rather than becoming approved by accident.
+    #[must_use]
+    pub fn risk_for(&self, server: &str, tool: &str) -> CapabilityRisk {
+        self.clients
+            .get(server)
+            .and_then(|client| client.policy().risk_for(tool))
+            .unwrap_or_else(|| normalize_mcp_capability(server, tool))
     }
 
     /// The per-tool result budget this server's entry declares, by full tool
@@ -2420,6 +2593,49 @@ pub fn resolved_server_for(
     })
 }
 
+/// The per-status facts [`inspect_server`] fills.
+///
+/// A named struct rather than a tuple: the three outcomes differ only in which
+/// facts they leave empty, and counting tuple positions made that unreadable
+/// once `declared_read_only` and `declared_risks` joined.
+struct InspectionFacts {
+    status: McpServerStatus,
+    tools: Vec<String>,
+    filtered: Vec<String>,
+    instructions_chars: Option<usize>,
+    resources: Option<usize>,
+    declared_read_only: Vec<String>,
+    declared_risks: Vec<(String, CapabilityRisk)>,
+}
+
+impl InspectionFacts {
+    /// Nothing but the status: what a server that never connected can report.
+    fn empty(status: McpServerStatus) -> Self {
+        Self {
+            status,
+            tools: Vec::new(),
+            filtered: Vec::new(),
+            instructions_chars: None,
+            resources: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
+        }
+    }
+
+    fn into_inspection(self, server: ConfiguredServer) -> McpServerInspection {
+        McpServerInspection {
+            server,
+            status: self.status,
+            tools: self.tools,
+            filtered: self.filtered,
+            instructions_chars: self.instructions_chars,
+            resources: self.resources,
+            declared_read_only: self.declared_read_only,
+            declared_risks: self.declared_risks,
+        }
+    }
+}
+
 /// Connects one server and reports its state, without touching the others.
 ///
 /// `mcp get <name>` uses this so inspecting a single server never spawns or
@@ -2429,60 +2645,52 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
         return Ok(None);
     };
     if server.disabled {
-        return Ok(Some(McpServerInspection {
-            server,
-            status: McpServerStatus::Disabled,
-            tools: Vec::new(),
-            filtered: Vec::new(),
-            instructions_chars: None,
-            resources: None,
-        }));
+        return Ok(Some(
+            InspectionFacts::empty(McpServerStatus::Disabled).into_inspection(server),
+        ));
     }
-    let (status, tools, filtered, instructions_chars, resources) =
-        match connect_server(server_name, transport, policy).await {
-            ConnectOutcome::Connected(client) => {
-                let tools = client
-                    .list_tools()
-                    .iter()
-                    .map(|tool| tool.name.to_string())
-                    .collect();
-                let filtered = client.hidden_tools().to_vec();
-                let chars = client.instructions().map(|text| text.chars().count());
-                // A server without resource support is expected, not an error,
-                // so a failed listing is reported as "did not answer" rather
-                // than failing the inspection.
-                let resources = client.list_resources().await.ok().map(|list| list.len());
-                (
-                    McpServerStatus::Connected,
-                    tools,
-                    filtered,
-                    chars,
-                    resources,
-                )
+    let facts = match connect_server(server_name, transport, policy).await {
+        ConnectOutcome::Connected(client) => {
+            let tools = client
+                .list_tools()
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            let filtered = client.hidden_tools().to_vec();
+            let chars = client.instructions().map(|text| text.chars().count());
+            // A server without resource support is expected, not an error,
+            // so a failed listing is reported as "did not answer" rather
+            // than failing the inspection.
+            let resources = client.list_resources().await.ok().map(|list| list.len());
+            // Only *declared* tiers, so "the entry is silent" and "the entry
+            // said high" stay distinguishable in the printed view.
+            let mut declared_risks: Vec<(String, CapabilityRisk)> = client
+                .list_tools()
+                .iter()
+                .filter_map(|tool| {
+                    client
+                        .policy()
+                        .risk_for(&tool.name)
+                        .map(|risk| (tool.name.to_string(), risk))
+                })
+                .collect();
+            declared_risks.sort_by(|a, b| a.0.cmp(&b.0));
+            InspectionFacts {
+                status: McpServerStatus::Connected,
+                tools,
+                filtered,
+                instructions_chars: chars,
+                resources,
+                declared_read_only: client.declared_read_only().to_vec(),
+                declared_risks,
             }
-            ConnectOutcome::NeedsAuthorization => (
-                McpServerStatus::PendingAuthorization,
-                Vec::new(),
-                Vec::new(),
-                None,
-                None,
-            ),
-            ConnectOutcome::Failed(error) => (
-                McpServerStatus::Failed(error),
-                Vec::new(),
-                Vec::new(),
-                None,
-                None,
-            ),
-        };
-    Ok(Some(McpServerInspection {
-        server,
-        status,
-        tools,
-        filtered,
-        instructions_chars,
-        resources,
-    }))
+        }
+        ConnectOutcome::NeedsAuthorization => {
+            InspectionFacts::empty(McpServerStatus::PendingAuthorization)
+        }
+        ConnectOutcome::Failed(error) => InspectionFacts::empty(McpServerStatus::Failed(error)),
+    };
+    Ok(Some(facts.into_inspection(server)))
 }
 
 /// Looks up the resolved remote config for a server by its final name.
@@ -2546,6 +2754,7 @@ mod tests {
         ErrorData as McpError, ServerHandler, ServiceExt,
         model::{
             CallToolResult, Content, JsonObject, ListToolsResult, ServerInfo, Tool as McpTool,
+            ToolAnnotations,
         },
         service::{RequestContext, RoleServer},
     };
@@ -2555,14 +2764,16 @@ mod tests {
         ApprovalMode, MCP_INSTRUCTIONS_MAX_CHARS, MCPToolRouter, McpAuthConfig, McpClient,
         McpConfigFile, McpEnvVar, McpLiveStatus, McpLoadReport, McpProjectConfig, McpServerConfig,
         McpServerPolicy, McpToolConfig, McpToolName, McpTransportConfig, MockMcpService,
-        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, UnmodelledKeys,
-        cap_instructions, collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved,
-        drain_mcp_stderr, installed_plugin_mcp_servers, plugin_manifest_mcp_servers,
-        prepare_plugin_entry, resolve_env_vars, resolve_servers, unmodelled_keys,
+        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, ToolRisk,
+        UnmodelledKeys, cap_instructions, collect_plugin_mcp_servers, collect_sourced_servers,
+        describe_resolved, drain_mcp_stderr, installed_plugin_mcp_servers,
+        plugin_manifest_mcp_servers, prepare_plugin_entry, resolve_env_vars, resolve_servers,
+        unmodelled_keys,
     };
 
     use crate::{
         consts::{PluginHome, TactPath},
+        permission::CapabilityRisk,
         plugin::{InstalledPlugin, InstalledState, PluginStore},
     };
 
@@ -3772,6 +3983,7 @@ mod tests {
             Some(&McpToolConfig {
                 approval_mode: None,
                 output_token_limit: Some(25_000),
+                risk: None,
             })
         );
     }
@@ -4004,6 +4216,105 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_risk_parses_its_three_tiers_and_nothing_else() {
+        assert_eq!(ToolRisk::parse(" read "), Some(ToolRisk::Read));
+        assert_eq!(ToolRisk::parse("write"), Some(ToolRisk::Write));
+        assert_eq!(ToolRisk::parse("high"), Some(ToolRisk::High));
+        // The empty string is not a tier, so an empty declaration cannot be
+        // mistaken for one.
+        assert_eq!(ToolRisk::parse(""), None);
+        assert_eq!(ToolRisk::parse("medium"), None);
+
+        // Each tier maps onto the capability the permission layer acts on.
+        assert_eq!(ToolRisk::Read.to_capability(), CapabilityRisk::Read);
+        assert_eq!(ToolRisk::Write.to_capability(), CapabilityRisk::Write);
+        assert_eq!(ToolRisk::High.to_capability(), CapabilityRisk::High);
+        // `as_str` is the spelling the docs and the config use.
+        assert_eq!(ToolRisk::Read.as_str(), "read");
+        assert_eq!(ToolRisk::High.as_str(), "high");
+    }
+
+    #[test]
+    fn a_declared_tool_risk_overrides_the_entry_default() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "default_tool_risk": "write",
+                "tools": {
+                    "search_notes": { "risk": "read" },
+                    "delete_project": { "risk": "high" }
+                }
+            }"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        // The entry default covers tools that say nothing of their own.
+        assert_eq!(policy.risk_for("read_thing"), Some(CapabilityRisk::Write));
+        // A per-tool tier wins over the default, in both directions: one
+        // lowers below it, one raises back to High.
+        assert_eq!(policy.risk_for("search_notes"), Some(CapabilityRisk::Read));
+        assert_eq!(
+            policy.risk_for("delete_project"),
+            Some(CapabilityRisk::High)
+        );
+        // A tool with an unrelated override still inherits the default.
+        let with_unrelated: McpProjectConfig = serde_json::from_str(
+            r#"{"command":"node","default_tool_risk":"write",
+                "tools":{"documented":{"output_token_limit":2500}}}"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&with_unrelated);
+        assert_eq!(policy.risk_for("documented"), Some(CapabilityRisk::Write));
+    }
+
+    #[test]
+    fn an_entry_that_declares_no_risk_declares_none_at_all() {
+        // `None` is what keeps a silent entry on Tact's default instead of
+        // letting an absent field read as a tier.
+        let config: McpProjectConfig = serde_json::from_str(r#"{"command":"node"}"#).unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+        assert_eq!(policy.risk_for("anything"), None);
+    }
+
+    #[test]
+    fn an_unknown_tool_risk_is_ignored_rather_than_guessed() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{"command":"node","default_tool_risk":"harmless",
+                "tools":{"write_thing":{"risk":"kinda-safe"}}}"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        // Neither the bad default nor the bad override becomes a tier.
+        assert_eq!(policy.risk_for("write_thing"), None);
+        assert_eq!(policy.risk_for("read_thing"), None);
+    }
+
+    #[test]
+    fn risk_keys_are_modelled_and_never_reported_as_unmodelled() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{"command":"node","default_tool_risk":"write",
+                "tools":{"search_notes":{"risk":"read"}},
+                "omit_tools_from":["code_mode"]}"#,
+        )
+        .unwrap();
+
+        // Only the field Tact genuinely does not model is reported.
+        assert!(unmodelled_keys("demo", "test", &config).is_some_and(|u| u.keys == ["omit_tools_from"]));
+        assert!(!config.extra.contains_key("default_tool_risk"));
+        assert_eq!(config.default_tool_risk.as_deref(), Some("write"));
+        assert_eq!(
+            config
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.get("search_notes"))
+                .and_then(|tool| tool.risk.as_deref()),
+            Some("read")
+        );
+    }
+
+    #[test]
     fn a_per_tool_approval_mode_overrides_the_server_default() {
         let config: McpProjectConfig = serde_json::from_str(
             r#"{
@@ -4067,6 +4378,107 @@ mod tests {
         assert_eq!(client.agent_tools().len(), 1);
         assert_eq!(client.agent_tools()[0].name, "mcp__demo__visible");
         assert_eq!(client.tool_count(), 1);
+    }
+
+    /// A tool that declares itself read-only, as a real server would.
+    fn read_only_tool(name: &'static str) -> McpTool {
+        McpTool {
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(true),
+                ..ToolAnnotations::default()
+            }),
+            ..named_tool(name)
+        }
+    }
+
+    #[test]
+    fn the_router_resolves_a_declared_tier_and_defaults_the_rest_to_high() {
+        // End of the wiring: JSON entry → resolved policy → what the permission
+        // layer is handed. `agent::tool_dispatch` delegates to this in one line.
+        let policy = McpServerPolicy::from_config(
+            &serde_json::from_str(
+                r#"{"command":"node","tools":{"search_notes":{"risk":"read"}}}"#,
+            )
+            .unwrap(),
+        );
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service_and_policy(
+            "bm",
+            vec![named_tool("search_notes"), named_tool("delete_project")],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+            policy,
+        ));
+
+        assert_eq!(
+            router.risk_for("bm", "search_notes"),
+            CapabilityRisk::Read
+        );
+        // The tool the entry said nothing about keeps the default.
+        assert_eq!(
+            router.risk_for("bm", "delete_project"),
+            CapabilityRisk::High
+        );
+        // An unknown server is not a reason to relax anything.
+        assert_eq!(router.risk_for("ghost", "search_notes"), CapabilityRisk::High);
+    }
+
+    #[test]
+    fn a_server_declared_read_only_tool_is_reported_but_never_downgrades_the_risk() {
+        // rmcp's own docs are explicit: "Clients should never make tool use
+        // decisions based on ToolAnnotations received from untrusted servers."
+        // So the declaration is surfaced for a human to act on, and the risk
+        // stays whatever the entry declared — here, the default.
+        let client = McpClient::with_service(
+            "demo",
+            vec![read_only_tool("search"), named_tool("write")],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+        );
+
+        assert_eq!(client.declared_read_only(), ["search"]);
+        assert_eq!(client.policy().risk_for("search"), None);
+    }
+
+    #[test]
+    fn an_exposed_only_declaration_is_what_gets_reported() {
+        // A tool the entry filtered away is not something a human can be asked
+        // to declare a risk for, so it must not appear as evidence.
+        let policy = McpServerPolicy::from_config(
+            &serde_json::from_str(r#"{"command":"node","disabled_tools":["search"]}"#).unwrap(),
+        );
+        let client = McpClient::with_service_and_policy(
+            "demo",
+            vec![read_only_tool("search"), read_only_tool("recall")],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+            policy,
+        );
+
+        assert_eq!(client.declared_read_only(), ["recall"]);
+    }
+
+    #[test]
+    fn a_read_only_hint_of_false_is_not_a_declaration() {
+        let tool = McpTool {
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(false),
+                ..ToolAnnotations::default()
+            }),
+            ..named_tool("write")
+        };
+        let client = McpClient::with_service(
+            "demo",
+            vec![tool],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+        );
+
+        assert!(client.declared_read_only().is_empty());
     }
 
     /// A tool with only a name — enough for exposure filtering.

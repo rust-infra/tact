@@ -237,7 +237,24 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
         lines.push(format!("  tools   {} available:", inspection.tools.len()));
         for tool in &inspection.tools {
             // The full name is what the agent must call, so show it verbatim.
-            lines.push(format!("            mcp__{name}__{tool}"));
+            let mut line = format!("            mcp__{name}__{tool}");
+            // The effective risk, so a silent entry (High) and a declared one
+            // never look alike.
+            let declared = inspection
+                .declared_risks
+                .iter()
+                .find(|(declared, _)| declared == tool)
+                .map(|(_, risk)| risk.to_string());
+            match declared {
+                Some(risk) => line.push_str(&format!("  risk {risk} (declared)")),
+                None => line.push_str("  risk high (default)"),
+            }
+            // The server's own claim, marked as a claim. It is evidence for
+            // choosing a `tools.<name>.risk`, never a risk Tact applied.
+            if inspection.declared_read_only.iter().any(|t| t == tool) {
+                line.push_str("  (server-declared read-only)");
+            }
+            lines.push(line);
         }
     }
     // A filtered server must not look like one that never had these tools.
@@ -609,6 +626,7 @@ async fn authorize(server: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tact::permission::CapabilityRisk;
 
     pub(super) fn configured(name: &str, oauth: bool) -> mcp::ConfiguredServer {
         mcp::ConfiguredServer {
@@ -720,6 +738,37 @@ mod tests {
     }
 
     #[test]
+    fn the_detail_view_separates_a_declared_risk_from_the_default() {
+        // "The entry said high" and "the entry said nothing" must not look
+        // alike, and the server's own read-only claim is marked as a claim
+        // rather than being applied.
+        let inspection = mcp::McpServerInspection {
+            server: configured("bm", false),
+            status: McpServerStatus::Connected,
+            tools: vec!["search_notes".to_string(), "delete_project".to_string()],
+            filtered: Vec::new(),
+            instructions_chars: None,
+            resources: None,
+            declared_read_only: vec!["search_notes".to_string()],
+            declared_risks: vec![("search_notes".to_string(), CapabilityRisk::Read)],
+        };
+
+        let text = render_server_detail(&inspection);
+        assert!(
+            text.contains("mcp__bm__search_notes  risk read (declared)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("(server-declared read-only)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("mcp__bm__delete_project  risk high (default)"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_detail_view_names_hidden_tools_too() {
         let inspection = mcp::McpServerInspection {
             server: configured("basic-memory", false),
@@ -728,6 +777,8 @@ mod tests {
             filtered: vec!["delete_note".to_string()],
             instructions_chars: None,
             resources: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
         };
 
         let text = render_server_detail(&inspection);
@@ -748,6 +799,8 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: Some(2_043),
             resources: Some(3),
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
         };
         let text = render_server_detail(&inspection);
         assert!(
@@ -777,6 +830,8 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: Some(0),
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
         };
         let text = render_server_detail(&connected);
         assert!(
@@ -947,6 +1002,8 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
         };
 
         let text = render_server_detail(&inspection);
@@ -972,6 +1029,8 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
         };
         let report = McpLoadReport {
             configured: vec![configured("linear", true)],
@@ -992,6 +1051,8 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
         };
         let report = McpLoadReport {
             configured: vec![configured("broken", false)],
@@ -1010,6 +1071,8 @@ mod tests {
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
         };
         let text = render_server_detail(&connected);
         assert!(text.contains("reports no tools"), "{text}");

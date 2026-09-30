@@ -136,6 +136,8 @@ More Codex per-entry fields are honoured, so a server that exposes two dozen too
 | `default_tools_approval_mode` | `"auto" \| "prompt" \| "approve"` | Server-wide approval default. |
 | `tools.<name>.approval_mode` | same | Per-tool override, wins over the default. |
 | `tools.<name>.output_token_limit` | number | Result budget for this tool; an oversized result is spilled to `.tact/tool-results/` with a preview. |
+| `default_tool_risk` | `"read" \| "write" \| "high"` | **Tact's own.** Risk for this server's tools that declare none of their own. Absent means `high`, Tact's historical default. |
+| `tools.<name>.risk` | same | **Tact's own.** Per-tool risk, wins over `default_tool_risk`. |
 
 ```json
 {
@@ -145,7 +147,10 @@ More Codex per-entry fields are honoured, so a server that exposes two dozen too
       "args": ["mcp"],
       "startup_timeout_sec": 120,
       "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
-      "tools": { "search_notes": { "approval_mode": "auto" } }
+      "tools": {
+        "search_notes": { "approval_mode": "auto", "risk": "read" },
+        "delete_project": { "risk": "high" }
+      }
     },
     "github": {
       "command": "npx",
@@ -157,7 +162,23 @@ More Codex per-entry fields are honoured, so a server that exposes two dozen too
 }
 ```
 
-Only `approval_mode: "auto"` changes Tact's behaviour, and it is an auto-**approve** rather than a re-classification: the tool stays `CapabilityRisk::High` everywhere it is displayed, because `Read` is allowed *before* plan mode is consulted and a server entry must not be able to unlock plan mode. The policy is consulted after plan mode, after an explicit `deny` rule and after an explicit `ask` rule, so a server's own declaration can skip the *default* prompt but never a local decision. `prompt`, `approve`, an unknown value and an absent field all keep today's ask behaviour; an unknown value is logged.
+Only `approval_mode: "auto"` changes the *prompt* behaviour, and it is an auto-**approve** rather than a re-classification: risk is decided by `risk` / `default_tool_risk` alone, because `Read` is allowed *before* plan mode is consulted and a server entry must not be able to unlock plan mode through a prompt setting. The approval policy is consulted after plan mode, after an explicit `deny` rule and after an explicit `ask` rule, so a server's own declaration can skip the *default* prompt but never a local decision. `prompt`, `approve`, an unknown value and an absent field all keep today's ask behaviour; an unknown value is logged.
+
+#### Per-tool risk
+
+An MCP tool used to resolve to `CapabilityRisk::High` whatever the entry said, which made a read-only recall tool prompt on every call and made **every** MCP tool unreachable in a non-interactive run (`ask_user` denies High). Two Tact-only keys fix that, and they are Tact's because Codex has no per-tool risk axis:
+
+| Declared | Plan mode | Default mode | Non-interactive | Session allow-list |
+|---|---|---|---|---|
+| `read` | **allowed** — this is the plan-mode bypass | allowed, never asks | allowed | n/a |
+| `write` | blocked | asks once, then the user's allow decision sticks | allowed once | honoured |
+| `high` (default) | blocked | asks; an explicit allow then sticks | **denied** | honoured |
+
+`write` is the tier to reach for when a tool must work unattended: it buys headless availability and a sticky allow without touching plan mode. `read` bypasses plan mode, which is the same trade the native `read_file` makes — declare it only for a tool that genuinely cannot write, and never infer it.
+
+An unknown value is warned about and ignored, exactly like `approval_mode`, so one typo cannot fail a whole entry. Both keys are modelled, so they never appear in the *Unmodelled entry keys* section. `mcp get <server>` prints the effective risk beside every tool, marked `(declared)` or `(default)`, so an entry that declares a risk is never indistinguishable from one that silently kept `high`.
+
+**Annotations are evidence, not authority.** A server may set `readOnlyHint` on a tool; `mcp get` marks those `(server-declared read-only)` so the human has something to base a `risk` declaration on. Tact does **not** lower the risk from it: rmcp's own documentation says clients "should never make tool use decisions based on ToolAnnotations received from untrusted servers", and an honest `readOnlyHint` combined with `openWorldHint` describes a tool that reads your files and sends them somewhere — read-only from the permission angle, an egress from the data angle. There is no data-flow axis here, so the claim is displayed and never applied.
 
 Hiding a tool is a deliberate configuration, not a problem — but it is **never silent**: `mcp list` prints a **Filtered tools** section and `mcp get` prints a `hidden` line naming what the entry keeps away from the agent. Neither turns into a startup notice, for the same reason `unmodelled` does not: a deliberate configuration should not make every launch noisy.
 
@@ -764,7 +785,8 @@ The measurement above is specific to the names Figma admits. Another provider ma
 | **Legacy HTTP+SSE** | `type: "sse"` maps to Streamable HTTP; the deprecated 2024-11-05 HTTP+SSE endpoint is not implemented |
 | **OAuth device flow / mTLS** | Only the authorization-code + PKCE flow is implemented; no device code, client certificates, or enterprise SSO |
 | **Client secrets / allowlisted providers** | Only self-registration (DCR) and public-client `clientId` are supported; a provider that refuses DCR *and* needs a client secret (Figma's remote server) cannot be authorized from Tact — the error names the alternatives |
-| **Per-tool permission granularity** | Every MCP tool resolves to `CapabilityRisk::High`; `normalize_mcp_capability` ignores both server and tool. An entry can skip the *prompt* with `approval_mode: "auto"`, but it cannot lower the reported risk — that needs a capability axis Tact does not have |
+| **Per-tool permission granularity** | Solved for server tools: `tools.<name>.risk` / `default_tool_risk` declare `read` / `write` / `high`, and `mcp get` prints the effective tier. The two router-served resource tools (`list_mcp_resources`, `read_mcp_resource`) are **not** addressable this way — they are not in any server's `tools` map — so they stay `CapabilityRisk::High` |
+| **Server-declared tool annotations** | `readOnlyHint` is read and displayed, never applied: a third party's self-description cannot lower a risk, and `openWorldHint` would make an "honest" read-only tool an egress path Tact has no axis for |
 | **Unmodelled entry fields** | `omit_tools_from` (Codex's code-mode concept) is parsed and reported, never honoured; `env_vars` is reported when it appears on a remote entry, which has no child process |
 | **No `env_vars` `source: "remote"`** | Codex's `remote` source asks a remote stdio executor for a value. Tact has no such executor, so the entry is refused by name rather than starting without it |
 | **No `${VAR}` interpolation** | `mcp.json` values are literal. Credentials go through `env_vars`, which is an explicit allowlist rather than a template engine |

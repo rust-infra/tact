@@ -225,10 +225,12 @@ impl PermissionManager {
     /// 6. Default mode + matching settings ask → ask (non-high only;
     ///    high-risk Ask/None still uses the high-risk ask path).
     /// 7. Default mode + server-policy auto-approve → allow.
-    /// 8. Default mode + high risk (no Deny/Allow rule) → ask
-    ///    (skips the in-session always-allowed list).
-    /// 9. Default mode + in-session always-allowed → allow.
-    /// 10. Otherwise → ask.
+    /// 8. Default mode + high risk + in-session always-allowed (exact tool
+    ///    *and* input) → allow. A high-risk tool is still asked for the first
+    ///    time; this only honours an allow the user granted explicitly.
+    /// 9. Default mode + high risk, not allow-listed → ask.
+    /// 10. Default mode + in-session always-allowed → allow.
+    /// 11. Otherwise → ask.
     pub fn check(
         &mut self,
         tool_name: &str,
@@ -314,21 +316,33 @@ impl PermissionManager {
             _ => {}
         }
 
-        // 7. High-risk without Deny/Allow: always ask (do not use always_allowed).
+        // 8. High-risk: ask, unless the user already allowed this exact tool
+        //    *and* input. The TUI offers "Always allow this tool" for every
+        //    risk, so a High tool that skipped the list here would record an
+        //    approval and then ignore it — the gesture would silently do
+        //    nothing whenever no settings store exists to persist it into.
+        //    Asking first, and honouring a granted allow afterwards, is what
+        //    the button promises. Plan mode above still blocks it.
         if risk == CapabilityRisk::High {
+            if self.is_always_allowed(tool_name, input) {
+                self.consecutive_denials = 0;
+                return PermissionDecision::allow(format!(
+                    "Always-allowed high-risk capability: {tool_name}"
+                ));
+            }
             return PermissionDecision::ask(format!(
                 "High-risk capability requires approval: {}",
                 tool_name
             ));
         }
 
-        // 8. Fallback: in-memory same-session always-allowed list.
+        // 10. Fallback: in-memory same-session always-allowed list.
         if self.is_always_allowed(tool_name, input) {
             self.consecutive_denials = 0;
             return PermissionDecision::allow(format!("Always allowed tool: {tool_name}"));
         }
 
-        // 9. Default: ask.
+        // 11. Default: ask.
         PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
     }
 
@@ -469,7 +483,12 @@ pub fn format_permission_prompt(
     }
 }
 
-/// MCP tools always start as High risk.
+/// The risk of an MCP tool whose entry declares none.
+///
+/// MCP tools always *start* as High risk: the tool is third-party, and its
+/// entry is what has to say otherwise — through `tools.<name>.risk` or the
+/// entry's `default_tool_risk`. Kept as the single named place that says "no
+/// declaration means High", so the fallback cannot drift.
 pub fn normalize_mcp_capability(_server: &str, _tool: &str) -> CapabilityRisk {
     CapabilityRisk::High
 }
@@ -600,11 +619,19 @@ mod tests {
     }
 
     #[test]
-    fn high_risk_requires_approval_even_for_allowed_tool() {
+    fn high_risk_is_allowed_only_after_an_explicit_allow() {
+        // The first call always asks; once the user grants the tool, the grant
+        // is honoured rather than recorded and ignored. A *bare* allow is the
+        // broadest form of that grant (every input), so it covers High too —
+        // mode and settings rules are what still gate it, and both are
+        // asserted elsewhere.
         let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let asked = mgr.check("bash", CapabilityRisk::High, &Value::Null);
+        assert_eq!(asked.behavior, PermissionBehavior::Ask);
+
         mgr.allow_tool("bash");
         let decision = mgr.check("bash", CapabilityRisk::High, &Value::Null);
-        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
     }
 
     // ── Settings-aware tests ────────────────────────────────────
@@ -1286,6 +1313,57 @@ mod tests {
             "{}",
             allowed.reason
         );
+    }
+
+    #[test]
+    fn a_high_risk_tool_honours_a_granted_always_allow() {
+        // The TUI offers "Always allow this tool" for every risk. With no
+        // settings store the grant lands in the in-memory list, which the
+        // High branch used to skip — so the click was recorded and then
+        // ignored, and the next identical call asked again.
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let input = serde_json::json!({"query": "notes"});
+
+        let asked = mgr.check("mcp__demo__search", CapabilityRisk::High, &input);
+        assert_eq!(asked.behavior, PermissionBehavior::Ask);
+
+        mgr.allow_tool_with_input(
+            "mcp__demo__search",
+            PermissionPromptPolicy::Json,
+            &input,
+        );
+
+        let allowed = mgr.check("mcp__demo__search", CapabilityRisk::High, &input);
+        assert_eq!(allowed.behavior, PermissionBehavior::Allow);
+        assert!(allowed.reason.contains("Always-allowed"), "{}", allowed.reason);
+    }
+
+    #[test]
+    fn a_high_risk_tool_still_asks_when_nothing_was_ever_allowed() {
+        // The headless path depends on this: `ask_user` denies High, so the
+        // list must stay the only way in.
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let decision = mgr.check("mcp__demo__search", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn a_granted_always_allow_does_not_unlock_plan_mode() {
+        // The grant relaxes the *prompt*, never the mode: plan mode is
+        // evaluated before the High branch.
+        let mut mgr = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+        mgr.allow_tool("mcp__demo__write_note");
+        let decision = mgr.check("mcp__demo__write_note", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn an_explicit_deny_rule_still_outranks_a_granted_always_allow() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"deny": ["mcp__demo__write_note"]}}"#);
+        mgr.allow_tool("mcp__demo__write_note");
+        let decision = mgr.check("mcp__demo__write_note", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
     }
 
     #[test]

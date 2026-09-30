@@ -35,6 +35,40 @@
 ---
 
 
+## 1. 2026-09-30 — 高风险工具上的「Always allow this tool」被记录了，然后被忽略
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/permission/mod.rs`（`check_with_auto`、`is_always_allowed`、`allow_tool_with_input`）、`crates/tact/src/agent/tool_dispatch.rs`（`preflight_tool_calls`）；spec `docs/superpowers/specs/2026-09-30-mcp-tool-risk-design.md`；[第 10 章](./10_chapter_permission_zh.md) |
+
+**症状 / 动机：** 权限提示对**任何**风险档位都提供三个选项——允许一次、拒绝、**always allow this tool**。对 `CapabilityRisk::High` 工具，第三个选项会被记录却永远不会被读取：`check_with_auto` 在 High 分支上就返回了 `Ask`，**早于**查询内存允许列表，于是用户的点击被存下，下一次完全相同的调用又照问不误。这个手势是否生效取决于一件看不见的事：存在项目路径时，点击会把规则持久化到 `.tact/settings.json`，而 settings 分支对任何风险都认这条规则，所以它生效；在没有项目路径的情况下启动，同样一次点击只落进内存列表，然后无声地什么都不做。每个 MCP 工具都是 `High`，所以这不是边角情况，而是 MCP 的常态。
+
+**决策：** 高风险调用现在会查询允许列表，并在用户**针对完全相同的工具与输入**授予过允许时放行；否则仍然询问。这个授权放宽的是提示，而绝不是模式或规则：计划模式仍然最先判定，`Auto` 模式仍然更早短路，显式的 `deny`/`ask` 规则仍然优先，非交互运行仍然拒绝 High —— 因为全新的 headless 会话里列表只有 `read_file`，且从不从 settings 播种。`check` 上那份编号决策列表已同步重排，而把旧契约写死的那条测试（`high_risk_requires_approval_even_for_allowed_tool`）被改写为 `high_risk_is_allowed_only_after_an_explicit_allow`，它同时断言两半：首次调用询问，授权之后不再询问。
+
+**之后的行为：** 「always allow this tool」在任何风险档位上都名副其实，同一个手势在有或没有项目设置文件时表现一致。高风险工具首次仍会被询问，在计划模式下仍被拦截。
+
+**指引：** `permission::tests::{a_high_risk_tool_honours_a_granted_always_allow, a_high_risk_tool_still_asks_when_nothing_was_ever_allowed, a_granted_always_allow_does_not_unlock_plan_mode, an_explicit_deny_rule_still_outranks_a_granted_always_allow, high_risk_is_allowed_only_after_an_explicit_allow}`。
+
+---
+
+## 1. 2026-09-30 — MCP 工具的 risk 可以按工具声明，server 的只读声明只展示、不施加
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`ToolRisk`、`McpToolConfig::risk`、`McpProjectConfig::default_tool_risk`、`McpServerPolicy::risk_for`、`MCPToolRouter::risk_for`、`McpClient::declared_read_only`、`McpServerInspection::{declared_risks, declared_read_only}`）、`crates/tact/src/permission/mod.rs`（`normalize_mcp_capability`）、`crates/tact/src/agent/tool_dispatch.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-tool-risk-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** 两个缺口，都有实测。 (1) 每个 MCP 工具都解析为 `CapabilityRisk::High`，于是只读的检索工具每次调用都要询问，而在非交互运行中**所有** MCP 调用被直接拒绝（`ask_user` 对 High 拒绝）——唯一的出路是 `approval_mode: "auto"`，一个全有或全无的开关，其另一个效果就是跳过询问。条目无法既说「这个工具是只读的，信任它」，又不为它放弃计划模式。 (2) MCP 定义了 `Tool.annotations`（`readOnlyHint`、`destructiveHint`、`openWorldHint`），而 `build_tool_specs` 只读 `name` / `description` / `input_schema`，于是 server 自己的声明被丢弃，而不是展示给那个必须做信任决策的人。这两者之下还埋着一个问题：`McpToolConfig` 没有 `#[serde(flatten)] extra`，所以用户文件里的 `risk` 键会被 serde 无声丢弃——连 `unmodelled_keys` 都不会上报，因为它只看 `McpProjectConfig::extra`。
+
+**决策：** 两个 Tact 自有键——`tools.<name>.risk` 与条目级 `default_tool_risk`，取 `read` / `write` / `high`——经 `McpServerPolicy::risk_for`（覆盖优先于默认）与 `MCPToolRouter::risk_for`（回退到 `normalize_mcp_capability`，它被保留为「未声明即 High」这唯一具名之处）解析。两者都是已建模字段，都不出现在 unmodelled 中；未知值像 `approval_mode` 一样被警告并忽略，因此一个拼写错误不会让整个条目失败。这些档位刻意不是同一个旋钮：需要一个工具在无人值守时可用，就选 `write`（换来 headless 可用性与可粘滞的允许，且不触碰计划模式），而 `read` 是唯一会绕过计划模式的档位——与原生 `read_file` 做的是同一笔权衡——所以它只能被声明，绝不被推断。`approval_mode: "auto"` 仍然是询问轴上的**自动批准**，不重新分级 risk。另外，`readOnlyHint` 会从已暴露的工具上收集，暴露在 `McpServerInspection` 上并由 `mcp get` 标为 `(server-declared read-only)`，且**不**参与 `risk_for`：rmcp 自己的文档写明客户端「should never make tool use decisions based on ToolAnnotations received from untrusted servers」；而且一个诚实的 `readOnlyHint` 加上 `openWorldHint`，描述的是一个读取你的文件再发往别处的工具。
+
+**之后的行为：** 条目可以把只读的检索工具声明为 `read`（无人值守可用、不询问），或把必须在 headless 下运行的工具声明为 `write`；而它保持沉默的一切仍为 `High`，行为与从前完全一致。`mcp get <server>` 会在每个工具旁打印生效的 risk，标注 `(declared)` 或 `(default)`，因此声明过的档位永远不会与沉默的默认值混同；同时标出 server 自身的只读声明，让人有依据去写 risk。两个由路由层提供的资源工具仍为 `High`：它们不在任何 server 的 `tools` 映射里，没有声明能寻址到它们，第 8 章的缺口表现在如实这么写，取代了原先那条笼统的行。
+
+**指引：** `mcp::tests::{a_tool_risk_parses_its_three_tiers_and_nothing_else, a_declared_tool_risk_overrides_the_entry_default, an_entry_that_declares_no_risk_declares_none_at_all, an_unknown_tool_risk_is_ignored_rather_than_guessed, risk_keys_are_modelled_and_never_reported_as_unmodelled, the_router_resolves_a_declared_tier_and_defaults_the_rest_to_high, a_server_declared_read_only_tool_is_reported_but_never_downgrades_the_risk, an_exposed_only_declaration_is_what_gets_reported, a_read_only_hint_of_false_is_not_a_declaration}`、`mcp_cli::tests::the_detail_view_separates_a_declared_risk_from_the_default`。
+
+---
+
 ## 1. 2026-09-30 — MCP resources 从「文档里的缺口」变成可读内容
 
 | 字段 | 值 |

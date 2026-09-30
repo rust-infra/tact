@@ -15,7 +15,7 @@ use crate::{
     invoke_hooks,
     mcp::MCPToolRouter,
     permission::{
-        CapabilityRisk, PermissionBehavior, format_permission_prompt, normalize_mcp_capability,
+        CapabilityRisk, PermissionBehavior, format_permission_prompt,
     },
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, TaskOperation, ToolDomain, ToolRouter,
@@ -648,7 +648,9 @@ impl Agent {
             };
             let risk = match &resolved {
                 ResolvedTool::Native { metadata } => metadata.permission.resolve(&tool_use.input),
-                ResolvedTool::Mcp { server, tool, .. } => normalize_mcp_capability(server, tool),
+                // The entry declares a tier through `tools.<name>.risk` or
+                // `default_tool_risk`; a silent entry keeps High.
+                ResolvedTool::Mcp { server, tool, .. } => self.mcp_router.risk_for(server, tool),
                 // Reading a resource is still third-party content, and a
                 // listing touches every server the user configured.
                 ResolvedTool::McpResource { .. } => CapabilityRisk::High,

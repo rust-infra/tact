@@ -120,7 +120,7 @@ pub enum PermissionMode {
 
 | 模式 | 标签 | 行为 |
 |------|------|------|
-| `Default` | `default - ask for writes` | Read 允许；Write 询问（除非 settings/allowlist 命中）；High 询问，除非命中 settings **allow** 规则 |
+| `Default` | `default - ask for writes` | Read 允许；Write 询问（除非 settings/allowlist 命中）；High 询问，除非命中 settings **allow** 规则**或会话内 allowlist 已覆盖该确切工具与输入** |
 | `Plan` | `plan - read only` | Read 允许（含可证明只读的 shell 命令——`ls`、`grep`、`git status` 等）；Write 与 High **拒绝**且不提示 |
 | `Auto` | `auto - allow non-high operations` | 所有风险自动批准（含 High） |
 
@@ -132,12 +132,14 @@ pub enum PermissionMode {
 1. Read risk?                         → Allow（所有模式）
 2. Plan mode + non-Read?              → Deny
 3. Auto mode?                         → Allow（所有风险）
-4. Settings deny rule?                → Deny
-5. Settings allow rule?               → Allow（含 High）
-6. Settings ask rule（非 High）?      → Ask
-7. High risk（无 Deny/Allow 规则）?   → Ask（跳过会话内 allowlist）
-8. 会话内 always_allowed 命中?        → Allow
-9. Default                            → Ask
+4. Settings deny rule?                     → Deny
+5. Settings allow rule?                    → Allow（含 High）
+6. Settings ask rule（非 High）?           → Ask
+7. Server-policy auto-approve?             → Allow
+8. High risk + 会话内 always_allowed 命中? → Allow
+9. High risk（没有任何允许）?              → Ask
+10. 会话内 always_allowed 命中?            → Allow
+11. Default                                → Ask
 ```
 
 ```mermaid
@@ -156,14 +158,16 @@ flowchart TD
     Settings -- Allow --> Allow
     Settings -- Ask / none --> High{"High risk?"}
 
-    High -- Yes --> Ask["Ask user"]
-    High -- No --> AllowList{"always_allowed_tools?"}
+    High -- Yes --> AllowList{"always_allowed_tools?"}
+    High -- No --> AllowList
 
     AllowList -- Yes --> Allow
     AllowList -- No --> Ask
 ```
 
-**High 与 allowlist：** 会话内裸名 allowlist（`allow_tool`）**不能**绕过 High——仍会 `Ask`。匹配的项目 settings **allow** 规则（含「Always allow this tool」经 `allow_tool_with_input` 持久化的规则）**可以**按输入模式放行 High。
+**High 与 allowlist：** High 首次无论如何都会询问。一旦有允许覆盖**该确切工具与输入**——裸名 `allow_tool`，或「Always allow this tool」写入的输入感知规则——High 就与其他风险一样被放行。计划模式与显式 `deny`/`ask` 规则仍然先判定，所以授权放宽的是询问，绝不是模式或规则。匹配的项目 settings **allow** 规则在第 5 步就能到达 High，甚至早于查询 allowlist。
+
+全新的非交互会话仍然拒绝 High：`always_allowed_tools` 只预置 `read_file`，且从不从 settings 填充，所以列表里只有用户在提示上授予过的内容，而非交互下没有提示。
 
 ---
 
@@ -173,9 +177,11 @@ flowchart TD
 
 `PermissionManager` 持有 `always_allowed_tools: Vec<String>`。构造时（`try_new`）预置 `"read_file"`。
 
-用户在 TUI 选择 **「Always allow this tool」** 时，`allow_tool(tool_name)` 追加精确工具名（如 `edit_file`、`bash`）。此后对该名的 **Write** 风险调用会跳过 Default 模式提示。
+用户在 TUI 选择 **「Always allow this tool」** 时，`tool_dispatch` 调用的是 `allow_tool_with_input(name, policy, input)`——针对那次确切调用的**输入感知**规则，而不是裸工具名。有 settings 存储时它被持久化进项目的 `.tact/settings.json`；没有则落进内存列表。两种情况都会让此后匹配该工具**且**输入的调用跳过询问，且**任何**风险都适用，包括 **High**。
 
-allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话。
+（裸名形式 `allow_tool(name)` 仍然存在，仍然授权任意输入，现在它也覆盖 High。全新会话的列表只有 `read_file`，所以没有真实点击就不会有任何授权。）
+
+allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话。只有 settings 规则那种形式能跨重启存活。
 
 ### 连续拒绝
 
@@ -209,7 +215,7 @@ TUI（`crates/tui/src/widgets/state/app/agent.rs`）切换到 `InputMode::Select
 |----------|------|------------|
 | Allow once | 0 | 运行工具；在 `StepFinished` 上设置 `permission_label = "Allow once"` |
 | Deny | 1（默认） | `PreparedState::Resolved`；`StepFailed` 附带 deny 消息 |
-| Always allow this tool | 2 | `allow_tool(name)`；运行工具；`permission_label = "Always allow this tool"` |
+| Always allow this tool | 2 | `allow_tool_with_input(name, policy, input)`；运行工具；`permission_label = "Always allow this tool"` |
 
 `permission_label` 附加到 `StepResult`，并在 TUI 工具 meta 行显示。见 [Tool Rendering](../docs/tool_rendering.md)。
 

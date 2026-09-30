@@ -126,7 +126,7 @@ Before a tool enters scheduling, `PermissionManager` classifies its intent:
 
 - **Read-only**: generally allowed.
 - **Write**: asks in Default mode (unless allowlisted); auto-approved in Auto mode; denied in Plan mode.
-- **High-risk**: always asks (even if allowlisted); includes `spawn_subagent`, destructive tool names, and dangerous bash patterns.
+- **High-risk**: asks the first time; allowed afterwards only once an explicit allow covers that exact tool and input. Includes `spawn_subagent`, destructive tool names, and dangerous bash patterns.
 
 See [Permission Model](./10_chapter_permission.md) for classification rules, modes, and the TUI approval flow.
 

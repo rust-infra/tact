@@ -32,6 +32,40 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — "Always allow this tool" was recorded and then ignored for a high-risk tool
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tact/src/permission/mod.rs` (`check_with_auto`, `is_always_allowed`, `allow_tool_with_input`), `crates/tact/src/agent/tool_dispatch.rs` (`preflight_tool_calls`); spec `docs/superpowers/specs/2026-09-30-mcp-tool-risk-design.md`; [Ch 10](./10_chapter_permission.md) |
+
+**Symptom / motivation:** The permission prompt offers every tool three options — allow once, deny, and **always allow this tool** — for every risk level. For a `CapabilityRisk::High` tool the third one was recorded and then never read: `check_with_auto` returned `Ask` on the High branch *before* it ever consulted the in-memory allow list, so the user's click was stored and the next identical call asked again. Whether the gesture worked depended on something invisible: with a project path present the click persisted a rule in `.tact/settings.json`, which the settings branch honours at every risk, so it worked; started without one, the same click fell into the in-memory list and did nothing, silently. Every MCP tool is `High`, so this was the normal case there, not an edge.
+
+**Decision:** A High-risk call now consults the allow list and is allowed when the user granted **that exact tool and input**; otherwise it still asks. The grant relaxes the prompt, never the mode or the rules: plan mode is still evaluated first, `Auto` still short-circuits earlier, an explicit `deny`/`ask` rule still outranks it, and non-interactive runs still deny High because a fresh headless session's list contains only `read_file` — it is never seeded from settings. The numbered decision list on `check` was renumbered to match, and the test that had encoded the old contract (`high_risk_requires_approval_even_for_allowed_tool`) was rewritten as `high_risk_is_allowed_only_after_an_explicit_allow`, which asserts both halves: the first call asks, the call after the grant does not.
+
+**Behavior after:** "Always allow this tool" means what it says at every risk, and the same gesture behaves identically with or without a project settings file. A high-risk tool is still asked for the first time and still blocked in plan mode.
+
+**Pointers:** `permission::tests::{a_high_risk_tool_honours_a_granted_always_allow, a_high_risk_tool_still_asks_when_nothing_was_ever_allowed, a_granted_always_allow_does_not_unlock_plan_mode, an_explicit_deny_rule_still_outranks_a_granted_always_allow, high_risk_is_allowed_only_after_an_explicit_allow}`.
+
+---
+
+## 1. 2026-09-30 — An MCP tool's risk becomes declarable per tool, and a server's read-only claim is shown but never applied
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/mcp/mod.rs` (`ToolRisk`, `McpToolConfig::risk`, `McpProjectConfig::default_tool_risk`, `McpServerPolicy::risk_for`, `MCPToolRouter::risk_for`, `McpClient::declared_read_only`, `McpServerInspection::{declared_risks, declared_read_only}`), `crates/tact/src/permission/mod.rs` (`normalize_mcp_capability`), `crates/tact/src/agent/tool_dispatch.rs`; spec `docs/superpowers/specs/2026-09-30-mcp-tool-risk-design.md`; [Ch 8](./08_chapter_mcp.md) |
+
+**Symptom / motivation:** Two gaps, both measured. (1) Every MCP tool resolved to `CapabilityRisk::High`, so a read-only recall tool prompted on every call, and in a non-interactive run **every** MCP call was refused outright (`ask_user` denies High) — the only escape was `approval_mode: "auto"`, an all-or-nothing switch whose other effect is to skip the prompt. An entry could not say "this tool is a read; trust it" without also giving up plan mode for it. (2) MCP defines `Tool.annotations` (`readOnlyHint`, `destructiveHint`, `openWorldHint`), and `build_tool_specs` read only `name` / `description` / `input_schema`, so a server's own claim was discarded rather than shown to the person who has to make that trust decision. Underneath both: `McpToolConfig` had no `#[serde(flatten)] extra`, so a `risk` key in a user's file would have been dropped by serde in silence — not even reported by `unmodelled_keys`, which only sees `McpProjectConfig::extra`.
+
+**Decision:** Two Tact-only keys — `tools.<name>.risk` and the entry-level `default_tool_risk`, taking `read` / `write` / `high` — resolved through `McpServerPolicy::risk_for` (override beats default) and `MCPToolRouter::risk_for` (which falls back to `normalize_mcp_capability`, kept as the single named place that says "no declaration means High"). They are modelled fields, so neither appears as unmodelled, and an unknown value is warned about and ignored like `approval_mode`, so one typo cannot fail an entry. The tiers are deliberately not one knob: `write` is the tier for a tool that must work unattended (it buys headless availability and a sticky allow without touching plan mode), while `read` is the only one that bypasses plan mode — the same trade the native `read_file` makes — so it is declared, never inferred. `approval_mode: "auto"` stays an auto-**approve** on the prompt axis and does not re-classify risk. Separately, `readOnlyHint` is collected from exposed tools, surfaced on `McpServerInspection` and marked `(server-declared read-only)` by `mcp get`, and **does not feed `risk_for`**: rmcp's own documentation says clients "should never make tool use decisions based on ToolAnnotations received from untrusted servers", and an honest `readOnlyHint` plus `openWorldHint` describes a tool that reads your files and sends them somewhere.
+
+**Behavior after:** An entry can make a read-only recall tool `read` (usable unattended, no prompt) or a tool that must run headless `write`, while everything it stays silent about keeps `High` and behaves exactly as before. `mcp get <server>` prints the effective risk beside every tool as `(declared)` or `(default)`, so a declared tier is never indistinguishable from the silent default, and marks the server's own read-only claims so a human has evidence to declare a risk from. The two router-served resource tools stay `High`: they are not in any server's `tools` map, so no declaration can address them, and Ch 8's gap table now says so instead of the old blanket row.
+
+**Pointers:** `mcp::tests::{a_tool_risk_parses_its_three_tiers_and_nothing_else, a_declared_tool_risk_overrides_the_entry_default, an_entry_that_declares_no_risk_declares_none_at_all, an_unknown_tool_risk_is_ignored_rather_than_guessed, risk_keys_are_modelled_and_never_reported_as_unmodelled, the_router_resolves_a_declared_tier_and_defaults_the_rest_to_high, a_server_declared_read_only_tool_is_reported_but_never_downgrades_the_risk, an_exposed_only_declaration_is_what_gets_reported, a_read_only_hint_of_false_is_not_a_declaration}`, `mcp_cli::tests::the_detail_view_separates_a_declared_risk_from_the_default`.
+
+---
+
 ## 1. 2026-09-30 — MCP resources become readable content instead of a documented gap
 
 | Field | Value |

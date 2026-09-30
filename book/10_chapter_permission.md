@@ -123,7 +123,7 @@ Display labels (from `PermissionMode`'s `Display` impl):
 
 | Mode | Label | Behavior |
 |------|-------|----------|
-| `Default` | `default - ask for writes` | Read allowed; Write asks unless settings/allowlist match; High asks unless a settings **allow** rule matches |
+| `Default` | `default - ask for writes` | Read allowed; Write asks unless settings/allowlist match; High asks unless a settings **allow** rule matches **or the in-session allowlist already covers that exact tool and input** |
 | `Plan` | `plan - read only` | Read allowed (including provably read-only shell commands — `ls`, `grep`, `git status`, …); Write and High **denied** without prompting |
 | `Auto` | `auto - allow non-high operations` | All risks auto-approved (including High) |
 
@@ -132,15 +132,17 @@ Display labels (from `PermissionMode`'s `Display` impl):
 The checks run in this fixed order:
 
 ```text
-1. Read risk?                         → Allow (all modes)
-2. Plan mode + non-Read?              → Deny
-3. Auto mode?                         → Allow (all risks)
-4. Settings deny rule?                → Deny
-5. Settings allow rule?               → Allow (including High)
-6. Settings ask rule (non-High)?      → Ask
-7. High risk (no Deny/Allow rule)?    → Ask (skips in-session allowlist)
-8. In-session always_allowed match?   → Allow
-9. Default                            → Ask
+1. Read risk?                              → Allow (all modes)
+2. Plan mode + non-Read?                   → Deny
+3. Auto mode?                              → Allow (all risks)
+4. Settings deny rule?                     → Deny
+5. Settings allow rule?                    → Allow (including High)
+6. Settings ask rule (non-High)?           → Ask
+7. Server-policy auto-approve?             → Allow
+8. High risk + in-session always_allowed?  → Allow
+9. High risk (nothing allowed it)?         → Ask
+10. In-session always_allowed match?       → Allow
+11. Default                                → Ask
 ```
 
 ```mermaid
@@ -159,14 +161,16 @@ flowchart TD
     Settings -- Allow --> Allow
     Settings -- Ask / none --> High{"High risk?"}
 
-    High -- Yes --> Ask["Ask user"]
-    High -- No --> AllowList{"always_allowed_tools?"}
+    High -- Yes --> AllowList{"always_allowed_tools?"}
+    High -- No --> AllowList
 
     AllowList -- Yes --> Allow
     AllowList -- No --> Ask
 ```
 
-**High-risk vs allowlists:** the in-session bare-name allowlist (`allow_tool`) does **not** bypass High — those calls still `Ask`. A matching project settings **allow** rule (including rules persisted by "Always allow this tool" via `allow_tool_with_input`) **does** allow High for that input pattern.
+**High-risk vs allowlists:** High is asked for the first time, whatever the allowlist says. Once an allow covers **that exact tool and input** — a bare `allow_tool` name, or the input-aware rule "Always allow this tool" writes — High is allowed like any other risk. Plan mode and an explicit `deny`/`ask` rule are still evaluated first, so a grant relaxes the prompt and never the mode or the rules. A matching project settings **allow** rule reaches High through step 5, before the allowlist is even consulted.
+
+A fresh non-interactive session still denies High: `always_allowed_tools` is seeded with `read_file` only and is never filled from settings, so the list is what the user granted at a prompt, and there is no prompt.
 
 ---
 
@@ -176,9 +180,11 @@ flowchart TD
 
 `PermissionManager` holds `always_allowed_tools: Vec<String>`. On construction (`try_new`), it is seeded with `"read_file"`.
 
-When the user picks **"Always allow this tool"** in the TUI, `allow_tool(tool_name)` appends the exact tool name (e.g. `edit_file`, `bash`). Future **Write**-risk calls to that name skip the Default-mode prompt.
+When the user picks **"Always allow this tool"** in the TUI, `tool_dispatch` calls `allow_tool_with_input(name, policy, input)` — an **input-aware** rule for that exact call, not a bare tool name. With a settings store present it is persisted to the project's `.tact/settings.json`; without one it lands in the in-memory list. Either way, future calls matching that tool **and** input skip the prompt, at **every** risk including **High**.
 
-The allowlist is **in-memory only** — it is not persisted to SQLite or TOML between sessions.
+(`allow_tool(name)` — the bare-name form — still exists and still grants every input, and it too now covers High. A fresh session's list holds only `read_file`, so nothing is granted without a real click.)
+
+The allowlist is **in-memory only** — it is not persisted to SQLite or TOML between sessions. Only the settings-rule form survives a restart.
 
 ### Consecutive denials
 
@@ -212,7 +218,7 @@ The TUI (`crates/tui/src/widgets/state/app/agent.rs`) switches to `InputMode::Se
 |-------------|-------|--------------|
 | Allow once | 0 | Run tool; set `permission_label = "Allow once"` on `StepFinished` |
 | Deny | 1 (default) | `PreparedState::Resolved`; `StepFailed` with deny message |
-| Always allow this tool | 2 | `allow_tool(name)`; run tool; `permission_label = "Always allow this tool"` |
+| Always allow this tool | 2 | `allow_tool_with_input(name, policy, input)`; run tool; `permission_label = "Always allow this tool"` |
 
 The `permission_label` is attached to `StepResult` and shown on the tool meta row in the TUI. See [Tool Rendering](../docs/tool_rendering.md).
 

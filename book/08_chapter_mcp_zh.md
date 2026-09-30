@@ -137,6 +137,8 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
 | `default_tools_approval_mode` | `"auto" \| "prompt" \| "approve"` | 该 server 的默认审批行为。 |
 | `tools.<name>.approval_mode` | 同上 | 单工具覆盖，优先于默认值。 |
 | `tools.<name>.output_token_limit` | number | 该工具的结果预算；超限结果落盘到 `.tact/tool-results/` 并只留预览。 |
+| `default_tool_risk` | `"read" \| "write" \| "high"` | **Tact 自有。** 该 server 中未自行声明的工具所用的 risk。缺省即 `high`，也就是 Tact 一贯的默认。 |
+| `tools.<name>.risk` | 同上 | **Tact 自有。** 单工具 risk，优先于 `default_tool_risk`。 |
 
 ```json
 {
@@ -146,7 +148,10 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
       "args": ["mcp"],
       "startup_timeout_sec": 120,
       "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
-      "tools": { "search_notes": { "approval_mode": "auto" } }
+      "tools": {
+        "search_notes": { "approval_mode": "auto", "risk": "read" },
+        "delete_project": { "risk": "high" }
+      }
     },
     "github": {
       "command": "npx",
@@ -158,7 +163,23 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
 }
 ```
 
-只有 `approval_mode: "auto"` 会改变 Tact 的行为，而且它是**自动批准**而非重新分级：该工具在一切展示与上报处仍是 `CapabilityRisk::High`。原因是 `Read` 在**计划模式之前**就被放行，若把 server 的声明映射成更低的 risk，就等于让一个配置项解锁计划模式。这条策略在计划模式、显式 `deny` 规则与显式 `ask` 规则之后才被查询，所以 server 自己的声明只能跳过**默认**询问，永远盖不过本地决定。`prompt`、`approve`、未知值与缺省字段一律维持现有的询问行为；未知值会记日志。
+只有 `approval_mode: "auto"` 会改变**询问**行为，而且它是**自动批准**而非重新分级：risk 只由 `risk` / `default_tool_risk` 决定。原因是 `Read` 在**计划模式之前**就被放行，若让一个审批设置解锁计划模式，就等于让配置项绕过模式。这条审批策略在计划模式、显式 `deny` 规则与显式 `ask` 规则之后才被查询，所以 server 自己的声明只能跳过**默认**询问，永远盖不过本地决定。`prompt`、`approve`、未知值与缺省字段一律维持现有的询问行为；未知值会记日志。
+
+#### 单工具 risk
+
+MCP 工具过去无论条目怎么写都解析为 `CapabilityRisk::High`，结果是只读的检索工具每次调用都要询问，而且在非交互运行时**所有** MCP 工具都无法使用（`ask_user` 对 High 直接拒绝）。两个 Tact 自有字段修掉这一点——之所以是 Tact 自有，是因为 Codex 没有单工具 risk 这条轴：
+
+| 声明值 | 计划模式 | 默认模式 | 非交互 | 会话允许列表 |
+|---|---|---|---|---|
+| `read` | **放行** —— 这就是计划模式旁路 | 放行，永不询问 | 放行 | 不适用 |
+| `write` | 拦截 | 询问一次，之后用户的允许决定持续生效 | 放行一次 | 生效 |
+| `high`（默认） | 拦截 | 每次都问；用户显式允许后生效 | **拒绝** | 生效 |
+
+需要一个工具在无人值守时可用，就选 `write`：它能换来 headless 可用性与可粘滞的允许，而不触碰计划模式。`read` 会绕过计划模式，这与原生 `read_file` 做的是同一笔权衡——只对确实不会写入的工具声明它，绝不推断。
+
+未知值会像 `approval_mode` 一样被警告并忽略，因此一个拼写错误不会让整个条目失败。两个键都是已建模字段，不会出现在 *Unmodelled entry keys* 一节。`mcp get <server>` 会在每个工具旁打印生效的 risk，并标注 `(declared)` 或 `(default)`，因此声明过 risk 的条目永远不会与沉默保留 `high` 的条目混同。
+
+**annotations 是证据，不是授权。** server 可以给工具打上 `readOnlyHint`；`mcp get` 会把这类工具标为 `(server-declared read-only)`，让人有依据去写 `risk` 声明。Tact **不会**据此降低 risk：rmcp 自己的文档就写明客户端「should never make tool use decisions based on ToolAnnotations received from untrusted servers」；而且一个诚实的 `readOnlyHint` 若与 `openWorldHint` 同时出现，描述的是一个读取你的文件再发往别处的工具——从权限角度看只读，从数据角度看是外泄通道。这里没有数据流这条轴，所以该声明只展示、不施加。
 
 隐藏工具是刻意的配置而非故障，但**绝不无声**：`mcp list` 会打印 **Filtered tools** 段落，`mcp get` 会打印 `hidden` 行，点名该条目挡在 agent 之外的工具。两者都不进入启动提示，理由与 `unmodelled` 相同：刻意的配置不该让每次启动都变吵。
 
@@ -765,7 +786,8 @@ oauth_client_name = "Codex"   # 默认；设为 "Tact" 可如实标识
 | **旧版 HTTP+SSE** | `type: "sse"` 映射到 Streamable HTTP；已废弃的 2024-11-05 HTTP+SSE 端点未实现 |
 | **OAuth 设备码 / mTLS** | 只实现授权码 + PKCE 流程；无设备码、客户端证书或企业 SSO |
 | **客户端密钥 / 白名单 provider** | 只支持自我注册（DCR）与公共客户端的 `clientId`；若 provider 既拒绝 DCR 又要求 client secret（Figma 远程 server），则无法在 Tact 内完成授权——报错会指明替代方案 |
-| **按工具的权限粒度** | 所有 MCP 工具都解析为 `CapabilityRisk::High`；`normalize_mcp_capability` 忽略 server 与 tool 两者。条目可以用 `approval_mode: "auto"` 跳过**询问**，但无法降低上报的 risk——那需要 Tact 目前没有的能力维度 |
+| **按工具的权限粒度** | 对 server 工具来说已解决：`tools.<name>.risk` / `default_tool_risk` 可声明 `read` / `write` / `high`，`mcp get` 会打印实际生效的档位。但两个由路由层提供的资源工具（`list_mcp_resources`、`read_mcp_resource`）**无法**用这种方式寻址——它们不在任何 server 的 `tools` 映射里——因此仍是 `CapabilityRisk::High` |
+| **server 声明的工具 annotations** | `readOnlyHint` 会被读取并展示，但从不施加：第三方的自述不能降低 risk；而且 `openWorldHint` 会让一个「诚实」的只读工具变成外泄通道，而 Tact 没有对应的轴 |
 | **未建模的条目字段** | `omit_tools_from`（Codex 的 code-mode 概念）只被解析并上报，不会被采纳；`env_vars` 出现在远程条目上时也会被上报，因为那里没有子进程 |
 | **不支持 `env_vars` 的 `source: "remote"`** | Codex 的 `remote` 源向远端 stdio 执行器索要取值。Tact 没有这样的执行器，因此该条目会按名拒绝，而不是缺值启动 |
 | **不做 `${VAR}` 插值** | `mcp.json` 的值是字面量。凭据走 `env_vars`——那是显式白名单，而不是模板引擎 |

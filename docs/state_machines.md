@@ -270,7 +270,7 @@ stateDiagram-v2
     Ask --> Deny: user chooses deny
 ```
 
-The settings check applies after mode classification for Default-mode prompted capabilities. A matching settings deny always blocks execution. A matching ask displays the prompt. A matching allow skips the prompt except when the existing high-risk policy requires confirmation (high-risk always asks regardless of allow rules). Existing Plan and Auto mode semantics are unchanged.
+The settings check applies after mode classification for Default-mode prompted capabilities. A matching settings deny always blocks execution. A matching ask displays the prompt. A matching allow skips the prompt at **every** risk, high risk included. High risk is otherwise asked the first time and allowed afterwards only when an in-session allow covers that exact tool and input — a grant relaxes the prompt, never the mode. Existing Plan and Auto mode semantics are unchanged.
 
 ---
 
