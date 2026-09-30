@@ -655,6 +655,55 @@ impl Agent {
                 ResolvedTool::McpResource { tool } => crate::mcp::resource_tool_risk(*tool),
                 ResolvedTool::Unknown { .. } => CapabilityRisk::High,
             };
+
+            // ── Sensitive-target guard ──────────────────────────────────────
+            //
+            // Deliberately *here*, before the PreToolUse hook and before the
+            // permission ladder: a `Credential` hit has to be unreachable by
+            // `Auto` mode, by an explicit settings `allow` rule, by an
+            // in-session "always allow", and by a `PermissionRequest` hook.
+            // Anything evaluated later can be talked out of it; this cannot.
+            //
+            // The `Secret` tier needs no special case — it escalates to `High`
+            // below and then follows the ordinary decision path, so plan mode
+            // denies it, Default asks, and the user's rules compose as usual.
+            let sensitive_hit = match &resolved {
+                ResolvedTool::Native { metadata } => metadata
+                    .permission
+                    .sensitive(&tool_use.input, &self.runtime.security),
+                // MCP tools are third-party and High by default; no path field
+                // of theirs is known here. Their *results* are still redacted.
+                _ => None,
+            };
+            if let Some(hit) = &sensitive_hit
+                && hit.tier == crate::security::sensitive::Tier::Credential
+            {
+                let msg = crate::security::sensitive::refusal_text(hit);
+                self.emit_update(AgentUpdate::StepFailed {
+                    idx: step_idx,
+                    tool_id: id.clone(),
+                    arg_summary: String::new(),
+                    error: msg.clone(),
+                });
+                prepared.push(PreparedTool {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: tool_use.input.clone(),
+                    step_idx,
+                    permission_label: Some(format!("Refused: {}", hit.kind.label())),
+                    state: PreparedState::Resolved(msg),
+                    resolved,
+                    task_before: None,
+                });
+                continue;
+            }
+            // A `Secret` hit escalates the declared risk; the manager then
+            // decides it like any other High call.
+            let risk = if sensitive_hit.is_some() {
+                CapabilityRisk::High
+            } else {
+                risk
+            };
             // An MCP entry's `approval_mode: "auto"` skips the default prompt
             // without lowering the risk: it must not unlock plan mode, and an
             // explicit local deny/ask rule still wins.
@@ -797,11 +846,26 @@ impl Agent {
                                         Some("always_allow") => {
                                             permission_label =
                                                 Some("Always allow this tool".to_string());
-                                            self.runtime.permission_manager.allow_tool_with_input(
-                                                stable_name,
-                                                permit_prompt,
-                                                &tool_use.input,
-                                            );
+                                            let outcome = self
+                                                .runtime
+                                                .permission_manager
+                                                .allow_tool_with_input(
+                                                    stable_name,
+                                                    permit_prompt,
+                                                    &tool_use.input,
+                                                );
+                                            if !outcome.is_recorded() {
+                                                // The gesture promised to be
+                                                // remembered; saying so when it
+                                                // cannot be is the difference
+                                                // between a limitation and a bug.
+                                                self.emit_update(AgentUpdate::Info(format!(
+                                                    "Approved {stable_name} for this call only — \
+                                                     no rule could be narrowed for it, and a \
+                                                     tool-wide rule would allow calls you were \
+                                                     not asked about."
+                                                )));
+                                            }
                                             PreparedState::Run
                                         }
                                         _ => {
@@ -1203,6 +1267,254 @@ mod tests {
         let mut router = MCPToolRouter::new();
         router.register_client(McpClient::with_service("bm", Vec::new(), Arc::new(service)));
         router
+    }
+
+    // ── Sensitive-target guard ──────────────────────────────────────────
+
+    /// An agent with the given permission mode and **no** UI channel, which
+    /// makes an `Ask` resolve through the non-interactive path (`ask_user`
+    /// denies `High`, allows `Write`) — exactly what a headless run does.
+    /// `name` must be unique per test: `test_context` keys its scratch
+    /// directory on it, and tests in this module run in parallel.
+    fn agent_with(name: &str, mode: crate::permission::PermissionMode) -> Agent {
+        agent_with_settings(name, mode, None)
+    }
+
+    /// As [`agent_with`], optionally with a settings file so a persisted `allow`
+    /// rule can be put in the guard's way.
+    fn agent_with_settings(
+        name: &str,
+        mode: crate::permission::PermissionMode,
+        settings_json: Option<&str>,
+    ) -> Agent {
+        crate::config::test_support::install_default();
+        let context = crate::tool::test_support::test_context(name);
+        let manager = match settings_json {
+            Some(json) => {
+                let dir = std::env::temp_dir().join(format!("tact-sensitive-guard-{name}"));
+                let _ = std::fs::create_dir_all(dir.join(".tact"));
+                let path = dir.join(".tact/settings.json");
+                std::fs::write(&path, json).unwrap();
+                let settings =
+                    crate::permission::settings::PermissionSettings::load_from(&path, None);
+                crate::permission::PermissionManager::try_new_with_settings(mode, settings).unwrap()
+            }
+            None => crate::permission::PermissionManager::try_new(mode).unwrap(),
+        };
+        Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(vec![])),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            manager,
+            crate::agent::AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+    }
+
+    /// Drive one async call from a sync test.
+    ///
+    /// `test_context` builds its own runtime on a scoped thread, so a test must
+    /// not already be inside one; this mirrors that arrangement rather than
+    /// making every test `#[tokio::test]`, which would panic in `test_context`.
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Runtime::new()
+            .expect("failed to create a tokio runtime")
+            .block_on(future)
+    }
+
+    fn tool_use(name: &str, input: serde_json::Value) -> Vec<ContentBlock> {
+        vec![ContentBlock::ToolUse {
+            id: "t1".to_string(),
+            name: name.to_string(),
+            input,
+        }]
+    }
+
+    /// What pre-flight decided for one call: `run`, or the message it resolved
+    /// to instead.
+    fn outcome(agent: &mut Agent, name: &str, input: serde_json::Value) -> String {
+        let preflight = block_on(agent.preflight_tool_calls(&tool_use(name, input))).unwrap();
+        preflight
+            .prepared
+            .into_iter()
+            .map(|p| match p.state {
+                PreparedState::Run => "run".to_string(),
+                PreparedState::Resolved(msg) => msg,
+            })
+            .next()
+            .unwrap_or_else(|| "none".to_string())
+    }
+
+    /// The refusal text, when pre-flight refused rather than denied.
+    fn refusal(agent: &mut Agent, name: &str, input: serde_json::Value) -> Option<String> {
+        let text = outcome(agent, name, input);
+        text.starts_with("Refused:").then_some(text)
+    }
+
+    /// The point of the `Credential` tier: it is decided before the mode, so
+    /// `Auto` — which skips every prompt — still cannot reach a private key.
+    #[test]
+    fn a_private_key_is_refused_even_in_auto_mode() {
+        let mut agent = agent_with("refused_in_auto", crate::permission::PermissionMode::Auto);
+        let text = refusal(
+            &mut agent,
+            "bash",
+            serde_json::json!({ "command": "cat ~/.ssh/id_ed25519" }),
+        )
+        .expect("a private-key read must be refused");
+        assert!(text.contains("credential material"), "{text}");
+        assert!(text.contains("private-key"), "{text}");
+        assert!(text.contains("sensitive_paths.allow"), "{text}");
+    }
+
+    #[test]
+    fn netrc_is_refused_too() {
+        let mut agent = agent_with("netrc_refused", crate::permission::PermissionMode::Auto);
+        let text = refusal(
+            &mut agent,
+            "bash",
+            serde_json::json!({ "command": "cat ~/.netrc" }),
+        )
+        .expect("a .netrc read must be refused");
+        assert!(text.contains("~/.netrc"), "{text}");
+        assert!(text.contains("credential-store"), "{text}");
+    }
+
+    /// A settings `allow` rule is consulted *after* the guard, so it cannot
+    /// lift a refusal — which is what makes the refusal a refusal.
+    #[test]
+    fn a_persisted_allow_rule_cannot_lift_a_credential_refusal() {
+        let mut agent = agent_with_settings(
+            "allow_rule_cannot_lift",
+            crate::permission::PermissionMode::Auto,
+            Some(r#"{"permissions": {"allow": ["bash"]}}"#),
+        );
+        let text = refusal(
+            &mut agent,
+            "bash",
+            serde_json::json!({ "command": "cat ~/.ssh/id_ed25519" }),
+        )
+        .expect("a bare `bash` allow rule must not reach a private key");
+        assert!(text.contains("id_ed25519"), "{text}");
+    }
+
+    /// The documented escape hatch: `sensitive_paths.allow`, which takes a file
+    /// edit rather than a button.
+    #[test]
+    fn a_sensitive_paths_allow_entry_is_the_escape() {
+        let mut agent = agent_with_settings(
+            "sensitive_allow_escape",
+            crate::permission::PermissionMode::Auto,
+            Some(r#"{"permissions": {"sensitive_paths": {"allow": ["~/.ssh/config"]}}}"#),
+        );
+        assert_eq!(
+            outcome(
+                &mut agent,
+                "bash",
+                serde_json::json!({ "command": "cat ~/.ssh/config" })
+            ),
+            "run",
+            "an explicitly allowed path runs, and Auto mode does not prompt"
+        );
+    }
+
+    /// A `Secret`-tier path is not refused — it escalates to `High`, so the
+    /// ordinary ladder applies and headless denies it.
+    #[test]
+    fn an_env_file_is_denied_headlessly_but_is_not_credential() {
+        let mut agent = agent_with("env_headless", crate::permission::PermissionMode::Default);
+        let text = outcome(
+            &mut agent,
+            "read_file",
+            serde_json::json!({ "path": ".env" }),
+        );
+        assert!(
+            text.contains("Permission denied"),
+            "expected the high-risk denial, got: {text}"
+        );
+        assert!(
+            !text.contains("credential material"),
+            ".env is Secret, not Credential: {text}"
+        );
+    }
+
+    #[test]
+    fn plan_mode_denies_reading_an_env_file() {
+        let mut agent = agent_with("env_plan", crate::permission::PermissionMode::Plan);
+        let text = outcome(
+            &mut agent,
+            "read_file",
+            serde_json::json!({ "path": ".env" }),
+        );
+        assert!(text.contains("Plan mode"), "{text}");
+    }
+
+    #[test]
+    fn auto_mode_still_allows_an_env_file() {
+        let mut agent = agent_with("env_auto", crate::permission::PermissionMode::Auto);
+        assert_eq!(
+            outcome(
+                &mut agent,
+                "read_file",
+                serde_json::json!({ "path": ".env" })
+            ),
+            "run",
+            "Auto mode is unchanged for the Secret tier"
+        );
+    }
+
+    #[test]
+    fn ordinary_source_still_runs_without_a_prompt() {
+        let mut agent = agent_with(
+            "ordinary_source",
+            crate::permission::PermissionMode::Default,
+        );
+        assert_eq!(
+            outcome(
+                &mut agent,
+                "read_file",
+                serde_json::json!({ "path": "src/main.rs" })
+            ),
+            "run"
+        );
+    }
+
+    /// The file tools cannot reach a `~`-rooted or absolute path anyway
+    /// (`safe_path` refuses them), so those must not cost a prompt: the tool's
+    /// own error is the right answer, and a popup before it is noise.
+    #[test]
+    fn a_home_path_through_a_file_tool_is_left_to_safe_path() {
+        let mut agent = agent_with(
+            "home_path_via_file_tool",
+            crate::permission::PermissionMode::Default,
+        );
+        assert_eq!(
+            outcome(
+                &mut agent,
+                "read_file",
+                serde_json::json!({ "path": "~/.ssh/id_ed25519" })
+            ),
+            "run",
+            "no prompt before an inevitable safe_path error"
+        );
+    }
+
+    /// The guard narrows the read-only shell safelist; it does not remove it.
+    /// Plan mode still runs inspection commands.
+    #[test]
+    fn the_guard_does_not_disable_read_only_shell_classification() {
+        let mut agent = agent_with(
+            "readonly_shell_intact",
+            crate::permission::PermissionMode::Plan,
+        );
+        assert_eq!(
+            outcome(
+                &mut agent,
+                "bash",
+                serde_json::json!({ "command": "ls -la" })
+            ),
+            "run"
+        );
     }
 
     #[tokio::test]

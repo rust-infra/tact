@@ -37,24 +37,78 @@ pub struct ToolMetadata {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionPolicy {
+    /// A read with no path target (metadata-only tools).
     Read,
+    /// A write with no path target.
     Write,
     High,
-    ShellCommand { command_field: &'static str },
+    /// A read whose **target** decides the risk: `.env` inside the workspace is
+    /// not the same proposition as `src/main.rs`.
+    ReadPath {
+        path_field: &'static str,
+    },
+    /// A write whose target decides the risk — a `*.pem` is not a `*.rs`.
+    WritePath {
+        path_field: &'static str,
+    },
+    /// A patch whose headers name the targets.
+    PatchPaths,
+    ShellCommand {
+        command_field: &'static str,
+    },
 }
 
 impl PermissionPolicy {
     /// Classify a concrete JSON input into a capability risk level.
+    ///
+    /// Target-aware variants consult the built-in registry in
+    /// [`crate::security::sensitive`] and report [`CapabilityRisk::High`] for a
+    /// sensitive target, which is what makes the target reachable by plan mode
+    /// (blocks it), `Auto` mode (allows it) and the settings rules as usual.
+    ///
+    /// This is the *built-in* answer. Dispatch uses
+    /// [`Self::sensitive`] against a configured
+    /// [`Scanner`](crate::security::sensitive::Scanner), whose `extra` patterns
+    /// are a superset of this; a caller that only wants the declared risk can
+    /// keep using this method.
     pub fn resolve(&self, input: &Value) -> CapabilityRisk {
         match self {
             PermissionPolicy::Read => CapabilityRisk::Read,
             PermissionPolicy::Write => CapabilityRisk::Write,
             PermissionPolicy::High => CapabilityRisk::High,
+            PermissionPolicy::ReadPath { path_field } => {
+                if path_target_is_sensitive(input, path_field) {
+                    CapabilityRisk::High
+                } else {
+                    CapabilityRisk::Read
+                }
+            }
+            PermissionPolicy::WritePath { path_field } => {
+                if path_target_is_sensitive(input, path_field) {
+                    CapabilityRisk::High
+                } else {
+                    CapabilityRisk::Write
+                }
+            }
+            PermissionPolicy::PatchPaths => {
+                if patch_targets_are_sensitive(input) {
+                    CapabilityRisk::High
+                } else {
+                    CapabilityRisk::Write
+                }
+            }
             PermissionPolicy::ShellCommand { command_field } => {
                 let cmd = input
                     .get(*command_field)
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                // The sensitive scan runs **first**: `cat ~/.ssh/id_ed25519` is
+                // provably read-only *on the file*, which is exactly why the
+                // read-only classifier must not be the last word on it. The
+                // file's contents are the secret.
+                if crate::security::sensitive::classify_command(cmd).is_some() {
+                    return CapabilityRisk::High;
+                }
                 if cmd.starts_with("sudo ") || cmd.starts_with("su ") {
                     CapabilityRisk::High
                 } else if super::readonly_shell::is_read_only_shell_command(cmd) {
@@ -68,14 +122,142 @@ impl PermissionPolicy {
             }
         }
     }
+
+    /// The sensitive-path guard for this policy's target, if any.
+    ///
+    /// [`Scanner`](crate::security::sensitive::Scanner) carries the user's
+    /// `enabled` / `extra` / `allow` overlay, so this is the configured form of
+    /// the same question [`Self::resolve`] answers with built-ins only. A
+    /// [`Tier::Credential`](crate::security::sensitive::Tier::Credential) hit is
+    /// refused before modes and rules; a
+    /// [`Tier::Secret`](crate::security::sensitive::Tier::Secret) hit becomes
+    /// `High` and follows the ordinary ladder.
+    #[must_use]
+    pub fn sensitive(
+        &self,
+        input: &Value,
+        scanner: &crate::security::sensitive::Scanner,
+    ) -> Option<crate::security::sensitive::Hit> {
+        match self {
+            PermissionPolicy::ReadPath { path_field }
+            | PermissionPolicy::WritePath { path_field } => {
+                let raw = input.get(*path_field).and_then(|v| v.as_str())?;
+                if !target_is_workspace_relative(raw) {
+                    return None;
+                }
+                scanner.classify(raw)
+            }
+            PermissionPolicy::PatchPaths => patch_targets(input)
+                .into_iter()
+                .find_map(|path| scanner.classify(&path)),
+            PermissionPolicy::ShellCommand { command_field } => {
+                let cmd = input.get(*command_field).and_then(|v| v.as_str())?;
+                scanner.classify_command(cmd)
+            }
+            PermissionPolicy::Read | PermissionPolicy::Write | PermissionPolicy::High => None,
+        }
+    }
+}
+
+/// Whether the file tools could even reach this path.
+///
+/// They resolve `path` against the workspace and refuse anything that escapes
+/// it (`tool::safe_path`), and a leading `~` is not expanded — it names a
+/// literal `~` directory. Gating such a path would only interrupt the user with
+/// a prompt before an inevitable error, so the guard skips them. Home-relative
+/// secrets are `bash`'s problem, and `bash` has no workspace boundary to skip.
+fn target_is_workspace_relative(raw: &str) -> bool {
+    let raw = raw.trim();
+    !(raw.starts_with('/') || raw.starts_with('~'))
+}
+
+fn path_target_is_sensitive(input: &Value, path_field: &str) -> bool {
+    input
+        .get(path_field)
+        .and_then(|v| v.as_str())
+        .is_some_and(|raw| {
+            target_is_workspace_relative(raw)
+                && crate::security::sensitive::classify_path(raw).is_some()
+        })
+}
+
+fn patch_targets(input: &Value) -> Vec<String> {
+    input
+        .get("patch")
+        .and_then(|v| v.as_str())
+        .map(extract_patch_paths)
+        .unwrap_or_default()
+}
+
+fn patch_targets_are_sensitive(input: &Value) -> bool {
+    patch_targets(input)
+        .iter()
+        .any(|path| crate::security::sensitive::classify_path(path).is_some())
+}
+
+/// The target paths a unified diff names — the same extraction the permission
+/// policy and the "always allow" rule generator use, so the prompt, the rule
+/// and the guard can never disagree about which files a patch touches.
+#[must_use]
+pub fn patch_target_paths(patch: &str) -> Vec<String> {
+    extract_patch_paths(patch)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionPromptPolicy {
     Json,
-    Question { field: &'static str },
-    Command { field: &'static str },
-    Path { field: &'static str },
+    Question {
+        field: &'static str,
+    },
+    Command {
+        field: &'static str,
+    },
+    Path {
+        field: &'static str,
+    },
+    /// A patch: the prompt shows its target path(s), and an "always allow"
+    /// persists a rule keyed on the patch text rather than the bare tool.
+    ///
+    /// `apply_patch` used to declare `Path { field: "path" }`, a field its
+    /// input does not have, so `PermissionRule::generate` fell back to a bare
+    /// rule: one click permitted every future patch. This variant exists so
+    /// that cannot happen — see [`PermissionPromptPolicy::generate_key`].
+    PatchTarget {
+        patch_field: &'static str,
+    },
+}
+
+impl PermissionPromptPolicy {
+    /// The `(field, value)` an "always allow" rule should be built from, or
+    /// `None` when no input-aware rule is possible.
+    ///
+    /// `None` is a deliberate refusal, not a fallback: the caller must not
+    /// degrade to a bare tool-wide rule, because a bare rule is broader than
+    /// the prompt the user answered.
+    #[must_use]
+    pub fn generate_key(&self, input: &Value) -> Option<(&'static str, String)> {
+        match self {
+            PermissionPromptPolicy::Command { field }
+            | PermissionPromptPolicy::Question { field }
+            | PermissionPromptPolicy::Path { field } => input
+                .get(*field)
+                .and_then(|v| v.as_str())
+                .map(|v| (*field, v.to_string())),
+            PermissionPromptPolicy::PatchTarget { patch_field } => {
+                let patch = input.get(*patch_field).and_then(|v| v.as_str())?;
+                let paths = extract_patch_paths(patch);
+                // Anchor the rule on the patch text, which is what actually
+                // round-trips, but only when the patch names exactly one file:
+                // a multi-file patch keyed on one of its paths would silently
+                // authorise the others too.
+                if paths.len() != 1 {
+                    return None;
+                }
+                Some((*patch_field, format!("*{}*", paths[0])))
+            }
+            PermissionPromptPolicy::Json => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,13 +351,25 @@ impl ResourcePolicy {
 }
 
 /// Extract file paths from a unified diff patch (`+++ b/path` lines).
+/// The target paths a unified diff names.
+///
+/// Handles both `+++ b/<path>` (git's default) and a bare `+++ <path>`, which
+/// `apply_patch`'s own parser also accepts — a guard that only understood the
+/// `b/` form would miss `+++ secrets.json` entirely. `/dev/null` is skipped: it
+/// marks a deletion, not a file to touch.
 fn extract_patch_paths(patch: &str) -> Vec<String> {
     patch
         .lines()
-        .filter_map(|line| line.strip_prefix("+++ b/"))
-        .map(|rest| {
+        .filter_map(|line| {
+            let rest = line
+                .strip_prefix("+++ b/")
+                .or_else(|| line.strip_prefix("+++ "))?;
             // Strip trailing tab (grep-style) and whitespace.
-            rest.split('\t').next().unwrap_or(rest).trim().to_string()
+            let path = rest.split('\t').next().unwrap_or(rest).trim();
+            if path.is_empty() || path == "/dev/null" {
+                return None;
+            }
+            Some(path.to_string())
         })
         .collect()
 }

@@ -73,6 +73,30 @@ pub enum PermissionBehavior {
     Ask,
 }
 
+/// What an "always allow this tool" gesture managed to record.
+///
+/// [`AllowOutcome::NotNarrowable`] exists so the UI can tell the user the
+/// approval will not stick. Silently doing nothing there was the previous
+/// behaviour of a *different* code path (the bare-rule fallback), which is how
+/// a `bash` command containing a `:` came to grant every future command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllowOutcome {
+    /// A rule was recorded — persisted to settings, or held in memory for this
+    /// session when no settings store exists.
+    Recorded,
+    /// No rule narrower than the whole tool could be expressed for this call,
+    /// so nothing was recorded. The call itself is still approved once; the
+    /// next identical call asks again.
+    NotNarrowable,
+}
+
+impl AllowOutcome {
+    #[must_use]
+    pub fn is_recorded(self) -> bool {
+        matches!(self, Self::Recorded)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionDecision {
     pub behavior: PermissionBehavior,
@@ -134,6 +158,14 @@ pub struct PermissionManager {
 #[derive(Clone)]
 pub struct PermissionSnapshot {
     pub mode: PermissionMode,
+    /// Rules the user granted *this session* ("Always allow this tool" with no
+    /// settings store to persist into).
+    ///
+    /// Deliberately empty at construction. `read_file` used to be seeded here,
+    /// which did nothing while `read_file` was always classified `Read` — but
+    /// once a sensitive target can escalate it to `High`, the seed let every
+    /// `read_file` input through, `.env` included. An allow-list entry nobody
+    /// granted must not be able to outrank the guard.
     pub always_allowed_tools: Vec<String>,
     pub settings: Option<settings::PermissionSettings>,
 }
@@ -147,7 +179,7 @@ impl PermissionManager {
     pub fn try_new(mode: PermissionMode) -> Result<Self> {
         Ok(Self {
             mode,
-            always_allowed_tools: vec!["read_file".to_string()],
+            always_allowed_tools: Vec::new(),
             consecutive_denials: 0,
             max_consecutive_denials: 3,
             settings: None,
@@ -165,7 +197,7 @@ impl PermissionManager {
     ) -> Result<Self> {
         Ok(Self {
             mode,
-            always_allowed_tools: vec!["read_file".to_string()],
+            always_allowed_tools: Vec::new(),
             consecutive_denials: 0,
             max_consecutive_denials: 3,
             settings: Some(settings),
@@ -174,6 +206,29 @@ impl PermissionManager {
 
     pub fn mode(&self) -> PermissionMode {
         self.mode
+    }
+
+    /// The sensitive-path guard this manager's settings describe.
+    ///
+    /// With no settings store the guard is still **on**, built from the
+    /// registry's defaults — an absent project directory must not mean absent
+    /// protection. `permissions.sensitive_paths.enabled = false` is the only
+    /// way to turn it off, and that has to be written down.
+    #[must_use]
+    pub fn scanner(&self) -> crate::security::sensitive::Scanner {
+        match &self.settings {
+            Some(settings) => settings.security_config().scanner(),
+            None => crate::security::sensitive::Scanner::builtin(),
+        }
+    }
+
+    /// The sensitive-path and redaction configuration in effect.
+    #[must_use]
+    pub fn security_config(&self) -> crate::security::SecurityConfig {
+        match &self.settings {
+            Some(settings) => settings.security_config().clone(),
+            None => crate::security::SecurityConfig::default(),
+        }
     }
 
     pub fn set_mode(&mut self, mode: PermissionMode) {
@@ -414,6 +469,12 @@ impl PermissionManager {
     /// the remainder of the session.  This is strictly narrower than a
     /// bare tool name because matching requires both tool name and input.
     ///
+    /// When the call cannot be narrowed to a rule — see
+    /// [`PermissionRule::generate`] — nothing is recorded and
+    /// [`AllowOutcome::NotNarrowable`] is returned. **The caller must surface
+    /// that**: a click on "Always allow this tool" that silently does nothing
+    /// is indistinguishable from a bug.
+    ///
     /// **Persistence errors are logged as warnings and never convert an
     /// already-approved choice into a denial.**
     pub fn allow_tool_with_input(
@@ -421,9 +482,11 @@ impl PermissionManager {
         tool_name: &str,
         policy: PermissionPromptPolicy,
         input: &Value,
-    ) {
+    ) -> AllowOutcome {
         // Generate the narrowest parameter-aware rule.
-        let rule = settings::PermissionRule::generate(tool_name, policy, input);
+        let Some(rule) = settings::PermissionRule::generate(tool_name, policy, input) else {
+            return AllowOutcome::NotNarrowable;
+        };
         let rule_string = rule.to_rule_string();
 
         // When no settings store is available, add the generated rule
@@ -433,7 +496,7 @@ impl PermissionManager {
             if !self.always_allowed_tools.contains(&rule_string) {
                 self.always_allowed_tools.push(rule_string);
             }
-            return;
+            return AllowOutcome::Recorded;
         }
 
         // Persist to project settings — warn on failure, never deny.
@@ -446,6 +509,7 @@ impl PermissionManager {
                 e
             );
         }
+        AllowOutcome::Recorded
     }
 
     fn is_always_allowed(&self, tool_name: &str, input: &Value) -> bool {
@@ -479,6 +543,17 @@ pub fn format_permission_prompt(
         PermissionPromptPolicy::Command { field } => format!("Run command: {}", field_str(field)),
         PermissionPromptPolicy::Question { field } => format!("Ask user: {}", field_str(field)),
         PermissionPromptPolicy::Path { field } => format!("Allow {name} on {}?", field_str(field)),
+        PermissionPromptPolicy::PatchTarget { patch_field } => {
+            match crate::tool::patch_target_paths(field_str(patch_field)) {
+                paths if paths.is_empty() => format!("Allow {name}?"),
+                paths if paths.len() == 1 => format!("Allow {name} on {}?", paths[0]),
+                paths => format!(
+                    "Allow {name} on {} files? {}",
+                    paths.len(),
+                    paths.join(", ")
+                ),
+            }
+        }
         PermissionPromptPolicy::Json => format!("Allow {name}?"),
     }
 }
@@ -1229,17 +1304,13 @@ mod tests {
         assert_eq!(snap.mode, PermissionMode::Plan);
         assert_eq!(
             snap.always_allowed_tools,
-            vec![
-                "read_file".to_string(),
-                "bash".to_string(),
-                "write_file".to_string(),
-            ]
+            vec!["bash".to_string(), "write_file".to_string()]
         );
         assert!(snap.settings.is_none());
 
         let restored = PermissionManager::from_snapshot(snap);
         assert_eq!(restored.mode(), PermissionMode::Plan);
-        assert_eq!(restored.rules(), &["read_file", "bash", "write_file"]);
+        assert_eq!(restored.rules(), &["bash", "write_file"]);
     }
 
     #[test]

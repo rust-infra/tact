@@ -331,6 +331,11 @@ pub struct AgentRuntime {
     pub compact_state: CompactState,
     pub recovery_state: RecoveryState,
     pub permission_manager: PermissionManager,
+    /// The sensitive-path guard, derived from the permission settings at
+    /// construction and inherited by subagents through the same snapshot that
+    /// carries the permission context. Evaluated **before** modes, hooks and
+    /// rules, so nothing can reach a credential file.
+    pub security: crate::security::sensitive::Scanner,
     pub stats: Arc<RwLock<SessionStats>>,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -470,6 +475,10 @@ impl Agent {
         let provider_kind = None;
         let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         tool_context.cancel_flag = cancel_flag.clone();
+        // Derived here rather than passed in, so every construction site — the
+        // TUI, headless, and a subagent built from a permission snapshot —
+        // inherits the same guard without a second parameter to thread.
+        let security = permission_manager.scanner();
         let mut agent = Self {
             runtime: AgentRuntime {
                 interrupt_hooks_fired: false,
@@ -478,6 +487,7 @@ impl Agent {
                 compact_state: CompactState::default(),
                 recovery_state: RecoveryState::default(),
                 permission_manager,
+                security,
                 stats: Arc::new(RwLock::new(SessionStats::default())),
                 ui_tx: None,
                 cancel_flag,

@@ -334,7 +334,7 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
 pub use metadata::{
     ArgumentSummaryPolicy, DetailPolicy, IntoToolCallResult, LiveOutputPolicy, OutputPolicy,
     PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation,
-    ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation,
+    ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation, patch_target_paths,
 };
 pub use path::{safe_path, safe_path_allow_missing};
 pub use progress::ToolProgressReporter;

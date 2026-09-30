@@ -41,7 +41,7 @@ fn partial_marker(start_line: usize, end_line: usize, next_offset: usize) -> Str
 pub const READ_FILE_METADATA: ToolMetadata = ToolMetadata {
     name: "read_file",
     description: "Read file contents.",
-    permission: PermissionPolicy::Read,
+    permission: PermissionPolicy::ReadPath { path_field: "path" },
     permission_prompt: PermissionPromptPolicy::Path { field: "path" },
     resources: ResourcePolicy::ReadPath { field: "path" },
     domain: ToolDomain::Generic,

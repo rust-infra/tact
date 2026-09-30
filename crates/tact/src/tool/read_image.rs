@@ -21,7 +21,9 @@ pub struct ReadImageInput {
 pub const READ_IMAGE_METADATA: ToolMetadata = ToolMetadata {
     name: "read_image",
     description: "Read a PNG/JPEG/WebP/GIF file and return the image itself to a vision model.",
-    permission: PermissionPolicy::Read,
+    permission: PermissionPolicy::ReadPath {
+        path_field: "file_path",
+    },
     permission_prompt: PermissionPromptPolicy::Path { field: "file_path" },
     resources: ResourcePolicy::ReadPath { field: "file_path" },
     domain: ToolDomain::Generic,
