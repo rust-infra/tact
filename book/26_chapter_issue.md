@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — `/hooks` reviews command hooks where they fire
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/protocol/src/agent.rs` (`UserCommand::{HooksList, HooksTrust, HooksForget}`), `crates/tact-ui/src/driver.rs`, `crates/tui/src/handlers/hooks.rs`, `crates/agent_tui_kit/src/{bridge,i18n}.rs`, `crates/tui/src/widgets/state/mod.rs`; spec `docs/superpowers/specs/2026-09-30-tui-hooks-command-design.md`; [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** Hook review was CLI-only. The TUI announced `1 hook needs review and was not run` and then left the user to quit, run `tact-ui hooks trust --all`, and start a new session — at the exact moment the user cares. `/mcp` already had the in-app review path; `/hooks` did not, so the one surface that shows the notice was the one surface that could not act on it.
+
+**Decision:** `/hooks list`, `/hooks trust --all`, `/hooks trust --source <label>`, `/hooks forget --all`, mirroring the CLI exactly and reusing `hooks_cli::render_hooks_listing` so the two surfaces cannot describe the same hooks differently. The parser is prefix-based rather than whitespace-split, because a source label is free text (`plugin ponytail`) and splitting would cut `--source` in half. A bare `/hooks trust` shows usage instead of approving anything: approving by accident is what the review step exists to prevent, and `trust_hooks` bails before touching the store. The work runs in the driver (only the `tact` crate can reach the sources and `~/.tact/hooks-state.json`); `list` is idle-only like `/mcp list`, while `trust`/`forget` may queue. The confirmation names the next-session caveat out loud — hooks register when the agent is built, so "approved" without "not yet running" would misdescribe this session.
+
+**Behavior after:** A user sees the review notice and can act on it in place. Approvals take effect from the next session, and the message says so.
+
+**Pointers:** `handlers::hooks::tests::*`, `driver::tests::{hooks_list_emits_the_review_listing, hooks_trust_without_a_selector_reports_the_refusal}`.
+
+---
+
 ## 1. 2026-09-30 — MCP server instructions reach the model instead of being discarded
 
 | Field | Value |

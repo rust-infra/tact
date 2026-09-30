@@ -191,8 +191,11 @@ mod tests {
     #[test]
     fn step_slash_selection_moves_and_clamps() {
         let mut app = open_app_with_skills(40);
-        // 20 builtins (incl. mcp and subagent_cancel) + 40 skills = 60
-        // selectable items (index 0..59).
+        // Builtins + 40 skills. Derived, not hardcoded: the palette grows every
+        // time a slash command is added, and a magic index turns that into a
+        // confusing off-by-one failure here.
+        let last = app.palette_commands().len() - 1;
+        assert!(last > 40, "40 skills plus the builtins must be selectable");
 
         app.step_slash_selection(1);
         assert_eq!(app.slash_command.selected, 1);
@@ -200,11 +203,11 @@ mod tests {
         assert_eq!(app.slash_command.selected, 0);
 
         // Clamp at the bottom.
-        app.slash_command.selected = 59;
+        app.slash_command.selected = last;
         app.step_slash_selection(1);
-        assert_eq!(app.slash_command.selected, 59);
+        assert_eq!(app.slash_command.selected, last);
         app.step_slash_selection(-1);
-        assert_eq!(app.slash_command.selected, 58);
+        assert_eq!(app.slash_command.selected, last - 1);
     }
 
     #[test]

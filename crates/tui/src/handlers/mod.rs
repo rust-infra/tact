@@ -1,5 +1,6 @@
 // Input handlers — split by mode.
 mod file_picker;
+mod hooks;
 mod insert;
 mod mcp;
 mod mouse;
@@ -260,7 +261,7 @@ pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
 /// Built-ins that take a subcommand / arguments: Enter should autocomplete
 /// `/{cmd} ` into the insert box instead of executing immediately.
 pub(crate) fn command_needs_args(cmd: &str) -> bool {
-    matches!(cmd, "plugin" | "mcp" | "subagent_cancel")
+    matches!(cmd, "plugin" | "mcp" | "hooks" | "subagent_cancel")
 }
 
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
@@ -382,6 +383,7 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
         }
         "plugin" => plugin::handle_plugin_command(app),
         "mcp" => mcp::handle_mcp_command(app),
+        "hooks" => hooks::handle_hooks_command(app),
         "cancel" => {
             // Only cancel an in-flight task; Idle and Done have nothing to
             // abort. Queued (pending) messages are NOT touched — dropping

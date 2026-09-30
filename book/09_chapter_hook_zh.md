@@ -184,7 +184,7 @@ hook 文件是可执行的配置，而仓库可以附带 `.tact/hooks.json`—�
 
 - **身份**就是定义本身：来源标签、事件、matcher 与命令，用 SHA-256 哈希。改动命令即作废此前的批准。
 - **存储**是 `~/.tact/hooks-state.json`（`{"version":1,"trusted":{hash:描述}}`）。它刻意不是 `config.toml`：手改配置不该能授予执行权。无法解析的存储等同空存储，于是所有 hook 回到待审核。
-- **审核**用 `tact-ui hooks list`（看有哪些、状态如何），随后 `tact-ui hooks trust --all` 或 `tact-ui hooks trust --source <label>`；`tact-ui hooks forget --all` 撤销全部。
+- **审核**用 `tact-ui hooks list`（看有哪些、状态如何），随后 `tact-ui hooks trust --all` 或 `tact-ui hooks trust --source <label>`；`tact-ui hooks forget --all` 撤销全部。同一套审核也能在 hook 实际触发的地方完成：TUI 里的 `/hooks list`、`/hooks trust --all`、`/hooks trust --source <标签>`、`/hooks forget --all`，措辞完全一致；`/hooks list` 仅在空闲时可执行，因为 driver 会把非 fast 命令串行排到进行中的 turn 之后。TUI 写法同样要求显式的 `--all` / `--source`，没有“全部批准”的捷径。
 - **生效**发生在 hook 注册时，所以批准从下一次会话开始起作用；正在运行的会话保留它启动时的决定。
 - **告知读者**从不省略：未审核的 hook 会在 TUI 里走 `AgentUpdate::Info` 通道，headless 下走 stderr（`[hooks] …`）——与 MCP 加载报告相同的两条通道。
 
@@ -364,6 +364,8 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 | `crates/tact/src/permission/mod.rs` | PreToolUse 之后运行；与 hooks 分离 |
 | `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`run_command_hook`、`build_payload` |
 | `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget` 及其渲染函数 |
+| `crates/tui/src/handlers/hooks.rs` | `/hooks list` / `trust` / `forget` —— 解析与空闲门控；实际工作由 driver 执行 |
+| `crates/tact-ui/src/driver.rs` | `UserCommand::Hooks{List,Trust,Forget}` → `survey_hooks` / `trust_hooks` / `forget_hook_trust`，经 `Info` / `MdInfo` 通道上报 |
 | `docs/state_machines.md` | Hook 控制枚举与流水线摘要 |
 
 ---

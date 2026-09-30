@@ -480,6 +480,48 @@ async fn handle_user_command_with_account(
                 ))),
             }
         }
+        UserCommand::HooksList => match tact::plugin::survey_hooks(image_work_dir) {
+            // The same wording `tact-ui hooks list` uses: two surfaces naming
+            // the same hooks must not describe them differently.
+            Ok(report) => agent.emit_update(AgentUpdate::MdInfo(
+                crate::hooks_cli::render_hooks_listing(&report),
+            )),
+            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                "Hooks list failed: {error:#}"
+            )))),
+        },
+        UserCommand::HooksTrust { all, source } => {
+            match tact::plugin::trust_hooks(image_work_dir, all, source.as_deref()) {
+                Ok(approved) if approved.is_empty() => agent.emit_update(AgentUpdate::Info(
+                    "Nothing to approve: every configured hook has already been reviewed."
+                        .to_string(),
+                )),
+                Ok(approved) => {
+                    let mut lines = vec![format!("Approved {} hook(s):", approved.len())];
+                    lines.extend(approved.iter().map(|hook| format!("  {}", hook.describe())));
+                    // Hooks are registered when the agent is built, so an
+                    // approval that only takes effect next session must say so.
+                    lines.push(
+                        "They run from the next session onward. Revoke with /hooks forget --all."
+                            .to_string(),
+                    );
+                    agent.emit_update(AgentUpdate::Info(lines.join("\n")));
+                }
+                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                    format!("Hooks trust failed: {error:#}"),
+                ))),
+            }
+        }
+        UserCommand::HooksForget => match tact::plugin::forget_hook_trust() {
+            Ok(()) => agent.emit_update(AgentUpdate::Info(
+                "Forgot every hook approval. No hook runs until it is reviewed again with \
+                 /hooks trust --all."
+                    .to_string(),
+            )),
+            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                "Hooks forget failed: {error:#}"
+            )))),
+        },
         _ => {}
     }
 }
@@ -720,6 +762,61 @@ mod tests {
             }
         }
         assert!(saw_md, "McpList must emit MdInfo with the server listing");
+    }
+
+    #[tokio::test]
+    async fn hooks_list_emits_the_review_listing() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(&mut agent, UserCommand::HooksList, &work_dir).await;
+
+        let mut rendered = None;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::MdInfo(md) = update {
+                rendered = Some(md);
+            }
+        }
+        // Both wordings come from `hooks_cli::render_hooks_listing`, so the
+        // assertion holds whether or not this machine has hooks configured —
+        // what it pins is that `/hooks list` reaches the loader and is shown,
+        // rather than being silently dropped by the driver.
+        let text = rendered.expect("HooksList must emit MdInfo");
+        assert!(
+            text.contains("hook(s) configured") || text.contains("No command hooks configured"),
+            "unexpected listing: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hooks_trust_without_a_selector_reports_the_refusal() {
+        // `trust_hooks` bails *before* touching the review store, so this is the
+        // one trust path a test can exercise without writing the developer's
+        // real `~/.tact/hooks-state.json`.
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::HooksTrust {
+                all: false,
+                source: None,
+            },
+            &work_dir,
+        )
+        .await;
+
+        let mut message = None;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::Error(kind) = update {
+                message = Some(kind.to_string());
+            }
+        }
+        let message = message.expect("a refusal must be reported, not swallowed");
+        assert!(message.contains("Hooks trust failed"), "{message}");
+        assert!(message.contains("--source"), "{message}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

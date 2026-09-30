@@ -183,7 +183,7 @@ A hook file is executable configuration, and a repository can ship `.tact/hooks.
 
 - **Identity** is the definition: source label, event, matcher and command, hashed with SHA-256. Editing the command invalidates the approval.
 - **The store** is `~/.tact/hooks-state.json` (`{"version":1,"trusted":{hash:description}}`). It is deliberately not `config.toml`: a hand-edited config must not be able to grant execution. A store that cannot be parsed is an empty one, so everything returns to review.
-- **Reviewing** is `tact-ui hooks list` (what is configured, and its status), then `tact-ui hooks trust --all` or `tact-ui hooks trust --source <label>`. `tact-ui hooks forget --all` revokes everything.
+- **Reviewing** is `tact-ui hooks list` (what is configured, and its status), then `tact-ui hooks trust --all` or `tact-ui hooks trust --source <label>`. `tact-ui hooks forget --all` revokes everything. The same review is reachable where the hooks fire: `/hooks list`, `/hooks trust --all`, `/hooks trust --source <label>`, `/hooks forget --all` in the TUI, with the identical wording, and `/hooks list` is idle-only because the driver serializes non-fast commands behind an in-flight turn. The TUI spelling requires the same explicit `--all` / `--source`; there is no "approve everything" shortcut.
 - **Applying** happens when hooks are registered, so approval takes effect from the next session; a running session keeps the decisions it started with.
 - **Telling the reader** is never skipped: unreviewed hooks are named on the `AgentUpdate::Info` channel in the TUI and on stderr (`[hooks] …`) in headless mode, using the same two channels the MCP load report uses.
 
@@ -363,6 +363,8 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 | `crates/tact/src/permission/mod.rs` | Runs after PreToolUse; separate from hooks |
 | `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources`, `admit_trusted`, `HookTrust`, `survey_hooks`, `trust_hooks`, `run_command_hook`, `build_payload` |
 | `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget`, and their renderers |
+| `crates/tui/src/handlers/hooks.rs` | `/hooks list` / `trust` / `forget` — parsing and the idle gate; the driver runs the work |
+| `crates/tact-ui/src/driver.rs` | `UserCommand::Hooks{List,Trust,Forget}` → `survey_hooks` / `trust_hooks` / `forget_hook_trust`, reported on the `Info` / `MdInfo` channels |
 | `docs/state_machines.md` | Hook control enum and pipeline summary |
 
 ---

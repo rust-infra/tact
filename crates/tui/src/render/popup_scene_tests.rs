@@ -189,6 +189,16 @@ fn full_frame_slash_command_no_match_shows_hint() {
     );
 }
 
+/// Index of the `skill-<n>` row in the slash popup.
+///
+/// Derived from the live palette rather than hardcoded: the popup lists the
+/// builtins first, so adding one command shifts every skill down by one and a
+/// magic index silently starts asserting about the wrong row.
+fn skill_row(app: &App, n: usize) -> usize {
+    let builtins = app.palette_commands().len() - app.skills_data.len();
+    builtins + n
+}
+
 /// Seed a long slash list: the built-in commands plus `count` skill entries.
 fn seed_slash_skills(app: &mut App, count: usize) {
     use crate::widgets::state::SkillEntry;
@@ -216,8 +226,7 @@ fn slash_popup_long_list_scrolls_selected_into_view() {
     open_slash_popup(&mut app);
     seed_slash_skills(&mut app, 40);
 
-    // The filtered list is 18 builtins + 40 skills; skill-30 sits at index 48.
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let text = render_app_text(&mut app, 100, 30);
 
     assert!(
@@ -240,7 +249,7 @@ fn slash_popup_long_list_keeps_selected_visible_on_short_terminal() {
     // clamped to what actually fits, so the selected row must never land
     // below the popup border (previously the anchor was off-screen and the
     // list appeared frozen / "did not scroll").
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let text = render_app_text(&mut app, 100, 13);
 
     assert!(
@@ -249,7 +258,7 @@ fn slash_popup_long_list_keeps_selected_visible_on_short_terminal() {
     );
 
     // The very last item must also be reachable on a short terminal.
-    app.slash_command.selected = 57;
+    app.slash_command.selected = skill_row(&app, 39);
     let text = render_app_text(&mut app, 100, 13);
     assert!(
         text.contains("/skill-39"),
@@ -269,7 +278,7 @@ fn slash_popup_scroll_window_moves_with_selection() {
         "top of list shows the first command, got:\n{top}"
     );
 
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let deep = render_app_text(&mut app, 100, 30);
     assert!(
         deep.contains("/skill-30") && !deep.contains("/theme"),

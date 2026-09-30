@@ -73,6 +73,10 @@ pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
         "mcp",
         "Manage MCP servers (usage: /mcp auth <server> | /mcp list)",
     ),
+    (
+        "hooks",
+        "Review command hooks (usage: /hooks list | /hooks trust --all | /hooks forget --all)",
+    ),
     ("balance", "Query account balance (DeepSeek/Kimi)"),
     ("lang", "Toggle language (EN/中文)"),
     ("stats", "Show session statistics"),

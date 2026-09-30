@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — `/hooks` 让 hook 在它触发的地方就能被审核
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature |
+| **相关** | `crates/protocol/src/agent.rs`（`UserCommand::{HooksList, HooksTrust, HooksForget}`）、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/hooks.rs`、`crates/agent_tui_kit/src/{bridge,i18n}.rs`、`crates/tui/src/widgets/state/mod.rs`；spec `docs/superpowers/specs/2026-09-30-tui-hooks-command-design.md`；[第 9 章](./09_chapter_hook.md) |
+
+**现象 / 动机：** hook 审核此前只有 CLI。TUI 只会提示 `1 hook needs review and was not run`，然后让用户退出、执行 `tact-ui hooks trust --all`、再开一个新会话——恰好是在用户最在意的那个时刻。`/mcp` 早就有了应用内审核入口，`/hooks` 没有，于是唯一展示该提示的界面，恰恰是唯一无法对它采取行动的界面。
+
+**决策：** 提供 `/hooks list`、`/hooks trust --all`、`/hooks trust --source <标签>`、`/hooks forget --all`，与 CLI 完全对应，并复用 `hooks_cli::render_hooks_listing`，使两个界面不会对同一批 hook 给出不同描述。解析按前缀而非按空白切分：来源标签是自由文本（`plugin ponytail`），切分会把 `--source` 的取值一分为二。裸 `/hooks trust` 只显示用法而不批准任何东西：误批准正是审核环节要防的事，而 `trust_hooks` 会在触碰存储之前就报错。实际工作由 driver 执行（只有 `tact` crate 能访问来源与 `~/.tact/hooks-state.json`）；`list` 与 `/mcp list` 一样仅在空闲时可用，`trust`/`forget` 则允许排队。确认信息会明确写出“下个会话生效”——hook 是在构建 agent 时注册的，只说“已批准”而不说“尚未运行”会错误描述当前会话。
+
+**改后行为：** 用户看到审核提示后可以就地处理。批准从下一个会话起生效，并且消息会明确说明这一点。
+
+**指针：** `handlers::hooks::tests::*`、`driver::tests::{hooks_list_emits_the_review_listing, hooks_trust_without_a_selector_reports_the_refusal}`。
+
+---
+
 ## 1. 2026-09-30 — MCP server 的 instructions 现在会进入上下文，而不是被丢掉
 
 | 字段 | 值 |
