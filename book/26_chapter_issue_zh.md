@@ -35,6 +35,23 @@
 ---
 
 
+## 1. 2026-09-30 — 管理员托管的 hook 文件凭权限而非开关免于审核
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/consts.rs`（`TactPath::managed_hooks_path`）、`crates/tact/src/plugin/hooks.rs`（`HookOrigin::Managed`、`is_admin_owned`、`admin_ownership_holds`、`collect_hook_sources_with`、`admit_trusted`）；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** Codex 可以不经审核地运行管理员下发的 hook 包，而当时记下的缺口说 Tact 没有对应物，因为这件事的两半都是「信任模型层面的决定且目前没有消费者」。但这两半并不是同一个决定，其中只有一半站得住。**效果**——管理员的 hook 不需要每个用户各自审核——恰恰是审核从未被设计去覆盖的场景：审核闸门存在是因为插件包是下载来的内容、project 文件是仓库内容，而一个只有管理员能写的文件两者都不是。
+
+**决策：** `/etc/tact/hooks.json` 成为一个 `HookOrigin::Managed` 来源，且**仅当**它属主为 root、且组与他人均不可写时才被接纳（`is_admin_owned`；其策略部分 `admin_ownership_holds` 单独抽出，因为测试无法创建 root 属主的文件）。任何无法确认该属性的情形——其它平台、不可读的文件、可被任意写入的文件——答案都是 `false`，该文件与其他所有来源一样走审核。`HookOrigin::Managed` 只会在该检查**之后**才产生，因此 `admit_trusted` 对这个来源直接受信、不查存储；而这些条目仍会带着路径出现在加载报告里，所以「免于审核」从不等于「隐形运行」。`bypass_trust` 本身刻意**不**实现：一个能关掉审核闸门的开关，任何能编辑配置文件的人都能设；而属性无法被「写不了这个文件的人」打开，并且在权限一旦不再是管理员专属时自动失效。其余情况的可脚本化等价做法仍是 `tact-ui hooks trust --all`。
+
+**之后的行为：** 管理员可以下发 hook 而不必让每个用户重新批准，且信任决策属于文件系统而非某个标志。属主非 root、或组/他人可写的托管文件会像其他文件一样重新走审核；托管来源被注册在最前，因此它的 `SessionStart` 上下文为会话定调，同时不打乱任何既有来源的顺序。第 9 章的缺口表现在只剩 `bypass_trust` 一行，并写明上述理由。
+
+**指引：** `plugin::hooks::tests::{a_managed_hook_needs_admin_ownership_not_a_switch, a_managed_source_is_admitted_without_the_store, an_ordinary_source_still_needs_review_next_to_a_managed_one}`。
+
+---
+
 ## 1. 2026-09-30 — hook 也可以住在 `config.toml` 里，一个文件一个来源
 
 | 字段 | 值 |

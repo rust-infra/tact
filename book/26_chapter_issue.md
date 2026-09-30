@@ -32,6 +32,23 @@ Newest entries first. Each entry should include:
 ---
 
 
+## 1. 2026-09-30 — An administrator-managed hooks file runs unreviewed, by permissions rather than by a switch
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature |
+| **Related** | `crates/tact/src/consts.rs` (`TactPath::managed_hooks_path`), `crates/tact/src/plugin/hooks.rs` (`HookOrigin::Managed`, `is_admin_owned`, `admin_ownership_holds`, `collect_hook_sources_with`, `admit_trusted`); [Ch 9](./09_chapter_hook.md) |
+
+**Symptom / motivation:** Codex can run an administrator-supplied hook bundle without review, and the recorded gap said Tact had no equivalent because both halves were "trust-model decisions with no consumer here yet". The two halves are not the same decision, and only one of them is defensible. The *effect* — an admin's hooks run without a per-user review — is needed for the case review was never designed for: the review gate exists because a plugin bundle is downloaded content and a project file is repository content, and a file only an administrator can write is neither.
+
+**Decision:** `/etc/tact/hooks.json` becomes a `HookOrigin::Managed` source, admitted **only** when it is root-owned and neither group- nor world-writable (`is_admin_owned`; the policy half, `admin_ownership_holds`, is split out because a test cannot create a root-owned file). Anywhere that cannot be established — another platform, an unreadable file, a world-writable one — the answer is `false` and the file goes through review like every other source. `HookOrigin::Managed` is only ever produced *after* that check, so `admit_trusted` trusts the origin without consulting the store, and the entries still appear in the load report with their path, so "runs without review" never means "runs invisibly". `bypass_trust` itself is deliberately **not** implemented: a switch that disables the review gate can be set by anyone who can edit a config file, whereas a property cannot be turned on by anyone who cannot write the file — and it turns itself off the moment the permissions stop being admin-only. `tact-ui hooks trust --all` remains the scriptable equivalent for everything else.
+
+**Behavior after:** An administrator can distribute hooks that run without each user re-approving them, and the trust decision is the filesystem's rather than a flag's. A non-root-owned or group/world-writable managed file is re-reviewed like any other, and the managed source is registered first so its `SessionStart` context frames the session without reordering any existing source. Ch 9's gap table now carries a single row for `bypass_trust` alone, with that reason.
+
+**Pointers:** `plugin::hooks::tests::{a_managed_hook_needs_admin_ownership_not_a_switch, a_managed_source_is_admitted_without_the_store, an_ordinary_source_still_needs_review_next_to_a_managed_one}`.
+
+---
+
 ## 1. 2026-09-30 — Hooks can live in `config.toml`, one source per file
 
 | Field | Value |

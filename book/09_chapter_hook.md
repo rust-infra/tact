@@ -165,10 +165,11 @@ Multiple hooks of the same type compose: all must return `Continue` unless one `
 
 ### Command hooks
 
-A hook comes from one of six places, and **all matching hooks run** — a higher layer never replaces a lower one, exactly as Codex layers user, project and managed hooks:
+A hook comes from one of seven places, and **all matching hooks run** — a higher layer never replaces a lower one, exactly as Codex layers user, project and managed hooks:
 
 | Origin | Path | `${PLUGIN_ROOT}` | `${PLUGIN_DATA}` |
 |---|---|---|---|
+| administrator-managed | `/etc/tact/hooks.json` | the file's directory | the file's directory |
 | user file | `~/.tact/hooks.json` | the file's directory | `~/.tact` |
 | project file | `<workdir>/.tact/hooks.json` | the file's directory | `<workdir>/.tact` |
 | installed plugin | bundle `hooks/hooks.json`, or the manifest's inline `hooks` map | bundle root | the plugin's data directory |
@@ -176,7 +177,9 @@ A hook comes from one of six places, and **all matching hooks run** — a higher
 | project config | `<workdir>/config.toml`, `[hooks]` table | the file's directory | `<workdir>/.tact` |
 | project config | `<workdir>/.tact/config.toml`, `[hooks]` table | the file's directory | `<workdir>/.tact` |
 
-They are registered in that order — plugins, user file, project file, then the `config.toml` tables — after any Rust closures. The order matters only for which `SessionStart` context is concatenated first, and appending is what keeps every existing order intact, so a new entry point cannot reorder a plugin's or a user file's context.
+They are registered in that order, after any Rust closures — the managed file first, because it is the widest scope and `SessionStart` context is concatenated in registration order, so an administrator's briefing frames the session; then plugins, user file, project file, then the `config.toml` tables. Order matters only for that concatenation, so nothing that existed before is reordered.
+
+**The managed file is trusted by its permissions, not by a switch.** The review gate exists because a plugin bundle is downloaded content and a project file is repository content. A file only `root` can write is neither: the trust decision was already made by the filesystem, and asking the user to re-make it in Tact's store would be theatre. So the collector admits a managed source only when it is root-owned **and** neither group- nor world-writable; otherwise — including on any platform where ownership cannot be established — the file goes through review like every other source. That is deliberately a property rather than Codex's `bypass_trust` flag: a flag lets anyone turn the gate off, while this cannot be turned on by anyone who cannot write the file, and it turns itself off the moment the permissions stop being admin-only.
 
 **A `[hooks]` table is a third spelling, not a third mechanism.** It deserialises into the same `HooksFile` the JSON files use, so the fields, the validation and the review are one implementation:
 
@@ -411,7 +414,7 @@ Do **not** perform permission UI inside hooks — use `PermissionManager` and th
 | Gap | Why |
 |-----|-----|
 | `SessionStart` sources `clear` and `fork` | Codex reports them, but Tact has no history-clear command and no session fork, so the variants would be unreachable. The vocabulary is `startup` / `resume` / `compact` — the three Tact actually distinguishes. |
-| Managed / enterprise hooks, `bypass_trust` | An admin-managed hook bundle and a switch that disables review are both trust-model decisions with no consumer here yet. `tact-ui hooks trust --all` is the scriptable equivalent. |
+| `bypass_trust` | Codex's switch for running hooks without review. Tact has the *effect* for the case that needs it — an administrator-managed `/etc/tact/hooks.json` runs unreviewed because only an administrator can write it — but not the switch, because a flag that disables the review gate can be set by anyone who can edit a config file. `tact-ui hooks trust --all` is the scriptable equivalent for everything else. |
 
 ---
 

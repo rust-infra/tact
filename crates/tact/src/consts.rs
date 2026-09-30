@@ -350,6 +350,24 @@ impl TactPath {
         Self::home_tact_dir().map(|dir| dir.join(HOOKS_STATE_FILE))
     }
 
+    /// The administrator-managed hooks file, on platforms that have one.
+    ///
+    /// Outside the user's home on purpose: the review gate exists because a
+    /// plugin bundle is downloaded and a project file is repository content, and
+    /// a file that only the administrator can write needs neither. See
+    /// `plugin::hooks`'s ownership check — that property, not a switch, is what
+    /// makes this source trusted.
+    pub fn managed_hooks_path() -> Option<PathBuf> {
+        #[cfg(unix)]
+        {
+            Some(PathBuf::from("/etc/tact").join(HOOKS_FILE))
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
     /// `<workdir>/.tact/tool-results`
     pub fn tool_results_dir(&self) -> PathBuf {
         self.tact_dir().join(TOOL_RESULTS_SUBDIR)

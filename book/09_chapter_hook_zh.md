@@ -166,10 +166,11 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 ### 命令 hook
 
-hook 来自六处，且**所有匹配的 hook 都会运行**——高层不会取代低层，与 Codex 叠加 user / project / managed 的方式一致：
+hook 来自七处，且**所有匹配的 hook 都会运行**——高层不会取代低层，与 Codex 叠加 user / project / managed 的方式一致：
 
 | 来源 | 路径 | `${PLUGIN_ROOT}` | `${PLUGIN_DATA}` |
 |---|---|---|---|
+| 管理员托管 | `/etc/tact/hooks.json` | 该文件所在目录 | 该文件所在目录 |
 | user 文件 | `~/.tact/hooks.json` | 该文件所在目录 | `~/.tact` |
 | project 文件 | `<workdir>/.tact/hooks.json` | 该文件所在目录 | `<workdir>/.tact` |
 | 已安装插件 | bundle 的 `hooks/hooks.json`，或 manifest 内联 `hooks` 映射 | bundle 根 | 该插件的数据目录 |
@@ -177,7 +178,9 @@ hook 来自六处，且**所有匹配的 hook 都会运行**——高层不会�
 | project 配置 | `<workdir>/config.toml` 的 `[hooks]` 表 | 该文件所在目录 | `<workdir>/.tact` |
 | project 配置 | `<workdir>/.tact/config.toml` 的 `[hooks]` 表 | 该文件所在目录 | `<workdir>/.tact` |
 
-注册顺序即上表顺序——插件、user 文件、project 文件，然后是 `config.toml` 的各张表——位于既有 Rust 闭包之后。这个顺序只影响哪一段 `SessionStart` 上下文先被拼接，而「追加在最后」正是保持所有既有顺序不变的做法，因此新增入口不会打乱插件或 user 文件的上下文顺序。
+注册顺序即上表顺序——位于既有 Rust 闭包之后——托管文件在最前（作用域最宽，而 `SessionStart` 上下文按注册顺序拼接，因此管理员的简报为整个会话定调），随后是插件、user 文件、project 文件，然后是 `config.toml` 的各张表。顺序只影响这段拼接，因此此前存在的任何来源都不会被打乱。
+
+**托管文件凭其权限受信，而不是凭一个开关。** 审核闸门存在的原因是：插件包是下载来的内容，project 文件是仓库内容。而一个只有 `root` 能写的文件两者都不是：信任决策已由文件系统做出，再要求用户在 Tact 的存储里重做一遍只是形式主义。因此收集器只在托管文件**属主为 root**且**组与他人均不可写**时才接纳它；否则——包括在任何无法确定属主的平台上——它与其他所有来源一样走审核。这刻意是一个**属性**而非 Codex 的 `bypass_trust` 开关：开关让任何人都有办法关掉闸门，而这个属性无法被「写不了这个文件的人」打开，并且在权限一旦不再是管理员专属时自动失效。
 
 **`[hooks]` 表是第三种写法，而不是第三套机制。** 它反序列化进 JSON 文件用的同一个 `HooksFile`，因此字段、校验与审核都是同一份实现：
 
@@ -414,7 +417,7 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 | `SessionStart` 的 `clear` / `fork` 来源 | Codex 会上报它们，但 Tact 没有清空历史的命令、也没有会话 fork，因此这两个变体会不可达。词表是 `startup` / `resume` / `compact`——Tact 真正区分的那三个。 |
 
 
-| 受管/企业 hook、`bypass_trust` | 管理员下发的 hook 包、以及关闭审核的开关，都是信任模型层面的决定，目前这里没有消费者。`tact-ui hooks trust --all` 是可脚本化的等价物。 |
+| `bypass_trust` | Codex 用来「不经审核直接运行 hook」的开关。Tact 为真正需要它的场景提供了**效果**——管理员托管的 `/etc/tact/hooks.json` 不经审核即运行，因为只有管理员能写它——但没有提供这个开关，因为一个能关掉审核闸门的标志，任何能编辑配置文件的人都能设。其余情况的可脚本化等价做法是 `tact-ui hooks trust --all`。 |
 
 ---
 

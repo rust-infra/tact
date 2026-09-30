@@ -948,6 +948,8 @@ fn plugin_hook_sources(home: &PluginHome) -> Result<Vec<HookSource>> {
             // Neither file origin is reachable from a plugin bundle.
             HookOrigin::UserFile => "~/.tact/hooks.json".to_string(),
             HookOrigin::ProjectFile => format!("{}/.tact/hooks.json", dirs.root.display()),
+            // Only reachable from the managed file itself.
+            HookOrigin::Managed => format!("{}/hooks.json (managed)", dirs.root.display()),
         };
         out.push(HookSource {
             label,
@@ -1001,15 +1003,70 @@ fn collect_hook_sources(home: Option<&PluginHome>, work_dir: &Path) -> Result<Ve
 /// [`collect_hook_sources`] with the user file named explicitly, so a test does
 /// not have to move the process-wide `HOME` (it would otherwise pick up the
 /// developer's real `~/.tact/hooks.json`).
+/// Whether a managed hooks file is owned by the administrator and cannot be
+/// rewritten by anyone else.
+///
+/// The review gate exists because a plugin bundle is downloaded content and a
+/// project file is repository content. A file only `root` can write is neither:
+/// the trust decision was made by the filesystem, and asking the user to re-make
+/// it in Tact's store would be theatre. On any platform where that cannot be
+/// established the answer is `false` — fail-closed — and the file goes through
+/// review like every other source.
+///
+/// Deliberately a *property*, not a switch. A `bypass_trust` flag would let
+/// anyone turn the gate off; this cannot be turned on by anyone who cannot write
+/// the file, and it turns itself off the moment the permissions stop being
+/// admin-only (a world-writable file is re-reviewed).
+#[cfg(unix)]
+fn is_admin_owned(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    match std::fs::metadata(path) {
+        Ok(meta) => admin_ownership_holds(meta.uid(), meta.mode()),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn is_admin_owned(_path: &Path) -> bool {
+    false
+}
+
+/// The policy half of [`is_admin_owned`], split out because a test cannot create
+/// a root-owned file.
+#[cfg(unix)]
+fn admin_ownership_holds(uid: u32, mode: u32) -> bool {
+    uid == 0 && mode & 0o022 == 0
+}
+
 fn collect_hook_sources_with(
     home: Option<&PluginHome>,
     user_file: Option<PathBuf>,
     work_dir: &Path,
 ) -> Result<Vec<HookSource>> {
-    let mut out = match home {
-        Some(home) => plugin_hook_sources(home)?,
-        None => Vec::new(),
-    };
+    let mut out: Vec<HookSource> = Vec::new();
+
+    // The administrator's file first: it is the widest scope, and `SessionStart`
+    // context is concatenated in registration order, so a managed briefing frames
+    // the session rather than trailing it. Nothing else reorders — every source
+    // that existed before keeps its position relative to the others.
+    if let Some(path) = crate::consts::TactPath::managed_hooks_path()
+        && path.is_file()
+        && is_admin_owned(&path)
+    {
+        let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let dirs = PluginDirs {
+            data: parent.clone(),
+            root: parent,
+        };
+        if let Some(source) = hooks_file_source(&path, path.display().to_string(), HookOrigin::Managed, dirs) {
+            out.push(source);
+        }
+    }
+
+    if let Some(home) = home {
+        out.extend(plugin_hook_sources(home)?);
+    }
 
     if let Some(path) = user_file.clone() {
         // The user file's `${PLUGIN_ROOT}` is its own directory — there is no
@@ -1129,7 +1186,7 @@ fn admit_trusted(source: &HookSource, trust: &HookTrust, report: &mut HookLoadRe
                     matcher: matcher.matcher.clone(),
                     command: command_text.to_string(),
                 };
-                if trust.is_trusted(&summary.hash) {
+                if source.origin == HookOrigin::Managed || trust.is_trusted(&summary.hash) {
                     report.trusted.push(summary);
                     kept_commands.push(command.clone());
                 } else {
@@ -1186,6 +1243,11 @@ pub enum HookOrigin {
     UserFile,
     /// `<workdir>/.tact/hooks.json`.
     ProjectFile,
+    /// An administrator-managed file, admitted because of *who can write it*.
+    ///
+    /// Only produced when the ownership check passed, so a source carrying this
+    /// origin is trusted by construction and never by a switch.
+    Managed,
 }
 
 /// One hooks file to register, whichever origin it came from.
@@ -3730,7 +3792,13 @@ mod tests {
         )
         .unwrap();
 
-        let sources = collect_hook_sources_with(None, Some(user.clone()), dir.path()).unwrap();
+        // A managed source, if this machine has one, is ordered first and is not
+        // what this test is about.
+        let collected = collect_hook_sources_with(None, Some(user.clone()), dir.path()).unwrap();
+        let sources: Vec<&HookSource> = collected
+            .iter()
+            .filter(|source| source.origin != HookOrigin::Managed)
+            .collect();
 
         let labels: Vec<&str> = sources.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(labels.len(), 2, "{labels:?}");
@@ -4659,5 +4727,82 @@ mod tests {
             })
             .collect();
         assert_eq!(order, ["hooks.json", "hooks.json", "config"]);
+    }
+    // ── administrator-managed hooks ─────────────────────────────────────
+
+    #[test]
+    fn a_managed_hook_needs_admin_ownership_not_a_switch() {
+        // The review gate exists because a plugin bundle is downloaded and a
+        // project file is repository content. A file only `root` can write is
+        // neither, so the trust decision was made by the filesystem.
+        assert!(admin_ownership_holds(0, 0o644), "root-owned, not writable");
+        assert!(admin_ownership_holds(0, 0o600));
+
+        // Anyone else's file is not managed, whatever its mode…
+        assert!(!admin_ownership_holds(501, 0o644));
+        // …and neither is a root-owned file anyone can rewrite: a world- or
+        // group-writable file goes back through review, which is why this is a
+        // property rather than a `bypass_trust` flag.
+        assert!(!admin_ownership_holds(0, 0o666));
+        assert!(!admin_ownership_holds(0, 0o646));
+        assert!(!admin_ownership_holds(0, 0o622));
+    }
+
+    #[test]
+    fn a_managed_source_is_admitted_without_the_store() {
+        // `HookOrigin::Managed` is only ever produced by the collector *after*
+        // the ownership check, so `admit_trusted` does not consult the review
+        // store for it — and an unknown store cannot hold it back.
+        let dir = tempfile::tempdir().unwrap();
+        let mut source = source_with(
+            "/etc/tact/hooks.json",
+            dir.path(),
+            one_command_hooks("Stop", &["admin.sh"]),
+        );
+        source.origin = HookOrigin::Managed;
+
+        let empty_store = HookTrust::from_path(dir.path().join("hooks-state.json"));
+        let mut report = HookLoadReport::default();
+        let admitted = admit_trusted(&source, &empty_store, &mut report);
+
+        let commands: Vec<&str> = admitted
+            .commands_for(HookEventKind::Stop)
+            .iter()
+            .filter_map(|(_, command)| command.command.as_deref())
+            .collect();
+        assert_eq!(commands, ["admin.sh"], "a managed hook runs unreviewed");
+        assert_eq!(report.trusted.len(), 1);
+        assert!(report.pending.is_empty());
+        // It still reports where it came from, so "runs without review" is not
+        // "runs invisibly".
+        assert_eq!(report.trusted[0].source, "/etc/tact/hooks.json");
+    }
+
+    #[test]
+    fn an_ordinary_source_still_needs_review_next_to_a_managed_one() {
+        // The managed origin must not leak: a project file alongside it is
+        // pending exactly as before.
+        let dir = tempfile::tempdir().unwrap();
+        let mut managed = source_with(
+            "/etc/tact/hooks.json",
+            dir.path(),
+            one_command_hooks("Stop", &["admin.sh"]),
+        );
+        managed.origin = HookOrigin::Managed;
+        let project = source_with(
+            dir.path().join(".tact/hooks.json").display().to_string().as_str(),
+            dir.path(),
+            one_command_hooks("Stop", &["repo.sh"]),
+        );
+
+        let store = HookTrust::from_path(dir.path().join("hooks-state.json"));
+        let mut report = HookLoadReport::default();
+        admit_trusted(&managed, &store, &mut report);
+        let admitted = admit_trusted(&project, &store, &mut report);
+
+        assert!(admitted.hooks.is_empty(), "the project hook must wait");
+        assert_eq!(report.pending.len(), 1);
+        assert_eq!(report.pending[0].command, "repo.sh");
+        assert_eq!(report.trusted.len(), 1);
     }
 }
