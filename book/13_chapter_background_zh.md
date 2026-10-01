@@ -1,7 +1,5 @@
 # 后台任务（Background Tasks）
 
-> 语言：[中文](./13_chapter_background_zh.md) · [English](./13_chapter_background.md)
-
 本章说明 Tact 的 **异步 shell 执行**：`background_run` 工具在 `tokio::spawn` 任务上启动命令并立即返回；`wait_background` 阻塞到它结束，`check_background` 则不等待、只查状态。每个任务持久化到磁盘，结果不受轮询顺序影响 —— 但进程重启后不保留（见 §5）。实现位于 `crates/tact/src/background.rs`，工具包装在 `crates/tact/src/tool/background_run.rs`。
 
 后台任务是同步 `bash` 工具的「即发即忘」对应物：相同 shell、相同校验，但 agent 的一轮不会因完成而阻塞。

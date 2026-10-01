@@ -1353,12 +1353,12 @@ must be updated in the same commit):
 | --- | --- |
 | This design | `docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md` (this file) |
 | Implementation plan | `docs/superpowers/plans/2026-09-15-bwrap-sandbox.md` |
-| bash execution lifecycle, sandbox insertion point, §19 path space | `book/07_chapter_tool.md` + `book/07_chapter_tool_zh.md` (§7 "Workspace Path Safety", §11 "Current Gaps") |
-| Permission vs Sandbox as separate layers | `book/10_chapter_permission.md` + `book/10_chapter_permission_zh.md` |
-| `background_run` remains unsandboxed | `book/13_chapter_background.md` + `_zh.md` |
-| `worktree_run` / lane git calls remain unsandboxed | `book/15_chapter_worktree.md` + `_zh.md` (the chapter already states a worktree is not an OS sandbox) |
-| `[tools] sandbox` config key | `config.example.toml` + `book/21_chapter_config.md` + `_zh.md` |
-| Shipped user-visible change | `book/26_chapter_issue.md` + `book/26_chapter_issue_zh.md`, newest-first entry (date, type, symptom, decision, observable behaviour, pointers) |
+| bash execution lifecycle, sandbox insertion point, §19 path space | `book/07_chapter_tool_zh.md` + `book/07_chapter_tool_zh.md` (§7 "Workspace Path Safety", §11 "Current Gaps") |
+| Permission vs Sandbox as separate layers | `book/10_chapter_permission_zh.md` + `book/10_chapter_permission_zh.md` |
+| `background_run` remains unsandboxed | `book/13_chapter_background_zh.md` |
+| `worktree_run` / lane git calls remain unsandboxed | `book/15_chapter_worktree_zh.md` (the chapter already states a worktree is not an OS sandbox) |
+| `[tools] sandbox` config key | `config.example.toml` + `book/21_chapter_config_zh.md` |
+| Shipped user-visible change | `book/26_chapter_issue_zh.md` + `book/26_chapter_issue_zh.md`, newest-first entry (date, type, symptom, decision, observable behaviour, pointers) |
 | Agent-facing conventions for the split path space (§19) | `docs/agent_guidelines.md` (bash/tool-usage section) |
 
 If an existing security or tool-execution document already describes Permission as the execution boundary, update it to explicitly distinguish:

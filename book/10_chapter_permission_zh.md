@@ -1,7 +1,5 @@
 # 权限模型（Permission Model）
 
-> 语言：[中文](./10_chapter_permission_zh.md) · [English](./10_chapter_permission.md)
-
 本章说明 Tact 如何决定每个工具调用是否可执行：按风险做意图分类、三种权限模式、会话内 allowlist，以及通过 TUI 的交互式审批。每个 native 与 MCP 工具都会在 `Agent::execute_tool_call` 的 Phase 1 经过同一道关卡——在 `PreToolUse` hook 之后、并行执行之前。Hook 顺序见 [Agent 生命周期 Hook](./09_chapter_hook_zh.md)。
 
 ---

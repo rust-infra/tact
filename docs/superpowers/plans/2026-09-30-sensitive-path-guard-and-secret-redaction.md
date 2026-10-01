@@ -142,13 +142,13 @@ Each task is independently testable and committable. Suggested commit types foll
    - `cargo clippy -p tact --all-targets` — the new `&'static str` fields and the const tables are the
      kind of thing clippy is noisy about.
 8. **Docs sync** (per AGENTS.md's trigger table — both languages, structurally aligned)
-   - `book/10_chapter_permission.md` + `_zh.md`: the `Read` short-circuit caveat (step 1 of
+   - `book/10_chapter_permission_zh.md`: the `Read` short-circuit caveat (step 1 of
      `check_with_auto` returns before plan mode — this is why the guard is not a risk tier); the two
      tiers and their different escape hatches; §9 Configuration gains the two JSON objects with the
      precedence table; §7 gains the `bash` tilde paragraph and the corrected rationale; §10 code map
      gains `security/sensitive.rs` + `security/redact.rs`; §11 Current Gaps gains the "the guard is a
      name-based heuristic; the real boundary is the Linux-only, opt-in sandbox" row.
-   - `book/26_chapter_issue.md` + `_zh.md`: two newest-first entries — (a) the leak: `cat
+   - `book/26_chapter_issue_zh.md`: two newest-first entries — (a) the leak: `cat
      ~/.ssh/id_ed25519` ran silently as a `Read`, and `~/.claude/settings.json` printed a live token;
      (b) the `apply_patch` bare-rule bug (§1.4 of the spec), which is a permission-scope bug worth its
      own row. Both need date, symptom, decision, observable behaviour, pointers.

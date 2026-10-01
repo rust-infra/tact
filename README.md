@@ -261,7 +261,7 @@ Multi-turn conversation loop with progressive context management:
 
 The entry path reserves the incoming user turn before push, so a large prompt cannot overflow immediately after append. Failed `compact` tool calls leave history intact.
 
-Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](./book/05_chapter_compact_zh.md)), [`docs/compaction.md`](./docs/compaction.md).
+Details: [`book/05_chapter_compact_zh.md`](./book/05_chapter_compact_zh.md), [`docs/compaction.md`](./docs/compaction.md).
 
 ### 🔧 Built-in Tools
 
@@ -381,7 +381,7 @@ The agent loop:
 8. Writes results back to the conversation history; a successful `compact` tool then rewrites context
 9. Continues until the model stops requesting tools (or recovery exhausts)
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop, bash sandbox).
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index_zh.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop, bash sandbox).
 
 ---
 

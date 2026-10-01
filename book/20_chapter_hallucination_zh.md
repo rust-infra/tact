@@ -1,7 +1,5 @@
 # Agent 循环中的幻觉问题
 
-> 语言：[English](./20_chapter_hallucination.md) · [中文](./20_chapter_hallucination_zh.md)
-
 本章系统梳理编码 Agent 循环中的 **LLM 幻觉模式**——模型凭空编造不存在的文件、函数签名、对话历史或工具输出。理解这些模式对于构建健壮的 Agent 系统至关重要，因为 prompt 中的幻觉（不仅是输出）会**毒化后续回合**，使整个任务偏离轨道。
 
 相关代码位于 `crates/tact/src/compact/mod.rs`、`crates/tact/src/agent/mod.rs`（特别是 prompt 构建和压缩逻辑）以及 `tact_llm` provider 适配层。

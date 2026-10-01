@@ -3,7 +3,7 @@
 Date: 2026-09-30
 Status: approved for implementation
 
-Closes the gap recorded in [Ch 8 §10](../../../book/08_chapter_mcp.md): *"Every MCP tool resolves to
+Closes the gap recorded in [Ch 8 §10](../../../book/08_chapter_mcp_zh.md): *"Every MCP tool resolves to
 `CapabilityRisk::High`; `normalize_mcp_capability` ignores both server and tool. An entry can skip
 the **prompt** with `approval_mode: "auto"`, but it cannot lower the reported **risk** — that needs a
 capability axis Tact does not have."*
@@ -164,8 +164,8 @@ test asserts the risk is unchanged when a server declares read-only.
 
 ## 6. Docs sync
 
-- `book/08_chapter_mcp.md` + `_zh.md`: field-table rows, a subsection under "Per-server tool policy"
+- `book/08_chapter_mcp_zh.md`: field-table rows, a subsection under "Per-server tool policy"
   for the risk axis and the plan-mode table, and the §10 gap row replaced by an accurate one.
 - `config.example.toml`: the `[mcp]` comment block gains both keys with the tier warning.
-- `book/26_chapter_issue.md` + `_zh.md`: two newest-first entries — the facet-A bugfix, and the
+- `book/26_chapter_issue_zh.md`: two newest-first entries — the facet-A bugfix, and the
   facet-B/C feature.

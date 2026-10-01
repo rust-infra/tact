@@ -1,7 +1,5 @@
 # Agent 生命周期钩子（Agent Lifecycle Hooks）
 
-> 语言：[中文](./09_chapter_hook_zh.md) · [English](./09_chapter_hook.md)
-
 本章说明 Tact 如何在工具执行前后注入自定义逻辑：调用前检查或改写 tool 输入，完成后改写输出，以及（通过注册 API）在会话开始前准备状态。
 
 Hooks 是 **agent 循环**与**工具调度器**之间的扩展点。它们顺序执行，可通过返回 `HookControl::Block` **否决**操作。
@@ -77,7 +75,7 @@ pub enum HookControl {
 
 ## 4. Hooks 在轮次流水线中的位置
 
-Hooks 包裹 [任务与工具调度](./11_chapter_task.md)（英文）所述的并行核心：
+Hooks 包裹 [任务与工具调度](./11_chapter_task_zh.md)（英文）所述的并行核心：
 
 ```text
 对 assistant 消息中每个 ToolUse（Phase 1 — 顺序）：
@@ -416,15 +414,14 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 |-----|-----|
 | `SessionStart` 的 `clear` / `fork` 来源 | Codex 会上报它们，但 Tact 没有清空历史的命令、也没有会话 fork，因此这两个变体会不可达。词表是 `startup` / `resume` / `compact`——Tact 真正区分的那三个。 |
 
-
 | `bypass_trust` | Codex 用来「不经审核直接运行 hook」的开关。Tact 为真正需要它的场景提供了**效果**——管理员托管的 `/etc/tact/hooks.json` 不经审核即运行，因为只有管理员能写它——但没有提供这个开关，因为一个能关掉审核闸门的标志，任何能编辑配置文件的人都能设，其中也包括随仓库下发的配置。两种更窄的形态被权衡后否决：一是 `--bypass-trust` 一次性命令行标志，它不可组合（每次调用都得重复，而一旦被做成别名就变成永久的），并且不留下「到底批准过哪些定义」的记录——而 `trust` 恰好写出这份记录，`forget --all` 可撤销它；二是带启动提示的、有作用域的 opt-in，它仍然是一个「任何能写配置的人都能设」的开关，而那条提示只有设它的人自己会读到。等价做法仍是 `tact-ui hooks trust --all` / `trust --source <标签>`，它是显式的、可审计的、且按来源限定作用域。 |
 
 ---
 
 ## Related Docs
 
-- [权限模型](./10_chapter_permission.md) — 流水线中紧接 PreToolUse 之后（英文）
-- [任务与工具调度](./11_chapter_task.md) — hooks 所包裹的三阶段 tool 流水线（英文）
+- [权限模型](./10_chapter_permission_zh.md) — 流水线中紧接 PreToolUse 之后（英文）
+- [任务与工具调度](./11_chapter_task_zh.md) — hooks 所包裹的三阶段 tool 流水线（英文）
 - [工具系统](./07_chapter_tool_zh.md) — 原生工具与 dispatch
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — Hook Engine 章节
 - [Tool Rendering](../docs/tool_rendering.md) — TUI 中 blocked/failed 步骤如何显示

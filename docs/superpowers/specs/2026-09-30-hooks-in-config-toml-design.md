@@ -3,7 +3,7 @@
 Date: 2026-09-30
 Status: approved for implementation
 
-Closes the second of the three items in [Ch 9 §13](../../../book/09_chapter_hook.md): *"Inline `[hooks]`
+Closes the second of the three items in [Ch 9 §13](../../../book/09_chapter_hook_zh.md): *"Inline `[hooks]`
 tables in `config.toml` | Codex accepts a third spelling; Tact deliberately has one, because the file
 entry point is what `bm hook install`-style tooling writes and a second spelling would need its own
 precedence rules."*
@@ -95,7 +95,7 @@ noise.
 
 ## 6. Docs sync
 
-- `book/09_chapter_hook.md` + `_zh.md`: the origins table gains `config.toml`, the registration order
+- `book/09_chapter_hook_zh.md`: the origins table gains `config.toml`, the registration order
   is stated, and the §13 row is removed.
 - `config.example.toml`: a commented `[hooks]` example.
-- `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+- `book/26_chapter_issue_zh.md`: newest-first entry.

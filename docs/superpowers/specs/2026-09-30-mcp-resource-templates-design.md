@@ -3,7 +3,7 @@
 Date: 2026-09-30
 Status: approved for implementation
 
-Closes the remaining half of the gap in [Ch 8 §10](../../../book/08_chapter_mcp.md): *"Resource templates
+Closes the remaining half of the gap in [Ch 8 §10](../../../book/08_chapter_mcp_zh.md): *"Resource templates
 / prompts | Resources are wired (`list_mcp_resources` / `read_mcp_resource`); `resources/templates/list`
 is not, and neither are Prompts"*.
 
@@ -85,6 +85,6 @@ from "the server publishes none", which is the one distinction the resources wor
 
 ## 5. Docs sync
 
-- `book/08_chapter_mcp.md` + `_zh.md`: Step 9 gains templates, the code map and Quick Reference rows
+- `book/08_chapter_mcp_zh.md`: Step 9 gains templates, the code map and Quick Reference rows
   follow, and the §10 gap row is narrowed to Prompts.
-- `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+- `book/26_chapter_issue_zh.md`: newest-first entry.

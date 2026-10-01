@@ -1,7 +1,5 @@
 # 子 Agent（Subagents）
 
-> 语言：[中文](./12_chapter_subagent_zh.md) · [English](./12_chapter_subagent.md)
-
 本章说明 Tact 如何通过 `spawn_subagent` 工具 spawn **隔离的工作 agent**：全新对话循环、受限工具集、`ToolContext` 服务，以及——除非 `worktree: true` 请求隔离的 git 泳道——共享文件系统，但无父级历史、hook 或 MCP 工具。每个子 agent 有自己的 SQLite session 行，经 `sessions.ref_id` 挂到父会话。
 
 实现：`crates/tact/src/tool/subagent.rs`。工具集装配：`subagent_toolset()` 在 `crates/tact/src/tool/registry.rs`。

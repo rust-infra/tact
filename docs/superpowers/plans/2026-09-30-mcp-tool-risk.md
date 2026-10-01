@@ -35,9 +35,9 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
      in `agent::tool_dispatch`: the dispatch site is a one-line delegation with no logic, and
      reaching it there would mean making `McpServerPolicy::from_config` public for a test.
 5. **Docs sync**
-   - `book/08_chapter_mcp.md` + `_zh.md`: two field-table rows, a "Per-tool risk" subsection under
+   - `book/08_chapter_mcp_zh.md`: two field-table rows, a "Per-tool risk" subsection under
      "Per-server tool policy" carrying the plan-mode table, and the §10 gap row replaced.
    - `config.example.toml`: the `[mcp]` comment block gains `default_tool_risk` and `tools.<name>.risk`
      with the tier warning.
-   - `book/26_chapter_issue.md` + `_zh.md`: two newest-first entries — the facet-A bugfix, then the
+   - `book/26_chapter_issue_zh.md`: two newest-first entries — the facet-A bugfix, then the
      facet-B/C feature.

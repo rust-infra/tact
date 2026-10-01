@@ -1,10 +1,8 @@
 # 上下文压缩（Context Compaction）
 
-> 语言：[中文](./05_chapter_compact_zh.md) · [English](./05_chapter_compact.md)
-
 本章说明 Tact 如何把长时间对话**压进模型上下文窗口**：每轮廉价的原地截断（`micro_compact`）、触及上限时的 LLM 摘要（`compact_history`，非 Responses provider）、OpenAI Responses 的原生 `/responses/compact`，以及 transcript / 超大工具输出的落盘溢出。原语在 `crates/tact/src/compact/mod.rs`；编排在 `crates/tact/src/agent/mod.rs` 的 `Agent::compact_history`。
 
-压缩也是一种**恢复策略**：当 provider 因 prompt 过长拒绝对话时，agent 会先压缩再重试。见 [错误恢复](./06_chapter_recovery.md)（英文）。
+压缩也是一种**恢复策略**：当 provider 因 prompt 过长拒绝对话时，agent 会先压缩再重试。见 [错误恢复](./06_chapter_recovery_zh.md)（英文）。
 
 ---
 
@@ -118,7 +116,7 @@ flowchart TD
 1. **入口路径** — 在 push 用户 turn 之前，`should_auto_compact` 会预留 `estimate(user_turn)`，避免刚 append 就立刻撑爆窗口。
 2. **每次循环迭代** — 在模型请求前（含工具后的续写 / recovery）先跑 `micro_compact`，再跑 `should_auto_compact(incoming = 0)`。
 3. **工具执行之后** — 只有**成功**的 `compact` 工具才会设置 `manual_compact`；该路径调用 `compact_history(focus)` 后回到循环顶部。失败 / 被拒绝的 compact 调用不会改写历史。
-4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_RECOVERY_ATTEMPTS`（3）。细节见 [错误恢复](./06_chapter_recovery.md)。
+4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_RECOVERY_ATTEMPTS`（3）。细节见 [错误恢复](./06_chapter_recovery_zh.md)。
 5. **手动 `compact` 工具** 不能在工具处理函数*内部*改写 context（API 有效性）。Dispatch 仅在成功时记录 flag；`compact_history` 在 tool results **追加之后**再跑。
 
 ---
@@ -375,7 +373,6 @@ OpenAI Responses 的回退方案。DeepSeek 与 Kimi 的 Responses 配置目前�
 
 **Provider 可用性说明** — 底层测试仍可以构造通用 adapter 做端点实验，但正常配置会在能力验证完成前保持 DeepSeek 与 Kimi Responses 禁用。
 
-
 **协议契约与验证状态** — 自动压缩的替换基线（单个 `compaction` item 置前，
 后跟本次 response 的非 compaction 输出 items）来源于设计阶段从目标端点捕获
 的脱敏 fixture
@@ -383,7 +380,7 @@ OpenAI Responses 的回退方案。DeepSeek 与 Kimi 的 Responses 配置目前�
 **尚未**经过真实端点验证。硬性校验仍然生效：零个或多个 `compaction` item、
 空的 `encrypted_content` 都是协议错误；格式错误的已知输出 item 会被 typed
 normalizer 拒绝，真正未知的输出 item 会由 raw wire 边界保留并在下一轮请求中回放（见
-[Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)）。
+[Ch 22 §6.2.2](./22_chapter_llm_zh.md#the-compaction-item-round-trip)）。
 与 fixture 契约不同的端点会以协议错误的方式响亮失败，而不会被掩盖。
 
 **流式中未完成的压缩** — 在流中被宣布但从未完成的 `compaction` item — 同样是
@@ -772,11 +769,11 @@ flowchart LR
 
 ## 相关文档
 
-- [Error Recovery](./06_chapter_recovery.md) — 作为 prompt-too-long 策略的压缩  
-- [Agent Main Loop](./18_chapter_agent_loop.md) — 这些挂钩周围的完整循环  
-- [System Prompt](./04_chapter_prompt.md) — 每轮重建；含压缩工具指引  
-- [Store and Persistence](./01_chapter_store.md) — 压缩后的会话消息重写  
-- [Tasks and Tool Scheduling](./11_chapter_task.md) — dispatch 中检测 `manual_compact`  
+- [Error Recovery](./06_chapter_recovery_zh.md) — 作为 prompt-too-long 策略的压缩  
+- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — 这些挂钩周围的完整循环  
+- [System Prompt](./04_chapter_prompt_zh.md) — 每轮重建；含压缩工具指引  
+- [Store and Persistence](./01_chapter_store_zh.md) — 压缩后的会话消息重写  
+- [Tasks and Tool Scheduling](./11_chapter_task_zh.md) — dispatch 中检测 `manual_compact`  
 - [docs/compaction.md](../docs/compaction.md) — 调参笔记  
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §6 上下文压缩  
-- [英文原文](./05_chapter_compact.md)
+- [英文原文](./05_chapter_compact_zh.md)

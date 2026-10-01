@@ -3,7 +3,7 @@
 Date: 2026-09-30
 Status: approved for implementation
 
-Closes one of the three items in [Ch 9 §13](../../../book/09_chapter_hook.md): *"`mcp_tool` hook
+Closes one of the three items in [Ch 9 §13](../../../book/09_chapter_hook_zh.md): *"`mcp_tool` hook
 handlers | Codex hooks can invoke an MCP tool; Tact runs commands only."*
 
 ## 1. Problem
@@ -94,7 +94,7 @@ loop by being broken. A tool that returns a decision is honoured exactly as a co
 
 ## 5. Docs sync
 
-- `book/09_chapter_hook.md` + `_zh.md`: the "Command hooks" section gains the second kind, the code
+- `book/09_chapter_hook_zh.md`: the "Command hooks" section gains the second kind, the code
   map gains `run_hook` / `run_mcp_tool_hook`, and the §13 deliberate-gaps table loses the `mcp_tool`
   row (keeping the other two, with their reasons).
-- `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+- `book/26_chapter_issue_zh.md`: newest-first entry.

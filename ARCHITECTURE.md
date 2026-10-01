@@ -278,13 +278,13 @@ Special cases:
 
 Result text is redacted before anything reads it (one choke point in
 `run_tool_waves`, plus a streaming pass for live command output). See
-[Ch 10 §12](book/10_chapter_permission.md#12-sensitive-paths-and-secret-redaction).
+[Ch 10 §12](book/10_chapter_permission_zh.md#12-sensitive-paths-and-secret-redaction).
 
 ---
 
 ## 4. Hook Engine
 
-Hooks are registered on the `Agent` and run from the agent loop; Tact maps fifteen lifecycle events (the full table is in [Ch 9](book/09_chapter_hook.md)). The mutable ones:
+Hooks are registered on the `Agent` and run from the agent loop; Tact maps fifteen lifecycle events (the full table is in [Ch 9](book/09_chapter_hook_zh.md)). The mutable ones:
 
 | Hook type | When | Can mutate | Can veto |
 |---|---|---|---|
@@ -357,7 +357,7 @@ When the conversation approaches the model context window (`agent.model_context_
 
 1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
 2. If `should_auto_compact` fires at 80% of the model window, `compact_history()` atomically writes a unique transcript, summarizes a window-aware recent slice with bounded retries and response validation, rebuilds context as retained real-user turns plus a handoff summary, validates the complete rebuilt request, and **`replace_session_messages`** syncs SQLite. ASCII is estimated at roughly four characters per token and non-ASCII at one character per token. Retained users are capped at 20k estimated tokens and reduced to reserve max output, system/tool/summary input, and 20% window headroom; oversized images become text omission markers rather than truncated base64.
-3. For OpenAI `protocol = "responses"` providers this local summary path is **not** used: ordinary requests carry `context_management` with the resolved compact threshold, and `compact_history()` calls the native `POST /responses/compact` endpoint, replacing the opaque protocol baseline (never the logical context). Endpoints without native compaction are unsupported — no local-summary fallback. See [Ch 5](./book/05_chapter_compact.md).
+3. For OpenAI `protocol = "responses"` providers this local summary path is **not** used: ordinary requests carry `context_management` with the resolved compact threshold, and `compact_history()` calls the native `POST /responses/compact` endpoint, replacing the opaque protocol baseline (never the logical context). Endpoints without native compaction are unsupported — no local-summary fallback. See [Ch 5](./book/05_chapter_compact_zh.md).
 4. Large successful native and MCP outputs are persisted to `<workdir>/.tact/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context. Transcript and tool-result directories each retain the 100 newest files.
 
 The TUI bottom-bar row 2 shows the same window as a usage meter (`used / model_context_window`).
@@ -600,7 +600,7 @@ flowchart TD
 ```
 
 This guard is unrelated to the OS-level **execution** sandbox (bubblewrap) of
-[Bash Sandbox](./book/27_chapter_sandbox.md): `resolve_safe_path` bounds the
+[Bash Sandbox](./book/27_chapter_sandbox_zh.md): `resolve_safe_path` bounds the
 in-process file tools' *paths*, while the execution sandbox bounds what an
 approved `bash` command can *reach* (`crates/tact/src/sandbox/`).
 

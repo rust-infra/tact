@@ -1,7 +1,5 @@
 # 任务与工具调度（Tasks and Tool Scheduling）
 
-> 语言：[中文](./11_chapter_task_zh.md) · [English](./11_chapter_task.md)
-
 本章说明 LLM 决定行动之后发生什么：Tact 如何将一组 `ToolUse` 块转为已执行命令、结果，以及下一轮对话。
 
 **勿与** [持久任务管理器](./19_chapter_persistent_tasks_zh.md)（`task_create` / `task_list` 工具）或 [子 Agent](./12_chapter_subagent_zh.md) 的 `spawn_subagent` spawn 工具混淆。

@@ -3,7 +3,7 @@
 Date: 2026-09-30
 Status: approved for implementation
 
-Closes the row the resource work left in [Ch 8 §10](../../../book/08_chapter_mcp.md): *"The two
+Closes the row the resource work left in [Ch 8 §10](../../../book/08_chapter_mcp_zh.md): *"The two
 router-served resource tools (`list_mcp_resources`, `read_mcp_resource`) are **not** addressable this
 way — they are not in any server's `tools` map — so they stay `CapabilityRisk::High`."*
 
@@ -80,7 +80,7 @@ Declaring `read` for `read_mcp_resource` therefore bypasses plan mode — the sa
 
 ## 5. Docs sync
 
-- `book/08_chapter_mcp.md` + `_zh.md`: the §10 row is replaced, and the resource section names the
+- `book/08_chapter_mcp_zh.md`: the §10 row is replaced, and the resource section names the
   keys.
 - `config.example.toml`: the `[mcp]` block gains both keys.
-- `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+- `book/26_chapter_issue_zh.md`: newest-first entry.

@@ -26,6 +26,6 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
      and `agent::tests`.
    - `cargo test -p tact-ui --lib mcp_cli::` for the new inspection field.
 5. **Docs sync**
-   - `book/08_chapter_mcp.md` + `_zh.md`: Step 9, the §6 code map row, the Quick Reference row, and the
+   - `book/08_chapter_mcp_zh.md`: Step 9, the §6 code map row, the Quick Reference row, and the
      §10 gap row narrowed to Prompts.
-   - `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+   - `book/26_chapter_issue_zh.md`: newest-first entry.

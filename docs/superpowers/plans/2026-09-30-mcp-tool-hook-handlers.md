@@ -18,5 +18,5 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
 4. **Tests**
    - `cargo test -p tact --lib plugin::hooks::` , then `--lib mcp::`.
 5. **Docs sync**
-   - `book/09_chapter_hook.md` + `_zh.md`: the second hook kind, the code map, and the §13 row.
-   - `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+   - `book/09_chapter_hook_zh.md`: the second hook kind, the code map, and the §13 row.
+   - `book/26_chapter_issue_zh.md`: newest-first entry.

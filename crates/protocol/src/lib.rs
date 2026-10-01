@@ -4,7 +4,7 @@
 //! exchanged over channels; [`biz`] defines account / quota structures carried
 //! inside those messages.
 //!
-//! State machine transitions: [book/25_chapter_protocol.md](../book/25_chapter_protocol.md).
+//! State machine transitions: [book/25_chapter_protocol_zh.md](../book/25_chapter_protocol_zh.md).
 
 pub mod agent;
 pub mod biz;

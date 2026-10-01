@@ -27,7 +27,7 @@ time (AGENTS.md — parallel runs contend on `target/`).
    - `cargo test -p tact --lib mcp::` , then `--lib prompt::`, then `--lib agent::`.
    - `cargo test -p tact-ui --lib mcp_cli::`.
 7. **Docs sync**
-   - `book/08_chapter_mcp.md` + `_zh.md`: a "Server instructions" subsection (capture, fence, cap,
+   - `book/08_chapter_mcp_zh.md`: a "Server instructions" subsection (capture, fence, cap,
      boundary placement) and the Gaps row for `InitializeResult.instructions` flipped to done.
-   - `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+   - `book/26_chapter_issue_zh.md`: newest-first entry.
    - `ARCHITECTURE.md` only if the prompt-composition description drifts.

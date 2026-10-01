@@ -1,7 +1,5 @@
 # Worktree 泳道（Lanes）
 
-> 语言：[中文](./15_chapter_worktree_zh.md) · [English](./15_chapter_worktree.md)
-
 本章说明 Tact 的 **git worktree 泳道**：用 `git worktree add` 创建的隔离工作目录，在 JSON 索引中跟踪，并通过六个 agent 工具驱动。实现位于 `crates/tact/src/worktree/mod.rs`，工具封装在 `crates/tact/src/tool/worktree.rs`。
 
 「泳道」（lane）是 Tact 对一条命名 worktree 的称呼：其目录、专用分支、可选的持久化任务链接，以及状态字符串。泳道让 agent 在独立分支上运行命令或实验，而不干扰主 checkout。
@@ -19,7 +17,7 @@
 | `worktree_remove` | `remove` | `git worktree remove <path>`（脏工作树会失败）、删除跟踪记录、追加审计事件；拒绝运行中子 agent 的泳道。移除后 backing 分支 `wt/<name>` 仅当**已完全合并**时用 `git branch -d` 删除——未合并分支保留，避免销毁任何工作 |
 | `worktree_events` | `events` | 审计日志最后 N 行（默认 20） |
 
-省略时 `base_ref` 默认为 `HEAD`；`task_id` 可选，将泳道链接到任务管理器中的记录（[任务与工具调度](./11_chapter_task.md)）。
+省略时 `base_ref` 默认为 `HEAD`；`task_id` 可选，将泳道链接到任务管理器中的记录（[任务与工具调度](./11_chapter_task_zh.md)）。
 
 ---
 
@@ -165,8 +163,8 @@ let worktree_manager =
 
 ## 相关文档
 
-- [任务与工具调度](./11_chapter_task.md) — `task_id` 所指的 task 记录
-- [团队协调](./14_chapter_team.md) — worktree 设计与之配对的协调层
-- [权限模型](./10_chapter_permission.md) — `worktree_run` 如何（以及未如何）被门控
+- [任务与工具调度](./11_chapter_task_zh.md) — `task_id` 所指的 task 记录
+- [团队协调](./14_chapter_team_zh.md) — worktree 设计与之配对的协调层
+- [权限模型](./10_chapter_permission_zh.md) — `worktree_run` 如何（以及未如何）被门控
 - [Store 与持久化](./01_chapter_store_zh.md) — `worktrees` / `worktree_events` SQLite 表
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §7 子 agent、团队、任务、worktree

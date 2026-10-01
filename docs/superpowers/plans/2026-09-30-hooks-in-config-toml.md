@@ -19,6 +19,6 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
    - A `[hooks]` table becomes a labelled source whose hooks are pending; no table means no source;
      two config files stay two sources; an `mcp_tool` entry works from TOML; order is preserved.
 4. **Docs sync**
-   - `book/09_chapter_hook.md` + `_zh.md`: origins table row + registration order, §13 row removed.
+   - `book/09_chapter_hook_zh.md`: origins table row + registration order, §13 row removed.
    - `config.example.toml`: a commented `[hooks]` block.
-   - `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+   - `book/26_chapter_issue_zh.md`: newest-first entry.

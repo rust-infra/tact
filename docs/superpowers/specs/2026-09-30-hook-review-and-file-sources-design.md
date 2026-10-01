@@ -98,7 +98,7 @@ and only a bare `exit 2` falls back to stderr.
 - `SessionStart`'s `clear` / `fork` sources: Tact has no history-clear command
   and no session fork (verified by grep), so the variants would be unreachable.
   The vocabulary stays `startup` / `resume` / `compact`. Recorded in
-  [Ch 9](../../../book/09_chapter_hook.md) §13.
+  [Ch 9](../../../book/09_chapter_hook_zh.md) §13.
 - Inline `[hooks]` tables in `config.toml`: Tact's config has no hook tables, and
   a second spelling would need its own precedence rules.
 - A `bypass_trust` config switch (Codex's `dangerously-bypass-hook-trust`):

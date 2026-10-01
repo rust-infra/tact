@@ -1,7 +1,5 @@
 # 工程问题与优化日志
 
-> Language: [English](./26_chapter_issue.md) · [中文](./26_chapter_issue_zh.md)
-
 本章是一份**按时间倒序的优化与 bugfix日志**，记录有用户可见或 API 可见行为变化的改动。它不是教程：每条写清问题、决策与代码 / 设计文档位置，避免后续重复踩坑。
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
@@ -31,11 +29,30 @@
 
 ---
 
+---
 
 ---
 
-
 ---
+
+## 1. 2026-09-30 — 英文册整体删除，本书只剩中文
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | docs / removal |
+| **相关** | `book/`（删除 27 个英文章节 + `index.md` + `mindmap.{md,html,png}` + `tact_book.xmind` + `book/output/`）、`AGENTS.md`（双语规则）、`book/index_zh.md`；全仓 72 个文件里的 203 处引用被改指 `*_zh.md` |
+
+**症状 / 动机：** 中英双册要一直成对维护——`AGENTS.md` 明确要求两册结构对齐（同样的标题、mermaid、表格），一次行为变更就得改两份，而实际阅读全部发生在中文册。`book/index_zh.md` 自己写着「英文为权威全文」，但没有任何机制保证这一点，靠的是每次改动都记得改两边。
+
+**决策：** 英文章节整体删除，`book/` 只保留中文。删除范围不止章节：`book/mindmap.md` / `mindmap.html` 里是 27 条指向英文 HTML 的导航链接，`book/output/` 是由英文源生成的 CHM 产物，都以英文册为前提。所有指向被删文件的引用改指 `*_zh.md`——不只是 `book/` 内部，还包括 `ARCHITECTURE.md`、`README.md`、`AGENTS.md`、`docs/`、`docs/superpowers/{specs,plans}/` 以及 `crates/` 里的文档注释。
+
+`_zh` 后缀**保留**：全仓有 436 处引用 `*_zh.md`，改名换来的只是好看一点，却要再动一遍所有链接；代价与收益不成比例。它现在只是历史命名，`book/index_zh.md` 与 `AGENTS.md` 都写明了这一点。`crates/`、`ARCHITECTURE.md`、`docs/` 仍是英文，只有本书是中文。
+
+**变更后行为：** `book/` 下只剩 `NN_chapter_<slug>_zh.md` 与 `index_zh.md`，章内不再有语言切换行。`AGENTS.md` 的双语对齐规则改为「本书只有中文，一章一文件，无需配对」。历史 plan / spec 文档里「双语」「both languages」之类的表述保持原样——它们记录的是当时确实发生过的事，不是现行约定。
+
+**顺带发现（未修）：** `crates/agent_tui_kit/README.md` 第 8 行把 `crates/protocol/src/agent.rs` 写成相对自身目录的链接，实际解析到 `crates/agent_tui_kit/crates/protocol/src/agent.rs`，是本次改动之前就存在的坏链。全仓其余 markdown 链接均已验证可解析。
+
+**指针：** `book/index_zh.md`（章节表 + 命名说明）、`AGENTS.md`（「Docs: sync at push time」一段）。
 
 ## 1. 2026-09-30 — 私钥可被读取，且工具打印出来的东西没有任何脱敏
 
@@ -206,7 +223,7 @@
 | 字段 | 值 |
 |------|-----|
 | **类型** | feature |
-| **相关** | `crates/tact/src/mcp/resource.rs`（`McpResourceTool`、`resource_tool_specs`、`render_resource_listing`、`render_resource_contents`）、`crates/tact/src/mcp/mod.rs`（`McpService::{list_resources, read_resource}`、`McpServerInspection::resources`）、`crates/tact/src/agent/{mod,tool_dispatch}.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-resources-design.md`；[第 8 章](./08_chapter_mcp.md) |
+| **相关** | `crates/tact/src/mcp/resource.rs`（`McpResourceTool`、`resource_tool_specs`、`render_resource_listing`、`render_resource_contents`）、`crates/tact/src/mcp/mod.rs`（`McpService::{list_resources, read_resource}`、`McpServerInspection::resources`）、`crates/tact/src/agent/{mod,tool_dispatch}.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-resources-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
 
 **现象 / 动机：** Tact 只接入了 MCP 的一种原语——Tools。Resources（server 以 URI 寻址的只读内容）无处可去，而这个缺口是关键路径上的：Basic Memory 的 `instructions` 写着「read the `memory://ai_assistant_guide` resource」，所以 Tact 一旦开始投递这些 instructions，也就等于开始告诉模型一件它取不到的东西。死路比它取代的沉默更糟，因为模型现在知道自己缺了什么。
 
@@ -223,7 +240,7 @@
 | 字段 | 值 |
 |------|-----|
 | **类型** | optimization |
-| **相关** | `crates/tact/src/mcp/mod.rs`（`McpEnvVar`、`resolve_env_vars`、`McpProjectConfig::env_vars` / `tool_timeout_sec`、`McpServerPolicy::tool_timeout`、`McpClient::{connect, call_tool}`、`unmodelled_keys`）；spec `docs/superpowers/specs/2026-09-30-mcp-env-vars-and-tool-timeout-design.md`；[第 8 章](./08_chapter_mcp.md) |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpEnvVar`、`resolve_env_vars`、`McpProjectConfig::env_vars` / `tool_timeout_sec`、`McpServerPolicy::tool_timeout`、`McpClient::{connect, call_tool}`、`unmodelled_keys`）；spec `docs/superpowers/specs/2026-09-30-mcp-env-vars-and-tool-timeout-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
 
 **现象 / 动机：** 有两个 Codex 条目字段此前只是被解析并上报，而它们各自都有实际代价。`tool_timeout_sec` 不存在，于是所有 server 的每次 `tools/call` 都套用同一个固定 600 秒上限——一个本该快速失败的工具无法这样要求。`env_vars` 不存在，于是 server 的凭据只能通过 `env` 以字面量写进 `.mcp.json`，既把密钥留在磁盘上，也让这个文件无法分享。
 
@@ -240,7 +257,7 @@
 | 字段 | 值 |
 |------|-----|
 | **类型** | feature |
-| **相关** | `crates/protocol/src/agent.rs`（`UserCommand::{HooksList, HooksTrust, HooksForget}`）、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/hooks.rs`、`crates/agent_tui_kit/src/{bridge,i18n}.rs`、`crates/tui/src/widgets/state/mod.rs`；spec `docs/superpowers/specs/2026-09-30-tui-hooks-command-design.md`；[第 9 章](./09_chapter_hook.md) |
+| **相关** | `crates/protocol/src/agent.rs`（`UserCommand::{HooksList, HooksTrust, HooksForget}`）、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/hooks.rs`、`crates/agent_tui_kit/src/{bridge,i18n}.rs`、`crates/tui/src/widgets/state/mod.rs`；spec `docs/superpowers/specs/2026-09-30-tui-hooks-command-design.md`；[第 9 章](./09_chapter_hook_zh.md) |
 
 **现象 / 动机：** hook 审核此前只有 CLI。TUI 只会提示 `1 hook needs review and was not run`，然后让用户退出、执行 `tact-ui hooks trust --all`、再开一个新会话——恰好是在用户最在意的那个时刻。`/mcp` 早就有了应用内审核入口，`/hooks` 没有，于是唯一展示该提示的界面，恰恰是唯一无法对它采取行动的界面。
 
@@ -257,7 +274,7 @@
 | 字段 | 值 |
 |------|-----|
 | **类型** | feature |
-| **相关** | `crates/tact/src/mcp/mod.rs`（`McpService::instructions`、`RealMcpService`、`McpClient::instructions`、`cap_instructions`、`MCP_INSTRUCTIONS_MAX_CHARS`、`MCPToolRouter::instructions_block`、`McpServerInspection::instructions_chars`）、`crates/tact/src/prompt/mod.rs` 与两个模板、`crates/tact/src/agent/mod.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-server-instructions-design.md`；[第 8 章](./08_chapter_mcp.md) |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpService::instructions`、`RealMcpService`、`McpClient::instructions`、`cap_instructions`、`MCP_INSTRUCTIONS_MAX_CHARS`、`MCPToolRouter::instructions_block`、`McpServerInspection::instructions_chars`）、`crates/tact/src/prompt/mod.rs` 与两个模板、`crates/tact/src/agent/mod.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-server-instructions-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
 
 **现象 / 动机：** Tact 只读走了 server 的工具，握手返回的其余部分全部丢弃——`InitializeResult.instructions` 从未被读过。而这个字段是刚连上的模型**唯一免费**拿到的东西：resources、prompt 模板、冗长的工具描述都要模型主动去取，而一个不知道这个 server 干什么用的模型没有理由去取。Basic Memory 在自己的源码里就是这么写的，并且把全部引导语放在这里（“会话开始时调用 `recent_activity`……主动提议保存第一条笔记，但绝不在未获同意时写入”）。接到 Tact 上实测是 21 个工具、0 条引导，agent 一直等到被问才动；同一个 server 在 Codex 下行为正常。
 
@@ -662,7 +679,6 @@
 
 ---
 
-
 ## 1. 2026-09-25 — 后台任务的 id 就钉在启动它的那张卡片上
 
 | 字段 | 值 |
@@ -965,7 +981,6 @@
 
 ---
 
-
 ## 1. 2026-09-14 — 压缩日志：单位修正，且每次尝试都打印它的请求信封
 
 | Field | Value |
@@ -982,7 +997,6 @@
 **指针：** `crates/tact/src/agent/mod.rs`（`think_block_bytes`、`[compact summary …]` / `[compact continue …]` 消息）；[第 5 章](./05_chapter_compact_zh.md)。
 
 ---
-
 
 ## 1. 2026-09-14 — 空闲状态栏把聚焦面板还回它自己的槽位
 
@@ -1001,7 +1015,6 @@
 
 ---
 
-
 ## 1. 2026-09-14 — 步骤标签去掉分母
 
 | Field | Value |
@@ -1019,7 +1032,6 @@
 
 ---
 
-
 ## 1. 2026-09-14 — 符号链接的 skill 能加载了，Assembled prompt 也显示它携带的 MCP skills
 
 | Field | Value |
@@ -1036,7 +1048,6 @@
 **指针：** `crates/tact/src/skill/mod.rs`（`load_skills_from_dir_with_namespace`、`load_direct_plugin_skills`、`symlinked_skill_dir_is_loaded`、`symlinked_plugin_skill_dir_is_loaded`）；`crates/tui/src/system_prompt.rs`（`SKILL_PATH`、`extract_mcp_skill_paths`、`assemble_prompt_view` 及其 4 个测试）；`crates/tui/src/handlers/select.rs`（`SelectKind::ViewSystemPrompt`）；[Ch 2](./02_chapter_skill_zh.md) §2（发现根目录）· §6（系统提示词集成）；Ch 26 2026-09-10（skill 根收敛）。
 
 ---
-
 
 ## 1. 2026-09-14 — 实时耗时搬到底栏第 1 行，状态栏的步骤进度条一并删除
 
@@ -1110,7 +1121,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — 已完成工具的输出：卡片收起为两行，无卡片的结果变得可打开
 
 | Field | Value |
@@ -1132,7 +1142,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — `[agent]` 拒绝未知键：写错位置的 thinking 设置会报错，而不是凭空消失
 
 | Field | Value |
@@ -1151,7 +1160,6 @@
 ---
 
 ---
-
 
 ## 1. 2026-09-13 — 移除 `[llm].max_tokens`，残留该键将直接报错
 
@@ -1172,7 +1180,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — 底栏 `out` 显示请求参数本身，而不是推算出来的 reasoning 份额
 
 | Field | Value |
@@ -1191,7 +1198,6 @@
 ---
 
 ---
-
 
 ## 1. 2026-09-13 — 显式配置压过内置模型→窗口映射，subagent 段不再被静默丢弃
 
@@ -1215,7 +1221,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — 底栏 `out` 额度不再在会话首个 prompt 后跳变
 
 | Field | Value |
@@ -1235,7 +1240,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — `[agent].max_tokens` 成为输出预算链上的真实一级
 
 | Field | Value |
@@ -1254,7 +1258,6 @@
 ---
 
 ---
-
 
 ## 1. 2026-09-13 — 压缩摘要改用 effort 桶 + 分档阶梯，取代固定预留
 
@@ -1577,7 +1580,6 @@
 
 ---
 
-
 ## 1. 2026-09-11 — `/mcp list` 在 TUI 内提供实时的 MCP server 视图，且不重连
 
 | Field | Value |
@@ -1597,7 +1599,6 @@
 **Pointers：** `crates/protocol/src/agent.rs`（`UserCommand::McpList`）；`crates/tact/src/mcp/mod.rs`（`transport_kind`、`McpLiveStatus`、`McpServerView`、`describe_servers`、`describe_resolved`）；`crates/tact-ui/src/mcp_cli.rs`（`render_live_listing`）；`crates/tact-ui/src/driver.rs`（`UserCommand::McpList` 分支）；`crates/tui/src/handlers/mcp.rs`；`crates/agent_tui_kit/src/bridge.rs`（`TryFrom<UserCommand>`）。测试：`mcp::tests::{describe_resolved_classifies_against_the_live_connection_set,describe_resolved_lists_a_connected_oauth_server_as_connected}`；`mcp_cli::tests::{live_listing_has_a_row_per_server_with_its_status,live_listing_explains_how_to_configure_when_empty,live_listing_escapes_pipes_so_a_source_path_cannot_break_the_table}`；`driver::tests::mcp_list_emits_the_live_listing_without_reconnecting`；`handlers::mcp::tests::{mcp_list_queues_a_listing_request_when_idle,mcp_list_flashes_busy_instead_of_queueing_while_a_task_runs}`。
 
 ---
-
 
 ## 1. 2026-09-11 — Mermaid 弹窗显示渲染后的图，无法渲染时也会说明原因
 
@@ -1620,7 +1621,6 @@
 
 ---
 
-
 ## 1. 2026-09-11 — 压缩不再产生孤立的 `role: tool` 消息
 
 | Field | Value |
@@ -1640,7 +1640,6 @@
 
 ---
 
-
 ## 1. 2026-09-11 — `deepseek-v4-*` 实验变体使用 1M 窗口，不再落到 200K 默认值
 
 | Field | Value |
@@ -1657,7 +1656,6 @@
 **指针：** `crates/tact/src/config/resolve.rs`（`model_context_window_for_model`）。测试：`config::resolve::tests::resolve_model_context_window_maps_deepseek_v4_variants`。
 
 ---
-
 
 ## 1. 2026-09-11 — `/mcp auth` 可容忍杂散回环请求，且 token 交换有超时上限
 
@@ -1726,7 +1724,6 @@
 **指针：** `crates/tact-ui/src/driver.rs`（`stream_auth_progress`、`UserCommand::McpAuth`）。测试：`crates/tact-ui/src/driver.rs` 单元测试 `driver::tests::{auth_progress_reaches_the_user_before_the_flow_finishes,auth_progress_drains_lines_sent_at_completion}`；端到端回归 `crates/tact-ui/tests/mcp_auth_url_progress.rs`——用 `wiremock` 起一个模拟 OAuth provider 驱动 `handle_user_command`，在旧的缓冲实现下会失败。相关：Ch 8 §Step 1c（本次改动恢复的正是该处已记录的 `/mcp auth` 行为）。
 
 ---
-
 
 ## 1. 2026-09-11 — `mcp.oauth_client_name`：OAuth 注册身份，默认 `Codex`
 
@@ -1842,7 +1839,6 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 **指针：** `crates/tact/src/mcp/remote.rs`（`McpRemoteConfig`、`McpAuthConfig`、`serve_remote`、`resolve_remote_auth`、`stored_access_token_at`、`oauth_parameters`、`is_auth_required_error`、`authorize_remote_server`、`FileCredentialStore`、`await_oauth_callback`、`percent_decode`）；`crates/tact/src/mcp/mod.rs`（`McpTransportConfig`、`McpTransportKind`、`ConfiguredServer`、`to_transport`、`resolve_servers`、`ResolvedServers::configured`、`load_mcp_router_with_report`、`remote_config_for`、`authorize_server`、`McpLoadReport::{configured,pending_auth,notice_lines}`）；`crates/tact-ui/src/mcp_cli.rs`（`run_mcp_cli`、`render_report`、`status_for`）；`crates/tact/src/config/cli.rs`（`McpSubcommand`）；`crates/tact/src/agent/mod.rs`（`rebuild_cached_tool_specs`、`reload_mcp_router`）；`crates/tact/src/consts.rs`（`home_mcp_oauth_dir`）。测试：`remote_config_parses_url_headers_and_oauth`、`invalid_header_names_are_dropped_from_the_transport_config`、`oauth_token_becomes_the_bearer_auth_header`、`file_credential_store_round_trips_and_clears`、`callback_listener_{extracts_code_and_state,surfaces_denied_authorization,times_out_without_a_request}`、`commandless_entries_are_skipped_not_fatal_while_remote_entries_connect`、`remote_entry_with_oauth_needs_authorization_without_credentials`、`load_report_renders_pending_authorization`、`auth_required_detection_ignores_unrelated_errors`、`undeclared_auth_still_uses_a_stored_credential`、`oauth_parameters_default_when_auth_is_not_declared`、`mcp_cli::tests::{empty_report_explains_how_to_configure,renders_each_server_with_its_status,skipped_servers_are_listed_even_though_they_are_not_configured,a_server_with_no_recorded_outcome_is_not_reported_as_healthy}`。公网远程 server 的实网（可选）端到端检查：`crates/tact/tests/live_remote_mcp.rs`（`cargo test -p tact --test live_remote_mcp -- --ignored --nocapture`），覆盖 DeepWiki + Cloudflare Docs 连接并暴露 `mcp__<key>__*` 工具、Linear 的 401 被升级为 `pending_auth`、以及声明与不声明 `auth` 两种情况下都能产出授权 URL（对真实 provider 验证发现、动态注册与 PKCE S256）。文档：Ch 8 §3.2/Step 1b/1c/FAQ/缺口（双语）、Ch 21 插件段（双语）。
 
 ---
-
 
 ## 1. 2026-09-10 — `tracing-subscriber` 的 `default-features = false` 终于生效
 
@@ -2910,7 +2906,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | Thinking 卡片把总行数显示了两遍——顶部标题（`🧠 Thinking (N lines)`）与底部栏（`↕ 可见/N 行 …`）各一次；`bash` 命令输出卡片同样重复（顶部 `Live output (N lines)` / `Command output (N lines)`，底部 `preview/total 行` 提示）；`read_file` 卡片也是如此（顶部 `Read <路径> (N lines)`）。两者同时可见时，顶部计数与底部栏数字冗余。 |
 | 决策 | 卡片顶部标题不再携带行数：`🧠 Thinking`（active 与 completed 一致）、`Live output`（运行中 bash）、`Command output`（已完成 bash）、`Read <路径>`（read_file）。底部栏成为唯一计数来源（Thinking 的 `↕ visible/total 行`；命令输出溢出预览时的 `preview/total 行`）。删除不再使用的 `thinking_card_title_pl` 字段；`tool_live_output_title_tmpl` 去掉 `{}` 占位符并更名为 `tool_live_output_title`。 |
 | 改后行为 | Thinking 卡片显示 `🧠 Thinking` / `🧠 思考中`；运行中的 bash 卡片显示 `Live output` / `实时输出`；完成的命令卡片显示 `Command output`；Read 卡片显示 `Read <路径>`。所有行数都在卡片底部栏。Popup 标题不变（本就用命令文本或裸 `Command output`）。 |
-| 指针 | `crates/tui/src/i18n.rs`、`crates/tui/src/render/cells/thinking.rs`、`crates/tui/src/widgets/tool_widget.rs`（`detail_card_title`）、`crates/tui/src/render/cells/tool.rs`（`card_bottom_text`）；测试 `live_output_total_excludes_command_prefix_but_popup_keeps_it`、`log_tool_card_renders_when_scrolled_into_placeholder_rows`；[Ch 23](./23_chapter_tui.md) §render pipeline。 |
+| 指针 | `crates/tui/src/i18n.rs`、`crates/tui/src/render/cells/thinking.rs`、`crates/tui/src/widgets/tool_widget.rs`（`detail_card_title`）、`crates/tui/src/render/cells/tool.rs`（`card_bottom_text`）；测试 `live_output_total_excludes_command_prefix_but_popup_keeps_it`、`log_tool_card_renders_when_scrolled_into_placeholder_rows`；[Ch 23](./23_chapter_tui_zh.md) §render pipeline。 |
 
 ## 2. 2026-08-15 — Log 按词边界折行；文字选择交互对称化
 
@@ -3203,7 +3199,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | DeepSeek/Kimi 用户会得到明确的配置错误，不会进入未经验证的 Responses 路径。OpenAI 与明确配置的自定义 OpenAI-compatible provider 保留现有 Responses 路由。 |
 | 指针 | `crates/tact/src/config/resolve.rs`；provider 构造：`crates/tact_llm/src/provider.rs`；相关设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；压缩行为：第 5 章。 |
 
-
 ## 2. 2026-08-08 — OpenAI Responses 保留未知 wire item
 
 | 字段 | 值 |
@@ -3213,7 +3208,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 决策 | 在 typed normalization 之前先解析 raw Responses envelope；已知 item 正常转换，未知 input/output item 作为 raw JSON 保留。增加只由 Responses adapter 消费的 `ResponsesRequestOptions`，并提供保守的 provider capability metadata；只有出现可复现的 SDK 阻塞时才 fork `async-openai`。 |
 | 变更后行为 | 无害的未知流事件不再中断响应。未知 output item 可以跨普通/流式 turn、session state 序列化和下一次 Responses 请求保留。Responses 专用请求字段不会出现在 Chat Completions 或 Anthropic payload 中。 |
 | 指针 | `crates/tact_llm/src/openai/responses/wire.rs`、`request_options.rs`、`stream.rs`、`provider.rs`；设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；计划：`docs/superpowers/plans/2026-08-08-responses-compatibility-foundation.md`；压缩：第 5 章与 `docs/compaction.md`。 |
-
 
 ## 2. 2026-08-08 — 主区域 Markdown 将完整 Mermaid fence 渲染为终端图
 
@@ -3228,7 +3222,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-
 ## 2. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
 
 | 字段 | 值 |
@@ -3240,8 +3233,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | OpenAI Responses 的 thinking block 请求并显示详细 reasoning summary，不再使用自动摘要级别。 |
 | 指针 | 请求转换与回归断言：`crates/tact_llm/src/openai/responses/convert.rs`；相关 Responses 适配器：`crates/tact_llm/src/openai/responses/`。 |
 
-
-
 | 字段 | 值 |
 |------|-----|
 | 类型 | `bugfix` |
@@ -3250,7 +3241,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 决策 | 缓存换行时预先扣除该消息实际缩进；流式回复使用相同的回复缩进。`TextCell` 的选区换行直接使用扣除缩进后的可用宽度。 |
 | 变更后行为 | 主区域满行的普通、嵌套和流式文本会在实际可绘制宽度内换行，右侧字符不再丢失。 |
 | 指针 | 日志布局与换行缓存见 `render/log.rs`；文本绘制见 `render/cells/text.rs`；回归测试 `log_full_width_nested_line_wraps_before_indentation_clip`。 |
-
 
 | Field | Value |
 |-------|-------|

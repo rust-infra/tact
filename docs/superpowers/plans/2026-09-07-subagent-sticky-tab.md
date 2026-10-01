@@ -175,8 +175,8 @@ pub async fn emit_subagents_changed(
 
 ## T6 文档同步（双语）
 
-- `book/23_chapter_tui.md` / `_zh.md`：sticky 相关小节与代码图表格。
-- `book/12_chapter_subagent.md` / `_zh.md`：§6 或 §11 增一行 sticky 总览指针。
+- `book/23_chapter_tui_zh.md` / `_zh.md`：sticky 相关小节与代码图表格。
+- `book/12_chapter_subagent_zh.md` / `_zh.md`：§6 或 §11 增一行 sticky 总览指针。
 - `book/26_chapter_issue*.md`：newest-first `feat` 条目（date 2026-09-07，链接 spec/plan、
   `subagent.rs`、Ch 23/12；动机为后台 fan-out 总览缺失；明确不推翻 98a133f）。
 

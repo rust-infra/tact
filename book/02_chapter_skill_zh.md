@@ -1,7 +1,5 @@
 # Skill 注册表
 
-> 语言：[中文](./02_chapter_skill_zh.md) · [English](./02_chapter_skill.md)
-
 本章说明 Tact 如何从磁盘加载**自定义指令文件**（skills）：扫描 `SKILL.md`、在系统提示词中暴露摘要、通过 `load_skill` 工具按需加载全文，以及从 TUI 用斜杠命令调用。
 
 Skills 与 [持久化记忆](./03_chapter_memory_zh.md) 相关但不同——skills 是作者编写的 playbook；memories 是对话中学到的事实。

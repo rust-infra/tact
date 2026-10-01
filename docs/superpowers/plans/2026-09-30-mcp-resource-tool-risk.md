@@ -17,5 +17,5 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
 4. **Tests**
    - `cargo test -p tact --lib mcp::` , `--lib config::` , `--lib agent::tool_dispatch`.
 5. **Docs sync**
-   - `book/08_chapter_mcp.md` + `_zh.md`: the §10 row and the resource section.
-   - `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+   - `book/08_chapter_mcp_zh.md`: the §10 row and the resource section.
+   - `book/26_chapter_issue_zh.md`: newest-first entry.

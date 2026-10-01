@@ -26,6 +26,6 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
    - The in-process rmcp fixture (`EchoServer`) gains a mutable tool list and a `call_tool` arm that
      adds a tool and calls `peer.notify_tool_list_changed()`; the test polls with a deadline.
 5. **Docs sync**
-   - `book/08_chapter_mcp.md` + `_zh.md`: Step 4 names the refresh point, Step 10 gains the handling,
+   - `book/08_chapter_mcp_zh.md`: Step 4 names the refresh point, Step 10 gains the handling,
      and the §10 gap row is replaced.
-   - `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+   - `book/26_chapter_issue_zh.md`: newest-first entry.

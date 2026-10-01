@@ -412,7 +412,7 @@ people work around. It is global and persisted, never per-call.
 
 | File | Change |
 |---|---|
-| `book/10_chapter_permission.md` + `_zh.md` | New sections: the `Read` short-circuit caveat, the two tiers, `sensitive_paths` / `redaction` config, the `bash` tilde hole (and that the old comment was wrong); rows added to §11 Current Gaps |
-| `book/26_chapter_issue.md` + `_zh.md` | Newest-first entry: date, symptom (`~/.ssh` readable, token printed from `~/.claude/settings.json`), decision, observable behaviour, pointers |
+| `book/10_chapter_permission_zh.md` | New sections: the `Read` short-circuit caveat, the two tiers, `sensitive_paths` / `redaction` config, the `bash` tilde hole (and that the old comment was wrong); rows added to §11 Current Gaps |
+| `book/26_chapter_issue_zh.md` | Newest-first entry: date, symptom (`~/.ssh` readable, token printed from `~/.claude/settings.json`), decision, observable behaviour, pointers |
 | `ARCHITECTURE.md` §3 | The permission-system diagram gains the guard as a pre-step |
 | `docs/tool_rendering.md` | Only if the refusal's rendering differs from a normal denial (it should not — `PreparedState::Resolved`) |

@@ -3,7 +3,7 @@
 Date: 2026-09-30
 Status: approved for implementation
 
-Closes the gap recorded in [Ch 8 §10](../../../book/08_chapter_mcp.md): *"No `tools/list_changed`
+Closes the gap recorded in [Ch 8 §10](../../../book/08_chapter_mcp_zh.md): *"No `tools/list_changed`
 handling — Tool list fixed at connect; no `ClientHandler` or loop refresh."*
 
 ## 1. Problem
@@ -102,6 +102,6 @@ was asked and failed gets its own line naming the reason.
 
 ## 6. Docs sync
 
-- `book/08_chapter_mcp.md` + `_zh.md`: Step 10 (Notifications) gains the handling, Step 4 the refresh
+- `book/08_chapter_mcp_zh.md`: Step 10 (Notifications) gains the handling, Step 4 the refresh
   point, and the §10 gap row is replaced.
-- `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+- `book/26_chapter_issue_zh.md`: newest-first entry.

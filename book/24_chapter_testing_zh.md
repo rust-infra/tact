@@ -1,7 +1,5 @@
 # 测试策略（Testing Strategy）
 
-> 语言：[中文](./24_chapter_testing_zh.md) · [English](./24_chapter_testing.md)
-
 Tact 采用分层集成测试：**agent 运行时**（`tact`）、**headless UI 驱动**（`tact-ui`）与 **TUI 渲染**（`tui`）。全部在无真实 LLM 与终端的情况下运行。
 
 ---

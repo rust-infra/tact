@@ -1,7 +1,5 @@
 # Tact 中的系统提示词
 
-> 语言：[中文](./04_chapter_prompt_zh.md) · [English](./04_chapter_prompt.md)
-
 本章说明 Tact 如何构建**系统提示词**——在任意用户消息之前交给 LLM 的初始指令——以及其结构如何在每轮仍反映最新记忆与项目上下文的同时，保持对缓存友好。
 
 ---
@@ -65,7 +63,6 @@ crates/tact/src/prompt/system_prompt_template.md
 ...
 ```
 
-
 | 节 | 来源 | 稳定性 |
 |----|------|--------|
 | `role` | 硬编码 agent 身份 | 静态 |
@@ -75,7 +72,6 @@ crates/tact/src/prompt/system_prompt_template.md
 | `additional` | `AGENTS.md`（默认；在 `# Additional context` 下） | 每会话静态 |
 | `memory` | `MemoryManager` | 动态 |
 | `dynamic_context` | 目录快照 / 近期文件 | 动态 |
-
 
 `=== DYNAMIC_BOUNDARY ===` **之上**的节很少变化。**之下**的节（`memory`、`dynamic_context`）每轮可能变化。
 
@@ -132,11 +128,9 @@ let prompt = SystemPrompt::builder()
 instruction_sources = ["agents_md"]
 ```
 
-
 | Key | 文件 |
 |-----|------|
 | `agents_md` | `<workdir>/AGENTS.md`、可选 `<cwd>/AGENTS.md` |
-
 
 ---
 
@@ -144,12 +138,10 @@ instruction_sources = ["agents_md"]
 
 `AgentSystemPrompt` 有两种变体：
 
-
 | 变体 | 行为 | 用例 |
 |------|------|------|
 | `Static` | 每次返回相同字符串 | 测试、演示或完全手动控制 |
 | `Dynamic` | 每个任务开始时重新渲染模板 | 正常运行；保持上下文与记忆新鲜 |
-
 
 正常 Tact 用法（`tact-ui` / headless）中，agent 以 `Dynamic` 模式启动。
 

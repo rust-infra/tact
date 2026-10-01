@@ -1,7 +1,5 @@
 # 配置（Configuration）
 
-> 语言：[中文](./21_chapter_config_zh.md) · [English](./21_chapter_config.md)
-
 本章说明 Tact 在 agent 工作开始前如何加载、合并并安装运行时设置。配置是**引导层**，负责把 LLM 凭证、agent 限制、UI 主题、工具密钥和权限模式接入进程全局的 `ResolvedConfig`。
 
 实现：`crates/tact/src/config/`（`mod.rs`、`cli.rs`、`load.rs`、`resolve.rs`、`types.rs`）。
@@ -13,7 +11,7 @@
 | 关注点 | Resolved 字段 | 主要消费者 |
 |--------|---------------|------------|
 | LLM 凭证 | `ResolvedConfig::llm` → `tact_llm::init_provider` | [Ch 22 LLM](./22_chapter_llm_zh.md)、`Agent::stream_message` |
-| Agent 限制 | `agent.*` | [Ch 5 压缩](./05_chapter_compact_zh.md)、[Ch 4 Prompt](./04_chapter_prompt.md)、[Ch 17 通知](./17_chapter_notify.md) |
+| Agent 限制 | `agent.*` | [Ch 5 压缩](./05_chapter_compact_zh.md)、[Ch 4 Prompt](./04_chapter_prompt_zh.md)、[Ch 17 通知](./17_chapter_notify_zh.md) |
 | 权限模式字符串 | `permission_mode: Option<String>` | 仅 headless — 见 [§6 缺口](#6-当前缺口) |
 | UI 主题 | `ui.theme` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
 | 调试 | `tokio_console` | `tact-ui` 的 `main()` |
@@ -454,7 +452,7 @@ let theme = config::settings().ui.theme.clone();
 
 若未调用 `init()`，`settings()` 会 panic — 对错误接线的二进制有意 fail-fast。
 
-Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_window`、`max_tokens` 和 `thinking_budget`（[Ch 18](./18_chapter_agent_loop.md)）。
+Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_window`、`max_tokens` 和 `thinking_budget`（[Ch 18](./18_chapter_agent_loop_zh.md)）。
 
 **破坏性重命名：** `agent.context_limit_chars` / `--context-limit-chars` → `agent.model_context_window` / `--model-context-window`（tokens，默认 200_000）。旧 TOML 键**无静默别名** — 请更新现有配置。
 
@@ -488,6 +486,6 @@ Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_
 ## 相关文档
 
 - [LLM Providers](./22_chapter_llm_zh.md) — `install()` 初始化内容
-- [Agent Main Loop](./18_chapter_agent_loop.md) — agent 设置的运行时消费者
-- [Permission Model](./10_chapter_permission.md) — 模式字符串 vs TUI 接线
+- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — agent 设置的运行时消费者
+- [Permission Model](./10_chapter_permission_zh.md) — 模式字符串 vs TUI 接线
 - [TUI](./23_chapter_tui_zh.md) — 主题与 channel 引导

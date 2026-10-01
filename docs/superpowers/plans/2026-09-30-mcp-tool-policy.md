@@ -34,9 +34,9 @@ invocation at a time (see AGENTS.md — parallel runs contend on `target/`).
    - `cargo test -p tact --lib mcp::` , then `--lib permission::`, then `--lib compact::`.
    - `cargo test -p tact-ui --lib mcp_cli::` for the new `mcp list` section.
 7. **Docs sync**
-   - `book/08_chapter_mcp.md` + `_zh.md`: Step 1 field table, a new "Per-server tool policy"
+   - `book/08_chapter_mcp_zh.md`: Step 1 field table, a new "Per-server tool policy"
      section, and the Current Gaps row for `enabled_tools` / `omit_tools_from` /
      `startup_timeout_sec`.
    - `config.example.toml` — an `[mcp]` comment block pointing at the new fields.
-   - `book/26_chapter_issue.md` + `_zh.md` — one newest-first entry (date, type, symptom,
+   - `book/26_chapter_issue_zh.md` — one newest-first entry (date, type, symptom,
      decision, observable behaviour, pointers).

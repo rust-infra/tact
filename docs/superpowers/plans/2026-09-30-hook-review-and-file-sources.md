@@ -21,4 +21,4 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
 5. **TUI** (`/hooks`, `/hooks trust …`)
    - Registered like `/mcp list` / `/mcp auth`, idle-only, output through the same log helper.
 6. **Tests**: `cargo test -p tact --lib plugin::hooks::`, `-p tact-ui --lib hooks_cli::`, `-p tui --lib handlers::`.
-7. **Docs**: `book/09_chapter_hook.md` + `_zh.md` (sources table, review section, exit-2 table, gaps), `config.example.toml` only if a config key appears (it does not), `book/26_chapter_issue.md` + `_zh.md` entry.
+7. **Docs**: `book/09_chapter_hook_zh.md` (sources table, review section, exit-2 table, gaps), `config.example.toml` only if a config key appears (it does not), `book/26_chapter_issue_zh.md` entry.

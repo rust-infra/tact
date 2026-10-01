@@ -2,7 +2,7 @@
 
 > Date: 2026-07-24  
 > Status: implemented  
-> Related: `book/19_chapter_persistent_tasks.md`, `book/23_chapter_tui.md`, `book/25_chapter_protocol.md`  
+> Related: `book/19_chapter_persistent_tasks_zh.md`, `book/23_chapter_tui_zh.md`, `book/25_chapter_protocol_zh.md`  
 > Plan: `docs/superpowers/plans/2026-07-24-task-progress-panel.md`
 
 ## Goal

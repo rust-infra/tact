@@ -1,7 +1,5 @@
 # 团队协调（Team Coordination）
 
-> 语言：[中文](./14_chapter_team_zh.md) · [English](./14_chapter_team.md)
-
 本章说明 Tact 的 **多 agent 团队原语**：具名 teammate 的持久 roster，以及支持点对点消息、广播与结构化协议请求（plan 审批、shutdown）的 SQLite backed inbox 系统。实现位于 `crates/tact/src/team.rs`，工具包装在 `crates/tact/src/tool/team.rs`。
 
 重要前提：目前是 **协调数据层**，非编排引擎。「Spawn」teammate 仅创建 roster 记录 —— 不会启动第二个 agent 进程。见 [当前缺口](#8-当前缺口)。

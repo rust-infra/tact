@@ -22,6 +22,6 @@ Spec: [2026-09-30-tui-hooks-command-design.md](../specs/2026-09-30-tui-hooks-com
      builtin count now derive it from `App::palette_commands()`.
    - `cargo test -p tact-ui --lib driver::tests::hooks` (2).
 6. **Docs sync**
-   - `book/09_chapter_hook.md` + `_zh.md`: the Reviewing bullet names the TUI spelling and the idle
+   - `book/09_chapter_hook_zh.md`: the Reviewing bullet names the TUI spelling and the idle
      gate; the code map gains the handler and driver rows.
-   - `book/26_chapter_issue.md` + `_zh.md`: newest-first entry.
+   - `book/26_chapter_issue_zh.md`: newest-first entry.

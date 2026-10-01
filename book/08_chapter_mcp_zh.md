@@ -1,7 +1,5 @@
 # MCP 协议与 Agent 集成
 
-> 语言：[中文](./08_chapter_mcp_zh.md) · [English](./08_chapter_mcp.md)
-
 本教程从 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 的第一性原理讲到 Tact 中的具体实现——agent 如何端到端连接外部工具。
 
 ---

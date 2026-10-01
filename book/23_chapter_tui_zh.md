@@ -1,7 +1,5 @@
 # 终端 UI（TUI）
 
-> 语言：[中文](./23_chapter_tui_zh.md) · [English](./23_chapter_tui.md)
-
 本章描述 `tui` crate：`tact-ui` 如何通过 async channel 接线 agent 循环，以及**渲染层**如何在每个 tick 将 `App` 状态转为 ratatui 帧。
 
 更多实现细节（扩展配方、性能分析）见 [docs/tui_rendering.md](../docs/tui_rendering.md)。
@@ -81,7 +79,7 @@ pub enum UserCommand {
 | 命令 | 来源 | `tui.rs` 中 handler |
 |------|------|---------------------|
 | **`SubmitTask`** | Insert 模式 Enter、slash 命令、`@` 文件选择器提交 —— **Planning/Executing 期间 Enter 改为排队**（Codex 风格"当前任务结束后提交"，见 §6.6） | 重置 `tool_use_counter`、清除 `cancel_flag`、`build_user_message`、`agent_loop`；仅 loop 成功且未取消时发出 `TaskComplete` |
-| **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop.md)） |
+| **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop_zh.md)） |
 | **`Compact`** | `/compact`（仅 idle 时） | `agent.compact_history(None)` → Responses provider 走原生 `/responses/compact`，其余 provider 走本地摘要（[Ch 5](./05_chapter_compact_zh.md)） |
 | **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 25](./25_chapter_protocol_zh.md)） |
 | **`QueryBackground`** | `/background` 或 `/background <id>` | `tool_context.background_manager.check(id)` → `MdInfo` 输出任务列表 / 单个任务 JSON（[Ch 13](./13_chapter_background_zh.md)） |
@@ -140,9 +138,9 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 |--------|---------|
 | `StreamChunk` | 追加到活跃 assistant 文本 cell |
 | `ThinkingChunk` | Thinking card / preview |
-| `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | 工具时间线（[Ch 11](./11_chapter_task.md)） |
+| `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | 工具时间线（[Ch 11](./11_chapter_task_zh.md)） |
 | `ToolProgress` | 更新匹配 active tool 的 1→3 行 live tail |
-| `RequestSelect` | 权限 popup（[Ch 10](./10_chapter_permission.md)） |
+| `RequestSelect` | 权限 popup（[Ch 10](./10_chapter_permission_zh.md)） |
 | `TokenUsage` | 状态栏计数 |
 | `TurnStats` | 状态栏回合计数（当前任务的 LLM 回合；cap 携带但不渲染） |
 | `ModelInfo` | 模型名 / 限制显示 |
@@ -166,7 +164,7 @@ match agent.agent_loop(Some(task_message)).await {
 }
 ```
 
-见 [Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration)。
+见 [Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)。
 
 ---
 
@@ -706,7 +704,7 @@ sequenceDiagram
 | `/skill-reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
 | `/plugin …` | 排队安装、卸载、更新、列出、重载及 marketplace 操作；成功的 install/uninstall/update/reload 刷新共享 skills。`/plugin list` 渲染功能表（技能 / 命令 / 代理 / 钩子 / MCP） |
 
-输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill.md)。与模型 mid-turn 调用 `load_skill` 分离。
+输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill_zh.md)。与模型 mid-turn 调用 `load_skill` 分离。
 
 `theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；normal 模式 `Ctrl+T` 循环。
 
@@ -718,12 +716,12 @@ sequenceDiagram
 
 | 依赖 | 用途 |
 |------|------|
-| `get_skill_registry` | Skills（[Ch 2](./02_chapter_skill.md)） |
+| `get_skill_registry` | Skills（[Ch 2](./02_chapter_skill_zh.md)） |
 | `StoreRoot` + managers | Tasks、background、team、worktree |
-| `memory_manager` | Memory（[Ch 3](./03_chapter_memory.md)） |
-| `load_mcp_router` | MCP tools（[Ch 8](./08_chapter_mcp.md)） |
+| `memory_manager` | Memory（[Ch 3](./03_chapter_memory_zh.md)） |
+| `load_mcp_router` | MCP tools（[Ch 8](./08_chapter_mcp_zh.md)） |
 | `PermissionManager::try_new(PermissionMode::Default)` | **硬编码** — 见缺口 |
-| `open_sqlite_session_store` | Session + 输入历史（[Ch 1](./01_chapter_store.md)） |
+| `open_sqlite_session_store` | Session + 输入历史（[Ch 1](./01_chapter_store_zh.md)） |
 
 输入历史经 `history_save_tx` → `append_input_history` 异步追加。
 
@@ -733,7 +731,7 @@ DeepSeek/Kimi 启动时后台 task 查询一次余额并经 account channel 发�
 
 ## 9. 通知与配置
 
-桌面通知在 `Agent::emit_update` 内对 `TaskComplete` 与 `StepFailed` 触发，当 `config::settings().agent.notifications_enabled` 为 true（[Ch 17](./17_chapter_notify.md)）。
+桌面通知在 `Agent::emit_update` 内对 `TaskComplete` 与 `StepFailed` 触发，当 `config::settings().agent.notifications_enabled` 为 true（[Ch 17](./17_chapter_notify_zh.md)）。
 
 TUI 本身不对流式事件直接调用 notification API。
 
@@ -770,7 +768,7 @@ TUI 本身不对流式事件直接调用 notification API。
 
 | 缺口 | 详情 |
 |------|------|
-| **交互模式忽略 `permission_mode`** | TUI 始终 `PermissionMode::Default`；TOML/CLI `-m` 仅影响 headless（[Ch 10](./10_chapter_permission.md)） |
+| **交互模式忽略 `permission_mode`** | TUI 始终 `PermissionMode::Default`；TOML/CLI `-m` 仅影响 headless（[Ch 10](./10_chapter_permission_zh.md)） |
 | **`TaskComplete` 文本启发式** | 用 context 最后一条消息，非严格最后 assistant turn |
 | **无 live config reload** | UI 可循环主题；LLM/provider 变更需重启 |
 | **单 agent 实例** | 每 session driver 一个 in-flight `agent_loop`；无多路复用任务 |
@@ -782,9 +780,9 @@ TUI 本身不对流式事件直接调用 notification API。
 
 ## 相关文档
 
-- [Agent Main Loop](./18_chapter_agent_loop.md) — TUI 驱动内容
+- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — TUI 驱动内容
 - [Configuration](./21_chapter_config_zh.md) — 主题与启动标志
 - [LLM Providers](./22_chapter_llm_zh.md) — 流式与余额 API
-- [Permission Model](./10_chapter_permission.md) — `RequestSelect` 流程
+- [Permission Model](./10_chapter_permission_zh.md) — `RequestSelect` 流程
 - [docs/tui_rendering.md](../docs/tui_rendering.md) — 扩展配方与性能分析
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — tool block 渲染管线

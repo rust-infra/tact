@@ -826,7 +826,7 @@ mod tests {
         for path in [
             "src/main.rs",
             "crates/tact/src/security/sensitive.rs",
-            "book/10_chapter_permission.md",
+            "book/10_chapter_permission_zh.md",
             "keyboard.rs",
             "notes.txt",
         ] {
