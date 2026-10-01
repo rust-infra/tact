@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::{UiResponse, UserCommand};
 
+use crate::widgets::state::app::config::theme_label;
 use crate::widgets::state::{App, InputMode, ModelTarget, SelectKind};
 
 const THINKING_BUDGETS: [usize; 5] = [0, 8_000, 32_000, 64_000, 128_000];
@@ -209,6 +210,21 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         .send(UserCommand::SetPermissionMode(mode_str.to_string()));
                     app.input_mode = InputMode::Normal;
                 }
+                SelectKind::ThemePick => {
+                    // The options are `ThemeName::all()` in order, so the index
+                    // is the theme; the label carries a " *" marker for the
+                    // current one, which is why the name is not parsed back out
+                    // of `chosen`.
+                    let name = crate::theme::ThemeName::all()
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(app.theme.name);
+                    app.apply_theme(name);
+                    open_theme_persist_step(app, name, theme_config_available());
+                }
+                SelectKind::PersistTheme { name } => {
+                    finish_theme_persist(app, &chosen, name);
+                }
                 SelectKind::ModelPick(target) => {
                     open_second_step(app, strip_current_marker(&chosen), target);
                 }
@@ -285,11 +301,19 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                             .replace("{}", effort.as_str()),
                     );
                 }
+                // Esc on the "save to config?" step answers "no" rather than
+                // discarding the theme: it is already applied, and the model
+                // flows report the same thing on Esc.
+                SelectKind::PersistTheme { name } => {
+                    let label = theme_label(&msgs, name);
+                    app.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
+                }
                 SelectKind::Agent
                 | SelectKind::ModelPick(_)
                 | SelectKind::ModelProfileEffortPick { .. }
                 | SelectKind::ThinkBudgetPick { .. }
                 | SelectKind::ViewSystemPrompt
+                | SelectKind::ThemePick
                 | SelectKind::PermissionModePick => {
                     app.add_system_message(msgs.selection_cancelled.to_string());
                 }
@@ -512,10 +536,7 @@ fn apply_model_and_budget_pick(
     };
     app.select.set_local(
         persist_prompt.to_string(),
-        vec![
-            msgs.model_persist_yes.to_string(),
-            msgs.model_persist_no.to_string(),
-        ],
+        vec![msgs.persist_yes.to_string(), msgs.persist_no.to_string()],
         1,
         false,
     );
@@ -592,10 +613,7 @@ fn open_effort_persist_prompt(
     };
     app.select.set_local(
         msgs.model_persist_with_effort_prompt.to_string(),
-        vec![
-            msgs.model_persist_yes.to_string(),
-            msgs.model_persist_no.to_string(),
-        ],
+        vec![msgs.persist_yes.to_string(), msgs.persist_no.to_string()],
         1,
         false,
     );
@@ -612,7 +630,7 @@ fn finish_effort_persist(
 ) {
     let msgs = app.msgs();
     let effort_str = effort.as_str();
-    if chosen == msgs.model_persist_yes {
+    if chosen == msgs.persist_yes {
         match persist(model, effort_str) {
             Ok(()) => app.add_system_message(
                 msgs.model_persisted_with_effort_tmpl
@@ -653,7 +671,7 @@ fn finish_persist_budget(
             msgs.model_subagent_session_only_with_budget_tmpl,
         ),
     };
-    if chosen == msgs.model_persist_yes {
+    if chosen == msgs.persist_yes {
         let result = match target {
             ModelTarget::Main => tact::config::persist_active_provider_model_and_thinking_budget(
                 model,
@@ -678,6 +696,57 @@ fn finish_persist_budget(
             model,
             &budget_label,
         ));
+    }
+    app.input_mode = InputMode::Normal;
+}
+
+/// Whether there is a config file to write `[ui] theme` into.
+fn theme_config_available() -> bool {
+    tact::config::try_settings().is_some_and(|settings| settings.config_path.is_some())
+}
+
+/// `/theme` second step: offer to write `[ui] theme` to the config file.
+///
+/// No config file means the choice stays session-only, and that is reported
+/// here rather than by opening a picker whose answer could not be honoured.
+/// `config_available` is a parameter so both branches are testable without
+/// installing process-global settings.
+fn open_theme_persist_step(app: &mut App, name: crate::theme::ThemeName, config_available: bool) {
+    let msgs = app.msgs();
+    if !config_available {
+        let label = theme_label(&msgs, name);
+        app.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
+        app.input_mode = InputMode::Normal;
+        return;
+    }
+    app.select_kind = SelectKind::PersistTheme { name };
+    app.select.set_local(
+        msgs.theme_persist_prompt.to_string(),
+        vec![msgs.persist_yes.to_string(), msgs.persist_no.to_string()],
+        // Default to No: writing a file is the deliberate choice, and the
+        // theme is already applied either way.
+        1,
+        false,
+    );
+    app.input_mode = InputMode::Select;
+}
+
+/// Apply the answer to the theme's "save to config?" step.
+fn finish_theme_persist(app: &mut App, chosen: &str, name: crate::theme::ThemeName) {
+    let msgs = app.msgs();
+    let label = theme_label(&msgs, name);
+    if chosen == msgs.persist_yes {
+        match tact::config::persist_theme(name.as_str()) {
+            Ok(()) => {
+                app.add_system_message(msgs.theme_persisted_tmpl.replace("{}", name.as_str()))
+            }
+            Err(error) => app.add_system_message(
+                msgs.theme_persist_failed_tmpl
+                    .replace("{}", &error.to_string()),
+            ),
+        }
+    } else {
+        app.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
     }
     app.input_mode = InputMode::Normal;
 }
@@ -820,6 +889,63 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    /// `/theme` → the "save to config?" step, as if a config file existed.
+    #[test]
+    fn theme_persist_step_asks_and_defaults_to_no() {
+        let mut app = make_app();
+
+        open_theme_persist_step(&mut app, crate::theme::ThemeName::Nord, true);
+
+        assert!(matches!(app.select_kind, SelectKind::PersistTheme { .. }));
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert_eq!(
+            app.select.options,
+            vec!["Yes".to_string(), "No".to_string()]
+        );
+        assert_eq!(
+            app.select.selected, 1,
+            "No is the default: writing a file is the deliberate answer"
+        );
+        assert_eq!(app.select.prompt, "Save theme to config?");
+    }
+
+    /// Without a config file there is nothing to offer — say so instead of
+    /// asking a question whose "yes" cannot be honoured.
+    #[test]
+    fn theme_persist_step_reports_session_only_without_a_config_file() {
+        let mut app = make_app();
+
+        open_theme_persist_step(&mut app, crate::theme::ThemeName::Nord, false);
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(!matches!(app.select_kind, SelectKind::PersistTheme { .. }));
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("session only")),
+            "{:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn declining_to_persist_reports_a_session_only_theme() {
+        let mut app = make_app();
+
+        finish_theme_persist(&mut app, "No", crate::theme::ThemeName::Nord);
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("Nord") && item.raw.contains("session only")),
+            "{:?}",
+            app.log.items
+        );
     }
 
     fn seed_select(app: &mut App) -> tokio::sync::mpsc::UnboundedReceiver<UserCommand> {

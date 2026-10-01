@@ -7,7 +7,7 @@ use std::str::FromStr;
 use ratatui::{style::Color, widgets::BorderType};
 
 /// Built-in theme name enum.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThemeName {
     Dark,
     Light,
@@ -24,7 +24,12 @@ pub enum ThemeName {
 }
 
 impl ThemeName {
-    fn all() -> &'static [ThemeName] {
+    /// Every built-in theme, in cycle order.
+    ///
+    /// Public because the host builds a picker from it (`/theme`) and a cycle
+    /// order is not something a caller should have to reconstruct with
+    /// `next()` until it wraps.
+    pub fn all() -> &'static [ThemeName] {
         &[
             ThemeName::Dark,
             ThemeName::Light,
@@ -40,6 +45,29 @@ impl ThemeName {
             ThemeName::InkLight,
         ]
     }
+    /// The canonical name, as `config.toml` spells it (`ink-light`, not
+    /// `InkLight`) and as [`ThemeName::from_str`] reads it back.
+    ///
+    /// Exists so the `/theme` persist step writes a value the next launch can
+    /// parse — `theme_name_round_trips_through_as_str` fails if the two ever
+    /// drift apart.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ThemeName::Dark => "dark",
+            ThemeName::Light => "light",
+            ThemeName::SolarizedDark => "solarized-dark",
+            ThemeName::SolarizedLight => "solarized-light",
+            ThemeName::GruvboxDark => "gruvbox-dark",
+            ThemeName::Nord => "nord",
+            ThemeName::Retro => "retro",
+            ThemeName::Kawaii => "kawaii",
+            ThemeName::Japanese => "japanese",
+            ThemeName::Brutal => "brutal",
+            ThemeName::Ink => "ink",
+            ThemeName::InkLight => "ink-light",
+        }
+    }
+
     /// Cycle to the next theme.
     pub fn next(&self) -> Self {
         let all = Self::all();
@@ -444,6 +472,26 @@ mod tests {
             Theme::from(ThemeName::InkLight).block_border_type(),
             BorderType::Plain
         );
+    }
+
+    /// `as_str` is written to `config.toml`; `from_str` reads it back. A
+    /// spelling either side does not know would silently reset the theme on
+    /// the next launch.
+    #[test]
+    fn theme_name_round_trips_through_as_str() {
+        for name in ThemeName::all() {
+            assert_eq!(
+                name.as_str().parse::<ThemeName>().ok(),
+                Some(*name),
+                "{name:?} does not survive as_str/from_str"
+            );
+        }
+        // The list itself must not contain duplicates.
+        let mut names: Vec<&str> = ThemeName::all().iter().map(ThemeName::as_str).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "two themes share a name");
     }
 
     #[test]

@@ -459,7 +459,7 @@ Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overl
 
 ### 6.10 渲染中的主题与 i18n
 
-颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `Ctrl+T` 循环主题；主题变化时 cache 失效防止 stale styled 行。
+颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `/theme` 打开选择器（`SelectKind::ThemePick`，开在**当前主题**那一行，选中的行带 ` *` 标记），`Ctrl+T` 仍是「下一个」的快捷循环；选择器走 `App::apply_theme`（静默应用，随后由持久化步骤报告），`Ctrl+T` 走 `App::set_theme`（应用 + 播报）。主题变化时 cache 失效防止 stale styled 行。
 
 UI 字符串集中在 `i18n.rs`（`English` / `Chinese`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言。
 
@@ -714,7 +714,7 @@ sequenceDiagram
 
 输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill_zh.md)。与模型 mid-turn 调用 `load_skill` 分离。
 
-`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；normal 模式 `Ctrl+T` 循环。
+`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；`/theme` 选择、`Ctrl+T` 循环。选完会像 `/model` 一样问一句「将主题保存到配置文件？」（默认 **否**），选「是」写 `[ui] theme`（`tact::config::persist_theme`，`toml_edit` 只改这一行、保留行尾注释），没有配置文件或选「否」/Esc 时只对本次会话生效。
 
 ---
 

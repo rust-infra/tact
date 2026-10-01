@@ -29,25 +29,26 @@ impl App {
             .send((self.session_id.clone(), entry.to_string()));
     }
 
+    /// Cycle to the next built-in theme (`Ctrl+T`, and the old `/theme`).
     pub(crate) fn toggle_theme(&mut self) {
-        let next_name = self.theme.name.next();
+        self.set_theme(self.theme.name.next());
+    }
+
+    /// Switch to one theme and say so — `Ctrl+T`, which has no persist step.
+    pub(crate) fn set_theme(&mut self, name: ThemeName) {
         let msgs = self.msgs();
-        let label = match next_name {
-            ThemeName::Dark => msgs.theme_dark,
-            ThemeName::Light => msgs.theme_light,
-            ThemeName::SolarizedDark => msgs.theme_solarized_dark,
-            ThemeName::SolarizedLight => msgs.theme_solarized_light,
-            ThemeName::GruvboxDark => msgs.theme_gruvbox_dark,
-            ThemeName::Nord => msgs.theme_nord,
-            ThemeName::Retro => msgs.theme_retro,
-            ThemeName::Kawaii => msgs.theme_kawaii,
-            ThemeName::Japanese => msgs.theme_japanese,
-            ThemeName::Brutal => msgs.theme_brutal,
-            ThemeName::Ink => msgs.theme_ink,
-            ThemeName::InkLight => msgs.theme_ink_light,
-        };
+        self.apply_theme(name);
+        let label = theme_label(&msgs, name);
         self.add_system_message(msgs.theme_changed_tmpl.replace("{}", label));
-        self.theme = Theme::from(next_name);
+    }
+
+    /// Switch the theme silently.
+    ///
+    /// The `/theme` picker uses this and lets its persist step do the talking;
+    /// two messages for one action ("Theme: nord" then "saved"/"session only")
+    /// would say the same thing twice.
+    pub(crate) fn apply_theme(&mut self, name: ThemeName) {
+        self.theme = Theme::from(name);
     }
 
     pub(crate) fn msgs(&self) -> Messages {
@@ -128,10 +129,35 @@ impl App {
     }
 }
 
+/// The localized name of one theme.
+///
+/// Single source for the `/theme` picker's rows and the "theme changed" line:
+/// two spellings of the same theme would be a bug the moment one is renamed.
+pub(crate) fn theme_label(msgs: &Messages, name: ThemeName) -> &'static str {
+    match name {
+        ThemeName::Dark => msgs.theme_dark,
+        ThemeName::Light => msgs.theme_light,
+        ThemeName::SolarizedDark => msgs.theme_solarized_dark,
+        ThemeName::SolarizedLight => msgs.theme_solarized_light,
+        ThemeName::GruvboxDark => msgs.theme_gruvbox_dark,
+        ThemeName::Nord => msgs.theme_nord,
+        ThemeName::Retro => msgs.theme_retro,
+        ThemeName::Kawaii => msgs.theme_kawaii,
+        ThemeName::Japanese => msgs.theme_japanese,
+        ThemeName::Brutal => msgs.theme_brutal,
+        ThemeName::Ink => msgs.theme_ink,
+        ThemeName::InkLight => msgs.theme_ink_light,
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
-    use crate::{render::test_harness::make_app, theme::ThemeName};
+    use super::theme_label;
+    use crate::{
+        render::test_harness::make_app,
+        theme::{Theme, ThemeName},
+    };
 
     #[test]
     fn toggle_theme_cycles_from_ink() {
@@ -146,6 +172,25 @@ mod tests {
                 .iter()
                 .any(|item| item.raw.contains("theme") || item.raw.contains("Theme")),
             "toggle should append theme changed message"
+        );
+    }
+
+    #[test]
+    fn set_theme_switches_to_the_named_theme() {
+        let mut app = make_app();
+        assert_eq!(app.theme.name, ThemeName::Ink);
+
+        app.set_theme(ThemeName::SolarizedLight);
+
+        assert_eq!(app.theme.name, ThemeName::SolarizedLight);
+        assert_eq!(app.theme.fg, Theme::from(ThemeName::SolarizedLight).fg);
+        assert_eq!(app.theme.bg, Theme::from(ThemeName::SolarizedLight).bg);
+        assert!(
+            app.log.items.iter().any(|item| item
+                .raw
+                .contains(theme_label(&app.msgs(), ThemeName::SolarizedLight))),
+            "the switch must name the theme it moved to: {:?}",
+            app.log.items
         );
     }
 

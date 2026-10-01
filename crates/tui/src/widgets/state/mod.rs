@@ -103,6 +103,11 @@ pub(crate) enum SelectKind {
     ViewSystemPrompt,
     /// `/permission` picker — choose Default / Plan / Auto.
     PermissionModePick,
+    /// `/theme` picker — choose one of the built-in themes.
+    ThemePick,
+    /// `/theme` second step — offer to write `[ui] theme` to `config.toml`,
+    /// mirroring what `/model` asks before persisting.
+    PersistTheme { name: crate::theme::ThemeName },
 }
 
 /// A queued agent-originated select (`RequestSelect` / `RequestMultiSelect`)

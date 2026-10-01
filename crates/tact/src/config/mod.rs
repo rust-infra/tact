@@ -331,6 +331,20 @@ pub fn update_subagent_reasoning_effort(effort: Option<OpenAiReasoningEffort>) {
     }
 }
 
+/// Persist `ui.theme` to the loaded config file.
+///
+/// `theme` is the canonical name (`ThemeName::as_str`). Without a config file
+/// the change stays session-only, which the caller reports as such — the same
+/// contract as the `persist_*_model` helpers.
+pub fn persist_theme(theme: &str) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings
+        .config_path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no config file to update (session-only theme change)"))?;
+    persist::update_ui_theme_in_toml(path, theme)
+}
+
 /// Persist `model` under the active `[llm.providers.<name>]` in the loaded config file.
 pub fn persist_active_provider_model(model: &str) -> anyhow::Result<()> {
     let settings = settings();

@@ -295,7 +295,7 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
 
     match command {
         C::Theme => {
-            app.toggle_theme();
+            start_theme_picker(app);
             CommandExecOutcome::handled()
         }
         C::Model => {
@@ -572,6 +572,42 @@ pub(crate) fn reload_skills(
     Ok(SkillsSnapshot { description, data })
 }
 
+/// Open the `/theme` SelectPopup from the palette / slash command.
+///
+/// Twelve themes cycled one at a time meant up to eleven presses to reach the
+/// one you want, which is what the picker replaces; `Ctrl+T` still cycles for
+/// the "next one" case.
+pub(crate) fn start_theme_picker(app: &mut App) {
+    use crate::theme::ThemeName;
+    use crate::widgets::state::app::config::theme_label;
+
+    let msgs = app.msgs();
+    let current = app.theme.name;
+    let options: Vec<String> = ThemeName::all()
+        .iter()
+        .map(|name| {
+            let label = theme_label(&msgs, *name);
+            if *name == current {
+                format!("{label} *")
+            } else {
+                label.to_string()
+            }
+        })
+        .collect();
+    let selected = ThemeName::all()
+        .iter()
+        .position(|name| *name == current)
+        .unwrap_or(0);
+    app.select_kind = crate::widgets::state::SelectKind::ThemePick;
+    app.select.set_local(
+        msgs.theme_select_prompt.to_string(),
+        options,
+        selected,
+        true,
+    );
+    app.input_mode = InputMode::Select;
+}
+
 /// Open the `/permission` SelectPopup from palette / slash command.
 pub(crate) fn start_permission_picker(app: &mut App) {
     let msgs = app.msgs();
@@ -604,7 +640,7 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::{execute_palette_command, skills_list_markdown};
-    use crate::widgets::state::{App, SlashCommand, Status, Subcommand};
+    use crate::widgets::state::{App, InputMode, SlashCommand, Status, Subcommand};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
@@ -1122,15 +1158,107 @@ mod tests {
         ));
     }
 
+    /// `/theme` opens the picker (it used to cycle): twelve themes meant up to
+    /// eleven presses to reach the one you want.
     #[test]
-    fn theme_command_toggles_theme() {
+    fn theme_command_opens_a_picker_marked_at_the_current_theme() {
         use crate::theme::ThemeName;
+        use crate::widgets::state::SelectKind;
 
         let (mut app, _user_cmd_rx) = make_app();
         assert_eq!(app.theme.name, ThemeName::Retro);
+
         let outcome = execute_palette_command(&mut app, "theme");
+
         assert!(outcome.handled);
-        assert_ne!(app.theme.name, ThemeName::Retro);
+        assert!(matches!(app.select_kind, SelectKind::ThemePick));
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert_eq!(app.select.options.len(), ThemeName::all().len());
+        let labelled: Vec<(usize, &str)> = app
+            .select
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (i, o.as_str()))
+            .collect();
+        let marked: Vec<&(usize, &str)> = labelled
+            .iter()
+            .filter(|(_, label)| label.ends_with(" *"))
+            .collect();
+        assert_eq!(marked.len(), 1, "exactly one row is the current theme");
+        assert_eq!(
+            marked[0].0, app.select.selected,
+            "the picker opens on the current theme, not at the top"
+        );
+        assert_eq!(
+            marked[0].1.strip_suffix(" *").unwrap(),
+            crate::widgets::state::app::config::theme_label(&app.msgs(), ThemeName::Retro)
+        );
+    }
+
+    #[test]
+    fn confirming_the_theme_picker_applies_the_chosen_theme() {
+        use crate::theme::ThemeName;
+
+        let (mut app, _user_cmd_rx) = make_app();
+        execute_palette_command(&mut app, "theme");
+        let target = ThemeName::all()
+            .iter()
+            .position(|name| *name == ThemeName::Nord)
+            .expect("nord is a built-in theme");
+        app.select.selected = target;
+
+        crate::handlers::select::handle_select_mode(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+        );
+
+        assert_eq!(app.theme.name, ThemeName::Nord);
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("Nord") || item.raw.contains("nord")),
+            "the switch is announced: {:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn cancelling_the_theme_picker_keeps_the_theme() {
+        use crate::theme::ThemeName;
+
+        let (mut app, _user_cmd_rx) = make_app();
+        let before = app.theme.name;
+        execute_palette_command(&mut app, "theme");
+        app.select.selected = 0;
+
+        crate::handlers::select::handle_select_mode(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+        );
+
+        assert_eq!(app.theme.name, before, "Esc must not switch the theme");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_ne!(before, ThemeName::Dark, "the test needs a non-first theme");
+    }
+
+    /// `Ctrl+T` keeps the cheap "next one" path the picker replaces.
+    #[test]
+    fn ctrl_t_still_cycles_themes() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let before = app.theme.name;
+
+        app.toggle_theme();
+
+        assert_ne!(app.theme.name, before);
     }
 
     #[test]

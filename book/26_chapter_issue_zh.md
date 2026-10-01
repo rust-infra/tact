@@ -37,6 +37,23 @@
 
 ---
 
+## 1. 2026-10-01 — `/theme` 从「循环下一个」改成主题选择器
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tui/src/widgets/state/mod.rs`（`SelectKind::ThemePick` / `PersistTheme`）；`crates/tact/src/config/{mod.rs,persist.rs}`（`persist_theme`、`update_ui_theme_in_toml`、`set_scalar`）；`crates/tui/src/handlers/mod.rs`（`start_theme_picker`）；`crates/tui/src/handlers/select.rs`（确认/取消分支）；`crates/tui/src/widgets/state/app/config.rs`（`set_theme`、`theme_label`，`toggle_theme` 改为调用前者）；`crates/agent_tui_kit/src/theme.rs`（`ThemeName::all()` 转 pub、新增 `as_str()`）；`crates/agent_tui_kit/src/i18n.rs`（`theme_select_prompt` / `theme_persist_*` / `theme_session_only_tmpl`，`model_persist_yes|no` 更名 `persist_yes|no`，`cmd_theme` 描述）；[Ch 23](./23_chapter_tui_zh.md) §主题 |
+
+**症状 / 动机：** `/theme` 只做一件事：`C::Theme => app.toggle_theme()`，即 `ThemeName::next()` 循环。内置主题有 12 个，想从 `ink`（config 默认）切到 `kawaii` 要按 6 次，而且每次都得盯着底栏看现在到哪了；`/model`、`/permission` 早就是选择器（列表 + 当前项标记 + Enter 确认），只有主题是异类。同一批主题名还散在两处：`toggle_theme` 里一个 12 分支的 `match`，以及（新加的）选择器需要同样的标签。
+
+**决策：** 引入 `SelectKind::ThemePick` 与 `start_theme_picker`，选项就是 `ThemeName::all()`（因此把 kit 里私有的 `all()` 转 pub——循环顺序不该让调用方靠 `next()` 绕一圈重建），当前主题那一行带 ` *` 后缀并**作为初始选中行**（不是停在第一行）。确认走新的 `App::set_theme(name)`，`toggle_theme` 退化为 `set_theme(self.theme.name.next())`——`Ctrl+T` 的「下一个」仍然可用，且两条路径共用同一个快照消息。12 个标签抽成 `theme_label(msgs, name)`，`toggle_theme`、选择器行、与 `theme_changed_tmpl` 都取它，避免同一主题出现两种拼写（`japanese` 的英文标签是 `Wa`、中文是 `和風`，这类非直译只有一处能改）。
+
+**变更后行为：** `/theme` 打开 12 行的选择器（`↑↓/j/k` 移动、Enter 应用、Esc 取消并保持原主题），开在当前主题上；`Ctrl+T` 仍循环。确认后追加一步「将主题保存到配置文件？」（默认**否**，与 `/model` 的手感一致）：选「是」调 `tact::config::persist_theme(ThemeName::as_str())` 写 `[ui] theme`，`settings.config_path` 为空时不问、直接播报「仅本次会话」。为此新增 `ThemeName::as_str()`（写进 TOML 的规范拼写，`theme_name_round_trips_through_as_str` 保证 `from_str` 能读回，否则下次启动会静默回落到默认主题）。命令描述同步改成「Choose a color theme (Ctrl+T cycles)」/「选择颜色主题（Ctrl+T 循环）」。
+
+**顺带修掉的存盘缺陷：** 加持久化时用临时文件测试 `ui.theme`，发现 `persist.rs` 的 `t.insert(key, value)` 会连**旧行的装饰一起换掉**——`model = "x"  # pinned for the ctx window` 的注释在每次 `/model` 存盘后消失，而该模块的文档注释声称「保留注释与原格式」。改为 `set_scalar()`：复用旧 item 的 `decor`，只替换值。五个 persist helper（model / model+budget / subagent / effort / theme）统一走它，`replacing_a_model_keeps_its_trailing_comment` 与 `updates_ui_theme_keeping_the_rest_of_the_file` 固定住这一行为。
+
+**指针：** `crates/tui/src/handlers/mod.rs::start_theme_picker`、`crates/tui/src/handlers/select.rs`（`SelectKind::ThemePick` 分支）、`crates/tui/src/widgets/state/app/config.rs::set_theme`。测试：`theme_command_opens_a_picker_marked_at_the_current_theme`（12 行、恰好一个 ` *`、开在该行）、`confirming_the_theme_picker_applies_the_chosen_theme`、`cancelling_the_theme_picker_keeps_the_theme`、`ctrl_t_still_cycles_themes`、`set_theme_switches_to_the_named_theme`。
+
 ## 1. 2026-10-01 — palette / slash / file picker / select 弹窗改为取色自 theme，亮色主题下不再白底白字
 
 | 字段 | 值 |
