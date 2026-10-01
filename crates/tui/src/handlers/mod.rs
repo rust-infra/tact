@@ -22,7 +22,7 @@ pub(crate) use select::handle_select_mode;
 pub(crate) use skills::flush_pending_when_idle;
 use tact_protocol::UserCommand;
 
-use crate::widgets::state::{App, InputMode, SelectKind, Status};
+use crate::widgets::state::{App, InputMode, SelectKind, SlashCommand, Status};
 
 /// Whether the active sticky panel (task / subagent / background) currently accepts scroll
 /// input — the panel must be on screen and its sticky tab expanded.
@@ -251,57 +251,71 @@ pub(super) struct CommandExecOutcome {
     pub clear_input: bool,
 }
 
+impl CommandExecOutcome {
+    /// The command ran: clear the input box so the next message starts fresh.
+    fn handled() -> Self {
+        Self {
+            handled: true,
+            clear_input: true,
+        }
+    }
+
+    /// Nothing here answers to that name.
+    fn unhandled() -> Self {
+        Self {
+            handled: false,
+            clear_input: false,
+        }
+    }
+}
+
 /// True when `cmd` is a built-in palette entry (wins over same-named skills).
 pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
-    crate::widgets::state::PALETTE_COMMANDS
-        .iter()
-        .any(|(name, _)| *name == cmd)
+    SlashCommand::from_name(cmd).is_some()
 }
 
 /// Built-ins that take a subcommand / arguments: Enter should autocomplete
 /// `/{cmd} ` into the insert box instead of executing immediately.
 pub(crate) fn command_needs_args(cmd: &str) -> bool {
-    matches!(cmd, "plugin" | "mcp" | "hooks" | "subagent_cancel")
+    SlashCommand::from_name(cmd).is_some_and(SlashCommand::needs_args)
 }
 
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
-    // Built-ins always win so a skill named `cancel`/`help`/… cannot shadow them.
-    if !is_builtin_palette_command(cmd)
-        && let Some(outcome) = skills::handle_skill_command(app, cmd)
-    {
-        return outcome;
-    }
+    // A name that is not a built-in may still be a skill; built-ins always win
+    // so a skill named `cancel`/`help`/… cannot shadow them.
+    let Some(command) = SlashCommand::from_name(cmd) else {
+        return skills::handle_skill_command(app, cmd)
+            .unwrap_or_else(CommandExecOutcome::unhandled);
+    };
+    run_command(app, command)
+}
 
-    match cmd {
-        "theme" => {
+/// Dispatch one built-in command.
+///
+/// The match has no `_` arm on purpose: it used to, and that is how a command
+/// could be listed in the palette and answered with `handled: false` — the
+/// failure surfaced only if a test happened to walk the list.
+fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
+    use SlashCommand as C;
+
+    match command {
+        C::Theme => {
             app.toggle_theme();
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "model" => {
+        C::Model => {
             crate::handlers::select::start_model_picker(app);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "model-subagent" => {
+        C::ModelSubagent => {
             crate::handlers::select::start_subagent_model_picker(app);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "permission" => {
+        C::Permission => {
             start_permission_picker(app);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "view-system-prompt" => {
+        C::ViewSystemPrompt => {
             app.select.set_local(
                 "View system prompt".to_string(),
                 vec![
@@ -313,12 +327,9 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             );
             app.select_kind = SelectKind::ViewSystemPrompt;
             app.input_mode = InputMode::Select;
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "save" => {
+        C::Save => {
             let timestamp = Local::now().format("%Y%m%d_%H%M%S");
             let path = std::env::temp_dir().join(format!("agent_log_{timestamp}.txt"));
             if let Ok(mut file) = std::fs::File::create(&path) {
@@ -335,56 +346,38 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 let msgs = app.msgs();
                 app.add_system_message(msgs.log_save_failed.to_string());
             }
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "quit" => {
+        C::Quit => {
             app.should_quit = true;
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "help" => {
+        C::Help => {
             app.show_help = !app.show_help;
             app.show_history = false;
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "history" => {
+        C::History => {
             app.show_history = !app.show_history;
             app.show_help = false;
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "skills" => {
+        C::Skills => {
             show_skills_command(app);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "skill-reload" => {
+        C::SkillReload => {
             // Off-loop: the reload scans the filesystem; the loop reports the
             // outcome via the background-task poll.
             app.start_skills_reload(
                 crate::widgets::state::app::background::SkillsReloadSource::Command,
             );
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "plugin" => plugin::handle_plugin_command(app),
-        "mcp" => mcp::handle_mcp_command(app),
-        "hooks" => hooks::handle_hooks_command(app),
-        "cancel" => {
+        C::Plugin => plugin::handle_plugin_command(app),
+        C::Mcp => mcp::handle_mcp_command(app),
+        C::Hooks => hooks::handle_hooks_command(app),
+        C::Cancel => {
             // Only cancel an in-flight task; Idle and Done have nothing to
             // abort. Queued (pending) messages are NOT touched — dropping
             // them is the `[Cancel]` button's job.
@@ -396,12 +389,9 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                     std::time::Instant::now(),
                 ));
             }
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "subagent_cancel" => {
+        C::SubagentCancel => {
             // Cancel a running background subagent: `/subagent_cancel <child-id>`.
             // The child-id comes from the `async_launched { id }` handle or
             // `check_subagent`. The driver flips the child's cooperative flag;
@@ -427,12 +417,9 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                     .user_cmd_tx
                     .send(UserCommand::CancelSubagent { child_id });
             }
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "compact" => {
+        C::Compact => {
             // Only compact when idle; active tasks cannot be compacted
             // from slash since compact_history synchronously rewrites
             // the session context.
@@ -442,60 +429,35 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             } else {
                 let _ = app.user_cmd_tx.send(UserCommand::Compact);
             }
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "balance" => {
+        C::Balance => {
             if app.account_rx.is_none() {
-                return CommandExecOutcome {
-                    handled: true,
-                    clear_input: true,
-                };
+                return CommandExecOutcome::handled();
             }
             let _ = app.user_cmd_tx.send(UserCommand::QueryBalance);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "stats" => {
+        C::Stats => {
             let _ = app.user_cmd_tx.send(UserCommand::QueryStats);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "tasks-dag" => {
+        C::TasksDag => {
             app.open_task_dag_popup();
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "background" => {
+        C::Background => {
             // `/background` lists all background tasks; `/background <id>`
             // shows one task (pretty JSON). The optional id comes from the
             // remaining input after the command token.
             let task_id = app.input.split_whitespace().nth(1).map(str::to_string);
             let _ = app.user_cmd_tx.send(UserCommand::QueryBackground(task_id));
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "lang" => {
+        C::Lang => {
             app.toggle_language();
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        _ => CommandExecOutcome {
-            handled: false,
-            clear_input: false,
-        },
     }
 }
 
@@ -1071,7 +1033,7 @@ mod tests {
 
     #[test]
     fn colliding_skill_omitted_from_palette_list() {
-        use crate::widgets::state::SkillEntry;
+        use crate::widgets::state::{SkillEntry, SlashCommand};
 
         let (mut app, _rx) = make_app();
         app.skills_data = vec![SkillEntry {
@@ -1085,6 +1047,6 @@ mod tests {
             .filter(|(c, _)| c == "help")
             .collect();
         assert_eq!(help_rows.len(), 1, "builtin help only once: {help_rows:?}");
-        assert_eq!(help_rows[0].1, app.localize_cmd_desc("help"));
+        assert_eq!(help_rows[0].1, SlashCommand::Help.desc(app.msgs()));
     }
 }

@@ -8,18 +8,16 @@ impl App {
     /// including dynamic skill commands.
     pub(crate) fn palette_commands(&self) -> Vec<(String, String)> {
         let account_enabled = self.account_rx.is_some();
-        let mut cmds: Vec<(String, String)> = PALETTE_COMMANDS
+        let msgs = self.msgs();
+        let mut cmds: Vec<(String, String)> = SlashCommand::ALL
             .iter()
-            .filter(move |(cmd, _)| account_enabled || *cmd != "balance")
-            .map(|&(cmd, _desc)| {
-                let desc = self.localize_cmd_desc(cmd);
-                (cmd.to_string(), desc)
-            })
+            .filter(|cmd| account_enabled || !cmd.needs_account())
+            .map(|cmd| (cmd.name().to_string(), cmd.desc(msgs).to_string()))
             .collect();
         // Skills as slash targets (Claude Code style `/skill-name`).
         // Skip names that collide with built-ins — builtins always win on Enter.
         let builtin_names: std::collections::HashSet<&str> =
-            PALETTE_COMMANDS.iter().map(|(n, _)| *n).collect();
+            SlashCommand::ALL.iter().map(|cmd| cmd.name()).collect();
         for skill in &self.skills_data {
             if builtin_names.contains(skill.name.as_str()) {
                 continue;
@@ -115,29 +113,6 @@ impl App {
             task_panel: self.task_panel().state(),
             subagent_panel: self.subagent_panel().state(),
             background_panel: self.background_panel().state(),
-        }
-    }
-
-    pub(crate) fn localize_cmd_desc(&self, cmd: &str) -> String {
-        let msgs = self.msgs();
-        match cmd {
-            "theme" => msgs.cmd_theme.to_string(),
-            "model" => msgs.cmd_model.to_string(),
-            "model-subagent" => msgs.cmd_model_subagent.to_string(),
-            "save" => msgs.cmd_save.to_string(),
-            "cancel" => msgs.cmd_cancel.to_string(),
-            "subagent_cancel" => msgs.cmd_subagent_cancel.to_string(),
-            "quit" => msgs.cmd_quit.to_string(),
-            "help" => msgs.cmd_help.to_string(),
-            "history" => msgs.cmd_history.to_string(),
-            "balance" => msgs.cmd_balance.to_string(),
-            "lang" => msgs.cmd_lang.to_string(),
-            "skills" => msgs.cmd_skills.to_string(),
-            "skill-reload" => msgs.cmd_skill_reload.to_string(),
-            "plugin" => msgs.cmd_plugin.to_string(),
-            "tasks-dag" => msgs.cmd_tasks_dag.to_string(),
-            "background" => msgs.cmd_background.to_string(),
-            _ => cmd.to_string(),
         }
     }
 

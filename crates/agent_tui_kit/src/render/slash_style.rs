@@ -2,7 +2,7 @@
 //! lines (pure; moved from `crates/tui/src/render/slash_style.rs`).
 //!
 //! `skill_name_set` takes the builtin-command names as a parameter — the host
-//! decides which slash commands are builtins (Tact: `PALETTE_COMMANDS`).
+//! decides which slash commands are builtins (Tact: its `SlashCommand` enum).
 
 use std::collections::HashSet;
 

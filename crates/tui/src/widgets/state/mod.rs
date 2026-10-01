@@ -49,40 +49,9 @@ pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceSta
 
 // ========== Basic Types ==========
 
-/// Commands shown in the command palette (triggered by `/`).
-pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
-    ("theme", "Toggle color theme"),
-    ("model", "Switch model for current provider"),
-    ("model-subagent", "Switch subagent model"),
-    ("permission", "Set permission mode (Default/Plan/Auto)"),
-    ("view-system-prompt", "View system prompt"),
-    ("save", "Save log to file"),
-    ("compact", "Compact conversation history"),
-    ("cancel", "Cancel current task"),
-    (
-        "subagent_cancel",
-        "Cancel a running subagent (usage: /subagent_cancel <child-id>)",
-    ),
-    ("quit", "Quit application"),
-    ("help", "Show help panel"),
-    ("history", "Show task history"),
-    ("skills", "List available skills"),
-    ("skill-reload", "Reload skills from disk"),
-    ("plugin", "Manage plugins and marketplaces"),
-    (
-        "mcp",
-        "Manage MCP servers (usage: /mcp auth <server> | /mcp list)",
-    ),
-    (
-        "hooks",
-        "Review command hooks (usage: /hooks list | /hooks trust --all | /hooks forget --all)",
-    ),
-    ("balance", "Query account balance (DeepSeek/Kimi)"),
-    ("lang", "Toggle language (EN/中文)"),
-    ("stats", "Show session statistics"),
-    ("tasks-dag", "Show task dependency DAG"),
-    ("background", "Check background task status"),
-];
+mod slash;
+
+pub(crate) use slash::SlashCommand;
 
 /// Which agent a `/model` flow targets: the main agent or the configured
 /// subagent. The two-step model/effort/budget flow is expressed once and

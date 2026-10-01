@@ -221,7 +221,7 @@ flowchart TB
 | `render/layout.rs`（tui） | 主内容路由（history、help、log + 可选 sticky tasks、popups）——纯编排 |
 | `render/log.rs`（tui） | Log `prepare_log_frame` 缓存重建（应用层 skill 样式）；纯渲染已移入 kit |
 | `render/log_style.rs`（tui） | 共享 log 文本样式 + skill restyle |
-| `render/slash_style.rs`（tui） | 薄包装：注入 `PALETTE_COMMANDS` 内置命令集到 kit `slash_style` |
+| `render/slash_style.rs`（tui） | 薄包装：把 `widgets/state/slash.rs` 的 `SlashCommand` 内置命令集注入 kit `slash_style` |
 | `render/popups/`（tui） | 应用层弹窗：palette、file picker、slash commands、task DAG、help（voice 键位）+ 应用 mouse 命中区的 wrapper |
 | `agent_tui_kit::render/bar.rs` | 顶栏 + 底栏统计（纯 `&RenderCtx`） |
 | `agent_tui_kit::render/input.rs` | 多行输入框、pending block、palette 命令行（纯） |
@@ -687,7 +687,11 @@ sequenceDiagram
 
 ## 7. 输入模式与主题
 
-`widgets/state/mod.rs` 中 `InputMode`：`Normal`、`Insert`、`Palette`、`Select`、`FilePicker`。Handler 在 `crates/tui/src/handlers/`。Normal 模式 `/` 打开 command palette；Insert 模式 `/` 打开 slash-command popup（同一命令列表，分组为 **Commands** 然后 **Skills**）。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
+`widgets/state/mod.rs` 中 `InputMode`：`Normal`、`Insert`、`Palette`、`Select`、`FilePicker`。Handler 在 `crates/tui/src/handlers/`。Normal 模式 `/` 打开 command palette；Insert 模式 `/` 打开 slash-command popup（同一命令列表，分组为 **Commands** 然后 **Skills**）。
+
+内置命令的唯一来源是 `widgets/state/slash.rs` 的 `SlashCommand` 枚举：`ALL` 决定弹出列表的顺序，`name()` / `from_name()` 是用户输入的名字，`desc(msgs)` 是中英描述，`needs_args()` 决定回车是补全还是执行。这些都是**穷尽匹配**——新增一个命令时，漏写名字、漏写描述、漏写处理分支都会编译失败。派发在 `handlers/mod.rs` 的 `run_command`（同样无 `_` 分支）：先按枚举解析，不中再交给 skill，因此内置名始终赢过同名 skill。
+
+`/balance` 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；`/plugin`、`/mcp`、`/hooks`、`/subagent_cancel` 是四个需要参数的命令。**不覆盖**：子命令解析（`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`）仍在各自的 handler 模块里按字符串切。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
 
 ### Slash skills
 

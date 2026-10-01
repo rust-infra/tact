@@ -35,6 +35,29 @@
 
 ---
 
+---
+
+## 1. 2026-09-30 — 斜杠命令收进一个枚举，6 条描述不再显示成命令名
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix / refactor |
+| **相关** | 新增 `crates/tui/src/widgets/state/slash.rs`（`SlashCommand`）；`crates/tui/src/{widgets/state/mod.rs,widgets/state/app/config.rs,render/slash_style.rs,handlers/mod.rs}`；`crates/agent_tui_kit/src/i18n.rs`（5 个新字段 × 2 语言）；[Ch 23](./23_chapter_tui_zh.md) §3 |
+
+**症状 / 动机：** 22 个内置斜杠命令的名字被平行列在 5 个地方，其中两处已经漂移。
+
+- `PALETTE_COMMANDS` 的 `(name, desc)` **描述字段是死代码**——没有任何调用方读它（`palette_commands()` 忽略它改调 `localize_cmd_desc`，`slash_style.rs` 只取名字），而同一批英文文本又原样存在于 `i18n.rs`。
+- `localize_cmd_desc` 只有 16 条分支而命令有 22 个，多出来的 6 个落进 `_ => cmd.to_string()`：`/permission`、`/view-system-prompt`、`/compact`、`/mcp`、`/hooks`、`/stats` 在**中英两种语言下**都把命令名当自己的描述显示。没有测试、没有编译器检查——纯靠人记得改两个地方。
+- `execute_palette_command` 的 `_ => handled: false` 让漏写一个处理分支变成静默不处理，只有 `palette_commands_are_all_handled` 这一个测试兜着。
+
+**决策：** 引入 `SlashCommand` 枚举作为唯一来源。`ALL` 是弹出列表顺序，`name()` / `from_name()` 是用户输入的名字（逐变体 `#[strum(serialize = ...)]`，因为集合不规整：`model-subagent` 用连字符而 `subagent_cancel` 用下划线，从变体名推导会静默改命令名），`desc(msgs)` 是中英描述，`needs_args()` / `needs_account()` 是那两个原本散落在别处的 4 元素与 1 元素判断。`desc` 与 `handlers/mod.rs` 的 `run_command` 都是**穷尽匹配、无 `_` 分支**，因此新增命令时漏写描述或漏写处理分支都会编译失败。派发改成先 `from_name` 解析、不中再交给 skill——内置名赢过同名 skill 的优先级不变。`PALETTE_COMMANDS` 连同它的死描述字段一并删除；`CommandExecOutcome::{handled,unhandled}` 消掉了 21 处重复的结构体字面量。
+
+**变更后行为：** 22 个命令在中英两种语言下都有真实描述（补上 `cmd_view_system_prompt` / `cmd_compact` / `cmd_mcp` / `cmd_hooks` / `cmd_stats` 五对字符串，`/permission` 的字符串本就存在、只是缺分支）。新增测试：每个变体都在 `ALL` 里且不重复、`from_name` 往返、描述非空且不等于命令名、中英描述不相同、只有 `balance` 需要账户通道、带参数的四个命令恰好是 `plugin`/`mcp`/`hooks`/`subagent_cancel`。
+
+**不覆盖（刻意）：** 子命令解析——`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`——仍在各自的 handler 模块里按字符串切；顶层枚举碰不到它，那是另一个抽象。`run_command` 也仍是 22 个分支的一个函数，枚举不会让它变小（只是不再能漏）。
+
+**指针：** `crates/tui/src/widgets/state/slash.rs`、`crates/tui/src/handlers/mod.rs`（`run_command`）、`crates/agent_tui_kit/src/i18n.rs`（`cmd_*`）。
+
 ## 1. 2026-09-30 — 英文册整体删除，本书只剩中文
 
 | 字段 | 值 |
