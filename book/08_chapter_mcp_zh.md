@@ -113,6 +113,8 @@ Tact **两者都支持**：带 `command` 的条目录用 stdio 启动，带 `url
 
 Tact 自己的两个文件排在前面，因为那才是"让你去写"的文件：仓库里的 `.mcp.json` 会被读取（这样随仓库共享的配置开箱可用），但它是最低优先级，**永远不会静默顶掉你自己声明的 server**。被顶掉的声明会以上下文注明 `MCP server X overrides <file>`，不静默。
 
+第 4 项的 `plugin__<plugin>__` 前缀只在**命名**处存在：它是配置键、OAuth 凭据文件名（`~/.tact/mcp/oauth/<name>.json`）与 agent 工具名前缀 `mcp__<server>__<tool>` 的来源。**展示和输入都按短名**——凡是面向用户印出 server 名的地方（`/mcp list`、`mcp list` 的表格与它的 Overridden / Filtered / Entry-keys 备注行、`mcp get` 的标题、连接失败与「needs authorization」提示）都只印 `<server>`，提示里的命令因此可以直接复述；反过来，凡是 `<server>` 参数（`/mcp auth`、`mcp login`、`mcp get`、`mcp logout`）都先经 `resolve_server_name` 解析：先精确匹配（你声明的同名 server 永远优先，不会被插件的短名顶掉），再取唯一一个短名相等的已配置 server；匹配到多个（两个插件都带 `canva`）或一个都没有则报错并列出候选，不做猜测。`mcp logout` 是唯一"尽力而为"的：server 已从配置里消失时，短名仍按原样当作凭据名去删。工具名一个字节都不变，所以 agent 侧感知不到这件事。
+
 Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`）在 `CODEX_HOME` 里，不在项目里。**已安装的 marketplace 插件**在启动时由 `installed_plugin_mcp_servers` 扫描：它读取 `.codex-plugin/plugin.json` 的 `mcpServers` 与插件**根目录**下的 `.mcp.json`。那是插件的**包**格式：一个用户显式装过的发行包，而不是项目里的约定。
 
 一份 `mcp.json` 无法解析是硬错误并指明路径（用户手写的配置不能被静默忽略）。工作目录下的 `.mcp.json` 不同：它属于项目而不属于你，解析失败只记一条 warning 并跳过——否则 clone 一个坏文件就能让 Tact 在那个目录里根本起不来。

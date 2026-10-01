@@ -201,17 +201,22 @@ fn scope_hint(workdir: &Path, scope: McpConfigScope, name: &str) -> String {
 /// Connects one server only and prints the full detail view.
 async fn get_server(name: &str) -> Result<()> {
     mcp::validate_server_name(name)?;
-    let inspection = mcp::inspect_server(name)
+    // `list` shows a plugin server short, so `get` must accept that form too.
+    // The detail view then prints the canonical name, which is what the
+    // `mcp__<server>__<tool>` prefix is built from.
+    let name = mcp::resolve_server_name(name)?;
+    let display = mcp::display_server_name(&name);
+    let inspection = mcp::inspect_server(&name)
         .await
-        .with_context(|| format!("failed to inspect MCP server '{name}'"))?
+        .with_context(|| format!("failed to inspect MCP server '{display}'"))?
         .with_context(|| {
-            format!("no MCP server named '{name}' is configured (see `tact-ui mcp list`)")
+            format!("no MCP server named '{display}' is configured (see `tact-ui mcp list`)")
         })?;
 
     println!("{}", render_server_detail(&inspection));
 
     if matches!(inspection.status, McpServerStatus::PendingAuthorization) {
-        println!("\nAuthorize it with: tact-ui mcp login {name}");
+        println!("\nAuthorize it with: tact-ui mcp login {display}");
     }
     Ok(())
 }
@@ -221,7 +226,11 @@ async fn get_server(name: &str) -> Result<()> {
 /// Split from printing so the layout is unit-testable without capturing stdout.
 #[must_use]
 pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
-    let name = &inspection.server.name;
+    // The heading shows the short form a plugin server is listed under; the tool
+    // lines below keep the full name, because that is the prefix the agent must
+    // call. `source` says which plugin the server came from.
+    let full_name = &inspection.server.name;
+    let name = mcp::display_server_name(full_name);
     let mut lines = vec![
         format!("{name}  {}", inspection.server.transport),
         format!("  source  {}", inspection.server.source),
@@ -237,7 +246,7 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
         lines.push(format!("  tools   {} available:", inspection.tools.len()));
         for tool in &inspection.tools {
             // The full name is what the agent must call, so show it verbatim.
-            let mut line = format!("            mcp__{name}__{tool}");
+            let mut line = format!("            mcp__{full_name}__{tool}");
             // The effective risk, so a silent entry (High) and a declared one
             // never look alike.
             let declared = inspection
@@ -301,16 +310,21 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
 
 /// Deletes the stored OAuth credentials for one server.
 async fn logout(server: &str) -> Result<()> {
-    let removed = mcp::forget_credentials(server)
+    // Best-effort resolution: a server that is no longer configured can still
+    // have stored credentials, and those are keyed by the full name, so a name
+    // that resolves to nothing is used verbatim rather than refused.
+    let server = mcp::resolve_server_name(server).unwrap_or_else(|_| server.to_owned());
+    let display = mcp::display_server_name(&server);
+    let removed = mcp::forget_credentials(&server)
         .await
-        .with_context(|| format!("failed to clear credentials for '{server}'"))?;
+        .with_context(|| format!("failed to clear credentials for '{display}'"))?;
     match removed {
         Some(path) => {
-            println!("Logged out of '{server}' (deleted {}).", path.display());
-            println!("\nThe next connection will need: tact-ui mcp login {server}");
+            println!("Logged out of '{display}' (deleted {}).", path.display());
+            println!("\nThe next connection will need: tact-ui mcp login {display}");
         }
         None => println!(
-            "No stored credentials for '{server}' — nothing to delete.\n\
+            "No stored credentials for '{display}' — nothing to delete.\n\
              (Credentials live at ~/.tact/mcp/oauth/<server>.json.)"
         ),
     }
@@ -409,11 +423,18 @@ pub fn render_report(report: &McpLoadReport) -> String {
             .to_string();
     }
 
+    // Widths are measured on the displayed (short) names, not the full ones, or
+    // a plugin server would pad every other row by its prefix.
     let width = report
         .configured
         .iter()
-        .map(|s| s.name.len())
-        .chain(report.skipped_remote.iter().map(String::len))
+        .map(|s| mcp::display_server_name(&s.name).len())
+        .chain(
+            report
+                .skipped_remote
+                .iter()
+                .map(|name| mcp::display_server_name(name).len()),
+        )
         .max()
         .unwrap_or(0);
 
@@ -428,7 +449,7 @@ pub fn render_report(report: &McpLoadReport) -> String {
         };
         lines.push(format!(
             "  {:<width$}  {:<34}  {}",
-            server.name,
+            mcp::display_server_name(&server.name),
             server.transport,
             status,
             width = width
@@ -436,7 +457,8 @@ pub fn render_report(report: &McpLoadReport) -> String {
     }
     for name in &report.skipped_remote {
         lines.push(format!(
-            "  {name:<width$}  {:<34}  skipped (no usable command or url)",
+            "  {:<width$}  {:<34}  skipped (no usable command or url)",
+            mcp::display_server_name(name),
             "-",
             width = width
         ));
@@ -460,7 +482,10 @@ pub fn render_report(report: &McpLoadReport) -> String {
                 .iter()
                 .find(|server| &server.name == name)
                 .map_or("<unknown>", |server| server.source.as_str());
-            notes.push(format!("  {name}  {displaced} is shadowed by {winner}"));
+            notes.push(format!(
+                "  {}  {displaced} is shadowed by {winner}",
+                mcp::display_server_name(name)
+            ));
         }
         out.push_str("\n\nOverridden declarations:\n");
         out.push_str(&notes.join("\n"));
@@ -473,7 +498,8 @@ pub fn render_report(report: &McpLoadReport) -> String {
         let mut notes = Vec::new();
         for (server, hidden) in &report.filtered {
             notes.push(format!(
-                "  {server}  {} hidden by enabled_tools/disabled_tools: {}",
+                "  {}  {} hidden by enabled_tools/disabled_tools: {}",
+                mcp::display_server_name(server),
                 hidden.len(),
                 hidden.join(", "),
             ));
@@ -490,7 +516,7 @@ pub fn render_report(report: &McpLoadReport) -> String {
         for entry in &report.unmodelled {
             notes.push(format!(
                 "  {}  {}  (ignored, from {})",
-                entry.server,
+                mcp::display_server_name(&entry.server),
                 entry.keys.join(", "),
                 entry.source,
             ));
@@ -520,17 +546,18 @@ pub fn render_live_listing(views: &[mcp::McpServerView]) -> String {
         "## 🔌 MCP Servers\n\n| Server | Transport | Source | Status |\n|---|---|---|---|\n",
     );
     for view in views {
+        let name = mcp::display_server_name(&view.server.name);
         let status = match view.status {
             McpLiveStatus::Connected { tools } => format!("connected ({tools} tools)"),
             McpLiveStatus::NeedsAuthorization => {
-                format!("needs authorization — run `/mcp auth {}`", view.server.name)
+                format!("needs authorization — run `/mcp auth {name}`")
             }
             McpLiveStatus::NotConnected => "not connected".to_string(),
             McpLiveStatus::Disabled => disabled_text(),
         };
         out.push_str(&format!(
             "| {} | {} | {} | {} |\n",
-            cell(&view.server.name),
+            cell(name),
             cell(&view.server.transport.to_string()),
             cell(&view.server.source),
             cell(&status),
@@ -569,7 +596,12 @@ fn connected_text(tools: usize) -> String {
 }
 
 fn needs_auth_text(name: &str) -> String {
-    format!("needs authorization — run `tact-ui mcp login {name}`")
+    // A plugin server is shown short, so the printed command must be the short
+    // form too — `mcp login` resolves it back (see `tact::mcp::resolve_server_name`).
+    format!(
+        "needs authorization — run `tact-ui mcp login {}`",
+        mcp::display_server_name(name)
+    )
 }
 
 fn failed_text(error: &str) -> String {
@@ -594,15 +626,19 @@ fn status_text(inspection: &mcp::McpServerInspection) -> String {
 
 /// Runs the interactive OAuth flow, printing the URL for the user to open.
 async fn authorize(server: &str) -> Result<()> {
-    // Fail before opening a browser flow for a name that is not configured.
-    let config = mcp::remote_config_for(server)?.with_context(|| {
-        format!("no remote MCP server named '{server}' is configured (see `tact-ui mcp list`)")
+    // Fail before opening a browser flow for a name that is not configured. The
+    // short form the listings show is accepted, so the printed hint is directly
+    // runnable; the canonical name is what the flow and its credential file use.
+    let server = mcp::resolve_server_name(server)?;
+    let display = mcp::display_server_name(&server);
+    let config = mcp::remote_config_for(&server)?.with_context(|| {
+        format!("no remote MCP server named '{display}' is configured (see `tact-ui mcp list`)")
     })?;
 
     let oauth_declared = matches!(config.auth, Some(tact::mcp::McpAuthConfig::Oauth { .. }));
     if !oauth_declared {
         eprintln!(
-            "Note: '{server}' does not declare `auth` in .mcp.json. \
+            "Note: '{display}' does not declare `auth` in .mcp.json. \
              Authorizing anyway — the server's 401 is what requires it."
         );
     }
@@ -610,28 +646,28 @@ async fn authorize(server: &str) -> Result<()> {
     let mut printed_url = false;
     let mut notify = |line: &str| {
         printed_url = true;
-        println!("\nOpen this URL in your browser to authorize '{server}':\n\n  {line}\n");
+        println!("\nOpen this URL in your browser to authorize '{display}':\n\n  {line}\n");
         println!("Waiting for the redirect (Ctrl-C to abort)...");
     };
 
-    mcp::authorize_server(server, &mut notify)
+    mcp::authorize_server(&server, &mut notify)
         .await
-        .with_context(|| format!("authorization failed for '{server}'"))?;
+        .with_context(|| format!("authorization failed for '{display}'"))?;
 
     if !printed_url {
         // Defensive: a successful flow always reports a URL first.
-        eprintln!("Warning: no authorization URL was reported for '{server}'.");
+        eprintln!("Warning: no authorization URL was reported for '{display}'.");
     }
-    println!("\nAuthorized '{server}'. Credentials saved.");
+    println!("\nAuthorized '{display}'. Credentials saved.");
 
     // Show the server's new state so the user immediately sees it working
     // (and does not have to re-run `list` to find out).
     let (_router, report) = mcp::load_mcp_router_with_report().await?;
     println!("\n{}", render_report(&report));
 
-    let status = status_for(&report, server);
+    let status = status_for(&report, &server);
     if !status.starts_with("connected") {
-        anyhow::bail!("authorized, but '{server}' is still not connected: {status}");
+        anyhow::bail!("authorized, but '{display}' is still not connected: {status}");
     }
     Ok(())
 }
@@ -691,6 +727,32 @@ mod tests {
     }
 
     #[test]
+    fn report_shows_a_plugin_server_under_its_short_name() {
+        let mut server = configured("plugin__canva__canva", true);
+        server.transport = mcp::McpTransportKind::Remote {
+            url: "https://mcp.canva.com/mcp".into(),
+            oauth: true,
+        };
+        server.source = "plugin openai-curated/canva".to_string();
+        let report = McpLoadReport {
+            configured: vec![server],
+            pending_auth: vec!["plugin__canva__canva".to_string()],
+            ..McpLoadReport::default()
+        };
+
+        let text = render_report(&report);
+
+        assert!(text.contains("  canva  remote"), "{text}");
+        // The status cell names the same short form the row does — and it is a
+        // command the user can actually run, which `mcp login` resolves.
+        assert!(
+            text.contains("needs authorization — run `tact-ui mcp login canva`"),
+            "{text}"
+        );
+        assert!(!text.contains("plugin__canva__canva"), "{text}");
+    }
+
+    #[test]
     fn skipped_servers_are_listed_even_though_they_are_not_configured() {
         let report = McpLoadReport {
             configured: vec![configured("ok-server", false)],
@@ -706,6 +768,41 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("typo"), "{text}");
+    }
+
+    #[test]
+    fn report_notes_name_a_plugin_server_short_too() {
+        // Every block of the report has to agree with the table above it: a
+        // note naming a different string than the row it refers to is worse
+        // than either name alone.
+        let mut server = configured("plugin__canva__canva", false);
+        server.transport = mcp::McpTransportKind::Stdio {
+            command: "/bin/canva".to_string(),
+        };
+        let report = McpLoadReport {
+            configured: vec![server],
+            shadowed: vec![(
+                "plugin__canva__canva".to_string(),
+                "/home/me/.tact/.mcp.json".to_string(),
+            )],
+            filtered: vec![(
+                "plugin__canva__canva".to_string(),
+                vec!["delete_design".to_string()],
+            )],
+            unmodelled: vec![mcp::UnmodelledKeys {
+                server: "plugin__canva__canva".to_string(),
+                source: "/proj/.tact/.mcp.json".to_string(),
+                keys: vec!["omit_tools_from".to_string()],
+            }],
+            ..McpLoadReport::default()
+        };
+
+        let text = render_report(&report);
+
+        assert!(text.contains("  canva  /home/me"), "{text}");
+        assert!(text.contains("  canva  1 hidden by"), "{text}");
+        assert!(text.contains("  canva  omit_tools_from"), "{text}");
+        assert!(!text.contains("plugin__canva__canva"), "{text}");
     }
 
     #[test]
@@ -775,6 +872,30 @@ mod tests {
         assert!(text.contains("(server-declared read-only)"), "{text}");
         assert!(
             text.contains("mcp__bm__delete_project  risk high (default)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_detail_view_heads_a_plugin_server_short_but_keeps_its_tool_prefix() {
+        // The heading is for the user; the tool names are what the agent calls,
+        // so those must keep the full server name.
+        let inspection = mcp::McpServerInspection {
+            server: configured("plugin__canva__canva", true),
+            status: McpServerStatus::Connected,
+            tools: vec!["list_designs".to_string()],
+            filtered: Vec::new(),
+            instructions_chars: None,
+            resources: None,
+            resource_templates: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
+        };
+
+        let text = render_server_detail(&inspection);
+        assert!(text.starts_with("canva  remote "), "{text}");
+        assert!(
+            text.contains("mcp__plugin__canva__canva__list_designs"),
             "{text}"
         );
     }
@@ -1272,6 +1393,31 @@ mod tests {
         let text = render_live_listing(&[]);
         assert!(text.contains("No MCP servers configured."), "{text}");
         assert!(text.contains("~/.tact/.mcp.json"), "{text}");
+    }
+
+    #[test]
+    fn live_listing_shows_a_plugin_server_under_its_short_name() {
+        // The `plugin__<id>__` prefix is how the loader keeps plugin servers
+        // apart from the user's own; in a listing it is only noise, and the
+        // Source column already says which plugin it came from.
+        let mut view = live_view(
+            "plugin__canva__canva",
+            mcp::McpTransportKind::Remote {
+                url: "https://mcp.canva.com/mcp".into(),
+                oauth: true,
+            },
+            mcp::McpLiveStatus::NeedsAuthorization,
+        );
+        view.server.source = "plugin openai-curated/canva".to_string();
+
+        let text = render_live_listing(&[view]);
+
+        assert!(text.contains("| canva |"), "{text}");
+        assert!(
+            text.contains("needs authorization — run `/mcp auth canva`"),
+            "{text}"
+        );
+        assert!(!text.contains("plugin__canva__canva"), "{text}");
     }
 
     #[test]

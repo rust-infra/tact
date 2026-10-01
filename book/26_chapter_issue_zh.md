@@ -37,6 +37,29 @@
 
 ---
 
+## 1. 2026-10-01 — 列表与提示里的插件 MCP server 只显示短名，`/mcp auth canva` 直接可用
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`display_server_name` / `resolve_server_name` / `notice_lines` / `authorize_server`）；`crates/tact-ui/src/mcp_cli.rs`（`render_live_listing` / `render_report` / `render_server_detail` / `authorize` / `get_server` / `logout`）；[Ch 08](./08_chapter_mcp_zh.md) §全部来源 |
+
+**症状 / 动机：** 插件带来的 server 叫 `plugin__<plugin_id>__<server>`，而多数插件的 manifest id 与 server key 同名，于是 Canva 插件的提示读作：
+
+> MCP server plugin__canva__canva needs authorization — run /mcp auth plugin__canva__canva
+
+一行里出现两次的 20 字符名字淹没了这句话真正要传达的东西（哪个 server、要跑哪条命令），`/mcp list` 的表格、`mcp get` 的标题同样如此。
+
+**决策：** 前缀只在**命名**处保留——它仍然是配置键、OAuth 凭据文件名（`~/.tact/mcp/oauth/<name>.json`）和 agent 工具名前缀 `mcp__<server>__<tool>` 的来源，工具名一个字节都没变。展示与输入两端各自解决：
+
+- **展示**：新增 `tact::mcp::display_server_name`，把 `plugin__<id>__` 去掉（`plugin__demo__a__b` → `a__b`：切分在 `id` 后的第一个 `__`，因此 server key 自身可以含 `__`）。凡是面向用户出现 server 名的地方都改用它——`/mcp list`（TUI 与 CLI）的表格、`mcp get` 的标题、「needs authorization — run …」提示，以及 `mcp list` 的 Overridden / Filtered / Entry-keys 备注行与 `notice_lines` 的失败、覆盖、跳过提示；表格列宽也按显示名计算。
+- **输入**：新增 `tact::mcp::resolve_server_name`——先做**精确匹配**（自己声明的 server 永远不会被插件的短名顶掉），否则取唯一一个短名相等的已配置 server。`/mcp auth`、`mcp login`、`mcp get`、`mcp logout` 都先解析再动作，所以提示里印出的短名是一条能直接跑的命令。匹配到多个（两个插件都带 `canva`）或一个都没有时报错并列出候选，不做猜测。
+- `mcp get` 的标题用短名，但工具行仍是 `mcp__plugin__canva__canva__<tool>`——那才是 agent 真正要调用的名字。`mcp logout` 的解析是**尽力而为**：server 已从配置里删掉时仍按原样当作凭据名去删。
+
+**变更后行为：** 上面那句话变成 `MCP server canva needs authorization — run /mcp auth canva`，而 `/mcp auth canva`、`tact-ui mcp login canva`、`tact-ui mcp get canva` 都能工作；同一个用户自己声明的 `canva` 依旧优先命中自己。报告/列表里的所有 server 名（含 Overridden、Filtered、Entry-keys 备注行与失败提示）都一致地显示短名——同一行文字的两种写法比任一种单独出现都糟。`mcp remove` 不变：插件 server 任何文件都删不掉，没有短名可解析。`mcp__plugin__canva__canva__<tool>` 与凭据路径不变，故对 agent 完全无影响。
+
+**指针：** `crates/tact/src/mcp/mod.rs`（`display_server_name`、`resolve_server_name`、`resolve_name_against`、`notice_lines`）、`crates/tact-ui/src/mcp_cli.rs`。
+
 ## 1. 2026-09-30 — 斜杠命令收进一个枚举，6 条描述不再显示成命令名
 
 | 字段 | 值 |

@@ -321,6 +321,76 @@ pub fn validate_server_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The prefix every plugin-contributed server name carries:
+/// `plugin__<plugin_id>__<server>` (see [`installed_plugin_mcp_servers`]).
+const PLUGIN_SERVER_PREFIX: &str = "plugin__";
+
+/// Splits `plugin__<plugin_id>__<server>` into `(plugin_id, server)`.
+///
+/// `None` for a name that does not carry the prefix, or whose plugin id or
+/// server segment is empty. The split is on the *first* `__` after the prefix,
+/// so a server key may itself contain `__`; only a plugin id may not.
+fn split_plugin_server_name(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix(PLUGIN_SERVER_PREFIX)?;
+    let (plugin_id, server) = rest.split_once("__")?;
+    (!plugin_id.is_empty() && !server.is_empty()).then_some((plugin_id, server))
+}
+
+/// The short, human-facing form of a server name.
+///
+/// A plugin-contributed server drops its `plugin__<plugin_id>__` prefix. That
+/// is display only: the full name stays the identity — the config key, the
+/// OAuth credential file, and the `mcp__<server>__<tool>` prefix the agent
+/// calls. [`resolve_server_name`] accepts either form on input, so a hint can
+/// name a server the short way and still be a command the user can run.
+#[must_use]
+pub fn display_server_name(name: &str) -> &str {
+    match split_plugin_server_name(name) {
+        Some((_, server)) => server,
+        None => name,
+    }
+}
+
+/// Resolves a user-typed server name to the configured one it stands for.
+///
+/// An exact match always wins, so a server the user declared themselves is
+/// never reached through a plugin's short form. Otherwise the *only* configured
+/// server whose [`display_server_name`] equals `name` is returned — which is
+/// what lets `/mcp auth canva` reach `plugin__canva__canva`. No match, or
+/// several (two plugins both shipping a `canva` server), is an error naming the
+/// candidates rather than a silent pick.
+pub fn resolve_server_name(name: &str) -> Result<String> {
+    let resolved = resolve_current()?;
+    let configured: Vec<String> = resolved
+        .configured()
+        .into_iter()
+        .map(|server| server.name)
+        .collect();
+    resolve_name_against(name, &configured)
+}
+
+/// Pure core of [`resolve_server_name`], separated so the matching rules are
+/// testable without reading the working directory.
+fn resolve_name_against(name: &str, configured: &[String]) -> Result<String> {
+    if configured.iter().any(|configured| configured == name) {
+        return Ok(name.to_owned());
+    }
+    let matches: Vec<&str> = configured
+        .iter()
+        .map(String::as_str)
+        .filter(|configured| display_server_name(configured) == name)
+        .collect();
+    match matches.as_slice() {
+        [only] => Ok((*only).to_owned()),
+        [] => bail!("no MCP server named '{name}' is configured"),
+        several => bail!(
+            "'{name}' matches {} configured servers ({}); use the full name of the one you mean",
+            several.len(),
+            several.join(", ")
+        ),
+    }
+}
+
 /// How a configured server will be reached, for diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpTransportKind {
@@ -530,20 +600,33 @@ impl McpLoadReport {
     pub fn notice_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for (server, error) in &self.failures {
-            lines.push(format!("MCP server {server} failed to connect: {error}"));
+            lines.push(format!(
+                "MCP server {} failed to connect: {error}",
+                display_server_name(server)
+            ));
         }
         for server in &self.pending_auth {
+            // The short form, because this line's whole job is to hand the user
+            // a command to type; `plugin__canva__canva` twice is not one.
+            let name = display_server_name(server);
             lines.push(format!(
-                "MCP server {server} needs authorization — run /mcp auth {server}"
+                "MCP server {name} needs authorization — run /mcp auth {name}"
             ));
         }
         for (server, source) in &self.shadowed {
-            lines.push(format!("MCP server {server} overrides {source}"));
+            lines.push(format!(
+                "MCP server {} overrides {source}",
+                display_server_name(server)
+            ));
         }
         if !self.skipped_remote.is_empty() {
             lines.push(format!(
                 "MCP servers skipped (unsupported transport): {}",
-                self.skipped_remote.join(", ")
+                self.skipped_remote
+                    .iter()
+                    .map(|name| display_server_name(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         lines
@@ -3053,10 +3136,17 @@ pub async fn authorize_server(
     server_name: &str,
     notify: &mut (dyn FnMut(&str) + Send),
 ) -> Result<()> {
-    let Some(config) = remote_config_for(server_name)? else {
-        bail!("no remote MCP server named {server_name} is configured");
+    // Accept the short form the listings show (`canva`) as well as the full
+    // name. Everything downstream — the flow and the credential file — keys off
+    // the resolved name, so this is the one place to translate.
+    let server_name = resolve_server_name(server_name)?;
+    let Some(config) = remote_config_for(&server_name)? else {
+        bail!(
+            "no remote MCP server named {} is configured",
+            display_server_name(&server_name)
+        );
     };
-    remote::authorize_remote_server(server_name, &config, notify).await
+    remote::authorize_remote_server(&server_name, &config, notify).await
 }
 
 fn join_mcp_content(content: &[rmcp::model::Content]) -> String {
@@ -3101,9 +3191,10 @@ mod tests {
         McpServerPolicy, McpToolConfig, McpToolName, McpTransportConfig, MockMcpService,
         PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer,
         ToolListChangedSignal, ToolListRefresh, ToolRisk, UnmodelledKeys, cap_instructions,
-        collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved, drain_mcp_stderr,
-        installed_plugin_mcp_servers, plugin_manifest_mcp_servers, prepare_plugin_entry,
-        resolve_env_vars, resolve_servers, unmodelled_keys,
+        collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved,
+        display_server_name, drain_mcp_stderr, installed_plugin_mcp_servers,
+        plugin_manifest_mcp_servers, prepare_plugin_entry, resolve_env_vars, resolve_name_against,
+        resolve_servers, unmodelled_keys,
     };
 
     use crate::{
@@ -5192,6 +5283,89 @@ mod tests {
         // Sorted by name, matching the loader's `configured()` order.
         let names: Vec<&str> = views.iter().map(|v| v.server.name.as_str()).collect();
         assert_eq!(names, ["broken", "ok", "tact-mcp-live-test-missing"]);
+    }
+
+    #[test]
+    fn display_server_name_strips_only_the_plugin_prefix() {
+        assert_eq!(display_server_name("figma"), "figma");
+        assert_eq!(display_server_name("plugin__canva__canva"), "canva");
+        assert_eq!(display_server_name("plugin__demo__echo"), "echo");
+        // A server key may itself contain `__`; only the plugin id may not.
+        assert_eq!(display_server_name("plugin__demo__a__b"), "a__b");
+        // Near-misses stay untouched rather than being half-stripped.
+        assert_eq!(display_server_name("plugin__demo"), "plugin__demo");
+        assert_eq!(display_server_name("plugin____echo"), "plugin____echo");
+        assert_eq!(display_server_name("my__plugin__x"), "my__plugin__x");
+    }
+
+    #[test]
+    fn resolve_name_prefers_an_exact_match_over_a_plugin_short_form() {
+        let configured = ["canva".to_owned(), "plugin__canva__canva".to_owned()];
+
+        // The user's own server wins; the plugin's short form never reaches it.
+        assert_eq!(
+            resolve_name_against("canva", &configured).unwrap(),
+            "canva".to_owned()
+        );
+        assert_eq!(
+            resolve_name_against("plugin__canva__canva", &configured).unwrap(),
+            "plugin__canva__canva".to_owned()
+        );
+    }
+
+    #[test]
+    fn resolve_name_reaches_a_plugin_server_through_its_short_form() {
+        let configured = ["figma".to_owned(), "plugin__canva__canva".to_owned()];
+
+        assert_eq!(
+            resolve_name_against("canva", &configured).unwrap(),
+            "plugin__canva__canva".to_owned()
+        );
+        assert_eq!(
+            resolve_name_against("figma", &configured).unwrap(),
+            "figma".to_owned()
+        );
+    }
+
+    #[test]
+    fn resolve_name_refuses_to_guess_between_two_plugin_servers() {
+        let configured = [
+            "plugin__alpha__canva".to_owned(),
+            "plugin__beta__canva".to_owned(),
+        ];
+
+        let error = resolve_name_against("canva", &configured).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("plugin__alpha__canva"), "{message}");
+        assert!(message.contains("plugin__beta__canva"), "{message}");
+        assert!(message.contains("use the full name"), "{message}");
+    }
+
+    #[test]
+    fn resolve_name_reports_an_unknown_name() {
+        let error = resolve_name_against("nope", &["figma".to_owned()]).unwrap_err();
+
+        assert!(
+            error.to_string().contains("no MCP server named 'nope'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn pending_authorization_hint_uses_the_short_plugin_name() {
+        let report = McpLoadReport {
+            pending_auth: vec!["plugin__canva__canva".to_owned()],
+            ..McpLoadReport::default()
+        };
+
+        let lines = report.notice_lines();
+
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("MCP server canva needs authorization"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("/mcp auth canva"), "{lines:?}");
     }
 
     #[test]
