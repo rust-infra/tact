@@ -123,6 +123,29 @@ impl PermissionPolicy {
         }
     }
 
+    /// The raw string this policy's decision is about: the path, the patch's
+    /// first target, or the command.
+    ///
+    /// Used for display and for `redaction.basic_only_paths`, which has to be
+    /// answerable even when there is no sensitive hit — a `level: "credential"`
+    /// setting applies to every call, fixtures included.
+    #[must_use]
+    pub fn target(&self, input: &Value) -> Option<String> {
+        match self {
+            PermissionPolicy::ReadPath { path_field }
+            | PermissionPolicy::WritePath { path_field } => input
+                .get(*path_field)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            PermissionPolicy::PatchPaths => patch_targets(input).into_iter().next(),
+            PermissionPolicy::ShellCommand { command_field } => input
+                .get(*command_field)
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            PermissionPolicy::Read | PermissionPolicy::Write | PermissionPolicy::High => None,
+        }
+    }
+
     /// The sensitive-path guard for this policy's target, if any.
     ///
     /// [`Scanner`](crate::security::sensitive::Scanner) carries the user's
@@ -139,20 +162,19 @@ impl PermissionPolicy {
         scanner: &crate::security::sensitive::Scanner,
     ) -> Option<crate::security::sensitive::Hit> {
         match self {
-            PermissionPolicy::ReadPath { path_field }
-            | PermissionPolicy::WritePath { path_field } => {
-                let raw = input.get(*path_field).and_then(|v| v.as_str())?;
-                if !target_is_workspace_relative(raw) {
+            PermissionPolicy::ReadPath { .. } | PermissionPolicy::WritePath { .. } => {
+                let raw = self.target(input)?;
+                if !target_is_workspace_relative(&raw) {
                     return None;
                 }
-                scanner.classify(raw)
+                scanner.classify(&raw)
             }
             PermissionPolicy::PatchPaths => patch_targets(input)
                 .into_iter()
                 .find_map(|path| scanner.classify(&path)),
-            PermissionPolicy::ShellCommand { command_field } => {
-                let cmd = input.get(*command_field).and_then(|v| v.as_str())?;
-                scanner.classify_command(cmd)
+            PermissionPolicy::ShellCommand { .. } => {
+                let command = self.target(input)?;
+                scanner.classify_command(&command)
             }
             PermissionPolicy::Read | PermissionPolicy::Write | PermissionPolicy::High => None,
         }

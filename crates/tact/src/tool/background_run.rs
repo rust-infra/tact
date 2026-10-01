@@ -94,7 +94,14 @@ pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
 /// (e.g., invalid command or internal error).
 pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Result<String> {
     // Stream live output into the invocation's tool card while the task runs.
-    let progress = BackgroundProgressSink::new(ctx.progress_reporter.tool_id(), ctx.ui_tx.clone());
+    // The sink inherits this invocation's reporter, so a background command
+    // gets the same live-output redaction a foreground one does — it prints
+    // secrets just as readily, and its card outlives the turn.
+    //
+    // The guard has already dealt with a sensitive *command* (it refused or
+    // escalated before we got here); what redaction adds is output that carries
+    // a secret without naming it, which is exactly the `python -c …` case.
+    let progress = BackgroundProgressSink::from_reporter(ctx.progress_reporter.clone());
     let command = input.command;
     let id = ctx
         .background_manager

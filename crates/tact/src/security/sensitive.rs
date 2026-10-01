@@ -298,15 +298,19 @@ fn matcher(pattern: &str) -> Option<GlobMatcher> {
     Glob::new(pattern).ok().map(|g| g.compile_matcher())
 }
 
-/// Where a user-supplied pattern (`extra`, `allow`) applies.
+/// Where a user-supplied pattern (`extra`, `allow`, `basic_only_paths`)
+/// applies.
 ///
 /// A leading `~/` makes it home-relative and the tilde is **stripped** before
 /// compiling — a glob containing a literal `~` would never match the relative
-/// path it is compared against. `/` makes it absolute; anything else is a
-/// filename.
+/// path it is compared against. A leading `/` makes it absolute; a pattern that
+/// merely *contains* a `/` is a path glob (`**/fixtures/**`) and is matched
+/// against the whole path, because a pattern with a separator in it can never
+/// match a bare filename. Anything else matches the final component.
 enum UserScope<'a> {
     Home(&'a str),
     Absolute(&'a str),
+    Path(&'a str),
     Name(&'a str),
 }
 
@@ -320,6 +324,9 @@ fn user_scope(pattern: &str) -> Option<UserScope<'_>> {
     }
     if pattern.starts_with('/') {
         return Some(UserScope::Absolute(pattern));
+    }
+    if pattern.contains('/') {
+        return Some(UserScope::Path(pattern));
     }
     Some(UserScope::Name(pattern))
 }
@@ -439,7 +446,7 @@ pub fn classify_with(raw: &str, home: Option<&Path>, extra: &[String]) -> Option
                 Some(rel) => (rel, g),
                 None => continue,
             },
-            UserScope::Absolute(g) => (expanded.as_str(), g),
+            UserScope::Absolute(g) | UserScope::Path(g) => (expanded.as_str(), g),
             UserScope::Name(g) => (name, g),
         };
         if matcher(glob).is_some_and(|m| m.is_match(subject)) {
@@ -529,6 +536,44 @@ pub fn refusal_text(hit: &Hit) -> String {
     )
 }
 
+/// Whether any pattern in `patterns` matches `raw`, using the same rules the
+/// scanner's `allow` list uses: `~/` is home-relative, `/` is absolute, and
+/// anything else matches the final path component.
+///
+/// Shared rather than duplicated because `redaction.basic_only_paths` and
+/// `sensitive_paths.allow` are the same matching problem with different
+/// consequences, and two implementations would drift.
+#[must_use]
+pub fn matches_any_with(patterns: &[String], raw: &str, home: Option<&Path>) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let raw = raw.trim();
+    let expanded = expand_home(raw, home);
+    let name = file_name_of(raw);
+    let relative = home_relative(&expanded, home);
+    patterns.iter().any(|pattern| {
+        let Some(scope) = user_scope(pattern) else {
+            return false;
+        };
+        let (subject, glob) = match scope {
+            UserScope::Home(g) => match relative.as_deref() {
+                Some(rel) => (rel, g),
+                None => return false,
+            },
+            UserScope::Absolute(g) | UserScope::Path(g) => (expanded.as_str(), g),
+            UserScope::Name(g) => (name, g),
+        };
+        matcher(glob).is_some_and(|m| m.is_match(subject))
+    })
+}
+
+/// [`matches_any_with`] against the process `$HOME`.
+#[must_use]
+pub fn matches_any(patterns: &[String], raw: &str) -> bool {
+    matches_any_with(patterns, raw, home_dir())
+}
+
 // ---------------------------------------------------------------------------
 // Scanner
 // ---------------------------------------------------------------------------
@@ -613,27 +658,7 @@ impl Scanner {
 
     /// Whether an `allow` entry exempts this raw path or command token.
     fn is_allowed(&self, raw: &str) -> bool {
-        if self.allow.is_empty() {
-            return false;
-        }
-        let raw = raw.trim();
-        let expanded = expand_home(raw, self.home.as_deref());
-        let name = file_name_of(raw);
-        let relative = home_relative(&expanded, self.home.as_deref());
-        self.allow.iter().any(|pattern| {
-            let Some(scope) = user_scope(pattern) else {
-                return false;
-            };
-            let (subject, glob) = match scope {
-                UserScope::Home(g) => match relative.as_deref() {
-                    Some(rel) => (rel, g),
-                    None => return false,
-                },
-                UserScope::Absolute(g) => (expanded.as_str(), g),
-                UserScope::Name(g) => (name, g),
-            };
-            matcher(glob).is_some_and(|m| m.is_match(subject))
-        })
+        matches_any_with(&self.allow, raw, self.home.as_deref())
     }
 
     /// Classify a path, honouring `enabled` and `allow`.
@@ -901,6 +926,25 @@ mod tests {
         let hit = scanner.classify("config.vault").unwrap();
         assert_eq!(hit.tier, Tier::Secret);
         assert_eq!(hit.pattern, "*.vault");
+    }
+
+    /// A separator in a pattern means it is a path glob: it can never match a
+    /// bare filename, so matching it against one silently does nothing.
+    #[test]
+    fn a_slash_in_a_pattern_makes_it_a_path_glob() {
+        let scanner = Scanner::with_parts(
+            Some(home().to_path_buf()),
+            vec![],
+            vec!["**/fixtures/**".to_string()],
+        );
+        assert!(
+            scanner.classify("tests/fixtures/.env").is_none(),
+            "a nested path must be matched, not reduced to its filename"
+        );
+        assert!(
+            scanner.classify(".env").is_some(),
+            "outside fixtures it holds"
+        );
     }
 
     #[test]

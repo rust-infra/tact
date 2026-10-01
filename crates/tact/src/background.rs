@@ -262,6 +262,10 @@ impl BackgroundManager {
                 if success { "completed" } else { "failed" }
             );
             if let Some(progress) = &progress {
+                // Release the redactor's held-back tail before finalizing, so
+                // the card shows the last line rather than waiting for the
+                // finished payload to replace everything.
+                progress.flush();
                 progress.send_finished(success, &message, &record.output);
             }
             let _ = manager.upsert(&record).await;
@@ -479,8 +483,7 @@ impl SharedBackgroundManager {
 /// TUI tool card while the task runs, then finalize it on completion.
 #[derive(Clone, Debug)]
 pub struct BackgroundProgressSink {
-    tool_id: String,
-    ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    reporter: crate::tool::ToolProgressReporter,
 }
 
 impl BackgroundProgressSink {
@@ -489,32 +492,41 @@ impl BackgroundProgressSink {
         ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     ) -> Self {
         Self {
-            tool_id: tool_id.into(),
-            ui_tx,
+            reporter: crate::tool::ToolProgressReporter::new(tool_id, ui_tx),
         }
+    }
+
+    /// Build from the invocation's own reporter, inheriting both its channel
+    /// and its streaming redaction.
+    ///
+    /// A background command is as capable of printing a token as a foreground
+    /// one, and its card stays on screen while it runs, so it needs the same
+    /// treatment. Delegating to
+    /// [`ToolProgressReporter`](crate::tool::ToolProgressReporter) rather than
+    /// keeping a second copy of the buffering logic is what makes that a
+    /// one-line change.
+    #[must_use]
+    pub fn from_reporter(reporter: crate::tool::ToolProgressReporter) -> Self {
+        Self { reporter }
     }
 
     fn send_progress(&self, chunks: Vec<ToolOutputChunk>) {
-        if chunks.is_empty() {
-            return;
-        }
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(AgentUpdate::ToolProgress {
-                tool_id: self.tool_id.clone(),
-                chunks,
-            });
-        }
+        self.reporter.report(chunks);
+    }
+
+    fn flush(&self) {
+        self.reporter.flush();
     }
 
     fn send_finished(&self, success: bool, message: &str, output: &str) {
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(AgentUpdate::BackgroundTaskFinished {
-                tool_id: self.tool_id.clone(),
-                success,
-                message: message.to_string(),
-                output: output.to_string(),
-            });
-        }
+        self.reporter.send(AgentUpdate::BackgroundTaskFinished {
+            tool_id: self.reporter.tool_id().to_string(),
+            success,
+            message: message.to_string(),
+            // The card can outlive the tool result, so its tail is redacted on
+            // the way out just like the stream was.
+            output: self.reporter.redact_text(output),
+        });
     }
 }
 
@@ -1352,6 +1364,55 @@ mod tests {
 
         assert!(output.contains("error"));
         assert!(output.contains("Process interrupted (agent restarted)"));
+    }
+
+    /// A background command's live card is a real leak surface: it is visible
+    /// while the task runs and outlives the turn. A secret printed by the task
+    /// must be redacted on both the streaming path and the finished payload.
+    #[tokio::test]
+    async fn run_redacts_a_secret_in_its_live_output_and_final_payload() {
+        let (manager, tmp) = temp_manager("run_redacts_secret");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = BackgroundProgressSink::from_reporter(
+            crate::tool::ToolProgressReporter::new("bg-redact", Some(tx))
+                .with_stream_redaction(crate::security::RedactionLevel::Basic),
+        );
+
+        manager
+            .run(
+                "echo sk-7325c3231cef402d8481c32a49c4898a".to_string(),
+                tmp.path(),
+                "sess-1".to_string(),
+                Some(progress),
+                no_cancel(),
+            )
+            .await
+            .unwrap();
+
+        let mut seen = String::new();
+        let mut saw_progress = false;
+        loop {
+            let Ok(update) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await else {
+                panic!("timed out waiting for background task events");
+            };
+            match update {
+                Some(AgentUpdate::ToolProgress { chunks, .. }) => {
+                    seen.extend(chunks.iter().map(|c| c.text.as_str()));
+                    saw_progress = true;
+                }
+                Some(AgentUpdate::BackgroundTaskFinished { output, .. }) => {
+                    seen.push_str(&output);
+                    break;
+                }
+                other => panic!("unexpected update: {other:?}"),
+            }
+        }
+        assert!(saw_progress, "expected live ToolProgress before finish");
+        assert!(seen.contains("[redacted:api-key]"), "seen: {seen:?}");
+        assert!(
+            !seen.contains("sk-7325c3231cef"),
+            "the token must never be shown: {seen:?}"
+        );
     }
 
     #[tokio::test]

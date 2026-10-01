@@ -163,8 +163,23 @@ pub struct ToolContext {
 
 impl ToolContext {
     pub fn for_invocation(&self, tool_id: &str) -> Self {
+        self.for_invocation_with_redaction(tool_id, crate::security::RedactionLevel::Off)
+    }
+
+    /// [`Self::for_invocation`] plus live-output redaction at `level`.
+    ///
+    /// Streaming is redacted separately from the final result because the two
+    /// leaks happen at different times: the live view is what the user watches
+    /// while a command is still running, and the assembled result is what the
+    /// transcript and the session store keep.
+    pub fn for_invocation_with_redaction(
+        &self,
+        tool_id: &str,
+        level: crate::security::RedactionLevel,
+    ) -> Self {
         let mut context = self.clone();
-        context.progress_reporter = ToolProgressReporter::new(tool_id, self.ui_tx.clone());
+        context.progress_reporter =
+            ToolProgressReporter::new(tool_id, self.ui_tx.clone()).with_stream_redaction(level);
         context
     }
 }

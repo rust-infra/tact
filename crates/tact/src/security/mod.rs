@@ -40,6 +40,7 @@
 //! the same tolerance the rule lists have. Nothing here is configured through
 //! `config.toml`: security rules live in one place.
 
+pub mod redact;
 pub mod sensitive;
 
 use std::collections::BTreeMap;

@@ -273,8 +273,9 @@ async fn run_native_tool(
     name: &str,
     input: &serde_json::Value,
     output_policy: OutputPolicy,
+    stream_redaction: crate::security::RedactionLevel,
 ) -> ExecResult {
-    let call_ctx = ctx.for_invocation(tool_use_id);
+    let call_ctx = ctx.for_invocation_with_redaction(tool_use_id, stream_redaction);
     match tools.call_result(&call_ctx, name, input.clone()).await {
         Ok(result) => {
             let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
@@ -1017,6 +1018,27 @@ impl Agent {
                     ResolvedTool::Native { metadata } => metadata.output,
                     _ => OutputPolicy::PersistLargeOutput,
                 };
+                // Live-output redaction is decided per call, the same way the
+                // final result's level is: a sensitive target gets the full
+                // treatment, everything else keeps the high-confidence rules.
+                let stream_redaction = {
+                    let redaction = self.runtime.permission_manager.security_config().redaction;
+                    let (sensitive, target) = match &prep.resolved {
+                        ResolvedTool::Native { metadata } => (
+                            metadata
+                                .permission
+                                .sensitive(&prep.input, &self.runtime.security)
+                                .is_some(),
+                            metadata.permission.target(&prep.input),
+                        ),
+                        _ => (false, None),
+                    };
+                    crate::security::redact::level_for_call(
+                        &redaction,
+                        sensitive,
+                        target.as_deref(),
+                    )
+                };
                 futures.push(async move {
                     let start = std::time::Instant::now();
                     let exec = if let Some(tool) = resource_tool {
@@ -1031,6 +1053,7 @@ impl Agent {
                             &prep.name,
                             &prep.input,
                             output_policy,
+                            stream_redaction,
                         )
                         .await
                     };
@@ -1041,6 +1064,42 @@ impl Agent {
             let mut pending_recent_files: Vec<String> = Vec::new();
             while let Some((pi, exec, duration_us)) = futures.next().await {
                 let prep = &prepared[pi];
+
+                // ── Redaction ───────────────────────────────────────────────
+                //
+                // The single choke point for the *result* text. Redacting here,
+                // before anything reads it, means the PostToolUse hook, the TUI
+                // step detail, the transcript and the session store all see the
+                // same redacted string — there is no second path to keep in
+                // sync. Deliberately not applied to `prep.input` / `arg_full`:
+                // the model's own `tool_use` block has to round-trip
+                // byte-identical or the next request is malformed.
+                let mut exec = exec;
+                let redaction = self.runtime.permission_manager.security_config().redaction;
+                let (call_is_sensitive, target) = match &prep.resolved {
+                    ResolvedTool::Native { metadata } => (
+                        metadata
+                            .permission
+                            .sensitive(&prep.input, &self.runtime.security)
+                            .is_some(),
+                        metadata.permission.target(&prep.input),
+                    ),
+                    _ => (false, None),
+                };
+                let level = crate::security::redact::level_for_call(
+                    &redaction,
+                    call_is_sensitive,
+                    target.as_deref(),
+                );
+                if level != crate::security::RedactionLevel::Off {
+                    exec.content = crate::security::redact::redact(
+                        &exec.content,
+                        level,
+                        &redaction.extra_patterns,
+                    )
+                    .into_owned();
+                }
+
                 let prep_id = prep.id.clone();
                 let prep_name = prep.name.clone();
                 let prep_input = prep.input.clone();
@@ -1515,6 +1574,83 @@ mod tests {
             ),
             "run"
         );
+    }
+
+    /// The guard is a heuristic; this is the backstop. A token printed by a
+    /// command — the shape that leaked in the first place — must not reach the
+    /// tool result the conversation and the session store are built from.
+    #[test]
+    fn a_token_in_command_output_never_reaches_the_tool_result() {
+        let mut agent = agent_with(
+            "redact_bash_output",
+            crate::permission::PermissionMode::Default,
+        );
+        let (blocks, _) = block_on(agent.execute_tool_call(&tool_use(
+            "bash",
+            serde_json::json!({ "command": "echo sk-7325c3231cef402d8481c32a49c4898a" }),
+        )))
+        .unwrap();
+
+        let text = tool_result_text(&blocks);
+        assert!(text.contains("[redacted:api-key]"), "{text}");
+        assert!(!text.contains("sk-7325c3231cef"), "{text}");
+    }
+
+    /// An in-workspace `.env` is `Secret`-tier, so the call is classified
+    /// sensitive and the structural rules run: the value goes, the key name and
+    /// the non-secret lines stay.
+    #[test]
+    fn an_env_read_keeps_its_shape_but_not_its_values() {
+        let mut agent = agent_with("redact_env_read", crate::permission::PermissionMode::Auto);
+        let env_path = agent.tool_context.work_dir.join(".env");
+        std::fs::write(&env_path, "API_KEY=abc123secret\nPORT=8080\n").unwrap();
+
+        let (blocks, _) = block_on(agent.execute_tool_call(&tool_use(
+            "read_file",
+            serde_json::json!({ "path": ".env" }),
+        )))
+        .unwrap();
+
+        let text = tool_result_text(&blocks);
+        assert!(text.contains("API_KEY=[redacted:value]"), "{text}");
+        assert!(!text.contains("abc123secret"), "{text}");
+        assert!(
+            text.contains("PORT=8080"),
+            "non-secret lines survive: {text}"
+        );
+    }
+
+    /// Ordinary source is untouched: the structural rules must not rewrite the
+    /// user's own code, which is why they are gated on a sensitive target.
+    #[test]
+    fn a_source_read_is_left_alone() {
+        let mut agent = agent_with(
+            "redact_source_read",
+            crate::permission::PermissionMode::Default,
+        );
+        let src = agent.tool_context.work_dir.join("main.rs");
+        std::fs::write(&src, "let token = compute(x);\n").unwrap();
+
+        let (blocks, _) = block_on(agent.execute_tool_call(&tool_use(
+            "read_file",
+            serde_json::json!({ "path": "main.rs" }),
+        )))
+        .unwrap();
+
+        assert_eq!(tool_result_text(&blocks), "let token = compute(x);");
+    }
+
+    /// Concatenated tool-result text, for asserting on what the conversation
+    /// (and therefore the session store) received.
+    fn tool_result_text(blocks: &[ContentBlock]) -> String {
+        blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[tokio::test]
