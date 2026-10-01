@@ -37,6 +37,21 @@
 
 ---
 
+## 1. 2026-10-01 — palette / slash / file picker / select 弹窗改为取色自 theme，亮色主题下不再白底白字
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tui/src/render/popups/{slash_command,command_palette,file_picker}.rs`；`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`、`crates/agent_tui_kit/src/render/popups/select.rs`；`crates/tui/src/render/popup_scene_tests.rs`（4 个亮色主题回归测试）；[Ch 23](./23_chapter_tui_zh.md) §覆层弹窗 |
+
+**症状：** 覆层弹窗的**行内容**用字面量取色：`Color::White`（未选中行、选中行前景）、`Color::Cyan`（选中行）、`Color::DarkGray`（描述与分组标题）、`Color::Gray`（空提示）。而 chrome（`render_popup_chrome`）是 theme 感知的，它给弹窗铺 `bg(theme.bg)`——亮色主题的 `bg` 是 **White**。于是 `Light` / `InkLight` / `SolarizedLight` 下：未选中行 = 白底白字，**整张命令列表不可见**（实测缓冲：`fg=White bg=Reset` 叠在 `bg=White` 的框内）；选中行是 Dark 的 cyan，恰好等于 `Light` 的 `highlight`，而它的 `accent` 是蓝——高亮与强调色都不属于当前主题。`select`（权限/模型选择器）与 file picker 的选中行同样是 `White on highlight`，亮色主题高亮为亮色时读不清。
+
+**决策：** 行内容的取色与 chrome 对齐到同一套 theme 字段：未选中 `theme.fg`、次要用 `theme.muted`（描述、分组标题、空提示）、强调用 `theme.accent`、选中行统一为 `bg(theme.highlight).fg(theme.fg)`（深色主题下与旧的 White 完全等价，亮色主题下自动变成蓝底黑字）。`SelectPopupWidget` 因此多了 `muted_color` 构造参数（唯一调用方是 `render/popups/select.rs`，已传 `theme.muted`），选中行改用调用方给的 `fg_color` 而非字面量。file picker 的文件类型色（`.rs` → 橙、`.py` → 蓝 …）**保持**：那是有意的语法式调色板，不属于"伪装成主题色"的那一类。
+
+**变更后行为：** 12 个内置主题下，弹窗行内容都随主题走；`Dark` 的渲染与修复前逐字节相同（`theme.fg` = White、`theme.accent` = Cyan），亮色主题不再是白底白字。
+
+**指针：** `popup_scene_tests` 的 `slash_popup_rows_take_their_colors_from_the_theme`、`command_palette_selected_row_is_legible_on_a_light_theme`、`file_picker_selected_row_is_legible_on_a_light_theme`、`select_popup_rows_and_empty_hint_take_their_colors_from_the_theme`（用 `cell_at` 定位具体单元格断言 fg；把任一处改回 `Color::White` 都会让它们失败）。
+
 ## 1. 2026-10-01 — skills 不再是斜杠一级命令，收进 `/skill <name>`
 
 | 字段 | 值 |

@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem},
 };
@@ -27,6 +27,10 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
     // -----
 
     let msgs = app.msgs();
+    // Theme, not literals: this popup used to draw cyan/white/dark-gray, which
+    // on a light theme is white items on the white popup background — the whole
+    // list, invisible.
+    let theme = app.theme;
     let candidates = app.slash_candidates();
     let n = candidates.len();
     if n == 0 {
@@ -46,7 +50,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
             inner.y,
             &Line::from(Span::styled(
                 msgs.palette_empty,
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme.muted),
             )),
             inner.width,
         );
@@ -105,7 +109,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
         0
     };
 
-    let accent = Color::Cyan;
+    let accent = theme.accent;
     // Subcommand rows are a table (`/plugin uninstall  <name>`) and read better
     // with their syntax column lined up; the command list is not (names there
     // already reach the widest point).
@@ -131,7 +135,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
                 ListItem::new(Line::from(Span::styled(
                     format!(" {label}"),
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(theme.muted)
                         .add_modifier(Modifier::DIM | Modifier::BOLD),
                 )))
             }
@@ -162,10 +166,10 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
                         if is_sel {
                             Style::default().fg(accent).add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default().fg(Color::White)
+                            Style::default().fg(theme.fg)
                         },
                     ),
-                    Span::styled(desc_short, Style::default().fg(Color::DarkGray)),
+                    Span::styled(desc_short, Style::default().fg(theme.muted)),
                 ]))
             }
         })

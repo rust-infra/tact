@@ -127,6 +127,8 @@ pub struct SelectPopupWidget<'a> {
     highlight_color: Color,
     /// Normal option foreground color.
     fg_color: Color,
+    /// Secondary text (the empty hint), so it stays legible on every theme.
+    muted_color: Color,
     /// Popup background color.
     bg_color: Color,
     /// Hint text when there are no options.
@@ -144,6 +146,7 @@ impl<'a> SelectPopupWidget<'a> {
         state: &'a SelectPopup,
         highlight_color: Color,
         fg_color: Color,
+        muted_color: Color,
         bg_color: Color,
         empty_text: &'static str,
         arrow: &'static str,
@@ -152,6 +155,7 @@ impl<'a> SelectPopupWidget<'a> {
             state,
             highlight_color,
             fg_color,
+            muted_color,
             bg_color,
             empty_text,
             arrow,
@@ -230,7 +234,7 @@ impl Widget for SelectPopupWidget<'_> {
         let items: Vec<ListItem> = if self.state.options.is_empty() {
             vec![ListItem::new(Span::styled(
                 self.empty_text,
-                Style::default().fg(Color::Gray),
+                Style::default().fg(self.muted_color),
             ))]
         } else {
             let selected = self
@@ -245,7 +249,10 @@ impl Widget for SelectPopupWidget<'_> {
                     let abs_i = offset + i;
                     let is_focused = abs_i == selected;
                     let style = if is_focused {
-                        Style::default().bg(self.highlight_color).fg(Color::White)
+                        // `fg` over `highlight`, not a literal white: on a
+                        // light theme the highlight is bright and white text
+                        // on it is the popup's only unreadable row.
+                        Style::default().bg(self.highlight_color).fg(self.fg_color)
                     } else {
                         Style::default().fg(self.fg_color)
                     };

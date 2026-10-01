@@ -41,6 +41,7 @@ pub fn render_select_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Re
         ctx.select,
         ctx.theme.highlight,
         ctx.theme.fg,
+        ctx.theme.muted,
         ctx.theme.bottom_bar_bg,
         ctx.messages.select_empty,
         ctx.messages.select_arrow,

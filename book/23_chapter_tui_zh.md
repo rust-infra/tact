@@ -433,6 +433,8 @@ Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit �
 
 Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overlay 无论内容如何，外观上都属于统一家族。
 
+**内容行同样取色自 theme（2026-10-01 修）：** chrome 只画框和背景，行内容由各弹窗自己画——而 palette / slash commands / file picker / select 曾用字面量 `Color::White`、`Color::Cyan`、`Color::DarkGray`。亮色主题下 `theme.bg` 是白，框内每一条未选中行就是白底白字**完全不可见**（选中行又是暗色主题的 cyan，而亮色主题 accent 是蓝）。现在一律用 `theme.fg` / `theme.muted` / `theme.accent`，选中行固定是 `bg(theme.highlight).fg(theme.fg)` 这个组合，`popup_scene_tests` 里有四个按亮色主题断言具体单元格 fg 的回归测试。file picker 的文件类型色（`.rs` 橙、`.py` 蓝等）仍是有意为之的字面色板，见该文件注释。
+
 **Dirty 渲染：** 仅当 `app.dirty`、`Status::Done` 或 `!tools.active.is_empty()` 时运行 `terminal.draw`。绘制后清除 `dirty`。
 
 **Caches**（`LogScroll`）：
