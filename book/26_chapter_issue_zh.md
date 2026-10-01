@@ -35,6 +35,34 @@
 ---
 
 
+---
+
+## 1. 2026-09-30 — 私钥可被读取，且工具打印出来的东西没有任何脱敏
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix / security |
+| **相关** | `crates/tact/src/security/{sensitive,redact,mod}.rs`（新增）、`crates/tact/src/tool/metadata.rs`（`PermissionPolicy::{ReadPath,WritePath,PatchPaths,target,sensitive}`、`PermissionPromptPolicy::{PatchTarget,generate_key}`）、`crates/tact/src/agent/tool_dispatch.rs`（`preflight_tool_calls` 里的守卫、`run_tool_waves` 里的脱敏收口）、`crates/tact/src/permission/{mod,settings}.rs`、`crates/tact/src/tool/{progress,bash,read_file,read_image,edit_file,write_file,apply_patch}.rs`、`crates/tact/src/background.rs`；spec `docs/superpowers/specs/2026-09-30-sensitive-path-guard-and-secret-redaction-design.md`；[第 10 章 §12](./10_chapter_permission_zh.md) |
+
+**症状 / 动机：** `cat ~/.ssh/id_ed25519` 会在所有权限模式下静默执行，headless 也一样。`cat` 在只读白名单里，而 `split_plain_command` 接受词首 `~`——注释写着波浪号展开「无害」，因为白名单里的程序对它打开的文件依然只读。确实如此；文件的**内容**才是秘密。于是该命令被判为 `CapabilityRisk::Read`，而 `check_with_auto` 对 `Read` 的放行**早于** plan mode，也早于一切 settings 规则。`~/.netrc`、`~/.aws/credentials`、`grep -r token ~/.aws` 同理。另外，打印 `~/.claude/settings.json` 会暴露一个仍有效的 `ANTHROPIC_AUTH_TOKEN`，而工具结果路径上没有任何地方脱敏——工具返回什么，会话存储与 transcript 就存什么。
+
+**决策：** 两套机制，因为它们各自独立失效。
+
+*守卫*（`security::sensitive`）是一张有序注册表，列出「本性即秘密」的路径，分两个档位、且逃生口刻意不同。`Credential`——私钥、token 存储、`~/.netrc`、`~/.ssh/**`、`~/.aws/**`、`~/.kube/**`、`~/.gnupg/**`、`~/.config/{gh,gcloud,heroku,op}/**`、`*.pem` / `*.key` / `*.p12` / `*.keystore` / `*.kdbx`、`id_*`、`*_rsa`、`*.tfstate`、`credentials.json`、`secrets.{json,yml,toml}`、仓库内的 `.npmrc` / `.pypirc` / `.pgpass` / `.netrc`，以及携带 `env` token 的 agent 宿主配置（`~/.claude/settings.json`、`~/.codex/auth.json`、`~/.tact/settings.json`）——在**预检直接拒绝**，早于 `PreToolUse`、早于 `PermissionManager::check`，因此 `Auto` 模式、已持久化的 `allow` 规则、会话内 always-allow、`PermissionRequest` hook 都碰不到它。其逃生口是 `permissions.sensitive_paths.allow`，需要改文件：一键即可解除的拒绝不算拒绝。`Secret`——`.env`、shell history、`~/.ssh/config`——升级为 `High` 并走普通阶梯，于是 plan mode 拒绝、Default 询问、headless 拒绝，用户规则照常组合。
+
+*脱敏*（`security::redact`）是给「基于名字的分类器看不见的东西」兜底——`python -c "print(open('/home/me/.ssh/id_ed25519').read())"` 不提及任何切词器找得到的路径。分两级，因为无差别的键值规则会改写用户自己的源码与 fixture，模型就会对着本该写着 `token = "abc"` 的地方分析 `[redacted:value]`：`Basic`（只含高置信度形状，作用于**所有**结果）与 `Credential`（`Basic` 加结构感知规则，按守卫自己的命中逐调用选择）。标记只带类别、绝不含值的前缀。它在 `run_tool_waves` 的单一收口处运行，早于 `PostToolUse` hook，因此 hook、TUI 步骤详情、transcript 与会话存储看到同一个字符串。实时输出是单独一遍——`StreamRedactor` 只输出完整行，并整体压制私钥块——因为实时视图是命令还在跑时用户正在看的东西。工具**调用**输入与 `arg_full` 永不改动：模型自己发出的 `tool_use` 块必须逐字节原样回传。
+
+接线过程中暴露了两个同型权限缺陷，一并在这里修掉，因为「窄手势授予宽权限」与「宽读」是同一种缺陷：
+
+- `PermissionRule::generate` 在无法表达实参时会退回**裸规则**，而规则文法把值嵌在 `tool(field:pattern)` 里。于是任何含冒号的 `bash` 命令——`git commit -m "fix: thing"`——会把一次「Always allow this tool」点击变成持久化的、与输入无关的 `bash` 规则：此后所有命令、所有会话。现在它返回 `None`，并由 `AllowOutcome::NotNarrowable` 让 `tool_dispatch` 明说。
+- `apply_patch` 声明了 `permission_prompt: Path { field: "path" }`，而它的输入没有这个字段，于是同一条退路让一次点击授权了此后对任意文件的任意 patch。`PermissionPromptPolicy::PatchTarget` 把规则锚在 patch 的目标路径上，并且对多文件 patch 拒绝生成规则，而不是挑其中一个路径去授权其余。
+
+同时移除：`always_allowed_tools` 曾预置 `"read_file"`。在 `read_file` 始终是 `Read` 时它没有作用；一旦敏感目标能把它升级为 `High`，它就放行任意输入，`.env` 也不例外——列表里的裸名匹配所有输入。没有任何人授予过的 allowlist 条目不该压过守卫。
+
+**之后的行为：** `cat ~/.ssh/id_ed25519` 与 `cat ~/.netrc` 在所有模式下被拒绝，文案指明路径、类别与逃生口。`read_file(".env")` 在 Default 询问、在 Plan 与 headless 拒绝、在 Auto 放行。settings 里的 `allow: ["bash"]` 规则无法解除凭据拒绝，而 `sensitive_paths.allow` 条目可以。每个工具结果在任何读取者之前都会被扫描高置信度秘密形状，被守卫判为敏感的调用还会额外套用结构规则。源码与 diff 不受影响。`redaction.enabled = false` 全局关闭该遍处理；`level` 未设置或拼错时解析为 `basic`，绝不是 `off`。
+
+**未修复：** 这不是沙箱。两套机制都是同进程内基于名字与模式的判断，一条刻意绕行的路径即可击穿。执行边界是 `crates/tact/src/sandbox/`，它仅支持 Linux（macOS 上返回 `SandboxDegradation`）且默认关闭（`[tools] sandbox = false`）。MCP 工具的**输入**不被守卫扫描（其结果仍按 `Basic` 脱敏）。
+
 ## 1. 2026-09-30 — Tact 自己的资源工具也有可声明的 risk 了
 
 | 字段 | 值 |

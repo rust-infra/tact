@@ -232,8 +232,12 @@ Every tool call is classified by risk and checked against the active permission 
 
 ```mermaid
 flowchart TD
-    ToolCall["ToolUse { name, input }"] --> Normalize["normalize_capability()"]
-    Normalize --> Risk["CapabilityRisk:<br/>Read / Write / High"]
+    ToolCall["ToolUse { name, input }"] --> Guard["security::sensitive::Scanner<br/>(before hooks and modes)"]
+    Guard -- "Credential tier" --> Refuse["Refuse<br/>(Auto mode and allow rules<br/>cannot reach it)"]
+    Guard -- "Secret tier" --> Normalize
+    Guard -- "no hit" --> Normalize
+
+    Normalize["PermissionPolicy::resolve()"] --> Risk["CapabilityRisk:<br/>Read / Write / High"]
 
     Risk -- Read --> Allow["Allow immediately"]
     Risk --> Mode{"PermissionMode?"}
@@ -269,7 +273,12 @@ Special cases:
 - `read_file` and tools whose names start with `read`, `list`, `get`, `show`, `search`, `query`, `inspect`, or `find` are classified as `Read`.
 - `spawn_subagent` is always `High` because it spawns a sub-agent with full filesystem/shell access.
 - `bash` commands containing `rm -rf`, `sudo`, `shutdown`, or `reboot` are always `High`.
-- Simple read-only bash commands (`ls`, `cat`, `git status`, etc.) are classified as `Read`.
+- Simple read-only bash commands (`ls`, `cat`, `git status`, etc.) are classified as `Read` — **unless** the command names a credential path, which is checked first. The safelist proves the program cannot write, not that its output is safe to publish: `cat ~/.ssh/id_ed25519` is provably read-only and reads a private key.
+- Read tools whose **target** is sensitive escalate: `.env` is not `src/main.rs`. `PermissionPolicy::{ReadPath, WritePath, PatchPaths}` carry that, so the target — not just the verb — decides the risk.
+
+Result text is redacted before anything reads it (one choke point in
+`run_tool_waves`, plus a streaming pass for live command output). See
+[Ch 10 §12](book/10_chapter_permission.md#12-sensitive-paths-and-secret-redaction).
 
 ---
 

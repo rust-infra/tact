@@ -1,7 +1,7 @@
 # Design: sensitive-path guard + secret redaction
 
 Date: 2026-09-30
-Status: awaiting approval
+Status: implemented (see Ch 10 §12 for the as-built contract)
 
 Answers the question raised by the `~/.ssh` incident: *why could the agent read a private key, and what
 stops it from happening again?* Two independent mechanisms, because they fail independently:
@@ -34,7 +34,16 @@ Three facts, each verified in this tree:
    store and the transcript. `redact_query_value` exists (`crates/tact/src/mcp/remote.rs:962`) but only
    for one OAuth URL field. There is no secret scanner anywhere on the tool-result path.
 
-4. **`apply_patch` has no path in its prompt policy, so "Always allow" silently means "always".**
+4. **`read_file` was seeded into `always_allowed_tools`, and a bare name grants every input.**
+   Both `PermissionManager::try_new` and `try_new_with_settings` started with
+   `vec!["read_file"]`. While `read_file` was always classified `Read` the entry
+   was inert. Once §3 makes a sensitive target escalate it to `High`, the entry
+   is consulted by the `High` branch and lets **every** `read_file` input
+   through, `.env` included. An allow-list entry nobody granted must not outrank
+   the guard, so the seed is removed — and the loss is nil, because `read_file`
+   is still auto-allowed by virtue of being `Read`.
+
+5. **`apply_patch` has no path in its prompt policy, so "Always allow" silently means "always".**
    `APPLY_PATCH_METADATA` declares `permission_prompt: PermissionPromptPolicy::Path { field: "path" }`,
    but `ApplyPatchInput` has only `patch` and `dry_run` — there is no `path` field, and the metadata's
    `ResourcePolicy::PatchFiles` names the real one (`patch_field: "patch"`). `PermissionRule::generate`
@@ -43,6 +52,13 @@ Three facts, each verified in this tree:
    editing one file grants every future patch, in every session, forever. Unrelated to secrets in
    mechanism, identical in consequence — a broad permission granted by a narrow-looking gesture. Fixed
    here because the same change touches the same metadata.
+
+6. **The bare fallback is worse than §1.5 suggests: it fires on any value containing `(`, `)` or `:`.**
+   The rule grammar embeds the pattern in `tool(field:pattern)`, so a value it cannot represent fell
+   back to a bare rule — and `bash` on `git commit -m "fix: thing"` contains a `:`. One click on
+   *Always allow this tool* therefore persisted an input-blind `bash` rule: **every future shell
+   command, in every session**. Same defect class as §1.4/§1.5, larger blast radius, and reachable
+   without any secret being involved. `generate` returns `None` for these now.
 
 So the leak was not "the sandbox failed" — the sandbox was off and is Linux-only (§6) — it was that a
 read of a private key is classified as a *safe read*.

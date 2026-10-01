@@ -126,6 +126,8 @@ pub enum PermissionMode {
 
 ### `PermissionManager::check()` 中的决策顺序
 
+在这之前，`tool_dispatch` 会先跑**敏感目标守卫**（§12）。`Credential` 档命中会在那里被直接拒绝，永远走不到这个阶梯；`Secret` 档会升级为 `High`，从第 2 步进入。
+
 检查按此固定顺序执行：
 
 ```text
@@ -167,7 +169,7 @@ flowchart TD
 
 **High 与 allowlist：** High 首次无论如何都会询问。一旦有允许覆盖**该确切工具与输入**——裸名 `allow_tool`，或「Always allow this tool」写入的输入感知规则——High 就与其他风险一样被放行。计划模式与显式 `deny`/`ask` 规则仍然先判定，所以授权放宽的是询问，绝不是模式或规则。匹配的项目 settings **allow** 规则在第 5 步就能到达 High，甚至早于查询 allowlist。
 
-全新的非交互会话仍然拒绝 High：`always_allowed_tools` 只预置 `read_file`，且从不从 settings 填充，所以列表里只有用户在提示上授予过的内容，而非交互下没有提示。
+全新的非交互会话仍然拒绝 High：`always_allowed_tools` 从不预置、也从不从 settings 填充，所以列表里只有用户在提示上授予过的内容，而非交互下没有提示。
 
 ---
 
@@ -175,11 +177,15 @@ flowchart TD
 
 ### 会话内 allowlist
 
-`PermissionManager` 持有 `always_allowed_tools: Vec<String>`。构造时（`try_new`）预置 `"read_file"`。
+`PermissionManager` 持有 `always_allowed_tools: Vec<String>`。构造时是**空的**。
+
+它以前预置 `"read_file"`。在 `read_file` 始终被判为 `Read` 时这条没有作用；但一旦敏感目标能把它升级为 `High`，它就等于放行 `read_file` 的**任意**输入，`.env` 也不例外——因为列表里的裸名匹配所有输入。没有任何人授予过的 allowlist 条目不该压过守卫，所以预置已删除。
 
 用户在 TUI 选择 **「Always allow this tool」** 时，`tool_dispatch` 调用的是 `allow_tool_with_input(name, policy, input)`——针对那次确切调用的**输入感知**规则，而不是裸工具名。有 settings 存储时它被持久化进项目的 `.tact/settings.json`；没有则落进内存列表。两种情况都会让此后匹配该工具**且**输入的调用跳过询问，且**任何**风险都适用，包括 **High**。
 
-（裸名形式 `allow_tool(name)` 仍然存在，仍然授权任意输入，现在它也覆盖 High。全新会话的列表只有 `read_file`，所以没有真实点击就不会有任何授权。）
+（裸名形式 `allow_tool(name)` 仍然存在，仍然授权任意输入，现在它也覆盖 High。全新会话的列表是空的，所以没有真实点击就不会有任何授权。）
+
+**「Always allow」可以拒绝记住。** 当无法表达比整工具更窄的规则时——字段缺失、不是字符串、或值里含规则文法定界符（`(`、`)`、`:`，模式被嵌在 `tool(field:pattern)` 里）——`PermissionRule::generate` 返回 `None`。旧行为是退回**裸规则**，而任何含冒号的 `bash` 命令（`git commit -m "fix: thing"`）都会走到那条路，于是点一次就授权了此后所有 shell 命令、且跨会话。现在这次点击只批准当前调用，并由 `AllowOutcome::NotNarrowable` 让 `tool_dispatch` 明说——静默无效的按钮和 bug 无法区分。
 
 allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话。只有 settings 规则那种形式能跨重启存活。
 
@@ -262,6 +268,8 @@ pub fn validate_shell_command(command: &str) -> Result<()>;
    - `sed` — 仅 `sed -n {N|M,N}p` 打印行区间形式
 
 白名单与选项规则镜像 OpenAI Codex 的 `is_known_safe_command`（`codex-rs/shell-command/src/command_safety/is_safe_command.rs`）。分类器刻意保守：漏判只多一次审批提示，误判则会在 plan mode 下静默执行变更——因此任何含糊输入一律归为 **Write**。最终效果：plan mode 下 `ls`、`grep -rn x .`、`git status` 无需提示即可运行；`cargo test`、管道、重定向与未知程序仍被拒绝。
+
+**白名单证明的是程序不能写入，不是它的输出可以公开。** 以前允许词首 `~`，理由是「波浪号展开只是替换家目录，而白名单里的程序对展开结果依然只读」——这话没错，但答非所问：`cat` 确实只读，而 `cat ~/.ssh/id_ed25519` 打印的是私钥。该命令被归为 **Read**，而 `check_with_auto` 对 `Read` 的放行发生在 plan mode 与一切 settings 规则之前，于是在所有模式下静默执行，headless 也一样。§12 堵住它：敏感扫描在 `is_read_only_shell_command` **之前**运行，因此任何提到凭据路径的命令都是 `High`（或被拒绝），无论其程序多么可证明只读。
 
 ### 两层
 
@@ -363,6 +371,33 @@ mode = "default"   # "default" | "plan" | "auto"
 
 定义于 `PermissionTomlConfig`（`crates/tact/src/config/types.rs`）。省略时默认 `"default"`。
 
+### JSON（`.tact/settings.json` 里的 `permissions`）
+
+规则与两个安全小节共用同一份宽容文档，安全配置因此只有一个归宿：
+
+```jsonc
+{
+  "permissions": {
+    "allow": ["bash(command:cargo test *)"],
+    "ask":   ["web_fetch"],
+    "deny":  ["read_file(path:~/.ssh/**)"],
+    "sensitive_paths": {
+      "enabled": true,               // 默认 true；即使没有 settings 文件也生效
+      "extra":  ["*.vault"],         // 追加进注册表，恒为 Secret 档
+      "allow":  ["~/.ssh/config"]    // 完全豁免守卫
+    },
+    "redaction": {
+      "enabled": true,               // false 是文档化的逃生口
+      "level": "basic",              // "off" | "basic" | "credential"
+      "extra_patterns": ["MYCO-[0-9a-f]{32}"],
+      "basic_only_paths": ["**/fixtures/**"]
+    }
+  }
+}
+```
+
+每个字段都可选，每个畸形值都退化为默认值。`level` 未设置**或拼错**时解析为 `basic`，绝不是 `off`：拼错不该静默关掉脱敏。含 `/` 的模式是路径 glob（`**/fixtures/**`），以 `~/` 开头的是家目录相对，其余匹配最后一段路径名。
+
 ### CLI
 
 `--permission-mode` / `-m` 通过 `config/resolve.rs` → `ResolvedConfig.permission_mode` 覆盖 TOML。
@@ -380,11 +415,16 @@ mode = "default"   # "default" | "plan" | "auto"
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`、`PermissionManager`、`normalize_capability`、分类启发式 |
+| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`、`PermissionManager`、`normalize_capability`、分类启发式、`AllowOutcome` |
+| `crates/tact/src/security/sensitive.rs` | 敏感路径注册表、两个档位、`Scanner`、`classify_command`、`refusal_text` |
+| `crates/tact/src/security/redact.rs` | `redact`、`level_for_call`、`StreamRedactor` |
+| `crates/tact/src/security/mod.rs` | `SecurityConfig` 解析与 global+project 合并 |
 | `crates/tact/src/shell.rs` | 共享高风险 shell 模式；执行时 `validate_shell_command` 拦截 |
 | `crates/tact/src/agent/tool_dispatch.rs` | 预检权限；`RequestSelect` 处理；`StepFinished` 上的 `permission_label` |
 | `crates/tact/src/agent/mod.rs` | `AgentRuntime.permission_manager` |
-| `crates/tact/src/tool/bash.rs` | spawn shell 前调用 `validate_shell_command` |
+| `crates/tact/src/tool/metadata.rs` | `PermissionPolicy`（含 `ReadPath` / `WritePath` / `PatchPaths`）、`PermissionPromptPolicy::PatchTarget` |
+| `crates/tact/src/tool/progress.rs` | `ToolProgressReporter`——实时输出脱敏及其 flush |
+| `crates/tact/src/tool/bash.rs` | spawn shell 前调用 `validate_shell_command`；并 flush 脱敏器 |
 | `crates/tact/src/background.rs` | 后台 shell 命令同样校验 |
 | `crates/tact/src/tool/subagent.rs` | 子 agent 用 `Default` 模式；继承 `ui_tx` |
 | `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
@@ -404,6 +444,92 @@ mode = "default"   # "default" | "plan" | "auto"
 | Headless 下 High 仍需 Auto 或 settings allow | 非交互 `ask_user` 会放行 Write/Read 的 Ask，但对 High 仍 deny，除非 settings allow 已先返回 Allow |
 | `PlanStep.need_approval` 已弃用 | 字段标记 `#[deprecated(since = "0.19.0")]`；用 `PlanStep::new()` — 权限由 `PermissionManager` 驱动 |
 | 权限与 hook 重叠 | 两者均可拦截工具；hook 先运行，`Block` 时跳过权限 |
+| 守卫是基于名字的启发式 | §12 匹配路径与命令词元；`python -c "print(open(...).read())"` 不提及任何它看得见的东西。脱敏是兜底，真正的边界是 `crates/tact/src/sandbox/`——**仅 Linux 且默认关闭**（macOS 上返回 `SandboxDegradation`，`[tools] sandbox = false`） |
+| MCP 的输入不被守卫扫描 | 第三方工具的路径参数不做分类（其**结果**仍按 `Basic` 脱敏）。MCP 工具默认 `High`，风险可按工具声明 |
+| 脱敏是模式匹配 | 可以被关掉（`redaction.enabled = false`），且测试 fixture 里的假密钥会和真密钥一样被脱敏 |
+
+---
+
+## 12. 敏感路径与密钥脱敏
+
+权限阶梯回答的是「agent 可不可以做这件事」。它对*一次已获准的读取会返回什么*无话可说，而私钥正是从这个缺口走漏的：`cat ~/.ssh/id_ed25519` 是可证明只读的命令，于是被判 `Read`，于是在 plan mode 被考虑之前就已放行。`crates/tact/src/security/` 里的两套机制堵住它。
+
+### 12.1 守卫：两个档位，两种结果
+
+`sensitive::RULES` 是一张有序的注册表，列出「本性即秘密」的路径。**先匹配者胜**，所以窄例外必须排在被它挖出洞的目录 glob 之前（`~/.ssh/config` 排在 `~/.ssh/**` 之上）。命中 `EXEMPT_NAMES` 的文件名（`*.pub`、`*.crt`、`*.cer`、`*.der`，以及 `*.example` / `*.sample` / `*.template` / `*.dist` 占位文件）最先排除。
+
+| 档位 | 含义 | 决策 | 逃生口 |
+|------|------|------|--------|
+| `Credential` | 文件**本身就是**秘密：私钥、token 存储、`~/.netrc`、`~/.ssh/**`、`~/.aws/**`、`~/.kube/**`、`~/.gnupg/**`、`~/.config/{gh,gcloud,heroku,op}/**`、`*.pem` / `*.key` / `*.p12` / `*.keystore` / `*.kdbx`、`id_*`、`*_rsa`、`*.tfstate`、`credentials.json`、`secrets.{json,yml,toml}`、仓库内的 `.npmrc` / `.pypirc` / `.pgpass` / `.netrc`，以及携带 `env` token 的 agent 宿主配置（`~/.claude/settings.json`、`~/.codex/auth.json`、`~/.tact/settings.json`） | **拒绝**——在预检直接拒，不弹窗 | `permissions.sensitive_paths.allow`，需要改文件 |
+| `Secret` | 读取**可能**泄露，但用户往往确实需要：`.env` / `.env.*` / `*.env` / `.envrc`、`~/.ssh/{config,known_hosts}`、`~/.bash_history` 等 | **询问**——升级为 `High`，走普通阶梯 | 普通规则与「always allow」 |
+
+`Credential` 刻意**不能**用 TUI 的「Always allow」按钮绕过：一键即可解除的拒绝不算拒绝。它只能通过编辑 `.tact/settings.json` 解除。
+
+关键在于位置。守卫在 `preflight_tool_calls` 中于 `PreToolUse` **之前**、`PermissionManager::check` 之前运行，因此 `Auto` 模式、已持久化的 `allow` 规则、会话内 always-allow、`PermissionRequest` hook 都碰不到凭据文件。`Secret` 档完全不需要特例——它变成 `High`，于是 plan mode 拒绝、Default 询问、headless 拒绝，用户规则照常组合。
+
+| 工具 | 策略 | 扫描什么 |
+|------|------|----------|
+| `read_file`、`read_image` | `ReadPath { path_field }` | 路径（绝对路径或以 `~` 开头时跳过——`safe_path` 本来就会拒绝，在必然报错前弹窗只是噪音） |
+| `edit_file`、`write_file` | `WritePath { path_field }` | 路径 |
+| `apply_patch` | `PatchPaths` | 每个 `+++ b/<path>` / `+++ <path>` 头，复用调度器同一套提取 |
+| `bash`、`background_run`、`worktree_run` | `ShellCommand { command_field }` | 命令字符串的词元，且**先于**只读分类器 |
+
+`classify_command` 先去掉引号再切分（因此 `~/.ss"h"/id_rsa` 会还原成 shell 实际传入的词元），并按 shell 元字符切分，这也是重定向目标（`> .env`）能被抓到的原因。不含 `.` 与 `/` 的裸词只与 `BARE_SECRET_NAMES` 比对——否则像 `"foo_rsa"` 这样的 grep 模式会换来一次拒绝。它**不**解析命令替换、变量，或 `python -c`。
+
+拒绝文案会点明路径、类别与逃生口，因为它同时被人和模型读到：
+
+```text
+Refused: ~/.ssh/id_ed25519 is credential material (private-key). Reading it is
+not something this agent does. If the user asked for this, they can permit the
+path in .tact/settings.json under permissions.sensitive_paths.allow.
+```
+
+### 12.2 脱敏：兜底
+
+守卫基于名字，它自己也这么说。脱敏是在守卫被绕过时仍然成立的那部分——`python -c "print(open('/home/me/.ssh/id_ed25519').read())"` 不提及任何切词器看得见的路径。
+
+| 级别 | 作用于 | 规则 |
+|------|--------|------|
+| `Basic` | **所有**工具结果 | 高置信度、低误报的形状：私钥块、`sk-…` / `sk-ant-…`、`AKIA` / `ASIA`、`ghp_…` / `github_pat_…`、`xox[baprs]-…`、`glpat-…`、`AIza…`、JWT、`Bearer …`、`https://user:pass@` |
+| `Credential` | 被守卫判为敏感的那次调用的结果 | `Basic` 之外追加结构感知规则：`.netrc` 的 `password …`、dotenv/INI/TOML 的 `API_KEY=…`、JSON 的 `"token": "…"`、npmrc 的 `_authToken=`、`authorized_keys` |
+
+之所以分级：无差别的键值规则会改写用户自己的源码与测试 fixture，模型就会对着 `[redacted:value]` 分析本应写着 `token = "abc"` 的代码。标记只带类别、绝不含值的前缀；键名保留，形状仍可读（`API_KEY=[redacted:value]`）。
+
+| 脱敏 | 不脱敏 | 原因 |
+|------|--------|------|
+| 工具**结果**（原生与 MCP）——在 `run_tool_waves` 的单一收口处，于 `PostToolUse` hook 读取之前，因此 hook、TUI 步骤详情、transcript 与会话存储看到的是同一个字符串 | 工具**调用**输入 / `arg_full` | 模型自己发出的 `tool_use` 块必须逐字节原样回传，否则下一次请求就是非法请求。若模型已经输出过秘密，抹掉回声也补不回来 |
+| `bash` / `background_run` 的实时输出 | hook 的 stdout | hook 是用户自己写的 |
+
+实时输出单独一遍处理，因为两次泄露发生在不同时刻：实时视图是命令还在跑时用户正在看的东西。`StreamRedactor` 只输出**完整行**，因此行内锚定的模式总能看全自己的输入；而私钥块一旦出现 `-----BEGIN … PRIVATE KEY` 就整体压制——它是多行的，无法按行扣留。跨两个 chunk 的秘密永远不会被完整显示。状态放在 `ToolProgressReporter` 里，位于 `report(&self)` 所需的互斥锁之后，`flush()` 在每条退出路径上释放尾部。
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant G as sensitive::Scanner
+    participant P as PermissionManager
+    participant T as Tool
+    participant R as redact
+
+    A->>G: classify(tool target)
+    alt Credential 档
+        G-->>A: Hit
+        A-->>A: 拒绝，StepFailed（先于 hook 与规则）
+    else Secret 档
+        G-->>A: Hit
+        A->>P: check(risk = High)
+        P-->>A: Ask / Deny / Allow
+    else 无命中
+        A->>P: check(声明的风险)
+    end
+    A->>T: execute
+    T-->>A: ExecResult
+    A->>R: redact(content, level_for_call)
+    R-->>A: 脱敏文本 → hook、TUI、transcript、存储
+```
+
+### 12.3 这不是什么
+
+两者都不是沙箱。都是同进程内基于名字与模式的判断，一条刻意绕行的路径即可击穿。真正的执行边界是 `crates/tact/src/sandbox/`（bwrap），而它今天**仅支持 Linux**——macOS 上返回 `SandboxDegradation::new("no sandbox implementation for this platform yet")`——且**默认关闭**（`[tools] sandbox = false`）。本次设计缩小暴露面，但不划定边界。
 
 ---
 

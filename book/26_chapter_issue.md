@@ -32,6 +32,99 @@ Newest entries first. Each entry should include:
 ---
 
 
+---
+
+## 1. 2026-09-30 — A private key could be read, and nothing redacted what tools printed
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix / security |
+| **Related** | `crates/tact/src/security/{sensitive,redact,mod}.rs` (new), `crates/tact/src/tool/metadata.rs` (`PermissionPolicy::{ReadPath,WritePath,PatchPaths,target,sensitive}`, `PermissionPromptPolicy::{PatchTarget,generate_key}`), `crates/tact/src/agent/tool_dispatch.rs` (the guard in `preflight_tool_calls`, the redaction choke point in `run_tool_waves`), `crates/tact/src/permission/{mod,settings}.rs`, `crates/tact/src/tool/{progress,bash,read_file,read_image,edit_file,write_file,apply_patch}.rs`, `crates/tact/src/background.rs`; spec `docs/superpowers/specs/2026-09-30-sensitive-path-guard-and-secret-redaction-design.md`; [Ch 10 §12](./10_chapter_permission.md) |
+
+**Symptom / motivation:** `cat ~/.ssh/id_ed25519` ran silently, in every
+permission mode, headless included. `cat` is on the read-only safelist and
+`split_plain_command` accepted a leading `~` — with a comment explaining that
+tilde expansion is "harmless" because every safelisted program stays read-only
+on the file it opens. It does; the file's *contents* are the secret. So the
+command resolved to `CapabilityRisk::Read`, and `check_with_auto` returns `Allow`
+for `Read` **before** plan mode and before any settings rule. `~/.netrc`,
+`~/.aws/credentials` and `grep -r token ~/.aws` were the same call. Separately,
+printing `~/.claude/settings.json` exposed a live `ANTHROPIC_AUTH_TOKEN`, and
+nothing anywhere on the tool-result path redacted it — the session store and the
+transcript kept whatever a tool returned.
+
+**Decision:** Two mechanisms, because they fail independently.
+
+*The guard* (`security::sensitive`) is an ordered registry of paths that are
+secret by their nature, in two tiers with deliberately different escape hatches.
+`Credential` — private keys, token stores, `~/.netrc`, `~/.ssh/**`, `~/.aws/**`,
+`~/.kube/**`, `~/.gnupg/**`, `~/.config/{gh,gcloud,heroku,op}/**`, `*.pem` /
+`*.key` / `*.p12` / `*.keystore` / `*.kdbx`, `id_*`, `*_rsa`, `*.tfstate`,
+`credentials.json`, `secrets.{json,yml,toml}`, in-repo `.npmrc` / `.pypirc` /
+`.pgpass` / `.netrc`, and the agent-host configs carrying `env` tokens
+(`~/.claude/settings.json`, `~/.codex/auth.json`, `~/.tact/settings.json`) — is
+**refused in preflight**, before `PreToolUse` and before
+`PermissionManager::check`, so `Auto` mode, a persisted `allow` rule, an
+in-session always-allow and a `PermissionRequest` hook can none of them reach it.
+Its escape hatch is `permissions.sensitive_paths.allow`, which takes a file edit:
+a refusal one button away is not a refusal. `Secret` — `.env`, shell history,
+`~/.ssh/config` — escalates to `High` and follows the ordinary ladder, so plan
+mode denies it, Default asks, headless denies, and user rules compose as usual.
+
+*Redaction* (`security::redact`) is the backstop for what a name-based
+classifier cannot see — `python -c "print(open('/home/me/.ssh/id_ed25519').read())"`
+names no path the tokenizer can find. Two levels, because blanket key/value
+rules would rewrite the user's own source and fixtures and the model would then
+reason about `[redacted:value]` where the file says `token = "abc"`: `Basic`
+(high-confidence shapes only, run over **everything**) and `Credential`
+(`Basic` plus structure-aware rules, selected per call from the guard's own
+hit). Markers carry the category, never a prefix of the value. It runs at one
+choke point in `run_tool_waves`, before the `PostToolUse` hook, so the hook, the
+TUI step detail, the transcript and the session store all see the same string.
+Live output is a separate pass — `StreamRedactor` emits only complete lines and
+suppresses a private-key block outright — because the live view is what a user
+watches while the command still runs. Tool *use* inputs and `arg_full` are never
+touched: the model's own `tool_use` block must round-trip byte-identical.
+
+Two permission bugs of the same shape surfaced while wiring this up, and both
+are fixed here because a narrow gesture granting a broad permission is the same
+defect as a broad read:
+
+- `PermissionRule::generate` fell back to a **bare** rule whenever it could not
+  express the argument, and the rule grammar embeds values in
+  `tool(field:pattern)`. Any `bash` command containing a `:` —
+  `git commit -m "fix: thing"` — therefore turned one "Always allow this tool"
+  click into a persisted, input-blind `bash` rule: every future command, every
+  session. It now returns `None` and `AllowOutcome::NotNarrowable` makes
+  `tool_dispatch` say so out loud.
+- `apply_patch` declared `permission_prompt: Path { field: "path" }`, a field its
+  input does not have, so the same fallback let one click permit every future
+  patch to any file. `PermissionPromptPolicy::PatchTarget` keys the rule on the
+  patch's target path and refuses a multi-file patch rather than picking one of
+  its paths to authorise the rest.
+
+Also removed: `always_allowed_tools` was seeded with `"read_file"`. That entry
+did nothing while `read_file` was always `Read`, and once a sensitive target can
+escalate it to `High` it let every input through, `.env` included — a bare name
+in the list grants every input. An allow-list entry nobody granted must not
+outrank the guard.
+
+**Behavior after:** `cat ~/.ssh/id_ed25519` and `cat ~/.netrc` are refused with a
+message naming the path, the kind, and the escape hatch, in every mode.
+`read_file(".env")` asks in Default, is denied in Plan and headless, and is
+allowed in Auto. A settings `allow: ["bash"]` rule cannot lift a credential
+refusal; a `sensitive_paths.allow` entry can. Every tool result is scanned for
+high-confidence secret shapes before anything reads it, and a call the guard
+classified sensitive additionally gets the structural rules. Source files and
+diffs are left alone. `redaction.enabled = false` turns the pass off globally,
+and an unset or misspelled `level` resolves to `basic`, never `off`.
+
+**Not fixed:** this is not a sandbox. Both mechanisms are same-process, name- and
+pattern-based, and a determined path defeats them. The execution boundary is
+`crates/tact/src/sandbox/`, which is Linux-only (`SandboxDegradation` on macOS)
+and opt-in (`[tools] sandbox = false`). MCP tools' *inputs* are not guard-scanned
+(their results are redacted at the `Basic` level).
+
 ## 1. 2026-09-30 — Tact's own resource tools get a risk you can declare
 
 | Field | Value |

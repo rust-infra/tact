@@ -129,6 +129,10 @@ Display labels (from `PermissionMode`'s `Display` impl):
 
 ### Decision order in `PermissionManager::check()`
 
+Before any of it, `tool_dispatch` runs the **sensitive-target guard** (§12). A
+`Credential`-tier hit is refused there and never reaches this ladder; a `Secret`
+tier becomes `High` and enters it at step 2.
+
 The checks run in this fixed order:
 
 ```text
@@ -178,11 +182,27 @@ A fresh non-interactive session still denies High: `always_allowed_tools` is see
 
 ### In-session allowlist
 
-`PermissionManager` holds `always_allowed_tools: Vec<String>`. On construction (`try_new`), it is seeded with `"read_file"`.
+`PermissionManager` holds `always_allowed_tools: Vec<String>`. It is **empty** on construction.
+
+It used to be seeded with `"read_file"`. That entry did nothing while `read_file`
+was always classified `Read` — and everything once a sensitive target could
+escalate it to `High`, because a bare name in the list grants every input, `.env`
+included. An allow-list entry nobody granted must not be able to outrank the
+guard, so the seed is gone.
 
 When the user picks **"Always allow this tool"** in the TUI, `tool_dispatch` calls `allow_tool_with_input(name, policy, input)` — an **input-aware** rule for that exact call, not a bare tool name. With a settings store present it is persisted to the project's `.tact/settings.json`; without one it lands in the in-memory list. Either way, future calls matching that tool **and** input skip the prompt, at **every** risk including **High**.
 
-(`allow_tool(name)` — the bare-name form — still exists and still grants every input, and it too now covers High. A fresh session's list holds only `read_file`, so nothing is granted without a real click.)
+(`allow_tool(name)` — the bare-name form — still exists and still grants every input, and it too now covers High. A fresh session's list is empty, so nothing is granted without a real click.)
+
+**"Always allow" can decline to remember.** `PermissionRule::generate` returns
+`None` when no rule narrower than the whole tool can be expressed: the field is
+absent, is not a string, or the value contains a rule-grammar delimiter (`(`,
+`)`, `:` — the pattern is embedded in `tool(field:pattern)`). The old behaviour
+was to fall back to a *bare* rule, and because `bash` on any command containing
+a colon (`git commit -m "fix: thing"`) hit that path, one click permitted every
+future shell command, in every session. The click is now approved once and
+`AllowOutcome::NotNarrowable` makes `tool_dispatch` say so out loud — a gesture
+that silently does nothing is indistinguishable from a bug.
 
 The allowlist is **in-memory only** — it is not persisted to SQLite or TOML between sessions. Only the settings-rule form survives a restart.
 
@@ -265,6 +285,17 @@ Since 2026-08-13, `PermissionPolicy::ShellCommand` classifies a shell command st
    - `sed` — only `sed -n {N|M,N}p` print-line-range forms
 
 The safelist and option rules mirror OpenAI Codex's `is_known_safe_command` (`codex-rs/shell-command/src/command_safety/is_safe_command.rs`). The classifier is deliberately conservative: a false negative only costs an approval prompt, while a false positive would run a mutation silently under plan mode — so anything ambiguous stays **Write**. Net effect: in plan mode `ls`, `grep -rn x .`, `git status` run without prompting; `cargo test`, pipes, redirections, and unknown programs are still denied.
+
+**The safelist proves the program cannot write, not that its output is safe to
+publish.** A leading `~` used to be accepted on the reasoning that "tilde
+expansion only substitutes the home directory, and every safelisted program
+stays read-only on the expanded result" — true, and beside the point: `cat` is
+read-only, and `cat ~/.ssh/id_ed25519` prints a private key. That path was
+classified **Read**, and `check_with_auto` returns `Allow` for `Read` before
+plan mode and before every settings rule, so it ran silently in every mode,
+headless included. §12 closes it: the sensitive scan runs **before**
+`is_read_only_shell_command`, so a command naming a credential path is `High`
+(or refused) no matter how provably read-only the program is.
 
 ### Two layers
 
@@ -366,6 +397,38 @@ mode = "default"   # "default" | "plan" | "auto"
 
 Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default when omitted: `"default"`.
 
+### JSON (`permissions` in `.tact/settings.json`)
+
+Rules and the two security sections live in the same tolerant document, so
+security configuration has one home rather than two:
+
+```jsonc
+{
+  "permissions": {
+    "allow": ["bash(command:cargo test *)"],
+    "ask":   ["web_fetch"],
+    "deny":  ["read_file(path:~/.ssh/**)"],
+    "sensitive_paths": {
+      "enabled": true,               // default true; enforced even with no settings file
+      "extra":  ["*.vault"],         // added to the registry, always Secret tier
+      "allow":  ["~/.ssh/config"]    // exempt from the guard entirely
+    },
+    "redaction": {
+      "enabled": true,               // false is the documented escape hatch
+      "level": "basic",              // "off" | "basic" | "credential"
+      "extra_patterns": ["MYCO-[0-9a-f]{32}"],
+      "basic_only_paths": ["**/fixtures/**"]
+    }
+  }
+}
+```
+
+Every field is optional and every malformed value degrades to its default. An
+unset **or misspelled** `level` resolves to `basic`, never `off`: a typo must not
+silently disable redaction. A pattern containing `/` is a path glob
+(`**/fixtures/**`), one starting with `~/` is home-relative, and anything else
+matches the final path component.
+
 ### CLI
 
 `--permission-mode` / `-m` overrides TOML via `config/resolve.rs` → `ResolvedConfig.permission_mode`.
@@ -383,11 +446,16 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 
 | File | Role |
 |------|------|
-| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`, `PermissionManager`, `normalize_capability`, classification heuristics |
+| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`, `PermissionManager`, `normalize_capability`, classification heuristics, `AllowOutcome` |
+| `crates/tact/src/security/sensitive.rs` | The sensitive-path registry, its two tiers, `Scanner`, `classify_command`, `refusal_text` |
+| `crates/tact/src/security/redact.rs` | `redact`, `level_for_call`, `StreamRedactor` |
+| `crates/tact/src/security/mod.rs` | `SecurityConfig` parsing and global+project merge |
 | `crates/tact/src/shell.rs` | Shared high-risk shell patterns; `validate_shell_command` for execution-time block |
 | `crates/tact/src/agent/tool_dispatch.rs` | Pre-flight permission check; `RequestSelect` handling; `permission_label` on `StepFinished` |
 | `crates/tact/src/agent/mod.rs` | `AgentRuntime.permission_manager` |
-| `crates/tact/src/tool/bash.rs` | Calls `validate_shell_command` before spawning shell |
+| `crates/tact/src/tool/metadata.rs` | `PermissionPolicy` (incl. `ReadPath` / `WritePath` / `PatchPaths`), `PermissionPromptPolicy::PatchTarget` |
+| `crates/tact/src/tool/progress.rs` | `ToolProgressReporter` — live-output redaction and its flush |
+| `crates/tact/src/tool/bash.rs` | Calls `validate_shell_command` before spawning shell; flushes the redactor |
 | `crates/tact/src/background.rs` | Same validation for background shell commands |
 | `crates/tact/src/tool/subagent.rs` | Sub-agent uses `Default` mode; inherits `ui_tx` |
 | `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
@@ -407,6 +475,131 @@ Defined in `PermissionTomlConfig` (`crates/tact/src/config/types.rs`). Default w
 | Headless High still needs Auto or settings allow | Non-interactive `ask_user` allows Write/Read Ask, but denies High unless a settings allow rule already returned Allow |
 | `PlanStep.need_approval` deprecated | Field marked `#[deprecated(since = "0.19.0")]`; use `PlanStep::new()` — permission is driven by `PermissionManager` |
 | Permission vs hook overlap | Both can block tools; hooks run first and skip permission on `Block` |
+| The guard is a name-based heuristic | §12 matches paths and command tokens; `python -c "print(open(...).read())"` names nothing it can see. Redaction is the backstop, and the real boundary is `crates/tact/src/sandbox/` — **Linux-only and opt-in today** (`SandboxDegradation` on macOS, `[tools] sandbox = false` by default) |
+| MCP inputs are not guard-scanned | A third-party tool's path argument is not classified (its *results* are still redacted at the `Basic` level). MCP tools are `High` by default and their risk is declarable per tool |
+| Redaction is pattern matching | It can be turned off (`redaction.enabled = false`), and a fake key in a test fixture is redacted like a real one |
+
+---
+
+## 12. Sensitive Paths and Secret Redaction
+
+The permission ladder answers "may the agent do this". It has nothing to say
+about *what a permitted read returns*, and that gap is where a private key walked
+out: `cat ~/.ssh/id_ed25519` is a provably read-only command, so it was `Read`,
+so it was allowed before plan mode was even consulted. Two mechanisms close it,
+in `crates/tact/src/security/`.
+
+### 12.1 The guard: two tiers, two outcomes
+
+`sensitive::RULES` is an ordered registry of paths that are secret by their
+nature. **First match wins**, so a narrow exception precedes the directory glob
+it carves out of (`~/.ssh/config` is listed above `~/.ssh/**`). Names matching
+`EXEMPT_NAMES` (`*.pub`, `*.crt`, `*.cer`, `*.der`, and the `*.example` /
+`*.sample` / `*.template` / `*.dist` placeholders) are checked first.
+
+| Tier | Meaning | Decision | Escape hatch |
+|------|---------|----------|--------------|
+| `Credential` | The file **is** the secret: private keys, token stores, `~/.netrc`, `~/.ssh/**`, `~/.aws/**`, `~/.kube/**`, `~/.gnupg/**`, `~/.config/{gh,gcloud,heroku,op}/**`, `*.pem` / `*.key` / `*.p12` / `*.keystore` / `*.kdbx`, `id_*`, `*_rsa`, `*.tfstate`, `credentials.json`, `secrets.{json,yml,toml}`, in-repo `.npmrc` / `.pypirc` / `.pgpass` / `.netrc`, and the agent-host configs that carry `env` tokens (`~/.claude/settings.json`, `~/.codex/auth.json`, `~/.tact/settings.json`) | **Deny** — refused in preflight, no prompt | `permissions.sensitive_paths.allow`, which takes a file edit |
+| `Secret` | Reading it *may* expose a secret, and the user may well want it: `.env` / `.env.*` / `*.env` / `.envrc`, `~/.ssh/{config,known_hosts}`, `~/.bash_history` & friends | **Ask** — escalates to `High` and follows the ordinary ladder | the ordinary rules and "always allow" |
+
+`Credential` is deliberately **not** reachable by the TUI's "Always allow"
+button: a refusal whose escape is one click away is not a refusal. It is
+reachable by editing `.tact/settings.json`.
+
+Placement is the whole point. The guard runs in `preflight_tool_calls`
+**before** `PreToolUse` and before `PermissionManager::check`, so `Auto` mode, a
+persisted `allow` rule, an in-session always-allow and a `PermissionRequest` hook
+can none of them reach a credential file. The `Secret` tier has no special case
+at all — it becomes `High`, so plan mode denies it, Default asks, headless
+denies, and user rules compose normally.
+
+| Tool | Policy | What is scanned |
+|------|--------|-----------------|
+| `read_file`, `read_image` | `ReadPath { path_field }` | the path (skipped when absolute or `~`-rooted — `safe_path` refuses those anyway, so a prompt before an inevitable error is noise) |
+| `edit_file`, `write_file` | `WritePath { path_field }` | the path |
+| `apply_patch` | `PatchPaths` | every `+++ b/<path>` / `+++ <path>` header, via the same extraction the scheduler uses |
+| `bash`, `background_run`, `worktree_run` | `ShellCommand { command_field }` | tokens of the command string, **before** the read-only classifier |
+
+`classify_command` removes quotes before splitting (so `~/.ss"h"/id_rsa`
+reconstructs into the token a shell would pass) and splits on shell
+metacharacters, which is what picks up redirection targets (`> .env`). Bare words
+without a `.` or `/` are matched only against `BARE_SECRET_NAMES` — otherwise a
+grep pattern like `"foo_rsa"` would cost a refusal. It does **not** resolve
+command substitution, variables, or `python -c`.
+
+The refusal names the path, the kind, and the escape hatch, because it is read by
+both the model and the human:
+
+```text
+Refused: ~/.ssh/id_ed25519 is credential material (private-key). Reading it is
+not something this agent does. If the user asked for this, they can permit the
+path in .tact/settings.json under permissions.sensitive_paths.allow.
+```
+
+### 12.2 Redaction: the backstop
+
+The guard is name-based and says so. Redaction is what still holds when it is
+walked past — `python -c "print(open('/home/me/.ssh/id_ed25519').read())"` names
+no path the tokenizer can see.
+
+| Level | Applies to | Rules |
+|-------|-----------|-------|
+| `Basic` | **every** tool result | High-confidence, low-false-positive shapes: private-key blocks, `sk-…` / `sk-ant-…`, `AKIA` / `ASIA`, `ghp_…` / `github_pat_…`, `xox[baprs]-…`, `glpat-…`, `AIza…`, JWTs, `Bearer …`, `https://user:pass@` |
+| `Credential` | results of a call the guard classified sensitive | `Basic` plus structure-aware rules: `.netrc` `password …`, dotenv/INI/TOML `API_KEY=…`, JSON `"token": "…"`, npmrc `_authToken=`, `authorized_keys` |
+
+The split exists because blanket key/value rules would rewrite the user's own
+source code and test fixtures, and the model would then be reasoning about
+`[redacted:value]` where the file says `token = "abc"`. Markers carry the
+category and never a prefix of the value; the key name survives so the shape
+stays readable (`API_KEY=[redacted:value]`).
+
+| Redacted | Not redacted | Why |
+|----------|--------------|-----|
+| Tool **results** (native and MCP) — at one choke point in `run_tool_waves`, before the `PostToolUse` hook reads them, so the hook, the TUI step detail, the transcript and the session store all see the same string | Tool **use** inputs / `arg_full` | The model's own `tool_use` block must round-trip byte-identical or the next request is malformed. If the model emitted a secret it already had it |
+| Live `bash` / `background_run` output, as it streams | Hook stdout | Hooks are user-authored |
+
+Live output is a separate pass because the two leaks happen at different times:
+the live view is what a user watches while a command still runs.
+`StreamRedactor` emits only **complete lines**, so a pattern anchored within a
+line always sees all of its input, and suppresses a private-key block entirely
+once `-----BEGIN … PRIVATE KEY` is seen — that one is multi-line and cannot be
+held line-by-line. A secret split across two chunks is never shown whole. The
+state lives in `ToolProgressReporter` behind the mutex `report(&self)` requires,
+and `flush()` releases the tail on every exit path.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant G as sensitive::Scanner
+    participant P as PermissionManager
+    participant T as Tool
+    participant R as redact
+
+    A->>G: classify(tool target)
+    alt Credential tier
+        G-->>A: Hit
+        A-->>A: refuse, StepFailed (before hooks and rules)
+    else Secret tier
+        G-->>A: Hit
+        A->>P: check(risk = High)
+        P-->>A: Ask / Deny / Allow
+    else no hit
+        A->>P: check(declared risk)
+    end
+    A->>T: execute
+    T-->>A: ExecResult
+    A->>R: redact(content, level_for_call)
+    R-->>A: redacted text → hook, TUI, transcript, store
+```
+
+### 12.3 What this is not
+
+Neither mechanism is a sandbox. Both are same-process, name- and
+pattern-based, and a determined path defeats them. The real execution boundary is
+`crates/tact/src/sandbox/` (bwrap), which today is **Linux-only** — on macOS
+`SandboxDegradation::new("no sandbox implementation for this platform yet")` —
+and **opt-in** (`[tools] sandbox = false` by default). This design narrows the
+exposure; it does not bound it.
 
 ---
 
