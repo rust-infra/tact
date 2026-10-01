@@ -20,7 +20,7 @@
 //!   provides lookup by name.
 //! - [`get_skill_registry`] / [`shared_skill_registry`] construct registries;
 //!   interactive mode shares [`SharedSkillRegistry`] between agent tools and the TUI
-//!   so `/skill-reload` updates both without restart.
+//!   so `/skill reload` updates both without restart.
 //! - [`SkillRegistry::describe_available`] supplies name/description lines for
 //!   the system prompt (not full bodies).
 //! - Full bodies are wrapped in `<skill>` XML for `load_skill` tool results

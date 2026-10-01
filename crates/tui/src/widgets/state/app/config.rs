@@ -4,32 +4,23 @@ use crate::{
     widgets::state::*,
 };
 impl App {
-    /// Palette commands visible for the current provider configuration,
-    /// including dynamic skill commands.
+    /// The built-in commands the palette lists, in [`SlashCommand::ALL`] order.
+    ///
+    /// Skills used to be appended here as `/{name}` entries, one per installed
+    /// skill. A marketplace with dozens of them buried `/mcp`, `/compact` and
+    /// the rest under a wall of skill names, and every new skill shifted the
+    /// first-level list — so they are no longer first-level entries. They live
+    /// under `/skill`: the popup offers them there (`/skill `, `/skill co`),
+    /// `slash_candidates` is what knows about them, and `/{name}` still runs
+    /// one directly for anyone who types it.
     pub(crate) fn palette_commands(&self) -> Vec<(String, String)> {
         let account_enabled = self.account_rx.is_some();
         let msgs = self.msgs();
-        let mut cmds: Vec<(String, String)> = SlashCommand::ALL
+        SlashCommand::ALL
             .iter()
             .filter(|cmd| account_enabled || !cmd.needs_account())
             .map(|cmd| (cmd.name().to_string(), cmd.desc(msgs).to_string()))
-            .collect();
-        // Skills as slash targets (Claude Code style `/skill-name`).
-        // Skip names that collide with built-ins — builtins always win on Enter.
-        let builtin_names: std::collections::HashSet<&str> =
-            SlashCommand::ALL.iter().map(|cmd| cmd.name()).collect();
-        for skill in &self.skills_data {
-            if builtin_names.contains(skill.name.as_str()) {
-                continue;
-            }
-            let desc = if skill.description.is_empty() {
-                skill.name.clone()
-            } else {
-                skill.description.clone()
-            };
-            cmds.push((skill.name.clone(), desc));
-        }
-        cmds
+            .collect()
     }
 
     pub(crate) fn save_history(&self, entry: &str) {

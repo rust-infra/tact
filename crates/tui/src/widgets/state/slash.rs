@@ -56,10 +56,8 @@ pub(crate) enum SlashCommand {
     Help,
     #[strum(serialize = "history")]
     History,
-    #[strum(serialize = "skills")]
-    Skills,
-    #[strum(serialize = "skill-reload")]
-    SkillReload,
+    #[strum(serialize = "skill")]
+    Skill,
     #[strum(serialize = "plugin")]
     Plugin,
     #[strum(serialize = "mcp")]
@@ -98,8 +96,7 @@ impl SlashCommand {
         Self::Quit,
         Self::Help,
         Self::History,
-        Self::Skills,
-        Self::SkillReload,
+        Self::Skill,
         Self::Plugin,
         Self::Mcp,
         Self::Hooks,
@@ -114,6 +111,24 @@ impl SlashCommand {
     #[must_use]
     pub(crate) fn name(self) -> &'static str {
         self.into()
+    }
+
+    /// The subcommands this built-in takes, in the order the popup offers them.
+    ///
+    /// This is what `/mcp ` completes to — the handlers still parse the tokens
+    /// themselves (that is a separate abstraction), but they parse *these*
+    /// strings: `every_declared_subcommand_has_a_handler` runs each declared
+    /// path through its handler and fails if one lands on the usage hint, so a
+    /// subcommand can never be completable and unrunnable at the same time.
+    #[must_use]
+    pub(crate) fn subcommands(self) -> &'static [Subcommand] {
+        match self {
+            Self::Skill => SKILL_SUBCOMMANDS,
+            Self::Mcp => MCP_SUBCOMMANDS,
+            Self::Plugin => PLUGIN_SUBCOMMANDS,
+            Self::Hooks => HOOKS_SUBCOMMANDS,
+            _ => &[],
+        }
     }
 
     /// Resolve a user-typed name (no leading `/`).
@@ -132,7 +147,7 @@ impl SlashCommand {
     pub(crate) fn needs_args(self) -> bool {
         matches!(
             self,
-            Self::Plugin | Self::Mcp | Self::Hooks | Self::SubagentCancel
+            Self::Skill | Self::Plugin | Self::Mcp | Self::Hooks | Self::SubagentCancel
         )
     }
 
@@ -163,8 +178,7 @@ impl SlashCommand {
             Self::Quit => msgs.cmd_quit,
             Self::Help => msgs.cmd_help,
             Self::History => msgs.cmd_history,
-            Self::Skills => msgs.cmd_skills,
-            Self::SkillReload => msgs.cmd_skill_reload,
+            Self::Skill => msgs.cmd_skill,
             Self::Plugin => msgs.cmd_plugin,
             Self::Mcp => msgs.cmd_mcp,
             Self::Hooks => msgs.cmd_hooks,
@@ -176,6 +190,74 @@ impl SlashCommand {
         }
     }
 }
+
+/// One subcommand of a built-in command, as the slash popup completes it.
+///
+/// `hint` is what the popup shows to the right of the completion: the syntax
+/// that follows (`<server>`, `--all | --source <label>`). It is deliberately
+/// not localized — it is syntax rather than prose, and it is literally what the
+/// user has to type next.
+pub(crate) struct Subcommand {
+    /// The token, as the handler matches it (`list`, `trust`, `--all`).
+    pub name: &'static str,
+    /// Placeholder for what follows, shown in the popup and never inserted.
+    pub hint: &'static str,
+    /// Deeper tokens this one takes (`/plugin marketplace list`).
+    pub children: &'static [Subcommand],
+    /// A free-form value follows (`/mcp auth <server>`): there is nothing left
+    /// to complete, and Enter completes rather than runs.
+    pub takes_value: bool,
+}
+
+const fn sub(
+    name: &'static str,
+    hint: &'static str,
+    children: &'static [Subcommand],
+    takes_value: bool,
+) -> Subcommand {
+    Subcommand {
+        name,
+        hint,
+        children,
+        takes_value,
+    }
+}
+
+const SKILL_SUBCOMMANDS: &[Subcommand] =
+    &[sub("list", "", &[], false), sub("reload", "", &[], false)];
+
+const MCP_SUBCOMMANDS: &[Subcommand] = &[
+    sub("auth", "<server>", &[], true),
+    // `login` is the CLI spelling and an accepted alias; both are listed so
+    // neither has to be remembered.
+    sub("login", "<server>", &[], true),
+    sub("list", "", &[], false),
+];
+
+const PLUGIN_MARKETPLACE_SUBCOMMANDS: &[Subcommand] = &[sub("list", "", &[], false)];
+
+const PLUGIN_SUBCOMMANDS: &[Subcommand] = &[
+    sub("list", "", &[], false),
+    sub("reload", "", &[], false),
+    sub("uninstall", "<name>", &[], true),
+    sub("update", "<name>", &[], true),
+    sub("marketplace", "", PLUGIN_MARKETPLACE_SUBCOMMANDS, false),
+];
+
+const HOOK_TRUST_SUBCOMMANDS: &[Subcommand] = &[
+    sub("--all", "", &[], false),
+    sub("--source", "<label>", &[], true),
+];
+
+/// `forget` has no `--source`: the handler accepts only `--all`, and offering a
+/// flag that reaches the usage hint would be worse than offering nothing.
+const HOOK_FORGET_SUBCOMMANDS: &[Subcommand] = &[sub("--all", "", &[], false)];
+
+const HOOKS_SUBCOMMANDS: &[Subcommand] = &[
+    sub("list", "", &[], false),
+    sub("trust", "", HOOK_TRUST_SUBCOMMANDS, false),
+    sub("forget", "", HOOK_FORGET_SUBCOMMANDS, false),
+];
 
 #[cfg(test)]
 mod tests {
@@ -192,7 +274,6 @@ mod tests {
         assert_eq!(SlashCommand::ModelSubagent.name(), "model-subagent");
         assert_eq!(SlashCommand::SubagentCancel.name(), "subagent_cancel");
         assert_eq!(SlashCommand::ViewSystemPrompt.name(), "view-system-prompt");
-        assert_eq!(SlashCommand::SkillReload.name(), "skill-reload");
         assert_eq!(SlashCommand::TasksDag.name(), "tasks-dag");
     }
 
@@ -271,7 +352,10 @@ mod tests {
             .filter(|c| c.needs_args())
             .map(SlashCommand::name)
             .collect();
-        assert_eq!(with_args, vec!["subagent_cancel", "plugin", "mcp", "hooks"]);
+        assert_eq!(
+            with_args,
+            vec!["subagent_cancel", "skill", "plugin", "mcp", "hooks"]
+        );
     }
 
     /// `/balance` is the only command gated on the account channel; it was a

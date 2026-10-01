@@ -13,8 +13,23 @@ use ratatui::{
 
 use crate::{state::SkillEntry, theme::Theme};
 
+/// The built-in command that gathers skills (`/skill <name> [args]`).
+///
+/// Duplicated here because the kit owns no command table; the host asserts it
+/// against `SlashCommand::Skill` in `render/slash_style.rs`, so a rename is a
+/// test failure rather than a silently plain line.
+pub const SKILL_COMMAND: &str = "skill";
+
 /// Split a line that starts with a known skill slash into `(skill_token, rest)`.
-/// `skill_token` includes the leading `/` (e.g. `/demo-test`); `rest` may start with spaces.
+///
+/// Two forms, both highlighted the same way:
+/// - the direct one (`/demo-test`, `/demo-test fix auth`) — the token includes
+///   the leading `/`;
+/// - the gathered one (`/skill demo-test`, `/skill demo-test fix auth`) — the
+///   token includes the built-in too, because `/skill` alone is the plainest
+///   part of the line and highlighting it would say nothing.
+///
+/// `rest` may start with spaces.
 pub fn split_skill_slash<'a>(
     line: &'a str,
     skill_names: &HashSet<&str>,
@@ -32,11 +47,23 @@ pub fn split_skill_slash<'a>(
         return None;
     }
     let cmd = &after_slash[..cmd_len];
-    if !skill_names.contains(cmd) {
+    if skill_names.contains(cmd) {
+        let skill_end = lead + 1 + cmd_len;
+        return Some((&line[..skill_end], &line[skill_end..]));
+    }
+    if cmd != SKILL_COMMAND {
         return None;
     }
-    let skill_end_in_trimmed = 1 + cmd_len;
-    let skill_end = lead + skill_end_in_trimmed;
+    // `/skill <name>`: the name must be a whole token, and a known skill.
+    let rest = &after_slash[cmd_len..];
+    let name_trimmed = rest.trim_start();
+    let name_len = name_trimmed
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(name_trimmed.len());
+    if name_len == 0 || !skill_names.contains(&name_trimmed[..name_len]) {
+        return None;
+    }
+    let skill_end = lead + 1 + cmd_len + (rest.len() - name_trimmed.len()) + name_len;
     Some((&line[..skill_end], &line[skill_end..]))
 }
 
@@ -150,6 +177,24 @@ mod tests {
     fn split_skill_slash_rejects_unknown() {
         let names: HashSet<&str> = ["demo-test"].into_iter().collect();
         assert!(split_skill_slash("/quit now", &names).is_none());
+    }
+
+    #[test]
+    fn split_skill_slash_covers_the_gathered_form() {
+        let names: HashSet<&str> = ["demo-test"].into_iter().collect();
+
+        let (skill, args) = split_skill_slash("/skill demo-test hi", &names).unwrap();
+        assert_eq!(skill, "/skill demo-test");
+        assert_eq!(args, " hi");
+
+        let (skill, args) = split_skill_slash("/skill demo-test", &names).unwrap();
+        assert_eq!(skill, "/skill demo-test");
+        assert_eq!(args, "");
+
+        // `/skill` with no skill (the listing, the usage hint) is not a skill line.
+        assert!(split_skill_slash("/skill list", &names).is_none());
+        assert!(split_skill_slash("/skill ", &names).is_none());
+        assert!(split_skill_slash("/skill dem", &names).is_none());
     }
 
     #[test]

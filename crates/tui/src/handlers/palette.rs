@@ -1,9 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{
-    command_needs_args, execute_palette_command, is_builtin_palette_command, prev_word_boundary,
-    skills::is_skill_command,
-};
+use super::{command_needs_args, execute_palette_command, prev_word_boundary};
 use crate::widgets::state::{App, InputMode};
 
 /// Palette mode key handling: filter the command list and navigate with arrow keys; Enter to execute.
@@ -26,18 +23,22 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
                 let idx = app.palette_selected.min(filtered.len() - 1);
                 let cmd = commands[filtered[idx]].0.clone();
                 app.cmd_line.clear();
-                // Skills and arg-taking built-ins: jump to Insert with `/name `
-                // Skills (and arg-taking built-ins) prefills Insert so the user
-                // can add args / restore a prior draft via undo. Other built-ins
-                // execute immediately. Built-ins win even if a same-named skill
-                // exists on disk.
-                if (is_skill_command(app, &cmd) && !is_builtin_palette_command(&cmd))
-                    || command_needs_args(&cmd)
-                {
+                // Arg-taking built-ins prefill Insert so the user can add the
+                // subcommand, and keep `undo` pointing at the prior draft.
+                // Everything else runs immediately. The palette lists built-ins
+                // only — skills are reached through `/skill <name>` — so this
+                // is the whole rule.
+                if command_needs_args(&cmd) {
                     app.save_undo();
                     app.input = format!("/{cmd} ");
                     app.input_cursor = app.input.len();
                     app.input_mode = InputMode::Insert;
+                    // A built-in with subcommands keeps completing where the
+                    // palette left off: Enter on `/skill` opens the subcommand
+                    // popup, so the next thing typed is already offered.
+                    app.slash_command.selected = 0;
+                    app.slash_command.start_pos = 0;
+                    app.slash_command.active = !app.slash_candidates().is_empty();
                     return;
                 }
                 app.input_mode = InputMode::Normal;
@@ -118,6 +119,51 @@ mod tests {
     }
 
     #[test]
+    fn palette_enter_on_a_command_with_subcommands_opens_its_completion() {
+        // Picking `/skill` from the Normal-mode palette pre-fills the input;
+        // the popup must come up with it, or the subcommands are once again
+        // something the user has to remember.
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.palette_selected = app
+            .palette_commands()
+            .iter()
+            .position(|(cmd, _)| cmd == "skill")
+            .expect("skill command");
+
+        handle_palette_mode(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(app.input, "/skill ");
+        assert!(matches!(app.input_mode, InputMode::Insert));
+        assert!(app.slash_command.active, "subcommands should be offered");
+        let paths: Vec<String> = app
+            .slash_candidates()
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect();
+        assert_eq!(paths, ["skill list", "skill reload"]);
+    }
+
+    #[test]
+    fn palette_enter_on_a_command_without_subcommands_stays_quiet() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.palette_selected = app
+            .palette_commands()
+            .iter()
+            .position(|(cmd, _)| cmd == "subagent_cancel")
+            .expect("subagent_cancel command");
+
+        handle_palette_mode(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(app.input, "/subagent_cancel ");
+        assert!(
+            !app.slash_command.active,
+            "nothing to complete: no popup over an id argument"
+        );
+    }
+
+    #[test]
     fn enter_executes_highlighted_command() {
         let mut app = make_app();
         app.input_mode = InputMode::Palette;
@@ -146,27 +192,20 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_skill_preserves_prior_input_via_undo() {
-        use crate::widgets::state::SkillEntry;
-
+    fn enter_on_an_arg_taking_command_preserves_prior_input_via_undo() {
         let mut app = make_app();
-        app.skills_data = vec![SkillEntry {
-            name: "demo".into(),
-            description: "d".into(),
-            body: "body".into(),
-        }];
         app.input = "draft text".into();
         app.input_cursor = app.input.len();
         app.input_mode = InputMode::Palette;
         app.palette_selected = app
             .palette_commands()
             .iter()
-            .position(|(c, _)| c == "demo")
-            .expect("demo skill in palette");
+            .position(|(c, _)| c == "mcp")
+            .expect("mcp command");
 
         handle_palette_mode(&mut app, key(KeyCode::Enter));
 
-        assert_eq!(app.input, "/demo ");
+        assert_eq!(app.input, "/mcp ");
         assert!(matches!(app.input_mode, InputMode::Insert));
         assert!(
             !app.undo_stack.is_empty(),

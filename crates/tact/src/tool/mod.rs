@@ -106,7 +106,7 @@ use write_file::WriteFileTool;
 /// teammates, and worktrees.
 #[derive(Clone)]
 pub struct ToolContext {
-    /// Shared with the TUI in interactive mode so `/skill-reload` updates
+    /// Shared with the TUI in interactive mode so `/skill reload` updates
     /// `load_skill` / system-prompt skill summaries without restarting.
     pub skill_registry: crate::skill::SharedSkillRegistry,
     /// Claude Code plugin `SubagentStart` command hooks, stamped at dispatch

@@ -293,7 +293,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 
 三个 `[agent]` 字段决定除内建根与默认值之外还有什么进入提示。
 
-`skill_dirs` 追加额外 skill 根目录。每个条目必须是一个包含 `*/SKILL.md` 的目录；相对路径按 **workdir** 解析，`~` 展开为 `$HOME`，空白条目被跳过。这些根按列出顺序追加在三个内建根（`~/.agents/skills`、`~/.tact/skills`、`<workdir>/.tact/skills`）之后，因此同名冲突时配置根胜过所有内建根；解析后与已有路径重复的条目会被丢弃。扫描方式与内建根完全一致，均为递归。`/skill-reload` 可重新读取，无需重启。见 [Ch 2](./02_chapter_skill_zh.md)。
+`skill_dirs` 追加额外 skill 根目录。每个条目必须是一个包含 `*/SKILL.md` 的目录；相对路径按 **workdir** 解析，`~` 展开为 `$HOME`，空白条目被跳过。这些根按列出顺序追加在三个内建根（`~/.agents/skills`、`~/.tact/skills`、`<workdir>/.tact/skills`）之后，因此同名冲突时配置根胜过所有内建根；解析后与已有路径重复的条目会被丢弃。扫描方式与内建根完全一致，均为递归。`/skill reload` 可重新读取，无需重启。见 [Ch 2](./02_chapter_skill_zh.md)。
 
 `instruction_sources` 选择注入系统提示的项目指令文件。`agents_md` 是唯一可接受的值（默认 `["agents_md"]`）；空列表，或 `claude_md` 等任何其他值，都会导致配置 resolve 失败。见 [Ch 4](./04_chapter_prompt_zh.md)。
 

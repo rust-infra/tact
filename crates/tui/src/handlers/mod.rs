@@ -269,11 +269,6 @@ impl CommandExecOutcome {
     }
 }
 
-/// True when `cmd` is a built-in palette entry (wins over same-named skills).
-pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
-    SlashCommand::from_name(cmd).is_some()
-}
-
 /// Built-ins that take a subcommand / arguments: Enter should autocomplete
 /// `/{cmd} ` into the insert box instead of executing immediately.
 pub(crate) fn command_needs_args(cmd: &str) -> bool {
@@ -362,18 +357,7 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             app.show_help = false;
             CommandExecOutcome::handled()
         }
-        C::Skills => {
-            show_skills_command(app);
-            CommandExecOutcome::handled()
-        }
-        C::SkillReload => {
-            // Off-loop: the reload scans the filesystem; the loop reports the
-            // outcome via the background-task poll.
-            app.start_skills_reload(
-                crate::widgets::state::app::background::SkillsReloadSource::Command,
-            );
-            CommandExecOutcome::handled()
-        }
+        C::Skill => skills::handle_skill_builtin_command(app),
         C::Plugin => plugin::handle_plugin_command(app),
         C::Mcp => mcp::handle_mcp_command(app),
         C::Hooks => hooks::handle_hooks_command(app),
@@ -461,7 +445,7 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
     }
 }
 
-/// `/skills` output is plain markdown (heading + pipe table) appended as
+/// `/skill list` output is plain markdown (heading + pipe table) appended as
 /// whole-Markdown messages and rendered by `MarkdownCell`. Long lists are
 /// split into pages of [`SKILLS_PER_PAGE`] rows so each message stays
 /// readable and scrollable instead of one giant table.
@@ -482,7 +466,7 @@ fn show_skills_command(app: &mut App) {
         }
     }
 
-    // Trailing blank so the next `/skills` (or other system block) is not flush.
+    // Trailing blank so the next `/skill list` (or other system block) is not flush.
     app.add_new_line();
 
     if app.input_mode == crate::widgets::state::InputMode::Insert
@@ -615,11 +599,12 @@ pub(crate) fn start_permission_picker(app: &mut App) {
 mod tests {
     use std::path::PathBuf;
 
+    use strum::IntoEnumIterator;
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::{execute_palette_command, skills_list_markdown};
-    use crate::widgets::state::{App, Status};
+    use crate::widgets::state::{App, SlashCommand, Status, Subcommand};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
@@ -643,6 +628,14 @@ mod tests {
             Vec::new(),
         );
         (app, user_cmd_rx)
+    }
+
+    /// Runs `/skill <sub>` the way the input box does: the palette dispatches on
+    /// the command name alone, and the handler reads the subcommand from the
+    /// input, exactly like `/mcp list`.
+    fn run_skill_command(app: &mut App, sub: &str) -> super::CommandExecOutcome {
+        app.input = format!("/skill {sub}");
+        execute_palette_command(app, "skill")
     }
 
     #[test]
@@ -810,6 +803,141 @@ mod tests {
         assert!(md.is_empty(), "expected empty markdown, got:\n{md}");
     }
 
+    /// Expands a subcommand tree into one sample input per leaf: `/hooks trust
+    /// --source <label>` becomes `/hooks trust --source sample`.
+    fn sample_subcommand_inputs(
+        command: &str,
+        subs: &[Subcommand],
+        prefix: String,
+        out: &mut Vec<String>,
+    ) {
+        for sub in subs {
+            let path = if prefix.is_empty() {
+                sub.name.to_string()
+            } else {
+                format!("{prefix} {}", sub.name)
+            };
+            if sub.children.is_empty() {
+                let value = if sub.takes_value { " sample" } else { "" };
+                out.push(format!("/{command} {path}{value}"));
+            } else {
+                assert!(
+                    !sub.takes_value,
+                    "`{}` cannot both take a value and have subcommands",
+                    sub.name
+                );
+                sample_subcommand_inputs(command, sub.children, path, out);
+            }
+        }
+    }
+
+    /// Every subcommand the popup completes must actually run.
+    ///
+    /// The declaration in `SlashCommand::subcommands()` drives the completion;
+    /// the handlers still parse the tokens themselves. This walks the
+    /// declaration and dispatches a sample input for each leaf, so a subcommand
+    /// that is offered but not implemented — completing straight into the usage
+    /// hint — fails here instead of at the user's fingertips.
+    #[test]
+    fn every_declared_subcommand_has_a_handler() {
+        for command in SlashCommand::iter() {
+            let mut inputs = Vec::new();
+            sample_subcommand_inputs(
+                command.name(),
+                command.subcommands(),
+                String::new(),
+                &mut inputs,
+            );
+            assert_eq!(
+                inputs.is_empty(),
+                command.subcommands().is_empty(),
+                "{command:?} declares subcommands but expands to no sample input"
+            );
+            for input in inputs {
+                let (mut app, _rx) = make_app();
+                app.input = input.clone();
+
+                let _ = execute_palette_command(&mut app, command.name());
+
+                let hinted = app
+                    .flash_msg
+                    .as_ref()
+                    .is_some_and(|(message, _)| is_usage_text(message))
+                    || app.log.items.iter().any(|item| is_usage_text(&item.raw));
+                assert!(
+                    !hinted,
+                    "`{input}` is completable but reaches the usage hint"
+                );
+            }
+        }
+    }
+
+    /// The usage hints are the only localized strings every handler shares.
+    fn is_usage_text(text: &str) -> bool {
+        text.contains("Usage") || text.contains("用法")
+    }
+
+    #[test]
+    fn skill_command_lists_skills_and_clears_the_input() {
+        let (mut app, _rx) = make_app();
+        app.skills_data = vec![crate::widgets::state::SkillEntry {
+            name: "code-reviewer".into(),
+            description: "代码审查专家".into(),
+            body: String::new(),
+        }];
+
+        let outcome = run_skill_command(&mut app, "list");
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input, "the subcommand was consumed");
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("code-reviewer")),
+            "expected the skill table, got: {:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn skill_command_reload_reports_the_rescan() {
+        let (mut app, _rx) = make_app();
+
+        let outcome = run_skill_command(&mut app, "reload");
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        // No reactor in a sync test, so the reload runs inline; the command's
+        // own report is what the user sees.
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("Reloaded")),
+            "expected a reload report, got: {:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn bare_skill_command_offers_the_usage_and_keeps_the_input() {
+        // Same contract as bare `/mcp`: hand the user a runnable command
+        // instead of silently doing nothing.
+        for input in ["/skill", "/skill nonsense"] {
+            let (mut app, _rx) = make_app();
+            app.input = input.to_string();
+
+            let outcome = execute_palette_command(&mut app, "skill");
+
+            assert!(outcome.handled, "{input}");
+            assert!(!outcome.clear_input, "{input}");
+            assert_eq!(app.input, "/skill ", "{input}");
+            let (flash, _) = app.flash_msg.as_ref().expect("usage flash");
+            assert!(flash.contains("/skill list"), "{input}: {flash}");
+        }
+    }
+
     #[test]
     fn skills_command_adds_separators_around_list() {
         let (mut app, _rx) = make_app();
@@ -826,7 +954,7 @@ mod tests {
             },
         ];
         let before = app.log.items.len();
-        execute_palette_command(&mut app, "skills");
+        run_skill_command(&mut app, "list");
         let after_first = app.log.items.len();
         assert!(after_first > before);
         assert!(
@@ -837,7 +965,7 @@ mod tests {
             app.log.items
         );
         // Second invocation must not glue flush to the previous block.
-        execute_palette_command(&mut app, "skills");
+        run_skill_command(&mut app, "list");
         let joined = app.log.items[after_first.saturating_sub(1)..]
             .iter()
             .map(|item| item.raw.as_str())
@@ -865,7 +993,7 @@ mod tests {
             })
             .collect();
         let before = app.log.items.len();
-        execute_palette_command(&mut app, "skills");
+        run_skill_command(&mut app, "list");
         let raw = &app.log.items[before..];
 
         // 40 skills / 15 per page → 3 pages with numbered headings.
@@ -893,7 +1021,7 @@ mod tests {
     fn skills_command_output_reaches_middle_skills_when_scrolling() {
         // Regression for the reported symptom: with ~60 skills the old
         // logical-row scrolling never showed alphabetically-middle entries
-        // (lark-*) of the `/skills` table. Paginated pages + visual stepping
+        // (lark-*) of the `/skill list` table. Paginated pages + visual stepping
         // must make every row reachable.
         let (mut app, _rx) = make_app();
         app.skills_data = (0..58)
@@ -914,7 +1042,7 @@ mod tests {
         {
             entry.name = "lark-doc".into();
         }
-        execute_palette_command(&mut app, "skills");
+        run_skill_command(&mut app, "list");
         app.scroll_log_to_top();
 
         let viewport_height = 8usize;
@@ -934,7 +1062,7 @@ mod tests {
         }
         assert!(
             seen,
-            "lark-doc never visible while traversing /skills output"
+            "lark-doc never visible while traversing /skill list output"
         );
     }
 

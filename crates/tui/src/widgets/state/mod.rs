@@ -23,7 +23,7 @@ mod voice;
 pub(crate) use agent_tui_kit::state::account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
-pub(crate) use slash_command::SlashCommandState;
+pub(crate) use slash_command::{Candidate, SlashCommandState};
 
 pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItemKind, SystemMsgStyle};
 pub(crate) use agent_tui_kit::state::log_scroll::LogScroll;
@@ -52,6 +52,8 @@ pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceSta
 mod slash;
 
 pub(crate) use slash::SlashCommand;
+#[allow(unused_imports)] // Re-exported for tui's test code (the subcommand guard)
+pub(crate) use slash::Subcommand;
 
 /// Which agent a `/model` flow targets: the main agent or the configured
 /// subagent. The two-step model/effort/budget flow is expressed once and

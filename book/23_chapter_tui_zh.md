@@ -480,7 +480,7 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `User` | `add_user_message` 产生的用户输入行 | 0 |
 | `AssistantMarkdown` | 流式或持久化的 assistant Markdown | `LOG_THINKING_INDENT + 1` |
 | `SystemPlain(style)` | 显式系统 / info 纯文本行 | `LOG_THINKING_INDENT + 1` |
-| `SystemMarkdown` | `/skills` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
+| `SystemMarkdown` | `/skill list` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
 | `SystemTool` | tool placeholder 与显式标记的 tool 行 | `LOG_TOOL_INDENT` |
 | `Thinking` | 为一个 direct Thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
 
@@ -687,11 +687,11 @@ sequenceDiagram
 
 ## 7. 输入模式与主题
 
-`widgets/state/mod.rs` 中 `InputMode`：`Normal`、`Insert`、`Palette`、`Select`、`FilePicker`。Handler 在 `crates/tui/src/handlers/`。Normal 模式 `/` 打开 command palette；Insert 模式 `/` 打开 slash-command popup（同一命令列表，分组为 **Commands** 然后 **Skills**）。
+`widgets/state/mod.rs` 中 `InputMode`：`Normal`、`Insert`、`Palette`、`Select`、`FilePicker`。Handler 在 `crates/tui/src/handlers/`。Normal 模式 `/` 打开 command palette；Insert 模式 `/` 打开 slash-command popup（同一份内置命令列表）。**skills 不在这份列表里**：每个已安装 skill 曾经都是一级条目，装几十个就把 `/mcp`、`/compact` 淹没，也让一级列表随安装变化；它们现在挂在 `/skill` 之下（`/skill ` 弹出 `list` / `reload` + 所有 skill，`/skill demo …` 运行），直接形式 `/demo` 仍可用但不再出现在任何列表里。
 
-内置命令的唯一来源是 `widgets/state/slash.rs` 的 `SlashCommand` 枚举：`ALL` 决定弹出列表的顺序，`name()` / `from_name()` 是用户输入的名字，`desc(msgs)` 是中英描述，`needs_args()` 决定回车是补全还是执行。这些都是**穷尽匹配**——新增一个命令时，漏写名字、漏写描述、漏写处理分支都会编译失败。派发在 `handlers/mod.rs` 的 `run_command`（同样无 `_` 分支）：先按枚举解析，不中再交给 skill，因此内置名始终赢过同名 skill。
+内置命令的唯一来源是 `widgets/state/slash.rs` 的 `SlashCommand` 枚举：`ALL` 决定弹出列表的顺序，`name()` / `from_name()` 是用户输入的名字，`desc(msgs)` 是中英描述，`needs_args()` 决定回车是补全还是执行，`subcommands()` 是**子命令树**（每个节点带 `hint`——弹窗右列显示的后续语法 `<server>`、`--all | --source <label>`，刻意不做翻译，因为那是语法不是文案；以及 `takes_value` / `children`，决定回车是补全还是执行）。这些都是**穷尽匹配**——新增一个命令时，漏写名字、漏写描述、漏写处理分支都会编译失败。派发在 `handlers/mod.rs` 的 `run_command`（同样无 `_` 分支）：先按枚举解析，不中再交给 skill，因此内置名始终赢过同名 skill。
 
-`/balance` 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；`/plugin`、`/mcp`、`/hooks`、`/subagent_cancel` 是四个需要参数的命令。**不覆盖**：子命令解析（`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`）仍在各自的 handler 模块里按字符串切。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
+`/balance` 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；`/skill`、`/plugin`、`/mcp`、`/hooks`、`/subagent_cancel` 是五个需要参数的命令。**子命令补全**：`handlers/insert.rs` 与 `widgets/state/slash_command.rs` 共用 `App::slash_candidates()`，输入到子命令位置时弹窗列出下一层节点（`/skill `、`/plugin mar`、`/hooks trust --`、以及嵌套的 `/plugin marketplace `），Tab 逐层补全（`/plugin ma` ⭢ Tab `/plugin marketplace ` ⭢ Tab `/plugin marketplace list `），回车只补全**未完成**的候选——`takes_value` 或还有子节点的那种——完整的叶子直接执行。空格不再一律关闭弹窗：只有当后续无可补全项时才关（`/mcp auth ` 进入取值状态即关，`/skill ` 保持打开），这就是"复合命令"能逐层补全的原因。`slash_candidates` 命中取值、skill 参数或未知 token 时返回空列表（不打"无匹配"提示框）。**不覆盖**：子命令解析（`/skill list`、`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`）仍在各自的 handler 模块里按字符串切——但声明与 handler 由 `every_declared_subcommand_has_a_handler` 对齐：它遍历 `subcommands()` 给每个叶子派发样例输入，任何"能被补全却只会打印用法"的子命令都会让它失败。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
 
 ### Slash skills
 
@@ -701,11 +701,13 @@ sequenceDiagram
 |------|------|
 | Slash popup Enter 于 **skill** | **立即 Invoke**（无额外 args，除非已输入） |
 | Slash popup **Tab** 于 skill | 仅自动补全到 `/name ` — 可加可选 args，再 Enter 运行 |
-| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` …）；`/plugin` 仍只补全以便写子命令 |
-| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` 等） |
+| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` 等）；`/skill`、`/plugin` 只补全以便写子命令 |
+| Slash popup **Tab/Enter** 于**子命令** | 逐层补全：`/plugin ma` ⭢ Tab `/plugin marketplace ` ⭢ Tab `/plugin marketplace list `；带取值的候选（`/mcp auth`）只补到 `/mcp auth ` |
 | `/skill-name` 或 `/skill-name args` + Enter | **Invoke**：log 显示 slash 行；agent 收到 `<skill>` body（裸 `$ARGUMENTS` 替换，或有 args 时 append Claude 式 `ARGUMENTS:`） |
 | Palette Enter 于 skill | Insert 模式预填 `/name `（undo checkpoint 保留） |
-| `/skill-reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
+| Palette Enter 于带子命令的内置命令（`/skill`、`/plugin`、`/mcp`、`/hooks`） | 预填 `/cmd ` **并直接打开子命令弹窗**（后续无可补全项时不开，如 `/subagent_cancel `） |
+| `/skill list` | 列出可用技能（纯本地渲染，任务进行中也可用） |
+| `/skill reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
 | `/plugin …` | 排队安装、卸载、更新、列出、重载及 marketplace 操作；成功的 install/uninstall/update/reload 刷新共享 skills。`/plugin list` 渲染功能表（技能 / 命令 / 代理 / 钩子 / MCP） |
 
 输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill_zh.md)。与模型 mid-turn 调用 `load_skill` 分离。

@@ -37,6 +37,61 @@
 
 ---
 
+## 1. 2026-10-01 — skills 不再是斜杠一级命令，收进 `/skill <name>`
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization / breaking（发现层） |
+| **相关** | `crates/tui/src/widgets/state/app/config.rs`（`palette_commands` 只返内置）；`crates/tui/src/widgets/state/slash_command.rs`（`skill_candidates`：`/skill` 的动态子命令）；`crates/tui/src/handlers/skills.rs`（`invoke_skill`、`skill_args_from_subcommand_input`）；`crates/tui/src/handlers/palette.rs`；`crates/agent_tui_kit/src/render/slash_style.rs`（`SKILL_COMMAND`、`/skill <name>` 高亮）；`crates/agent_tui_kit/src/i18n.rs`（`skill_usage` / `cmd_skill`）；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 每装一个 skill，它就变成一条一级斜杠命令（`/code-reviewer`、`/lark-doc`…），混进 palette 与 `/` 弹出菜单。装几十个之后，`/mcp`、`/compact`、`/help` 淹没在一列 skill 名里；一级列表还随安装/卸载整体挪位（补全索引、分组标题、视觉记忆全部失效）。上一轮刚把 `/skills` 收成 `/skill list`，等于承认这条路径该有统一入口，但 skill 仍然各自占据一级。
+
+**决策：** 把 skills 从一级列表中**摘掉**，改挂在 `/skill` 之下——上一轮建好的 `Subcommand` 声明树正好给了挂载点：`/skill` 是唯一"子命令不全是静态"的命令，`skill_candidates()` 把 `skills_data` 变成它的动态子节点（名字序，过滤 token 与其它子命令一致）。三处配套：
+
+1. `palette_commands()` 只返内置命令（`App::slash_candidates` 是唯一知道 skill 的地方），Normal 面板与 Insert 弹窗因此天然只剩内置。
+2. `/skill <name> [args]` 运行一个 skill：`handle_skill_builtin_command` 新增该分支，与直接形式共用 `invoke_skill`（`$ARGUMENTS` 规则、`<skill>` 包装、提交只有一份实现，差别只是 log 回显 `/skill demo foo` 还是 `/demo foo`）。
+3. 冲突与高亮：名为 `list`/`reload` 的 skill 不进入 `/skill` 的补全（否则 `/skill list` 会出现两行同路径、无法区分），直接形式仍可运行；`split_skill_slash` 同时识别 `/skill demo` 与 `/demo`，把整段标为 accent+bold——kit 里的 `SKILL_COMMAND` 常量由 `the_kit_gather_command_is_the_hosts_skill_command` 钉住，重命名不会静默丢失高亮。
+
+直接形式 `/{name}` **保留**（不进任何列表）：它是已经形成的习惯，也是 Claude Code 的写法；收拢的是发现层，不是运行路径。
+
+**变更后行为：** 一级列表恒为 20/21 条内置命令，与装了多少 skill 无关；`/skill ` 弹出 `list` / `reload` + 所有 skill（`/skill co` 过滤到 `code-reviewer`），Tab 补成 `/skill code-reviewer `，Enter 直接跑；`/skill demo fix auth` 与 `/demo fix auth` 产出同一个 agent 任务。`/skill ` 的弹窗在几百个 skill 时仍受既有滚动窗口约束（`slash_popup_long_list_*` 测试已改到这一层）。
+
+**指针：** `crates/tui/src/widgets/state/app/config.rs`、`crates/tui/src/widgets/state/slash_command.rs`（`skill_candidates`）、`crates/tui/src/handlers/skills.rs`（`invoke_skill`、`skill_args_from_subcommand_input`）、`crates/agent_tui_kit/src/render/slash_style.rs`。
+
+## 1. 2026-10-01 — 子命令也能补全：`/skill ` 弹出 `list` / `reload`，Tab 逐层往下走
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Subcommand` + `subcommands()`）；`crates/tui/src/widgets/state/slash_command.rs`（`Candidate` + `App::slash_candidates`，取代 `matched_commands`）；`crates/tui/src/handlers/insert.rs`（空格 / Tab / Enter）；`crates/tui/src/render/popups/slash_command.rs`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 斜杠弹窗只认命令名，而且空格一律关闭它（`KeyCode::Char(' ') if slash_command.active` 直接 `active = false`）。于是 `/skill ` 之后既没有提示也没有补全——`list` / `reload` 只存在于 `skill_usage` 这类用法字符串和文档里；`/plugin`（5 个子命令）、`/hooks`（3 个，还带 `--all` / `--source <label>`）、`/mcp`（3 个）同样如此。上一轮把 `/skills` 收成 `/skill list` 之后，这个缺口更明显了：命令变得需要记子命令，而补全只帮到命令名那一步。
+
+**决策：** 子命令从"handler 里的 `match` 字符串"变成**声明树**：`SlashCommand::subcommands()` → `Subcommand { name, hint, children, takes_value }`。`hint` 是弹窗右列显示的后续语法（`<server>`、`--all | --source <label>`），刻意不做翻译——那是语法，不是文案。补全状态机集中到 `App::slash_candidates()`（取代 `SlashCommandState::matched_commands`，顺带把 `palette_commands()` + `skill_name_set` + 模糊匹配这三处重复调用收进一个函数），候选 `Candidate` 携带**完整路径**（`plugin marketplace list`），因此 Tab 替换的是整段输入，而不是最后一个 token。三条规则：
+
+1. 候选形态按输入位置决定：还在打命令名 → 命令+skill 模糊匹配（原样）；命令名已完整且是内置命令 → 该命令的子命令（按光标下的 token 过滤）；其余（取值、skill 参数、未知 token）→ 空列表，不再弹出"无匹配"框盖在参数上。
+2. 空格只在**后续仍有候选**时保留弹窗（`/skill ` 保持，`/mcp auth ` 进入取值即关），这就是逐层补全得以成立的前提。
+3. Tab 补全到 `/{完整路径} ` 并继续打开下一层；Enter 只补全 `incomplete` 的候选（还有子节点，或 `takes_value`），完整的叶子直接执行——`/mcp auth` 上按 Enter 不会再打出一个用法提示。
+
+**变更后行为：** `/plugin ma` ⭢ Tab ⭢ Tab 得到 `/plugin marketplace list `；Normal 模式命令面板选中 `/skill` 之后同样直接打开子命令弹窗（后续无可补全项的命令，如 `/subagent_cancel`，不开）；`/hooks trust --` 列出 `--all` / `--source`；`/mcp auth` 按 Enter 只补成 `/mcp auth ` 等用户填 server；`/skill list` 按 Enter 直接执行。声明与 handler 的一致性由 `every_declared_subcommand_has_a_handler` 保证：它遍历 `subcommands()`，为每个叶子派发样例输入（`takes_value` 的补一个 `sample`），任何"能被补全却落到用法提示"的子命令都会失败——`/plugin install` 正是被它挡下的一条（该子命令**没有**声明，因为 TUI 的 handler 不接受它）。
+
+**指针：** `crates/tui/src/widgets/state/slash.rs`（`subcommands()`、`SKILL_/MCP_/PLUGIN_/HOOKS_SUBCOMMANDS`）、`crates/tui/src/widgets/state/slash_command.rs`（`slash_candidates`、`subcommand_candidates`）、`crates/tui/src/handlers/insert.rs`、`crates/tui/src/render/popups/slash_command.rs`。
+
+## 1. 2026-10-01 — `/skills` 与 `/skill-reload` 合并成 `/skill list` / `/skill reload`
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization / breaking rename |
+| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Skill` 取代 `Skills` + `SkillReload`）；`crates/tui/src/handlers/skills.rs`（新增 `handle_skill_builtin_command`）；`crates/tui/src/handlers/mod.rs`；`crates/tui/src/render/popups/command_palette.rs`；`crates/agent_tui_kit/src/i18n.rs`（`cmd_skill` 取代 `cmd_skills`/`cmd_skill_reload`，新增 `skill_usage`）；[Ch 02](./02_chapter_skill_zh.md)、[Ch 21](./21_chapter_config_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 技能那两条命令是全表里唯一不成对的：`/skills` 平级列出技能，`/skill-reload` 平级重扫，而同类能力在别处都是「一个命令 + 子命令」——`/mcp list`、`/plugin list|reload|install`、`/hooks list|trust`。结果弹出面板里多出一条命令、两张图标、两个描述字段（`cmd_skills` / `cmd_skill_reload`），用户还得记住哪条是横线哪条是下划线。
+
+**决策：** 按 `/mcp` 的形态收成一条内置命令 `/skill`，两个子命令由 `handlers/skills.rs` 的 `handle_skill_builtin_command` 解析（子命令解析留在命令自己的模块里，与 `/mcp`、`/plugin`、`/hooks` 一致；面板只知道命令名）。`needs_args()` 增加 `Skill`，因此面板/弹出菜单回车补全成 `/skill ` 而不是立即执行；裸 `/skill` 与未知子命令都把 `/skill ` 留在输入框并闪 usage（`skill_usage`），与 `/mcp` 同一套手感。`/skill list` 是纯本地渲染（不打 agent），所以**不做** `/mcp list` 的 busy 拦截——任务进行中也能看列表。`i18n` 的两个 `cmd_*` 字段合并为一个 `cmd_skill`。
+
+**变更后行为：** `/skill list` 列出技能（分页 Markdown 表格），`/skill reload` 重扫技能根到共享 registry。`/skills` 与 `/skill-reload` 不再是命令名，输入它们既不会执行也不会被 skill 兜底——它们是普通文本，会当作消息发给 agent（弹出面板的模糊搜索输入 `skill` 即可找到新命令）。调用技能本身的路径完全没变（`/{skill-name}`）；因此名为 `skill` 的 skill 现在被内置命令顶掉，与既有「内置命令优先于同名 skill」规则一致（`mcp`、`plugin`、`hooks` 同名 skill 早已如此）。
+
+**指针：** `crates/tui/src/widgets/state/slash.rs`、`crates/tui/src/handlers/skills.rs`（`handle_skill_builtin_command`）、`crates/agent_tui_kit/src/i18n.rs`（`cmd_skill`、`skill_usage`）。
+
 ## 1. 2026-10-01 — 列表与提示里的插件 MCP server 只显示短名，`/mcp auth canva` 直接可用
 
 | 字段 | 值 |

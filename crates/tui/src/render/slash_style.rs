@@ -43,4 +43,32 @@ mod tests {
         assert!(!names.contains("help"));
         assert!(names.contains("demo"));
     }
+
+    /// The kit hardcodes the gather command (it owns no command table); this is
+    /// the link that makes a rename fail loudly here instead of silently
+    /// unhighlighting `/skill <name>` everywhere.
+    #[test]
+    fn the_kit_gather_command_is_the_hosts_skill_command() {
+        assert_eq!(
+            agent_tui_kit::render::slash_style::SKILL_COMMAND,
+            SlashCommand::Skill.name()
+        );
+    }
+
+    #[test]
+    fn the_skill_command_form_highlights_the_skill_name_too() {
+        use agent_tui_kit::render::slash_style::split_skill_slash;
+
+        let skills = vec![SkillEntry {
+            name: "demo".into(),
+            description: "d".into(),
+            body: "y".into(),
+        }];
+        let names = skill_name_set(&skills);
+
+        let (token, args) = split_skill_slash("/skill demo fix auth", &names).unwrap();
+
+        assert_eq!(token, "/skill demo");
+        assert_eq!(args, " fix auth");
+    }
 }
