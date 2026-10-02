@@ -108,24 +108,32 @@ impl App {
         }
     }
 
-    /// Flip the UI language and hand the new [`Messages`] to every component
-    /// that owns one.
+    /// Flip the UI language and say so — `Ctrl+L`, which has no persist step.
+    pub(crate) fn toggle_language(&mut self) {
+        let next = self.language.next();
+        let old_msgs = self.msgs();
+        self.apply_language(next);
+        self.add_system_message(old_msgs.lang_changed_tmpl.replace("{}", next.label()));
+    }
+
+    /// Switch the language silently, handing the new [`Messages`] to every
+    /// component that owns one.
+    ///
+    /// `/lang` uses this and lets its persist step do the talking; two messages
+    /// for one action ("Language: 中文" then "saved"/"session only") would say
+    /// the same thing twice.
     ///
     /// `self.language` is what the *render* path reads, so flipping it alone
     /// would leave the components building their log text (event messages, card
     /// chrome) in the old locale while the rows they anchor are drawn in the new
     /// one. Components take a snapshot at construction, so the snapshot is
     /// refreshed here — the one place the language changes.
-    pub(crate) fn toggle_language(&mut self) {
-        let next = self.language.next();
-        let label = next.label();
-        let old_msgs = self.msgs();
-        self.language = next;
+    pub(crate) fn apply_language(&mut self, language: Language) {
+        self.language = language;
         let msgs = self.msgs();
         self.thinking_mut().set_messages(msgs);
         self.stream_mut().set_messages(msgs);
         self.tools_mut().set_messages(msgs);
-        self.add_system_message(old_msgs.lang_changed_tmpl.replace("{}", label));
     }
 }
 
@@ -155,6 +163,7 @@ mod tests {
 
     use super::theme_label;
     use crate::{
+        i18n::Language,
         render::test_harness::make_app,
         theme::{Theme, ThemeName},
     };
@@ -202,5 +211,40 @@ mod tests {
         app.toggle_language();
 
         assert_ne!(app.language, before);
+    }
+
+    /// The silent half must move `language` too, or `/lang` would apply the
+    /// locale to the picker's answer and not to the app it belongs to.
+    #[test]
+    fn apply_language_switches_without_announcing() {
+        let mut app = make_app();
+        app.language = Language::English;
+        let before = app.log.items.len();
+
+        app.apply_language(Language::Chinese);
+
+        assert_eq!(app.language, Language::Chinese);
+        assert_eq!(
+            app.log.items.len(),
+            before,
+            "the persist step speaks for /lang; apply_language must stay silent"
+        );
+    }
+
+    /// The language and its canonical config name are separate on purpose: the
+    /// label is drawn for the user, the name goes into a file.
+    #[test]
+    fn language_names_round_trip_through_the_config_spelling() {
+        for language in Language::all() {
+            assert_eq!(
+                Language::parse(language.as_str()),
+                Some(*language),
+                "{} must parse back from what it writes",
+                language.as_str()
+            );
+        }
+        assert_eq!(Language::parse("EN"), Some(Language::English));
+        assert_eq!(Language::parse(" chinese "), Some(Language::Chinese));
+        assert_eq!(Language::parse("jp"), None, "a typo is not a fallback");
     }
 }

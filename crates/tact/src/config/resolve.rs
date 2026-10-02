@@ -532,6 +532,7 @@ struct NonLlmSettings {
     skill_dirs: Vec<String>,
     instruction_sources: InstructionSources,
     theme: String,
+    language: String,
     vision_image: VisionImageSettings,
     bash_timeout_secs: u64,
     bash_nice: i32,
@@ -593,6 +594,14 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         .or_else(|| toml_cfg.ui.theme.clone())
         .unwrap_or_else(|| "ink".to_string());
 
+    // No CLI flag: unlike the theme (chosen per terminal, so `--theme` earns
+    // its keep) a language belongs to the person, and `/lang` writes it once.
+    let language = toml_cfg
+        .ui
+        .language
+        .clone()
+        .unwrap_or_else(|| "en".to_string());
+
     let vision_image = resolve_vision_image(toml_cfg);
 
     let bash_timeout_secs = toml_cfg
@@ -624,6 +633,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         skill_dirs,
         instruction_sources,
         theme,
+        language,
         vision_image,
         bash_timeout_secs,
         bash_nice,
@@ -673,6 +683,7 @@ pub(super) fn resolve_non_llm_settings(
         },
         ui: UiSettings {
             theme: non_llm.theme,
+            language: non_llm.language,
             vision_image: non_llm.vision_image,
         },
         tools: ToolSettings {
@@ -878,6 +889,7 @@ pub(super) fn resolve_config(
         },
         ui: UiSettings {
             theme: non_llm.theme,
+            language: non_llm.language,
             vision_image: non_llm.vision_image,
         },
         tools: ToolSettings {

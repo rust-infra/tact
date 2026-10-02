@@ -461,7 +461,9 @@ Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overl
 
 颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `/theme` 打开选择器（`SelectKind::ThemePick`，开在**当前主题**那一行，选中的行带 ` *` 标记），`Ctrl+T` 仍是「下一个」的快捷循环；选择器走 `App::apply_theme`（静默应用，随后由持久化步骤报告），`Ctrl+T` 走 `App::set_theme`（应用 + 播报）。主题变化时 cache 失效防止 stale styled 行。
 
-UI 字符串集中在 `i18n.rs`（`English` / `Chinese`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言。
+UI 字符串集中在 `crates/agent_tui_kit/src/i18n.rs`（`Language::English` / `Language::Chinese`，每种语言一份 `Messages`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言，与 `Ctrl+T` 对称：走 `App::toggle_language`（应用 + 播报）。`/lang` 则与 `/theme` 对称：先经 `App::apply_language` **静默**翻转，再打开「保存到配置？」第二步（`SelectKind::PersistLang`，默认选 `No`），由这一步负责说话——一次动作只该播报一次。接受保存时写 `[ui] language`，写进去的是 `Language::as_str()` 的 locale 标签（`en` / `zh`）而**不是**界面标签（`中文`）：后者是画给人看的，解析器读不回来。没有配置文件时（`ui_config_available()` 为假，`/theme` 与 `/lang` 共用同一个探针）不开这一步，直接说明「仅本次会话」。启动时 `App::set_configured_language` 读回 `[ui] language`，未知取值告警并回落英文。
+
+`apply_language` 与 `toggle_language` 的分工不是风格问题：`self.language` 是**渲染**路径读的，而持有 `Messages` 快照的组件（thinking / stream / tools）在构造时就冻结了语言，所以两者都必须经 `apply_language` 把新快照推下去，否则日志里已存在的行会在旧语言的外壳里被重绘。`/lang` 之所以要拆出静默版，正是因为它的持久化步骤承担了播报。
 
 ### 6.11 Log 消息模型
 

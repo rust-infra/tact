@@ -71,6 +71,17 @@ pub(super) fn update_ui_theme_in_toml(path: &Path, theme: &str) -> anyhow::Resul
     })
 }
 
+/// Set `ui.language` in `path` and rewrite the file.
+///
+/// `language` is the canonical name (`Language::as_str`), the same string
+/// `TactTomlConfig.ui.language` resolves back into a locale on the next launch.
+pub(super) fn update_ui_language_in_toml(path: &Path, language: &str) -> anyhow::Result<()> {
+    update_toml(path, &["ui"], |t| {
+        set_scalar(t, "language", language);
+        Ok(())
+    })
+}
+
 /// Set `llm.providers.<provider>.model` in `path` and rewrite the file.
 pub(super) fn update_provider_model_in_toml(
     path: &Path,
@@ -200,6 +211,36 @@ provider = "kimi"
 
         let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(cfg["ui"]["theme"].as_str(), Some("kawaii"));
+    }
+
+    /// The theme's own line must survive a language write: both live in `[ui]`,
+    /// so a rewrite that rebuilt the table would drop the other preference.
+    #[test]
+    fn updates_ui_language_keeping_the_theme_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[ui]\ntheme = \"nord\"  # chosen by /theme\n").unwrap();
+
+        update_ui_language_in_toml(&path, "zh").unwrap();
+
+        let updated = std::fs::read_to_string(&path).unwrap();
+        let cfg: toml::Value = updated.parse().unwrap();
+        assert_eq!(cfg["ui"]["language"].as_str(), Some("zh"));
+        assert_eq!(cfg["ui"]["theme"].as_str(), Some("nord"));
+        assert!(updated.contains("# chosen by /theme"), "{updated}");
+    }
+
+    #[test]
+    fn ui_language_is_created_when_the_table_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[llm]\nprovider = \"kimi\"\n").unwrap();
+
+        update_ui_language_in_toml(&path, "zh").unwrap();
+
+        let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(cfg["ui"]["language"].as_str(), Some("zh"));
+        assert_eq!(cfg["llm"]["provider"].as_str(), Some("kimi"));
     }
 
     /// The `/model` write used to swap the whole item, taking the line's

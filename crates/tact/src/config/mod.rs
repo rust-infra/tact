@@ -345,6 +345,19 @@ pub fn persist_theme(theme: &str) -> anyhow::Result<()> {
     persist::update_ui_theme_in_toml(path, theme)
 }
 
+/// Persist `ui.language` to the loaded config file.
+///
+/// `language` is the canonical name (`Language::as_str`, e.g. `"en"` / `"zh"`).
+/// Without a config file the choice stays session-only, reported as such by the
+/// caller — the same contract as [`persist_theme`].
+pub fn persist_language(language: &str) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings.config_path.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("no config file to update (session-only language change)")
+    })?;
+    persist::update_ui_language_in_toml(path, language)
+}
+
 /// Persist `model` under the active `[llm.providers.<name>]` in the loaded config file.
 pub fn persist_active_provider_model(model: &str) -> anyhow::Result<()> {
     let settings = settings();
@@ -492,6 +505,7 @@ pub(crate) mod test_support {
                 },
                 ui: super::types::UiSettings {
                     theme: "retro".to_string(),
+                    language: "en".to_string(),
                     vision_image: super::types::VisionImageSettings {
                         compress: super::types::VisionImageSettings::DEFAULT_COMPRESS,
                         max_edge: super::types::VisionImageSettings::DEFAULT_MAX_EDGE,

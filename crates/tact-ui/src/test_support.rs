@@ -53,6 +53,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
         },
         ui: tact::config::UiSettings {
             theme: "retro".to_string(),
+            language: "en".to_string(),
             vision_image: tact::config::VisionImageSettings {
                 compress: tact::config::VisionImageSettings::DEFAULT_COMPRESS,
                 max_edge: tact::config::VisionImageSettings::DEFAULT_MAX_EDGE,

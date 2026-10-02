@@ -37,6 +37,25 @@
 
 ---
 
+## 1. 2026-10-02 — `/lang` 现在能把语言写进 `[ui] language`，下次启动读得回来
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`Language::as_str` / `parse`、`Eq`，新增 `lang_persist_prompt` / `lang_persisted_tmpl` / `lang_persist_failed_tmpl` / `lang_session_only_tmpl`）；`crates/tact/src/config/types.rs`（`UiTomlConfig.language`、`UiSettings.language`）、`resolve.rs`（`resolve_non_llm`，无 CLI flag）、`persist.rs`（`update_ui_language_in_toml`）、`mod.rs`（`persist_language`）；`crates/tui/src/widgets/state/mod.rs`（`SelectKind::PersistLang`）、`handlers/select.rs`（`start_language_toggle` / `open_language_persist_step` / `finish_language_persist`、`theme_config_available` → `ui_config_available`）、`widgets/state/app/config.rs`（`apply_language` 从 `toggle_language` 拆出）、`construct.rs`（`set_configured_language`）、`lib.rs`（`TuiConfig.language`）；spec `docs/superpowers/specs/2026-10-02-ui-language-persistence-design.md`；[Ch 23](./23_chapter_tui_zh.md) §6.10、[Ch 21](./21_chapter_config_zh.md) §4/§5/§6 |
+
+**症状 / 动机：** 上一轮的 `/theme` 已经能问一句「保存到配置文件？」并写 `[ui] theme`，`Ctrl+L` 旁边的 `/lang` 却仍然只有 `app.toggle_language()`：换完语言、本轮生效，下次启动回到英文，而且**没有任何地方能改这个结果**——`[ui]` 里根本没有语言这个键，TOML 里写了也没人读。于是「我明明切成中文了」只能靠每次重开再按一次来对抗。
+
+**决策：** 把语言提升为与主题并列的 `[ui]` 偏好，但**刻意不走同一条交互路径**。`/lang` 仍是翻转而不是选择器：只有两种语言，选择器的信息量抵不上一次回车。新增的是第二步——`SelectKind::PersistLang`，与 `PersistTheme` 分开而不是合并成一个「写哪个 `[ui]` 键」的变体，因为两者写进去的拼写不同（主题名 vs locale 标签）且各自用自己的话播报。为此 `theme_config_available()` 更名 `ui_config_available()`：两个命令都写 `[ui]`，必须对「这张表有没有文件可住」给出同一个答案。
+
+**写入的是 locale 标签，不是界面标签。** `Language::label()` 对中文返回 `中文`——那正是刚选了中文的人在屏幕上看到的字，而 `Language::parse()` 读不回来；写进文件就是一个下次启动静默失效的值。因此新增 `Language::as_str()`（`en` / `zh`）与 `parse()`（额外接受 `english` / `cn` / `chinese`，忽略大小写与首尾空格，其余返回 `None`），并由 `language_names_round_trip_through_the_config_spelling` 与 `confirming_save_writes_the_locale_tag_and_leaves_the_other_tables` 钉住。`parse()` 返回 `Option` 而不是自带回退，是为了让「配置说了什么」和「我们猜了什么」分开：未知取值由 `App::set_configured_language` 打 `tracing::warn!` 再回落英文，而不是假装配置本来就写着英文。
+
+**播报只发生一次。** 原先 `toggle_language` 一个函数同时做「翻转」和「播报」，`/lang` 若直接复用会先打印 `🌐 语言: 中文`、紧接着再打印「已保存 / 仅本次会话」——同一件事说两遍。拆成 `apply_language`（静默切换，并把新 `Messages` 快照推给 thinking / stream / tools 三个持有者）与 `toggle_language`（`apply_language` + 播报）后，`Ctrl+L` 走后者、`/lang` 走前者并让持久化步骤承担播报。这个拆分不是风格问题：`self.language` 是**渲染**路径读的，而组件的 `Messages` 在构造时就冻结了，只翻 `self.language` 会让切换前已存在的行在旧语言的外壳里被重绘。
+
+**变更后行为：** `/lang` 翻转语言后追加一步「将语言保存到配置文件？」（默认**否**，与 `/theme`、`/model` 手感一致）：选「是」写 `[ui] language`（`en` / `zh`），`config_path` 为空时不开这一步、直接播报「仅本次会话」；`Ctrl+L` 行为不变，只翻转不写文件。启动时读回 `[ui] language`，无法识别则告警 + 英文。**没有 CLI flag**：主题可能随终端而变，一次启动换一个说得通；语言属于使用者本人，`/lang` 写一次就够了——因此解析链只有「TOML → 默认值」两级。`config.example.toml` 与 [Ch 21](./21_chapter_config_zh.md) 的 `[ui]` 段、默认值表、§6 均同步。
+
+**指针：** `crates/tui/src/handlers/select.rs::start_language_toggle` / `open_language_persist_step` / `finish_language_persist`、`crates/tui/src/widgets/state/app/construct.rs::set_configured_language`、`crates/tact/src/config/persist.rs::update_ui_language_in_toml`。测试：`language_persist_step_asks_and_defaults_to_no`、`language_persist_step_reports_session_only_without_a_config_file`、`declining_to_persist_reports_a_session_only_language`、`confirming_save_writes_the_locale_tag_and_leaves_the_other_tables`、`apply_language_switches_without_announcing`、`language_names_round_trip_through_the_config_spelling`、`updates_ui_language_keeping_the_theme_line`、`ui_language_is_created_when_the_table_is_missing`。
+
 ## 1. 2026-10-01 — 插件提供的 MCP server 现在可以被用户配置了（策略覆盖层）
 
 | 字段 | 值 |
@@ -77,7 +96,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/tact/src/mcp/mod.rs`（`ExposedTools::tool_bytes`、`McpClient::tool_bytes`、`McpServerInspection::tool_bytes`）；`crates/tact-ui/src/mcp_cli.rs`（`format_bytes` / `format_tokens`、`render_server_detail`）；[Ch 08](./08_chapter_mcp_zh.md) §工具策略 |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`ExposedTools::tool_bytes`、`McpClient::tool_bytes`、`McpServerInspection::tool_bytes`）；`crates/tact-ui/src/mcp_cli.rs`（`format_bytes` / `format_tokens`、`render_server_detail`）；spec `docs/superpowers/specs/2026-10-01-mcp-tool-declaration-cost-design.md`；[Ch 08](./08_chapter_mcp_zh.md) §工具策略 |
 
 **症状 / 动机：** 每个 MCP 工具的名字、描述、input schema 都要在**每轮请求**里重发，而唯一能降低它的旋钮（`enabled_tools`）没有任何反馈：用户看到的是 `mcp list` 里的「21 tools」，看不到这等于多少上下文。以 Basic Memory 为例，21 个工具 = 34.6 KB ≈ 8.6k tokens/请求，而其中 `edit_note` 一个就 4.5 KB。
 
@@ -132,7 +151,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/tui/src/widgets/state/mod.rs`（`SelectKind::ThemePick` / `PersistTheme`）；`crates/tact/src/config/{mod.rs,persist.rs}`（`persist_theme`、`update_ui_theme_in_toml`、`set_scalar`）；`crates/tui/src/handlers/mod.rs`（`start_theme_picker`）；`crates/tui/src/handlers/select.rs`（确认/取消分支）；`crates/tui/src/widgets/state/app/config.rs`（`set_theme`、`theme_label`，`toggle_theme` 改为调用前者）；`crates/agent_tui_kit/src/theme.rs`（`ThemeName::all()` 转 pub、新增 `as_str()`）；`crates/agent_tui_kit/src/i18n.rs`（`theme_select_prompt` / `theme_persist_*` / `theme_session_only_tmpl`，`model_persist_yes|no` 更名 `persist_yes|no`，`cmd_theme` 描述）；[Ch 23](./23_chapter_tui_zh.md) §主题 |
+| **相关** | `crates/tui/src/widgets/state/mod.rs`（`SelectKind::ThemePick` / `PersistTheme`）；`crates/tact/src/config/{mod.rs,persist.rs}`（`persist_theme`、`update_ui_theme_in_toml`、`set_scalar`）；`crates/tui/src/handlers/mod.rs`（`start_theme_picker`）；`crates/tui/src/handlers/select.rs`（确认/取消分支）；`crates/tui/src/widgets/state/app/config.rs`（`set_theme`、`theme_label`，`toggle_theme` 改为调用前者）；`crates/agent_tui_kit/src/theme.rs`（`ThemeName::all()` 转 pub、新增 `as_str()`）；`crates/agent_tui_kit/src/i18n.rs`（`theme_select_prompt` / `theme_persist_*` / `theme_session_only_tmpl`，`model_persist_yes|no` 更名 `persist_yes|no`，`cmd_theme` 描述）；spec `docs/superpowers/specs/2026-10-01-tui-theme-picker-design.md`；[Ch 23](./23_chapter_tui_zh.md) §主题 |
 
 **症状 / 动机：** `/theme` 只做一件事：`C::Theme => app.toggle_theme()`，即 `ThemeName::next()` 循环。内置主题有 12 个，想从 `ink`（config 默认）切到 `kawaii` 要按 6 次，而且每次都得盯着底栏看现在到哪了；`/model`、`/permission` 早就是选择器（列表 + 当前项标记 + Enter 确认），只有主题是异类。同一批主题名还散在两处：`toggle_theme` 里一个 12 分支的 `match`，以及（新加的）选择器需要同样的标签。
 
@@ -164,7 +183,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization / breaking（发现层） |
-| **相关** | `crates/tui/src/widgets/state/app/config.rs`（`palette_commands` 只返内置）；`crates/tui/src/widgets/state/slash_command.rs`（`skill_candidates`：`/skill` 的动态子命令）；`crates/tui/src/handlers/skills.rs`（`invoke_skill`、`skill_args_from_subcommand_input`）；`crates/tui/src/handlers/palette.rs`；`crates/agent_tui_kit/src/render/slash_style.rs`（`SKILL_COMMAND`、`/skill <name>` 高亮）；`crates/agent_tui_kit/src/i18n.rs`（`skill_usage` / `cmd_skill`）；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+| **相关** | `crates/tui/src/widgets/state/app/config.rs`（`palette_commands` 只返内置）；`crates/tui/src/widgets/state/slash_command.rs`（`skill_candidates`：`/skill` 的动态子命令）；`crates/tui/src/handlers/skills.rs`（`invoke_skill`、`skill_args_from_subcommand_input`）；`crates/tui/src/handlers/palette.rs`；`crates/agent_tui_kit/src/render/slash_style.rs`（`SKILL_COMMAND`、`/skill <name>` 高亮）；`crates/agent_tui_kit/src/i18n.rs`（`skill_usage` / `cmd_skill`）；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
 
 **症状 / 动机：** 每装一个 skill，它就变成一条一级斜杠命令（`/code-reviewer`、`/lark-doc`…），混进 palette 与 `/` 弹出菜单。装几十个之后，`/mcp`、`/compact`、`/help` 淹没在一列 skill 名里；一级列表还随安装/卸载整体挪位（补全索引、分组标题、视觉记忆全部失效）。上一轮刚把 `/skills` 收成 `/skill list`，等于承认这条路径该有统一入口，但 skill 仍然各自占据一级。
 
@@ -185,7 +204,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Subcommand` + `subcommands()`）；`crates/tui/src/widgets/state/slash_command.rs`（`Candidate` + `App::slash_candidates`，取代 `matched_commands`）；`crates/tui/src/handlers/insert.rs`（空格 / Tab / Enter）；`crates/tui/src/render/popups/slash_command.rs`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Subcommand` + `subcommands()`）；`crates/tui/src/widgets/state/slash_command.rs`（`Candidate` + `App::slash_candidates`，取代 `matched_commands`）；`crates/tui/src/handlers/insert.rs`（空格 / Tab / Enter）；`crates/tui/src/render/popups/slash_command.rs`；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
 
 **症状 / 动机：** 斜杠弹窗只认命令名，而且空格一律关闭它（`KeyCode::Char(' ') if slash_command.active` 直接 `active = false`）。于是 `/skill ` 之后既没有提示也没有补全——`list` / `reload` 只存在于 `skill_usage` 这类用法字符串和文档里；`/plugin`（5 个子命令）、`/hooks`（3 个，还带 `--all` / `--source <label>`）、`/mcp`（3 个）同样如此。上一轮把 `/skills` 收成 `/skill list` 之后，这个缺口更明显了：命令变得需要记子命令，而补全只帮到命令名那一步。
 
@@ -204,7 +223,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization / breaking rename |
-| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Skill` 取代 `Skills` + `SkillReload`）；`crates/tui/src/handlers/skills.rs`（新增 `handle_skill_builtin_command`）；`crates/tui/src/handlers/mod.rs`；`crates/tui/src/render/popups/command_palette.rs`；`crates/agent_tui_kit/src/i18n.rs`（`cmd_skill` 取代 `cmd_skills`/`cmd_skill_reload`，新增 `skill_usage`）；[Ch 02](./02_chapter_skill_zh.md)、[Ch 21](./21_chapter_config_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Skill` 取代 `Skills` + `SkillReload`）；`crates/tui/src/handlers/skills.rs`（新增 `handle_skill_builtin_command`）；`crates/tui/src/handlers/mod.rs`；`crates/tui/src/render/popups/command_palette.rs`；`crates/agent_tui_kit/src/i18n.rs`（`cmd_skill` 取代 `cmd_skills`/`cmd_skill_reload`，新增 `skill_usage`）；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 21](./21_chapter_config_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
 
 **症状 / 动机：** 技能那两条命令是全表里唯一不成对的：`/skills` 平级列出技能，`/skill-reload` 平级重扫，而同类能力在别处都是「一个命令 + 子命令」——`/mcp list`、`/plugin list|reload|install`、`/hooks list|trust`。结果弹出面板里多出一条命令、两张图标、两个描述字段（`cmd_skills` / `cmd_skill_reload`），用户还得记住哪条是横线哪条是下划线。
 
@@ -219,7 +238,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/tact/src/mcp/mod.rs`（`display_server_name` / `resolve_server_name` / `notice_lines` / `authorize_server`）；`crates/tact-ui/src/mcp_cli.rs`（`render_live_listing` / `render_report` / `render_server_detail` / `authorize` / `get_server` / `logout`）；[Ch 08](./08_chapter_mcp_zh.md) §全部来源 |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`display_server_name` / `resolve_server_name` / `notice_lines` / `authorize_server`）；`crates/tact-ui/src/mcp_cli.rs`（`render_live_listing` / `render_report` / `render_server_detail` / `authorize` / `get_server` / `logout`）；spec `docs/superpowers/specs/2026-10-01-mcp-plugin-server-short-name-design.md`；[Ch 08](./08_chapter_mcp_zh.md) §全部来源 |
 
 **症状 / 动机：** 插件带来的 server 叫 `plugin__<plugin_id>__<server>`，而多数插件的 manifest id 与 server key 同名，于是 Canva 插件的提示读作：
 

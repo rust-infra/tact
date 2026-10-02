@@ -263,6 +263,12 @@ mode = "default"
 # Theme name, or "auto" for terminal/system detection.
 theme = "ink"     # ink | ink-light | retro | brutal | nord | dark | auto
 
+# UI language. Written by `/lang` when you accept its "save to config?" step.
+# "en" | "zh"; "english" / "cn" / "chinese" are accepted too, and an
+# unrecognized value falls back to English with a warning. No CLI flag —
+# unlike the theme (chosen per terminal) a language belongs to the person.
+# language = "en"
+
 # User-attached images (`@file.png`, `![alt](path)`).
 # Requires a vision-capable model/endpoint; compress only reduces tokens.
 # Text-only OpenAI-compatible APIs reject image_url (HTTP 400).

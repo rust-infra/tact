@@ -180,6 +180,7 @@ mod tests {
             },
             ui: crate::config::UiSettings {
                 theme: "retro".to_string(),
+                language: "en".to_string(),
                 vision_image: crate::config::VisionImageSettings {
                     compress: crate::config::VisionImageSettings::DEFAULT_COMPRESS,
                     max_edge: crate::config::VisionImageSettings::DEFAULT_MAX_EDGE,

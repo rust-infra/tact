@@ -439,7 +439,11 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             CommandExecOutcome::handled()
         }
         C::Lang => {
-            app.toggle_language();
+            // Toggling is the whole choice with two languages, so `Ctrl+L` and
+            // `/lang` move the same way; `/lang` differs by asking whether the
+            // choice should outlive the session. Silent inside because that
+            // step speaks for both, exactly as `/theme`'s does.
+            select::start_language_toggle(app);
             CommandExecOutcome::handled()
         }
     }

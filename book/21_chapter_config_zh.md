@@ -14,6 +14,7 @@
 | Agent 限制 | `agent.*` | [Ch 5 压缩](./05_chapter_compact_zh.md)、[Ch 4 Prompt](./04_chapter_prompt_zh.md)、[Ch 17 通知](./17_chapter_notify_zh.md) |
 | 权限模式字符串 | `permission_mode: Option<String>` | 仅 headless — 见 [§6 缺口](#6-当前缺口) |
 | UI 主题 | `ui.theme` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
+| UI 语言 | `ui.language` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
 | 调试 | `tokio_console` | `tact-ui` 的 `main()` |
 
 每个二进制入口在启动时应**调用一次** `tact::config::init()`（或 `init_config()`）。
@@ -184,6 +185,9 @@ max_token_usage_bodies = 1   # 每会话保留的请求正文条数（压缩行�
 
 [ui]
 theme = "ink"
+# UI 语言。`/lang` 第二步选择「保存」时由 TUI 写入。
+# "en" | "zh"（也接受 "english" / "cn" / "chinese"）；无法识别时告警并回落英文。
+# language = "en"
 # 附加图片（`@file.png`、`![alt](path)`）；compress 仅减少 token —
 # 模型/端点仍须支持 vision（见 Ch 22 / Ch 23）。
 # vision_image.compress = true
@@ -278,6 +282,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
 | `tools.sandbox` | `false` | `true` / `false`（Linux：bubblewrap） |
 | `ui.theme` | `"ink"` | — |
+| `ui.language` | `"en"` | —（`en` / `zh`；无 CLI flag，见 §6） |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
 | `ui.vision_image.jpeg_quality` | `80`（钳制 1–100） | — |
@@ -437,6 +442,12 @@ tact-ui headless "Summarize this repo"
 
 `tools.bash_timeout_secs` 在 v1 仅可由 TOML 设置。Resolve 保留 `0` 的“禁用”
 语义，否则经 `ToolSettings` 将该值传到每个 `ToolContext`；没有对应 CLI flag。
+
+`ui.language` 刻意**没有** CLI flag（`--theme` 有）。主题可能随终端而变，一次启动
+换一个说得通；语言属于使用者本人，`/lang` 的第二步写一次就够了。因此解析链只有
+「TOML → 默认值」两级：`resolve_non_llm` 读 `[ui].language`，缺失即 `"en"`，未知
+取值由 TUI 在启动时告警并回落英文（`App::set_configured_language`），而不是静默
+当成英文——否则 `language = "jp"` 会看起来像配置确实这么说的。
 
 ---
 

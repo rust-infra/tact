@@ -123,6 +123,7 @@ async fn run_interactive_locked(
     let agent_session_store = session_store.clone();
 
     let theme = tact::config::settings().ui.theme.clone();
+    let language = tact::config::settings().ui.language.clone();
     let model_context_window = tact::config::settings().agent.model_context_window;
     let model_name = tact::config::settings().agent.model.clone();
     let model_max_tokens = tact::config::settings().agent.max_tokens;
@@ -148,6 +149,7 @@ async fn run_interactive_locked(
             pending_ui: tui_ui_responder,
             history_save_tx,
             theme,
+            language,
             model_context_window,
             model_name,
             model_max_tokens,

@@ -2,7 +2,7 @@
 //! consistent with the theme switching mechanism.
 
 /// Language enum.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Language {
     English,
     Chinese,
@@ -26,6 +26,30 @@ impl Language {
         match self {
             Language::English => "EN",
             Language::Chinese => "中文",
+        }
+    }
+
+    /// The canonical name, for `[ui] language` and messages that name it.
+    ///
+    /// Deliberately not [`Self::label`]: that one is drawn for the user (and is
+    /// `中文` for the language someone already reading Chinese picked), so it
+    /// cannot double as the value written to a config file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Language::English => "en",
+            Language::Chinese => "zh",
+        }
+    }
+
+    /// Parses a configured name.
+    ///
+    /// `None` for anything unrecognized, so the caller owns the fallback and a
+    /// typo cannot present itself as "the config said English".
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "en" | "english" => Some(Language::English),
+            "zh" | "cn" | "chinese" => Some(Language::Chinese),
+            _ => None,
         }
     }
 }
@@ -351,6 +375,12 @@ pub struct Messages {
     pub theme_session_only_tmpl: &'static str,
     pub theme_changed_tmpl: &'static str,
     pub lang_changed_tmpl: &'static str,
+    /// `/lang` second step — offer to write `[ui] language`, the same question
+    /// `/theme` asks, so a chosen locale can outlive the session.
+    pub lang_persist_prompt: &'static str,
+    pub lang_persisted_tmpl: &'static str,
+    pub lang_persist_failed_tmpl: &'static str,
+    pub lang_session_only_tmpl: &'static str,
 
     // ---- 输入限制 ----
     pub input_too_long_tmpl: &'static str,
@@ -663,6 +693,10 @@ impl Messages {
             theme_session_only_tmpl: "🎨 Theme: {} (this session only)",
             theme_changed_tmpl: "🎨 Theme: {}",
             lang_changed_tmpl: "🌐 Language: {}",
+            lang_persist_prompt: "Save language to config?",
+            lang_persisted_tmpl: "✓ Saved language = \"{}\" to config",
+            lang_persist_failed_tmpl: "✗ Failed to save language: {}",
+            lang_session_only_tmpl: "🌐 Language: {} (this session only)",
 
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
             skill_task_too_long_tmpl: "⚠ Skill payload too long (max {} characters). Shorten the skill body or args.",
@@ -962,6 +996,10 @@ impl Messages {
             theme_session_only_tmpl: "🎨 主题: {}（仅本次会话）",
             theme_changed_tmpl: "🎨 主题: {}",
             lang_changed_tmpl: "🌐 语言: {}",
+            lang_persist_prompt: "将语言保存到配置文件？",
+            lang_persisted_tmpl: "✓ 已将 language = \"{}\" 写入配置",
+            lang_persist_failed_tmpl: "✗ 保存语言失败: {}",
+            lang_session_only_tmpl: "🌐 语言: {}（仅本次会话）",
 
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
             skill_task_too_long_tmpl: "⚠ 技能内容过长（最多 {} 个字符），请缩短技能正文或参数。",

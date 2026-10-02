@@ -199,6 +199,13 @@ pub struct UiTomlConfig {
     /// Initial TUI theme name (e.g. "retro", "nord", "dark").
     pub theme: Option<String>,
 
+    /// Initial UI language ("en" | "zh").
+    ///
+    /// Written by `/lang`'s persist step, but readable from the file at
+    /// startup like any other `[ui]` preference — an interactive write the
+    /// next session cannot read would not be persistence.
+    pub language: Option<String>,
+
     /// Vision image attachment compression (user `@file` / markdown images).
     pub vision_image: VisionImageTomlConfig,
 }
@@ -424,6 +431,7 @@ impl VisionImageSettings {
 #[derive(Debug, Clone)]
 pub struct UiSettings {
     pub theme: String,
+    pub language: String,
     pub vision_image: VisionImageSettings,
 }
 

@@ -132,6 +132,9 @@ pub struct TuiConfig {
     pub session_id: String,
     pub history_save_tx: UnboundedSender<(String, String)>,
     pub theme: String,
+    /// Configured UI language ("en" | "zh"); an unknown value falls back
+    /// to English with a warning, the same contract as `theme`.
+    pub language: String,
     pub model_context_window: usize,
     /// Configured model name, shown in the bottom bar before the first LLM call.
     pub model_name: String,
@@ -169,6 +172,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         session_id,
         history_save_tx,
         theme,
+        language,
         model_context_window,
         model_name,
         model_max_tokens,
@@ -211,6 +215,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
     );
 
+    app.set_configured_language(&language);
     app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);

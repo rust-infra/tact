@@ -108,6 +108,12 @@ pub(crate) enum SelectKind {
     /// `/theme` second step — offer to write `[ui] theme` to `config.toml`,
     /// mirroring what `/model` asks before persisting.
     PersistTheme { name: crate::theme::ThemeName },
+    /// `/lang` second step — offer to write `[ui] language` to `config.toml`.
+    ///
+    /// Separate from [`Self::PersistTheme`] rather than one "which `[ui]` key"
+    /// variant: the two write different spellings (a theme's canonical name vs
+    /// a locale tag) and report in their own words.
+    PersistLang { language: crate::i18n::Language },
 }
 
 /// A queued agent-originated select (`RequestSelect` / `RequestMultiSelect`)
