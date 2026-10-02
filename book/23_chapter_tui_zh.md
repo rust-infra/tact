@@ -52,9 +52,10 @@ sequenceDiagram
 
 1. `tact::config::init()` — 设置 + LLM provider（[Ch 21](./21_chapter_config_zh.md)）。
 2. 打开 SQLite session store，resolve `session_id`（`--session`、`--resume-last` 或新 UUID）。`--resume-last` 与 `--list-sessions` 按当前工作目录的 `root_dir` 过滤 session，忽略其他项目行。`SessionLockGuard` 在争用前重试 `try_lock_session`。
-3. 用 `toolset()`、MCP router、managers 与 `with_ui_channel(agent_tx)` 构建 `Agent`。
-4. 在独立 tokio task 上 spawn `tui::run_tui(...)`。
-5. 循环 `user_cmd_rx` — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
+3. 建好 channel / session store / skill registry 等，**先在独立 tokio task 上 spawn `tui::run_tui(...)`** —— 这些都不依赖 Agent，所以 TUI 先可见。
+4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`（`toolset()`、MCP router、managers、`with_ui_channel(agent_tx)`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
+5. 构建成功后 spawn driver task 跑 `user_cmd_rx` 循环 — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
+6. `tui_handle` 结束后等 driver 收尾（SessionEnd hook + `shutdown_mcp`），再打印 session id 与 stats。
 
 主题来自 `config::settings().ui.theme`（默认 `"ink"`）。
 

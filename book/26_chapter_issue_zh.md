@@ -37,6 +37,30 @@
 
 ---
 
+## 1. 2026-10-02 — 启动期间退出不再等 MCP 连完
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-ui/src/interactive.rs`（`run_interactive`：`build_agent_for_interactive` 与 `tui_handle` 的 `tokio::select!`）；[Ch 23](./23_chapter_tui_zh.md) §1 |
+
+**症状 / 动机：** 启动后头十秒内按 `q`，终端已经恢复、`Bye! 🔔` 已经打印，但进程要再挂几秒到十几秒才真正退出——屏幕看起来已经结束了，shell 提示符就是不来。用 pty 探针量「打印 `Bye!`」到「进程真正退出」的差值（注意 TUI 默认是 **Insert** 模式，探针要先发 `Esc` 再发 `q`，否则 `q` 只是打进输入框）：
+
+| 退出时刻 | MCP server | `Bye!` 之后的死等 |
+|---|---|---|
+| 1.5 s | 无 | 0.01 s |
+| 4.4 s | 无 | 0.01 s |
+| 4.4 s | basic-memory + canva | **5.13 s** |
+| 25 s | basic-memory + canva | 0.35 s |
+
+**根因不是退出路径，是启动路径。** `run_interactive` 先 `build_agent_for_interactive(...).await`，再 `tui_handle.await`。TUI 跑在独立 task 上，所以 `q` 立刻结束 TUI 循环、恢复终端、打印告别语，但进程要等 agent 构建完才能退。构建里最贵的是连 MCP：`basic-memory`（stdio，Python/uv）约 5.7 s，`canva`（remote + OAuth）约 5.0 s 且每次启动 token refresh 都失败。连接本身**已经是并发**的（`FuturesUnordered`），所以耗时等于最慢那个 server。RUST_LOG 时间线钉死：t+4.45 按 `q` → t+9.2 canva 连接结束 → t+9.54 进程退出。25 s 之后再退只要 0.35 s，因为构建早就跑完了。
+
+**决策：** 让构建与 TUI **竞速**（`tokio::select!`）：TUI 先结束就丢弃构建、直接返回。丢弃是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程（rmcp `ChildWithCleanup::drop`），实测退出后无残留 `basic-memory` 进程。代价是这条路不打印 session id / stats：没有 agent 可总结，而且启动两秒就退出本来也无统计可言。**刻意不顺手改退出路径**：`shutdown_mcp` 用的是 rmcp 的 `cancel()`（`cancellation_token.cancel(); handle.await`，**无界等待**）而非 `close_with_timeout`，且 `disconnect_all` 是串行的；2 个 server 实测 0.35 s，现在不是瓶颈，留给单独一轮。
+
+**变更后行为：** 启动任意时刻退出都是立即的（三档 dwell 实测均为 0.00 s）；正常路径不变——启动已完成后退出仍打印 `[session id: ...]` 与 stats，仍走 SessionEnd hook + `shutdown_mcp`。
+
+**指针：** `crates/tact-ui/src/interactive.rs::run_interactive`（`let mut build = Box::pin(...)` + `tokio::select!`，TUI 分支 `tui??; return Ok(())`）；[Ch 23](./23_chapter_tui_zh.md) §1。**无自动化测试**：要稳定复现需要给构建注入可观测的延迟，现有 harness 的构建太快、跑不到这个竞态；证据是 pty 探针的前后对照（上表），改动后三档均为 0.00 s。
+
 ## 1. 2026-10-02 — `/lang` 现在能把语言写进 `[ui] language`，下次启动读得回来
 
 | 字段 | 值 |

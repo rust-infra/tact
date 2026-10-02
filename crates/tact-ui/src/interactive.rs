@@ -130,7 +130,7 @@ async fn run_interactive_locked(
     let model_thinking_budget = tact::config::settings().agent.thinking_budget;
     let account_enabled = account::is_supported();
     let tui_ui_responder = ui_responder.clone();
-    let tui_handle = tokio::spawn(Box::pin(async move {
+    let mut tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
             Some(account_rx)
         } else {
@@ -210,7 +210,19 @@ async fn run_interactive_locked(
     // task). Instead the error is delivered into the running TUI as an
     // `AgentUpdate::Error`, the user quits normally, and `run_tui` restores
     // the terminal.
-    let driver = match build_agent_for_interactive(
+    //
+    // Raced against the TUI, because this is the slowest thing that happens
+    // after the UI appears: connecting MCP servers is a handshake per server,
+    // and a remote one can spend seconds on OAuth discovery before it fails.
+    // Awaiting it unconditionally made `q` look broken — the TUI printed its
+    // bye line and restored the terminal immediately, and then the process sat
+    // there until the last server finished connecting, with nothing on screen
+    // to say why. A user who quits during startup has nothing left to drive, so
+    // the build is dropped instead of waited out. That is safe: every MCP
+    // transport kills its child on drop, and the session simply ends with no
+    // agent, which is also why the session-id / stats lines below are skipped
+    // on this path — there is no agent to summarise.
+    let mut build = Box::pin(build_agent_for_interactive(
         tact_path,
         agent_tx.clone(),
         agent_skill_registry,
@@ -218,23 +230,36 @@ async fn run_interactive_locked(
         agent_session_store,
         work_dir,
         ui_responder,
-    )
-    .await
-    {
-        Ok(agent) => Some(tokio::spawn(run_command_loop_with_account(
-            agent,
-            user_cmd_rx,
-            image_work_dir,
-            Some(account_tx),
-        ))),
-        Err(err) => {
-            // Deliver the failure into the already-running TUI instead of
-            // propagating it past the raw-mode boundary. The TUI shows the
-            // error and the user quits normally (restoring the terminal).
-            let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "startup failed: {err:#}"
-            ))));
-            None
+    ));
+    let driver = tokio::select! {
+        // `biased`, so a build that is *already* finished is always used: the
+        // default random choice would occasionally drop a just-built agent
+        // because the TUI happened to become ready in the same poll, and the
+        // stats below would go missing for no reason the user could see.
+        biased;
+        built = &mut build => match built {
+            Ok(agent) => Some(tokio::spawn(run_command_loop_with_account(
+                agent,
+                user_cmd_rx,
+                image_work_dir,
+                Some(account_tx),
+            ))),
+            Err(err) => {
+                // Deliver the failure into the already-running TUI instead of
+                // propagating it past the raw-mode boundary. The TUI shows the
+                // error and the user quits normally (restoring the terminal).
+                let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                    "startup failed: {err:#}"
+                ))));
+                None
+            }
+        },
+        tui = &mut tui_handle => {
+            // Quit while the agent was still being built. `run_tui` has already
+            // restored the terminal and printed its goodbye, so the only thing
+            // left to do is to stop waiting for a build nobody will use.
+            tui??;
+            return Ok(());
         }
     };
 
