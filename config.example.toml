@@ -302,6 +302,9 @@ api_key = ""
 # Keyboard shortcut to start/stop voice recording (optional; mouse-only when unset).
 # Format: "ctrl+<char>" — one letter, digit, or symbol after ctrl+.
 # Only an exact match toggles voice; other keys still reach the input box.
+# Must not be one of the built-in global shortcuts (ctrl+c / ctrl+h / ctrl+t /
+# ctrl+l / ctrl+?) — those are handled first and consume the key, so a binding on
+# one of them could never fire. Startup refuses such a config and names the key.
 # Examples: "ctrl+g", "ctrl+r", "ctrl+,"
 # voice_keybind = "ctrl+g"
 

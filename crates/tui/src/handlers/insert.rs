@@ -446,8 +446,14 @@ pub(crate) fn handle_insert_mode(
             app.input.insert(app.input_cursor, '@');
             app.input_cursor += '@'.len_utf8();
         }
-        KeyCode::Char(c) => {
-            // Typing anything exits history navigation
+        // A plain character types itself. `CONTROL` is excluded on purpose:
+        // every `Ctrl+<letter>` is either handled above or consumed globally,
+        // and an unbound one must not silently fall back to typing its letter.
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             app.input_history.index = None;
             app.input_history.saved.clear();
             app.save_undo();
@@ -602,6 +608,46 @@ mod tests {
             Vec::new(),
         );
         (app, user_cmd_rx)
+    }
+
+    #[test]
+    fn an_unbound_ctrl_key_types_nothing() {
+        // The reported bug: `Ctrl+T` toggled the theme *and* typed a `t`, because
+        // the global handler did not consume the event and this handler's
+        // catch-all matched on `KeyCode` alone. `Ctrl+G` is bound nowhere — both
+        // must type nothing.
+        for c in ['t', 'g'] {
+            let (mut app, _user_cmd_rx) = make_app();
+            let user_cmd_tx = app.user_cmd_tx.clone();
+            app.input = "abc".to_string();
+            app.input_cursor = app.input.len();
+
+            handle_insert_mode(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+                &user_cmd_tx,
+            );
+
+            assert_eq!(app.input, "abc", "Ctrl+{c} must not type its letter");
+            assert_eq!(app.input_cursor, 3);
+        }
+    }
+
+    #[test]
+    fn a_plain_letter_still_types_itself() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.input = "ab".to_string();
+        app.input_cursor = app.input.len();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert_eq!(app.input, "abc");
+        assert_eq!(app.input_cursor, 3);
     }
 
     #[test]

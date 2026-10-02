@@ -292,7 +292,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `voice.model` | `gpt-4o-mini-transcribe`（openai）/ `latest_short`（google）/ 空（whisper_cpp） | — |
 | `voice.language` | `zh` | Google 示例：`zh-CN`、`en-US` |
 | `voice.max_duration_secs` | `300`（openai/whisper_cpp，有效 `1..=600`）/ `60`（google，有效 `1..=60`） | — |
-| `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`） |
+| `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`），不可与内置全局键 `Ctrl+C/H/T/L/?` 重合 |
 
 ### `[agent]` — skill 根目录、指令文件、全文注入
 
@@ -357,7 +357,9 @@ Cloud 项目中启用 Speech-to-Text API。Google API key 模式不支持 Servic
 `enabled = false` 隐藏标题栏居中按钮。`enabled = true` 但未配置 `api_key`（仅 openai）时仍显示按钮，
 点击会提示 `[voice].api_key`。可选 `voice_keybind = "ctrl+<char>"` 可在任意输入模式下切换录制；
 仅精确匹配时消费按键（其它键仍进入 Insert/Normal）。未设置则仅鼠标控制。配置的快捷键会显示在
-帮助面板（`Ctrl+?`）。空字符串、多字符键、非 `ctrl` 修饰符会在配置解析阶段失败。凭证不会写入
+帮助面板（`Ctrl+?`）。空字符串、多字符键、非 `ctrl` 修饰符会在配置解析阶段失败；与内置全局快捷键
+（`Ctrl+C/H/T/L/?`）重合的绑定会在**启动时被拒绝**并指名冲突的键——全局快捷键先派发且消费事件，
+这种绑定永远不可能触发（[Ch 23](./23_chapter_tui_zh.md) §7）。凭证不会写入
 日志或会话历史。
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。

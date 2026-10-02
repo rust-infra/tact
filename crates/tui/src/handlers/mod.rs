@@ -12,6 +12,7 @@ mod select;
 mod skills;
 
 use chrono::Local;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub(crate) use file_picker::handle_file_picker_mode;
 pub(crate) use insert::{handle_insert_mode, insert_transcript};
 pub(crate) use mouse::handle_mouse_event;
@@ -52,6 +53,76 @@ pub(crate) fn scroll_active_sticky(app: &mut App, delta: isize) {
     } else {
         scroll.saturating_add(delta as usize)
     };
+}
+
+/// One global shortcut: the key it answers to after `Ctrl+`, and what it does.
+type GlobalShortcut = (char, fn(&mut App));
+
+/// The built-in global shortcuts — `Ctrl+<key>` — in one table.
+///
+/// Read twice on purpose: [`handle_global_shortcut`] dispatches on it, and
+/// [`is_global_shortcut`] lets the startup check refuse a `voice.voice_keybind`
+/// that names one of them. A second list of the same keys would drift the first
+/// time a shortcut is added, and the drift would be silent — the new shortcut
+/// would simply stay bindable by voice, where it can never fire.
+const GLOBAL_SHORTCUTS: &[GlobalShortcut] = &[
+    ('c', |app| app.should_quit = true),
+    ('h', |app| {
+        app.show_history = !app.show_history;
+        app.show_help = false;
+    }),
+    ('t', |app| app.toggle_theme()),
+    ('l', |app| app.toggle_language()),
+    ('?', |app| {
+        app.show_help = !app.show_help;
+        app.show_history = false;
+    }),
+];
+
+/// Global shortcuts, active in **any** input mode. Returns `true` when the key
+/// was consumed and the caller must not keep dispatching it.
+///
+/// Consuming is the point: the mode handlers below match on `KeyCode` alone, so
+/// an unconsumed `Ctrl+T` reached the insert handler and typed its letter — the
+/// theme switched *and* a `t` landed in the input box on every press. Same for
+/// `Ctrl+H` / `Ctrl+L` / `Ctrl+?` / `Ctrl+C`.
+///
+/// Consuming is also why a user binding may not name one of these keys: nothing
+/// dispatched after this function can ever see the event again.
+pub(crate) fn handle_global_shortcut(app: &mut App, key: &KeyEvent) -> bool {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+    let KeyCode::Char(c) = key.code else {
+        return false;
+    };
+    match GLOBAL_SHORTCUTS.iter().find(|(k, _)| *k == c) {
+        Some((_, run)) => {
+            run(app);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether `Ctrl+<c>` is one of the built-in global shortcuts.
+pub(crate) fn is_global_shortcut(c: char) -> bool {
+    GLOBAL_SHORTCUTS.iter().any(|(k, _)| *k == c)
+}
+
+/// One built-in global shortcut as a `Ctrl+<KEY>` label — the same spelling the
+/// help panel uses for the voice binding.
+pub(crate) fn global_shortcut_label(c: char) -> String {
+    format!("Ctrl+{}", c.to_uppercase())
+}
+
+/// The built-in global shortcuts as labels, for error messages.
+pub(crate) fn global_shortcut_labels() -> String {
+    GLOBAL_SHORTCUTS
+        .iter()
+        .map(|(c, _)| global_shortcut_label(*c))
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 /// Returns the byte index of the previous char boundary before `cursor`.
@@ -643,8 +714,12 @@ mod tests {
     use tact_protocol::{AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
 
-    use super::{execute_palette_command, skills_list_markdown};
+    use super::{
+        execute_palette_command, global_shortcut_labels, handle_global_shortcut,
+        is_global_shortcut, skills_list_markdown,
+    };
     use crate::widgets::state::{App, InputMode, SlashCommand, Status, Subcommand};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
         let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
@@ -702,6 +777,98 @@ mod tests {
         let outcome = execute_palette_command(&mut app, "nonexistent");
         assert!(!outcome.handled);
         assert!(!outcome.clear_input);
+    }
+
+    #[test]
+    fn every_global_shortcut_is_consumed() {
+        // Consumption is what keeps `Ctrl+<char>` out of the mode handlers,
+        // which match on `KeyCode` alone and would type the letter.
+        let (mut app, _user_cmd_rx) = make_app();
+        let theme = app.theme.name;
+        let language = app.language;
+
+        for code in [
+            KeyCode::Char('c'),
+            KeyCode::Char('h'),
+            KeyCode::Char('t'),
+            KeyCode::Char('l'),
+            KeyCode::Char('?'),
+        ] {
+            assert!(
+                handle_global_shortcut(&mut app, &KeyEvent::new(code, KeyModifiers::CONTROL)),
+                "{code:?} + Ctrl must be consumed"
+            );
+        }
+
+        assert!(app.should_quit, "Ctrl+C asks to quit");
+        assert_ne!(app.theme.name, theme, "Ctrl+T cycles the theme");
+        assert_ne!(app.language, language, "Ctrl+L flips the language");
+        // Ctrl+H then Ctrl+? — the two panels are mutually exclusive, and the
+        // later one wins.
+        assert!(app.show_help, "Ctrl+? shows the help panel");
+        assert!(!app.show_history, "Ctrl+? hides the history panel");
+    }
+
+    #[test]
+    fn the_reserved_set_matches_the_dispatcher() {
+        // `is_global_shortcut` and `handle_global_shortcut` read one table, so
+        // this pins its contents: a key the dispatcher consumes must also be
+        // reported as reserved, or a voice binding on it would be accepted and
+        // then never fire.
+        let (mut app, _user_cmd_rx) = make_app();
+        let labels = global_shortcut_labels();
+
+        for c in ['c', 'h', 't', 'l', '?'] {
+            assert!(is_global_shortcut(c), "Ctrl+{c} must be reserved");
+            assert!(
+                handle_global_shortcut(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+                ),
+                "Ctrl+{c} must be consumed"
+            );
+            assert!(
+                labels.contains(&format!("Ctrl+{}", c.to_uppercase())),
+                "the message must name Ctrl+{c}: {labels}"
+            );
+        }
+
+        for c in ['g', 'r', ','] {
+            assert!(!is_global_shortcut(c), "Ctrl+{c} is not a global shortcut");
+            assert!(
+                !labels.contains(&format!("Ctrl+{}", c.to_uppercase())),
+                "the message must not claim Ctrl+{c}: {labels}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unbound_ctrl_key_is_left_to_the_mode_handler() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let theme = app.theme.name;
+
+        let consumed = handle_global_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+
+        assert!(!consumed, "Ctrl+G is bound nowhere and must fall through");
+        assert_eq!(app.theme.name, theme);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn a_plain_letter_is_left_to_the_mode_handler() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let theme = app.theme.name;
+
+        let consumed = handle_global_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        );
+
+        assert!(!consumed, "a bare `t` is text, not a shortcut");
+        assert_eq!(app.theme.name, theme);
     }
 
     #[test]

@@ -64,7 +64,12 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
             app.cmd_line.clear();
             app.palette_selected = 0;
         }
-        KeyCode::Char(c) => {
+        // Same rule as the insert box: an unbound `Ctrl+<char>` types nothing.
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             app.cmd_line.push(c);
             app.palette_selected = 0;
         }
@@ -116,6 +121,23 @@ mod tests {
         assert_eq!(app.palette_selected, 1);
         handle_palette_mode(&mut app, key(KeyCode::Up));
         assert_eq!(app.palette_selected, 0);
+    }
+
+    #[test]
+    fn an_unbound_ctrl_key_does_not_type_into_the_palette() {
+        // `Ctrl+<char>` is either a global shortcut (consumed before dispatch)
+        // or nothing at all — it must never reach the palette's text arm and
+        // leave a stray letter in the command line.
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.cmd_line = "sk".to_string();
+
+        handle_palette_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(app.cmd_line, "sk");
     }
 
     #[test]

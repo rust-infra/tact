@@ -37,6 +37,23 @@
 
 ---
 
+## 1. 2026-10-02 — 全局快捷键真正消费按键，`Ctrl+T` 不再顺手打出一个 `t`
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tui/src/handlers/mod.rs`（新增 `handle_global_shortcut` 与 `GLOBAL_SHORTCUTS` 表、`is_global_shortcut` / `global_shortcut_label(s)`）、`crates/tui/src/lib.rs`（`run_tui` 事件分发、`voice_keybind_conflict`）、`handlers/insert.rs`、`handlers/palette.rs`、`handlers/file_picker.rs`；`config.example.toml`、[Ch 21](./21_chapter_config_zh.md) §`[voice]`、[Ch 23](./23_chapter_tui_zh.md) §7 |
+
+**症状 / 动机：** 全局快捷键（`Ctrl+C/H/T/L/?`）在 `run_tui` 里只是「顺带执行一下」，事件**没有被消费**——同一个 `KeyEvent` 继续往下派发给当前输入模式的 handler，而那些 handler 的兜底分支只匹配 `KeyCode::Char(c)`、不看修饰键。于是按一次 `Ctrl+T` 做两件事：主题切到下一个，**同时**输入框里多出一个 `t`。`Ctrl+H`、`Ctrl+L`、`Ctrl+?`、`Ctrl+C` 同理；Palette 模式把字母塞进 `cmd_line`，FilePicker 模式把它塞进过滤词。
+
+**决策：** 把全局快捷键抽成 `handlers::handle_global_shortcut(app, &key) -> bool`，返回 `true` 即「已消费」，`lib.rs` 据此**不再往下派发**（`global_handled` 分支排在 voice keybind 与各模式 handler 之前）。同时给三个「会把字符写进缓冲区」的兜底分支加 `!CONTROL` 守卫：Insert 的输入框、Palette 的 `cmd_line`、FilePicker 的过滤词。规则是一句话：**`Ctrl+<char>` 要么是已绑定的快捷键，要么什么都不是——绝不退化成打出那个字母。** 只改 `insert.rs` 不够：另外两处是同一个 bug，留着会让这条规则在半数模式里不成立。
+
+**决策（第二半）：用户绑定不得占用这些键。** 消费的另一个后果是：派发到全局 handler 之后的任何东西都再也看不到该事件，所以 `voice.voice_keybind = "ctrl+t"` 这种配置**永远不可能触发**——按下只切主题，录制不启动，而且运行时毫无提示。取舍是「用户显式配置优先」还是「拒绝该配置」；选定**拒绝**：`run_tui` 在进入 raw mode **之前**报错退出，错误信息指名冲突的键与全部保留键。放在 TUI 层而不是配置解析层，是因为保留集必须来自 `GLOBAL_SHORTCUTS` 那张表——若在 `crates/tact` 里再抄一份键列表，新增全局快捷键时就会漂移，而漂移的表现恰好是「新键仍可被语音绑定、但永不触发」。
+
+**变更后行为：** `Ctrl+T` 只切主题，输入框不再出现 `t`；未绑定的 `Ctrl+<char>`（如 `Ctrl+G`）在三种模式里都不产生任何字符；无修饰键的普通字母照常输入。Insert 模式内既有的 `Ctrl+W/A/E/K/U/D/P/N/Z/Y`、`Ctrl+←/→`、`Ctrl+Home/End`、`Ctrl+Backspace` 不受影响——它们在兜底分支**之前**。`voice_keybind` 与 `Ctrl+C/H/T/L/?` 重合时启动即失败（实测：`ctrl+t` → `Error: voice.voice_keybind = "ctrl+t" is already taken by the built-in Ctrl+T shortcut. …`，exit 1，终端未被触碰）；`ctrl+g` / `ctrl+r` / `ctrl+,` 照常接受。
+
+**指针：** `crates/tui/src/handlers/mod.rs::handle_global_shortcut` / `GLOBAL_SHORTCUTS` / `is_global_shortcut`；`crates/tui/src/lib.rs`（`let global_handled = handle_global_shortcut(&mut app, &key);` 之后 `if global_handled { /* nothing else */ } else if voice_key_handled { … }`；`voice_keybind_conflict` 在 `run_tui` 解构 `TuiConfig` 之后、`enable_raw_mode()` 之前 `bail!`）；测试 `handlers::tests::every_global_shortcut_is_consumed` / `the_reserved_set_matches_the_dispatcher` / `an_unbound_ctrl_key_is_left_to_the_mode_handler` / `a_plain_letter_is_left_to_the_mode_handler`、`handlers::insert::tests::an_unbound_ctrl_key_types_nothing` / `a_plain_letter_still_types_itself`、`handlers::palette::tests::an_unbound_ctrl_key_does_not_type_into_the_palette`、`handlers::file_picker::tests::an_unbound_ctrl_key_does_not_filter_the_picker`、`voice_keybind_tests::a_binding_on_a_global_shortcut_is_refused` / `every_reserved_key_is_refused` / `a_free_binding_is_accepted`；[Ch 23](./23_chapter_tui_zh.md) §7、[Ch 21](./21_chapter_config_zh.md)。
+
 ## 1. 2026-10-02 — 启动期间退出不再等 MCP 连完
 
 | 字段 | 值 |
