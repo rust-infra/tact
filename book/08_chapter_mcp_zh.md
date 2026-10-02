@@ -119,7 +119,17 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
 
 一份 `mcp.json` 无法解析是硬错误并指明路径（用户手写的配置不能被静默忽略）。工作目录下的 `.mcp.json` 不同：它属于项目而不属于你，解析失败只记一条 warning 并跳过——否则 clone 一个坏文件就能让 Tact 在那个目录里根本起不来。
 
-每个条目只声明一种传输：`command`（本地 stdio）或 `url`（远程 Streamable HTTP，可选 `headers` 与 `auth`）。两者同时存在时 `command` 优先。两者都没有的条目按**已跳过**上报，绝不当作硬错误。
+每个条目只声明一种传输：`command`（本地 stdio）或 `url`（远程 Streamable HTTP，可选 `headers` 与 `auth`）。两者同时存在时 `command` 优先。两者都没有、且**什么都没声明**的条目按**已跳过**上报，绝不当作硬错误。
+
+**没有传输、但声明了策略的条目是「覆盖层」（policy overlay）**，不是 server 声明。这一条是为插件 server 准备的：插件在优先级表里排第 4（最高），所以一个**带**传输的用户条目只会被它顶掉——包括把它关掉的 `"enabled": false`。唯一能配置插件 server 的写法因此是只写策略，例如给 Canva 那 45 个工具（≈102 KB）收口：
+
+```json
+{ "mcpServers": { "plugin__canva__canva": {
+    "enabled_tools": ["list-folder-items", "get-assets"],
+    "tools": { "fetch": { "risk": "read" } } } } }
+```
+
+合并规则是「**赢家说过的字段归赢家，覆盖层只补空缺**」：优先级本身一点没动，覆盖层永远**不会**覆盖赢家写明的字段（赢家把 `fetch` 写成 `write`，覆盖层写 `read` 也无效），只是替沉默处说话。单工具条目按字段逐个合并，所以覆盖层可以点名一个赢家从没提过的工具而不抹掉其余（`enabled_tools` / `disabled_tools` 按整张列表合并——列表是一个决定，不是一组字段）。这与优先级是两件不同的事，所以 `mcp list` 把它单列在 `Policy overlays:` 段里，而不是混进 `Overridden declarations:`。名字谁都不属于的覆盖层仍是**已跳过**，会被上报——写错名字不会消失。覆盖层里的 `"enabled"` 无效（谁拥有传输谁决定跑不跑），只记一条 warning。
 
 条目可以用 `"enabled": false` 关掉（Codex 的写法，OpenAI 自带的 `unified-computer-use` 就这么写）。被关掉的声明照常参与解析——它能顶掉更低优先级的启用声明，也能被更高优先级的启用声明顶掉——但**绝不连接**，`mcp list` 会把它显示为 `disabled (enabled: false)`。剩下的 Codex 专有条目字段 `omit_tools_from` 在 Tact 没有对应能力，而 `env_vars` 在**远程条目**上也没有——两者都会被解析出来并在 `mcp list` 里**逐条点名**（日志文件里同时有一条 warning），而不是无声丢弃——tracing 只在设了 `RUST_LOG` 或 `tokio_console` 时才装 subscriber，只靠日志等于没说。
 
@@ -181,7 +191,7 @@ MCP 工具过去无论条目怎么写都解析为 `CapabilityRisk::High`，结�
 
 **上下文成本是可见的。** `mcp get <server>` 的 `tools` 行会求和打印「N 个工具（34 KB，≈8.4k tokens per request — hide unused ones with `enabled_tools`）」，每个工具行尾附自己的声明字节数，因此「要不要裁、裁谁」是一个能算的决定而不是猜。**为什么只做可见性不做自动压缩**：实测把 schema 里 pydantic 风格的部分压掉（折叠 `anyOf: [X, null]` → `X`、删 `title`、删 `default: null`）只省 **2%**——字节的大头是每个参数的 `description` 这类合法结构，不是冗余。真正的大头是「声明了多少个工具」，所以杠杆是 `enabled_tools` 这个既有字段，Tact 只负责把代价摊在阳光下。
 
-**annotations 是证据，不是授权。** server 可以给工具打上 `readOnlyHint`；`mcp get` 会把这类工具标为 `(server-declared read-only)`，让人有依据去写 `risk` 声明。Tact **不会**据此降低 risk：rmcp 自己的文档就写明客户端「should never make tool use decisions based on ToolAnnotations received from untrusted servers」；而且一个诚实的 `readOnlyHint` 若与 `openWorldHint` 同时出现，描述的是一个读取你的文件再发往别处的工具——从权限角度看只读，从数据角度看是外泄通道。这里没有数据流这条轴，所以该声明只展示、不施加。
+**annotations 是证据，不是授权。** server 可以给工具打上 `readOnlyHint`；`mcp get` 会把这类工具标为 `(server-declared read-only)`，让人有依据去写 `risk` 声明。为了让这条原则不至于只是原则，同一视图会在末尾**起草**一段可直接粘贴的 `"tools"` 块（`suggested risk policy` 段）：只覆盖服务器自报只读、而条目尚未声明的工具，其余保持默认 `high`——**粘贴只会比服务器声明更严，绝不会更松**；人 review 后粘贴即完成声明，Tact 自己仍然不施加该声明。Tact **不会**据此降低 risk：rmcp 自己的文档就写明客户端「should never make tool use decisions based on ToolAnnotations received from untrusted servers」；而且一个诚实的 `readOnlyHint` 若与 `openWorldHint` 同时出现，描述的是一个读取你的文件再发往别处的工具——从权限角度看只读，从数据角度看是外泄通道。这里没有数据流这条轴，所以该声明只展示、不施加。
 
 隐藏工具是刻意的配置而非故障，但**绝不无声**：`mcp list` 会打印 **Filtered tools** 段落，`mcp get` 会打印 `hidden` 行，点名该条目挡在 agent 之外的工具。两者都不进入启动提示，理由与 `unmodelled` 相同：刻意的配置不该让每次启动都变吵。
 
@@ -220,7 +230,7 @@ tact-ui mcp logout linear                     # 删除 token
 
 名称、URL、header 名与 header 值都会预先校验。server 名还会额外拒绝空白、控制字符与路径分隔符：名称同时是 `mcp__<server>__<tool>` 的 `<server>` 段与 OAuth 凭据文件名（`~/.tact/mcp/oauth/<server>.json`），因此 `mcp logout <name>` 绝不能被指向任意文件。header/env 的**值**绝不回显或记录日志（它们常含密钥），且 `add` 绝不发起连接。重复的 `--header`/`--env` 名会报错，而不是静默地后者覆盖前者。
 
-当一个名字被多处声明时，`mcp list` 还会打印 **Overridden declarations** 段，指明被覆盖与最终生效的文件——覆盖关系决定了 `remove` 究竟改变了什么行为，因此不能是静默的。
+当一个名字被多处声明时，`mcp list` 还会打印 **Overridden declarations** 段，指明被覆盖与最终生效的文件——覆盖关系决定了 `remove` 究竟改变了什么行为，因此不能是静默的。声明了策略却没有传输的条目另列在 **Policy overlays** 段（它不顶掉任何东西，也就没有"赢家"可当）；两者分开是因为它们说的是相反的事。
 
 `mcp get` 是 `mcp list` 的聚焦版本：它只连接**一个** server，因此查看单个条目不会启动或拨号其余配置，并打印 agent 实际必须调用的工具名（`mcp__<server>__<tool>`）。两个视图共用同一套状态措辞（`connected (N tools)` / `needs authorization` / `failed`），因此不会出现说法漂移。
 

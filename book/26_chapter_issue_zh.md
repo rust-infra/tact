@@ -37,6 +37,41 @@
 
 ---
 
+## 1. 2026-10-01 — 插件提供的 MCP server 现在可以被用户配置了（策略覆盖层）
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpServerPolicy::declares_policy` / `merged_under`、`resolve_servers`、`ResolvedServers::policy_overlays`、`McpLoadReport::policy_overlays`）；`crates/tact-ui/src/mcp_cli.rs`（`render_report` 的 `Policy overlays:` 段）；[Ch 08](./08_chapter_mcp_zh.md) §来源与优先级 |
+
+**症状 / 动机：** 上一轮把上下文成本摊开之后，Canva 一眼就很刺眼：45 个工具 = 102 KB ≈ 25.4k tokens/请求，其中 25 个是服务器自报只读。想给它收口，写配置，然后发现**写什么都没用**。用真实的插件复现：
+
+- 条目**带**传输（`command`/`url`）→ `mcp list` 老实打印 `Overridden declarations: canva … is shadowed by installed plugin`，但 `"enabled": false` 照样不生效——插件在优先级表里排最高，用户的 `enabled` 永远被顶掉。
+- 条目**不带**传输、只有 `tools` / `enabled_tools` → 这一条**彻底消失**：不在表格里，不在 skipped 里，没有任何一行字提到它。零反馈。
+
+第二行是真正的 bug，根因两处：`config.to_transport()` 为 `None` 时直接 `continue`，**在进入遮蔽记录之前**就丢了；随后 `skipped_remote.retain(|name| !index_of.contains_key(name))` 又把它从 skipped 里摘掉（那条 retain 的意图是「另一个 scope 已经声明了它，就别算 skipped」，但它连**策略**一起扔了）。于是插件 server 在结构上不可配置：唯一能改的文件是插件缓存里的 `.mcp.json`，而 `plugin update` 会覆盖它。
+
+**决策：** 不碰优先级，而是承认**没有传输、却声明了策略的条目根本不是 server 声明，是「策略覆盖层」**。它不遮蔽任何东西，而是在解析器跑完、`retain` 之前，折进赢得该名字的声明之下。合并规则是「赢家说过的字段归赢家，覆盖层只补空缺」——优先级一点没动，覆盖层永远不覆盖赢家写明的字段，只替沉默处说话。单工具条目按字段逐个合并（可以点名一个赢家没提过的工具而不抹掉其余），`enabled_tools` / `disabled_tools` 按整张列表合并（列表是一个决定，不是一组字段）。覆盖层里的 `"enabled"` 无效并记 warning：谁拥有传输谁决定跑不跑。
+
+**变更后行为：** 只写策略即可配置插件 server：
+
+```json
+{ "mcpServers": { "plugin__canva__canva": {
+    "enabled_tools": ["list-folder-items", "get-assets"],
+    "tools": { "fetch": { "risk": "read" } } } } }
+```
+
+实测（真实 Canva 插件）：`canva` 从 `connected (45 tools)` 变成 `connected (2 tools)`，`mcp get canva` 的成本行从 ≈25.4k 降到 `2 available (2.7 KB, ≈666 tokens per request)`。`mcp list` 单列一段、与 `Overridden declarations` 分开，因为两者说的是相反的事：
+
+```
+Policy overlays:
+  canva  policy overlaid from /proj/.tact/.mcp.json
+```
+
+名字谁都不属于的覆盖层仍是 `skipped (no usable command or url)`，写错名字不会消失；此前「无传输、也没声明任何策略」的条目行为完全不变（仍是 skipped）。
+
+**指针：** `crates/tact/src/mcp/mod.rs::McpServerPolicy::merged_under`、`resolve_servers`；测试 `a_policy_only_entry_overlays_the_declaration_that_owns_the_transport`、`an_overlay_never_outranks_a_field_the_winner_stated`、`an_overlay_adds_a_tool_without_dropping_the_winners_own`、`an_overlay_can_hide_tools_the_transport_owner_exposes`、`a_policy_only_entry_that_names_nobody_is_still_reported_as_skipped`、`a_policy_overlay_names_the_file_the_policy_came_from`。
+
 ## 1. 2026-10-01 — `mcp get` 把每个 MCP 工具的上下文成本摊开
 
 | 字段 | 值 |

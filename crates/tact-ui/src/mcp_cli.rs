@@ -575,6 +575,22 @@ pub fn render_report(report: &McpLoadReport) -> String {
         out.push_str(&notes.join("\n"));
     }
 
+    // A policy-only declaration has no transport, so it owns no row in the
+    // table above — yet it is what decided these tools' risk. Naming it keeps
+    // "who wrote this policy" answerable when the entry that owns the transport
+    // is a plugin bundle the user cannot edit.
+    if !report.policy_overlays.is_empty() {
+        let mut notes = Vec::new();
+        for (name, source) in &report.policy_overlays {
+            notes.push(format!(
+                "  {}  policy overlaid from {source}",
+                mcp::display_server_name(name)
+            ));
+        }
+        out.push_str("\n\nPolicy overlays:\n");
+        out.push_str(&notes.join("\n"));
+    }
+
     // Hiding a tool is a deliberate configuration, not a problem — but it must
     // be visible somewhere, or a filtered server looks like one that simply
     // lacks those tools.
@@ -1337,6 +1353,50 @@ mod tests {
         assert!(
             text.contains("/home/me/.tact/.mcp.json is shadowed by /proj/.tact/.mcp.json"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn a_policy_overlay_names_the_file_the_policy_came_from() {
+        // A policy-only entry owns no row of its own, so without this section
+        // a plugin server's risk would read as if the plugin bundle set it —
+        // and that file is the one thing the user is told not to edit.
+        let report = McpLoadReport {
+            configured: vec![mcp::ConfiguredServer {
+                name: "plugin__canva__canva".to_string(),
+                transport: mcp::McpTransportKind::Remote {
+                    url: "https://mcp.canva.com/mcp".to_string(),
+                    oauth: true,
+                },
+                source: "installed plugin (/home/me/.tact/plugins)".to_string(),
+                disabled: false,
+            }],
+            policy_overlays: vec![(
+                "plugin__canva__canva".to_string(),
+                "/home/me/.tact/.mcp.json".to_string(),
+            )],
+            ..McpLoadReport::default()
+        };
+
+        let text = render_report(&report);
+        assert!(text.contains("Policy overlays:"), "{text}");
+        assert!(
+            text.contains("canva  policy overlaid from /home/me/.tact/.mcp.json"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_report_without_overlays_has_no_overlay_section() {
+        let report = McpLoadReport {
+            configured: vec![configured("solo", false)],
+            connected: vec![("solo".to_string(), 1)],
+            ..McpLoadReport::default()
+        };
+        assert!(
+            !render_report(&report).contains("Policy overlays"),
+            "{}",
+            render_report(&report)
         );
     }
 

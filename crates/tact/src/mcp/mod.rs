@@ -557,6 +557,13 @@ pub struct McpLoadReport {
     pub failures: Vec<(String, String)>,
     /// Server name and the lower-precedence source it displaced.
     pub shadowed: Vec<(String, String)>,
+    /// Server name and the source of a policy-only declaration folded under it.
+    ///
+    /// Like [`Self::filtered`], deliberately *not* part of [`Self::is_quiet`]:
+    /// an applied overlay is a deliberate configuration that worked, not a
+    /// problem — but it must be visible somewhere, or a policy written by two
+    /// sources reads as one.
+    pub policy_overlays: Vec<(String, String)>,
     /// Entries that declare keys Tact does not model.
     ///
     /// Deliberately *not* part of [`Self::is_quiet`]: a plugin bundle that
@@ -1036,6 +1043,59 @@ impl McpServerPolicy {
         self.tool_overrides
             .get(tool)
             .and_then(|policy| policy.output_token_limit)
+    }
+
+    /// Whether the entry said anything at all about how the server behaves.
+    ///
+    /// Separates the two ways an entry can fail to declare a transport: one
+    /// that declares *nothing* is a mistake to report, while one that declares
+    /// only policy is an overlay for whoever owns the transport (see
+    /// [`Self::merged_under`]).
+    #[must_use]
+    fn declares_policy(&self) -> bool {
+        self.enabled_tools.is_some()
+            || self.disabled_tools.is_some()
+            || self.startup_timeout.is_some()
+            || self.tool_timeout.is_some()
+            || self.default_approval_mode.is_some()
+            || self.default_risk.is_some()
+            || !self.tool_overrides.is_empty()
+    }
+
+    /// Folds `overlay` in *under* `self`: every field `self` set is kept, and
+    /// the overlay only speaks where `self` was silent.
+    ///
+    /// This is how a policy-only entry reaches a server someone else declared —
+    /// typically a plugin-contributed one, whose bundled declaration always
+    /// outranks the user's own files. Precedence itself is untouched: an
+    /// overlay never overrides a stated field. Per-tool entries merge the same
+    /// way, so an overlay can add one tool's risk without dropping the winner's
+    /// other tools. `enabled_tools` / `disabled_tools` merge as whole lists,
+    /// because a list is one decision rather than a set of fields.
+    #[must_use]
+    fn merged_under(&self, overlay: &Self) -> Self {
+        let mut tool_overrides = self.tool_overrides.clone();
+        for (tool, extra) in &overlay.tool_overrides {
+            let slot = tool_overrides.entry(tool.clone()).or_default();
+            slot.approval_mode = slot.approval_mode.or(extra.approval_mode);
+            slot.output_token_limit = slot.output_token_limit.or(extra.output_token_limit);
+            slot.risk = slot.risk.or(extra.risk);
+        }
+        Self {
+            enabled_tools: self
+                .enabled_tools
+                .clone()
+                .or_else(|| overlay.enabled_tools.clone()),
+            disabled_tools: self
+                .disabled_tools
+                .clone()
+                .or_else(|| overlay.disabled_tools.clone()),
+            startup_timeout: self.startup_timeout.or(overlay.startup_timeout),
+            tool_timeout: self.tool_timeout.or(overlay.tool_timeout),
+            default_approval_mode: self.default_approval_mode.or(overlay.default_approval_mode),
+            default_risk: self.default_risk.or(overlay.default_risk),
+            tool_overrides,
+        }
     }
 }
 
@@ -2752,6 +2812,12 @@ struct ResolvedServers {
     /// `(name, transport, source)` tuples every caller already matches on stay
     /// unchanged.
     policies: HashMap<String, McpServerPolicy>,
+    /// Server name and the source of a policy-only declaration folded under it.
+    ///
+    /// Recorded because a policy with two authors must not read as one: when
+    /// the entry owning the transport is a plugin bundle the user cannot edit,
+    /// this is the only place saying where the behaviour actually came from.
+    policy_overlays: Vec<(String, String)>,
 }
 
 impl ResolvedServers {
@@ -2796,13 +2862,16 @@ impl ResolvedServers {
 /// Later declarations win by server name; every displaced declaration is
 /// recorded so the override is visible rather than silent. An entry with no
 /// usable transport (neither `command` nor `url`) is dropped with a report
-/// entry, never a hard error.
+/// entry, never a hard error — unless it declares policy, in which case it is
+/// folded under whatever declaration owns the name (see
+/// [`McpServerPolicy::merged_under`]).
 fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
     let mut order: Vec<Resolution> = Vec::new();
     let mut index_of: HashMap<String, usize> = HashMap::new();
     let mut shadowed: Vec<(String, String)> = Vec::new();
     let mut skipped_remote: Vec<String> = Vec::new();
     let mut unmodelled: Vec<UnmodelledKeys> = Vec::new();
+    let mut overlays: Vec<(String, McpServerPolicy, String)> = Vec::new();
 
     for SourcedServer {
         name,
@@ -2815,7 +2884,28 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
         }
 
         let Some(transport) = config.to_transport() else {
-            // No `command` and no `url`: report, do not abort.
+            let policy = McpServerPolicy::from_config(&config);
+            if policy.declares_policy() {
+                // No transport of its own, but it does say how the server
+                // should behave: that is an overlay for whoever wins the name,
+                // not a server declaration. Reported as skipped for now so a
+                // name that turns out to belong to nobody is still visible;
+                // the `retain` below drops it once a winner is found.
+                if !config.enabled {
+                    tracing::warn!(
+                        mcp_server = %name,
+                        source = %source,
+                        "a policy-only MCP entry cannot switch a server off: \
+                         `enabled` is ignored here, because the declaration \
+                         that owns the transport decides whether it runs"
+                    );
+                }
+                overlays.push((name.clone(), policy, source));
+                skipped_remote.push(name);
+                continue;
+            }
+            // No `command`, no `url`, and nothing to say about the server:
+            // report, do not abort.
             tracing::warn!(
                 mcp_server = %name,
                 source = %source,
@@ -2862,6 +2952,21 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
         }
     }
 
+    // A policy-only declaration was never a server, so it shadows nothing: it
+    // folds *under* the declaration that won the name. Doing it here — after
+    // the loop, before `skipped_remote` is trimmed — means an overlay whose
+    // name belongs to nobody stays in the skipped list instead of vanishing.
+    let mut policy_overlays: Vec<(String, String)> = Vec::new();
+    for (name, policy, source) in overlays {
+        let Some(&index) = index_of.get(&name) else {
+            continue;
+        };
+        let merged = order[index].policy.merged_under(&policy);
+        order[index].policy = merged;
+        policy_overlays.push((name, source));
+    }
+    policy_overlays.sort_by(|a, b| a.0.cmp(&b.0));
+
     // A name skipped in one scope can still be declared usefully by another
     // (project wins over user). It is only "skipped" when nothing usable was
     // declared for it anywhere, otherwise the report would list — and count —
@@ -2890,6 +2995,7 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
         shadowed,
         skipped_remote,
         unmodelled,
+        policy_overlays,
     }
 }
 
@@ -2961,6 +3067,7 @@ async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadRe
         shadowed: resolved.shadowed,
         skipped_remote: resolved.skipped_remote,
         unmodelled: resolved.unmodelled,
+        policy_overlays: resolved.policy_overlays,
         ..McpLoadReport::default()
     };
 
@@ -2995,6 +3102,7 @@ async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadRe
     report.connected.sort_by(|a, b| a.0.cmp(&b.0));
     report.failures.sort_by(|a, b| a.0.cmp(&b.0));
     report.shadowed.sort_by(|a, b| a.0.cmp(&b.0));
+    report.policy_overlays.sort_by(|a, b| a.0.cmp(&b.0));
     report.filtered.sort_by(|a, b| a.0.cmp(&b.0));
     report.pending_auth.sort();
     Ok((router, report))
@@ -4143,6 +4251,157 @@ mod tests {
             resolved.skipped_remote.is_empty(),
             "configured name was also listed as skipped: {:?}",
             resolved.skipped_remote
+        );
+    }
+
+    /// The shape a user writes to configure a server someone else declares: no
+    /// transport of its own, only policy.
+    fn policy_only(name: &str, source: &str, tool: &str, risk: &str) -> SourcedServer {
+        SourcedServer {
+            name: name.to_owned(),
+            source: source.to_owned(),
+            config: McpProjectConfig {
+                tools: Some(HashMap::from([(
+                    tool.to_owned(),
+                    McpToolConfig {
+                        risk: Some(risk.to_owned()),
+                        ..McpToolConfig::default()
+                    },
+                )])),
+                ..McpProjectConfig::default()
+            },
+        }
+    }
+
+    /// A remote declaration of the shape a plugin bundle ships.
+    fn remote_declaration(name: &str, source: &str, url: &str) -> SourcedServer {
+        SourcedServer {
+            name: name.to_owned(),
+            source: source.to_owned(),
+            config: McpProjectConfig {
+                server_type: Some("http".to_owned()),
+                url: Some(url.to_owned()),
+                ..McpProjectConfig::default()
+            },
+        }
+    }
+
+    /// The problem overlays exist for: a plugin bundle outranks every file the
+    /// user owns, so an entry *with* a transport can only ever be shadowed by
+    /// it. A policy-only entry used to be dropped on the floor — `tools` and
+    /// all — leaving a plugin server unconfigurable.
+    #[test]
+    fn a_policy_only_entry_overlays_the_declaration_that_owns_the_transport() {
+        let resolved = resolve_servers(vec![
+            policy_only("plugin__canva__canva", "~/.tact/.mcp.json", "fetch", "read"),
+            remote_declaration(
+                "plugin__canva__canva",
+                "installed plugin (/home/me/.tact/plugins)",
+                "https://mcp.canva.com/mcp",
+            ),
+        ]);
+
+        assert_eq!(resolved.servers.len(), 1);
+        // Crucially not an override: the transport declaration still owns the
+        // name, so `shadowed` would say the opposite of what happened.
+        assert!(
+            resolved.shadowed.is_empty(),
+            "an overlay must not read as an override: {:?}",
+            resolved.shadowed
+        );
+        assert!(resolved.skipped_remote.is_empty());
+        assert_eq!(
+            resolved.policy_overlays,
+            vec![(
+                "plugin__canva__canva".to_owned(),
+                "~/.tact/.mcp.json".to_owned()
+            )]
+        );
+        let policy = resolved.policy_for("plugin__canva__canva");
+        assert_eq!(policy.risk_for("fetch"), Some(CapabilityRisk::Read));
+    }
+
+    /// Precedence is untouched: the overlay fills gaps, it does not argue.
+    #[test]
+    fn an_overlay_never_outranks_a_field_the_winner_stated() {
+        let mut winner = remote_declaration("hosted", "installed plugin (p)", "https://x.invalid");
+        winner.config.tools = Some(HashMap::from([(
+            "fetch".to_owned(),
+            McpToolConfig {
+                risk: Some("write".to_owned()),
+                ..McpToolConfig::default()
+            },
+        )]));
+
+        let resolved = resolve_servers(vec![
+            policy_only("hosted", "~/.tact/.mcp.json", "fetch", "read"),
+            winner,
+        ]);
+
+        assert_eq!(
+            resolved.policy_for("hosted").risk_for("fetch"),
+            Some(CapabilityRisk::Write),
+            "a lower-precedence overlay overrode a field the winner stated"
+        );
+    }
+
+    /// Per-tool entries merge one key at a time, so an overlay can name a tool
+    /// the winner never mentioned without erasing the ones it did.
+    #[test]
+    fn an_overlay_adds_a_tool_without_dropping_the_winners_own() {
+        let mut winner = remote_declaration("hosted", "installed plugin (p)", "https://x.invalid");
+        winner.config.tools = Some(HashMap::from([(
+            "fetch".to_owned(),
+            McpToolConfig {
+                risk: Some("high".to_owned()),
+                ..McpToolConfig::default()
+            },
+        )]));
+
+        let resolved = resolve_servers(vec![
+            policy_only("hosted", "~/.tact/.mcp.json", "get-assets", "read"),
+            winner,
+        ]);
+
+        let policy = resolved.policy_for("hosted");
+        assert_eq!(policy.risk_for("get-assets"), Some(CapabilityRisk::Read));
+        assert_eq!(policy.risk_for("fetch"), Some(CapabilityRisk::High));
+    }
+
+    /// The context-cost lever has to reach plugin servers too, or the 102 KB
+    /// declaration of a bundled server stays untouchable.
+    #[test]
+    fn an_overlay_can_hide_tools_the_transport_owner_exposes() {
+        let mut overlay = policy_only("hosted", "~/.tact/.mcp.json", "fetch", "read");
+        overlay.config.tools = None;
+        overlay.config.enabled_tools = Some(vec!["fetch".to_owned()]);
+
+        let resolved = resolve_servers(vec![
+            overlay,
+            remote_declaration("hosted", "installed plugin (p)", "https://x.invalid"),
+        ]);
+
+        let policy = resolved.policy_for("hosted");
+        assert!(!policy.exposes("get-assets"));
+        assert!(policy.exposes("fetch"));
+    }
+
+    /// An overlay whose name belongs to nobody is a typo, and a typo must not
+    /// disappear just because it was correctly understood as an overlay.
+    #[test]
+    fn a_policy_only_entry_that_names_nobody_is_still_reported_as_skipped() {
+        let resolved = resolve_servers(vec![policy_only(
+            "plugin__typo__nope",
+            "~/.tact/.mcp.json",
+            "fetch",
+            "read",
+        )]);
+
+        assert!(resolved.servers.is_empty());
+        assert!(resolved.policy_overlays.is_empty());
+        assert_eq!(
+            resolved.skipped_remote,
+            vec!["plugin__typo__nope".to_owned()]
         );
     }
 
