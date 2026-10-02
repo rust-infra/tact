@@ -36,6 +36,11 @@ enum ResolvedTool {
     McpResource {
         tool: crate::mcp::McpResourceTool,
     },
+    /// `list_mcp_prompts` / `get_mcp_prompt` — the prompt tools, served the same
+    /// way for the same reason.
+    McpPrompt {
+        tool: crate::mcp::McpPromptTool,
+    },
     Unknown {
         name: String,
     },
@@ -354,6 +359,87 @@ fn is_mcp_resource_tool(name: &str) -> bool {
     crate::mcp::McpResourceTool::from_name(name).is_some()
 }
 
+/// Whether `name` is one of Tact's two MCP prompt tools.
+fn is_mcp_prompt_tool(name: &str) -> bool {
+    crate::mcp::McpPromptTool::from_name(name).is_some()
+}
+
+/// Runs the two prompt tools against the live router.
+///
+/// Outside `run_mcp_tool` for the resource tools' reason: those take an
+/// `mcp__<server>__<tool>` name parsed into a server/tool pair, and a prompt has
+/// no tool name at all.
+async fn run_mcp_prompt_tool(
+    mcp_router: &MCPToolRouter,
+    tool: crate::mcp::McpPromptTool,
+    input: &serde_json::Value,
+) -> ExecResult {
+    let server = input.get("server").and_then(|value| value.as_str());
+    let result = match tool {
+        crate::mcp::McpPromptTool::List => mcp_router.list_prompts(server).await,
+        crate::mcp::McpPromptTool::Get => {
+            let Some(server) = server else {
+                return ExecResult {
+                    content: "Error invoking get_mcp_prompt: `server` is required".to_string(),
+                    status: StepStatus::Failed,
+                    image: None,
+                };
+            };
+            let Some(name) = input.get("name").and_then(|value| value.as_str()) else {
+                return ExecResult {
+                    content: "Error invoking get_mcp_prompt: `name` is required".to_string(),
+                    status: StepStatus::Failed,
+                    image: None,
+                };
+            };
+            match prompt_arguments(input) {
+                Ok(arguments) => mcp_router.get_prompt(server, name, arguments).await,
+                Err(message) => Err(anyhow::anyhow!(message)),
+            }
+        }
+    };
+
+    match result {
+        Ok(content) => ExecResult {
+            content,
+            status: StepStatus::Success,
+            image: None,
+        },
+        Err(error) => ExecResult {
+            content: format!("Error invoking {}: {error}", tool.name()),
+            status: StepStatus::Failed,
+            image: None,
+        },
+    }
+}
+
+/// Collects `get_mcp_prompt`'s `arguments` object.
+///
+/// The protocol's prompt arguments are a *string* map, so a number or a bool is
+/// stringified rather than dropped — a model that writes `{"count": 3}` means
+/// `"3"`. Anything else (an object, an array, null) is refused by name: silently
+/// omitting it would hand the server a template with an unfilled placeholder and
+/// report success.
+fn prompt_arguments(
+    input: &serde_json::Value,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+    let Some(map) = input.get("arguments").and_then(|value| value.as_object()) else {
+        return Ok(None);
+    };
+    let mut arguments = serde_json::Map::new();
+    for (key, value) in map {
+        let text = match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Number(_) | serde_json::Value::Bool(_) => value.to_string(),
+            _ => {
+                return Err(format!("argument `{key}` must be a string (got {value})"));
+            }
+        };
+        arguments.insert(key.clone(), serde_json::Value::String(text));
+    }
+    Ok((!arguments.is_empty()).then_some(arguments))
+}
+
 /// Runs the three resource tools against the live router.
 ///
 /// Deliberately outside `run_mcp_tool`: those tools take a `mcp__<server>__<tool>`
@@ -464,6 +550,14 @@ fn tool_resources_for(
             None => super::tool_schedule::ToolResources::barrier(),
         },
         ResolvedTool::McpResource { .. } => super::tool_schedule::ToolResources::barrier(),
+        // Same split for prompts: a get names one server, a listing spans all.
+        ResolvedTool::McpPrompt {
+            tool: crate::mcp::McpPromptTool::Get,
+        } => match prep.input.get("server").and_then(|value| value.as_str()) {
+            Some(server) => super::tool_schedule::mcp_server_resources(server),
+            None => super::tool_schedule::ToolResources::barrier(),
+        },
+        ResolvedTool::McpPrompt { .. } => super::tool_schedule::ToolResources::barrier(),
         ResolvedTool::Unknown { .. } => super::tool_schedule::ToolResources::barrier(),
     }
 }
@@ -568,6 +662,10 @@ impl Agent {
                         tool: crate::mcp::McpResourceTool::from_name(name)
                             .expect("guarded by is_mcp_resource_tool"),
                     },
+                    Ok(None) | Err(_) if is_mcp_prompt_tool(name) => ResolvedTool::McpPrompt {
+                        tool: crate::mcp::McpPromptTool::from_name(name)
+                            .expect("guarded by is_mcp_prompt_tool"),
+                    },
                     Ok(None) | Err(_) => {
                         let msg = format!("unknown tool: {name}");
                         self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
@@ -644,6 +742,7 @@ impl Agent {
                 ResolvedTool::Native { metadata } => metadata.name,
                 ResolvedTool::Mcp { full_name, .. } => full_name.as_str(),
                 ResolvedTool::McpResource { tool } => tool.name(),
+                ResolvedTool::McpPrompt { tool } => tool.name(),
                 ResolvedTool::Unknown { name } => name.as_str(),
             };
             let risk = match &resolved {
@@ -654,6 +753,8 @@ impl Agent {
                 // Tact's own resource tools: no server entry can declare their
                 // risk, so `[mcp]`'s two keys do, and both default to High.
                 ResolvedTool::McpResource { tool } => crate::mcp::resource_tool_risk(*tool),
+                // Tact's own prompt tools: same rule, `[mcp]`'s prompt keys.
+                ResolvedTool::McpPrompt { tool } => crate::mcp::prompt_tool_risk(*tool),
                 ResolvedTool::Unknown { .. } => CapabilityRisk::High,
             };
 
@@ -1014,6 +1115,10 @@ impl Agent {
                     ResolvedTool::McpResource { tool } => Some(*tool),
                     _ => None,
                 };
+                let prompt_tool = match &prep.resolved {
+                    ResolvedTool::McpPrompt { tool } => Some(*tool),
+                    _ => None,
+                };
                 let output_policy = match &prep.resolved {
                     ResolvedTool::Native { metadata } => metadata.output,
                     _ => OutputPolicy::PersistLargeOutput,
@@ -1043,6 +1148,8 @@ impl Agent {
                     let start = std::time::Instant::now();
                     let exec = if let Some(tool) = resource_tool {
                         run_mcp_resource_tool(mcp, tool, &prep.input).await
+                    } else if let Some(tool) = prompt_tool {
+                        run_mcp_prompt_tool(mcp, tool, &prep.input).await
                     } else if is_mcp {
                         run_mcp_tool(mcp, ctx, &prep.id, &prep.name, &prep.input).await
                     } else {
@@ -1742,6 +1849,136 @@ mod tests {
         assert!(is_mcp_resource_tool("read_mcp_resource"));
         assert!(!is_mcp_resource_tool("mcp__bm__read_note"));
         assert!(!is_mcp_resource_tool("read_file"));
+    }
+
+    /// A router whose one server publishes `getting_started`.
+    fn router_with_a_prompt() -> MCPToolRouter {
+        let service = MockMcpService::new(Vec::new(), |_| {
+            Ok(rmcp::model::CallToolResult::success(Vec::new()))
+        })
+        .with_prompt(
+            "getting_started",
+            "Introduce the server",
+            &[("topic", true)],
+        )
+        .with_prompt_messages(
+            "getting_started",
+            vec![rmcp::model::PromptMessage::new_text(
+                rmcp::model::PromptMessageRole::User,
+                "Start with the notes.",
+            )],
+        );
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service("bm", Vec::new(), Arc::new(service)));
+        router
+    }
+
+    #[tokio::test]
+    async fn a_prompt_listing_is_a_successful_tool_result() {
+        let exec = run_mcp_prompt_tool(
+            &router_with_a_prompt(),
+            crate::mcp::McpPromptTool::List,
+            &serde_json::json!({}),
+        )
+        .await;
+
+        assert!(matches!(exec.status, StepStatus::Success));
+        assert!(exec.content.contains("getting_started"), "{}", exec.content);
+        assert!(
+            exec.content.contains("topic (required)"),
+            "{}",
+            exec.content
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_get_requires_both_server_and_name() {
+        // The schema marks both required, but a model can still send the wrong
+        // shape; failing with a named argument beats an "unknown server" from a
+        // lookup with an empty name.
+        let exec = run_mcp_prompt_tool(
+            &router_with_a_prompt(),
+            crate::mcp::McpPromptTool::Get,
+            &serde_json::json!({"name": "getting_started"}),
+        )
+        .await;
+        assert!(matches!(exec.status, StepStatus::Failed));
+        assert!(
+            exec.content.contains("`server` is required"),
+            "{}",
+            exec.content
+        );
+
+        let exec = run_mcp_prompt_tool(
+            &router_with_a_prompt(),
+            crate::mcp::McpPromptTool::Get,
+            &serde_json::json!({"server": "bm"}),
+        )
+        .await;
+        assert!(matches!(exec.status, StepStatus::Failed));
+        assert!(
+            exec.content.contains("`name` is required"),
+            "{}",
+            exec.content
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_get_returns_the_messages() {
+        let exec = run_mcp_prompt_tool(
+            &router_with_a_prompt(),
+            crate::mcp::McpPromptTool::Get,
+            &serde_json::json!({"server": "bm", "name": "getting_started"}),
+        )
+        .await;
+
+        assert!(matches!(exec.status, StepStatus::Success));
+        assert!(
+            exec.content.contains("Start with the notes."),
+            "{}",
+            exec.content
+        );
+    }
+
+    #[test]
+    fn prompt_arguments_are_strings_and_a_bad_one_is_named() {
+        // The protocol's prompt arguments are a string map. A number or a bool
+        // is stringified — a model that writes `{"count": 3}` means `"3"` — but
+        // anything else is refused by name rather than dropped, because a
+        // silently omitted argument reaches the server as an unfilled
+        // placeholder and still reports success.
+        let ok = prompt_arguments(&serde_json::json!({
+            "arguments": {
+                "topic": "notes",
+                "count": 3,
+                "deep": true
+            }
+        }))
+        .unwrap()
+        .expect("a non-empty object is arguments");
+        assert_eq!(ok.get("topic").unwrap(), &serde_json::json!("notes"));
+        assert_eq!(ok.get("count").unwrap(), &serde_json::json!("3"));
+        assert_eq!(ok.get("deep").unwrap(), &serde_json::json!("true"));
+
+        // Absent or empty is `None`, not an empty map: the two are the same
+        // request, and the caller passes `None` through to the server.
+        assert_eq!(prompt_arguments(&serde_json::json!({})).unwrap(), None);
+        assert_eq!(
+            prompt_arguments(&serde_json::json!({"arguments": {}})).unwrap(),
+            None
+        );
+
+        let error = prompt_arguments(&serde_json::json!({"arguments": {"topic": ["a", "b"]}}))
+            .expect_err("an array is not a string");
+        assert!(error.contains("topic"), "{error}");
+    }
+
+    #[test]
+    fn only_the_prompt_names_resolve_to_the_prompt_path() {
+        assert!(is_mcp_prompt_tool("list_mcp_prompts"));
+        assert!(is_mcp_prompt_tool("get_mcp_prompt"));
+        assert!(!is_mcp_prompt_tool("mcp__bm__read_note"));
+        assert!(!is_mcp_prompt_tool("read_mcp_resource"));
     }
 
     #[test]

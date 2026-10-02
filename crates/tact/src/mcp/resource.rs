@@ -30,7 +30,7 @@ use rmcp::model::{
 };
 use serde_json::json;
 
-use super::{MCP_RESOURCE_TIMEOUT, MCPToolRouter, McpClient};
+use super::{MCP_FETCH_TIMEOUT, MCPToolRouter, McpClient};
 use crate::{ToolSpec, permission::CapabilityRisk};
 
 /// List the resources connected servers expose (Codex's tool name).
@@ -180,13 +180,13 @@ pub fn resource_tool_risk_with(
 impl McpClient {
     /// `resources/list` for this server.
     pub async fn list_resources(&self) -> Result<Vec<Resource>> {
-        tokio::time::timeout(MCP_RESOURCE_TIMEOUT, self.service.list_resources())
+        tokio::time::timeout(MCP_FETCH_TIMEOUT, self.service.list_resources())
             .await
             .with_context(|| {
                 format!(
                     "MCP server {} did not list its resources within {}s",
                     self.server_name,
-                    MCP_RESOURCE_TIMEOUT.as_secs()
+                    MCP_FETCH_TIMEOUT.as_secs()
                 )
             })?
             .with_context(|| format!("failed to list resources from {}", self.server_name))
@@ -194,13 +194,13 @@ impl McpClient {
 
     /// `resources/templates/list` for this server.
     pub async fn list_resource_templates(&self) -> Result<Vec<ResourceTemplate>> {
-        tokio::time::timeout(MCP_RESOURCE_TIMEOUT, self.service.list_resource_templates())
+        tokio::time::timeout(MCP_FETCH_TIMEOUT, self.service.list_resource_templates())
             .await
             .with_context(|| {
                 format!(
                     "MCP server {} did not list its resource templates within {}s",
                     self.server_name,
-                    MCP_RESOURCE_TIMEOUT.as_secs()
+                    MCP_FETCH_TIMEOUT.as_secs()
                 )
             })?
             .with_context(|| {
@@ -214,7 +214,7 @@ impl McpClient {
     /// `resources/read` for one URI on this server.
     pub async fn read_resource(&self, uri: &str) -> Result<ReadResourceResult> {
         tokio::time::timeout(
-            MCP_RESOURCE_TIMEOUT,
+            MCP_FETCH_TIMEOUT,
             self.service.read_resource(uri.to_string()),
         )
         .await
@@ -222,7 +222,7 @@ impl McpClient {
             format!(
                 "MCP server {} did not read {uri} within {}s",
                 self.server_name,
-                MCP_RESOURCE_TIMEOUT.as_secs()
+                MCP_FETCH_TIMEOUT.as_secs()
             )
         })?
         .with_context(|| format!("failed to read {uri} from {}", self.server_name))
@@ -269,12 +269,16 @@ impl MCPToolRouter {
             None => names.iter().map(String::as_str).collect(),
         };
 
-        let mut listings = Vec::with_capacity(selected.len());
+        let mut results = Vec::with_capacity(selected.len());
         for name in selected {
             let client = &self.clients[name];
-            listings.push((name.to_string(), client.list_resources().await?));
+            results.push((name.to_string(), client.list_resources().await));
         }
-        Ok(render_resource_listing(&listings))
+        Ok(render_server_results(
+            "resources/list",
+            results,
+            render_resource_listing,
+        ))
     }
 
     /// Every resource template of every connected server, or of one named
@@ -302,12 +306,16 @@ impl MCPToolRouter {
             None => names.iter().map(String::as_str).collect(),
         };
 
-        let mut listings = Vec::with_capacity(selected.len());
+        let mut results = Vec::with_capacity(selected.len());
         for name in selected {
             let client = &self.clients[name];
-            listings.push((name.to_string(), client.list_resource_templates().await?));
+            results.push((name.to_string(), client.list_resource_templates().await));
         }
-        Ok(render_resource_template_listing(&listings))
+        Ok(render_server_results(
+            "resources/templates/list",
+            results,
+            render_resource_template_listing,
+        ))
     }
 
     /// Reads one resource and renders its contents for the model.
@@ -323,10 +331,48 @@ impl MCPToolRouter {
     }
 
     /// Connected server names, sorted.
-    fn known_servers(&self) -> Vec<String> {
+    pub(super) fn known_servers(&self) -> Vec<String> {
         let mut names: Vec<String> = self.clients.keys().cloned().collect();
         names.sort();
         names
+    }
+}
+
+/// Renders a per-server listing, keeping a server that could not answer out of
+/// the way of one that did.
+///
+/// Shared by all three listings (`resources/list`, `resources/templates/list`,
+/// `prompts/list`). The distinction is the one `mcp get` has drawn per server
+/// since it gained a `resources` column: *publishes none* and *did not answer*
+/// are different facts. Folding them together is not neutral — a server with no
+/// prompt support answers `-32601 Method not found`, and before this split that
+/// error failed the whole call, so one such server made every other server's
+/// prompts unreachable through `list_mcp_prompts`.
+pub fn render_server_results<T>(
+    what: &str,
+    results: Vec<(String, anyhow::Result<T>)>,
+    render: impl FnOnce(&[(String, T)]) -> String,
+) -> String {
+    let mut answered = Vec::new();
+    let mut failed = Vec::new();
+    for (server, result) in results {
+        match result {
+            Ok(value) => answered.push((server, value)),
+            Err(error) => failed.push(format!("- {server}: {error:#}")),
+        }
+    }
+    if answered.is_empty() {
+        return format!(
+            "No server answered `{what}` ({} connected).\n{}",
+            failed.len(),
+            failed.join("\n")
+        );
+    }
+    let body = render(&answered);
+    if failed.is_empty() {
+        body
+    } else {
+        format!("{body}\n\n## Did not answer\n{}", failed.join("\n"))
     }
 }
 
@@ -675,6 +721,35 @@ mod tests {
             .await
             .unwrap();
         assert!(content.contains("Read me first."), "{content}");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_cannot_answer_does_not_hide_another_servers_resources() {
+        // Same rule as the prompt listing: a server with no resource support is
+        // a fact about that server, not a failed listing for everyone.
+        let good = MockMcpService::new(Vec::new(), |_| {
+            Ok(rmcp::model::CallToolResult::success(Vec::new()))
+        })
+        .with_text_resource("memory://guide", "Guide", "Read me first.");
+        let bad = MockMcpService::new(Vec::new(), |_| {
+            Ok(rmcp::model::CallToolResult::success(Vec::new()))
+        })
+        .without_listings();
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service(
+            "basic-memory",
+            Vec::new(),
+            Arc::new(good),
+        ));
+        router.register_client(McpClient::with_service("canva", Vec::new(), Arc::new(bad)));
+
+        let listing = router.list_resources(None).await.unwrap();
+        assert!(listing.contains("memory://guide"), "{listing}");
+        assert!(listing.contains("## Did not answer"), "{listing}");
+        assert!(listing.contains("canva"), "{listing}");
+
+        let templates = router.list_resource_templates(None).await.unwrap();
+        assert!(templates.contains("## Did not answer"), "{templates}");
     }
 
     #[tokio::test]

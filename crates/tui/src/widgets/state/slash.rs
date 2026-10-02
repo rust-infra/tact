@@ -232,6 +232,12 @@ const MCP_SUBCOMMANDS: &[Subcommand] = &[
     // neither has to be remembered.
     sub("login", "<server>", &[], true),
     sub("list", "", &[], false),
+    // Prompts are the one primitive the MCP spec calls *user*-controlled, so
+    // they get a user-facing surface — here rather than at the top level, for
+    // the reason skills live under `/skill`: a server's names must not bury the
+    // built-ins.
+    sub("prompts", "[server]", &[], false),
+    sub("prompt", "<server> <name> [key=value ...]", &[], true),
 ];
 
 const PLUGIN_MARKETPLACE_SUBCOMMANDS: &[Subcommand] = &[sub("list", "", &[], false)];

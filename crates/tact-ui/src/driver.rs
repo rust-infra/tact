@@ -278,6 +278,34 @@ fn spawn_wakeup_task(
 ///
 /// This wrapper discards any account-related updates; tests that need to
 /// observe them should use [`run_command_loop_with_account`].
+/// Fetches one MCP prompt and renders it as the text of a user turn.
+///
+/// Split out from the command arm so the fetch-and-render path is reachable
+/// without running a turn: the arm is then three lines, and this is the one
+/// place the router, the renderer and the two error messages meet.
+async fn render_mcp_prompt(
+    agent: &Agent,
+    server: &str,
+    name: &str,
+    arguments: std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
+    if name.is_empty() {
+        return Err(
+            "/mcp prompt needs a prompt name: /mcp prompt <server> <name> [key=value ...]"
+                .to_string(),
+        );
+    }
+    agent
+        .mcp_router
+        .get_prompt(
+            server,
+            name,
+            tact::mcp::prompt_arguments_from_pairs(arguments),
+        )
+        .await
+        .map_err(|error| format!("MCP prompt {server}/{name} failed: {error:#}"))
+}
+
 pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work_dir: &Path) {
     handle_user_command_with_account(agent, cmd, image_work_dir, None).await;
 }
@@ -480,6 +508,36 @@ async fn handle_user_command_with_account(
                 ))),
             }
         }
+        UserCommand::McpPrompts { server } => {
+            // Live view, like `McpList`: the router the agent already holds.
+            match agent.mcp_router.list_prompts(server.as_deref()).await {
+                Ok(listing) => agent.emit_update(AgentUpdate::MdInfo(listing)),
+                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                    format!("MCP prompts failed: {error:#}"),
+                ))),
+            }
+        }
+        UserCommand::RunMcpPrompt {
+            server,
+            name,
+            arguments,
+        } => match render_mcp_prompt(agent, &server, &name, arguments).await {
+            // A prompt is a *starting message*, so it is submitted as one: the
+            // ordinary task path, with the same rendering the `get_mcp_prompt`
+            // tool returns. Nothing downstream learns a new turn shape.
+            Ok(messages) => {
+                Box::pin(handle_user_command_with_account(
+                    agent,
+                    UserCommand::SubmitTask(messages),
+                    image_work_dir,
+                    account_tx,
+                ))
+                .await;
+            }
+            Err(message) => {
+                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(message)));
+            }
+        },
         UserCommand::HooksList => match tact::plugin::survey_hooks(image_work_dir) {
             // The same wording `tact-ui hooks list` uses: two surfaces naming
             // the same hooks must not describe them differently.
@@ -604,6 +662,39 @@ mod tests {
             }
         }
         assert!(saw_complete, "SubmitTask should clear cancel and complete");
+    }
+
+    #[tokio::test]
+    async fn running_an_mcp_prompt_names_a_missing_prompt_name() {
+        // The TUI forwards an incomplete `/mcp prompt` on purpose (see the
+        // spec's note on arity); naming the missing piece is the driver's job,
+        // because only the driver can also say "no such prompt".
+        install_test_config();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+
+        let error = super::render_mcp_prompt(&agent, "bm", "", std::collections::BTreeMap::new())
+            .await
+            .expect_err("an empty name cannot be fetched");
+        assert!(error.contains("needs a prompt name"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn running_an_mcp_prompt_on_an_unknown_server_names_it() {
+        // An empty router is the honest case here: the fetch must not look like
+        // a prompt that composed nothing.
+        install_test_config();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+
+        let error = super::render_mcp_prompt(
+            &agent,
+            "nope",
+            "getting_started",
+            std::collections::BTreeMap::new(),
+        )
+        .await
+        .expect_err("an unknown server is an error, not an empty prompt");
+        assert!(error.contains("nope"), "{error}");
+        assert!(error.contains("getting_started"), "{error}");
     }
 
     #[tokio::test]

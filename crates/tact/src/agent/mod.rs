@@ -561,6 +561,8 @@ impl Agent {
             // is connected: with an empty router they would be tools that can
             // only ever answer "no MCP servers are connected".
             .chain(self.mcp_router.resource_tool_specs())
+            // Same rule for the prompt pair.
+            .chain(self.mcp_router.prompt_tool_specs())
             .collect();
     }
 

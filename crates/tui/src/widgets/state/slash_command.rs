@@ -353,7 +353,13 @@ mod tests {
         );
         assert_eq!(
             paths(&app_typing("/mcp ")),
-            ["mcp auth", "mcp login", "mcp list"]
+            [
+                "mcp auth",
+                "mcp login",
+                "mcp list",
+                "mcp prompts",
+                "mcp prompt",
+            ]
         );
     }
 

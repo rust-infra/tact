@@ -65,11 +65,14 @@ const MCP_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60)
 /// Ceiling on `tools/list` for one server.
 const MCP_LIST_TOOLS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Ceiling on one `resources/list` or `resources/read`.
+/// Ceiling on one `resources/*` or `prompts/*` request.
 ///
-/// The same order of magnitude as `tools/list`: a resource listing is served
-/// from the server's own index, and reading one is a fetch, not a computation.
-const MCP_RESOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The same order of magnitude as `tools/list`: a listing is served from the
+/// server's own index, and reading a resource or composing a prompt is a fetch,
+/// not a computation. One constant for all four requests because they are the
+/// same kind of wait — a name per primitive would only invite the ceilings to
+/// drift apart for no reason.
+const MCP_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Ceiling on a single `tools/call`.
 ///
@@ -95,8 +98,9 @@ use rmcp::{
     RoleClient, ServiceExt,
     handler::client::ClientHandler,
     model::{
-        CallToolRequestParams, CallToolResult, RawContent, RawResource, ReadResourceResult,
-        Resource, ResourceContents, ResourceTemplate, Tool as McpTool,
+        CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult, Prompt,
+        RawContent, RawResource, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+        Tool as McpTool,
     },
     service::{NotificationContext, RunningService, ServiceError},
     transport::{ConfigureCommandExt, TokioChildProcess},
@@ -115,9 +119,11 @@ use crate::{
 };
 
 mod edit;
+mod prompt;
 mod remote;
 mod resource;
 pub use edit::*;
+pub use prompt::*;
 pub use remote::*;
 pub use resource::*;
 
@@ -699,6 +705,13 @@ pub struct McpServerInspection {
     /// publishing none — and the one that matters, because a template-addressed
     /// server is exactly the case `resources/list` cannot describe.
     pub resource_templates: Option<usize>,
+    /// How many prompts `prompts/list` returned.
+    ///
+    /// `None` means the server did not answer, which is a different fact from
+    /// publishing none — the same distinction `resources` draws, and the reason
+    /// this is reported at all: a server whose prompts are invisible here is one
+    /// the model will never think to ask for.
+    pub prompts: Option<usize>,
     /// Exposed tools the server marked `readOnlyHint: true`, sorted.
     ///
     /// Evidence for the human writing `tools.<name>.risk`, not an input to the
@@ -1661,6 +1674,22 @@ pub trait McpService: Send + Sync + 'static {
     fn list_resource_templates(&self)
     -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>>;
 
+    /// `prompts/list`, paginated to the end by the implementation.
+    ///
+    /// Required for the same reason [`Self::list_resources`] is: a service that
+    /// cannot ask must say so, or "this transport cannot answer" becomes
+    /// indistinguishable from "the server publishes no prompts".
+    fn list_prompts(&self) -> BoxFuture<'_, Result<Vec<Prompt>, ServiceError>>;
+
+    /// `prompts/get` for one prompt, with the caller's arguments.
+    ///
+    /// Arguments are forwarded verbatim: a prompt's placeholders are the
+    /// server's vocabulary, and Tact has no business guessing at them.
+    fn get_prompt(
+        &self,
+        params: GetPromptRequestParams,
+    ) -> BoxFuture<'_, Result<GetPromptResult, ServiceError>>;
+
     /// The `instructions` string the server returned during `initialize`.
     ///
     /// This is the MCP spec's channel for "what this server is and how to use
@@ -1813,6 +1842,31 @@ impl McpService for RealMcpService {
             let guard = self.service.read().await;
             match guard.as_ref() {
                 Some(service) => service.list_all_resource_templates().await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
+    }
+
+    fn list_prompts(&self) -> BoxFuture<'_, Result<Vec<Prompt>, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.list_all_prompts().await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
+    }
+
+    fn get_prompt(
+        &self,
+        params: GetPromptRequestParams,
+    ) -> BoxFuture<'_, Result<GetPromptResult, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.get_prompt(params).await,
                 None => Err(ServiceError::TransportClosed),
             }
         }
@@ -2172,6 +2226,9 @@ impl McpClient {
 type McpToolHandler =
     Arc<dyn Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError> + Send + Sync>;
 
+/// One `prompts/get` a test double received: the prompt name and its arguments.
+type PromptCall = (String, Option<Map<String, Value>>);
+
 pub struct MockMcpService {
     /// Behind a lock so a test can grow the list the way a real server does
     /// after `notifications/tools/list_changed` — a fixed vec could only ever
@@ -2183,12 +2240,25 @@ pub struct MockMcpService {
     resources: Vec<Resource>,
     resource_templates: Vec<ResourceTemplate>,
     resource_text: HashMap<String, String>,
+    prompts: Vec<Prompt>,
+    /// Messages each prompt composes, keyed by prompt name.
+    prompt_messages: HashMap<String, Vec<rmcp::model::PromptMessage>>,
+    /// Every `prompts/get` this double received: `(prompt name, arguments)`.
+    ///
+    /// Recorded because the arguments are the part a test can get wrong: a
+    /// prompt fetched without its placeholders is a template, not an
+    /// instruction, and nothing else in the pipeline would notice.
+    prompt_calls: std::sync::Mutex<Vec<PromptCall>>,
     /// Set by [`Self::announce_tools_changed`], read by
     /// [`McpService::take_tools_changed`].
     tools_changed: Arc<AtomicBool>,
     /// When set, `tools/list` fails — the shape a re-list takes when the
     /// transport went away between the notification and the request.
     list_tools_fails: bool,
+    /// When set, the three *listing* methods answer `-32601 Method not found`,
+    /// the way a server that implements none of them does. canva is such a
+    /// server, and its answer used to fail a listing for every other server too.
+    lists_nothing: bool,
 }
 
 impl MockMcpService {
@@ -2207,8 +2277,12 @@ impl MockMcpService {
             resources: Vec::new(),
             resource_templates: Vec::new(),
             resource_text: HashMap::new(),
+            prompts: Vec::new(),
+            prompt_messages: HashMap::new(),
+            prompt_calls: std::sync::Mutex::new(Vec::new()),
             tools_changed: Arc::new(AtomicBool::new(false)),
             list_tools_fails: false,
+            lists_nothing: false,
         }
     }
 
@@ -2232,6 +2306,17 @@ impl MockMcpService {
     #[must_use]
     pub fn failing_to_list(mut self) -> Self {
         self.list_tools_fails = true;
+        self
+    }
+
+    /// Makes the listing methods answer `-32601 Method not found`, which is what
+    /// a server that implements none of them does.
+    ///
+    /// The distinction this exists to test is *where* the error lands: a
+    /// per-server "did not answer" line, not a failed listing for everyone.
+    #[must_use]
+    pub fn without_listings(mut self) -> Self {
+        self.lists_nothing = true;
         self
     }
 
@@ -2271,6 +2356,53 @@ impl MockMcpService {
     pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
         self.instructions = Some(instructions.into());
         self
+    }
+
+    /// Publishes one prompt, with the arguments its listing should show.
+    ///
+    /// `arguments` is `(name, required)` pairs; an empty slice is a prompt that
+    /// takes none, which must not gain an argument line in the listing.
+    #[must_use]
+    pub fn with_prompt(
+        mut self,
+        name: &str,
+        description: &str,
+        arguments: &[(&str, bool)],
+    ) -> Self {
+        let arguments: Vec<rmcp::model::PromptArgument> = arguments
+            .iter()
+            .map(|(argument, required)| rmcp::model::PromptArgument {
+                name: (*argument).to_string(),
+                title: None,
+                description: None,
+                required: Some(*required),
+            })
+            .collect();
+        self.prompts.push(Prompt::new(
+            name,
+            Some(description),
+            (!arguments.is_empty()).then_some(arguments),
+        ));
+        self
+    }
+
+    /// The messages this prompt composes when fetched.
+    #[must_use]
+    pub fn with_prompt_messages(
+        mut self,
+        name: &str,
+        messages: Vec<rmcp::model::PromptMessage>,
+    ) -> Self {
+        self.prompt_messages.insert(name.to_string(), messages);
+        self
+    }
+
+    /// Every `(prompt name, arguments)` pair `prompts/get` received.
+    pub fn prompt_calls(&self) -> Vec<PromptCall> {
+        self.prompt_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Return every `(tool_name, arguments)` pair received so far.
@@ -2315,6 +2447,13 @@ impl McpService for MockMcpService {
     }
 
     fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>> {
+        if self.lists_nothing {
+            return std::future::ready(Err(ServiceError::McpError(
+                rmcp::model::ErrorData::method_not_found::<rmcp::model::ListResourcesRequestMethod>(
+                ),
+            )))
+            .boxed();
+        }
         let resources = self.resources.clone();
         std::future::ready(Ok(resources)).boxed()
     }
@@ -2322,6 +2461,14 @@ impl McpService for MockMcpService {
     fn list_resource_templates(
         &self,
     ) -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>> {
+        if self.lists_nothing {
+            return std::future::ready(Err(ServiceError::McpError(
+                rmcp::model::ErrorData::method_not_found::<
+                    rmcp::model::ListResourceTemplatesRequestMethod,
+                >(),
+            )))
+            .boxed();
+        }
         let templates = self.resource_templates.clone();
         std::future::ready(Ok(templates)).boxed()
     }
@@ -2342,6 +2489,49 @@ impl McpService for MockMcpService {
             None => Err(ServiceError::McpError(
                 rmcp::model::ErrorData::resource_not_found(
                     format!("no such resource: {uri}"),
+                    None,
+                ),
+            )),
+        };
+        std::future::ready(result).boxed()
+    }
+
+    fn list_prompts(&self) -> BoxFuture<'_, Result<Vec<Prompt>, ServiceError>> {
+        if self.lists_nothing {
+            return std::future::ready(Err(ServiceError::McpError(
+                rmcp::model::ErrorData::method_not_found::<rmcp::model::ListPromptsRequestMethod>(),
+            )))
+            .boxed();
+        }
+        let prompts = self.prompts.clone();
+        std::future::ready(Ok(prompts)).boxed()
+    }
+
+    fn get_prompt(
+        &self,
+        params: GetPromptRequestParams,
+    ) -> BoxFuture<'_, Result<GetPromptResult, ServiceError>> {
+        self.prompt_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((params.name.clone(), params.arguments.clone()));
+        // A missing prompt is a real not-found error, not an empty result: the
+        // two must not be confusable in a test. "Missing" means *not advertised*
+        // — a prompt this double lists is gettable, even if a test never gave it
+        // messages, because that is what a real server does.
+        let listed = self.prompts.iter().any(|prompt| prompt.name == params.name);
+        let result = match (self.prompt_messages.get(&params.name), listed) {
+            (Some(messages), _) => Ok(GetPromptResult {
+                description: None,
+                messages: messages.clone(),
+            }),
+            (None, true) => Ok(GetPromptResult {
+                description: None,
+                messages: Vec::new(),
+            }),
+            (None, false) => Err(ServiceError::McpError(
+                rmcp::model::ErrorData::invalid_params(
+                    format!("no such prompt: {}", params.name),
                     None,
                 ),
             )),
@@ -3164,6 +3354,7 @@ struct InspectionFacts {
     instructions_chars: Option<usize>,
     resources: Option<usize>,
     resource_templates: Option<usize>,
+    prompts: Option<usize>,
     declared_read_only: Vec<String>,
     declared_risks: Vec<(String, CapabilityRisk)>,
 }
@@ -3179,6 +3370,7 @@ impl InspectionFacts {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         }
@@ -3194,6 +3386,7 @@ impl InspectionFacts {
             instructions_chars: self.instructions_chars,
             resources: self.resources,
             resource_templates: self.resource_templates,
+            prompts: self.prompts,
             declared_read_only: self.declared_read_only,
             declared_risks: self.declared_risks,
         }
@@ -3233,6 +3426,10 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
                 .await
                 .ok()
                 .map(|list| list.len());
+            // And for prompts, which are the primitive a server is least likely
+            // to be asked about: without the count they are invisible until the
+            // model happens to call `list_mcp_prompts`.
+            let prompts = client.list_prompts().await.ok().map(|list| list.len());
             // Only *declared* tiers, so "the entry is silent" and "the entry
             // said high" stay distinguishable in the printed view.
             let mut declared_risks: Vec<(String, CapabilityRisk)> = client
@@ -3254,6 +3451,7 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
                 instructions_chars: chars,
                 resources,
                 resource_templates,
+                prompts,
                 declared_read_only: client.declared_read_only().to_vec(),
                 declared_risks,
             }
@@ -4157,6 +4355,92 @@ mod tests {
                 )],
             }))
         }
+
+        fn list_prompts(
+            &self,
+            _request: Option<rmcp::model::PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> impl std::future::Future<Output = Result<rmcp::model::ListPromptsResult, McpError>>
+        + Send
+        + '_ {
+            std::future::ready(Ok(rmcp::model::ListPromptsResult {
+                prompts: vec![rmcp::model::Prompt::new(
+                    "getting_started",
+                    Some("Introduce the server"),
+                    Some(vec![rmcp::model::PromptArgument {
+                        name: "topic".to_string(),
+                        title: None,
+                        description: None,
+                        required: Some(true),
+                    }]),
+                )],
+                next_cursor: None,
+                meta: None,
+            }))
+        }
+
+        fn get_prompt(
+            &self,
+            request: rmcp::model::GetPromptRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResult, McpError>> + Send + '_
+        {
+            // Echoes the argument back: whether the caller's values survive the
+            // wire is exactly what a mock cannot show.
+            let topic = request
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("topic"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("<none>")
+                .to_string();
+            std::future::ready(Ok(rmcp::model::GetPromptResult {
+                description: Some(format!("prompt {}", request.name)),
+                messages: vec![rmcp::model::PromptMessage::new_text(
+                    rmcp::model::PromptMessageRole::User,
+                    format!("topic is {topic}"),
+                )],
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_client_gets_prompts_from_a_real_in_process_server() {
+        // The mock proves the routing; this proves the rmcp call shapes — the
+        // paginated list and the `prompts/get` params — are right.
+        let server = EchoServer::new(Vec::new());
+        let (client_stream, server_stream) = tokio::io::duplex(64);
+        let _server_handle = tokio::spawn(async move {
+            let running = server.serve(server_stream).await.unwrap();
+            while !running.is_transport_closed() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+
+        let signal = ToolListChangedSignal::default();
+        let running = signal.clone().serve(client_stream).await.unwrap();
+        let client = McpClient::with_service(
+            "fixture",
+            Vec::new(),
+            Arc::new(RealMcpService::new(running, signal)),
+        );
+
+        let prompts = client.list_prompts().await.unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].name, "getting_started");
+
+        let mut arguments = rmcp::model::JsonObject::new();
+        arguments.insert("topic".to_string(), serde_json::json!("deployment"));
+        let result = client
+            .get_prompt("getting_started", Some(arguments))
+            .await
+            .unwrap();
+        assert_eq!(result.messages.len(), 1);
+        let rendered = super::prompt::render_prompt_messages("getting_started", &result);
+        assert!(
+            rendered.contains("topic is deployment"),
+            "the argument must survive the wire: {rendered}"
+        );
     }
 
     #[tokio::test]

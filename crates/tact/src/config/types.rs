@@ -292,6 +292,18 @@ pub struct McpTomlConfig {
     /// listing returns metadata, a read returns third-party content fetched over
     /// the network.
     pub resource_read_risk: Option<String>,
+
+    /// Risk for `list_mcp_prompts` (`mcp.prompt_list_risk`).
+    ///
+    /// The prompt tools belong to Tact for the same reason the resource tools
+    /// do, so they need their own keys too.
+    pub prompt_list_risk: Option<String>,
+
+    /// Risk for `get_mcp_prompt` (`mcp.prompt_get_risk`).
+    ///
+    /// Separate from the listing key for the resource pair's reason: a listing
+    /// returns metadata, a get returns server-authored content.
+    pub prompt_get_risk: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +332,12 @@ pub struct McpSettings {
 
     /// Risk for `read_mcp_resource`; `None` keeps `CapabilityRisk::High`.
     pub resource_read_risk: Option<CapabilityRisk>,
+
+    /// Risk for Tact's prompt listings; `None` keeps `CapabilityRisk::High`.
+    pub prompt_list_risk: Option<CapabilityRisk>,
+
+    /// Risk for `get_mcp_prompt`; `None` keeps `CapabilityRisk::High`.
+    pub prompt_get_risk: Option<CapabilityRisk>,
 }
 
 impl McpSettings {
@@ -337,6 +355,8 @@ impl Default for McpSettings {
             oauth_client_name: Self::DEFAULT_OAUTH_CLIENT_NAME.to_string(),
             resource_list_risk: None,
             resource_read_risk: None,
+            prompt_list_risk: None,
+            prompt_get_risk: None,
         }
     }
 }

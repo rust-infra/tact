@@ -361,16 +361,18 @@ api_key = ""
 #   { "mcpServers": { "figma": { "url": "...", "auth": { "type": "oauth", "clientName": "Codex" } } } }
 # oauth_client_name = "Codex"
 
-# Risk for Tact's OWN resource tools. They belong to Tact rather than to any
-# server, so a server entry's `tools.<name>.risk` cannot address them and these
-# two keys do. Same vocabulary: read | write | high. Both default to "high", so
-# nothing changes until you declare otherwise. They are separate keys because a
-# listing returns metadata while a read returns third-party content fetched over
-# the network — declaring "read" for the read key bypasses plan mode, the same
-# trade the native read_file makes.
+# Risk for Tact's OWN resource and prompt tools. They belong to Tact rather than
+# to any server, so a server entry's `tools.<name>.risk` cannot address them and
+# these four keys do. Same vocabulary: read | write | high. All default to
+# "high", so nothing changes until you declare otherwise. Listing and fetching
+# are separate keys because a listing returns metadata while a fetch returns
+# third-party content — declaring "read" for a fetch key bypasses plan mode, the
+# same trade the native read_file makes.
 #
 # resource_list_risk = "write"   # list_mcp_resources, list_mcp_resource_templates
 # resource_read_risk = "high"    # read_mcp_resource
+# prompt_list_risk = "write"     # list_mcp_prompts
+# prompt_get_risk = "high"       # get_mcp_prompt
 
 # Per-entry tool policy lives in `.mcp.json` (not here) — Codex's own field
 # names, honoured per server. All are optional; an entry that declares none

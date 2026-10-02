@@ -87,6 +87,9 @@ impl TryFrom<UserCommand> for Command {
             // Listing MCP servers reads the agent's live router, which only
             // the Tact driver owns; not a kit command.
             UserCommand::McpList => Err(()),
+            // Same for prompts: the listing and the fetch both read that router,
+            // and running one submits a Tact user turn.
+            UserCommand::McpPrompts { .. } | UserCommand::RunMcpPrompt { .. } => Err(()),
             // Hook review reads Tact's hook sources and writes its review
             // store (`~/.tact/hooks-state.json`) — Tact-specific, and
             // deliberately not a generic kit command.

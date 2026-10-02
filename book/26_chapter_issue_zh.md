@@ -37,6 +37,53 @@
 
 ---
 
+## 1. 2026-10-02 — `prompts/list` 与 `prompts/get`：最后一个 MCP 原语接通
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | 新增 `crates/tact/src/mcp/prompt.rs`（`McpPromptTool`、`list_mcp_prompts` / `get_mcp_prompt`、`render_prompt_listing` / `render_prompt_messages`、`prompt_tool_risk`）；`crates/tact/src/mcp/mod.rs`（`McpService::list_prompts` / `get_prompt`、`MockMcpService`、`McpServerInspection.prompts`、`MCP_RESOURCE_TIMEOUT` → `MCP_FETCH_TIMEOUT`）、`mcp/resource.rs`（`known_servers` 改 `pub(super)`）；`crates/tact/src/agent/{mod,tool_dispatch}.rs`；`crates/tact/src/config/{types,resolve}.rs`（`mcp.prompt_list_risk` / `prompt_get_risk`）；`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-10-02-mcp-prompts-design.md`；[Ch 8](./08_chapter_mcp_zh.md) Step 9 |
+
+**症状 / 动机：** 缺口表上只剩这一行，而它的否决理由（"prompt 模板是 server 编写的一串消息，而不是一次工具调用，在 Tact 的轮次结构里没有消费者"）**只管住了一半**：那是关于**把 prompt 推给模型**，Tact 至今也不做；它对**工具结果**不成立——`get_mcp_prompt` 把消息当文本返回，模型读它的方式与读一个 resource 完全相同，消费者问题在原语变成模型可调用的工具那一刻就没了。
+
+代价是可测的。用 JSON-RPC over stdio 直接问服务器（`initialize` + 四个 list），Basic Memory 4.0.0b1 广告 `tools 21 / resources 1 / templates 1 / prompts 4`，capabilities 里明确声明了 `prompts: {listChanged: false}`——不是"可能有"，是确实有四个（`continue_conversation`、`getting_started`、`recent_activity`、`search_knowledge_base`）。而 `tact-ui mcp get basic-memory` 对它们**一个字都不说**：一个被告知"从 `getting_started` 开始"的模型没有任何办法取到它，与 resources 接通前读不到 `memory://ai_assistant_guide` 是同一种死路。
+
+**决策：** 照 `resource.rs` 的形状补两个工具（`list_mcp_prompts` / `get_mcp_prompt`），派发、调度、risk、`mcp get` 全部沿用既有五处钩子。几处**非显然**的取舍：
+
+- **列表必须给出参数词汇**（`arguments: topic (required), project`）：看不见占位符的模板读起来就是"不需要参数"，然后带着未填充的模板去 `prompts/get`。
+- **参数只做字符串化与拒绝，不做猜测**：协议里 prompt 参数是 string map，数字/布尔转成字符串（`{"count": 3}` 的意图就是 `"3"`），对象/数组/null 则**指名报错**。静默丢弃会让 server 收到未填充的占位符却仍报成功——这正是本节要防的失败模式。
+- **消息按 server 给的顺序逐条渲染**，只标 role，不排序不合并：顺序本身就是指令。图像与内嵌 resource 只报大小不内联（复用 `render_resource_contents`），理由同 `read_mcp_resource`。
+- **两个 risk 键**（`mcp.prompt_list_risk` / `prompt_get_risk`），与资源那两个同权：名字属于 Tact，条目的 `tools.<name>.risk` 够不到；都默认 `high`。
+- **`MCP_RESOURCE_TIMEOUT` 改名 `MCP_FETCH_TIMEOUT`** 而不是再加一个常量：四个请求是同一类等待（server 自己索引里的列表，或取一个条目），每个原语一个名字只会让两个上限无理由地漂移。
+- **`mcp get` 新增 `prompts N available to \`list_mcp_prompts\``**：这是 prompts 在模型不问时唯一的可见处。
+
+**变更后行为：** `prompts/list` 与 `prompts/get` 全部接通，缺口表上 Prompts 那一行删除。模型可以 `list_mcp_prompts` 看参数、再 `get_mcp_prompt` 取回消息；`tact-ui mcp get basic-memory` 现在显示 `prompts  4 available to \`list_mcp_prompts\``。**仍未做**：把 prompt 暴露成 TUI slash 命令（MCP 规范称 prompt 是 user-controlled，slash 命令其实更贴合规范；推迟而非否决——本轮只回答"模型根本够不到"，不在同一个 diff 里再开一个用户可见面）；`prompts/list_changed` 仍未处理，理由与 resources 相同（按需取用，过期的数量不是正确性问题），且能查到的 server 都声明 `listChanged: false`。
+
+**指针：** `crates/tact/src/mcp/prompt.rs`；测试 `mcp::prompt::tests::*`（16 条）、`mcp::tests::mcp_client_gets_prompts_from_a_real_in_process_server`（**真实 rmcp 进程内 server**：广告一个 prompt 并把参数回显，证明 rmcp 调用形状与参数过线正确，这是 mock 证明不了的）、`agent::tool_dispatch::tests::{a_prompt_listing_is_a_successful_tool_result, a_prompt_get_requires_both_server_and_name, a_prompt_get_returns_the_messages, prompt_arguments_are_strings_and_a_bad_one_is_named, only_the_prompt_names_resolve_to_the_prompt_path}`、`config::resolve::tests::resolve_mcp_prompt_tool_risk_defaults_to_high_and_is_overridable`、`mcp_cli` 的 `prompts  4 available` 断言。
+
+## 1. 2026-10-02 — 三个僵尸钩子清掉，pre-push 的测试输出从 ~200 KB 压到 5 KB
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `scripts/check-rust.sh`（`cargo test … --verbose` → `--quiet`）；移出 `.githooks/pre-commit.sh`（版本控制内）与 `.git/hooks/{pre-push,post-commit}`（本地）；`scripts/install-git-hooks.sh`；[Ch 24](./24_chapter_testing_zh.md) §提交前 |
+
+**症状 / 动机：** 一次**成功**的 push 会打出约 200 KB 的测试日志。来源是 `cargo test --verbose`：它会回显每个 target 的完整 rustc/rustdoc 命令行，`-L native=…` 一行就几 KB（`git push` 输出的**最后 25 行**就有 86 KB）。这段 stdout 不只给人看，也会进 agent 的上下文，等于每次绿灯 push 都白烧一次。
+
+**决策：** 测试步骤改 `--quiet`（每个测试一个字符，无命令行回显）。绿灯 ~5 KB；红灯 1.4 KB 且**信息不缺**——用一个故意失败的测试实测过，quiet 模式下仍打印测试名、`file:line`、断言 diff 与 `test result: FAILED`，所以红行仍可诊断。
+
+同时清掉三个从未生效的钩子。它们本身就是陷阱：读起来像"gate"，照着它们判断会得出错的结论。
+
+| 文件 | 为什么是僵尸 |
+|---|---|
+| `.git/hooks/pre-push` | `core.hooksPath` 已改指 `.githooks`，git 不读它。内容是**四项**检查（含 `cargo build`、`--all-features`、全 workspace），与实际 gate 不符 |
+| `.git/hooks/post-commit` | Qoder tracker 上报（`\|\| true`）。自 2026-08-02 改指后从未运行，即**那之后没有 commit 被上报** |
+| `.githooks/pre-commit.sh` | 名字带 `.sh`，而 git 只认精确的 `pre-commit`。无任何脚本引用它，`install-git-hooks.sh` 也只 chmod `.githooks/pre-push` |
+
+**变更后行为：** push 绿灯输出约 5 KB。唯一生效路径仍是 `.githooks/pre-push` → `scripts/check-rust.sh`，三项检查：`cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings`（**无** `--all-features`）、`cargo test -p tact-ui -p tui -p tact -p tact_llm --quiet`（四个包，非全 workspace）；**无** `cargo build` 步骤（`cargo test` 自行构建所需目标）。warm 约 33 s。副作用：提交时不再有任何钩子做格式化（本来也没有），`cargo fmt` 仍需自己先跑。
+
+**指针：** `scripts/check-rust.sh`（`--quiet`，注释写明取舍：这段 stdout 会进 agent transcript）；验证 `git hook run pre-push` 退出 0、输出 5288 B；两个 `.git/hooks/*` 只是移出到 `.git/hooks/.removed-2026-10-02/`（未版本控制，可还原）。**`--quiet` 对 worktree 内的 push 暂不生效**：`.githooks/pre-push` 用 `ROOT=$(git rev-parse --show-toplevel)`，在 worktree 里那就是调用方的 worktree，而每个 worktree 有自己的 `scripts/check-rust.sh` 副本——要等这次改动 commit 且被该 worktree 检出。
+
 ## 1. 2026-10-02 — 全局快捷键真正消费按键，`Ctrl+T` 不再顺手打出一个 `t`
 
 | 字段 | 值 |

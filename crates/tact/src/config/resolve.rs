@@ -110,11 +110,21 @@ fn resolve_mcp(toml_cfg: &TactTomlConfig) -> McpSettings {
         toml_cfg.mcp.resource_read_risk.as_deref(),
         "mcp.resource_read_risk",
     );
+    let prompt_list_risk = parse_mcp_tool_risk(
+        toml_cfg.mcp.prompt_list_risk.as_deref(),
+        "mcp.prompt_list_risk",
+    );
+    let prompt_get_risk = parse_mcp_tool_risk(
+        toml_cfg.mcp.prompt_get_risk.as_deref(),
+        "mcp.prompt_get_risk",
+    );
 
     McpSettings {
         oauth_client_name,
         resource_list_risk,
         resource_read_risk,
+        prompt_list_risk,
+        prompt_get_risk,
     }
 }
 
@@ -1081,6 +1091,37 @@ max_tokens = {subagent_max_tokens}
         toml_cfg.mcp.resource_read_risk = Some("harmless".to_string());
         let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
         assert_eq!(cfg.mcp.resource_read_risk, None);
+    }
+
+    #[test]
+    fn resolve_mcp_prompt_tool_risk_defaults_to_high_and_is_overridable() {
+        use crate::permission::CapabilityRisk;
+
+        let (args, toml_cfg) = empty_cli_args_with_openai();
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.prompt_list_risk, None);
+        assert_eq!(cfg.mcp.prompt_get_risk, None);
+
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.prompt_list_risk = Some(" write ".to_string());
+        toml_cfg.mcp.prompt_get_risk = Some("read".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.prompt_list_risk, Some(CapabilityRisk::Write));
+        assert_eq!(cfg.mcp.prompt_get_risk, Some(CapabilityRisk::Read));
+
+        // Same rule as the resource keys: an unknown value is ignored rather
+        // than guessed, so the tool keeps the restrictive default.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.prompt_get_risk = Some("harmless".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.prompt_get_risk, None);
+
+        // And the two families stay independent: a prompt key must not move a
+        // resource tool.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.prompt_list_risk = Some("read".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.resource_list_risk, None);
     }
 
     #[test]

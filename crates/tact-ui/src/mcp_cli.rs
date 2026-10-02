@@ -316,6 +316,17 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
         }
         None => {}
     }
+    // Prompts are the primitive nothing else surfaces: without this line a
+    // server's templates are invisible until the model happens to ask.
+    match inspection.prompts {
+        Some(count) => lines.push(format!(
+            "  prompts  {count} available to `list_mcp_prompts`"
+        )),
+        None if matches!(inspection.status, McpServerStatus::Connected) => {
+            lines.push("  prompts  (the server did not answer `prompts/list`)".to_string());
+        }
+        None => {}
+    }
     if let Some(draft) = suggested_risk_policy(inspection) {
         lines.push(draft);
     }
@@ -964,6 +975,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1012,6 +1024,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: vec!["read_content".to_string(), "read_note".to_string()],
             declared_risks: Vec::new(),
         };
@@ -1060,6 +1073,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: vec!["search_notes".to_string()],
             declared_risks: vec![("search_notes".to_string(), CapabilityRisk::Read)],
         };
@@ -1089,6 +1103,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1114,6 +1129,7 @@ mod tests {
             instructions_chars: None,
             resources: Some(0),
             resource_templates: Some(3),
+            prompts: Some(4),
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1123,10 +1139,17 @@ mod tests {
             text.contains("templates  3 available to `list_mcp_resource_templates`"),
             "{text}"
         );
+        // Prompts have no other surface: nothing else in the detail view would
+        // tell a user their server offers four of them.
+        assert!(
+            text.contains("prompts  4 available to `list_mcp_prompts`"),
+            "{text}"
+        );
 
         // And "did not answer" stays a different fact from "publishes none".
         let unanswered = mcp::McpServerInspection {
             resource_templates: None,
+            prompts: None,
             ..inspection
         };
         let text = render_server_detail(&unanswered);
@@ -1147,6 +1170,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1171,6 +1195,7 @@ mod tests {
             instructions_chars: Some(2_043),
             resources: Some(3),
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1186,6 +1211,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             ..inspection
         };
         assert!(
@@ -1205,6 +1231,7 @@ mod tests {
             instructions_chars: None,
             resources: Some(0),
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1219,6 +1246,7 @@ mod tests {
         let silent = mcp::McpServerInspection {
             resources: None,
             resource_templates: None,
+            prompts: None,
             ..connected
         };
         let text = render_server_detail(&silent);
@@ -1228,6 +1256,7 @@ mod tests {
             status: McpServerStatus::PendingAuthorization,
             resources: None,
             resource_templates: None,
+            prompts: None,
             ..silent
         };
         assert!(
@@ -1425,6 +1454,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1454,6 +1484,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1478,6 +1509,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
@@ -1500,6 +1532,7 @@ mod tests {
             instructions_chars: None,
             resources: None,
             resource_templates: None,
+            prompts: None,
             declared_read_only: Vec::new(),
             declared_risks: Vec::new(),
         };
