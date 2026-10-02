@@ -48,6 +48,7 @@ pub struct MessageCountByPeriod {
     pub count: i64,
 }
 
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     /// Create or refresh a session. `ref_id` is the parent session id (`""` = top-level).

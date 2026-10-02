@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use crate::subagent::SubagentRun;
 
 /// Storage backend contract for the subagent manager.
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait SubagentStore: Send + Sync {
     /// Inserts or replaces a record by child session id.

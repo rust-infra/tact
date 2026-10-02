@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use crate::worktree::WorktreeRecord;
 
 /// Storage backend contract for the worktree manager.
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait WorktreeStore: Send + Sync {
     /// Inserts a worktree record. Returns `false` when a worktree with the

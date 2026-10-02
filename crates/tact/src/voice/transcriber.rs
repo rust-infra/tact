@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::VoiceSettings;
 
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait Transcriber: Send + Sync {
     async fn transcribe(&self, wav: Vec<u8>, cancel: CancellationToken) -> anyhow::Result<String>;
