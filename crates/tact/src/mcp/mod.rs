@@ -659,6 +659,14 @@ pub struct McpServerInspection {
     /// Short tool names (as the server reports them, without the
     /// `mcp__<server>__` prefix). Empty unless [`McpServerStatus::Connected`].
     pub tools: Vec<String>,
+    /// Bytes of each exposed tool's declaration payload (name, description,
+    /// input schema), sorted by tool name.
+    ///
+    /// Every request carries these declarations, so this is the number behind
+    /// "21 tools": `mcp get` sums it into a per-request estimate, which is
+    /// what makes `enabled_tools` a decision instead of a guess. Empty when the
+    /// server is not connected.
+    pub tool_bytes: Vec<(String, usize)>,
     /// Names the server exposes but this entry's `enabled_tools` /
     /// `disabled_tools` keep away from the agent.
     ///
@@ -1802,6 +1810,11 @@ pub struct McpClient {
     /// read-only tool can be an egress path when it also sets
     /// `openWorldHint` — Tact has no data-flow axis to express that.
     declared_read_only: Vec<String>,
+    /// Per-tool declaration size in bytes, for `mcp get`'s cost line.
+    ///
+    /// Not a policy input: it exists so the human choosing `enabled_tools` can
+    /// see what each tool costs. Sorted by name like the rest of the view.
+    tool_bytes: Vec<(String, usize)>,
     /// The server's `InitializeResult.instructions`, normalized and capped.
     ///
     /// `None` when the server sent none (or only whitespace). Capped at
@@ -1871,6 +1884,7 @@ impl McpClient {
             hidden,
             tool_specs,
             declared_read_only,
+            tool_bytes,
         } = derive_exposed(&server_name, tools, &policy);
         // Read the server's prose before the service is moved into the client.
         // Normalizing here (not in the transport) keeps the mock and the real
@@ -1888,6 +1902,7 @@ impl McpClient {
             hidden,
             policy: Box::new(policy),
             declared_read_only,
+            tool_bytes,
             instructions,
         }
     }
@@ -1910,6 +1925,7 @@ impl McpClient {
             hidden,
             tool_specs,
             declared_read_only,
+            tool_bytes,
         } = derive_exposed(&self.server_name, tools, &self.policy);
         let after: BTreeSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
         let after_hidden: BTreeSet<String> = hidden.iter().cloned().collect();
@@ -1922,6 +1938,7 @@ impl McpClient {
         self.tool_specs = tool_specs;
         self.hidden = hidden;
         self.declared_read_only = declared_read_only;
+        self.tool_bytes = tool_bytes;
         Ok(Some(refresh))
     }
 
@@ -1932,6 +1949,13 @@ impl McpClient {
 
     pub fn list_tools(&self) -> &[McpTool] {
         &self.tools
+    }
+
+    /// Bytes of each exposed tool's declaration, sorted by tool name.
+    ///
+    /// What `mcp get` adds up to show a server's per-request context cost.
+    pub fn tool_bytes(&self) -> &[(String, usize)] {
+        &self.tool_bytes
     }
 
     /// Tool names hidden by this entry's `enabled_tools` / `disabled_tools`.
@@ -2493,6 +2517,12 @@ struct ExposedTools {
     hidden: Vec<String>,
     tool_specs: Vec<ToolSpec>,
     declared_read_only: Vec<String>,
+    /// Bytes of each exposed tool's declaration payload (name, description,
+    /// input schema), which is what costs context on every request.
+    ///
+    /// Measured here, once, from the spec that is actually sent — the whole
+    /// point is that "21 tools" tells you nothing about 8.6k tokens.
+    tool_bytes: Vec<(String, usize)>,
 }
 
 fn derive_exposed(
@@ -2526,11 +2556,24 @@ fn derive_exposed(
     declared_read_only.sort();
     declared_read_only.dedup();
     let tool_specs = build_tool_specs(server_name, &exposed);
+    let tool_bytes = exposed
+        .iter()
+        .zip(&tool_specs)
+        .map(|(tool, spec)| {
+            (
+                tool.name.to_string(),
+                serde_json::to_string(spec)
+                    .map(|json| json.len())
+                    .unwrap_or(0),
+            )
+        })
+        .collect();
     ExposedTools {
         tools: exposed,
         hidden,
         tool_specs,
         declared_read_only,
+        tool_bytes,
     }
 }
 
@@ -3008,6 +3051,7 @@ pub fn resolved_server_for(
 struct InspectionFacts {
     status: McpServerStatus,
     tools: Vec<String>,
+    tool_bytes: Vec<(String, usize)>,
     filtered: Vec<String>,
     instructions_chars: Option<usize>,
     resources: Option<usize>,
@@ -3022,6 +3066,7 @@ impl InspectionFacts {
         Self {
             status,
             tools: Vec::new(),
+            tool_bytes: Vec::new(),
             filtered: Vec::new(),
             instructions_chars: None,
             resources: None,
@@ -3036,6 +3081,7 @@ impl InspectionFacts {
             server,
             status: self.status,
             tools: self.tools,
+            tool_bytes: self.tool_bytes,
             filtered: self.filtered,
             instructions_chars: self.instructions_chars,
             resources: self.resources,
@@ -3095,6 +3141,7 @@ pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspect
             InspectionFacts {
                 status: McpServerStatus::Connected,
                 tools,
+                tool_bytes: client.tool_bytes().to_vec(),
                 filtered,
                 instructions_chars: chars,
                 resources,

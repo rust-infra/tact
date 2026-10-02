@@ -243,7 +243,15 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
             lines.push("  tools   (none — the server reports no tools)".to_string());
         }
     } else {
-        lines.push(format!("  tools   {} available:", inspection.tools.len()));
+        // Every request re-declares these tools, so the count alone is a poor
+        // description of the cost; the sum is what `enabled_tools` trades away.
+        let total: usize = inspection.tool_bytes.iter().map(|(_, bytes)| bytes).sum();
+        lines.push(format!(
+            "  tools   {} available ({}, {} per request — hide unused ones with `enabled_tools`):",
+            inspection.tools.len(),
+            format_bytes(total),
+            format_tokens(total),
+        ));
         for tool in &inspection.tools {
             // The full name is what the agent must call, so show it verbatim.
             let mut line = format!("            mcp__{full_name}__{tool}");
@@ -262,6 +270,9 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
             // choosing a `tools.<name>.risk`, never a risk Tact applied.
             if inspection.declared_read_only.iter().any(|t| t == tool) {
                 line.push_str("  (server-declared read-only)");
+            }
+            if let Some((_, bytes)) = inspection.tool_bytes.iter().find(|(name, _)| name == tool) {
+                line.push_str(&format!("  {}", format_bytes(*bytes)));
             }
             lines.push(line);
         }
@@ -305,7 +316,80 @@ pub fn render_server_detail(inspection: &mcp::McpServerInspection) -> String {
         }
         None => {}
     }
+    if let Some(draft) = suggested_risk_policy(inspection) {
+        lines.push(draft);
+    }
     lines.join("\n")
+}
+
+/// `34.6 KB` — one decimal, because the difference between 34.6 and 35 is not
+/// the point and the difference between 4 and 34 is.
+fn format_bytes(bytes: usize) -> String {
+    if bytes < 10_000 {
+        format!("{:.1} KB", bytes as f64 / 1000.0)
+    } else {
+        format!("{:.0} KB", bytes as f64 / 1000.0)
+    }
+}
+
+/// `≈8.6k tokens`, an estimate at four bytes per token.
+///
+/// Labelled as an estimate on purpose: the real count comes from the provider
+/// (`ctx` in the status bar), and this is only here to rank servers and tools
+/// against each other.
+fn format_tokens(bytes: usize) -> String {
+    let tokens = bytes as f64 / 4.0;
+    if tokens < 1000.0 {
+        format!("≈{tokens:.0} tokens")
+    } else {
+        format!("≈{:.1}k tokens", tokens / 1000.0)
+    }
+}
+
+/// A paste-ready `tools` block for the tools the server declared read-only.
+///
+/// Tact deliberately does **not** apply `readOnlyHint` (see
+/// `McpClient::declared_read_only`: a server can lie, and a read-only tool can
+/// still be an egress path), so an entry that declares nothing leaves every
+/// tool at `High` — a memory server then asks before every lookup. This drafts
+/// the boring half of that policy from the server's own claim: the human reads
+/// it, pastes it, and has decided. Everything the server did *not* claim
+/// read-only is left out, so it keeps the `High` default: the draft can only
+/// ever make things stricter than the claim, never looser.
+///
+/// `None` when there is nothing to suggest or nothing left to add.
+fn suggested_risk_policy(inspection: &mcp::McpServerInspection) -> Option<String> {
+    let already: Vec<&str> = inspection
+        .declared_risks
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let proposed: Vec<&str> = inspection
+        .declared_read_only
+        .iter()
+        .map(String::as_str)
+        .filter(|tool| !already.contains(tool))
+        .collect();
+    if proposed.is_empty() {
+        return None;
+    }
+
+    let width = proposed.iter().map(|tool| tool.len()).max().unwrap_or(0);
+    let mut out = String::from(
+        "\n  suggested risk policy — the server calls these read-only; review, then paste\n  \
+         into the entry's \"tools\" (Tact does not apply the claim itself):\n\n    \"tools\": {\n",
+    );
+    for (i, tool) in proposed.iter().enumerate() {
+        let comma = if i + 1 == proposed.len() { "" } else { "," };
+        // Pad *after* the quoted key: inside the quotes it would become part of
+        // the name the user pastes.
+        let pad = " ".repeat(width.saturating_sub(tool.len()));
+        out.push_str(&format!(
+            "      \"{tool}\":{pad} {{ \"risk\": \"read\" }}{comma}\n"
+        ));
+    }
+    out.push_str("    }");
+    Some(out)
 }
 
 /// Deletes the stored OAuth credentials for one server.
@@ -847,12 +931,112 @@ mod tests {
         assert!(text.contains("delete_note, schema_diff"), "{text}");
     }
 
+    /// "21 tools" says nothing about what a server costs; every request
+    /// re-declares them, so the view has to add it up for `enabled_tools` to be
+    /// a decision the user can make.
+    #[test]
+    fn the_detail_view_reports_what_the_tools_cost() {
+        let inspection = mcp::McpServerInspection {
+            tool_bytes: vec![
+                ("read_note".to_string(), 2_000),
+                ("write_note".to_string(), 4_500),
+            ],
+            server: configured("bm", false),
+            status: McpServerStatus::Connected,
+            tools: vec!["read_note".to_string(), "write_note".to_string()],
+            filtered: Vec::new(),
+            instructions_chars: None,
+            resources: None,
+            resource_templates: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
+        };
+
+        let text = render_server_detail(&inspection);
+
+        assert!(
+            text.contains("2 available (6.5 KB, ≈1.6k tokens per request"),
+            "{text}"
+        );
+        assert!(text.contains("enabled_tools"), "the knob is named: {text}");
+        assert!(
+            text.contains("read_note  risk high (default)  2.0 KB"),
+            "{text}"
+        );
+        assert!(
+            text.contains("write_note  risk high (default)  4.5 KB"),
+            "{text}"
+        );
+
+        // A server that reported no tools has no cost line to report.
+        let empty = mcp::McpServerInspection {
+            tools: Vec::new(),
+            tool_bytes: Vec::new(),
+            ..inspection
+        };
+        let text = render_server_detail(&empty);
+        assert!(!text.contains("per request"), "{text}");
+    }
+
+    /// The draft exists so a ten-tool server does not have to be hand-written,
+    /// but it is only ever a *suggestion*: it lists what the server claimed
+    /// read-only and nothing else, so pasting it cannot loosen anything.
+    #[test]
+    fn the_detail_view_drafts_a_risk_policy_from_the_servers_own_claim() {
+        let mut inspection = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
+            server: configured("bm", false),
+            status: McpServerStatus::Connected,
+            tools: vec![
+                "read_content".to_string(),
+                "read_note".to_string(),
+                "delete_note".to_string(),
+            ],
+            filtered: Vec::new(),
+            instructions_chars: None,
+            resources: None,
+            resource_templates: None,
+            declared_read_only: vec!["read_content".to_string(), "read_note".to_string()],
+            declared_risks: Vec::new(),
+        };
+
+        let text = render_server_detail(&inspection);
+
+        assert!(text.contains("suggested risk policy"), "{text}");
+        assert!(
+            text.contains("\"read_content\": { \"risk\": \"read\" },"),
+            "first row: {text}"
+        );
+        assert!(
+            text.contains("\"read_note\":    { \"risk\": \"read\" }"),
+            "padded outside the quoted key, and no trailing comma on the last row: {text}"
+        );
+        // The writer keeps the default: the draft never invents a tier for a
+        // tool the server did not claim.
+        assert!(!text.contains("delete_note\": "), "{text}");
+
+        // Nothing left to add once every claim is declared.
+        inspection.declared_risks = vec![
+            ("read_content".to_string(), CapabilityRisk::Read),
+            ("read_note".to_string(), CapabilityRisk::Read),
+        ];
+        let text = render_server_detail(&inspection);
+        assert!(!text.contains("suggested risk policy"), "{text}");
+
+        // And nothing to add when the server claimed nothing.
+        inspection.declared_risks = Vec::new();
+        inspection.declared_read_only = Vec::new();
+        let text = render_server_detail(&inspection);
+        assert!(!text.contains("suggested risk policy"), "{text}");
+    }
+
     #[test]
     fn the_detail_view_separates_a_declared_risk_from_the_default() {
         // "The entry said high" and "the entry said nothing" must not look
         // alike, and the server's own read-only claim is marked as a claim
         // rather than being applied.
         let inspection = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("bm", false),
             status: McpServerStatus::Connected,
             tools: vec!["search_notes".to_string(), "delete_project".to_string()],
@@ -881,6 +1065,7 @@ mod tests {
         // The heading is for the user; the tool names are what the agent calls,
         // so those must keep the full server name.
         let inspection = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("plugin__canva__canva", true),
             status: McpServerStatus::Connected,
             tools: vec!["list_designs".to_string()],
@@ -905,6 +1090,7 @@ mod tests {
         // A server that publishes templates enumerates nothing through
         // `resources/list`, so "resources 0" alone reads as "nothing here".
         let inspection = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("memory", false),
             status: McpServerStatus::Connected,
             tools: vec!["read_note".to_string()],
@@ -937,6 +1123,7 @@ mod tests {
     #[test]
     fn the_detail_view_names_hidden_tools_too() {
         let inspection = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("basic-memory", false),
             status: McpServerStatus::Connected,
             tools: vec!["read_note".to_string()],
@@ -960,6 +1147,7 @@ mod tests {
     #[test]
     fn the_detail_view_reports_server_instructions() {
         let inspection = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("basic-memory", false),
             status: McpServerStatus::Connected,
             tools: vec!["read_note".to_string()],
@@ -993,6 +1181,7 @@ mod tests {
     #[test]
     fn the_detail_view_separates_no_resources_from_no_answer() {
         let connected = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("memory", false),
             status: McpServerStatus::Connected,
             tools: vec!["read_note".to_string()],
@@ -1168,6 +1357,7 @@ mod tests {
     #[test]
     fn detail_view_shows_transport_source_status_and_qualified_tool_names() {
         let inspection = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("figma", false),
             status: McpServerStatus::Connected,
             tools: vec!["get_file".into(), "list_files".into()],
@@ -1196,6 +1386,7 @@ mod tests {
         // Both views must phrase a status identically, or a user comparing
         // them has to guess whether they describe the same state.
         let pending = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("linear", true),
             status: McpServerStatus::PendingAuthorization,
             tools: Vec::new(),
@@ -1219,6 +1410,7 @@ mod tests {
         );
 
         let failed = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("broken", false),
             status: McpServerStatus::Failed("connection refused".into()),
             tools: Vec::new(),
@@ -1240,6 +1432,7 @@ mod tests {
     #[test]
     fn detail_view_never_prints_an_empty_tool_list_as_success() {
         let connected = mcp::McpServerInspection {
+            tool_bytes: Vec::new(),
             server: configured("quiet", false),
             status: McpServerStatus::Connected,
             tools: Vec::new(),

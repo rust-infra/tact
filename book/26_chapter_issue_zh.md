@@ -37,6 +37,61 @@
 
 ---
 
+## 1. 2026-10-01 — `mcp get` 把每个 MCP 工具的上下文成本摊开
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`ExposedTools::tool_bytes`、`McpClient::tool_bytes`、`McpServerInspection::tool_bytes`）；`crates/tact-ui/src/mcp_cli.rs`（`format_bytes` / `format_tokens`、`render_server_detail`）；[Ch 08](./08_chapter_mcp_zh.md) §工具策略 |
+
+**症状 / 动机：** 每个 MCP 工具的名字、描述、input schema 都要在**每轮请求**里重发，而唯一能降低它的旋钮（`enabled_tools`）没有任何反馈：用户看到的是 `mcp list` 里的「21 tools」，看不到这等于多少上下文。以 Basic Memory 为例，21 个工具 = 34.6 KB ≈ 8.6k tokens/请求，而其中 `edit_note` 一个就 4.5 KB。
+
+**决策：** 先测量，再决定动什么。测了两个方向：
+
+1. **schema 瘦身**（折叠 `anyOf: [X, {type: null}]` → `X`、删 `title`、删 `default: null`）：21 个工具 34,631 B → 33,627 B，**只省 2%（≈251 tokens）**。字节大头是每个参数的 `description`，那是合法结构不是 pydantic 冗余——因此**不做**，收益远不抵多一层 schema 变换的维护与风险（有些 provider 对 schema 形状敏感）。
+2. **声明多少工具**：裁到 6 个（search_notes/read_note/write_note/build_context/recent_activity/list_directory）省 52%（4,098 tok），裁到 4 个省 66%（2,896 tok）。杠杆在这里，而字段早已存在。
+
+于是只做「可见性」：`derive_exposed` 在重建 spec 时顺手记下每个工具的声明字节数（`serde_json::to_string(spec).len()`，也就是真正发出去的那份），随 `McpServerInspection` 带到 CLI；`render_server_detail` 求和打印每轮估算、每个工具行尾附自己的字节数、并在首行点名 `enabled_tools`。不做自动裁剪：**裁掉工具就是丢能力**，哪几个属于工作流是用户的选择，Tact 只把价格标出来。
+
+**变更后行为：**
+
+```
+  tools   21 available (34 KB, ≈8.4k tokens per request — hide unused ones with `enabled_tools`):
+            mcp__basic-memory__search_notes  risk read (declared)  3.8 KB
+            mcp__basic-memory__edit_note     risk high (default)   4.5 KB
+```
+
+字节数是「从 Tact 发出去的 spec」量的，估算按 4 B/token（真实数字看底栏 `ctx`，来自 provider）；服务器没连上或没有工具时不打印这一行。
+
+**指针：** `crates/tact/src/mcp/mod.rs::derive_exposed`、`crates/tact-ui/src/mcp_cli.rs::render_server_detail`；测试 `the_detail_view_reports_what_the_tools_cost`。
+
+## 1. 2026-10-01 — `mcp get` 把服务器的只读声明起草成可粘贴的 `tools` 块
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact-ui/src/mcp_cli.rs`（`render_server_detail`、`suggested_risk_policy`）；[Ch 08](./08_chapter_mcp_zh.md) §工具策略 |
+
+**症状 / 动机：** Tact 刻意不采信服务器自报的 `readOnlyHint`（Ch 08 记录的理由：服务器会说谎；只读＋`openWorldHint` 是外泄通道）。代价落在默认体验上：一个什么都不声明的条目让**每个** MCP 工具都停在 `High`——以 Basic Memory（21 个工具、实测 15 个 `readOnlyHint: true`）为例，读一条自己的笔记也要批准一次，headless 下 `High` 直接被拒（`permission::ask_user`），整个 server 形同不可用。要么手写 15 条 `tools.<name>.risk`，要么把策略开成 fail-open。
+
+**决策：** 不动那条策略，改成**起草**：`mcp get <server>` 在工具列表之后，如果存在「服务器自报只读、条目尚未声明 risk」的工具，就打印一段 paste-ready 的 `"tools"` 块。只列这些工具，写死 `"risk": "read"`；服务器没声明只读的一律不出现，因此粘贴只会让策略更严、绝不会更松（fail-closed）。Tact 依然不施加声明——它只是把人的那半工作量（抄 15 个名字）变成一次复制，人 review 后粘贴即完成决策。键的对齐 padding 放在引号**之外**（放里面会把空格变成名字的一部分）。
+
+**变更后行为：** `mcp get basic-memory` 末尾多出：
+
+```
+  suggested risk policy — the server calls these read-only; review, then paste
+  into the entry's "tools" (Tact does not apply the claim itself):
+
+    "tools": {
+      "read_note":             { "risk": "read" },
+      …
+    }
+```
+
+服务器改工具集（`tools.listChanged: true`）后重跑一次即可重新起草；block 只在“有东西可加”时出现（全部声明过、或服务器什么都没声明，都不打印）。
+
+**指针：** `crates/tact-ui/src/mcp_cli.rs::suggested_risk_policy`、`the_detail_view_drafts_a_risk_policy_from_the_servers_own_claim`。
+
 ## 1. 2026-10-01 — `/theme` 从「循环下一个」改成主题选择器
 
 | 字段 | 值 |

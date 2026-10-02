@@ -129,7 +129,7 @@ Tact 仍然不读取 cwd 级的 Codex manifest——那个文件（`config.toml`
 
 | 字段 | 类型 | 行为 |
 |------|------|------|
-| `enabled_tools` | `[string]` | 允许列表。存在时，只有这些工具名会到达 agent。 |
+| `enabled_tools` | `[string]` | 允许列表。存在时，只有这些工具名会到达 agent。**这是唯一能真正降低上下文成本的旋钮**：工具声明每轮请求都要重发（Basic Memory 21 个工具实测 34.6 KB ≈ 8.6k tokens/请求），裁到 6 个省 52%、裁到 4 个省 66%。`mcp get` 会打印每个工具的字节数和整台 server 的每轮估算（见下）。 |
 | `disabled_tools` | `[string]` | 拒绝列表，在 `enabled_tools` **之后**应用，所以同时写进两个列表的工具会被隐藏。 |
 | `startup_timeout_sec` / `startup_timeout_ms` | number | 该 server 的握手预算；两者同时存在时 `sec` 优先。 |
 | `tool_timeout_sec` | number | 该 server 单次 `tools/call` 的预算；缺省时沿用 Tact 自己的上限。 |
@@ -178,6 +178,8 @@ MCP 工具过去无论条目怎么写都解析为 `CapabilityRisk::High`，结�
 需要一个工具在无人值守时可用，就选 `write`：它能换来 headless 可用性与可粘滞的允许，而不触碰计划模式。`read` 会绕过计划模式，这与原生 `read_file` 做的是同一笔权衡——只对确实不会写入的工具声明它，绝不推断。
 
 未知值会像 `approval_mode` 一样被警告并忽略，因此一个拼写错误不会让整个条目失败。两个键都是已建模字段，不会出现在 *Unmodelled entry keys* 一节。`mcp get <server>` 会在每个工具旁打印生效的 risk，并标注 `(declared)` 或 `(default)`，因此声明过 risk 的条目永远不会与沉默保留 `high` 的条目混同。
+
+**上下文成本是可见的。** `mcp get <server>` 的 `tools` 行会求和打印「N 个工具（34 KB，≈8.4k tokens per request — hide unused ones with `enabled_tools`）」，每个工具行尾附自己的声明字节数，因此「要不要裁、裁谁」是一个能算的决定而不是猜。**为什么只做可见性不做自动压缩**：实测把 schema 里 pydantic 风格的部分压掉（折叠 `anyOf: [X, null]` → `X`、删 `title`、删 `default: null`）只省 **2%**——字节的大头是每个参数的 `description` 这类合法结构，不是冗余。真正的大头是「声明了多少个工具」，所以杠杆是 `enabled_tools` 这个既有字段，Tact 只负责把代价摊在阳光下。
 
 **annotations 是证据，不是授权。** server 可以给工具打上 `readOnlyHint`；`mcp get` 会把这类工具标为 `(server-declared read-only)`，让人有依据去写 `risk` 声明。Tact **不会**据此降低 risk：rmcp 自己的文档就写明客户端「should never make tool use decisions based on ToolAnnotations received from untrusted servers」；而且一个诚实的 `readOnlyHint` 若与 `openWorldHint` 同时出现，描述的是一个读取你的文件再发往别处的工具——从权限角度看只读，从数据角度看是外泄通道。这里没有数据流这条轴，所以该声明只展示、不施加。
 
