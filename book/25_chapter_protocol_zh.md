@@ -1,12 +1,10 @@
 # Agent–TUI 协议（Agent–TUI Protocol）
 
-> 语言：[中文](./25_chapter_protocol_zh.md) · [English](./25_chapter_protocol.md)
-
 本章文档化 `tact_protocol` crate：agent 运行时与终端 UI 之间交换的消息类型，以及各 `AgentUpdate` variant 如何在两侧驱动状态转换。
 
 实现：`crates/protocol/src/agent.rs`、`crates/protocol/src/biz.rs`。TUI 消费者：`crates/tui/src/widgets/state/app/agent.rs`。Agent 发出者：`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact_llm`（流式）。
 
-相关章节：[Ch 18 Agent Loop](./18_chapter_agent_loop.md)、[Ch 23 TUI](./23_chapter_tui_zh.md)。其他状态机（输入模式、权限、任务）见 [docs/state_machines.md](../docs/state_machines.md)。
+相关章节：[Ch 18 Agent Loop](./18_chapter_agent_loop_zh.md)、[Ch 23 TUI](./23_chapter_tui_zh.md)。其他状态机（输入模式、权限、任务）见 [docs/state_machines.md](../docs/state_machines.md)。
 
 ---
 
@@ -170,7 +168,7 @@ stateDiagram-v2
 
 **`arg_summary` vs `arg_full`：** `arg_summary` 截断（≤120 字符）供 log 标题行。`arg_full` 为完整参数字符串（路径、命令或原始 JSON），popup 与 diff 视图不依赖 TUI 内工具名启发式。
 
-同一 turn 中并行工具各自运行上述序列。`StepFinished` 在各工具完成时发出 — 非整波 join 之后 — UI 显示并发进度（[Ch 11](./11_chapter_task.md)）。
+同一 turn 中并行工具各自运行上述序列。`StepFinished` 在各工具完成时发出 — 非整波 join 之后 — UI 显示并发进度（[Ch 11](./11_chapter_task_zh.md)）。
 
 ### 每工具发出顺序
 
@@ -242,7 +240,7 @@ stateDiagram-v2
 | `Done` | `Idle` | `task_done_time` 后 2 s | 主循环调用 `maybe_expire_done_status` |
 | *（不变）* | *（不变）* | `UserCommand::Cancel` | `Info("Cancelling…")` + 设 `cancel_flag`；随后 `TaskCancelled` |
 
-`TaskComplete` 由 `crates/tact-ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration)）。取消路径改为发送 `TaskCancelled`。
+`TaskComplete` 由 `crates/tact-ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)）。取消路径改为发送 `TaskCancelled`。
 
 ### 4.2 `AgentUpdate` → `Status` 映射
 
@@ -286,7 +284,7 @@ flowchart LR
 | `StepStarted` | `Executing`（更新 `current_step`） | 可有多个并发 `ActiveToolBlock`s |
 | `ToolProgress` | 无 status 变化 | 一个 active `tool_id` 的信息性 live output |
 | `StepFailed` / `Error(Other)` | `→ Idle` | Cost timer 冻结 |
-| `RequestSelect` | `InputMode::Select`（Status 保持 `Executing`） | 见 [Ch 10](./10_chapter_permission.md) |
+| `RequestSelect` | `InputMode::Select`（Status 保持 `Executing`） | 见 [Ch 10](./10_chapter_permission_zh.md) |
 | `TaskComplete` | `→ Done`（2s → `Idle`） | 由 driver 发出，非 `agent_loop` |
 | `TaskCancelled` | `→ Idle` | 取消后的 driver；解除新 prompt 阻塞 |
 | `TokenUsage` / `ModelInfo` | 无 status 变化 | 仅元数据；状态栏更新 |

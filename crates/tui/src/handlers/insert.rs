@@ -5,8 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::{
     cursor_line_col, end_of_line, execute_palette_command, exit_history, line_col_to_cursor,
     line_length, next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
-    skills::{skill_name_set, submit_user_task},
-    start_of_line,
+    skills::submit_user_task, start_of_line,
 };
 use crate::widgets::state::{App, InputMode, Status};
 
@@ -35,58 +34,57 @@ pub(crate) fn insert_transcript(input: &mut String, cursor: &mut usize, transcri
 }
 
 fn apply_selected_slash_command(app: &mut App) -> bool {
-    let cmds = app.palette_commands();
-    let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
-    let skill_names = skill_name_set(app);
-    let cmds =
-        app.slash_command
-            .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
-    let sel = app.slash_command.selected.min(cmds.len().saturating_sub(1));
-    if let Some(&(_idx, (cmd, _desc), _score)) = cmds.get(sel) {
-        let start = app.slash_command.start_pos;
-        let end = app.input_cursor;
-        let replacement = format!("/{cmd} ");
-        app.input.replace_range(start..end, &replacement);
-        app.input_cursor = start + cmd.len() + 2;
-        app.slash_command.active = false;
-        return true;
-    }
-    false
+    let candidates = app.slash_candidates();
+    let sel = app
+        .slash_command
+        .selected
+        .min(candidates.len().saturating_sub(1));
+    let Some(candidate) = candidates.get(sel) else {
+        return false;
+    };
+    let start = app.slash_command.start_pos;
+    let end = app.input_cursor;
+    let replacement = format!("/{} ", candidate.path);
+    app.input.replace_range(start..end, &replacement);
+    app.input_cursor = start + replacement.len();
+    // Stay open while there is still something to complete — that is what lets
+    // Tab walk down `/plugin marketplace list` — and close once the command is
+    // finished, so an argument is typed against a quiet box.
+    app.slash_command.selected = 0;
+    app.slash_command.active = !app.slash_candidates().is_empty();
+    true
 }
 
 /// Enter on an open slash popup runs the highlighted item.
 ///
-/// - **Tab** only fills `/{name} ` (see [`apply_selected_slash_command`]).
-/// - **Enter** executes built-ins and skills immediately.
-/// - Arg-taking built-ins (e.g. `/plugin`) still only autocomplete so the user
-///   can type the subcommand.
+/// - **Tab** only fills `/{path} ` (see [`apply_selected_slash_command`]).
+/// - **Enter** runs a finished candidate now; one that expects more input (a
+///   subcommand with children, or a value like `/mcp auth <server>`) is
+///   completed instead, so Enter never fires an incomplete command.
 fn execute_selected_slash_command(app: &mut App) -> bool {
-    let cmds = app.palette_commands();
-    let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
-    let skill_names = skill_name_set(app);
-    let matched =
-        app.slash_command
-            .matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
+    let candidates = app.slash_candidates();
     let sel = app
         .slash_command
         .selected
-        .min(matched.len().saturating_sub(1));
-    let Some(&(_idx, (cmd, _desc), _score)) = matched.get(sel) else {
+        .min(candidates.len().saturating_sub(1));
+    let Some(candidate) = candidates.get(sel) else {
         return false;
     };
-    if super::command_needs_args(cmd) {
+    if candidate.incomplete {
         return apply_selected_slash_command(app);
     }
-    // Normalize the token under the cursor so skill arg parsing sees `/{cmd}`.
+    let command = candidate.command().to_string();
+    let path = candidate.path.clone();
+    // Normalize the token under the cursor so the handler sees exactly `/{path}`.
     let start = app.slash_command.start_pos;
     let end = app.input_cursor.min(app.input.len());
     if start <= end {
-        let replacement = format!("/{cmd}");
+        let replacement = format!("/{path}");
         app.input.replace_range(start..end, &replacement);
         app.input_cursor = start + replacement.len();
     }
     app.slash_command.active = false;
-    let outcome = execute_palette_command(app, cmd);
+    let outcome = execute_palette_command(app, &command);
     if outcome.clear_input {
         app.input.clear();
         app.input_cursor = 0;
@@ -178,12 +176,16 @@ pub(crate) fn handle_insert_mode(
             app.slash_command.active = false;
         }
         KeyCode::Char(' ') if app.slash_command.active => {
-            app.slash_command.active = false;
             app.input_history.index = None;
             app.input_history.saved.clear();
             app.save_undo();
             app.input.insert(app.input_cursor, ' ');
             app.input_cursor += 1;
+            // A space ends the command unless what follows is completable:
+            // `/skill ` offers `list`/`reload`, `/code-reviewer ` offers
+            // nothing and closes the popup.
+            app.slash_command.selected = 0;
+            app.slash_command.active = !app.slash_candidates().is_empty();
         }
         KeyCode::Backspace if app.slash_command.active && key.modifiers.is_empty() => {
             app.input_history.index = None;
@@ -444,8 +446,14 @@ pub(crate) fn handle_insert_mode(
             app.input.insert(app.input_cursor, '@');
             app.input_cursor += '@'.len_utf8();
         }
-        KeyCode::Char(c) => {
-            // Typing anything exits history navigation
+        // A plain character types itself. `CONTROL` is excluded on purpose:
+        // every `Ctrl+<letter>` is either handled above or consumed globally,
+        // and an unbound one must not silently fall back to typing its letter.
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             app.input_history.index = None;
             app.input_history.saved.clear();
             app.save_undo();
@@ -600,6 +608,46 @@ mod tests {
             Vec::new(),
         );
         (app, user_cmd_rx)
+    }
+
+    #[test]
+    fn an_unbound_ctrl_key_types_nothing() {
+        // The reported bug: `Ctrl+T` toggled the theme *and* typed a `t`, because
+        // the global handler did not consume the event and this handler's
+        // catch-all matched on `KeyCode` alone. `Ctrl+G` is bound nowhere — both
+        // must type nothing.
+        for c in ['t', 'g'] {
+            let (mut app, _user_cmd_rx) = make_app();
+            let user_cmd_tx = app.user_cmd_tx.clone();
+            app.input = "abc".to_string();
+            app.input_cursor = app.input.len();
+
+            handle_insert_mode(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+                &user_cmd_tx,
+            );
+
+            assert_eq!(app.input, "abc", "Ctrl+{c} must not type its letter");
+            assert_eq!(app.input_cursor, 3);
+        }
+    }
+
+    #[test]
+    fn a_plain_letter_still_types_itself() {
+        let (mut app, _user_cmd_rx) = make_app();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.input = "ab".to_string();
+        app.input_cursor = app.input.len();
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert_eq!(app.input, "abc");
+        assert_eq!(app.input_cursor, 3);
     }
 
     #[test]
@@ -933,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_popup_tab_only_autocompletes_skill() {
+    fn slash_popup_tab_only_autocompletes_a_skill() {
         use crate::widgets::state::SkillEntry;
 
         let (mut app, mut user_cmd_rx) = make_app();
@@ -943,7 +991,7 @@ mod tests {
             description: "Demo skill".into(),
             body: "Follow the checklist.".into(),
         }];
-        app.input = "/dem".to_string();
+        app.input = "/skill dem".to_string();
         app.input_cursor = app.input.len();
         app.slash_command.active = true;
         app.slash_command.start_pos = 0;
@@ -955,7 +1003,7 @@ mod tests {
             &user_cmd_tx,
         );
 
-        assert_eq!(app.input, "/demo ");
+        assert_eq!(app.input, "/skill demo ");
         assert!(!app.slash_command.active);
         assert!(
             user_cmd_rx.try_recv().is_err(),
@@ -975,7 +1023,7 @@ mod tests {
             description: "Demo skill".into(),
             body: "Follow the checklist.".into(),
         }];
-        app.input = "/dem".to_string();
+        app.input = "/skill dem".to_string();
         app.input_cursor = app.input.len();
         app.slash_command.active = true;
         app.slash_command.start_pos = 0;
@@ -1004,6 +1052,106 @@ mod tests {
         }
     }
 
+    /// Types `input` one key at a time, exactly as the input box would.
+    fn type_keys(app: &mut App, input: &str) {
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        for c in input.chars() {
+            handle_insert_mode(
+                app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &user_cmd_tx,
+            );
+        }
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        handle_insert_mode(app, KeyEvent::new(code, KeyModifiers::NONE), &user_cmd_tx);
+    }
+
+    #[test]
+    fn typing_a_space_keeps_the_popup_while_subcommands_remain() {
+        let (mut app, _rx) = make_app();
+
+        type_keys(&mut app, "/skill ");
+
+        assert_eq!(app.input, "/skill ");
+        assert!(
+            app.slash_command.active,
+            "`/skill ` still has subcommands to complete"
+        );
+        let paths: Vec<String> = app
+            .slash_candidates()
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect();
+        assert_eq!(paths, ["skill list", "skill reload"]);
+
+        // The next space ends it: `list` is a leaf.
+        type_keys(&mut app, "list ");
+        assert!(!app.slash_command.active, "the command is finished");
+    }
+
+    #[test]
+    fn tab_walks_down_nested_subcommands() {
+        let (mut app, _rx) = make_app();
+
+        type_keys(&mut app, "/plugin ma");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input, "/plugin marketplace ");
+        assert!(app.slash_command.active, "one level deeper to go");
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input, "/plugin marketplace list ");
+        assert!(
+            !app.slash_command.active,
+            "a leaf leaves nothing to complete"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_subcommand_that_needs_a_value_only_completes() {
+        let (mut app, mut user_cmd_rx) = make_app();
+
+        type_keys(&mut app, "/mcp au");
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.input, "/mcp auth ",
+            "Enter completes `/mcp auth` so the server name can be typed"
+        );
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "completing must not run the command"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_complete_subcommand_runs_it() {
+        let (mut app, mut user_cmd_rx) = make_app();
+        app.skills_data = vec![crate::widgets::state::SkillEntry {
+            name: "code-reviewer".into(),
+            description: "代码审查专家".into(),
+            body: String::new(),
+        }];
+
+        type_keys(&mut app, "/skill li");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("code-reviewer")),
+            "expected the skill table, got: {:?}",
+            app.log.items
+        );
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "/skill list is local: it must not submit a task"
+        );
+    }
+
     #[test]
     fn slash_popup_enter_on_plugin_autocompletes_for_subcommand() {
         let (mut app, mut user_cmd_rx) = make_app();
@@ -1026,7 +1174,19 @@ mod tests {
             "Enter on /plugin should leave `/plugin ` so the user can type list/reload"
         );
         assert_eq!(app.input_cursor, "/plugin ".len());
-        assert!(!app.slash_command.active);
+        // The popup stays open, now offering the subcommands: completing a
+        // command that has them is the start of the next step, not the end.
+        assert!(app.slash_command.active);
+        let candidates: Vec<String> = app
+            .slash_candidates()
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect();
+        assert!(
+            candidates.contains(&"plugin list".to_string())
+                && candidates.contains(&"plugin marketplace".to_string()),
+            "expected the plugin subcommands, got {candidates:?}"
+        );
         assert!(
             !app.log
                 .items
@@ -1050,7 +1210,9 @@ mod tests {
             body: "Review it.".into(),
         }];
 
-        for c in "/demo:".chars() {
+        // Plugin skills keep their `plugin:name` namespace; it is just another
+        // token under `/skill`, now that skills are not first-level entries.
+        for c in "/skill demo:".chars() {
             handle_insert_mode(
                 &mut app,
                 KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
@@ -1058,22 +1220,13 @@ mod tests {
             );
         }
 
-        let commands = app.palette_commands();
-        let refs: Vec<(&str, &str)> = commands
-            .iter()
-            .map(|(command, description)| (command.as_str(), description.as_str()))
-            .collect();
-        let matches = app.slash_command.matched_commands(
-            &app.input,
-            app.input_cursor,
-            &refs,
-            &super::skill_name_set(&app),
-        );
+        let matches = app.slash_candidates();
         assert!(app.slash_command.active);
         assert!(
             matches
                 .iter()
-                .any(|(_, (name, _), _)| *name == "demo:review")
+                .any(|candidate| candidate.path == "skill demo:review"),
+            "expected the namespaced skill, got {matches:?}"
         );
     }
 

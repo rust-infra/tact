@@ -4,7 +4,7 @@
 //! execution status updates, user commands, step results, token usage, errors,
 //! and streaming output.
 //!
-//! State machine transitions: see [book/25_chapter_protocol.md](../../book/25_chapter_protocol.md).
+//! State machine transitions: see [book/25_chapter_protocol_zh.md](../../book/25_chapter_protocol_zh.md).
 
 use std::fmt;
 
@@ -483,6 +483,32 @@ pub enum UserCommand {
     /// `/mcp list`). The driver renders it from the agent's **already-connected**
     /// router, so it never reconnects and cannot disturb in-flight work.
     McpList,
+    /// List the prompts connected servers publish (triggered by
+    /// `/mcp prompts [server]`). Read-only; the driver answers it from the
+    /// agent's **already-connected** router, like [`UserCommand::McpList`].
+    McpPrompts { server: Option<String> },
+    /// Fetch one MCP prompt and run it (triggered by
+    /// `/mcp prompt <server> <name> [key=value …]`). The driver owns the fetch
+    /// because only it can see the router, and submits the rendered messages
+    /// through the ordinary task path — a prompt is a starting message, not a
+    /// new turn shape. An empty `name` is refused by the driver, which is where
+    /// "no such prompt" can also be said.
+    RunMcpPrompt {
+        server: String,
+        name: String,
+        arguments: std::collections::BTreeMap<String, String>,
+    },
+    /// List every configured command hook with its review status (triggered by
+    /// `/hooks list`). Read-only; the driver answers it because only the Tact
+    /// crate can read the hook sources and the review store.
+    HooksList,
+    /// Approve hooks that are waiting for review (triggered by
+    /// `/hooks trust --all` or `/hooks trust --source <label>`). One of the two
+    /// is required — approving a hook by accident is the failure the review
+    /// step exists to prevent.
+    HooksTrust { all: bool, source: Option<String> },
+    /// Revoke every hook approval (triggered by `/hooks forget --all`).
+    HooksForget,
     /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
     /// (see [`UiResponse`]). Routed by the driver to the shared responder.
     UiResponse(UiResponse),

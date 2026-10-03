@@ -13,7 +13,7 @@ use tact::{
     subagent::{SharedSubagentManager, SubagentManager},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
-    tool::{ToolContext, toolset},
+    tool::{ToolContext, toolset_with_memory},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::get_llm_client;
@@ -100,7 +100,7 @@ async fn run_headless_locked(
         eprintln!("[mcp] {line}");
     }
 
-    let mut tools = toolset();
+    let mut tools = toolset_with_memory(tact::config::settings().agent.memory_enabled);
     // Annotate `spawn_subagent` with the current subagent skill-card catalog
     // so the main agent can discover valid `skill:` names.
     tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
@@ -163,12 +163,15 @@ async fn run_headless_locked(
     // `tools.rtk_filter` setting is enabled.
     agent = agent.with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
 
-    // Claude plugin command hooks (SessionStart / UserPromptSubmit /
-    // PreToolUse / PostToolUse) from every installed plugin.
-    agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
-
-    // SessionStart hooks fire once per session, before the first turn.
-    agent.dispatch_session_start_hooks().await?;
+    // Command hooks from installed plugins and the two `.tact/hooks.json`
+    // files. Headless has no UI channel, so an unreviewed hook is reported on
+    // stderr instead of silently skipped.
+    let (hooked, hook_report) =
+        tact::plugin::apply_plugin_hooks_with_report(agent, tact_path.workdir())?;
+    agent = hooked;
+    for line in hook_report.notice_lines() {
+        eprintln!("[hooks] {line}");
+    }
 
     // Restore any prior messages for resumed sessions.
     agent.ensure_session().await?;

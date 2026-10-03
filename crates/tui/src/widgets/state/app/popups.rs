@@ -26,6 +26,14 @@ impl App {
     /// Without this the caller reports "Copied" off a clipboard nobody can
     /// paste from.
     fn write_system_clipboard(&mut self, text: &str) -> bool {
+        // Tests: the pasteboard is process-global and this binary runs its
+        // tests in parallel threads, where two of them touching it at once
+        // crashes the process. Take the shared guard unless the caller already
+        // holds it — the copy tests do, so that their write is not raced by
+        // another test's — because `std::sync::Mutex` is not reentrant.
+        #[cfg(test)]
+        let _clipboard =
+            (!crate::clipboard_lock::held_by_this_thread()).then(crate::clipboard_lock::take);
         if self.system_clipboard.is_none() {
             self.system_clipboard = Clipboard::new().ok();
         }
@@ -1454,13 +1462,11 @@ mod clipboard_tests {
     /// The clipboard is global and every test here writes it, so they take
     /// turns instead of racing each other (cargo runs tests in parallel
     /// threads, and the very race this module guards against makes a
-    /// concurrent reader see an empty clipboard).
-    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn take_clipboard() -> std::sync::MutexGuard<'static, ()> {
-        CLIPBOARD
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// concurrent reader see an empty clipboard). Holding it across the write
+    /// *and* the read-back is why this test module takes the guard itself: the
+    /// copy path only takes it when its caller has not.
+    fn take_clipboard() -> crate::clipboard_lock::ClipboardGuard {
+        crate::clipboard_lock::take()
     }
 
     /// This machine must have a clipboard we can write and read at all —
@@ -1522,6 +1528,11 @@ mod clipboard_tests {
     }
 
     /// True when `arboard` itself round-trips `text` on this machine.
+    ///
+    /// Gated with its only caller: on a platform whose clipboard takes the text
+    /// the Linux-only test never runs, and an unguarded helper would then be
+    /// dead code under `-D warnings`.
+    #[cfg(target_os = "linux")]
     fn native_round_trips(text: &str) -> bool {
         let Ok(mut probe) = arboard::Clipboard::new() else {
             return false;

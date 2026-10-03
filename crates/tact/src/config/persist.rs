@@ -43,6 +43,45 @@ where
     Ok(())
 }
 
+/// Insert a scalar at `key`, keeping the decoration of the line it replaces.
+///
+/// `Table::insert` swaps the whole item, which takes the *old* item's decor
+/// with it: a `model = "x"  # why` line lost its comment on every `/model`
+/// write. Replacing only the value keeps the user's comment (and its
+/// alignment) where they put it.
+fn set_scalar(table: &mut toml_edit::Table, key: &str, value: impl Into<toml_edit::Value>) {
+    let mut item = toml_edit::Item::Value(value.into());
+    if let (Some(existing), Some(new)) = (
+        table.get(key).and_then(toml_edit::Item::as_value),
+        item.as_value_mut(),
+    ) {
+        *new.decor_mut() = existing.decor().clone();
+    }
+    table.insert(key, item);
+}
+
+/// Set `ui.theme` in `path` and rewrite the file.
+///
+/// `theme` is the canonical name (`ThemeName::as_str`), which is what the
+/// resolver reads back on the next launch.
+pub(super) fn update_ui_theme_in_toml(path: &Path, theme: &str) -> anyhow::Result<()> {
+    update_toml(path, &["ui"], |t| {
+        set_scalar(t, "theme", theme);
+        Ok(())
+    })
+}
+
+/// Set `ui.language` in `path` and rewrite the file.
+///
+/// `language` is the canonical name (`Language::as_str`), the same string
+/// `TactTomlConfig.ui.language` resolves back into a locale on the next launch.
+pub(super) fn update_ui_language_in_toml(path: &Path, language: &str) -> anyhow::Result<()> {
+    update_toml(path, &["ui"], |t| {
+        set_scalar(t, "language", language);
+        Ok(())
+    })
+}
+
 /// Set `llm.providers.<provider>.model` in `path` and rewrite the file.
 pub(super) fn update_provider_model_in_toml(
     path: &Path,
@@ -50,7 +89,7 @@ pub(super) fn update_provider_model_in_toml(
     model: &str,
 ) -> anyhow::Result<()> {
     update_toml(path, &["llm", "providers", provider], |t| {
-        t.insert("model", toml_edit::value(model));
+        set_scalar(t, "model", model);
         Ok(())
     })
 }
@@ -68,8 +107,8 @@ pub(super) fn update_provider_model_and_thinking_budget_in_toml(
     let budget = i64::try_from(thinking_budget)
         .map_err(|_| anyhow::anyhow!("thinking_budget exceeds TOML integer range"))?;
     update_toml(path, &["llm", "providers", provider], |t| {
-        t.insert("model", toml_edit::value(model));
-        t.insert("thinking_budget", toml_edit::value(budget));
+        set_scalar(t, "model", model);
+        set_scalar(t, "thinking_budget", budget);
         t.remove("reasoning_effort");
         Ok(())
     })
@@ -87,8 +126,8 @@ pub(super) fn update_subagent_model_in_toml(
     let budget = i64::try_from(thinking_budget)
         .map_err(|_| anyhow::anyhow!("thinking_budget exceeds TOML integer range"))?;
     update_toml(path, &["agent", "subagent"], |t| {
-        t.insert("model", toml_edit::value(model));
-        t.insert("thinking_budget", toml_edit::value(budget));
+        set_scalar(t, "model", model);
+        set_scalar(t, "thinking_budget", budget);
         t.remove("reasoning_effort");
         Ok(())
     })
@@ -106,8 +145,8 @@ pub(super) fn update_provider_model_and_reasoning_effort_in_toml(
     effort: &str,
 ) -> anyhow::Result<()> {
     update_toml(path, &["llm", "providers", provider], |t| {
-        t.insert("model", toml_edit::value(model));
-        t.insert("reasoning_effort", toml_edit::value(effort));
+        set_scalar(t, "model", model);
+        set_scalar(t, "reasoning_effort", effort);
         t.remove("thinking_budget");
         Ok(())
     })
@@ -123,8 +162,8 @@ pub(super) fn update_subagent_model_and_reasoning_effort_in_toml(
     effort: &str,
 ) -> anyhow::Result<()> {
     update_toml(path, &["agent", "subagent"], |t| {
-        t.insert("model", toml_edit::value(model));
-        t.insert("reasoning_effort", toml_edit::value(effort));
+        set_scalar(t, "model", model);
+        set_scalar(t, "reasoning_effort", effort);
         t.remove("thinking_budget");
         Ok(())
     })
@@ -135,6 +174,98 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn updates_ui_theme_keeping_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"[ui]
+theme = "ink"   # keep my comment
+
+[llm]
+provider = "kimi"
+"#,
+        )
+        .unwrap();
+
+        update_ui_theme_in_toml(&path, "nord").unwrap();
+
+        let updated = std::fs::read_to_string(&path).unwrap();
+        let cfg: toml::Value = updated.parse().unwrap();
+        assert_eq!(cfg["ui"]["theme"].as_str(), Some("nord"));
+        assert_eq!(cfg["llm"]["provider"].as_str(), Some("kimi"));
+        // `toml_edit` keeps the comment: the user's file is edited, not
+        // regenerated.
+        assert!(updated.contains("# keep my comment"), "{updated}");
+    }
+
+    #[test]
+    fn ui_theme_is_created_when_the_table_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[llm]\nprovider = \"kimi\"\n").unwrap();
+
+        update_ui_theme_in_toml(&path, "kawaii").unwrap();
+
+        let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(cfg["ui"]["theme"].as_str(), Some("kawaii"));
+    }
+
+    /// The theme's own line must survive a language write: both live in `[ui]`,
+    /// so a rewrite that rebuilt the table would drop the other preference.
+    #[test]
+    fn updates_ui_language_keeping_the_theme_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[ui]\ntheme = \"nord\"  # chosen by /theme\n").unwrap();
+
+        update_ui_language_in_toml(&path, "zh").unwrap();
+
+        let updated = std::fs::read_to_string(&path).unwrap();
+        let cfg: toml::Value = updated.parse().unwrap();
+        assert_eq!(cfg["ui"]["language"].as_str(), Some("zh"));
+        assert_eq!(cfg["ui"]["theme"].as_str(), Some("nord"));
+        assert!(updated.contains("# chosen by /theme"), "{updated}");
+    }
+
+    #[test]
+    fn ui_language_is_created_when_the_table_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[llm]\nprovider = \"kimi\"\n").unwrap();
+
+        update_ui_language_in_toml(&path, "zh").unwrap();
+
+        let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(cfg["ui"]["language"].as_str(), Some("zh"));
+        assert_eq!(cfg["llm"]["provider"].as_str(), Some("kimi"));
+    }
+
+    /// The `/model` write used to swap the whole item, taking the line's
+    /// trailing comment with it — the user's note about *why* they pinned that
+    /// model disappeared on the first `/model`.
+    #[test]
+    fn replacing_a_model_keeps_its_trailing_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[llm]\nprovider = \"kimi\"\n\n[llm.providers.kimi]\nmodel = \"old\"  # pinned for the ctx window\n",
+        )
+        .unwrap();
+
+        update_provider_model_in_toml(&path, "kimi", "new").unwrap();
+
+        let updated = std::fs::read_to_string(&path).unwrap();
+        assert!(updated.contains("# pinned for the ctx window"), "{updated}");
+        let cfg: toml::Value = updated.parse().unwrap();
+        assert_eq!(
+            cfg["llm"]["providers"]["kimi"]["model"].as_str(),
+            Some("new")
+        );
+    }
 
     #[test]
     fn updates_model_under_active_provider_section() {

@@ -1,10 +1,8 @@
 # 工具系统（Tool System）
 
-> 语言：[中文](./07_chapter_tool_zh.md) · [English](./07_chapter_tool.md)
-
 本章说明 Tact 如何定义、注册并执行**原生工具**：`Tool` trait、共享 `ToolContext`、`ToolRouter` 分发、主 agent 与子 agent 工具集、工作区路径安全，以及 `#[tool]` 过程宏。
 
-MCP 工具走 `MCPToolRouter` 的并行路径——见 [MCP 协议与 Agent 集成](./08_chapter_mcp_zh.md)。三阶段执行流水线（预检、并行波次、结果组装）见 [任务与工具调度](./11_chapter_task.md)（英文）。
+MCP 工具走 `MCPToolRouter` 的并行路径——见 [MCP 协议与 Agent 集成](./08_chapter_mcp_zh.md)。三阶段执行流水线（预检、并行波次、结果组装）见 [任务与工具调度](./11_chapter_task_zh.md)（英文）。
 
 ---
 
@@ -139,7 +137,7 @@ Spec 通过 `OnceLock` 只算一次——正常用法下首次 `tool_specs()` �
 | `edit_file` | 精确字符串替换（首次或全部） |
 | `sleep` | 定时 / 轮询 |
 
-子 agent **不**获得团队、任务管理、仅 MCP 名称、worktree 工具或其他特权工具——包括 `spawn_subagent` 本身（无嵌套子 agent）。默认五件套由 `subagent_toolset_has_five_tools` 强制。完整 spawn 生命周期：[Subagents](./12_chapter_subagent.md)（英文）。
+子 agent **不**获得团队、任务管理、仅 MCP 名称、worktree 工具或其他特权工具——包括 `spawn_subagent` 本身（无嵌套子 agent）。默认五件套由 `subagent_toolset_has_five_tools` 强制。完整 spawn 生命周期：[Subagents](./12_chapter_subagent_zh.md)（英文）。
 
 ---
 
@@ -253,7 +251,7 @@ pipeline 来绕过应用缓冲。
 进程非 0 退出也会使工具失败（`StepStatus::Failed`），并附带已捕获的 stdout/stderr
 作为 partial output，供模型继续阅读命令输出。
 
-权限与 hooks 在 Phase 1 运行，**早于** `ToolRouter::call`——见 [权限模型](./10_chapter_permission.md)（英文）与 [Agent 生命周期钩子](./09_chapter_hook_zh.md)。
+权限与 hooks 在 Phase 1 运行，**早于** `ToolRouter::call`——见 [权限模型](./10_chapter_permission_zh.md)（英文）与 [Agent 生命周期钩子](./09_chapter_hook_zh.md)。
 
 ---
 
@@ -263,8 +261,8 @@ pipeline 来绕过应用缓冲。
 |------|--------|------|
 | `read_file.rs`, `write_file.rs`, `edit_file.rs` | 文件 I/O | 路径安全；`read_file` 流式 PARTIAL 分页 |
 | `bash.rs` | `bash` | 校验 shell；流式 pipe、超时、process-group 取消 |
-| `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory.md)（英文） |
-| `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill.md)（英文） |
+| `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory_zh.md)（英文） |
+| `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill_zh.md)（英文） |
 | `task.rs`, `subagent.rs` | `spawn_subagent` | 用 `subagent_toolset()` spawn 子 agent |
 | `compact/mod.rs` | `compact` | 上下文压缩触发 |
 
@@ -301,10 +299,10 @@ pipeline 来绕过应用缓冲。
 
 ## Related Docs
 
-- [任务与工具调度](./11_chapter_task.md) — 并行执行与调度（英文）
-- [权限模型](./10_chapter_permission.md) — `call` 之前的预检门（英文）
+- [任务与工具调度](./11_chapter_task_zh.md) — 并行执行与调度（英文）
+- [权限模型](./10_chapter_permission_zh.md) — `call` 之前的预检门（英文）
 - [Agent 生命周期钩子](./09_chapter_hook_zh.md) — PreToolUse / PostToolUse
 - [MCP 协议与 Agent 集成](./08_chapter_mcp_zh.md) — 外部工具
-- [团队协调](./14_chapter_team.md)、[Worktree 泳道](./15_chapter_worktree.md)、[后台任务](./13_chapter_background.md) — `ToolContext` 上由 manager 支撑的工具族（英文）
+- [团队协调](./14_chapter_team_zh.md)、[Worktree 泳道](./15_chapter_worktree_zh.md)、[后台任务](./13_chapter_background_zh.md) — `ToolContext` 上由 manager 支撑的工具族（英文）
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — TUI 工具块
 - [ARCHITECTURE.md](../ARCHITECTURE.md#13-tool-proc-macro) — 宏概览

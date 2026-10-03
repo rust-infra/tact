@@ -33,6 +33,7 @@ pub enum VoiceEvent {
     Cancelled,
 }
 
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait Recorder: Send + Sync {
     async fn record(

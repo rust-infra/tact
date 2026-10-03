@@ -172,7 +172,7 @@
 - `book/08_chapter_mcp*.md`：插件 MCP 扫描、`.mcp.json`、http 限制。
 - `book/09_chapter_hook*.md`：命令型插件 hook、新事件点、Claude 协议、失败语义。
 - `book/12_chapter_subagent*.md`：声明式 agents（.tact/agents + 插件）、`spawn_subagent.agent`。
-- `book/21_chapter_config.md` / `book/23_chapter_tui*.md`：plugin list 功能摘要。
+- `book/21_chapter_config_zh.md` / `book/23_chapter_tui*.md`：plugin list 功能摘要。
 - `book/26_chapter_issue*.md`：追加 2026-08-29 条目（双语同结构）。
 
 ## Phase 8 — 验证

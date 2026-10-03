@@ -2,7 +2,7 @@
 //! consistent with the theme switching mechanism.
 
 /// Language enum.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Language {
     English,
     Chinese,
@@ -26,6 +26,30 @@ impl Language {
         match self {
             Language::English => "EN",
             Language::Chinese => "中文",
+        }
+    }
+
+    /// The canonical name, for `[ui] language` and messages that name it.
+    ///
+    /// Deliberately not [`Self::label`]: that one is drawn for the user (and is
+    /// `中文` for the language someone already reading Chinese picked), so it
+    /// cannot double as the value written to a config file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Language::English => "en",
+            Language::Chinese => "zh",
+        }
+    }
+
+    /// Parses a configured name.
+    ///
+    /// `None` for anything unrecognized, so the caller owns the fallback and a
+    /// typo cannot present itself as "the config said English".
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "en" | "english" => Some(Language::English),
+            "zh" | "cn" | "chinese" => Some(Language::Chinese),
+            _ => None,
         }
     }
 }
@@ -219,8 +243,8 @@ pub struct Messages {
     pub model_switch_failed_tmpl: &'static str,
     pub model_no_config_file: &'static str,
     pub model_persist_prompt: &'static str,
-    pub model_persist_yes: &'static str,
-    pub model_persist_no: &'static str,
+    pub persist_yes: &'static str,
+    pub persist_no: &'static str,
     pub model_persisted_tmpl: &'static str,
     pub model_persist_failed_tmpl: &'static str,
     pub model_session_only: &'static str,
@@ -253,7 +277,9 @@ pub struct Messages {
     pub cmd_model: &'static str,
     pub cmd_model_subagent: &'static str,
     pub cmd_permission: &'static str,
+    pub cmd_view_system_prompt: &'static str,
     pub cmd_save: &'static str,
+    pub cmd_compact: &'static str,
     pub cmd_cancel: &'static str,
     pub cmd_subagent_cancel: &'static str,
     pub cmd_quit: &'static str,
@@ -261,10 +287,12 @@ pub struct Messages {
     pub cmd_history: &'static str,
     pub cmd_balance: &'static str,
     pub cmd_lang: &'static str,
-    pub cmd_skills: &'static str,
-    pub cmd_skill_reload: &'static str,
+    pub cmd_skill: &'static str,
     pub cmd_plugin: &'static str,
+    pub cmd_mcp: &'static str,
+    pub cmd_hooks: &'static str,
     pub cmd_tasks_dag: &'static str,
+    pub cmd_stats: &'static str,
     pub cmd_background: &'static str,
 
     // ---- /model-subagent ----
@@ -285,7 +313,10 @@ pub struct Messages {
     pub plugin_request_queued: &'static str,
     pub plugin_worker_unavailable: &'static str,
     pub plugin_usage: &'static str,
+    pub skill_usage: &'static str,
     pub mcp_usage: &'static str,
+    pub mcp_prompt_argument_syntax: &'static str,
+    pub hooks_usage: &'static str,
     pub mcp_auth_started_tmpl: &'static str,
     pub plugin_completed_tmpl: &'static str,
     pub plugin_reload_failed_tmpl: &'static str,
@@ -338,8 +369,19 @@ pub struct Messages {
     pub thinking_line_prefix: &'static str,
     pub user_msg_prefix: &'static str,
     pub user_msg_cont: &'static str,
+    pub theme_select_prompt: &'static str,
+    pub theme_persist_prompt: &'static str,
+    pub theme_persisted_tmpl: &'static str,
+    pub theme_persist_failed_tmpl: &'static str,
+    pub theme_session_only_tmpl: &'static str,
     pub theme_changed_tmpl: &'static str,
     pub lang_changed_tmpl: &'static str,
+    /// `/lang` second step — offer to write `[ui] language`, the same question
+    /// `/theme` asks, so a chosen locale can outlive the session.
+    pub lang_persist_prompt: &'static str,
+    pub lang_persisted_tmpl: &'static str,
+    pub lang_persist_failed_tmpl: &'static str,
+    pub lang_session_only_tmpl: &'static str,
 
     // ---- 输入限制 ----
     pub input_too_long_tmpl: &'static str,
@@ -525,8 +567,8 @@ impl Messages {
             model_switch_failed_tmpl: "✗ Failed to switch model: {}",
             model_no_config_file: "No config file to update (session-only)",
             model_persist_prompt: "Save to config?",
-            model_persist_yes: "Yes",
-            model_persist_no: "No",
+            persist_yes: "Yes",
+            persist_no: "No",
             model_persisted_tmpl: "✓ Saved model = \"{}\" to config",
             model_persist_failed_tmpl: "✗ Failed to save model: {}",
             model_session_only: "Session-only; restart restores config model",
@@ -564,11 +606,13 @@ impl Messages {
             model_subagent_session_only_with_budget_tmpl: "Subagent model {} and thinking budget {} apply only to this session",
             model_subagent_not_configured: "Subagent provider not configured. Add [agent.subagent] to your config.",
 
-            cmd_theme: "Toggle color theme",
+            cmd_theme: "Choose a color theme (Ctrl+T cycles)",
             cmd_model: "Switch model for current provider",
             cmd_model_subagent: "Switch subagent model",
             cmd_permission: "Set permission mode (Default/Plan/Auto)",
+            cmd_view_system_prompt: "View system prompt",
             cmd_save: "Save log to file",
+            cmd_compact: "Compact conversation history",
             cmd_cancel: "Cancel current task",
             cmd_subagent_cancel: "Cancel a running subagent (usage: /subagent_cancel <child-id>)",
             cmd_quit: "Quit application",
@@ -576,10 +620,12 @@ impl Messages {
             cmd_history: "Show task history",
             cmd_balance: "Query account balance (DeepSeek/Kimi)",
             cmd_lang: "Toggle language (EN/中文)",
-            cmd_skills: "List available skills",
-            cmd_skill_reload: "Reload skills from disk",
+            cmd_skill: "List, reload or run a skill (usage: /skill list | /skill reload | /skill <name>)",
             cmd_plugin: "Manage plugins and marketplaces",
+            cmd_mcp: "Manage MCP servers (usage: /mcp auth <server> | /mcp list)",
+            cmd_hooks: "Review command hooks (usage: /hooks list | /hooks trust --all | /hooks forget --all)",
             cmd_tasks_dag: "Show task dependency DAG",
+            cmd_stats: "Show session statistics",
             cmd_background: "Check background task status",
             permission_select_prompt: "Permission mode",
             permission_option_default: "Default — ask for writes",
@@ -589,8 +635,11 @@ impl Messages {
             plugin_request_queued: "▶ Plugin request queued…",
             plugin_worker_unavailable: "⚠ Plugin worker is unavailable",
             plugin_usage: "Usage: /plugin list | /plugin reload | /plugin uninstall <name> | /plugin update <name> | /plugin marketplace list",
-            mcp_usage: "Usage: /mcp auth <server> (or /mcp login <server>) — authorize a remote (OAuth) MCP server. /mcp list — show configured servers and their live status (idle only). Manage servers from the CLI: `tact-ui mcp list|get|add|remove|login|logout`.",
+            skill_usage: "Usage: /skill list — list available skills. /skill reload — rescan the skill roots without restarting. /skill <name> [args] — run a skill. (Skills are no longer first-level commands; `/<name>` still works.)",
+            mcp_usage: "Usage: /mcp auth <server> (or /mcp login <server>) — authorize a remote (OAuth) MCP server. /mcp list — show configured servers and their live status (idle only). /mcp prompts [server] — list the prompts the servers publish. /mcp prompt <server> <name> [key=value ...] — run one. Manage servers from the CLI: `tact-ui mcp list|get|add|remove|login|logout`.",
+            mcp_prompt_argument_syntax: "arguments after <server> <name> must be key=value, e.g. /mcp prompt basic-memory search_knowledge_base query=notes — got `{}`",
             mcp_auth_started_tmpl: "🔐 Starting MCP authorization for {} (watch for the URL below)...",
+            hooks_usage: "Usage: /hooks list — show every configured hook and whether it has been reviewed (idle only). /hooks trust --all | /hooks trust --source <label> — approve the exact definitions that will run, from the next session onward. /hooks forget --all — revoke every approval. The same review is available as `tact-ui hooks list|trust|forget`.",
             plugin_completed_tmpl: "plugin completed: {}",
             plugin_reload_failed_tmpl: "plugin skill refresh failed: {}",
             plugin_worker_failed_tmpl: "plugin error: {}",
@@ -639,8 +688,17 @@ impl Messages {
             thinking_line_prefix: "│ {}",
             user_msg_prefix: "💬 {}",
             user_msg_cont: "  {}",
+            theme_select_prompt: "Select theme",
+            theme_persist_prompt: "Save theme to config?",
+            theme_persisted_tmpl: "✓ Saved theme = \"{}\" to config",
+            theme_persist_failed_tmpl: "✗ Failed to save theme: {}",
+            theme_session_only_tmpl: "🎨 Theme: {} (this session only)",
             theme_changed_tmpl: "🎨 Theme: {}",
             lang_changed_tmpl: "🌐 Language: {}",
+            lang_persist_prompt: "Save language to config?",
+            lang_persisted_tmpl: "✓ Saved language = \"{}\" to config",
+            lang_persist_failed_tmpl: "✗ Failed to save language: {}",
+            lang_session_only_tmpl: "🌐 Language: {} (this session only)",
 
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
             skill_task_too_long_tmpl: "⚠ Skill payload too long (max {} characters). Shorten the skill body or args.",
@@ -813,8 +871,8 @@ impl Messages {
             model_switch_failed_tmpl: "✗ 切换模型失败: {}",
             model_no_config_file: "没有可更新的配置文件（仅本次会话生效）",
             model_persist_prompt: "保存到配置文件？",
-            model_persist_yes: "是",
-            model_persist_no: "否",
+            persist_yes: "是",
+            persist_no: "否",
             model_persisted_tmpl: "✓ 已将 model = \"{}\" 写入配置",
             model_persist_failed_tmpl: "✗ 保存模型失败: {}",
             model_session_only: "仅本次会话生效；重启后恢复配置中的 model",
@@ -852,11 +910,13 @@ impl Messages {
             model_subagent_session_only_with_budget_tmpl: "Subagent 模型 {} 和思考预算 {} 仅在当前会话生效",
             model_subagent_not_configured: "未配置 Subagent 提供者。在配置文件中添加 [agent.subagent]。",
 
-            cmd_theme: "切换颜色主题",
+            cmd_theme: "选择颜色主题（Ctrl+T 循环）",
             cmd_model: "切换当前 provider 的模型",
             cmd_model_subagent: "切换 Subagent 模型",
             cmd_permission: "设置权限模式 (默认/只读/自动)",
+            cmd_view_system_prompt: "查看系统提示",
             cmd_save: "保存日志到文件",
+            cmd_compact: "压缩对话历史",
             cmd_cancel: "取消当前任务",
             cmd_subagent_cancel: "取消运行中的子代理（用法：/subagent_cancel <child-id>）",
             cmd_quit: "退出应用",
@@ -864,10 +924,12 @@ impl Messages {
             cmd_history: "显示任务历史",
             cmd_balance: "查询账户余额 (DeepSeek/Kimi)",
             cmd_lang: "切换语言 (EN/中文)",
-            cmd_skills: "列出可用的技能",
-            cmd_skill_reload: "从磁盘重新加载技能",
+            cmd_skill: "列出、重新加载或运行技能（用法：/skill list | /skill reload | /skill <名称>）",
             cmd_plugin: "管理插件和市场",
+            cmd_mcp: "管理 MCP server（用法：/mcp auth <server> | /mcp list）",
+            cmd_hooks: "审阅 command hook（用法：/hooks list | /hooks trust --all | /hooks forget --all）",
             cmd_tasks_dag: "显示任务依赖 DAG",
+            cmd_stats: "显示会话统计",
             cmd_background: "查看后台任务状态",
             permission_select_prompt: "权限模式",
             permission_option_default: "默认 — 写入需确认",
@@ -877,8 +939,11 @@ impl Messages {
             plugin_request_queued: "▶ 插件请求已加入队列…",
             plugin_worker_unavailable: "⚠ 插件工作线程不可用",
             plugin_usage: "用法：/plugin list | /plugin reload | /plugin uninstall <名称> | /plugin update <名称> | /plugin marketplace list",
-            mcp_usage: "用法：/mcp auth <服务器名>（或 /mcp login <服务器名>）—— 为远程（OAuth）MCP 服务器授权。/mcp list —— 列出已配置服务器及其当前状态（仅空闲时）。用 CLI 管理服务器：`tact-ui mcp list|get|add|remove|login|logout`。",
+            skill_usage: "用法：/skill list —— 列出可用技能。/skill reload —— 重新扫描技能根目录，无需重启。/skill <名称> [参数] —— 运行技能。（技能不再是一级命令，`/<名称>` 仍可用。）",
+            mcp_usage: "用法：/mcp auth <服务器名>（或 /mcp login <服务器名>）—— 为远程（OAuth）MCP 服务器授权。/mcp list —— 列出已配置服务器及其当前状态（仅空闲时）。/mcp prompts [服务器名] —— 列出服务器发布的 prompt。/mcp prompt <服务器名> <名称> [key=value ...] —— 运行其中一个。用 CLI 管理服务器：`tact-ui mcp list|get|add|remove|login|logout`。",
+            mcp_prompt_argument_syntax: "<服务器名> <名称> 之后的参数必须是 key=value，例如 /mcp prompt basic-memory search_knowledge_base query=notes —— 收到 `{}`",
             mcp_auth_started_tmpl: "🔐 正在为 {} 启动 MCP 授权（请留意下方链接）...",
+            hooks_usage: "用法：/hooks list —— 列出所有已配置的 hook 及是否已审核（仅空闲时）。/hooks trust --all | /hooks trust --source <标签> —— 批准即将运行的确切定义，从下一个会话起生效。/hooks forget --all —— 撤销全部批准。同样的审核也可用 `tact-ui hooks list|trust|forget`。",
             plugin_completed_tmpl: "插件操作完成：{}",
             plugin_reload_failed_tmpl: "插件技能刷新失败：{}",
             plugin_worker_failed_tmpl: "插件错误：{}",
@@ -927,8 +992,17 @@ impl Messages {
             thinking_line_prefix: "│ {}",
             user_msg_prefix: "💬 {}",
             user_msg_cont: "  {}",
+            theme_select_prompt: "选择主题",
+            theme_persist_prompt: "将主题保存到配置文件？",
+            theme_persisted_tmpl: "✓ 已将 theme = \"{}\" 写入配置",
+            theme_persist_failed_tmpl: "✗ 保存主题失败: {}",
+            theme_session_only_tmpl: "🎨 主题: {}（仅本次会话）",
             theme_changed_tmpl: "🎨 主题: {}",
             lang_changed_tmpl: "🌐 语言: {}",
+            lang_persist_prompt: "将语言保存到配置文件？",
+            lang_persisted_tmpl: "✓ 已将 language = \"{}\" 写入配置",
+            lang_persist_failed_tmpl: "✗ 保存语言失败: {}",
+            lang_session_only_tmpl: "🌐 语言: {}（仅本次会话）",
 
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
             skill_task_too_long_tmpl: "⚠ 技能内容过长（最多 {} 个字符），请缩短技能正文或参数。",

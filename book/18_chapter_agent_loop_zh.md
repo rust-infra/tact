@@ -1,10 +1,8 @@
 # Agent 主循环
 
-> 语言：[中文](./18_chapter_agent_loop_zh.md) · [English](./18_chapter_agent_loop.md)
-
 本章是第 1–11 章的 **收官篇**：描述 `Agent::agent_loop`——将 session 存储、prompt 组装、压缩、LLM 调用、恢复和工具 dispatch 绑成一轮循环的流式对话循环。
 
-实现：`crates/tact/src/agent/mod.rs`（`Agent`、`AgentRuntime`、`agent_loop`、`stream_message`、`build_system_prompt`）。工具执行细节见 [第 11 章 工具调度](./11_chapter_task.md)。
+实现：`crates/tact/src/agent/mod.rs`（`Agent`、`AgentRuntime`、`agent_loop`、`stream_message`、`build_system_prompt`）。工具执行细节见 [第 11 章 工具调度](./11_chapter_task_zh.md)。
 
 ---
 
@@ -13,11 +11,11 @@
 | 关注点 | 循环中的位置 | 专章 |
 |--------|--------------|------|
 | Session 恢复 / 持久化 | `ensure_session`、`push_message`、`persist_message` | [第 1 章 Store](./01_chapter_store_zh.md) |
-| 系统 prompt | 每个 task 一次，在 turn 循环前 `build_system_prompt()` | [第 4 章 Prompt](./04_chapter_prompt.md) |
+| 系统 prompt | 每个 task 一次，在 turn 循环前 `build_system_prompt()` | [第 4 章 Prompt](./04_chapter_prompt_zh.md) |
 | 上下文大小 | `micro_compact`、可选 `compact_history` | [第 5 章 Compact](./05_chapter_compact_zh.md) |
 | LLM 流式 | `stream_message` | 本章 |
 | 失败恢复 | compact / backoff / continue 分支 | [第 6 章 Recovery](./06_chapter_recovery_zh.md) |
-| 工具执行 | `execute_tool_call` | [第 9–11 章 Hooks / Permission / Scheduling](./09_chapter_hook.md) |
+| 工具执行 | `execute_tool_call` | [第 9–11 章 Hooks / Permission / Scheduling](./09_chapter_hook_zh.md) |
 | UI 事件 | `emit_update(AgentUpdate::…)` | 本章 |
 
 循环 **本身不** 发出 `TaskComplete`——`tact-ui` 在 `agent_loop` 成功返回后发送（见 [§7 TUI 集成](#7-tui-集成)）。
@@ -34,10 +32,11 @@ pub async fn agent_loop(&mut self, initial_user_message: Option<Message>) -> Res
 
 1. **`RecoveryState` 重置** — 计数器为本 task 调用重新开始。
 2. **`ensure_session()`** — 当 `session_store` 已接线时创建或恢复 SQLite 历史（[第 1 章](./01_chapter_store_zh.md)）。
-3. **`client.set_user_id(session_id)`** — provider 特定的 cache 隔离（DeepSeek KV）。
-4. **初始用户消息** — 提供时 push 并通过 `push_message` 持久化。
+3. **`SessionStart` hooks** — 在第一轮派发（而非启动时），且只跑一次（[第 9 章](./09_chapter_hook_zh.md)）；它们收集的 context 在本轮预压缩之后、第 5 步的消息之前注入。
+4. **`client.set_user_id(session_id)`** — provider 特定的 cache 隔离（DeepSeek KV）。
+5. **初始用户消息** — 提供时 push 并通过 `push_message` 持久化。
 
-子 agent 调用 `agent_loop(None)`，上下文已预填；见 [第 12 章 Subagents](./12_chapter_subagent.md)。
+子 agent 调用 `agent_loop(None)`，上下文已预填；见 [第 12 章 Subagents](./12_chapter_subagent_zh.md)。
 
 ---
 
@@ -70,7 +69,7 @@ flowchart TD
 
 - **`micro_compact`** — 在内存中 stub 旧 tool 结果（[第 5 章](./05_chapter_compact_zh.md)）。
 - **自动 compact** — 当 `should_auto_compact` 触发（`last_token_total >= model_context_window`，或冷启动时用 `estimate_context_size` 对比同一窗口）时，运行 `compact_history` 并通过 `AgentUpdate::Info` 发出 `[auto compact]`（[第 5 章](./05_chapter_compact_zh.md)）。
-- **`build_system_prompt`** — 子 agent 用动态 Tera 渲染或静态字符串；每个 task 在 turn 循环前运行一次，渲染字符串在每轮复用（[第 4 章](./04_chapter_prompt.md)）。
+- **`build_system_prompt`** — 子 agent 用动态 Tera 渲染或静态字符串；每个 task 在 turn 循环前运行一次，渲染字符串在每轮复用（[第 4 章](./04_chapter_prompt_zh.md)）。
 - **请求组装** — `CreateMessageParams` 含 `all_tool_specs()`（原生 + MCP）、流式，以及 config 中的 thinking budget。
 
 ### 流式
@@ -209,7 +208,6 @@ UserCommand::Cancel => {
 
 | 缺口 | 详情 |
 |------|------|
-| **`SessionStart` 未调用** | 可通过 `session_start()` 注册 hook，但 `agent_loop` 从不运行它们（[第 9 章](./09_chapter_hook.md)） |
 | **`TaskComplete` 启发式** | TUI 在未取消时用 context 中最后一条消息；非显式最后 assistant 文本 |
 | **Headless 路径** | 无 `ui_tx`；无 `TaskComplete` emit — stdout 后单次直接 `notify_task_complete`（[第 17 章](./17_chapter_notify_zh.md)） |
 | **Agent 上无专用 cancel API** | 只有 atomic flag；子 agent 有独立 flag |
@@ -222,9 +220,9 @@ UserCommand::Cancel => {
 - [Store 与持久化](./01_chapter_store_zh.md) — 循环开始时的 session
 - [上下文压缩](./05_chapter_compact_zh.md) — LLM 前 compact
 - [错误恢复](./06_chapter_recovery_zh.md) — 流失败处理
-- [任务与工具调度](./11_chapter_task.md) — 循环的工具分支
-- [Subagents](./12_chapter_subagent.md) — 嵌套 `agent_loop`
+- [任务与工具调度](./11_chapter_task_zh.md) — 循环的工具分支
+- [Subagents](./12_chapter_subagent_zh.md) — 嵌套 `agent_loop`
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §2 Agent Task Execution Flow
-- [Configuration](./21_chapter_config.md) — `max_tokens`、`model_context_window`、`thinking_budget`
-- [LLM Providers](./22_chapter_llm.md) — `stream_message` 适配器
-- [Terminal UI](./23_chapter_tui.md) — `TaskComplete` 与通道接线
+- [Configuration](./21_chapter_config_zh.md) — `max_tokens`、`model_context_window`、`thinking_budget`
+- [LLM Providers](./22_chapter_llm_zh.md) — `stream_message` 适配器
+- [Terminal UI](./23_chapter_tui_zh.md) — `TaskComplete` 与通道接线

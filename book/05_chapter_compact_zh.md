@@ -1,10 +1,8 @@
 # 上下文压缩（Context Compaction）
 
-> 语言：[中文](./05_chapter_compact_zh.md) · [English](./05_chapter_compact.md)
-
 本章说明 Tact 如何把长时间对话**压进模型上下文窗口**：每轮廉价的原地截断（`micro_compact`）、触及上限时的 LLM 摘要（`compact_history`，非 Responses provider）、OpenAI Responses 的原生 `/responses/compact`，以及 transcript / 超大工具输出的落盘溢出。原语在 `crates/tact/src/compact/mod.rs`；编排在 `crates/tact/src/agent/mod.rs` 的 `Agent::compact_history`。
 
-压缩也是一种**恢复策略**：当 provider 因 prompt 过长拒绝对话时，agent 会先压缩再重试。见 [错误恢复](./06_chapter_recovery.md)（英文）。
+压缩也是一种**恢复策略**：当 provider 因 prompt 过长拒绝对话时，agent 会先压缩再重试。见 [错误恢复](./06_chapter_recovery_zh.md)（英文）。
 
 ---
 
@@ -118,7 +116,7 @@ flowchart TD
 1. **入口路径** — 在 push 用户 turn 之前，`should_auto_compact` 会预留 `estimate(user_turn)`，避免刚 append 就立刻撑爆窗口。
 2. **每次循环迭代** — 在模型请求前（含工具后的续写 / recovery）先跑 `micro_compact`，再跑 `should_auto_compact(incoming = 0)`。
 3. **工具执行之后** — 只有**成功**的 `compact` 工具才会设置 `manual_compact`；该路径调用 `compact_history(focus)` 后回到循环顶部。失败 / 被拒绝的 compact 调用不会改写历史。
-4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_RECOVERY_ATTEMPTS`（3）。细节见 [错误恢复](./06_chapter_recovery.md)。
+4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_RECOVERY_ATTEMPTS`（3）。细节见 [错误恢复](./06_chapter_recovery_zh.md)。
 5. **手动 `compact` 工具** 不能在工具处理函数*内部*改写 context（API 有效性）。Dispatch 仅在成功时记录 flag；`compact_history` 在 tool results **追加之后**再跑。
 
 ---
@@ -207,7 +205,7 @@ OR 两侧都与同一 **token** 窗口比较，且两侧都预留了输出预算
 
 摘要后重建（Codex 风格）：**`[近期真实 User…] + [<context-handoff> summary cell]`**，不再是单条 summary。交接摘要是一条带 `<context-handoff>` … `</context-handoff>` 包裹、内存中标记为 `MessageKind::Summary` 的 `User` 角色消息，是**一等公民 cell**：按类型检测（reload 会话回退到 `SUMMARY_PREFIX` 字符串匹配）、永远不会被当成真实 user turn，即使 provider 合并连续 user 消息也能靠标签区分。重建分为三步：
 
-1. **`collect_user_messages`** — 遍历整个 context，用 `is_real_user_message` 挑出真实 user turn（排除工具结果组成的 block 消息、旧 summary 消息和非 User 角色）。
+1. **`collect_user_messages`** — 遍历整个 context，用 `is_real_user_message` 挑出真实 user turn（排除工具结果组成的 block 消息、旧 summary 消息、hook 注入的 `<hook-context>` cell 和非 User 角色）。
 2. **`retained_user_message_token_budget`** — 预算 = `min(20k 估算 token, model_context_window - max_tokens - estimate(system + tools + summary) - 20% 余量)`。
 3. **`build_compacted_history`** — 从尾部保留真实 user 消息直到预算用尽；block turn 在预算内原样保留，超大 block turn 退化为文本尾部，纯图片则变成省略占位符，绝不截断 base64。最后追加一条 summary 消息。
 
@@ -375,7 +373,6 @@ OpenAI Responses 的回退方案。DeepSeek 与 Kimi 的 Responses 配置目前�
 
 **Provider 可用性说明** — 底层测试仍可以构造通用 adapter 做端点实验，但正常配置会在能力验证完成前保持 DeepSeek 与 Kimi Responses 禁用。
 
-
 **协议契约与验证状态** — 自动压缩的替换基线（单个 `compaction` item 置前，
 后跟本次 response 的非 compaction 输出 items）来源于设计阶段从目标端点捕获
 的脱敏 fixture
@@ -383,7 +380,7 @@ OpenAI Responses 的回退方案。DeepSeek 与 Kimi 的 Responses 配置目前�
 **尚未**经过真实端点验证。硬性校验仍然生效：零个或多个 `compaction` item、
 空的 `encrypted_content` 都是协议错误；格式错误的已知输出 item 会被 typed
 normalizer 拒绝，真正未知的输出 item 会由 raw wire 边界保留并在下一轮请求中回放（见
-[Ch 22 §6.2.2](./22_chapter_llm.md#the-compaction-item-round-trip)）。
+[Ch 22 §6.2.2](./22_chapter_llm_zh.md#the-compaction-item-round-trip)）。
 与 fixture 契约不同的端点会以协议错误的方式响亮失败，而不会被掩盖。
 
 **流式中未完成的压缩** — 在流中被宣布但从未完成的 `compaction` item — 同样是
@@ -416,6 +413,7 @@ id 仅存于 provider 状态与 SQLite 元数据中。
 | **目标** | 产出一份好的交接摘要 | 压缩后 agent 继续工作 |
 | **谁读** | 摘要 LLM（一次性） | 主 agent（每轮直到下次压缩） |
 | **角色** | User + Assistant + ToolResult | **仅 User** |
+| **消息类型** | 全部，经 `summary_message_fallback` 压缩 | 仅「真实 user」（跳过纯工具结果 block、旧 summary、hook 注入的 `<hook-context>`、非 User 角色） |
 | **用户原文** | 送入摘要器，不保留原文 | ✅ 原样保留（从尾部，预算内） |
 | **Assistant / ToolUse / ToolResult** | 送入摘要器（压缩后） | ❌ 丢弃（摘要已覆盖） |
 | **预算** | `min(20k, summary_input_limit - 固定指令)` | `min(20k, window - output - system - tools - summary - 20%)` |
@@ -615,6 +613,8 @@ if name != "read_file" {
 | `PERSIST_THRESHOLD` | 30,000 字符 |
 | `PREVIEW_CHARS` | 2,000 字符 |
 
+有一个调用方会覆盖该阈值：MCP 条目的 `tools.<name>.output_token_limit` 会按自己的 token 预算通过 `persist_large_output_over_tokens` 落盘那一个工具的结果，信封完全相同。上面这条字符规则仍适用于没有声明该字段的所有工具。条目字段见[第 8 章](./08_chapter_mcp_zh.md)。
+
 ```mermaid
 flowchart TD
     Out[成功的工具输出] --> Th{字符数 > 30_000?}
@@ -769,11 +769,11 @@ flowchart LR
 
 ## 相关文档
 
-- [Error Recovery](./06_chapter_recovery.md) — 作为 prompt-too-long 策略的压缩  
-- [Agent Main Loop](./18_chapter_agent_loop.md) — 这些挂钩周围的完整循环  
-- [System Prompt](./04_chapter_prompt.md) — 每轮重建；含压缩工具指引  
-- [Store and Persistence](./01_chapter_store.md) — 压缩后的会话消息重写  
-- [Tasks and Tool Scheduling](./11_chapter_task.md) — dispatch 中检测 `manual_compact`  
+- [Error Recovery](./06_chapter_recovery_zh.md) — 作为 prompt-too-long 策略的压缩  
+- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — 这些挂钩周围的完整循环  
+- [System Prompt](./04_chapter_prompt_zh.md) — 每轮重建；含压缩工具指引  
+- [Store and Persistence](./01_chapter_store_zh.md) — 压缩后的会话消息重写  
+- [Tasks and Tool Scheduling](./11_chapter_task_zh.md) — dispatch 中检测 `manual_compact`  
 - [docs/compaction.md](../docs/compaction.md) — 调参笔记  
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §6 上下文压缩  
-- [英文原文](./05_chapter_compact.md)
+- [英文原文](./05_chapter_compact_zh.md)

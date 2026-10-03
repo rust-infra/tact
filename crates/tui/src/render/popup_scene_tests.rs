@@ -189,7 +189,39 @@ fn full_frame_slash_command_no_match_shows_hint() {
     );
 }
 
-/// Seed a long slash list: the built-in commands plus `count` skill entries.
+/// The popup must show the syntax that follows a subcommand, not just its name:
+/// `/mcp auth` is useless advice without `<server>`.
+#[test]
+fn full_frame_slash_popup_completes_subcommands_with_their_syntax() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Insert;
+    app.input = "/mcp ".into();
+    app.input_cursor = app.input.len();
+    app.slash_command.active = true;
+    app.slash_command.start_pos = 0;
+
+    let text = render_app_text(&mut app, 100, 30);
+
+    for expected in ["/mcp auth", "/mcp login", "/mcp list", "<server>"] {
+        assert!(text.contains(expected), "missing {expected} in:\n{text}");
+    }
+}
+
+/// Index of the `skill-<n>` candidate in the `/skill ` popup.
+///
+/// Derived from the live candidate list rather than hardcoded: the built-in
+/// subcommands come first, so a new one shifts every skill down and a magic
+/// index silently starts asserting about the wrong row.
+fn skill_row(app: &App, n: usize) -> usize {
+    app.slash_candidates()
+        .iter()
+        .position(|candidate| candidate.path == format!("skill skill-{n:02}"))
+        .expect("seeded skill is offered under /skill")
+}
+
+/// Seed a long slash list: the two built-in skill subcommands plus `count`
+/// skill entries — which is where a long list lives now that skills are not
+/// first-level entries.
 fn seed_slash_skills(app: &mut App, count: usize) {
     use crate::widgets::state::SkillEntry;
     app.skills_data = (0..count)
@@ -201,10 +233,11 @@ fn seed_slash_skills(app: &mut App, count: usize) {
         .collect();
 }
 
+/// Open the popup on `/skill `, the level that carries the many entries.
 fn open_slash_popup(app: &mut App) {
     app.input_mode = InputMode::Insert;
-    app.input = "/".into();
-    app.input_cursor = 1;
+    app.input = "/skill ".into();
+    app.input_cursor = app.input.len();
     app.slash_command.active = true;
     app.slash_command.start_pos = 0;
     app.slash_command.selected = 0;
@@ -216,16 +249,15 @@ fn slash_popup_long_list_scrolls_selected_into_view() {
     open_slash_popup(&mut app);
     seed_slash_skills(&mut app, 40);
 
-    // The filtered list is 18 builtins + 40 skills; skill-30 sits at index 48.
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let text = render_app_text(&mut app, 100, 30);
 
     assert!(
-        text.contains("/skill-30"),
+        text.contains("skill-30"),
         "deep selection must be visible after scrolling, got:\n{text}"
     );
     assert!(
-        !text.contains("/theme"),
+        !text.contains("/skill list"),
         "the top of the list must have scrolled out of view, got:\n{text}"
     );
 }
@@ -240,19 +272,19 @@ fn slash_popup_long_list_keeps_selected_visible_on_short_terminal() {
     // clamped to what actually fits, so the selected row must never land
     // below the popup border (previously the anchor was off-screen and the
     // list appeared frozen / "did not scroll").
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let text = render_app_text(&mut app, 100, 13);
 
     assert!(
-        text.contains("/skill-30"),
+        text.contains("skill-30"),
         "selected row must stay visible on a short terminal, got:\n{text}"
     );
 
     // The very last item must also be reachable on a short terminal.
-    app.slash_command.selected = 57;
+    app.slash_command.selected = skill_row(&app, 39);
     let text = render_app_text(&mut app, 100, 13);
     assert!(
-        text.contains("/skill-39"),
+        text.contains("skill-39"),
         "last item must be reachable on a short terminal, got:\n{text}"
     );
 }
@@ -265,14 +297,14 @@ fn slash_popup_scroll_window_moves_with_selection() {
 
     let top = render_app_text(&mut app, 100, 30);
     assert!(
-        top.contains("/theme"),
-        "top of list shows the first command, got:\n{top}"
+        top.contains("/skill list"),
+        "top of list shows the first entry, got:\n{top}"
     );
 
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let deep = render_app_text(&mut app, 100, 30);
     assert!(
-        deep.contains("/skill-30") && !deep.contains("/theme"),
+        deep.contains("skill-30") && !deep.contains("/skill list"),
         "moving the selection deep into the list must scroll the window, got:\n{deep}"
     );
 }
@@ -1447,4 +1479,188 @@ fn popup_footer_swaps_the_copy_hint_for_the_confirmation_after_a_copy() {
             "the footer row keeps the popup background"
         );
     }
+}
+
+// ===== Popups must draw with the theme, not with literals =====
+//
+// Regression: the slash popup (and the palette, the file picker and the select
+// popup) styled their rows with `Color::White` / `Color::Cyan` /
+// `Color::DarkGray`. Under a light theme the popup's own background is white
+// (`Theme::bg`), so every unselected row was white-on-white — the command list
+// was invisible, and the highlighted row came out in Dark's cyan while the
+// theme's accent is blue. The colors now come from `Theme`.
+
+/// The style of the cell where `needle` starts: scans the buffer cell by cell
+/// so a wide glyph (emoji, CJK) earlier in the row cannot shift the answer.
+fn cell_at<'a>(buf: &'a ratatui::buffer::Buffer, needle: &str) -> &'a ratatui::buffer::Cell {
+    let width = buf.area.width;
+    for y in 0..buf.area.height {
+        for x in 0..width {
+            let mut candidate = String::new();
+            for dx in 0..needle.chars().count() as u16 {
+                if let Some(cell) = buf.cell((x + dx, y)) {
+                    candidate.push_str(cell.symbol());
+                }
+            }
+            if candidate == needle {
+                return &buf[(x, y)];
+            }
+        }
+    }
+    panic!("{needle:?} not found in:\n{}", buffer_text(buf));
+}
+
+fn light_app() -> App {
+    use agent_tui_kit::theme::{Theme, ThemeName};
+    let mut app = make_app();
+    app.theme = Theme::from(ThemeName::Light);
+    app
+}
+
+#[test]
+fn slash_popup_rows_take_their_colors_from_the_theme() {
+    let mut app = light_app();
+    // The command list, not the `/skill ` subcommands: this is the surface the
+    // regression was reported on.
+    app.input_mode = InputMode::Insert;
+    app.input = "/".into();
+    app.input_cursor = 1;
+    app.slash_command.active = true;
+    app.slash_command.start_pos = 0;
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(
+        cell_at(buf, "/theme").fg,
+        app.theme.accent,
+        "the highlighted row is the theme's accent"
+    );
+    assert_eq!(
+        cell_at(buf, "/model").fg,
+        app.theme.fg,
+        "an unselected row is the theme's foreground — white here would be \
+         white-on-white, because the popup background is `theme.bg`"
+    );
+    assert_ne!(cell_at(buf, "/model").fg, ratatui::style::Color::White);
+}
+
+#[test]
+fn command_palette_selected_row_is_legible_on_a_light_theme() {
+    let mut app = light_app();
+    app.input_mode = InputMode::Palette;
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    let selected = cell_at(buf, "theme");
+    assert_eq!(
+        selected.fg, app.theme.fg,
+        "the selected palette row puts `theme.fg` on `theme.highlight`"
+    );
+    assert_eq!(selected.bg, app.theme.highlight);
+}
+
+#[test]
+fn file_picker_selected_row_is_legible_on_a_light_theme() {
+    let mut app = light_app();
+    app.input_mode = InputMode::FilePicker;
+    app.file_picker.options = vec!["src/main.rs".into(), "Cargo.toml".into()];
+    app.file_picker.current_dir = app.work_dir.clone();
+    app.file_picker.base_dir = app.work_dir.clone();
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(
+        cell_at(buf, "main.rs").fg,
+        app.theme.fg,
+        "the selected file row must not use a literal white"
+    );
+}
+
+#[test]
+fn select_popup_rows_and_empty_hint_take_their_colors_from_the_theme() {
+    let mut app = light_app();
+    open_select_popup(&mut app, 3);
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(
+        cell_at(buf, "model-00").fg,
+        app.theme.fg,
+        "the selected option is `theme.fg` over `theme.highlight`"
+    );
+
+    // And the empty state is muted, not a literal gray.
+    let mut app = light_app();
+    open_select_popup(&mut app, 0);
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    let empty = app.msgs().select_empty;
+    assert_eq!(cell_at(buf, empty).fg, app.theme.muted);
+}
+
+/// The invariant the literals broke, over every built-in theme: no popup row
+/// may be painted in the popup's own background color.
+#[test]
+fn no_theme_draws_a_popup_row_in_its_own_background_color() {
+    use agent_tui_kit::theme::{Theme, ThemeName};
+
+    let mut unreadable = Vec::new();
+    // `next()` cycles the full set; `ThemeName::all()` is private to the kit.
+    let mut name = ThemeName::Dark;
+    loop {
+        let theme = Theme::from(name);
+        let mut app = make_app();
+        app.theme = theme;
+        app.input_mode = InputMode::Insert;
+        app.input = "/".into();
+        app.input_cursor = 1;
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let row = cell_at(buf, "/model");
+        if row.fg == theme.bg {
+            unreadable.push(format!("{name:?}: fg={:?} on bg={:?}", row.fg, theme.bg));
+        }
+
+        name = name.next();
+        if name == ThemeName::Dark {
+            break;
+        }
+    }
+    assert!(
+        unreadable.is_empty(),
+        "popup rows painted in the popup background:\n{}",
+        unreadable.join("\n")
+    );
 }

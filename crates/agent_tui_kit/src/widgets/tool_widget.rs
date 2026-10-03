@@ -405,7 +405,7 @@ pub fn tool_visual_rows(
 /// Storing a rendered row here instead would freeze the locale of the moment the
 /// output was built: `/lang` flips the language the cell draws with, so a stored
 /// row would stop describing what is on screen — and the click target measured
-/// from it would drift off the drawn hint (see `book/26_chapter_issue.md`,
+/// from it would drift off the drawn hint (see `book/26_chapter_issue_zh.md`,
 /// 2026-09-14).
 #[derive(Debug, Clone)]
 pub struct ToolRenderOutput {

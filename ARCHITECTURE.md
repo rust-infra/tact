@@ -232,8 +232,12 @@ Every tool call is classified by risk and checked against the active permission 
 
 ```mermaid
 flowchart TD
-    ToolCall["ToolUse { name, input }"] --> Normalize["normalize_capability()"]
-    Normalize --> Risk["CapabilityRisk:<br/>Read / Write / High"]
+    ToolCall["ToolUse { name, input }"] --> Guard["security::sensitive::Scanner<br/>(before hooks and modes)"]
+    Guard -- "Credential tier" --> Refuse["Refuse<br/>(Auto mode and allow rules<br/>cannot reach it)"]
+    Guard -- "Secret tier" --> Normalize
+    Guard -- "no hit" --> Normalize
+
+    Normalize["PermissionPolicy::resolve()"] --> Risk["CapabilityRisk:<br/>Read / Write / High"]
 
     Risk -- Read --> Allow["Allow immediately"]
     Risk --> Mode{"PermissionMode?"}
@@ -245,8 +249,8 @@ flowchart TD
     AutoCheck -- Yes --> Ask["Ask user"]
     AutoCheck -- No --> Allow
 
-    DefaultCheck -- Yes --> Ask
-    DefaultCheck -- No --> AlwaysAllowed{"always_allowed_tools?"}
+    DefaultCheck -- Yes --> AlwaysAllowed{"always_allowed_tools?"}
+    DefaultCheck -- No --> AlwaysAllowed
 
     AlwaysAllowed -- Yes --> Allow
     AlwaysAllowed -- No --> Ask
@@ -260,7 +264,7 @@ flowchart TD
 
 | Mode | Behavior |
 |---|---|
-| `default` | Read-only tools allowed; writes ask once; high-risk always asks. |
+| `default` | Read-only tools allowed; writes ask once; high-risk asks until an explicit allow covers that exact tool and input. |
 | `plan` | Read-only only; all writes denied (useful for review-first workflows). |
 | `auto` | Read and non-high writes auto-approved; high-risk still asks. |
 
@@ -269,19 +273,24 @@ Special cases:
 - `read_file` and tools whose names start with `read`, `list`, `get`, `show`, `search`, `query`, `inspect`, or `find` are classified as `Read`.
 - `spawn_subagent` is always `High` because it spawns a sub-agent with full filesystem/shell access.
 - `bash` commands containing `rm -rf`, `sudo`, `shutdown`, or `reboot` are always `High`.
-- Simple read-only bash commands (`ls`, `cat`, `git status`, etc.) are classified as `Read`.
+- Simple read-only bash commands (`ls`, `cat`, `git status`, etc.) are classified as `Read` — **unless** the command names a credential path, which is checked first. The safelist proves the program cannot write, not that its output is safe to publish: `cat ~/.ssh/id_ed25519` is provably read-only and reads a private key.
+- Read tools whose **target** is sensitive escalate: `.env` is not `src/main.rs`. `PermissionPolicy::{ReadPath, WritePath, PatchPaths}` carry that, so the target — not just the verb — decides the risk.
+
+Result text is redacted before anything reads it (one choke point in
+`run_tool_waves`, plus a streaming pass for live command output). See
+[Ch 10 §12](book/10_chapter_permission_zh.md#12-sensitive-paths-and-secret-redaction).
 
 ---
 
 ## 4. Hook Engine
 
-Hooks are registered on the `Agent` and run at three points:
+Hooks are registered on the `Agent` and run from the agent loop; Tact maps fifteen lifecycle events (the full table is in [Ch 9](book/09_chapter_hook_zh.md)). The mutable ones:
 
 | Hook type | When | Can mutate | Can veto |
 |---|---|---|---|
-| `SessionStart` | Before the first LLM call | `LoopState` | Yes |
-| `PreToolUse` | Before each tool execution | `ToolUse` input | Yes |
-| `PostToolUse` | After each tool execution | `ToolResult` content | Yes |
+| `SessionStart` | Once per session, on the first turn rather than at startup — after any pre-turn compaction, before that turn's user message; re-run with `source: "compact"` after a compaction | `&mut SessionStartContext` (appends injected context) | Yes — `Block` skips the turn (Codex `continue: false`) |
+| `PreToolUse` | Before each tool execution | `ToolUse` input; appends injected context | Yes |
+| `PostToolUse` | After each tool execution | `ToolResult` content; appends injected context | Yes |
 
 A hook returns `HookControl::Continue` or `HookControl::Block(reason)`. The first `Block` short-circuits the chain.
 
@@ -348,7 +357,7 @@ When the conversation approaches the model context window (`agent.model_context_
 
 1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
 2. If `should_auto_compact` fires at 80% of the model window, `compact_history()` atomically writes a unique transcript, summarizes a window-aware recent slice with bounded retries and response validation, rebuilds context as retained real-user turns plus a handoff summary, validates the complete rebuilt request, and **`replace_session_messages`** syncs SQLite. ASCII is estimated at roughly four characters per token and non-ASCII at one character per token. Retained users are capped at 20k estimated tokens and reduced to reserve max output, system/tool/summary input, and 20% window headroom; oversized images become text omission markers rather than truncated base64.
-3. For OpenAI `protocol = "responses"` providers this local summary path is **not** used: ordinary requests carry `context_management` with the resolved compact threshold, and `compact_history()` calls the native `POST /responses/compact` endpoint, replacing the opaque protocol baseline (never the logical context). Endpoints without native compaction are unsupported — no local-summary fallback. See [Ch 5](./book/05_chapter_compact.md).
+3. For OpenAI `protocol = "responses"` providers this local summary path is **not** used: ordinary requests carry `context_management` with the resolved compact threshold, and `compact_history()` calls the native `POST /responses/compact` endpoint, replacing the opaque protocol baseline (never the logical context). Endpoints without native compaction are unsupported — no local-summary fallback. See [Ch 5](./book/05_chapter_compact_zh.md).
 4. Large successful native and MCP outputs are persisted to `<workdir>/.tact/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context. Transcript and tool-result directories each retain the 100 newest files.
 
 The TUI bottom-bar row 2 shows the same window as a usage meter (`used / model_context_window`).
@@ -591,7 +600,7 @@ flowchart TD
 ```
 
 This guard is unrelated to the OS-level **execution** sandbox (bubblewrap) of
-[Bash Sandbox](./book/27_chapter_sandbox.md): `resolve_safe_path` bounds the
+[Bash Sandbox](./book/27_chapter_sandbox_zh.md): `resolve_safe_path` bounds the
 in-process file tools' *paths*, while the execution sandbox bounds what an
 approved `bash` command can *reach* (`crates/tact/src/sandbox/`).
 

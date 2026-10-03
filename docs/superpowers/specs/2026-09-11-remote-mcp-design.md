@@ -127,6 +127,6 @@ mcp.json ──parse──> McpProjectConfig{command|url, headers, auth}
 
 ## 8. 文档同步
 
-- `book/08_chapter_mcp.md` + `_zh.md`：transport 表、限制段、新增「Remote MCP & OAuth」小节。
-- `book/21_chapter_config.md` + `_zh.md`：`mcp.json` 远程/`auth` 字段。
-- `book/26_chapter_issue.md` + `_zh.md`：newest-first 条目。
+- `book/08_chapter_mcp_zh.md`：transport 表、限制段、新增「Remote MCP & OAuth」小节。
+- `book/21_chapter_config_zh.md`：`mcp.json` 远程/`auth` 字段。
+- `book/26_chapter_issue_zh.md`：newest-first 条目。

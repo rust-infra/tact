@@ -21,7 +21,9 @@ pub struct ReadImageInput {
 pub const READ_IMAGE_METADATA: ToolMetadata = ToolMetadata {
     name: "read_image",
     description: "Read a PNG/JPEG/WebP/GIF file and return the image itself to a vision model.",
-    permission: PermissionPolicy::Read,
+    permission: PermissionPolicy::ReadPath {
+        path_field: "file_path",
+    },
     permission_prompt: PermissionPromptPolicy::Path { field: "file_path" },
     resources: ResourcePolicy::ReadPath { field: "file_path" },
     domain: ToolDomain::Generic,
@@ -171,6 +173,7 @@ mod tests {
                 notifications_enabled: false,
                 max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
                 micro_compact_enabled: true,
+                memory_enabled: true,
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
                 instruction_sources: crate::config::InstructionSources::default(),
@@ -178,6 +181,7 @@ mod tests {
             },
             ui: crate::config::UiSettings {
                 theme: "retro".to_string(),
+                language: "en".to_string(),
                 vision_image: crate::config::VisionImageSettings {
                     compress: crate::config::VisionImageSettings::DEFAULT_COMPRESS,
                     max_edge: crate::config::VisionImageSettings::DEFAULT_MAX_EDGE,

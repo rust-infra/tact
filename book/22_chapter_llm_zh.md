@@ -1,10 +1,8 @@
 # LLM Providers
 
-> 语言：[中文](./22_chapter_llm_zh.md) · [English](./22_chapter_llm.md)
-
 本章涵盖 `tact_llm` crate：provider 选择、adapter 构建、流式与非流式调用、token 用量、session 级 cache 键，以及 DeepSeek 与 Kimi 的余额查询。
 
-本层配置在 [Ch 21 配置](./21_chapter_config_zh.md) 中 resolve。Agent 循环通过 `Agent::stream_message` 消费 client（[Ch 18 Agent Main Loop](./18_chapter_agent_loop.md)）。
+本层配置在 [Ch 21 配置](./21_chapter_config_zh.md) 中 resolve。Agent 循环通过 `Agent::stream_message` 消费 client（[Ch 18 Agent Main Loop](./18_chapter_agent_loop_zh.md)）。
 
 实现：`crates/tact_llm/src/`（`lib.rs`、`client.rs`、`provider.rs`、`profile.rs`、`auth.rs`、`transport.rs`、`types.rs`、`content.rs`、`anthropic/`、`openai/`、`convert.rs`）。
 
@@ -210,7 +208,7 @@ pub enum StopReason {
 | `StopReason::from_anthropic` | Messages API `stop_reason` 字符串 | `model_context_window_exceeded` → `MaxTokens`（视为截断） |
 | `StopReason::from_openai` | Chat Completions `finish_reason` 字符串 | 旧版 `function_call` → `ToolUse`；`content_filter` → `StopSequence` |
 
-未知值变为 `Unknown(raw)` 而非解析失败，新 provider 值可优雅降级。各 variant 如何驱动循环（继续 / 工具 / 错误）见 [Ch 18 §4](./18_chapter_agent_loop.md#4-stop-reasons-and-loop-exit)。
+未知值变为 `Unknown(raw)` 而非解析失败，新 provider 值可优雅降级。各 variant 如何驱动循环（继续 / 工具 / 错误）见 [Ch 18 §4](./18_chapter_agent_loop_zh.md#4-stop-reasons-and-loop-exit)。
 
 ```mermaid
 sequenceDiagram
@@ -244,7 +242,7 @@ sequenceDiagram
     AgentLoop->>Store: persist_llm_call(...)
 ```
 
-流式 turn 是 [Ch 18](./18_chapter_agent_loop.md) 的热路径：adapter 翻译共享请求、流式 provider 特定 SSE、可选发出 UI 更新，并向循环返回规范化 assistant 内容。
+流式 turn 是 [Ch 18](./18_chapter_agent_loop_zh.md) 的热路径：adapter 翻译共享请求、流式 provider 特定 SSE、可选发出 UI 更新，并向循环返回规范化 assistant 内容。
 
 ```mermaid
 sequenceDiagram
@@ -316,7 +314,7 @@ adapter：`ProviderProfile::dialect_for(model)` 按请求选择
 
 **不完整 tool calls：** 流式与非流式解析器跳过 `id` 或 `name` 为空的 tool-call 槽，避免截断 SSE 插入 phantom `ToolUse` block。
 
-**空 assistant 清理：** 因 thinking block 在面向非 Kimi OpenAI 兼容 API 时被丢弃，仅含 thinking（或截断后仅剩 orphan tool calls）的 assistant turn 会序列化为 `{ "role": "assistant", "content": null, "tool_calls": null }` 并被 400 拒绝。`convert.rs` 中 `sanitize_assistant_messages` 对这类消息打 stub 并在每次请求剥离 orphan `tool_calls`。完整上下文见 [错误恢复](./06_chapter_recovery.md)。
+**空 assistant 清理：** 因 thinking block 在面向非 Kimi OpenAI 兼容 API 时被丢弃，仅含 thinking（或截断后仅剩 orphan tool calls）的 assistant turn 会序列化为 `{ "role": "assistant", "content": null, "tool_calls": null }` 并被 400 拒绝。`convert.rs` 中 `sanitize_assistant_messages` 对这类消息打 stub 并在每次请求剥离 orphan `tool_calls`。完整上下文见 [错误恢复](./06_chapter_recovery_zh.md)。
 
 ### 6.2 Responses API
 
@@ -581,9 +579,9 @@ provider 默认（openai 6 档、deepseek/kimi k3 3 档、budget 5 档）。
 | 请求元数据 | `ModelInfo(ModelCallParams)` |
 | 流结束用量 | `TokenUsage { ... }` |
 
-Agent 在每次成功流后通过 `persist_llm_call` 持久化 token 用量（[Ch 1 Store](./01_chapter_store.md)）。
+Agent 在每次成功流后通过 `persist_llm_call` 持久化 token 用量（[Ch 1 Store](./01_chapter_store_zh.md)）。
 
-传输失败恢复在 agent 循环中处理，不在 adapter 内（[Ch 6 Recovery](./06_chapter_recovery.md)）。
+传输失败恢复在 agent 循环中处理，不在 adapter 内（[Ch 6 Recovery](./06_chapter_recovery_zh.md)）。
 
 ---
 
@@ -724,7 +722,7 @@ sequenceDiagram
 ## 相关文档
 
 - [Configuration](./21_chapter_config_zh.md) — 凭证与默认值
-- [Agent Main Loop](./18_chapter_agent_loop.md) — 流式集成
+- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — 流式集成
 - [Context Compaction](./05_chapter_compact_zh.md) — 非流式 `create_message`
-- [Error Recovery](./06_chapter_recovery.md) — LLM 失败处理
+- [Error Recovery](./06_chapter_recovery_zh.md) — LLM 失败处理
 - [TUI](./23_chapter_tui_zh.md) — 余额显示与流渲染

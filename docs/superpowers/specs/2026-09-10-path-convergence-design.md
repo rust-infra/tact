@@ -241,11 +241,11 @@ case, so allow-lists keyed on `mcp__{plugin}__{server}__*` need updating.
 
 ## Docs to sync
 
-- `book/08_chapter_mcp.md` + `_zh.md` — new config file, load order, naming.
+- `book/08_chapter_mcp_zh.md` — new config file, load order, naming.
 - `book/01_chapter_store*.md` — plugin state path, if the chapter mentions it.
 - `book/21_*` (marketplace) — state file location.
 - `config.example.toml` — only if a new knob is added (none planned).
-- `book/26_chapter_issue.md` + `_zh.md` — issue-log entry (user-visible
+- `book/26_chapter_issue_zh.md` — issue-log entry (user-visible
   change: silent MCP failures now reported; MCP gets a config file).
 
 ## Risks

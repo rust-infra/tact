@@ -1,7 +1,5 @@
 # 配置（Configuration）
 
-> 语言：[中文](./21_chapter_config_zh.md) · [English](./21_chapter_config.md)
-
 本章说明 Tact 在 agent 工作开始前如何加载、合并并安装运行时设置。配置是**引导层**，负责把 LLM 凭证、agent 限制、UI 主题、工具密钥和权限模式接入进程全局的 `ResolvedConfig`。
 
 实现：`crates/tact/src/config/`（`mod.rs`、`cli.rs`、`load.rs`、`resolve.rs`、`types.rs`）。
@@ -13,9 +11,10 @@
 | 关注点 | Resolved 字段 | 主要消费者 |
 |--------|---------------|------------|
 | LLM 凭证 | `ResolvedConfig::llm` → `tact_llm::init_provider` | [Ch 22 LLM](./22_chapter_llm_zh.md)、`Agent::stream_message` |
-| Agent 限制 | `agent.*` | [Ch 5 压缩](./05_chapter_compact_zh.md)、[Ch 4 Prompt](./04_chapter_prompt.md)、[Ch 17 通知](./17_chapter_notify.md) |
+| Agent 限制 | `agent.*` | [Ch 5 压缩](./05_chapter_compact_zh.md)、[Ch 4 Prompt](./04_chapter_prompt_zh.md)、[Ch 17 通知](./17_chapter_notify_zh.md) |
 | 权限模式字符串 | `permission_mode: Option<String>` | 仅 headless — 见 [§6 缺口](#6-当前缺口) |
 | UI 主题 | `ui.theme` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
+| UI 语言 | `ui.language` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
 | 调试 | `tokio_console` | `tact-ui` 的 `main()` |
 
 每个二进制入口在启动时应**调用一次** `tact::config::init()`（或 `init_config()`）。
@@ -164,6 +163,7 @@ model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
+memory_enabled = true      # 关闭后不注入记忆，也不注册 save_memory
 max_token_usage_bodies = 1   # 每会话保留的请求正文条数（压缩行永远保留自己的）
 # 额外 skill 根目录（可选）。每个目录下应包含 */SKILL.md。
 # 相对路径按 workdir 解析；~ 展开为 $HOME。
@@ -186,6 +186,9 @@ max_token_usage_bodies = 1   # 每会话保留的请求正文条数（压缩行�
 
 [ui]
 theme = "ink"
+# UI 语言。`/lang` 第二步选择「保存」时由 TUI 写入。
+# "en" | "zh"（也接受 "english" / "cn" / "chinese"）；无法识别时告警并回落英文。
+# language = "en"
 # 附加图片（`@file.png`、`![alt](path)`）；compress 仅减少 token —
 # 模型/端点仍须支持 vision（见 Ch 22 / Ch 23）。
 # vision_image.compress = true
@@ -273,6 +276,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
+| `memory_enabled` | `true` | —（关闭后不注入 `~/.tact/memory` 与 `MEMORY_GUIDANCE`，也不注册 `save_memory`） |
 | `max_token_usage_bodies` | 1 | —（每会话在 `token_usages` 保留的请求正文条数；`0` 表示一条不留，同时使 `/view-system-prompt` 的 assembled 视图失效） |
 | `instruction_sources` | `["agents_md"]` | — |
 | `skill_dirs` | 空（无额外根） | — |
@@ -280,6 +284,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
 | `tools.sandbox` | `false` | `true` / `false`（Linux：bubblewrap） |
 | `ui.theme` | `"ink"` | — |
+| `ui.language` | `"en"` | —（`en` / `zh`；无 CLI flag，见 §6） |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
 | `ui.vision_image.jpeg_quality` | `80`（钳制 1–100） | — |
@@ -289,13 +294,13 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `voice.model` | `gpt-4o-mini-transcribe`（openai）/ `latest_short`（google）/ 空（whisper_cpp） | — |
 | `voice.language` | `zh` | Google 示例：`zh-CN`、`en-US` |
 | `voice.max_duration_secs` | `300`（openai/whisper_cpp，有效 `1..=600`）/ `60`（google，有效 `1..=60`） | — |
-| `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`） |
+| `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`），不可与内置全局键 `Ctrl+C/H/T/L/?` 重合 |
 
 ### `[agent]` — skill 根目录、指令文件、全文注入
 
 三个 `[agent]` 字段决定除内建根与默认值之外还有什么进入提示。
 
-`skill_dirs` 追加额外 skill 根目录。每个条目必须是一个包含 `*/SKILL.md` 的目录；相对路径按 **workdir** 解析，`~` 展开为 `$HOME`，空白条目被跳过。这些根按列出顺序追加在三个内建根（`~/.agents/skills`、`~/.tact/skills`、`<workdir>/.tact/skills`）之后，因此同名冲突时配置根胜过所有内建根；解析后与已有路径重复的条目会被丢弃。扫描方式与内建根完全一致，均为递归。`/skill-reload` 可重新读取，无需重启。见 [Ch 2](./02_chapter_skill_zh.md)。
+`skill_dirs` 追加额外 skill 根目录。每个条目必须是一个包含 `*/SKILL.md` 的目录；相对路径按 **workdir** 解析，`~` 展开为 `$HOME`，空白条目被跳过。这些根按列出顺序追加在三个内建根（`~/.agents/skills`、`~/.tact/skills`、`<workdir>/.tact/skills`）之后，因此同名冲突时配置根胜过所有内建根；解析后与已有路径重复的条目会被丢弃。扫描方式与内建根完全一致，均为递归。`/skill reload` 可重新读取，无需重启。见 [Ch 2](./02_chapter_skill_zh.md)。
 
 `instruction_sources` 选择注入系统提示的项目指令文件。`agents_md` 是唯一可接受的值（默认 `["agents_md"]`）；空列表，或 `claude_md` 等任何其他值，都会导致配置 resolve 失败。见 [Ch 4](./04_chapter_prompt_zh.md)。
 
@@ -354,7 +359,9 @@ Cloud 项目中启用 Speech-to-Text API。Google API key 模式不支持 Servic
 `enabled = false` 隐藏标题栏居中按钮。`enabled = true` 但未配置 `api_key`（仅 openai）时仍显示按钮，
 点击会提示 `[voice].api_key`。可选 `voice_keybind = "ctrl+<char>"` 可在任意输入模式下切换录制；
 仅精确匹配时消费按键（其它键仍进入 Insert/Normal）。未设置则仅鼠标控制。配置的快捷键会显示在
-帮助面板（`Ctrl+?`）。空字符串、多字符键、非 `ctrl` 修饰符会在配置解析阶段失败。凭证不会写入
+帮助面板（`Ctrl+?`）。空字符串、多字符键、非 `ctrl` 修饰符会在配置解析阶段失败；与内置全局快捷键
+（`Ctrl+C/H/T/L/?`）重合的绑定会在**启动时被拒绝**并指名冲突的键——全局快捷键先派发且消费事件，
+这种绑定永远不可能触发（[Ch 23](./23_chapter_tui_zh.md) §7）。凭证不会写入
 日志或会话历史。
 
 Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
@@ -440,6 +447,12 @@ tact-ui headless "Summarize this repo"
 `tools.bash_timeout_secs` 在 v1 仅可由 TOML 设置。Resolve 保留 `0` 的“禁用”
 语义，否则经 `ToolSettings` 将该值传到每个 `ToolContext`；没有对应 CLI flag。
 
+`ui.language` 刻意**没有** CLI flag（`--theme` 有）。主题可能随终端而变，一次启动
+换一个说得通；语言属于使用者本人，`/lang` 的第二步写一次就够了。因此解析链只有
+「TOML → 默认值」两级：`resolve_non_llm` 读 `[ui].language`，缺失即 `"en"`，未知
+取值由 TUI 在启动时告警并回落英文（`App::set_configured_language`），而不是静默
+当成英文——否则 `language = "jp"` 会看起来像配置确实这么说的。
+
 ---
 
 ## 7. 运行时访问设置
@@ -454,7 +467,7 @@ let theme = config::settings().ui.theme.clone();
 
 若未调用 `init()`，`settings()` 会 panic — 对错误接线的二进制有意 fail-fast。
 
-Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_window`、`max_tokens` 和 `thinking_budget`（[Ch 18](./18_chapter_agent_loop.md)）。
+Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_window`、`max_tokens` 和 `thinking_budget`（[Ch 18](./18_chapter_agent_loop_zh.md)）。
 
 **破坏性重命名：** `agent.context_limit_chars` / `--context-limit-chars` → `agent.model_context_window` / `--model-context-window`（tokens，默认 200_000）。旧 TOML 键**无静默别名** — 请更新现有配置。
 
@@ -488,6 +501,6 @@ Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_
 ## 相关文档
 
 - [LLM Providers](./22_chapter_llm_zh.md) — `install()` 初始化内容
-- [Agent Main Loop](./18_chapter_agent_loop.md) — agent 设置的运行时消费者
-- [Permission Model](./10_chapter_permission.md) — 模式字符串 vs TUI 接线
+- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — agent 设置的运行时消费者
+- [Permission Model](./10_chapter_permission_zh.md) — 模式字符串 vs TUI 接线
 - [TUI](./23_chapter_tui_zh.md) — 主题与 channel 引导

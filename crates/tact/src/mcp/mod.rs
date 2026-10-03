@@ -44,11 +44,14 @@
 //! connected, and `mcp list` shows it as disabled.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// Ceiling on the MCP `initialize` handshake.
@@ -62,11 +65,28 @@ const MCP_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60)
 /// Ceiling on `tools/list` for one server.
 const MCP_LIST_TOOLS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Ceiling on one `resources/*` or `prompts/*` request.
+///
+/// The same order of magnitude as `tools/list`: a listing is served from the
+/// server's own index, and reading a resource or composing a prompt is a fetch,
+/// not a computation. One constant for all four requests because they are the
+/// same kind of wait — a name per primitive would only invite the ceilings to
+/// drift apart for no reason.
+const MCP_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Ceiling on a single `tools/call`.
 ///
 /// Generous on purpose: some MCP tools are legitimately long-running, so this
 /// only stops an unbounded hang from wedging the agent loop.
 const MCP_CALL_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Ceiling on one server's `InitializeResult.instructions`.
+///
+/// The handshake is the one place a server can hand over arbitrary prose that
+/// reaches the *trusted* half of the system prompt, so the size is bounded per
+/// server rather than trusted. Truncation is marked, never silent — a server
+/// whose guidance matters will notice it is being cut.
+const MCP_INSTRUCTIONS_MAX_CHARS: usize = 16_384;
 
 use anyhow::{Context, Result, bail};
 use futures_util::{
@@ -76,8 +96,13 @@ use futures_util::{
 };
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, CallToolResult, RawContent, ResourceContents, Tool as McpTool},
-    service::{RunningService, ServiceError},
+    handler::client::ClientHandler,
+    model::{
+        CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult, Prompt,
+        RawContent, RawResource, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+        Tool as McpTool,
+    },
+    service::{NotificationContext, RunningService, ServiceError},
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
 use serde::Deserialize;
@@ -88,14 +113,19 @@ use tokio::process::Command;
 use crate::{
     ToolSpec,
     consts::{PluginDirs, PluginHome, TactPath},
+    permission::{CapabilityRisk, normalize_mcp_capability},
     plugin::{PluginRoot, PluginStore},
     tool::copy_tool_spec,
 };
 
 mod edit;
+mod prompt;
 mod remote;
+mod resource;
 pub use edit::*;
+pub use prompt::*;
 pub use remote::*;
+pub use resource::*;
 
 /// How the client reaches one MCP server.
 ///
@@ -109,6 +139,91 @@ pub enum McpTransportConfig {
     Remote(McpRemoteConfig),
 }
 
+/// One Codex `env_vars` entry.
+///
+/// Codex accepts both a bare name (`"env_vars": ["TOKEN"]`) and the explicit
+/// `{ "name": …, "source": "local" | "remote" }` object; the bare form means
+/// `local`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum McpEnvVar {
+    /// The shorthand form.
+    Name(String),
+    /// The explicit form.
+    Explicit {
+        name: String,
+        #[serde(default)]
+        source: Option<String>,
+    },
+}
+
+impl McpEnvVar {
+    /// The variable this entry names.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Name(name) | Self::Explicit { name, .. } => name,
+        }
+    }
+
+    /// Where the value comes from. `None` means Codex's default, `local`.
+    #[must_use]
+    pub fn source(&self) -> Option<&str> {
+        match self {
+            Self::Name(_) => None,
+            Self::Explicit { source, .. } => source.as_deref(),
+        }
+    }
+}
+
+/// Resolves `env_vars` against Tact's environment for one stdio server.
+///
+/// `explicit` is the entry's literal `env` map and wins any name collision: a
+/// user who wrote a value down meant it.
+///
+/// Failures are returned rather than skipped. A server that expects
+/// `GITHUB_TOKEN` and starts without it fails later, somewhere unrelated, with
+/// a message about authentication; failing at spawn names the variable. Codex
+/// makes the same choice (`env var \`X\` is not set`).
+fn resolve_env_vars(
+    server_name: &str,
+    explicit: &HashMap<String, String>,
+    env_vars: &[McpEnvVar],
+) -> Result<HashMap<String, String>> {
+    let mut resolved = HashMap::new();
+    for entry in env_vars {
+        let name = entry.name();
+        if name.is_empty() {
+            bail!("MCP server {server_name} declares an env_vars entry with an empty name");
+        }
+        if explicit.contains_key(name) {
+            tracing::debug!(
+                mcp_server = %server_name,
+                variable = %name,
+                "env_vars entry is overridden by the literal env map; ignoring it"
+            );
+            continue;
+        }
+        match entry.source() {
+            None | Some("local") => {}
+            // Codex's `remote` source asks a remote stdio executor for the
+            // value. Tact has no remote-stdio executor, so the honest outcome is
+            // a named unsupported-feature error, not a silently missing value.
+            Some("remote") => bail!(
+                "MCP server {server_name}: env_vars source `remote` needs a remote stdio                  executor, which Tact does not implement"
+            ),
+            Some(other) => bail!(
+                "MCP server {server_name}: unsupported env_vars source `{other}`;                  expected `local` or `remote`"
+            ),
+        }
+        let value = std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("MCP server {server_name}: env var `{name}` is not set")
+        })?;
+        resolved.insert(name.to_string(), value);
+    }
+    Ok(resolved)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
@@ -117,6 +232,15 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Codex `env_vars`: names copied out of Tact's own environment.
+    ///
+    /// The child gets these in addition to [`Self::env`]; an explicit `env`
+    /// entry with the same name wins, so a literal value is never overridden by
+    /// a pass-through. Resolution happens at spawn time (see
+    /// [`resolve_env_vars`]) because an unset variable must fail *that server*
+    /// with a reason, not start it with a missing credential.
+    #[serde(default)]
+    pub env_vars: Vec<McpEnvVar>,
     /// Working directory for the subprocess.
     ///
     /// `None` inherits tact's own directory, which is what a user-level
@@ -201,6 +325,76 @@ pub fn validate_server_name(name: &str) -> Result<()> {
         bail!("server name '{name}' must not contain a path separator");
     }
     Ok(())
+}
+
+/// The prefix every plugin-contributed server name carries:
+/// `plugin__<plugin_id>__<server>` (see [`installed_plugin_mcp_servers`]).
+const PLUGIN_SERVER_PREFIX: &str = "plugin__";
+
+/// Splits `plugin__<plugin_id>__<server>` into `(plugin_id, server)`.
+///
+/// `None` for a name that does not carry the prefix, or whose plugin id or
+/// server segment is empty. The split is on the *first* `__` after the prefix,
+/// so a server key may itself contain `__`; only a plugin id may not.
+fn split_plugin_server_name(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix(PLUGIN_SERVER_PREFIX)?;
+    let (plugin_id, server) = rest.split_once("__")?;
+    (!plugin_id.is_empty() && !server.is_empty()).then_some((plugin_id, server))
+}
+
+/// The short, human-facing form of a server name.
+///
+/// A plugin-contributed server drops its `plugin__<plugin_id>__` prefix. That
+/// is display only: the full name stays the identity — the config key, the
+/// OAuth credential file, and the `mcp__<server>__<tool>` prefix the agent
+/// calls. [`resolve_server_name`] accepts either form on input, so a hint can
+/// name a server the short way and still be a command the user can run.
+#[must_use]
+pub fn display_server_name(name: &str) -> &str {
+    match split_plugin_server_name(name) {
+        Some((_, server)) => server,
+        None => name,
+    }
+}
+
+/// Resolves a user-typed server name to the configured one it stands for.
+///
+/// An exact match always wins, so a server the user declared themselves is
+/// never reached through a plugin's short form. Otherwise the *only* configured
+/// server whose [`display_server_name`] equals `name` is returned — which is
+/// what lets `/mcp auth canva` reach `plugin__canva__canva`. No match, or
+/// several (two plugins both shipping a `canva` server), is an error naming the
+/// candidates rather than a silent pick.
+pub fn resolve_server_name(name: &str) -> Result<String> {
+    let resolved = resolve_current()?;
+    let configured: Vec<String> = resolved
+        .configured()
+        .into_iter()
+        .map(|server| server.name)
+        .collect();
+    resolve_name_against(name, &configured)
+}
+
+/// Pure core of [`resolve_server_name`], separated so the matching rules are
+/// testable without reading the working directory.
+fn resolve_name_against(name: &str, configured: &[String]) -> Result<String> {
+    if configured.iter().any(|configured| configured == name) {
+        return Ok(name.to_owned());
+    }
+    let matches: Vec<&str> = configured
+        .iter()
+        .map(String::as_str)
+        .filter(|configured| display_server_name(configured) == name)
+        .collect();
+    match matches.as_slice() {
+        [only] => Ok((*only).to_owned()),
+        [] => bail!("no MCP server named '{name}' is configured"),
+        several => bail!(
+            "'{name}' matches {} configured servers ({}); use the full name of the one you mean",
+            several.len(),
+            several.join(", ")
+        ),
+    }
 }
 
 /// How a configured server will be reached, for diagnostics.
@@ -336,9 +530,11 @@ fn describe_resolved(
 
 /// An entry that declares keys Tact does not model.
 ///
-/// The Codex per-entry fields (`enabled_tools`, `omit_tools_from`,
-/// `startup_timeout_sec`, `tools`) land here: parsing them without implementing
-/// them is only honest if the user can see which ones were ignored.
+/// Two things land here: a Codex per-entry field Tact still does not implement
+/// (`omit_tools_from`), and a field Tact does implement but not *here*
+/// (`env_vars` on a remote entry, which has no child process to receive it).
+/// Parsing either without honouring it is only honest if the user can see
+/// which ones were ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnmodelledKeys {
     /// The server name as it appears in the file (before any plugin prefix).
@@ -367,6 +563,13 @@ pub struct McpLoadReport {
     pub failures: Vec<(String, String)>,
     /// Server name and the lower-precedence source it displaced.
     pub shadowed: Vec<(String, String)>,
+    /// Server name and the source of a policy-only declaration folded under it.
+    ///
+    /// Like [`Self::filtered`], deliberately *not* part of [`Self::is_quiet`]:
+    /// an applied overlay is a deliberate configuration that worked, not a
+    /// problem — but it must be visible somewhere, or a policy written by two
+    /// sources reads as one.
+    pub policy_overlays: Vec<(String, String)>,
     /// Entries that declare keys Tact does not model.
     ///
     /// Deliberately *not* part of [`Self::is_quiet`]: a plugin bundle that
@@ -374,6 +577,14 @@ pub struct McpLoadReport {
     /// into a notice — but `mcp list` names them, because a configuration that
     /// is silently ignored is worse than one that is visibly unimplemented.
     pub unmodelled: Vec<UnmodelledKeys>,
+    /// Server name and the tool names this entry's `enabled_tools` /
+    /// `disabled_tools` hide from the agent.
+    ///
+    /// Like [`Self::unmodelled`], deliberately *not* part of
+    /// [`Self::is_quiet`]: filtering is a deliberate configuration, not a
+    /// problem — but hiding a tool must be visible somewhere, so `mcp list` and
+    /// `mcp get` report it.
+    pub filtered: Vec<(String, Vec<String>)>,
     /// Server names skipped because they declare an unsupported/incomplete
     /// transport (currently a remote entry without a `url`, or a stdio entry
     /// without a `command`).
@@ -402,20 +613,33 @@ impl McpLoadReport {
     pub fn notice_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for (server, error) in &self.failures {
-            lines.push(format!("MCP server {server} failed to connect: {error}"));
+            lines.push(format!(
+                "MCP server {} failed to connect: {error}",
+                display_server_name(server)
+            ));
         }
         for server in &self.pending_auth {
+            // The short form, because this line's whole job is to hand the user
+            // a command to type; `plugin__canva__canva` twice is not one.
+            let name = display_server_name(server);
             lines.push(format!(
-                "MCP server {server} needs authorization — run /mcp auth {server}"
+                "MCP server {name} needs authorization — run /mcp auth {name}"
             ));
         }
         for (server, source) in &self.shadowed {
-            lines.push(format!("MCP server {server} overrides {source}"));
+            lines.push(format!(
+                "MCP server {} overrides {source}",
+                display_server_name(server)
+            ));
         }
         if !self.skipped_remote.is_empty() {
             lines.push(format!(
                 "MCP servers skipped (unsupported transport): {}",
-                self.skipped_remote.join(", ")
+                self.skipped_remote
+                    .iter()
+                    .map(|name| display_server_name(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         lines
@@ -448,6 +672,60 @@ pub struct McpServerInspection {
     /// Short tool names (as the server reports them, without the
     /// `mcp__<server>__` prefix). Empty unless [`McpServerStatus::Connected`].
     pub tools: Vec<String>,
+    /// Bytes of each exposed tool's declaration payload (name, description,
+    /// input schema), sorted by tool name.
+    ///
+    /// Every request carries these declarations, so this is the number behind
+    /// "21 tools": `mcp get` sums it into a per-request estimate, which is
+    /// what makes `enabled_tools` a decision instead of a guess. Empty when the
+    /// server is not connected.
+    pub tool_bytes: Vec<(String, usize)>,
+    /// Names the server exposes but this entry's `enabled_tools` /
+    /// `disabled_tools` keep away from the agent.
+    ///
+    /// Reported so a filtered server cannot be mistaken for one that simply
+    /// lacks those tools.
+    pub filtered: Vec<String>,
+    /// Length of the server's `InitializeResult.instructions`, in characters.
+    ///
+    /// `None` when the server sent none. Reported so a server whose guidance is
+    /// silently dropped is distinguishable from one that never sent any —
+    /// the same reason `filtered` exists.
+    pub instructions_chars: Option<usize>,
+    /// How many resources `resources/list` returned.
+    ///
+    /// `None` means the server did not answer the request (no resource support,
+    /// or an error): a server that publishes no resources and a server that
+    /// cannot answer at all are different, and `list_mcp_resources` behaves
+    /// differently for each.
+    pub resources: Option<usize>,
+    /// How many templates `resources/templates/list` returned.
+    ///
+    /// `None` means the server did not answer, which is a different fact from
+    /// publishing none — and the one that matters, because a template-addressed
+    /// server is exactly the case `resources/list` cannot describe.
+    pub resource_templates: Option<usize>,
+    /// How many prompts `prompts/list` returned.
+    ///
+    /// `None` means the server did not answer, which is a different fact from
+    /// publishing none — the same distinction `resources` draws, and the reason
+    /// this is reported at all: a server whose prompts are invisible here is one
+    /// the model will never think to ask for.
+    pub prompts: Option<usize>,
+    /// Exposed tools the server marked `readOnlyHint: true`, sorted.
+    ///
+    /// Evidence for the human writing `tools.<name>.risk`, not an input to the
+    /// risk itself — reported so a server's claim is visible instead of being
+    /// silently dropped along with the rest of `Tool::annotations`.
+    pub declared_read_only: Vec<String>,
+    /// Tools whose entry declares a risk, with the tier it declares, sorted by
+    /// name.
+    ///
+    /// Only *declared* tiers appear. A tool absent from this list keeps Tact's
+    /// default (`high`), so an entry that declares a risk is never
+    /// indistinguishable from one that silently kept the default — the same
+    /// reason `filtered` and `declared_read_only` exist.
+    pub declared_risks: Vec<(String, CapabilityRisk)>,
 }
 
 /// What one connection attempt produced.
@@ -464,7 +742,11 @@ enum ConnectOutcome {
 /// upgraded to the actionable pending state rather than reported as a failure.
 /// Shared by the full-config load and the single-server `get` view so both
 /// classify identically.
-async fn connect_server(name: &str, config: McpTransportConfig) -> ConnectOutcome {
+async fn connect_server(
+    name: &str,
+    config: McpTransportConfig,
+    policy: McpServerPolicy,
+) -> ConnectOutcome {
     if let McpTransportConfig::Remote(remote) = &config
         && remote.needs_authorization(name)
     {
@@ -474,7 +756,7 @@ async fn connect_server(name: &str, config: McpTransportConfig) -> ConnectOutcom
         );
         return ConnectOutcome::NeedsAuthorization;
     }
-    match McpClient::try_new(name.to_string(), config).await {
+    match McpClient::try_new_with_policy(name.to_string(), config, policy).await {
         Ok(client) => ConnectOutcome::Connected(client),
         Err(err)
             if err
@@ -514,6 +796,355 @@ pub struct PluginManifest {
     pub mcp_servers: Option<Value>,
 }
 
+/// Codex's `tools.<name>` override for one MCP tool.
+///
+/// Keys are snake_case exactly as Codex writes them, so this struct declares
+/// its own convention instead of inheriting `McpProjectConfig`'s `camelCase`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct McpToolConfig {
+    /// Codex `approval_mode`: `auto` | `prompt` | `approve`.
+    ///
+    /// Left as a string so an unknown value can be reported and ignored rather
+    /// than failing the whole entry.
+    #[serde(default)]
+    pub approval_mode: Option<String>,
+    /// Codex `output_token_limit`: result budget for this tool.
+    #[serde(default)]
+    pub output_token_limit: Option<usize>,
+    /// **Tact's own** `risk`: `read` | `write` | `high`.
+    ///
+    /// Not a Codex field — Codex has no per-tool risk axis, which is why every
+    /// MCP tool used to resolve to `CapabilityRisk::High` and could only be
+    /// made usable unattended through `approval_mode: "auto"`.
+    ///
+    /// Kept as a string for the same reason as `approval_mode`: an unknown
+    /// value is warned about and ignored, never fatal. Modelled rather than
+    /// left to serde's unknown-field handling, so a declared risk cannot be
+    /// dropped in silence.
+    #[serde(default)]
+    pub risk: Option<String>,
+}
+
+/// Tact's per-tool risk declaration for an MCP tool.
+///
+/// The tiers are not steps on one knob — see [`Self::as_str`] and the chapter
+/// table. `Write` is the tier to reach for when a tool must be usable
+/// unattended; `Read` is the only one that bypasses plan mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolRisk {
+    /// Read-only: allowed in every mode, including plan mode.
+    Read,
+    /// Same risk as a native writing tool: blocked in plan mode, asks once.
+    Write,
+    /// The default when nothing is declared: blocked in plan mode, asks, and
+    /// denied outright in a non-interactive run.
+    High,
+}
+
+impl ToolRisk {
+    /// Parses a configured value. `None` for anything unrecognised.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::High => "high",
+        }
+    }
+
+    #[must_use]
+    pub fn to_capability(self) -> CapabilityRisk {
+        match self {
+            Self::Read => CapabilityRisk::Read,
+            Self::Write => CapabilityRisk::Write,
+            Self::High => CapabilityRisk::High,
+        }
+    }
+}
+
+/// Codex's MCP approval modes.
+///
+/// Only [`ApprovalMode::Auto`] changes Tact's behaviour; it is an
+/// auto-**approve** on the *prompt* axis, never a re-classification. The
+/// risk a tool is reported and gated at comes from [`ToolRisk`] — the entry's
+/// `tools.<name>.risk` or `default_tool_risk`, and `CapabilityRisk::High` when
+/// the entry declares neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalMode {
+    /// Run without asking.
+    Auto,
+    /// Ask every time — Tact's unchanged default.
+    Prompt,
+    /// Ask every time. Kept as its own value so a Codex config round-trips
+    /// instead of being rewritten.
+    Approve,
+}
+
+impl ApprovalMode {
+    /// Parses a configured value. `None` for anything unrecognised, which the
+    /// caller reports and treats as absent.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "auto" => Some(Self::Auto),
+            "prompt" => Some(Self::Prompt),
+            "approve" => Some(Self::Approve),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Prompt => "prompt",
+            Self::Approve => "approve",
+        }
+    }
+}
+
+/// Resolved per-tool policy inside one server's [`McpServerPolicy`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct McpToolPolicy {
+    approval_mode: Option<ApprovalMode>,
+    output_token_limit: Option<usize>,
+    /// Already resolved to a capability, so the resolver cannot hand out a
+    /// tier that has no meaning at the permission layer.
+    risk: Option<CapabilityRisk>,
+}
+
+/// What one `.mcp.json` entry declares about the server's tools.
+///
+/// Empty by default: a plain `{"command": …, "args": […]}` entry exposes every
+/// tool, uses the global handshake timeout, keeps every tool asking for
+/// approval, and leaves every tool at `CapabilityRisk::High`.
+#[derive(Debug, Clone, Default)]
+pub struct McpServerPolicy {
+    enabled_tools: Option<Vec<String>>,
+    disabled_tools: Option<Vec<String>>,
+    startup_timeout: Option<std::time::Duration>,
+    tool_timeout: Option<std::time::Duration>,
+    default_approval_mode: Option<ApprovalMode>,
+    /// The entry's `default_tool_risk`, already resolved.
+    default_risk: Option<CapabilityRisk>,
+    tool_overrides: HashMap<String, McpToolPolicy>,
+}
+
+impl McpServerPolicy {
+    /// Reads the Codex per-entry fields off a parsed configuration.
+    #[must_use]
+    fn from_config(config: &McpProjectConfig) -> Self {
+        // Codex documents both spellings; seconds wins when both are present so
+        // one entry can never mean two different budgets.
+        let startup_timeout = match (config.startup_timeout_sec, config.startup_timeout_ms) {
+            (Some(secs), _) => Some(std::time::Duration::from_secs(secs)),
+            (None, Some(ms)) => Some(std::time::Duration::from_millis(ms)),
+            (None, None) => None,
+        };
+
+        let tool_overrides = config
+            .tools
+            .as_ref()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .map(|(name, raw)| {
+                        (
+                            name.clone(),
+                            McpToolPolicy {
+                                approval_mode: parse_approval_mode(
+                                    raw.approval_mode.as_deref(),
+                                    &format!("tools.{name}.approval_mode"),
+                                ),
+                                output_token_limit: raw.output_token_limit,
+                                risk: parse_tool_risk(
+                                    raw.risk.as_deref(),
+                                    &format!("tools.{name}.risk"),
+                                ),
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Self {
+            enabled_tools: config.enabled_tools.clone(),
+            disabled_tools: config.disabled_tools.clone(),
+            startup_timeout,
+            tool_timeout: config.tool_timeout_sec.map(std::time::Duration::from_secs),
+            default_approval_mode: parse_approval_mode(
+                config.default_tools_approval_mode.as_deref(),
+                "default_tools_approval_mode",
+            ),
+            default_risk: parse_tool_risk(config.default_tool_risk.as_deref(), "default_tool_risk"),
+            tool_overrides,
+        }
+    }
+
+    /// Whether this server exposes `tool` to the agent.
+    ///
+    /// `disabled_tools` is applied after `enabled_tools`, which is Codex's
+    /// documented order: naming a tool in both lists hides it.
+    #[must_use]
+    pub fn exposes(&self, tool: &str) -> bool {
+        if let Some(enabled) = &self.enabled_tools
+            && !enabled.iter().any(|listed| listed == tool)
+        {
+            return false;
+        }
+        if let Some(disabled) = &self.disabled_tools
+            && disabled.iter().any(|listed| listed == tool)
+        {
+            return false;
+        }
+        true
+    }
+
+    /// The handshake budget this entry asks for, if any.
+    #[must_use]
+    pub fn startup_timeout(&self) -> Option<std::time::Duration> {
+        self.startup_timeout
+    }
+
+    /// The single-call budget this entry asks for, if any.
+    #[must_use]
+    pub fn tool_timeout(&self) -> Option<std::time::Duration> {
+        self.tool_timeout
+    }
+
+    /// Whether the entry declares `approval_mode: "auto"` for `tool`.
+    ///
+    /// A per-tool override wins over the server default.
+    #[must_use]
+    pub fn is_auto_approved(&self, tool: &str) -> bool {
+        let mode = self
+            .tool_overrides
+            .get(tool)
+            .and_then(|policy| policy.approval_mode)
+            .or(self.default_approval_mode);
+        mode == Some(ApprovalMode::Auto)
+    }
+
+    /// The risk this entry declares for `tool`, if it declares one at all.
+    ///
+    /// A per-tool override wins over the entry's `default_tool_risk`. `None`
+    /// means the entry is silent, which the caller resolves to Tact's default
+    /// (`CapabilityRisk::High`) rather than to a guess.
+    #[must_use]
+    pub fn risk_for(&self, tool: &str) -> Option<CapabilityRisk> {
+        self.tool_overrides
+            .get(tool)
+            .and_then(|policy| policy.risk)
+            .or(self.default_risk)
+    }
+
+    /// The per-tool result budget this entry declares, if any.
+    #[must_use]
+    pub fn output_token_limit(&self, tool: &str) -> Option<usize> {
+        self.tool_overrides
+            .get(tool)
+            .and_then(|policy| policy.output_token_limit)
+    }
+
+    /// Whether the entry said anything at all about how the server behaves.
+    ///
+    /// Separates the two ways an entry can fail to declare a transport: one
+    /// that declares *nothing* is a mistake to report, while one that declares
+    /// only policy is an overlay for whoever owns the transport (see
+    /// [`Self::merged_under`]).
+    #[must_use]
+    fn declares_policy(&self) -> bool {
+        self.enabled_tools.is_some()
+            || self.disabled_tools.is_some()
+            || self.startup_timeout.is_some()
+            || self.tool_timeout.is_some()
+            || self.default_approval_mode.is_some()
+            || self.default_risk.is_some()
+            || !self.tool_overrides.is_empty()
+    }
+
+    /// Folds `overlay` in *under* `self`: every field `self` set is kept, and
+    /// the overlay only speaks where `self` was silent.
+    ///
+    /// This is how a policy-only entry reaches a server someone else declared —
+    /// typically a plugin-contributed one, whose bundled declaration always
+    /// outranks the user's own files. Precedence itself is untouched: an
+    /// overlay never overrides a stated field. Per-tool entries merge the same
+    /// way, so an overlay can add one tool's risk without dropping the winner's
+    /// other tools. `enabled_tools` / `disabled_tools` merge as whole lists,
+    /// because a list is one decision rather than a set of fields.
+    #[must_use]
+    fn merged_under(&self, overlay: &Self) -> Self {
+        let mut tool_overrides = self.tool_overrides.clone();
+        for (tool, extra) in &overlay.tool_overrides {
+            let slot = tool_overrides.entry(tool.clone()).or_default();
+            slot.approval_mode = slot.approval_mode.or(extra.approval_mode);
+            slot.output_token_limit = slot.output_token_limit.or(extra.output_token_limit);
+            slot.risk = slot.risk.or(extra.risk);
+        }
+        Self {
+            enabled_tools: self
+                .enabled_tools
+                .clone()
+                .or_else(|| overlay.enabled_tools.clone()),
+            disabled_tools: self
+                .disabled_tools
+                .clone()
+                .or_else(|| overlay.disabled_tools.clone()),
+            startup_timeout: self.startup_timeout.or(overlay.startup_timeout),
+            tool_timeout: self.tool_timeout.or(overlay.tool_timeout),
+            default_approval_mode: self.default_approval_mode.or(overlay.default_approval_mode),
+            default_risk: self.default_risk.or(overlay.default_risk),
+            tool_overrides,
+        }
+    }
+}
+
+/// Parses an `approval_mode`, reporting an unknown value instead of ignoring it.
+fn parse_approval_mode(value: Option<&str>, field: &str) -> Option<ApprovalMode> {
+    let value = value?;
+    match ApprovalMode::parse(value) {
+        Some(mode) => Some(mode),
+        None => {
+            tracing::warn!(
+                field,
+                value,
+                "unknown MCP approval_mode (expected auto|prompt|approve); ignoring it"
+            );
+            None
+        }
+    }
+}
+
+/// Parses a configured `risk`. An unknown value is reported and ignored, so a
+/// typo cannot fail the whole entry — the same rule `approval_mode` follows.
+fn parse_tool_risk(value: Option<&str>, field: &str) -> Option<CapabilityRisk> {
+    let value = value?;
+    match ToolRisk::parse(value) {
+        Some(risk) => Some(risk.to_capability()),
+        None => {
+            tracing::warn!(
+                field,
+                value,
+                "unknown MCP tool risk (expected read|write|high); ignoring it"
+            );
+            None
+        }
+    }
+}
+
 /// MCP server entry in `.mcp.json` / a plugin `.mcp.json`.
 ///
 /// Exactly one transport is expected:
@@ -535,6 +1166,12 @@ pub struct McpProjectConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Codex `env_vars`: names to copy out of Tact's environment.
+    ///
+    /// Applies to stdio entries. A remote entry that declares any is reported as
+    /// unmodelled, because there is no child process to put them in.
+    #[serde(rename = "env_vars", default)]
+    pub env_vars: Vec<McpEnvVar>,
     /// Working directory for a stdio server (Agent Plugins §7.2.1).
     ///
     /// Modelled rather than left in [`Self::extra`] because a plugin entry may
@@ -559,12 +1196,50 @@ pub struct McpProjectConfig {
     /// from a lower-precedence source — but is never connected.
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
+    /// Codex `enabled_tools`: allow list of tool names this server exposes.
+    ///
+    /// Absent means every tool the server lists. Written snake_case because
+    /// that is the spelling Codex uses for these fields.
+    #[serde(rename = "enabled_tools", default)]
+    pub enabled_tools: Option<Vec<String>>,
+    /// Codex `disabled_tools`: deny list, applied **after** `enabled_tools`.
+    #[serde(rename = "disabled_tools", default)]
+    pub disabled_tools: Option<Vec<String>>,
+    /// Codex `startup_timeout_sec`: handshake budget for this server.
+    ///
+    /// Overrides the global default for slow launchers (a cold `uvx` measured
+    /// ~100s). Absent keeps Tact's own default rather than Codex's 10s: an
+    /// entry that worked before must not start timing out.
+    #[serde(rename = "startup_timeout_sec", default)]
+    pub startup_timeout_sec: Option<u64>,
+    /// Codex `startup_timeout_ms`: millisecond alias for `startup_timeout_sec`.
+    #[serde(rename = "startup_timeout_ms", default)]
+    pub startup_timeout_ms: Option<u64>,
+    /// Codex `tool_timeout_sec`: budget for one `tools/call` on this server.
+    ///
+    /// Overrides Tact's global default for this server only, which is what the
+    /// field means in Codex. Absent keeps Tact's own ceiling.
+    #[serde(rename = "tool_timeout_sec", default)]
+    pub tool_timeout_sec: Option<u64>,
+    /// Codex `default_tools_approval_mode`: server-wide approval default.
+    #[serde(rename = "default_tools_approval_mode", default)]
+    pub default_tools_approval_mode: Option<String>,
+    /// **Tact's own** `default_tool_risk`: risk for this server's tools that
+    /// name no `risk` of their own.
+    ///
+    /// Not a Codex field. Absent keeps Tact's historical default
+    /// (`CapabilityRisk::High`), so an entry that says nothing about risk
+    /// behaves exactly as it did before this field existed.
+    #[serde(rename = "default_tool_risk", default)]
+    pub default_tool_risk: Option<String>,
+    /// Codex `tools`: per-tool `approval_mode` / `output_token_limit`.
+    #[serde(rename = "tools", default)]
+    pub tools: Option<HashMap<String, McpToolConfig>>,
     /// Keys this struct does not model.
     ///
     /// Kept so the resolver can report them instead of dropping them silently:
-    /// the Codex per-entry fields (`enabled_tools`, `omit_tools_from`,
-    /// `startup_timeout_sec`, `tools`) land here, and a configuration someone
-    /// wrote must not disappear without a word.
+    /// the remaining Codex per-entry field (`omit_tools_from`) lands here, and a
+    /// configuration someone wrote must not disappear without a word.
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -583,11 +1258,20 @@ impl Default for McpProjectConfig {
             command: None,
             args: Vec::new(),
             env: HashMap::new(),
+            env_vars: Vec::new(),
             cwd: None,
             url: None,
             headers: HashMap::new(),
             auth: None,
             enabled: true,
+            enabled_tools: None,
+            disabled_tools: None,
+            startup_timeout_sec: None,
+            startup_timeout_ms: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            default_tool_risk: None,
+            tools: None,
             extra: HashMap::new(),
         }
     }
@@ -611,6 +1295,7 @@ impl McpProjectConfig {
             command: self.command.clone()?,
             args: self.args.clone(),
             env: self.env.clone(),
+            env_vars: self.env_vars.clone(),
             cwd: self.cwd.as_deref().map(PathBuf::from),
         })
     }
@@ -627,6 +1312,7 @@ impl McpProjectConfig {
                 command: command.clone(),
                 args: self.args.clone(),
                 env: self.env.clone(),
+                env_vars: self.env_vars.clone(),
                 cwd: self.cwd.as_deref().map(PathBuf::from),
             }));
         }
@@ -967,20 +1653,123 @@ pub trait McpService: Send + Sync + 'static {
     fn cancel(&self) -> BoxFuture<'_, ()> {
         std::future::ready(()).boxed()
     }
+
+    /// `resources/list`, paginated to the end by the implementation.
+    ///
+    /// Required rather than defaulted: a service that cannot answer must say so
+    /// (the mock returns an empty list, and `read_resource` a not-found error),
+    /// because a silently empty resource list is indistinguishable from a server
+    /// that publishes none.
+    fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>>;
+
+    /// `resources/read` for one URI.
+    fn read_resource(&self, uri: String)
+    -> BoxFuture<'_, Result<ReadResourceResult, ServiceError>>;
+
+    /// `resources/templates/list`, paginated to the end by the implementation.
+    ///
+    /// Required for the same reason [`Self::list_resources`] is: a service that
+    /// cannot ask must say so, or "this transport cannot answer" becomes
+    /// indistinguishable from "the server publishes no templates".
+    fn list_resource_templates(&self)
+    -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>>;
+
+    /// `prompts/list`, paginated to the end by the implementation.
+    ///
+    /// Required for the same reason [`Self::list_resources`] is: a service that
+    /// cannot ask must say so, or "this transport cannot answer" becomes
+    /// indistinguishable from "the server publishes no prompts".
+    fn list_prompts(&self) -> BoxFuture<'_, Result<Vec<Prompt>, ServiceError>>;
+
+    /// `prompts/get` for one prompt, with the caller's arguments.
+    ///
+    /// Arguments are forwarded verbatim: a prompt's placeholders are the
+    /// server's vocabulary, and Tact has no business guessing at them.
+    fn get_prompt(
+        &self,
+        params: GetPromptRequestParams,
+    ) -> BoxFuture<'_, Result<GetPromptResult, ServiceError>>;
+
+    /// The `instructions` string the server returned during `initialize`.
+    ///
+    /// This is the MCP spec's channel for "what this server is and how to use
+    /// it", and the only thing a newly connected model gets *for free* — the
+    /// resources and tool descriptions behind it need a deliberate fetch. A
+    /// default of `None` keeps every test double compiling; only the real
+    /// client answers.
+    fn instructions(&self) -> Option<String> {
+        None
+    }
+
+    /// Whether the server signalled `notifications/tools/list_changed` since the
+    /// last check, clearing the flag.
+    ///
+    /// Defaulted to `false` rather than required: a test double, or a transport
+    /// that cannot carry notifications, must never look like a server that keeps
+    /// changing its mind — every request would re-list.
+    fn take_tools_changed(&self) -> bool {
+        false
+    }
 }
 
-struct RealMcpService(tokio::sync::RwLock<Option<RunningService<RoleClient, ()>>>);
+/// Records that a server said its tool list changed.
+///
+/// The connection's `ClientHandler` is this type, so rmcp delivers
+/// `notifications/tools/list_changed` here instead of dropping it on the unit
+/// handler Tact used before. The handler deliberately records *only* that
+/// something changed, and never re-lists: a refresh needs `&mut McpClient`, and
+/// running one inside the service's own notification task would contend with
+/// the transport driving it. The flag means "ask again", not what the answer is.
+#[derive(Debug, Clone, Default)]
+struct ToolListChangedSignal {
+    changed: Arc<AtomicBool>,
+}
+
+impl ToolListChangedSignal {
+    /// Whether a notification arrived since the last check, clearing the flag.
+    fn take(&self) -> bool {
+        self.changed.swap(false, Ordering::AcqRel)
+    }
+}
+
+impl ClientHandler for ToolListChangedSignal {
+    async fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        self.changed.store(true, Ordering::Release);
+    }
+}
+
+struct RealMcpService {
+    service: tokio::sync::RwLock<Option<RunningService<RoleClient, ToolListChangedSignal>>>,
+    /// Snapshotted at construction: `peer_info()` is only readable while the
+    /// service is alive, and `McpService::instructions` is synchronous.
+    instructions: Option<String>,
+    /// Shared with the connection's handler, so a notification the server sends
+    /// is visible to [`McpService::take_tools_changed`].
+    tools_changed: ToolListChangedSignal,
+}
 
 impl RealMcpService {
-    fn new(service: RunningService<RoleClient, ()>) -> Self {
-        Self(tokio::sync::RwLock::new(Some(service)))
+    fn new(
+        service: RunningService<RoleClient, ToolListChangedSignal>,
+        tools_changed: ToolListChangedSignal,
+    ) -> Self {
+        // Snapshotted at construction: `peer_info()` is only readable while the
+        // service is alive, and `McpService::instructions` is synchronous.
+        let instructions = service
+            .peer_info()
+            .and_then(|info| info.instructions.clone());
+        Self {
+            service: tokio::sync::RwLock::new(Some(service)),
+            instructions,
+            tools_changed,
+        }
     }
 }
 
 impl McpService for RealMcpService {
     fn list_all_tools(&self) -> BoxFuture<'_, Result<Vec<McpTool>, ServiceError>> {
         async move {
-            let guard = self.0.read().await;
+            let guard = self.service.read().await;
             match guard.as_ref() {
                 Some(service) => service.list_all_tools().await,
                 None => Err(ServiceError::TransportClosed),
@@ -994,7 +1783,7 @@ impl McpService for RealMcpService {
         params: CallToolRequestParams,
     ) -> BoxFuture<'_, Result<CallToolResult, ServiceError>> {
         async move {
-            let guard = self.0.read().await;
+            let guard = self.service.read().await;
             match guard.as_ref() {
                 Some(service) => service.call_tool(params).await,
                 None => Err(ServiceError::TransportClosed),
@@ -1005,9 +1794,80 @@ impl McpService for RealMcpService {
 
     fn cancel(&self) -> BoxFuture<'_, ()> {
         async move {
-            let mut guard = self.0.write().await;
+            let mut guard = self.service.write().await;
             if let Some(service) = guard.take() {
                 let _ = service.cancel().await;
+            }
+        }
+        .boxed()
+    }
+
+    fn instructions(&self) -> Option<String> {
+        self.instructions.clone()
+    }
+
+    fn take_tools_changed(&self) -> bool {
+        self.tools_changed.take()
+    }
+
+    fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.list_all_resources().await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
+    }
+
+    fn read_resource(
+        &self,
+        uri: String,
+    ) -> BoxFuture<'_, Result<ReadResourceResult, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.read_resource(read_params(&uri)).await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
+    }
+
+    fn list_resource_templates(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.list_all_resource_templates().await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
+    }
+
+    fn list_prompts(&self) -> BoxFuture<'_, Result<Vec<Prompt>, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.list_all_prompts().await,
+                None => Err(ServiceError::TransportClosed),
+            }
+        }
+        .boxed()
+    }
+
+    fn get_prompt(
+        &self,
+        params: GetPromptRequestParams,
+    ) -> BoxFuture<'_, Result<GetPromptResult, ServiceError>> {
+        async move {
+            let guard = self.service.read().await;
+            match guard.as_ref() {
+                Some(service) => service.get_prompt(params).await,
+                None => Err(ServiceError::TransportClosed),
             }
         }
         .boxed()
@@ -1026,11 +1886,55 @@ where
     while lines.next_line().await.ok().flatten().is_some() {}
 }
 
+/// Bounds one server's instructions, marking the cut.
+///
+/// The truncation marker is part of the injected text on purpose: a silent cut
+/// would leave the model with guidance that stops mid-sentence and no way to
+/// know it is incomplete.
+fn cap_instructions(text: &str) -> String {
+    if text.chars().count() <= MCP_INSTRUCTIONS_MAX_CHARS {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(MCP_INSTRUCTIONS_MAX_CHARS).collect();
+    format!("{kept}\n… (truncated at {MCP_INSTRUCTIONS_MAX_CHARS} characters)")
+}
+
 pub struct McpClient {
     pub server_name: String,
     service: Arc<dyn McpService>,
     tools: Vec<McpTool>,
     tool_specs: Vec<ToolSpec>,
+    /// Tool names the entry's `enabled_tools` / `disabled_tools` hide.
+    ///
+    /// Kept so the filtering can be *reported*: a configuration that removes a
+    /// tool must not look identical to a server that never had it.
+    hidden: Vec<String>,
+    /// The entry's per-tool policy (approval mode, output budget, risk).
+    ///
+    /// Boxed so `ConnectOutcome::Connected` stays small: the enum is built
+    /// once per server, and an unboxed policy doubled the variant's size
+    /// (`clippy::large_enum_variant`).
+    policy: Box<McpServerPolicy>,
+    /// Exposed tools the server itself marked `readOnlyHint: true`, sorted.
+    ///
+    /// Evidence, never authority: it is displayed by `mcp get` so a human can
+    /// decide whether to declare `tools.<name>.risk`, and it deliberately does
+    /// **not** reach [`McpServerPolicy::risk_for`]. A server that lies is the
+    /// case a permission system exists to survive, and even an honest
+    /// read-only tool can be an egress path when it also sets
+    /// `openWorldHint` — Tact has no data-flow axis to express that.
+    declared_read_only: Vec<String>,
+    /// Per-tool declaration size in bytes, for `mcp get`'s cost line.
+    ///
+    /// Not a policy input: it exists so the human choosing `enabled_tools` can
+    /// see what each tool costs. Sorted by name like the rest of the view.
+    tool_bytes: Vec<(String, usize)>,
+    /// The server's `InitializeResult.instructions`, normalized and capped.
+    ///
+    /// `None` when the server sent none (or only whitespace). Capped at
+    /// [`MCP_INSTRUCTIONS_MAX_CHARS`] here, once, so every consumer — the
+    /// prompt block and `mcp get` — reports the same length.
+    instructions: Option<String>,
 }
 
 impl McpClient {
@@ -1038,19 +1942,21 @@ impl McpClient {
         server_name: impl Into<String>,
         config: McpTransportConfig,
     ) -> Result<Self> {
+        Self::try_new_with_policy(server_name, config, McpServerPolicy::default()).await
+    }
+
+    /// Connects a server together with the policy its entry declared.
+    pub async fn try_new_with_policy(
+        server_name: impl Into<String>,
+        config: McpTransportConfig,
+        policy: McpServerPolicy,
+    ) -> Result<Self> {
         let server_name = server_name.into();
-        let running = Self::connect(&server_name, config).await?;
-        let service: Arc<dyn McpService> = Arc::new(RealMcpService::new(running));
+        let (running, tools_changed) =
+            Self::connect(&server_name, config, policy.startup_timeout()).await?;
+        let service: Arc<dyn McpService> = Arc::new(RealMcpService::new(running, tools_changed));
         match Self::fetch_tools(&server_name, service.as_ref()).await {
-            Ok(tools) => {
-                let tool_specs = build_tool_specs(&server_name, &tools);
-                Ok(Self {
-                    server_name,
-                    service,
-                    tools,
-                    tool_specs,
-                })
-            }
+            Ok(tools) => Ok(Self::assemble(server_name, tools, service, policy)),
             Err(err) => {
                 let _ = service.cancel().await;
                 Err(err)
@@ -1067,34 +1973,150 @@ impl McpClient {
         tools: Vec<McpTool>,
         service: Arc<dyn McpService>,
     ) -> Self {
-        let server_name = server_name.into();
-        let tool_specs = build_tool_specs(&server_name, &tools);
+        Self::with_service_and_policy(server_name, tools, service, McpServerPolicy::default())
+    }
+
+    /// [`Self::with_service`] for a server whose entry declares a tool policy.
+    pub fn with_service_and_policy(
+        server_name: impl Into<String>,
+        tools: Vec<McpTool>,
+        service: Arc<dyn McpService>,
+        policy: McpServerPolicy,
+    ) -> Self {
+        Self::assemble(server_name.into(), tools, service, policy)
+    }
+
+    /// Applies the entry's tool filter and keeps the hidden names for reporting.
+    fn assemble(
+        server_name: String,
+        tools: Vec<McpTool>,
+        service: Arc<dyn McpService>,
+        policy: McpServerPolicy,
+    ) -> Self {
+        let ExposedTools {
+            tools,
+            hidden,
+            tool_specs,
+            declared_read_only,
+            tool_bytes,
+        } = derive_exposed(&server_name, tools, &policy);
+        // Read the server's prose before the service is moved into the client.
+        // Normalizing here (not in the transport) keeps the mock and the real
+        // client on one path: a whitespace-only payload means "sent nothing".
+        let instructions = service
+            .instructions()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .map(|text| cap_instructions(&text));
         Self {
             server_name,
             service,
             tools,
             tool_specs,
+            hidden,
+            policy: Box::new(policy),
+            declared_read_only,
+            tool_bytes,
+            instructions,
         }
+    }
+
+    /// Re-lists this server's tools when it said they changed.
+    ///
+    /// `Ok(None)` means the server was quiet and nothing was re-listed: the
+    /// notification is only a hint that the answer moved, so a server that
+    /// never sends one costs exactly nothing. A re-list failure leaves the
+    /// previous list in place and is reported by the caller.
+    pub async fn refresh_tools_if_stale(&mut self) -> Result<Option<ToolListRefresh>> {
+        if !self.service.take_tools_changed() {
+            return Ok(None);
+        }
+        let tools = Self::fetch_tools(&self.server_name, self.service.as_ref()).await?;
+        let before: BTreeSet<String> = self.tools.iter().map(|t| t.name.to_string()).collect();
+        let before_hidden: BTreeSet<String> = self.hidden.iter().cloned().collect();
+        let ExposedTools {
+            tools,
+            hidden,
+            tool_specs,
+            declared_read_only,
+            tool_bytes,
+        } = derive_exposed(&self.server_name, tools, &self.policy);
+        let after: BTreeSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
+        let after_hidden: BTreeSet<String> = hidden.iter().cloned().collect();
+        let refresh = ToolListRefresh {
+            added: after.difference(&before).cloned().collect(),
+            removed: before.difference(&after).cloned().collect(),
+            newly_hidden: after_hidden.difference(&before_hidden).cloned().collect(),
+        };
+        self.tools = tools;
+        self.tool_specs = tool_specs;
+        self.hidden = hidden;
+        self.declared_read_only = declared_read_only;
+        self.tool_bytes = tool_bytes;
+        Ok(Some(refresh))
+    }
+
+    /// The server's `initialize` instructions, capped and trimmed.
+    pub fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
     }
 
     pub fn list_tools(&self) -> &[McpTool] {
         &self.tools
     }
 
+    /// Bytes of each exposed tool's declaration, sorted by tool name.
+    ///
+    /// What `mcp get` adds up to show a server's per-request context cost.
+    pub fn tool_bytes(&self) -> &[(String, usize)] {
+        &self.tool_bytes
+    }
+
+    /// Tool names hidden by this entry's `enabled_tools` / `disabled_tools`.
+    pub fn hidden_tools(&self) -> &[String] {
+        &self.hidden
+    }
+
+    /// The server's own `readOnlyHint: true` declarations, sorted.
+    ///
+    /// Display-only evidence — see the field's own note. Never consulted by
+    /// [`McpServerPolicy::risk_for`].
+    pub fn declared_read_only(&self) -> &[String] {
+        &self.declared_read_only
+    }
+
+    /// This server's resolved tool policy.
+    pub fn policy(&self) -> &McpServerPolicy {
+        self.policy.as_ref()
+    }
+
     async fn connect(
         server_name: &str,
         config: McpTransportConfig,
-    ) -> Result<RunningService<RoleClient, ()>> {
+        timeout: Option<std::time::Duration>,
+    ) -> Result<(
+        RunningService<RoleClient, ToolListChangedSignal>,
+        ToolListChangedSignal,
+    )> {
         let config = match config {
             McpTransportConfig::Stdio(config) => config,
             McpTransportConfig::Remote(remote) => {
-                return remote::serve_remote(server_name, &remote).await;
+                let signal = ToolListChangedSignal::default();
+                let service = remote::serve_remote(server_name, &remote, signal.clone()).await?;
+                return Ok((service, signal));
             }
         };
         let command = config.command;
         let args = config.args;
         let env = config.env;
+        let env_vars = config.env_vars;
         let cwd = config.cwd;
+        // Resolved before the spawn: an unset variable fails this server with a
+        // message naming it, rather than starting a child that will fail later
+        // somewhere unrelated.
+        let inherited = resolve_env_vars(server_name, &env, &env_vars)?;
+        let mut child_env = env;
+        child_env.extend(inherited);
         // Capture and drain the server's stderr instead of inheriting it to
         // the terminal. Many stdio MCP servers log incidental progress (e.g.
         // index/recovery "Reconstruction complete") there; forwarding those
@@ -1102,7 +2124,7 @@ impl McpClient {
         // are enabled.
         let (transport, stderr) =
             TokioChildProcess::builder(Command::new(&command).configure(move |cmd| {
-                cmd.args(&args).envs(&env);
+                cmd.args(&args).envs(&child_env);
                 if let Some(cwd) = cwd.as_deref() {
                     cmd.current_dir(cwd);
                 }
@@ -1117,15 +2139,24 @@ impl McpClient {
             });
         }
 
-        tokio::time::timeout(MCP_INIT_TIMEOUT, ().serve(transport))
+        // The connection's handler records `notifications/tools/list_changed`
+        // into the signal we keep, so a server that grows or drops a tool after
+        // the handshake is not frozen at whatever it advertised then.
+        let signal = ToolListChangedSignal::default();
+        // Codex names this budget `startup_timeout_sec`; an entry that declares
+        // it overrides the global default so a slow launcher (a cold `uvx`) is a
+        // configuration problem, not a permanently failed server.
+        let budget = timeout.unwrap_or(MCP_INIT_TIMEOUT);
+        let service = tokio::time::timeout(budget, signal.clone().serve(transport))
             .await
             .with_context(|| {
                 format!(
                     "MCP server {server_name} did not complete the handshake within {}s",
-                    MCP_INIT_TIMEOUT.as_secs()
+                    budget.as_secs()
                 )
             })?
-            .with_context(|| format!("failed to initialize MCP client for server {server_name}"))
+            .with_context(|| format!("failed to initialize MCP client for server {server_name}"))?;
+        Ok((service, signal))
     }
 
     async fn fetch_tools(server_name: &str, service: &dyn McpService) -> Result<Vec<McpTool>> {
@@ -1151,8 +2182,11 @@ impl McpClient {
             }
         };
 
+        // The entry's `tool_timeout_sec` overrides the global ceiling for this
+        // server; the error names whichever budget was actually applied.
+        let budget = self.policy.tool_timeout().unwrap_or(MCP_CALL_TOOL_TIMEOUT);
         let result = tokio::time::timeout(
-            MCP_CALL_TOOL_TIMEOUT,
+            budget,
             self.service.call_tool(CallToolRequestParams {
                 meta: None,
                 name: tool_name.to_string().into(),
@@ -1164,7 +2198,7 @@ impl McpClient {
         .with_context(|| {
             format!(
                 "MCP tool {tool_name} did not return within {}s",
-                MCP_CALL_TOOL_TIMEOUT.as_secs()
+                budget.as_secs()
             )
         })?
         .with_context(|| format!("failed to call MCP tool {tool_name}"))?;
@@ -1192,10 +2226,39 @@ impl McpClient {
 type McpToolHandler =
     Arc<dyn Fn(&CallToolRequestParams) -> Result<CallToolResult, ServiceError> + Send + Sync>;
 
+/// One `prompts/get` a test double received: the prompt name and its arguments.
+type PromptCall = (String, Option<Map<String, Value>>);
+
 pub struct MockMcpService {
-    tools: Vec<McpTool>,
+    /// Behind a lock so a test can grow the list the way a real server does
+    /// after `notifications/tools/list_changed` — a fixed vec could only ever
+    /// prove that a re-list was issued, not that it was used.
+    tools: std::sync::Mutex<Vec<McpTool>>,
     handler: McpToolHandler,
     calls: std::sync::Mutex<Vec<(String, Value)>>,
+    instructions: Option<String>,
+    resources: Vec<Resource>,
+    resource_templates: Vec<ResourceTemplate>,
+    resource_text: HashMap<String, String>,
+    prompts: Vec<Prompt>,
+    /// Messages each prompt composes, keyed by prompt name.
+    prompt_messages: HashMap<String, Vec<rmcp::model::PromptMessage>>,
+    /// Every `prompts/get` this double received: `(prompt name, arguments)`.
+    ///
+    /// Recorded because the arguments are the part a test can get wrong: a
+    /// prompt fetched without its placeholders is a template, not an
+    /// instruction, and nothing else in the pipeline would notice.
+    prompt_calls: std::sync::Mutex<Vec<PromptCall>>,
+    /// Set by [`Self::announce_tools_changed`], read by
+    /// [`McpService::take_tools_changed`].
+    tools_changed: Arc<AtomicBool>,
+    /// When set, `tools/list` fails — the shape a re-list takes when the
+    /// transport went away between the notification and the request.
+    list_tools_fails: bool,
+    /// When set, the three *listing* methods answer `-32601 Method not found`,
+    /// the way a server that implements none of them does. canva is such a
+    /// server, and its answer used to fail a listing for every other server too.
+    lists_nothing: bool,
 }
 
 impl MockMcpService {
@@ -1207,10 +2270,139 @@ impl MockMcpService {
             + 'static,
     {
         Self {
-            tools,
+            tools: std::sync::Mutex::new(tools),
             handler: Arc::new(handler),
             calls: std::sync::Mutex::new(Vec::new()),
+            instructions: None,
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            resource_text: HashMap::new(),
+            prompts: Vec::new(),
+            prompt_messages: HashMap::new(),
+            prompt_calls: std::sync::Mutex::new(Vec::new()),
+            tools_changed: Arc::new(AtomicBool::new(false)),
+            list_tools_fails: false,
+            lists_nothing: false,
         }
+    }
+
+    /// The tools this double currently advertises.
+    fn tools(&self) -> Vec<McpTool> {
+        self.tools.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Replaces the advertised tools, as a server would when its list moves.
+    pub fn set_tools(&self, tools: Vec<McpTool>) {
+        *self.tools.lock().unwrap_or_else(|e| e.into_inner()) = tools;
+    }
+
+    /// Blows the `notifications/tools/list_changed` whistle.
+    pub fn announce_tools_changed(&self) {
+        self.tools_changed.store(true, Ordering::Release);
+    }
+
+    /// Makes `tools/list` fail, so a re-list can be tested against a server that
+    /// announced a change and then went away.
+    #[must_use]
+    pub fn failing_to_list(mut self) -> Self {
+        self.list_tools_fails = true;
+        self
+    }
+
+    /// Makes the listing methods answer `-32601 Method not found`, which is what
+    /// a server that implements none of them does.
+    ///
+    /// The distinction this exists to test is *where* the error lands: a
+    /// per-server "did not answer" line, not a failed listing for everyone.
+    #[must_use]
+    pub fn without_listings(mut self) -> Self {
+        self.lists_nothing = true;
+        self
+    }
+
+    /// Publishes a readable text resource under `uri`.
+    #[must_use]
+    pub fn with_text_resource(mut self, uri: &str, name: &str, text: &str) -> Self {
+        self.resources
+            .push(Resource::new(RawResource::new(uri, name), None));
+        self.resource_text.insert(uri.to_string(), text.to_string());
+        self
+    }
+
+    /// Publishes a URI *template* this server can serve.
+    ///
+    /// A template-only server is the case `resources/list` cannot describe: it
+    /// answers with nothing, and the model needs the placeholder vocabulary
+    /// before it can read anything.
+    #[must_use]
+    pub fn with_resource_template(mut self, uri_template: &str, name: &str) -> Self {
+        self.resource_templates
+            .push(rmcp::model::ResourceTemplate::new(
+                rmcp::model::RawResourceTemplate {
+                    uri_template: uri_template.to_string(),
+                    name: name.to_string(),
+                    title: None,
+                    description: None,
+                    mime_type: None,
+                    icons: None,
+                },
+                None,
+            ));
+        self
+    }
+
+    /// Adds an `InitializeResult.instructions` payload for this server.
+    #[must_use]
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
+        self
+    }
+
+    /// Publishes one prompt, with the arguments its listing should show.
+    ///
+    /// `arguments` is `(name, required)` pairs; an empty slice is a prompt that
+    /// takes none, which must not gain an argument line in the listing.
+    #[must_use]
+    pub fn with_prompt(
+        mut self,
+        name: &str,
+        description: &str,
+        arguments: &[(&str, bool)],
+    ) -> Self {
+        let arguments: Vec<rmcp::model::PromptArgument> = arguments
+            .iter()
+            .map(|(argument, required)| rmcp::model::PromptArgument {
+                name: (*argument).to_string(),
+                title: None,
+                description: None,
+                required: Some(*required),
+            })
+            .collect();
+        self.prompts.push(Prompt::new(
+            name,
+            Some(description),
+            (!arguments.is_empty()).then_some(arguments),
+        ));
+        self
+    }
+
+    /// The messages this prompt composes when fetched.
+    #[must_use]
+    pub fn with_prompt_messages(
+        mut self,
+        name: &str,
+        messages: Vec<rmcp::model::PromptMessage>,
+    ) -> Self {
+        self.prompt_messages.insert(name.to_string(), messages);
+        self
+    }
+
+    /// Every `(prompt name, arguments)` pair `prompts/get` received.
+    pub fn prompt_calls(&self) -> Vec<PromptCall> {
+        self.prompt_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Return every `(tool_name, arguments)` pair received so far.
@@ -1221,8 +2413,15 @@ impl MockMcpService {
 
 impl McpService for MockMcpService {
     fn list_all_tools(&self) -> BoxFuture<'_, Result<Vec<McpTool>, ServiceError>> {
-        let tools = self.tools.clone();
+        if self.list_tools_fails {
+            return std::future::ready(Err(ServiceError::TransportClosed)).boxed();
+        }
+        let tools = self.tools();
         std::future::ready(Ok(tools)).boxed()
+    }
+
+    fn take_tools_changed(&self) -> bool {
+        self.tools_changed.swap(false, Ordering::AcqRel)
     }
 
     fn call_tool(
@@ -1242,12 +2441,127 @@ impl McpService for MockMcpService {
         let handler = self.handler.clone();
         std::future::ready(handler(&params)).boxed()
     }
+
+    fn instructions(&self) -> Option<String> {
+        self.instructions.clone()
+    }
+
+    fn list_resources(&self) -> BoxFuture<'_, Result<Vec<Resource>, ServiceError>> {
+        if self.lists_nothing {
+            return std::future::ready(Err(ServiceError::McpError(
+                rmcp::model::ErrorData::method_not_found::<rmcp::model::ListResourcesRequestMethod>(
+                ),
+            )))
+            .boxed();
+        }
+        let resources = self.resources.clone();
+        std::future::ready(Ok(resources)).boxed()
+    }
+
+    fn list_resource_templates(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<ResourceTemplate>, ServiceError>> {
+        if self.lists_nothing {
+            return std::future::ready(Err(ServiceError::McpError(
+                rmcp::model::ErrorData::method_not_found::<
+                    rmcp::model::ListResourceTemplatesRequestMethod,
+                >(),
+            )))
+            .boxed();
+        }
+        let templates = self.resource_templates.clone();
+        std::future::ready(Ok(templates)).boxed()
+    }
+
+    fn read_resource(
+        &self,
+        uri: String,
+    ) -> BoxFuture<'_, Result<ReadResourceResult, ServiceError>> {
+        // A missing URI is a real not-found error, not an empty result: the two
+        // must not be confusable in a test.
+        let result = match self.resource_text.get(&uri) {
+            Some(text) => Ok(ReadResourceResult {
+                contents: vec![rmcp::model::ResourceContents::text(
+                    text.clone(),
+                    uri.clone(),
+                )],
+            }),
+            None => Err(ServiceError::McpError(
+                rmcp::model::ErrorData::resource_not_found(
+                    format!("no such resource: {uri}"),
+                    None,
+                ),
+            )),
+        };
+        std::future::ready(result).boxed()
+    }
+
+    fn list_prompts(&self) -> BoxFuture<'_, Result<Vec<Prompt>, ServiceError>> {
+        if self.lists_nothing {
+            return std::future::ready(Err(ServiceError::McpError(
+                rmcp::model::ErrorData::method_not_found::<rmcp::model::ListPromptsRequestMethod>(),
+            )))
+            .boxed();
+        }
+        let prompts = self.prompts.clone();
+        std::future::ready(Ok(prompts)).boxed()
+    }
+
+    fn get_prompt(
+        &self,
+        params: GetPromptRequestParams,
+    ) -> BoxFuture<'_, Result<GetPromptResult, ServiceError>> {
+        self.prompt_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((params.name.clone(), params.arguments.clone()));
+        // A missing prompt is a real not-found error, not an empty result: the
+        // two must not be confusable in a test. "Missing" means *not advertised*
+        // — a prompt this double lists is gettable, even if a test never gave it
+        // messages, because that is what a real server does.
+        let listed = self.prompts.iter().any(|prompt| prompt.name == params.name);
+        let result = match (self.prompt_messages.get(&params.name), listed) {
+            (Some(messages), _) => Ok(GetPromptResult {
+                description: None,
+                messages: messages.clone(),
+            }),
+            (None, true) => Ok(GetPromptResult {
+                description: None,
+                messages: Vec::new(),
+            }),
+            (None, false) => Err(ServiceError::McpError(
+                rmcp::model::ErrorData::invalid_params(
+                    format!("no such prompt: {}", params.name),
+                    None,
+                ),
+            )),
+        };
+        std::future::ready(result).boxed()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpToolName {
     pub server: String,
     pub tool: String,
+}
+
+/// Builds the `mcp__<server>__<tool>` name the agent calls.
+///
+/// One place, because routing keys on this exact spelling: a second literal
+/// (the hook path needs the name too) would eventually differ from this one,
+/// and the failure would look like "the tool does not exist".
+#[must_use]
+pub fn mcp_tool_name(server: &str, tool: &str) -> String {
+    format!("mcp__{server}__{tool}")
+}
+
+impl McpToolName {
+    /// The namespaced name, the inverse of `TryFrom<&str>`.
+    #[must_use]
+    pub fn full_name(&self) -> String {
+        mcp_tool_name(&self.server, &self.tool)
+    }
 }
 
 impl TryFrom<&str> for McpToolName {
@@ -1320,6 +2634,63 @@ impl MCPToolRouter {
         McpToolName::try_from(name).ok().map(|p| p.server)
     }
 
+    /// Whether the server's entry declares `approval_mode: "auto"` for a tool.
+    ///
+    /// False for an unknown server or tool, so an unresolvable name keeps the
+    /// default ask behaviour instead of becoming auto-approved by accident.
+    #[must_use]
+    pub fn is_auto_approved(&self, server: &str, tool: &str) -> bool {
+        self.clients
+            .get(server)
+            .is_some_and(|client| client.policy().is_auto_approved(tool))
+    }
+
+    /// The risk to report for one of this server's tools.
+    ///
+    /// `self.clients.get(server).and_then(risk_for)` when the entry declares a
+    /// tier, and [`normalize_mcp_capability`] otherwise — so "the entry is
+    /// silent" and "the entry said high" end up the same, while only an
+    /// explicit declaration can lower it. An unknown server or tool keeps the
+    /// default rather than becoming approved by accident.
+    #[must_use]
+    pub fn risk_for(&self, server: &str, tool: &str) -> CapabilityRisk {
+        self.clients
+            .get(server)
+            .and_then(|client| client.policy().risk_for(tool))
+            .unwrap_or_else(|| normalize_mcp_capability(server, tool))
+    }
+
+    /// Re-lists every server that announced `notifications/tools/list_changed`.
+    ///
+    /// Quiet servers are untouched — no request is sent — so the cost of this
+    /// pass is zero until a server actually says something. A server that
+    /// announced a change and then failed to answer keeps its previous list,
+    /// and is reported rather than silently emptied.
+    pub async fn refresh_changed(&mut self) -> ToolListReport {
+        let mut report = ToolListReport::default();
+        for (server, client) in self.clients.iter_mut() {
+            match client.refresh_tools_if_stale().await {
+                Ok(None) => {}
+                Ok(Some(refresh)) if refresh.is_empty() => {}
+                Ok(Some(refresh)) => report.changed.push((server.clone(), refresh)),
+                Err(err) => report.failed.push((server.clone(), format!("{err:#}"))),
+            }
+        }
+        report.changed.sort_by(|a, b| a.0.cmp(&b.0));
+        report.failed.sort();
+        report
+    }
+
+    /// The per-tool result budget this server's entry declares, by full tool
+    /// name (`mcp__<server>__<tool>`).
+    #[must_use]
+    pub fn output_token_limit(&self, full_name: &str) -> Option<usize> {
+        let parsed = McpToolName::try_from(full_name).ok()?;
+        self.clients
+            .get(&parsed.server)
+            .and_then(|client| client.policy().output_token_limit(&parsed.tool))
+    }
+
     pub async fn call(&self, tool_name: &str, arguments: Value) -> Result<String> {
         let parsed = McpToolName::try_from(tool_name)?;
         let client = self
@@ -1347,6 +2718,37 @@ impl MCPToolRouter {
         summaries
     }
 
+    /// The `InitializeResult.instructions` of every connected server, as one
+    /// markdown body for the system prompt — empty when no server sent any.
+    ///
+    /// Servers are emitted in name order so the block is deterministic (the
+    /// system prompt sits before the KV-cache boundary; an unstable body would
+    /// invalidate the cached prefix on every render).
+    ///
+    /// A server whose tools are all filtered out is skipped: its guidance is
+    /// about tools the agent cannot call, and `mcp list` already reports the
+    /// filter. A server that sends no tools at all is skipped for the same
+    /// reason.
+    pub fn instructions_block(&self) -> String {
+        let mut servers: Vec<(&str, &str)> = self
+            .clients
+            .values()
+            .filter(|client| !client.tools.is_empty())
+            .filter_map(|client| {
+                client
+                    .instructions()
+                    .map(|text| (client.server_name.as_str(), text))
+            })
+            .collect();
+        servers.sort_by(|a, b| a.0.cmp(b.0));
+
+        let mut sections = Vec::with_capacity(servers.len());
+        for (server, text) in servers {
+            sections.push(format!("## {server}\n\n{text}"));
+        }
+        sections.join("\n\n")
+    }
+
     pub async fn disconnect_all(&mut self) {
         for (_, client) in self.clients.drain() {
             client.shutdown().await;
@@ -1354,11 +2756,141 @@ impl MCPToolRouter {
     }
 }
 
+/// Applies the entry's tool filter and derives everything the client keeps.
+///
+/// One place, because `assemble` (at connect) and `refresh_tools_if_stale`
+/// (after `notifications/tools/list_changed`) must not disagree about which
+/// tools a server exposes — a disagreement would be invisible, and `hidden` /
+/// `declared_read_only` exist precisely to make that decision visible.
+struct ExposedTools {
+    tools: Vec<McpTool>,
+    hidden: Vec<String>,
+    tool_specs: Vec<ToolSpec>,
+    declared_read_only: Vec<String>,
+    /// Bytes of each exposed tool's declaration payload (name, description,
+    /// input schema), which is what costs context on every request.
+    ///
+    /// Measured here, once, from the spec that is actually sent — the whole
+    /// point is that "21 tools" tells you nothing about 8.6k tokens.
+    tool_bytes: Vec<(String, usize)>,
+}
+
+fn derive_exposed(
+    server_name: &str,
+    tools: Vec<McpTool>,
+    policy: &McpServerPolicy,
+) -> ExposedTools {
+    let mut exposed = Vec::new();
+    let mut hidden = Vec::new();
+    for tool in tools {
+        if policy.exposes(&tool.name) {
+            exposed.push(tool);
+        } else {
+            hidden.push(tool.name.to_string());
+        }
+    }
+    hidden.sort();
+    // Read the server's own read-only declarations off the tools we are about
+    // to keep. Only *exposed* tools matter: a tool the entry filtered away is
+    // not something the human can be asked to declare a risk for.
+    let mut declared_read_only: Vec<String> = exposed
+        .iter()
+        .filter(|tool| {
+            tool.annotations
+                .as_ref()
+                .and_then(|a| a.read_only_hint)
+                .unwrap_or(false)
+        })
+        .map(|tool| tool.name.to_string())
+        .collect();
+    declared_read_only.sort();
+    declared_read_only.dedup();
+    let tool_specs = build_tool_specs(server_name, &exposed);
+    let tool_bytes = exposed
+        .iter()
+        .zip(&tool_specs)
+        .map(|(tool, spec)| {
+            (
+                tool.name.to_string(),
+                serde_json::to_string(spec)
+                    .map(|json| json.len())
+                    .unwrap_or(0),
+            )
+        })
+        .collect();
+    ExposedTools {
+        tools: exposed,
+        hidden,
+        tool_specs,
+        declared_read_only,
+        tool_bytes,
+    }
+}
+
+/// What one server's tool list did when it was re-read.
+///
+/// Names rather than counts: "21 → 21" is not a debuggable fact, and a server
+/// that swaps one tool for another would otherwise look unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolListRefresh {
+    /// Tools the agent can now call and could not before.
+    pub added: Vec<String>,
+    /// Tools the agent can no longer call.
+    pub removed: Vec<String>,
+    /// Tools that became hidden by this entry's `enabled_tools` /
+    /// `disabled_tools` — not callable, but not the server's doing either.
+    pub newly_hidden: Vec<String>,
+}
+
+impl ToolListRefresh {
+    /// Whether the re-read changed anything the log is worth showing.
+    fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.newly_hidden.is_empty()
+    }
+
+    /// The phrase a report line carries.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.added.is_empty() {
+            parts.push(format!("added {}", self.added.join(", ")));
+        }
+        if !self.removed.is_empty() {
+            parts.push(format!("removed {}", self.removed.join(", ")));
+        }
+        if !self.newly_hidden.is_empty() {
+            parts.push(format!("now hidden {}", self.newly_hidden.join(", ")));
+        }
+        if parts.is_empty() {
+            parts.push("no visible change".to_string());
+        }
+        parts.join("; ")
+    }
+}
+
+/// The outcome of one refresh pass over every connected server.
+#[derive(Debug, Clone, Default)]
+pub struct ToolListReport {
+    /// Servers whose tool list was re-read, with what moved.
+    pub changed: Vec<(String, ToolListRefresh)>,
+    /// Servers that announced a change and could not be re-listed. Their
+    /// previous list is kept: a transient error must not leave a working
+    /// server looking like a server with no tools.
+    pub failed: Vec<(String, String)>,
+}
+
+impl ToolListReport {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.failed.is_empty()
+    }
+}
+
 fn build_tool_specs(server_name: &str, tools: &[McpTool]) -> Vec<ToolSpec> {
     tools
         .iter()
         .map(|tool| ToolSpec {
-            name: format!("mcp__{server_name}__{}", tool.name),
+            name: mcp_tool_name(server_name, &tool.name),
             description: tool.description.as_ref().map(ToString::to_string),
             input_schema: Value::Object((*tool.input_schema).clone()),
         })
@@ -1464,9 +2996,29 @@ struct ResolvedServers {
     skipped_remote: Vec<String>,
     /// Entries that declare keys Tact does not model, in declaration order.
     unmodelled: Vec<UnmodelledKeys>,
+    /// Winning per-entry tool policy by server name.
+    ///
+    /// Kept beside the connect list rather than inside it so the
+    /// `(name, transport, source)` tuples every caller already matches on stay
+    /// unchanged.
+    policies: HashMap<String, McpServerPolicy>,
+    /// Server name and the source of a policy-only declaration folded under it.
+    ///
+    /// Recorded because a policy with two authors must not read as one: when
+    /// the entry owning the transport is a plugin bundle the user cannot edit,
+    /// this is the only place saying where the behaviour actually came from.
+    policy_overlays: Vec<(String, String)>,
 }
 
 impl ResolvedServers {
+    /// The winning declaration's tool policy for `server_name`.
+    ///
+    /// An unknown name — or an entry that declared nothing — gets the empty
+    /// policy, so callers never branch on `Option`.
+    fn policy_for(&self, server_name: &str) -> McpServerPolicy {
+        self.policies.get(server_name).cloned().unwrap_or_default()
+    }
+
     /// Describes each server for diagnostics (`tact-ui mcp list`).
     ///
     /// Sorted by name: `.mcp.json` is parsed into a `HashMap`, so there is no
@@ -1500,13 +3052,16 @@ impl ResolvedServers {
 /// Later declarations win by server name; every displaced declaration is
 /// recorded so the override is visible rather than silent. An entry with no
 /// usable transport (neither `command` nor `url`) is dropped with a report
-/// entry, never a hard error.
+/// entry, never a hard error — unless it declares policy, in which case it is
+/// folded under whatever declaration owns the name (see
+/// [`McpServerPolicy::merged_under`]).
 fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
     let mut order: Vec<Resolution> = Vec::new();
     let mut index_of: HashMap<String, usize> = HashMap::new();
     let mut shadowed: Vec<(String, String)> = Vec::new();
     let mut skipped_remote: Vec<String> = Vec::new();
     let mut unmodelled: Vec<UnmodelledKeys> = Vec::new();
+    let mut overlays: Vec<(String, McpServerPolicy, String)> = Vec::new();
 
     for SourcedServer {
         name,
@@ -1519,7 +3074,28 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
         }
 
         let Some(transport) = config.to_transport() else {
-            // No `command` and no `url`: report, do not abort.
+            let policy = McpServerPolicy::from_config(&config);
+            if policy.declares_policy() {
+                // No transport of its own, but it does say how the server
+                // should behave: that is an overlay for whoever wins the name,
+                // not a server declaration. Reported as skipped for now so a
+                // name that turns out to belong to nobody is still visible;
+                // the `retain` below drops it once a winner is found.
+                if !config.enabled {
+                    tracing::warn!(
+                        mcp_server = %name,
+                        source = %source,
+                        "a policy-only MCP entry cannot switch a server off: \
+                         `enabled` is ignored here, because the declaration \
+                         that owns the transport decides whether it runs"
+                    );
+                }
+                overlays.push((name.clone(), policy, source));
+                skipped_remote.push(name);
+                continue;
+            }
+            // No `command`, no `url`, and nothing to say about the server:
+            // report, do not abort.
             tracing::warn!(
                 mcp_server = %name,
                 source = %source,
@@ -1552,6 +3128,7 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
             disabled: !config.enabled,
             transport,
             source,
+            policy: McpServerPolicy::from_config(&config),
         };
         match index_of.get(&name) {
             Some(&existing) => {
@@ -1565,6 +3142,21 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
         }
     }
 
+    // A policy-only declaration was never a server, so it shadows nothing: it
+    // folds *under* the declaration that won the name. Doing it here — after
+    // the loop, before `skipped_remote` is trimmed — means an overlay whose
+    // name belongs to nobody stays in the skipped list instead of vanishing.
+    let mut policy_overlays: Vec<(String, String)> = Vec::new();
+    for (name, policy, source) in overlays {
+        let Some(&index) = index_of.get(&name) else {
+            continue;
+        };
+        let merged = order[index].policy.merged_under(&policy);
+        order[index].policy = merged;
+        policy_overlays.push((name, source));
+    }
+    policy_overlays.sort_by(|a, b| a.0.cmp(&b.0));
+
     // A name skipped in one scope can still be declared usefully by another
     // (project wins over user). It is only "skipped" when nothing usable was
     // declared for it anywhere, otherwise the report would list — and count —
@@ -1575,7 +3167,9 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
 
     let mut servers = Vec::new();
     let mut disabled = Vec::new();
+    let mut policies: HashMap<String, McpServerPolicy> = HashMap::new();
     for resolution in order {
+        policies.insert(resolution.name.clone(), resolution.policy);
         let entry = (resolution.name, resolution.transport, resolution.source);
         if resolution.disabled {
             disabled.push(entry);
@@ -1587,9 +3181,11 @@ fn resolve_servers(servers: Vec<SourcedServer>) -> ResolvedServers {
     ResolvedServers {
         servers,
         disabled,
+        policies,
         shadowed,
         skipped_remote,
         unmodelled,
+        policy_overlays,
     }
 }
 
@@ -1601,21 +3197,29 @@ struct Resolution {
     source: String,
     /// Declared with `enabled: false`: listed, never connected.
     disabled: bool,
+    /// The Codex per-entry tool policy of the winning declaration.
+    policy: McpServerPolicy,
 }
 
 /// Describes the entry keys Tact does not model, or `None` when there are none.
 ///
 /// Silently ignoring configuration is the failure this exists to prevent: a
-/// Codex plugin can declare `enabled_tools` / `tools.<name>.output_token_limit`
-/// and Tact would otherwise look as if it honored them. The keys are both
-/// logged and returned so `mcp list` can name them — the log subscriber is
-/// only installed when `RUST_LOG` (or `tokio_console`) asks for it, so a
-/// warning alone would be invisible to a default run.
+/// Codex entry can declare `omit_tools_from`, or `env_vars` on a server that has
+/// no child process, and Tact would otherwise look as if it honored them. The keys are both logged and
+/// returned so `mcp list` can name them — the log subscriber is only installed
+/// when `RUST_LOG` (or `tokio_console`) asks for it, so a warning alone would be
+/// invisible to a default run.
 fn unmodelled_keys(name: &str, source: &str, config: &McpProjectConfig) -> Option<UnmodelledKeys> {
-    if config.extra.is_empty() {
+    let mut keys: Vec<String> = config.extra.keys().cloned().collect();
+    // `env_vars` is modelled, but only for stdio: a remote entry has no child
+    // process to put the variables in, so declaring them there is the same kind
+    // of silence `extra` exists to prevent.
+    if !config.env_vars.is_empty() && config.is_remote() {
+        keys.push("env_vars".to_string());
+    }
+    if keys.is_empty() {
         return None;
     }
-    let mut keys: Vec<String> = config.extra.keys().cloned().collect();
     keys.sort_unstable();
     tracing::warn!(
         mcp_server = %name,
@@ -1653,14 +3257,17 @@ async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadRe
         shadowed: resolved.shadowed,
         skipped_remote: resolved.skipped_remote,
         unmodelled: resolved.unmodelled,
+        policy_overlays: resolved.policy_overlays,
         ..McpLoadReport::default()
     };
 
+    let policies = resolved.policies.clone();
     let mut router = MCPToolRouter::new();
     let mut connections = FuturesUnordered::new();
     for (server_name, config, _source) in resolved.servers {
+        let policy = policies.get(&server_name).cloned().unwrap_or_default();
         connections.push(async move {
-            let outcome = connect_server(&server_name, config).await;
+            let outcome = connect_server(&server_name, config, policy).await;
             (server_name, outcome)
         });
     }
@@ -1670,6 +3277,11 @@ async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadRe
                 let tools = client.list_tools().len();
                 tracing::debug!(mcp_server = %server_name, tools, "MCP server connected");
                 report.connected.push((server_name.clone(), tools));
+                if !client.hidden_tools().is_empty() {
+                    report
+                        .filtered
+                        .push((server_name.clone(), client.hidden_tools().to_vec()));
+                }
                 router.register_client(client);
             }
             ConnectOutcome::NeedsAuthorization => report.pending_auth.push(server_name),
@@ -1680,6 +3292,8 @@ async fn load_mcp_router_with_report_inner() -> Result<(MCPToolRouter, McpLoadRe
     report.connected.sort_by(|a, b| a.0.cmp(&b.0));
     report.failures.sort_by(|a, b| a.0.cmp(&b.0));
     report.shadowed.sort_by(|a, b| a.0.cmp(&b.0));
+    report.policy_overlays.sort_by(|a, b| a.0.cmp(&b.0));
+    report.filtered.sort_by(|a, b| a.0.cmp(&b.0));
     report.pending_auth.sort();
     Ok((router, report))
 }
@@ -1708,7 +3322,7 @@ fn resolve_current() -> Result<ResolvedServers> {
 /// server actually lives before failing.
 pub fn resolved_server_for(
     server_name: &str,
-) -> Result<Option<(ConfiguredServer, McpTransportConfig)>> {
+) -> Result<Option<(ConfiguredServer, McpTransportConfig, McpServerPolicy)>> {
     let resolved = resolve_current()?;
     let described = resolved
         .configured()
@@ -1720,10 +3334,63 @@ pub fn resolved_server_for(
         .chain(resolved.disabled.iter())
         .find(|(name, _, _)| name == server_name)
         .map(|(_, transport, _)| transport.clone());
+    let policy = resolved.policy_for(server_name);
     Ok(match (described, transport) {
-        (Some(server), Some(transport)) => Some((server, transport)),
+        (Some(server), Some(transport)) => Some((server, transport, policy)),
         _ => None,
     })
+}
+
+/// The per-status facts [`inspect_server`] fills.
+///
+/// A named struct rather than a tuple: the three outcomes differ only in which
+/// facts they leave empty, and counting tuple positions made that unreadable
+/// once `declared_read_only` and `declared_risks` joined.
+struct InspectionFacts {
+    status: McpServerStatus,
+    tools: Vec<String>,
+    tool_bytes: Vec<(String, usize)>,
+    filtered: Vec<String>,
+    instructions_chars: Option<usize>,
+    resources: Option<usize>,
+    resource_templates: Option<usize>,
+    prompts: Option<usize>,
+    declared_read_only: Vec<String>,
+    declared_risks: Vec<(String, CapabilityRisk)>,
+}
+
+impl InspectionFacts {
+    /// Nothing but the status: what a server that never connected can report.
+    fn empty(status: McpServerStatus) -> Self {
+        Self {
+            status,
+            tools: Vec::new(),
+            tool_bytes: Vec::new(),
+            filtered: Vec::new(),
+            instructions_chars: None,
+            resources: None,
+            resource_templates: None,
+            prompts: None,
+            declared_read_only: Vec::new(),
+            declared_risks: Vec::new(),
+        }
+    }
+
+    fn into_inspection(self, server: ConfiguredServer) -> McpServerInspection {
+        McpServerInspection {
+            server,
+            status: self.status,
+            tools: self.tools,
+            tool_bytes: self.tool_bytes,
+            filtered: self.filtered,
+            instructions_chars: self.instructions_chars,
+            resources: self.resources,
+            resource_templates: self.resource_templates,
+            prompts: self.prompts,
+            declared_read_only: self.declared_read_only,
+            declared_risks: self.declared_risks,
+        }
+    }
 }
 
 /// Connects one server and reports its state, without touching the others.
@@ -1731,33 +3398,70 @@ pub fn resolved_server_for(
 /// `mcp get <name>` uses this so inspecting a single server never spawns or
 /// dials the rest of the configuration. Returns `Ok(None)` for an unknown name.
 pub async fn inspect_server(server_name: &str) -> Result<Option<McpServerInspection>> {
-    let Some((server, transport)) = resolved_server_for(server_name)? else {
+    let Some((server, transport, policy)) = resolved_server_for(server_name)? else {
         return Ok(None);
     };
     if server.disabled {
-        return Ok(Some(McpServerInspection {
-            server,
-            status: McpServerStatus::Disabled,
-            tools: Vec::new(),
-        }));
+        return Ok(Some(
+            InspectionFacts::empty(McpServerStatus::Disabled).into_inspection(server),
+        ));
     }
-    let (status, tools) = match connect_server(server_name, transport).await {
+    let facts = match connect_server(server_name, transport, policy).await {
         ConnectOutcome::Connected(client) => {
             let tools = client
                 .list_tools()
                 .iter()
                 .map(|tool| tool.name.to_string())
                 .collect();
-            (McpServerStatus::Connected, tools)
+            let filtered = client.hidden_tools().to_vec();
+            let chars = client.instructions().map(|text| text.chars().count());
+            // A server without resource support is expected, not an error,
+            // so a failed listing is reported as "did not answer" rather
+            // than failing the inspection.
+            let resources = client.list_resources().await.ok().map(|list| list.len());
+            // Same reasoning for templates: a server that does not answer and a
+            // server that publishes none must not look alike.
+            let resource_templates = client
+                .list_resource_templates()
+                .await
+                .ok()
+                .map(|list| list.len());
+            // And for prompts, which are the primitive a server is least likely
+            // to be asked about: without the count they are invisible until the
+            // model happens to call `list_mcp_prompts`.
+            let prompts = client.list_prompts().await.ok().map(|list| list.len());
+            // Only *declared* tiers, so "the entry is silent" and "the entry
+            // said high" stay distinguishable in the printed view.
+            let mut declared_risks: Vec<(String, CapabilityRisk)> = client
+                .list_tools()
+                .iter()
+                .filter_map(|tool| {
+                    client
+                        .policy()
+                        .risk_for(&tool.name)
+                        .map(|risk| (tool.name.to_string(), risk))
+                })
+                .collect();
+            declared_risks.sort_by(|a, b| a.0.cmp(&b.0));
+            InspectionFacts {
+                status: McpServerStatus::Connected,
+                tools,
+                tool_bytes: client.tool_bytes().to_vec(),
+                filtered,
+                instructions_chars: chars,
+                resources,
+                resource_templates,
+                prompts,
+                declared_read_only: client.declared_read_only().to_vec(),
+                declared_risks,
+            }
         }
-        ConnectOutcome::NeedsAuthorization => (McpServerStatus::PendingAuthorization, Vec::new()),
-        ConnectOutcome::Failed(error) => (McpServerStatus::Failed(error), Vec::new()),
+        ConnectOutcome::NeedsAuthorization => {
+            InspectionFacts::empty(McpServerStatus::PendingAuthorization)
+        }
+        ConnectOutcome::Failed(error) => InspectionFacts::empty(McpServerStatus::Failed(error)),
     };
-    Ok(Some(McpServerInspection {
-        server,
-        status,
-        tools,
-    }))
+    Ok(Some(facts.into_inspection(server)))
 }
 
 /// Looks up the resolved remote config for a server by its final name.
@@ -1785,10 +3489,17 @@ pub async fn authorize_server(
     server_name: &str,
     notify: &mut (dyn FnMut(&str) + Send),
 ) -> Result<()> {
-    let Some(config) = remote_config_for(server_name)? else {
-        bail!("no remote MCP server named {server_name} is configured");
+    // Accept the short form the listings show (`canva`) as well as the full
+    // name. Everything downstream — the flow and the credential file — keys off
+    // the resolved name, so this is the one place to translate.
+    let server_name = resolve_server_name(server_name)?;
+    let Some(config) = remote_config_for(&server_name)? else {
+        bail!(
+            "no remote MCP server named {} is configured",
+            display_server_name(&server_name)
+        );
     };
-    remote::authorize_remote_server(server_name, &config, notify).await
+    remote::authorize_remote_server(&server_name, &config, notify).await
 }
 
 fn join_mcp_content(content: &[rmcp::model::Content]) -> String {
@@ -1821,22 +3532,27 @@ mod tests {
         ErrorData as McpError, ServerHandler, ServiceExt,
         model::{
             CallToolResult, Content, JsonObject, ListToolsResult, ServerInfo, Tool as McpTool,
+            ToolAnnotations,
         },
         service::{RequestContext, RoleServer},
     };
     use serde_json::json;
 
     use super::{
-        MCPToolRouter, McpAuthConfig, McpClient, McpConfigFile, McpLiveStatus, McpLoadReport,
-        McpProjectConfig, McpServerConfig, McpToolName, McpTransportConfig, MockMcpService,
-        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer, UnmodelledKeys,
-        collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved, drain_mcp_stderr,
-        installed_plugin_mcp_servers, plugin_manifest_mcp_servers, prepare_plugin_entry,
-        resolve_servers,
+        ApprovalMode, MCP_INSTRUCTIONS_MAX_CHARS, MCPToolRouter, McpAuthConfig, McpClient,
+        McpConfigFile, McpEnvVar, McpLiveStatus, McpLoadReport, McpProjectConfig, McpServerConfig,
+        McpServerPolicy, McpToolConfig, McpToolName, McpTransportConfig, MockMcpService,
+        PluginDirs, PluginManifest, PluginRoot, RealMcpService, SourcedServer,
+        ToolListChangedSignal, ToolListRefresh, ToolRisk, UnmodelledKeys, cap_instructions,
+        collect_plugin_mcp_servers, collect_sourced_servers, describe_resolved,
+        display_server_name, drain_mcp_stderr, installed_plugin_mcp_servers,
+        plugin_manifest_mcp_servers, prepare_plugin_entry, resolve_env_vars, resolve_name_against,
+        resolve_servers, unmodelled_keys,
     };
 
     use crate::{
         consts::{PluginHome, TactPath},
+        permission::CapabilityRisk,
         plugin::{InstalledPlugin, InstalledState, PluginStore},
     };
 
@@ -1869,6 +3585,7 @@ mod tests {
             command: "node".to_string(),
             args: vec!["server.js".to_string()],
             env: [("A".to_string(), "B".to_string())].into(),
+            env_vars: Vec::new(),
             cwd: None,
         };
 
@@ -2325,6 +4042,119 @@ mod tests {
         );
     }
 
+    /// A client whose service carries `instructions`, for the prompt-block tests.
+    fn client_with_instructions(
+        server: &str,
+        tools: Vec<McpTool>,
+        instructions: &str,
+    ) -> McpClient {
+        let service = MockMcpService::new(tools, |_| {
+            Ok(CallToolResult::success(vec![Content::text("ok")]))
+        })
+        .with_instructions(instructions);
+        let tools = service.tools();
+        McpClient::with_service(server, tools, Arc::new(service))
+    }
+
+    #[test]
+    fn instructions_are_captured_from_the_service_and_trimmed() {
+        let client = client_with_instructions("demo", vec![echo_tool()], "  Use me well.\n");
+        assert_eq!(client.instructions(), Some("Use me well."));
+    }
+
+    #[test]
+    fn whitespace_only_instructions_are_absent_not_empty() {
+        // A server that sends `""` is indistinguishable from one that sends
+        // nothing; a fenced empty section would only cost tokens.
+        let client = client_with_instructions("demo", vec![echo_tool()], "   \n\t ");
+        assert_eq!(client.instructions(), None);
+        assert_eq!(MCPToolRouter::new().instructions_block(), "");
+    }
+
+    #[test]
+    fn the_instructions_block_is_server_sorted_and_headed() {
+        let mut router = MCPToolRouter::new();
+        router.register_client(client_with_instructions(
+            "zeta",
+            vec![echo_tool()],
+            "Zeta guidance.",
+        ));
+        router.register_client(client_with_instructions(
+            "alpha",
+            vec![echo_tool()],
+            "Alpha guidance.",
+        ));
+
+        assert_eq!(
+            router.instructions_block(),
+            "## alpha\n\nAlpha guidance.\n\n## zeta\n\nZeta guidance."
+        );
+    }
+
+    #[test]
+    fn a_server_with_every_tool_filtered_contributes_no_instructions() {
+        // The guidance describes tools the agent cannot call, and `mcp list`
+        // already reports the filter.
+        let service = MockMcpService::new(vec![echo_tool()], |_| {
+            Ok(CallToolResult::success(Vec::new()))
+        })
+        .with_instructions("You can echo things.");
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","enabled_tools":["other"]}"#).unwrap();
+        let client = McpClient::with_service_and_policy(
+            "demo",
+            vec![echo_tool()],
+            Arc::new(service),
+            McpServerPolicy::from_config(&config),
+        );
+        assert_eq!(client.instructions(), Some("You can echo things."));
+
+        let mut router = MCPToolRouter::new();
+        router.register_client(client);
+        assert_eq!(router.instructions_block(), "");
+    }
+
+    #[test]
+    fn oversized_instructions_are_capped_with_a_marker() {
+        let long = "x".repeat(MCP_INSTRUCTIONS_MAX_CHARS + 10);
+        let capped = cap_instructions(&long);
+
+        assert!(capped.starts_with(&"x".repeat(64)));
+        assert!(capped.ends_with(&format!(
+            "… (truncated at {MCP_INSTRUCTIONS_MAX_CHARS} characters)"
+        )));
+        // The kept prefix is exactly the ceiling — not one character more.
+        assert_eq!(
+            capped
+                .lines()
+                .next()
+                .unwrap()
+                .chars()
+                .filter(|c| *c == 'x')
+                .count(),
+            MCP_INSTRUCTIONS_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn instructions_at_the_cap_are_left_alone() {
+        let exact = "y".repeat(MCP_INSTRUCTIONS_MAX_CHARS);
+        assert_eq!(cap_instructions(&exact), exact);
+        assert!(!cap_instructions(&exact).contains("truncated"));
+    }
+
+    #[test]
+    fn capping_counts_characters_not_bytes() {
+        // A multi-byte payload must not be sliced mid-codepoint.
+        let cjk = "記".repeat(MCP_INSTRUCTIONS_MAX_CHARS + 5);
+        let capped = cap_instructions(&cjk);
+        assert!(capped.ends_with("characters)"));
+        assert_eq!(
+            capped.lines().next().unwrap().chars().count(),
+            MCP_INSTRUCTIONS_MAX_CHARS
+        );
+    }
+
     #[tokio::test]
     async fn mock_service_records_calls() {
         let echo = echo_tool();
@@ -2403,7 +4233,42 @@ mod tests {
     }
 
     struct EchoServer {
-        tools: Vec<McpTool>,
+        /// Mutable, because `notifications/tools/list_changed` is only
+        /// meaningful if the list can move after the handshake.
+        tools: std::sync::Mutex<Vec<McpTool>>,
+        /// What a `reveal` call appends. The test chooses, so one fixture covers
+        /// a plain newcomer, a server-declared read-only one, and one this
+        /// entry's filter hides.
+        revealed: Vec<McpTool>,
+        /// Counts `tools/list` requests, so a test can prove a quiet server is
+        /// not polled.
+        list_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl EchoServer {
+        fn new(tools: Vec<McpTool>) -> Self {
+            Self {
+                tools: std::sync::Mutex::new(tools),
+                revealed: Vec::new(),
+                list_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        /// The shared `tools/list` counter, taken before the server is moved
+        /// into its task.
+        fn list_calls(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+            self.list_calls.clone()
+        }
+
+        /// Reveals `tools` when a client calls `reveal`.
+        fn revealing(mut self, tools: Vec<McpTool>) -> Self {
+            self.revealed = tools;
+            self
+        }
+
+        fn tools(&self) -> Vec<McpTool> {
+            self.tools.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
     }
 
     impl ServerHandler for EchoServer {
@@ -2412,7 +4277,7 @@ mod tests {
         }
 
         fn get_tool(&self, name: &str) -> Option<McpTool> {
-            self.tools.iter().find(|t| t.name == name).cloned()
+            self.tools().iter().find(|t| t.name == name).cloned()
         }
 
         fn list_tools(
@@ -2421,15 +4286,33 @@ mod tests {
             _context: RequestContext<RoleServer>,
         ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_
         {
-            std::future::ready(Ok(ListToolsResult::with_all_items(self.tools.clone())))
+            self.list_calls
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            std::future::ready(Ok(ListToolsResult::with_all_items(self.tools())))
         }
 
-        fn call_tool(
+        async fn call_tool(
             &self,
             request: rmcp::model::CallToolRequestParams,
-            _context: RequestContext<RoleServer>,
-        ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_
-        {
+            context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResult, McpError> {
+            // `reveal` is the fixture's stand-in for a server that finishes an
+            // auth or indexing pass and grows its tool list. Announcing it is
+            // the point: the client must learn the list moved without being
+            // told to look again.
+            if request.name.as_ref() == "reveal" {
+                self.tools
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(self.revealed.iter().cloned());
+                return match context.peer.notify_tool_list_changed().await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text("revealed")])),
+                    Err(err) => Err(McpError::internal_error(
+                        format!("fixture failed to notify: {err}"),
+                        None,
+                    )),
+                };
+            }
             let text = request
                 .arguments
                 .as_ref()
@@ -2437,16 +4320,162 @@ mod tests {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            std::future::ready(Ok(CallToolResult::success(vec![Content::text(text)])))
+            Ok(CallToolResult::success(vec![Content::text(text)]))
         }
+
+        fn list_resources(
+            &self,
+            _request: Option<rmcp::model::PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> impl std::future::Future<
+            Output = Result<rmcp::model::ListResourcesResult, McpError>,
+        > + Send
+        + '_ {
+            std::future::ready(Ok(rmcp::model::ListResourcesResult {
+                resources: vec![rmcp::model::Resource::new(
+                    rmcp::model::RawResource::new("memory://guide", "Guide"),
+                    None,
+                )],
+                next_cursor: None,
+                meta: None,
+            }))
+        }
+
+        fn read_resource(
+            &self,
+            request: rmcp::model::ReadResourceRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> impl std::future::Future<Output = Result<rmcp::model::ReadResourceResult, McpError>>
+        + Send
+        + '_ {
+            std::future::ready(Ok(rmcp::model::ReadResourceResult {
+                contents: vec![rmcp::model::ResourceContents::text(
+                    format!("content of {}", request.uri),
+                    request.uri,
+                )],
+            }))
+        }
+
+        fn list_prompts(
+            &self,
+            _request: Option<rmcp::model::PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> impl std::future::Future<Output = Result<rmcp::model::ListPromptsResult, McpError>>
+        + Send
+        + '_ {
+            std::future::ready(Ok(rmcp::model::ListPromptsResult {
+                prompts: vec![rmcp::model::Prompt::new(
+                    "getting_started",
+                    Some("Introduce the server"),
+                    Some(vec![rmcp::model::PromptArgument {
+                        name: "topic".to_string(),
+                        title: None,
+                        description: None,
+                        required: Some(true),
+                    }]),
+                )],
+                next_cursor: None,
+                meta: None,
+            }))
+        }
+
+        fn get_prompt(
+            &self,
+            request: rmcp::model::GetPromptRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResult, McpError>> + Send + '_
+        {
+            // Echoes the argument back: whether the caller's values survive the
+            // wire is exactly what a mock cannot show.
+            let topic = request
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("topic"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("<none>")
+                .to_string();
+            std::future::ready(Ok(rmcp::model::GetPromptResult {
+                description: Some(format!("prompt {}", request.name)),
+                messages: vec![rmcp::model::PromptMessage::new_text(
+                    rmcp::model::PromptMessageRole::User,
+                    format!("topic is {topic}"),
+                )],
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_client_gets_prompts_from_a_real_in_process_server() {
+        // The mock proves the routing; this proves the rmcp call shapes — the
+        // paginated list and the `prompts/get` params — are right.
+        let server = EchoServer::new(Vec::new());
+        let (client_stream, server_stream) = tokio::io::duplex(64);
+        let _server_handle = tokio::spawn(async move {
+            let running = server.serve(server_stream).await.unwrap();
+            while !running.is_transport_closed() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+
+        let signal = ToolListChangedSignal::default();
+        let running = signal.clone().serve(client_stream).await.unwrap();
+        let client = McpClient::with_service(
+            "fixture",
+            Vec::new(),
+            Arc::new(RealMcpService::new(running, signal)),
+        );
+
+        let prompts = client.list_prompts().await.unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].name, "getting_started");
+
+        let mut arguments = rmcp::model::JsonObject::new();
+        arguments.insert("topic".to_string(), serde_json::json!("deployment"));
+        let result = client
+            .get_prompt("getting_started", Some(arguments))
+            .await
+            .unwrap();
+        assert_eq!(result.messages.len(), 1);
+        let rendered = super::prompt::render_prompt_messages("getting_started", &result);
+        assert!(
+            rendered.contains("topic is deployment"),
+            "the argument must survive the wire: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_client_reads_resources_from_a_real_in_process_server() {
+        // The mock proves the routing; this proves the rmcp call shapes are
+        // right, which only a real server can.
+        let server = EchoServer::new(Vec::new());
+        let (client_stream, server_stream) = tokio::io::duplex(64);
+        let _server_handle = tokio::spawn(async move {
+            let running = server.serve(server_stream).await.unwrap();
+            while !running.is_transport_closed() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+
+        let signal = ToolListChangedSignal::default();
+        let running = signal.clone().serve(client_stream).await.unwrap();
+        let client = McpClient::with_service(
+            "fixture",
+            Vec::new(),
+            Arc::new(RealMcpService::new(running, signal)),
+        );
+
+        let resources = client.list_resources().await.unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].uri, "memory://guide");
+
+        let contents = client.read_resource("memory://guide").await.unwrap();
+        assert_eq!(contents.contents.len(), 1);
     }
 
     #[tokio::test]
     async fn mcp_client_talks_to_real_in_process_server() {
         let tool = echo_tool();
-        let server = EchoServer {
-            tools: vec![tool.clone()],
-        };
+        let server = EchoServer::new(vec![tool.clone()]);
         let (client_stream, server_stream) = tokio::io::duplex(64);
 
         let _server_handle = tokio::spawn(async move {
@@ -2457,11 +4486,12 @@ mod tests {
             }
         });
 
-        let running = ().serve(client_stream).await.unwrap();
+        let signal = ToolListChangedSignal::default();
+        let running = signal.clone().serve(client_stream).await.unwrap();
         let client = McpClient::with_service(
             "fixture",
             vec![tool],
-            Arc::new(RealMcpService::new(running)),
+            Arc::new(RealMcpService::new(running, signal)),
         );
 
         let output = client
@@ -2505,6 +4535,157 @@ mod tests {
             resolved.skipped_remote.is_empty(),
             "configured name was also listed as skipped: {:?}",
             resolved.skipped_remote
+        );
+    }
+
+    /// The shape a user writes to configure a server someone else declares: no
+    /// transport of its own, only policy.
+    fn policy_only(name: &str, source: &str, tool: &str, risk: &str) -> SourcedServer {
+        SourcedServer {
+            name: name.to_owned(),
+            source: source.to_owned(),
+            config: McpProjectConfig {
+                tools: Some(HashMap::from([(
+                    tool.to_owned(),
+                    McpToolConfig {
+                        risk: Some(risk.to_owned()),
+                        ..McpToolConfig::default()
+                    },
+                )])),
+                ..McpProjectConfig::default()
+            },
+        }
+    }
+
+    /// A remote declaration of the shape a plugin bundle ships.
+    fn remote_declaration(name: &str, source: &str, url: &str) -> SourcedServer {
+        SourcedServer {
+            name: name.to_owned(),
+            source: source.to_owned(),
+            config: McpProjectConfig {
+                server_type: Some("http".to_owned()),
+                url: Some(url.to_owned()),
+                ..McpProjectConfig::default()
+            },
+        }
+    }
+
+    /// The problem overlays exist for: a plugin bundle outranks every file the
+    /// user owns, so an entry *with* a transport can only ever be shadowed by
+    /// it. A policy-only entry used to be dropped on the floor — `tools` and
+    /// all — leaving a plugin server unconfigurable.
+    #[test]
+    fn a_policy_only_entry_overlays_the_declaration_that_owns_the_transport() {
+        let resolved = resolve_servers(vec![
+            policy_only("plugin__canva__canva", "~/.tact/.mcp.json", "fetch", "read"),
+            remote_declaration(
+                "plugin__canva__canva",
+                "installed plugin (/home/me/.tact/plugins)",
+                "https://mcp.canva.com/mcp",
+            ),
+        ]);
+
+        assert_eq!(resolved.servers.len(), 1);
+        // Crucially not an override: the transport declaration still owns the
+        // name, so `shadowed` would say the opposite of what happened.
+        assert!(
+            resolved.shadowed.is_empty(),
+            "an overlay must not read as an override: {:?}",
+            resolved.shadowed
+        );
+        assert!(resolved.skipped_remote.is_empty());
+        assert_eq!(
+            resolved.policy_overlays,
+            vec![(
+                "plugin__canva__canva".to_owned(),
+                "~/.tact/.mcp.json".to_owned()
+            )]
+        );
+        let policy = resolved.policy_for("plugin__canva__canva");
+        assert_eq!(policy.risk_for("fetch"), Some(CapabilityRisk::Read));
+    }
+
+    /// Precedence is untouched: the overlay fills gaps, it does not argue.
+    #[test]
+    fn an_overlay_never_outranks_a_field_the_winner_stated() {
+        let mut winner = remote_declaration("hosted", "installed plugin (p)", "https://x.invalid");
+        winner.config.tools = Some(HashMap::from([(
+            "fetch".to_owned(),
+            McpToolConfig {
+                risk: Some("write".to_owned()),
+                ..McpToolConfig::default()
+            },
+        )]));
+
+        let resolved = resolve_servers(vec![
+            policy_only("hosted", "~/.tact/.mcp.json", "fetch", "read"),
+            winner,
+        ]);
+
+        assert_eq!(
+            resolved.policy_for("hosted").risk_for("fetch"),
+            Some(CapabilityRisk::Write),
+            "a lower-precedence overlay overrode a field the winner stated"
+        );
+    }
+
+    /// Per-tool entries merge one key at a time, so an overlay can name a tool
+    /// the winner never mentioned without erasing the ones it did.
+    #[test]
+    fn an_overlay_adds_a_tool_without_dropping_the_winners_own() {
+        let mut winner = remote_declaration("hosted", "installed plugin (p)", "https://x.invalid");
+        winner.config.tools = Some(HashMap::from([(
+            "fetch".to_owned(),
+            McpToolConfig {
+                risk: Some("high".to_owned()),
+                ..McpToolConfig::default()
+            },
+        )]));
+
+        let resolved = resolve_servers(vec![
+            policy_only("hosted", "~/.tact/.mcp.json", "get-assets", "read"),
+            winner,
+        ]);
+
+        let policy = resolved.policy_for("hosted");
+        assert_eq!(policy.risk_for("get-assets"), Some(CapabilityRisk::Read));
+        assert_eq!(policy.risk_for("fetch"), Some(CapabilityRisk::High));
+    }
+
+    /// The context-cost lever has to reach plugin servers too, or the 102 KB
+    /// declaration of a bundled server stays untouchable.
+    #[test]
+    fn an_overlay_can_hide_tools_the_transport_owner_exposes() {
+        let mut overlay = policy_only("hosted", "~/.tact/.mcp.json", "fetch", "read");
+        overlay.config.tools = None;
+        overlay.config.enabled_tools = Some(vec!["fetch".to_owned()]);
+
+        let resolved = resolve_servers(vec![
+            overlay,
+            remote_declaration("hosted", "installed plugin (p)", "https://x.invalid"),
+        ]);
+
+        let policy = resolved.policy_for("hosted");
+        assert!(!policy.exposes("get-assets"));
+        assert!(policy.exposes("fetch"));
+    }
+
+    /// An overlay whose name belongs to nobody is a typo, and a typo must not
+    /// disappear just because it was correctly understood as an overlay.
+    #[test]
+    fn a_policy_only_entry_that_names_nobody_is_still_reported_as_skipped() {
+        let resolved = resolve_servers(vec![policy_only(
+            "plugin__typo__nope",
+            "~/.tact/.mcp.json",
+            "fetch",
+            "read",
+        )]);
+
+        assert!(resolved.servers.is_empty());
+        assert!(resolved.policy_overlays.is_empty());
+        assert_eq!(
+            resolved.skipped_remote,
+            vec!["plugin__typo__nope".to_owned()]
         );
     }
 
@@ -2837,7 +5018,7 @@ mod tests {
     }
 
     /// Codex per-entry fields Tact has no equivalent for must not vanish
-    /// without a word — `report_unmodelled_keys` names them.
+    /// without a word — `unmodelled_keys` names them.
     #[test]
     fn codex_only_entry_keys_are_captured_instead_of_dropped() {
         let config: McpProjectConfig = serde_json::from_str(
@@ -2854,25 +5035,33 @@ mod tests {
         .unwrap();
 
         assert!(!config.enabled);
+        // The modelled fields are no longer "unmodelled": `enabled_tools`,
+        // `startup_timeout_sec` and `tools` are honoured, so only the fields
+        // Tact genuinely has no equivalent for remain.
         let mut keys: Vec<&str> = config.extra.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec![
-                "enabled_tools",
-                "omit_tools_from",
-                "startup_timeout_sec",
-                "tools"
-            ],
-        );
+        assert_eq!(keys, vec!["omit_tools_from"]);
         // `enabled` is modelled, so it must *not* also land in `extra`.
         assert!(!config.extra.contains_key("enabled"));
+        assert_eq!(
+            config.enabled_tools.as_deref(),
+            Some(["js".to_owned(), "js_reset".to_owned()].as_slice())
+        );
+        assert_eq!(config.startup_timeout_sec, Some(120));
+        assert_eq!(
+            config.tools.as_ref().and_then(|tools| tools.get("js")),
+            Some(&McpToolConfig {
+                approval_mode: None,
+                output_token_limit: Some(25_000),
+                risk: None,
+            })
+        );
     }
 
     #[test]
     fn codex_only_keys_are_reported_with_their_source() {
         let config: McpProjectConfig = serde_json::from_str(
-            r#"{"command":"node","startup_timeout_sec":5,"tools":{"js":{"output_token_limit":1}}}"#,
+            r#"{"command":"node","omit_tools_from":["code_mode"],"tool_timeout_sec":30}"#,
         )
         .unwrap();
 
@@ -2881,13 +5070,674 @@ mod tests {
         assert_eq!(resolved.unmodelled.len(), 1, "{:?}", resolved.unmodelled);
         assert_eq!(resolved.unmodelled[0].server, "codexish");
         assert_eq!(resolved.unmodelled[0].source, "/tmp/.mcp.json");
+        // `tool_timeout_sec` is honoured now, so only the field with no
+        // counterpart here is left to report.
+        assert_eq!(resolved.unmodelled[0].keys, vec!["omit_tools_from"]);
         assert_eq!(
-            resolved.unmodelled[0].keys,
-            vec!["startup_timeout_sec", "tools"]
+            resolved.policies["codexish"].tool_timeout(),
+            Some(std::time::Duration::from_secs(30))
         );
         // The entry still connects: an unimplemented *option* is not a reason
         // to drop a server that declares a working transport.
         assert_eq!(resolved.servers.len(), 1);
+    }
+
+    // ── Per-entry tool policy ────────────────────────────────────────────
+
+    #[test]
+    fn enabled_tools_limits_exposure_and_disabled_tools_wins() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "enabled_tools": ["keep", "also_hidden"],
+                "disabled_tools": ["also_hidden"]
+            }"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        assert!(policy.exposes("keep"));
+        assert!(!policy.exposes("other"));
+        // Codex applies the deny list *after* the allow list, so naming a tool
+        // in both hides it.
+        assert!(!policy.exposes("also_hidden"));
+    }
+
+    #[test]
+    fn an_entry_without_tool_policy_exposes_everything() {
+        let config: McpProjectConfig = serde_json::from_str(r#"{"command":"node"}"#).unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        assert!(policy.exposes("anything"));
+        assert!(policy.startup_timeout().is_none());
+        assert!(policy.tool_timeout().is_none());
+        assert!(!policy.is_auto_approved("anything"));
+        assert!(policy.output_token_limit("anything").is_none());
+    }
+
+    /// A variable name nothing can have set, so the "unset" tests cannot pass by
+    /// accident on a machine that happens to define it.
+    fn absent_var() -> String {
+        format!("TACT_TEST_ABSENT_{}", std::process::id())
+    }
+
+    #[test]
+    fn env_vars_accept_the_shorthand_and_the_explicit_form() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "env_vars": ["SHORTHAND", {"name": "LOCAL", "source": "local"}, {"name": "PLAIN"}]
+            }"#,
+        )
+        .unwrap();
+
+        let names: Vec<&str> = config.env_vars.iter().map(|v| v.name()).collect();
+        assert_eq!(names, ["SHORTHAND", "LOCAL", "PLAIN"]);
+        assert_eq!(config.env_vars[0].source(), None, "shorthand means local");
+        assert_eq!(config.env_vars[1].source(), Some("local"));
+        assert_eq!(config.env_vars[2].source(), None, "source is optional");
+    }
+
+    #[test]
+    fn env_vars_are_resolved_from_the_process_environment() {
+        let inherited =
+            resolve_env_vars("demo", &HashMap::new(), &[McpEnvVar::Name("PATH".into())])
+                .expect("PATH is always set");
+        assert_eq!(
+            inherited.get("PATH"),
+            std::env::var("PATH").ok().as_ref(),
+            "the value must be the process's own"
+        );
+    }
+
+    #[test]
+    fn a_literal_env_entry_wins_over_env_vars() {
+        // The name is deliberately unset: if the literal map did not win, this
+        // would fail instead of resolving, which is exactly the bug being
+        // pinned — a pass-through must never override what the user wrote down.
+        let explicit = HashMap::from([(absent_var(), "literal".to_string())]);
+        let resolved = resolve_env_vars("demo", &explicit, &[McpEnvVar::Name(absent_var())])
+            .expect("the literal entry wins, so the unset variable is never read");
+        assert!(resolved.is_empty(), "nothing needed inheriting");
+    }
+
+    #[test]
+    fn an_unset_env_var_fails_the_server_by_name() {
+        let error = resolve_env_vars("demo", &HashMap::new(), &[McpEnvVar::Name(absent_var())])
+            .expect_err("an unset variable must fail rather than start a broken child");
+        let message = error.to_string();
+        assert!(message.contains(&absent_var()), "{message}");
+        assert!(message.contains("is not set"), "{message}");
+    }
+
+    #[test]
+    fn a_remote_env_vars_source_names_the_missing_executor() {
+        let entry = McpEnvVar::Explicit {
+            name: "TOKEN".to_string(),
+            source: Some("remote".to_string()),
+        };
+        let error = resolve_env_vars("demo", &HashMap::new(), &[entry])
+            .expect_err("remote stdio is not implemented");
+        assert!(error.to_string().contains("remote stdio"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_env_vars_source_names_the_allowed_set() {
+        let entry = McpEnvVar::Explicit {
+            name: "TOKEN".to_string(),
+            source: Some("keychain".to_string()),
+        };
+        let error = resolve_env_vars("demo", &HashMap::new(), &[entry])
+            .expect_err("an unknown source must be reported, never ignored");
+        let message = error.to_string();
+        assert!(message.contains("keychain"), "{message}");
+        assert!(message.contains("`local` or `remote`"), "{message}");
+    }
+
+    #[test]
+    fn env_vars_on_a_remote_entry_are_reported_as_unmodelled() {
+        // A remote entry has no child process, so claiming to honour its
+        // `env_vars` would be exactly the silence `unmodelled_keys` prevents.
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"url":"https://example.test/mcp","env_vars":["TOKEN"]}"#)
+                .unwrap();
+        let reported = unmodelled_keys("hosted", "test", &config).expect("must be reported");
+        assert_eq!(reported.keys, ["env_vars"]);
+
+        // …and a stdio entry that uses it is not reported at all.
+        let stdio: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","env_vars":["TOKEN"]}"#).unwrap();
+        assert!(unmodelled_keys("local", "test", &stdio).is_none());
+    }
+
+    #[tokio::test]
+    async fn env_vars_are_resolved_before_the_child_is_spawned() {
+        // The command does not exist: if resolution ran after the spawn, the
+        // error would be about spawning. Naming the variable proves the order.
+        let config = McpServerConfig {
+            command: "/nonexistent-tact-test-binary".to_string(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            env_vars: vec![McpEnvVar::Name(absent_var())],
+            cwd: None,
+        };
+        let error = McpClient::connect("demo", McpTransportConfig::Stdio(config), None)
+            .await
+            .expect_err("an unset env var must fail the connect");
+        let message = format!("{error:#}");
+        assert!(message.contains(&absent_var()), "{message}");
+        assert!(!message.contains("failed to spawn"), "{message}");
+    }
+
+    #[test]
+    fn tool_timeout_sec_overrides_the_global_call_ceiling() {
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","tool_timeout_sec":5}"#).unwrap();
+        assert_eq!(
+            McpServerPolicy::from_config(&config).tool_timeout(),
+            Some(std::time::Duration::from_secs(5))
+        );
+
+        // Absent keeps Tact's own ceiling rather than Codex's.
+        let plain: McpProjectConfig = serde_json::from_str(r#"{"command":"node"}"#).unwrap();
+        assert!(
+            McpServerPolicy::from_config(&plain)
+                .tool_timeout()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tool_timeout_sec_is_no_longer_reported_as_unmodelled() {
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","tool_timeout_sec":5}"#).unwrap();
+        assert!(
+            unmodelled_keys("demo", "test", &config).is_none(),
+            "Tact honours this field now, so reporting it would be a lie"
+        );
+    }
+
+    #[test]
+    fn startup_timeout_accepts_seconds_and_the_millisecond_alias() {
+        let secs: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","startup_timeout_sec":120}"#).unwrap();
+        assert_eq!(
+            McpServerPolicy::from_config(&secs).startup_timeout(),
+            Some(std::time::Duration::from_secs(120))
+        );
+
+        let ms: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","startup_timeout_ms":1500}"#).unwrap();
+        assert_eq!(
+            McpServerPolicy::from_config(&ms).startup_timeout(),
+            Some(std::time::Duration::from_millis(1500))
+        );
+
+        // Both present: seconds is the documented unit and wins, so one entry
+        // can never mean two budgets.
+        let both: McpProjectConfig = serde_json::from_str(
+            r#"{"command":"node","startup_timeout_sec":5,"startup_timeout_ms":9000}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            McpServerPolicy::from_config(&both).startup_timeout(),
+            Some(std::time::Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn a_tool_risk_parses_its_three_tiers_and_nothing_else() {
+        assert_eq!(ToolRisk::parse(" read "), Some(ToolRisk::Read));
+        assert_eq!(ToolRisk::parse("write"), Some(ToolRisk::Write));
+        assert_eq!(ToolRisk::parse("high"), Some(ToolRisk::High));
+        // The empty string is not a tier, so an empty declaration cannot be
+        // mistaken for one.
+        assert_eq!(ToolRisk::parse(""), None);
+        assert_eq!(ToolRisk::parse("medium"), None);
+
+        // Each tier maps onto the capability the permission layer acts on.
+        assert_eq!(ToolRisk::Read.to_capability(), CapabilityRisk::Read);
+        assert_eq!(ToolRisk::Write.to_capability(), CapabilityRisk::Write);
+        assert_eq!(ToolRisk::High.to_capability(), CapabilityRisk::High);
+        // `as_str` is the spelling the docs and the config use.
+        assert_eq!(ToolRisk::Read.as_str(), "read");
+        assert_eq!(ToolRisk::High.as_str(), "high");
+    }
+
+    #[test]
+    fn a_declared_tool_risk_overrides_the_entry_default() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "default_tool_risk": "write",
+                "tools": {
+                    "search_notes": { "risk": "read" },
+                    "delete_project": { "risk": "high" }
+                }
+            }"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        // The entry default covers tools that say nothing of their own.
+        assert_eq!(policy.risk_for("read_thing"), Some(CapabilityRisk::Write));
+        // A per-tool tier wins over the default, in both directions: one
+        // lowers below it, one raises back to High.
+        assert_eq!(policy.risk_for("search_notes"), Some(CapabilityRisk::Read));
+        assert_eq!(
+            policy.risk_for("delete_project"),
+            Some(CapabilityRisk::High)
+        );
+        // A tool with an unrelated override still inherits the default.
+        let with_unrelated: McpProjectConfig = serde_json::from_str(
+            r#"{"command":"node","default_tool_risk":"write",
+                "tools":{"documented":{"output_token_limit":2500}}}"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&with_unrelated);
+        assert_eq!(policy.risk_for("documented"), Some(CapabilityRisk::Write));
+    }
+
+    #[test]
+    fn an_entry_that_declares_no_risk_declares_none_at_all() {
+        // `None` is what keeps a silent entry on Tact's default instead of
+        // letting an absent field read as a tier.
+        let config: McpProjectConfig = serde_json::from_str(r#"{"command":"node"}"#).unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+        assert_eq!(policy.risk_for("anything"), None);
+    }
+
+    #[test]
+    fn an_unknown_tool_risk_is_ignored_rather_than_guessed() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{"command":"node","default_tool_risk":"harmless",
+                "tools":{"write_thing":{"risk":"kinda-safe"}}}"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        // Neither the bad default nor the bad override becomes a tier.
+        assert_eq!(policy.risk_for("write_thing"), None);
+        assert_eq!(policy.risk_for("read_thing"), None);
+    }
+
+    #[test]
+    fn risk_keys_are_modelled_and_never_reported_as_unmodelled() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{"command":"node","default_tool_risk":"write",
+                "tools":{"search_notes":{"risk":"read"}},
+                "omit_tools_from":["code_mode"]}"#,
+        )
+        .unwrap();
+
+        // Only the field Tact genuinely does not model is reported.
+        assert!(
+            unmodelled_keys("demo", "test", &config).is_some_and(|u| u.keys == ["omit_tools_from"])
+        );
+        assert!(!config.extra.contains_key("default_tool_risk"));
+        assert_eq!(config.default_tool_risk.as_deref(), Some("write"));
+        assert_eq!(
+            config
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.get("search_notes"))
+                .and_then(|tool| tool.risk.as_deref()),
+            Some("read")
+        );
+    }
+
+    #[test]
+    fn a_per_tool_approval_mode_overrides_the_server_default() {
+        let config: McpProjectConfig = serde_json::from_str(
+            r#"{
+                "command": "node",
+                "default_tools_approval_mode": "auto",
+                "tools": {
+                    "write_thing": { "approval_mode": "prompt" },
+                    "documented": { "output_token_limit": 2500 }
+                }
+            }"#,
+        )
+        .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        // Server default applies where nothing overrides it.
+        assert!(policy.is_auto_approved("read_thing"));
+        // An explicit per-tool mode wins over the default.
+        assert!(!policy.is_auto_approved("write_thing"));
+        // A tool with an unrelated override still inherits the default.
+        assert!(policy.is_auto_approved("documented"));
+        assert_eq!(policy.output_token_limit("documented"), Some(2500));
+        assert_eq!(policy.output_token_limit("read_thing"), None);
+    }
+
+    #[test]
+    fn an_unknown_approval_mode_is_ignored_rather_than_guessed() {
+        let config: McpProjectConfig =
+            serde_json::from_str(r#"{"command":"node","default_tools_approval_mode":"yolo"}"#)
+                .unwrap();
+        let policy = McpServerPolicy::from_config(&config);
+
+        // Not auto-approved: an unreadable value must fail towards asking.
+        assert!(!policy.is_auto_approved("anything"));
+        assert_eq!(ApprovalMode::parse(" yolo "), None);
+        assert_eq!(ApprovalMode::parse(" auto "), Some(ApprovalMode::Auto));
+    }
+
+    #[test]
+    fn filtering_hides_tools_from_the_agent_and_reports_them() {
+        let policy = McpServerPolicy::from_config(
+            &serde_json::from_str(
+                r#"{"command":"node","enabled_tools":["visible"],"disabled_tools":["nope"]}"#,
+            )
+            .unwrap(),
+        );
+        let client = McpClient::with_service_and_policy(
+            "demo",
+            vec![
+                named_tool("visible"),
+                named_tool("hidden"),
+                named_tool("unlisted"),
+            ],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+            policy,
+        );
+
+        assert_eq!(client.list_tools().len(), 1);
+        assert_eq!(client.hidden_tools(), ["hidden", "unlisted"]);
+        assert_eq!(client.agent_tools().len(), 1);
+        assert_eq!(client.agent_tools()[0].name, "mcp__demo__visible");
+        assert_eq!(client.tool_count(), 1);
+    }
+
+    /// A tool that declares itself read-only, as a real server would.
+    fn read_only_tool(name: &'static str) -> McpTool {
+        McpTool {
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(true),
+                ..ToolAnnotations::default()
+            }),
+            ..named_tool(name)
+        }
+    }
+
+    #[test]
+    fn the_router_resolves_a_declared_tier_and_defaults_the_rest_to_high() {
+        // End of the wiring: JSON entry → resolved policy → what the permission
+        // layer is handed. `agent::tool_dispatch` delegates to this in one line.
+        let policy = McpServerPolicy::from_config(
+            &serde_json::from_str(r#"{"command":"node","tools":{"search_notes":{"risk":"read"}}}"#)
+                .unwrap(),
+        );
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service_and_policy(
+            "bm",
+            vec![named_tool("search_notes"), named_tool("delete_project")],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+            policy,
+        ));
+
+        assert_eq!(router.risk_for("bm", "search_notes"), CapabilityRisk::Read);
+        // The tool the entry said nothing about keeps the default.
+        assert_eq!(
+            router.risk_for("bm", "delete_project"),
+            CapabilityRisk::High
+        );
+        // An unknown server is not a reason to relax anything.
+        assert_eq!(
+            router.risk_for("ghost", "search_notes"),
+            CapabilityRisk::High
+        );
+    }
+
+    #[test]
+    fn a_server_declared_read_only_tool_is_reported_but_never_downgrades_the_risk() {
+        // rmcp's own docs are explicit: "Clients should never make tool use
+        // decisions based on ToolAnnotations received from untrusted servers."
+        // So the declaration is surfaced for a human to act on, and the risk
+        // stays whatever the entry declared — here, the default.
+        let client = McpClient::with_service(
+            "demo",
+            vec![read_only_tool("search"), named_tool("write")],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+        );
+
+        assert_eq!(client.declared_read_only(), ["search"]);
+        assert_eq!(client.policy().risk_for("search"), None);
+    }
+
+    #[test]
+    fn an_exposed_only_declaration_is_what_gets_reported() {
+        // A tool the entry filtered away is not something a human can be asked
+        // to declare a risk for, so it must not appear as evidence.
+        let policy = McpServerPolicy::from_config(
+            &serde_json::from_str(r#"{"command":"node","disabled_tools":["search"]}"#).unwrap(),
+        );
+        let client = McpClient::with_service_and_policy(
+            "demo",
+            vec![read_only_tool("search"), read_only_tool("recall")],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+            policy,
+        );
+
+        assert_eq!(client.declared_read_only(), ["recall"]);
+    }
+
+    #[test]
+    fn a_read_only_hint_of_false_is_not_a_declaration() {
+        let tool = McpTool {
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(false),
+                ..ToolAnnotations::default()
+            }),
+            ..named_tool("write")
+        };
+        let client = McpClient::with_service(
+            "demo",
+            vec![tool],
+            Arc::new(MockMcpService::new(Vec::new(), |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })),
+        );
+
+        assert!(client.declared_read_only().is_empty());
+    }
+
+    /// Polls `refresh_tools_if_stale` until it reports a refresh, with a
+    /// deadline.
+    ///
+    /// The notification travels on the service's own task, so "the server said
+    /// so" and "we noticed" are separated by a real scheduling hop. Asserting
+    /// once would be a race; waiting forever would hang the suite, which AGENTS.md
+    /// forbids.
+    async fn refresh_until_changed(client: &mut McpClient) -> ToolListRefresh {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(refresh) = client.refresh_tools_if_stale().await.unwrap() {
+                return refresh;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no tools/list_changed notification arrived within the deadline"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Connects a real in-process server and hands back the client, plus the
+    /// server's shared `tools/list` counter.
+    async fn connect_with_policy(
+        server: EchoServer,
+        policy: McpServerPolicy,
+    ) -> (McpClient, Arc<std::sync::atomic::AtomicUsize>) {
+        let list_calls = server.list_calls();
+        let (client_stream, server_stream) = tokio::io::duplex(64);
+        tokio::spawn(async move {
+            let running = server.serve(server_stream).await.unwrap();
+            // Keep the server alive until the client closes the transport.
+            while !running.is_transport_closed() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+        let signal = ToolListChangedSignal::default();
+        let running = signal.clone().serve(client_stream).await.unwrap();
+        let client = McpClient::with_service_and_policy(
+            "fixture",
+            vec![echo_tool()],
+            Arc::new(RealMcpService::new(running, signal)),
+            policy,
+        );
+        (client, list_calls)
+    }
+
+    /// [`connect_with_policy`] with the default (unfiltered) policy.
+    async fn connect(server: EchoServer) -> (McpClient, Arc<std::sync::atomic::AtomicUsize>) {
+        connect_with_policy(server, McpServerPolicy::default()).await
+    }
+
+    #[tokio::test]
+    async fn a_list_changed_notification_makes_the_new_tool_callable() {
+        let server = EchoServer::new(vec![echo_tool()]).revealing(vec![named_tool("recall")]);
+        let (mut client, _list_calls) = connect(server).await;
+
+        // What the handshake advertised.
+        assert_eq!(client.list_tools().len(), 1);
+
+        // A call that grows the list and announces it. The announcement is the
+        // whole difference from a server that changed silently.
+        client.call_tool("reveal", json!({})).await.unwrap();
+
+        let refresh = refresh_until_changed(&mut client).await;
+        assert_eq!(refresh.added, ["recall"]);
+        assert!(refresh.removed.is_empty());
+        assert_eq!(client.list_tools().len(), 2);
+        // The derived specs move with it: what the model is offered is what the
+        // server now has.
+        assert!(
+            client
+                .agent_tools()
+                .iter()
+                .any(|spec| spec.name == "mcp__fixture__recall"),
+            "{:?}",
+            client
+                .agent_tools()
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_quiet_server_is_never_polled() {
+        // The notification is a hint, not a schedule: a server that never sends
+        // one must cost exactly nothing, so a refresh must not turn into a
+        // `tools/list` on every request.
+        let server = EchoServer::new(vec![echo_tool()]);
+        let (mut client, list_calls) = connect(server).await;
+        let after_connect = list_calls.load(std::sync::atomic::Ordering::Acquire);
+
+        assert!(client.refresh_tools_if_stale().await.unwrap().is_none());
+        assert!(client.refresh_tools_if_stale().await.unwrap().is_none());
+
+        assert_eq!(
+            list_calls.load(std::sync::atomic::Ordering::Acquire),
+            after_connect,
+            "a quiet server must not be re-listed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_re_derives_the_filter_and_the_read_only_claims() {
+        // The newcomer set is chosen to hit every derivation at once: one tool
+        // the entry hides, and one the server declares read-only.
+        let server = EchoServer::new(vec![echo_tool()])
+            .revealing(vec![read_only_tool("recall"), named_tool("secret")]);
+        let policy = McpServerPolicy::from_config(
+            &serde_json::from_str(r#"{"command":"node","disabled_tools":["secret"]}"#).unwrap(),
+        );
+        let (mut client, _list_calls) = connect_with_policy(server, policy).await;
+
+        client.call_tool("reveal", json!({})).await.unwrap();
+        let refresh = refresh_until_changed(&mut client).await;
+
+        // Only the newcomer the policy exposes counts as added…
+        assert_eq!(refresh.added, ["recall"]);
+        // …the hidden one is reported rather than silently dropped…
+        assert_eq!(refresh.newly_hidden, ["secret"]);
+        assert_eq!(client.hidden_tools(), ["secret"]);
+        // …and the read-only claim is re-derived from the new list, not the old.
+        assert_eq!(client.declared_read_only(), ["recall"]);
+    }
+
+    #[tokio::test]
+    async fn the_router_reports_what_moved_and_keeps_a_list_it_could_not_re_read() {
+        let moving = Arc::new(MockMcpService::new(vec![named_tool("one")], |_| {
+            Ok(CallToolResult::success(Vec::new()))
+        }));
+        let broken = Arc::new(
+            MockMcpService::new(vec![named_tool("kept")], |_| {
+                Ok(CallToolResult::success(Vec::new()))
+            })
+            .failing_to_list(),
+        );
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service(
+            "moving",
+            vec![named_tool("one")],
+            moving.clone(),
+        ));
+        router.register_client(McpClient::with_service(
+            "broken",
+            vec![named_tool("kept")],
+            broken.clone(),
+        ));
+
+        // Nothing announced: the pass costs nothing and reports nothing.
+        assert!(router.refresh_changed().await.is_empty());
+
+        moving.set_tools(vec![named_tool("one"), named_tool("two")]);
+        moving.announce_tools_changed();
+        broken.announce_tools_changed();
+
+        let report = router.refresh_changed().await;
+        assert_eq!(report.changed.len(), 1, "{report:?}");
+        assert_eq!(report.changed[0].0, "moving");
+        assert_eq!(report.changed[0].1.added, ["two"]);
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].0, "broken");
+        // A server that announced a change and could not answer keeps what it
+        // had: a transient failure must not leave it looking empty.
+        assert_eq!(router.server_summaries().len(), 2);
+        assert!(
+            router
+                .all_tools()
+                .iter()
+                .any(|spec| spec.name == "mcp__broken__kept"),
+            "the unreachable server's tools must survive the failed re-list"
+        );
+    }
+
+    /// A tool with only a name — enough for exposure filtering.
+    fn named_tool(name: &'static str) -> McpTool {
+        McpTool {
+            name: Cow::Borrowed(name),
+            title: None,
+            description: None,
+            input_schema: Arc::new(JsonObject::new()),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        }
     }
 
     /// A plugin bundle carrying Codex-only fields is normal, so it must not
@@ -3023,6 +5873,89 @@ mod tests {
         // Sorted by name, matching the loader's `configured()` order.
         let names: Vec<&str> = views.iter().map(|v| v.server.name.as_str()).collect();
         assert_eq!(names, ["broken", "ok", "tact-mcp-live-test-missing"]);
+    }
+
+    #[test]
+    fn display_server_name_strips_only_the_plugin_prefix() {
+        assert_eq!(display_server_name("figma"), "figma");
+        assert_eq!(display_server_name("plugin__canva__canva"), "canva");
+        assert_eq!(display_server_name("plugin__demo__echo"), "echo");
+        // A server key may itself contain `__`; only the plugin id may not.
+        assert_eq!(display_server_name("plugin__demo__a__b"), "a__b");
+        // Near-misses stay untouched rather than being half-stripped.
+        assert_eq!(display_server_name("plugin__demo"), "plugin__demo");
+        assert_eq!(display_server_name("plugin____echo"), "plugin____echo");
+        assert_eq!(display_server_name("my__plugin__x"), "my__plugin__x");
+    }
+
+    #[test]
+    fn resolve_name_prefers_an_exact_match_over_a_plugin_short_form() {
+        let configured = ["canva".to_owned(), "plugin__canva__canva".to_owned()];
+
+        // The user's own server wins; the plugin's short form never reaches it.
+        assert_eq!(
+            resolve_name_against("canva", &configured).unwrap(),
+            "canva".to_owned()
+        );
+        assert_eq!(
+            resolve_name_against("plugin__canva__canva", &configured).unwrap(),
+            "plugin__canva__canva".to_owned()
+        );
+    }
+
+    #[test]
+    fn resolve_name_reaches_a_plugin_server_through_its_short_form() {
+        let configured = ["figma".to_owned(), "plugin__canva__canva".to_owned()];
+
+        assert_eq!(
+            resolve_name_against("canva", &configured).unwrap(),
+            "plugin__canva__canva".to_owned()
+        );
+        assert_eq!(
+            resolve_name_against("figma", &configured).unwrap(),
+            "figma".to_owned()
+        );
+    }
+
+    #[test]
+    fn resolve_name_refuses_to_guess_between_two_plugin_servers() {
+        let configured = [
+            "plugin__alpha__canva".to_owned(),
+            "plugin__beta__canva".to_owned(),
+        ];
+
+        let error = resolve_name_against("canva", &configured).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("plugin__alpha__canva"), "{message}");
+        assert!(message.contains("plugin__beta__canva"), "{message}");
+        assert!(message.contains("use the full name"), "{message}");
+    }
+
+    #[test]
+    fn resolve_name_reports_an_unknown_name() {
+        let error = resolve_name_against("nope", &["figma".to_owned()]).unwrap_err();
+
+        assert!(
+            error.to_string().contains("no MCP server named 'nope'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn pending_authorization_hint_uses_the_short_plugin_name() {
+        let report = McpLoadReport {
+            pending_auth: vec!["plugin__canva__canva".to_owned()],
+            ..McpLoadReport::default()
+        };
+
+        let lines = report.notice_lines();
+
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("MCP server canva needs authorization"),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("/mcp auth canva"), "{lines:?}");
     }
 
     #[test]

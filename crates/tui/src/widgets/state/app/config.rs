@@ -4,34 +4,23 @@ use crate::{
     widgets::state::*,
 };
 impl App {
-    /// Palette commands visible for the current provider configuration,
-    /// including dynamic skill commands.
+    /// The built-in commands the palette lists, in [`SlashCommand::ALL`] order.
+    ///
+    /// Skills used to be appended here as `/{name}` entries, one per installed
+    /// skill. A marketplace with dozens of them buried `/mcp`, `/compact` and
+    /// the rest under a wall of skill names, and every new skill shifted the
+    /// first-level list — so they are no longer first-level entries. They live
+    /// under `/skill`: the popup offers them there (`/skill `, `/skill co`),
+    /// `slash_candidates` is what knows about them, and `/{name}` still runs
+    /// one directly for anyone who types it.
     pub(crate) fn palette_commands(&self) -> Vec<(String, String)> {
         let account_enabled = self.account_rx.is_some();
-        let mut cmds: Vec<(String, String)> = PALETTE_COMMANDS
+        let msgs = self.msgs();
+        SlashCommand::ALL
             .iter()
-            .filter(move |(cmd, _)| account_enabled || *cmd != "balance")
-            .map(|&(cmd, _desc)| {
-                let desc = self.localize_cmd_desc(cmd);
-                (cmd.to_string(), desc)
-            })
-            .collect();
-        // Skills as slash targets (Claude Code style `/skill-name`).
-        // Skip names that collide with built-ins — builtins always win on Enter.
-        let builtin_names: std::collections::HashSet<&str> =
-            PALETTE_COMMANDS.iter().map(|(n, _)| *n).collect();
-        for skill in &self.skills_data {
-            if builtin_names.contains(skill.name.as_str()) {
-                continue;
-            }
-            let desc = if skill.description.is_empty() {
-                skill.name.clone()
-            } else {
-                skill.description.clone()
-            };
-            cmds.push((skill.name.clone(), desc));
-        }
-        cmds
+            .filter(|cmd| account_enabled || !cmd.needs_account())
+            .map(|cmd| (cmd.name().to_string(), cmd.desc(msgs).to_string()))
+            .collect()
     }
 
     pub(crate) fn save_history(&self, entry: &str) {
@@ -40,25 +29,26 @@ impl App {
             .send((self.session_id.clone(), entry.to_string()));
     }
 
+    /// Cycle to the next built-in theme (`Ctrl+T`, and the old `/theme`).
     pub(crate) fn toggle_theme(&mut self) {
-        let next_name = self.theme.name.next();
+        self.set_theme(self.theme.name.next());
+    }
+
+    /// Switch to one theme and say so — `Ctrl+T`, which has no persist step.
+    pub(crate) fn set_theme(&mut self, name: ThemeName) {
         let msgs = self.msgs();
-        let label = match next_name {
-            ThemeName::Dark => msgs.theme_dark,
-            ThemeName::Light => msgs.theme_light,
-            ThemeName::SolarizedDark => msgs.theme_solarized_dark,
-            ThemeName::SolarizedLight => msgs.theme_solarized_light,
-            ThemeName::GruvboxDark => msgs.theme_gruvbox_dark,
-            ThemeName::Nord => msgs.theme_nord,
-            ThemeName::Retro => msgs.theme_retro,
-            ThemeName::Kawaii => msgs.theme_kawaii,
-            ThemeName::Japanese => msgs.theme_japanese,
-            ThemeName::Brutal => msgs.theme_brutal,
-            ThemeName::Ink => msgs.theme_ink,
-            ThemeName::InkLight => msgs.theme_ink_light,
-        };
+        self.apply_theme(name);
+        let label = theme_label(&msgs, name);
         self.add_system_message(msgs.theme_changed_tmpl.replace("{}", label));
-        self.theme = Theme::from(next_name);
+    }
+
+    /// Switch the theme silently.
+    ///
+    /// The `/theme` picker uses this and lets its persist step do the talking;
+    /// two messages for one action ("Theme: nord" then "saved"/"session only")
+    /// would say the same thing twice.
+    pub(crate) fn apply_theme(&mut self, name: ThemeName) {
+        self.theme = Theme::from(name);
     }
 
     pub(crate) fn msgs(&self) -> Messages {
@@ -118,54 +108,65 @@ impl App {
         }
     }
 
-    pub(crate) fn localize_cmd_desc(&self, cmd: &str) -> String {
-        let msgs = self.msgs();
-        match cmd {
-            "theme" => msgs.cmd_theme.to_string(),
-            "model" => msgs.cmd_model.to_string(),
-            "model-subagent" => msgs.cmd_model_subagent.to_string(),
-            "save" => msgs.cmd_save.to_string(),
-            "cancel" => msgs.cmd_cancel.to_string(),
-            "subagent_cancel" => msgs.cmd_subagent_cancel.to_string(),
-            "quit" => msgs.cmd_quit.to_string(),
-            "help" => msgs.cmd_help.to_string(),
-            "history" => msgs.cmd_history.to_string(),
-            "balance" => msgs.cmd_balance.to_string(),
-            "lang" => msgs.cmd_lang.to_string(),
-            "skills" => msgs.cmd_skills.to_string(),
-            "skill-reload" => msgs.cmd_skill_reload.to_string(),
-            "plugin" => msgs.cmd_plugin.to_string(),
-            "tasks-dag" => msgs.cmd_tasks_dag.to_string(),
-            "background" => msgs.cmd_background.to_string(),
-            _ => cmd.to_string(),
-        }
+    /// Flip the UI language and say so — `Ctrl+L`, which has no persist step.
+    pub(crate) fn toggle_language(&mut self) {
+        let next = self.language.next();
+        let old_msgs = self.msgs();
+        self.apply_language(next);
+        self.add_system_message(old_msgs.lang_changed_tmpl.replace("{}", next.label()));
     }
 
-    /// Flip the UI language and hand the new [`Messages`] to every component
-    /// that owns one.
+    /// Switch the language silently, handing the new [`Messages`] to every
+    /// component that owns one.
+    ///
+    /// `/lang` uses this and lets its persist step do the talking; two messages
+    /// for one action ("Language: 中文" then "saved"/"session only") would say
+    /// the same thing twice.
     ///
     /// `self.language` is what the *render* path reads, so flipping it alone
     /// would leave the components building their log text (event messages, card
     /// chrome) in the old locale while the rows they anchor are drawn in the new
     /// one. Components take a snapshot at construction, so the snapshot is
     /// refreshed here — the one place the language changes.
-    pub(crate) fn toggle_language(&mut self) {
-        let next = self.language.next();
-        let label = next.label();
-        let old_msgs = self.msgs();
-        self.language = next;
+    pub(crate) fn apply_language(&mut self, language: Language) {
+        self.language = language;
         let msgs = self.msgs();
         self.thinking_mut().set_messages(msgs);
         self.stream_mut().set_messages(msgs);
         self.tools_mut().set_messages(msgs);
-        self.add_system_message(old_msgs.lang_changed_tmpl.replace("{}", label));
+    }
+}
+
+/// The localized name of one theme.
+///
+/// Single source for the `/theme` picker's rows and the "theme changed" line:
+/// two spellings of the same theme would be a bug the moment one is renamed.
+pub(crate) fn theme_label(msgs: &Messages, name: ThemeName) -> &'static str {
+    match name {
+        ThemeName::Dark => msgs.theme_dark,
+        ThemeName::Light => msgs.theme_light,
+        ThemeName::SolarizedDark => msgs.theme_solarized_dark,
+        ThemeName::SolarizedLight => msgs.theme_solarized_light,
+        ThemeName::GruvboxDark => msgs.theme_gruvbox_dark,
+        ThemeName::Nord => msgs.theme_nord,
+        ThemeName::Retro => msgs.theme_retro,
+        ThemeName::Kawaii => msgs.theme_kawaii,
+        ThemeName::Japanese => msgs.theme_japanese,
+        ThemeName::Brutal => msgs.theme_brutal,
+        ThemeName::Ink => msgs.theme_ink,
+        ThemeName::InkLight => msgs.theme_ink_light,
     }
 }
 
 #[cfg(test)]
 mod tests {
 
-    use crate::{render::test_harness::make_app, theme::ThemeName};
+    use super::theme_label;
+    use crate::{
+        i18n::Language,
+        render::test_harness::make_app,
+        theme::{Theme, ThemeName},
+    };
 
     #[test]
     fn toggle_theme_cycles_from_ink() {
@@ -184,6 +185,25 @@ mod tests {
     }
 
     #[test]
+    fn set_theme_switches_to_the_named_theme() {
+        let mut app = make_app();
+        assert_eq!(app.theme.name, ThemeName::Ink);
+
+        app.set_theme(ThemeName::SolarizedLight);
+
+        assert_eq!(app.theme.name, ThemeName::SolarizedLight);
+        assert_eq!(app.theme.fg, Theme::from(ThemeName::SolarizedLight).fg);
+        assert_eq!(app.theme.bg, Theme::from(ThemeName::SolarizedLight).bg);
+        assert!(
+            app.log.items.iter().any(|item| item
+                .raw
+                .contains(theme_label(&app.msgs(), ThemeName::SolarizedLight))),
+            "the switch must name the theme it moved to: {:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
     fn toggle_language_switches_en_and_zh() {
         let mut app = make_app();
         let before = app.language;
@@ -191,5 +211,40 @@ mod tests {
         app.toggle_language();
 
         assert_ne!(app.language, before);
+    }
+
+    /// The silent half must move `language` too, or `/lang` would apply the
+    /// locale to the picker's answer and not to the app it belongs to.
+    #[test]
+    fn apply_language_switches_without_announcing() {
+        let mut app = make_app();
+        app.language = Language::English;
+        let before = app.log.items.len();
+
+        app.apply_language(Language::Chinese);
+
+        assert_eq!(app.language, Language::Chinese);
+        assert_eq!(
+            app.log.items.len(),
+            before,
+            "the persist step speaks for /lang; apply_language must stay silent"
+        );
+    }
+
+    /// The language and its canonical config name are separate on purpose: the
+    /// label is drawn for the user, the name goes into a file.
+    #[test]
+    fn language_names_round_trip_through_the_config_spelling() {
+        for language in Language::all() {
+            assert_eq!(
+                Language::parse(language.as_str()),
+                Some(*language),
+                "{} must parse back from what it writes",
+                language.as_str()
+            );
+        }
+        assert_eq!(Language::parse("EN"), Some(Language::English));
+        assert_eq!(Language::parse(" chinese "), Some(Language::Chinese));
+        assert_eq!(Language::parse("jp"), None, "a typo is not a fallback");
     }
 }

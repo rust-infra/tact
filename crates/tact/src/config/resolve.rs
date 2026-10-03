@@ -99,7 +99,55 @@ fn resolve_mcp(toml_cfg: &TactTomlConfig) -> McpSettings {
             "MCP OAuth registration identity"
         );
     }
-    McpSettings { oauth_client_name }
+    // The resource tools are Tact's own, so their risk has no server entry to
+    // live in. Same vocabulary as `tools.<name>.risk`; an unknown value is
+    // warned about and ignored, so one typo cannot fail the whole config.
+    let resource_list_risk = parse_mcp_tool_risk(
+        toml_cfg.mcp.resource_list_risk.as_deref(),
+        "mcp.resource_list_risk",
+    );
+    let resource_read_risk = parse_mcp_tool_risk(
+        toml_cfg.mcp.resource_read_risk.as_deref(),
+        "mcp.resource_read_risk",
+    );
+    let prompt_list_risk = parse_mcp_tool_risk(
+        toml_cfg.mcp.prompt_list_risk.as_deref(),
+        "mcp.prompt_list_risk",
+    );
+    let prompt_get_risk = parse_mcp_tool_risk(
+        toml_cfg.mcp.prompt_get_risk.as_deref(),
+        "mcp.prompt_get_risk",
+    );
+
+    McpSettings {
+        oauth_client_name,
+        resource_list_risk,
+        resource_read_risk,
+        prompt_list_risk,
+        prompt_get_risk,
+    }
+}
+
+/// Parses one of `[mcp]`'s resource-tool risk keys.
+///
+/// `None` for absent *or* unrecognised: the caller treats both as "keep the
+/// default", and the default is the restrictive one.
+fn parse_mcp_tool_risk(
+    value: Option<&str>,
+    field: &str,
+) -> Option<crate::permission::CapabilityRisk> {
+    let value = value?;
+    match crate::mcp::ToolRisk::parse(value) {
+        Some(risk) => Some(risk.to_capability()),
+        None => {
+            tracing::warn!(
+                field,
+                value,
+                "unknown MCP resource-tool risk (expected read|write|high); ignoring it"
+            );
+            None
+        }
+    }
 }
 
 fn resolve_voice(toml_cfg: &TactTomlConfig) -> anyhow::Result<VoiceSettings> {
@@ -489,11 +537,13 @@ struct NonLlmSettings {
     notifications_enabled: bool,
     snapshot_max_items: usize,
     micro_compact_enabled: bool,
+    memory_enabled: bool,
     max_token_usage_bodies: usize,
     skill_body_auto_inject: bool,
     skill_dirs: Vec<String>,
     instruction_sources: InstructionSources,
     theme: String,
+    language: String,
     vision_image: VisionImageSettings,
     bash_timeout_secs: u64,
     bash_nice: i32,
@@ -532,6 +582,8 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         toml_cfg.agent.micro_compact_enabled.unwrap_or(false)
     };
 
+    let memory_enabled = toml_cfg.agent.memory_enabled.unwrap_or(true);
+
     let max_token_usage_bodies = toml_cfg
         .agent
         .max_token_usage_bodies
@@ -554,6 +606,14 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         .clone()
         .or_else(|| toml_cfg.ui.theme.clone())
         .unwrap_or_else(|| "ink".to_string());
+
+    // No CLI flag: unlike the theme (chosen per terminal, so `--theme` earns
+    // its keep) a language belongs to the person, and `/lang` writes it once.
+    let language = toml_cfg
+        .ui
+        .language
+        .clone()
+        .unwrap_or_else(|| "en".to_string());
 
     let vision_image = resolve_vision_image(toml_cfg);
 
@@ -581,11 +641,13 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         notifications_enabled,
         snapshot_max_items,
         micro_compact_enabled,
+        memory_enabled,
         max_token_usage_bodies,
         skill_body_auto_inject,
         skill_dirs,
         instruction_sources,
         theme,
+        language,
         vision_image,
         bash_timeout_secs,
         bash_nice,
@@ -627,6 +689,7 @@ pub(super) fn resolve_non_llm_settings(
             notifications_enabled: non_llm.notifications_enabled,
             snapshot_max_items: non_llm.snapshot_max_items,
             micro_compact_enabled: non_llm.micro_compact_enabled,
+            memory_enabled: non_llm.memory_enabled,
             max_token_usage_bodies: non_llm.max_token_usage_bodies,
             skill_body_auto_inject: non_llm.skill_body_auto_inject,
             skill_dirs: non_llm.skill_dirs,
@@ -635,6 +698,7 @@ pub(super) fn resolve_non_llm_settings(
         },
         ui: UiSettings {
             theme: non_llm.theme,
+            language: non_llm.language,
             vision_image: non_llm.vision_image,
         },
         tools: ToolSettings {
@@ -832,6 +896,7 @@ pub(super) fn resolve_config(
             notifications_enabled: non_llm.notifications_enabled,
             snapshot_max_items: non_llm.snapshot_max_items,
             micro_compact_enabled: non_llm.micro_compact_enabled,
+            memory_enabled: non_llm.memory_enabled,
             max_token_usage_bodies: non_llm.max_token_usage_bodies,
             skill_body_auto_inject: non_llm.skill_body_auto_inject,
             skill_dirs: non_llm.skill_dirs,
@@ -840,6 +905,7 @@ pub(super) fn resolve_config(
         },
         ui: UiSettings {
             theme: non_llm.theme,
+            language: non_llm.language,
             vision_image: non_llm.vision_image,
         },
         tools: ToolSettings {
@@ -1007,6 +1073,61 @@ max_tokens = {subagent_max_tokens}
             McpSettings::default().oauth_client_name,
             McpSettings::DEFAULT_OAUTH_CLIENT_NAME
         );
+    }
+
+    #[test]
+    fn resolve_mcp_resource_tool_risk_defaults_to_high_and_is_overridable() {
+        use crate::permission::CapabilityRisk;
+
+        let (args, toml_cfg) = empty_cli_args_with_openai();
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.resource_list_risk, None);
+        assert_eq!(cfg.mcp.resource_read_risk, None);
+
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.resource_list_risk = Some(" write ".to_string());
+        toml_cfg.mcp.resource_read_risk = Some("read".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.resource_list_risk, Some(CapabilityRisk::Write));
+        assert_eq!(cfg.mcp.resource_read_risk, Some(CapabilityRisk::Read));
+
+        // An unknown value is ignored rather than guessed, so the tool keeps the
+        // restrictive default — the same rule `tools.<name>.risk` follows.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.resource_read_risk = Some("harmless".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.resource_read_risk, None);
+    }
+
+    #[test]
+    fn resolve_mcp_prompt_tool_risk_defaults_to_high_and_is_overridable() {
+        use crate::permission::CapabilityRisk;
+
+        let (args, toml_cfg) = empty_cli_args_with_openai();
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.prompt_list_risk, None);
+        assert_eq!(cfg.mcp.prompt_get_risk, None);
+
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.prompt_list_risk = Some(" write ".to_string());
+        toml_cfg.mcp.prompt_get_risk = Some("read".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.prompt_list_risk, Some(CapabilityRisk::Write));
+        assert_eq!(cfg.mcp.prompt_get_risk, Some(CapabilityRisk::Read));
+
+        // Same rule as the resource keys: an unknown value is ignored rather
+        // than guessed, so the tool keeps the restrictive default.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.prompt_get_risk = Some("harmless".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.prompt_get_risk, None);
+
+        // And the two families stay independent: a prompt key must not move a
+        // resource tool.
+        let (args, mut toml_cfg) = empty_cli_args_with_openai();
+        toml_cfg.mcp.prompt_list_risk = Some("read".to_string());
+        let cfg = resolve_config(&args, &toml_cfg, None).unwrap();
+        assert_eq!(cfg.mcp.resource_list_risk, None);
     }
 
     #[test]
@@ -1240,10 +1361,20 @@ model = "gpt-4o"
             VisionImageSettings::DEFAULT_JPEG_QUALITY
         );
         assert!(!resolved.agent.micro_compact_enabled);
+        assert!(resolved.agent.memory_enabled);
         assert_eq!(
             resolved.agent.instruction_sources,
             InstructionSources::default()
         );
+    }
+
+    #[test]
+    fn memory_can_be_disabled_in_toml() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.memory_enabled = Some(false);
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert!(!resolved.agent.memory_enabled);
     }
 
     #[test]

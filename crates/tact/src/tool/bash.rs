@@ -369,6 +369,10 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     if !pending.is_empty() {
         ctx.progress_reporter.report(pending.take());
     }
+    // Release whatever the live-output redactor is still holding back (anything
+    // after the last newline). Called on every exit path below, including the
+    // two error returns, because a missed flush truncates the live view.
+    ctx.progress_reporter.flush();
     let _ = stdout_task.await;
     let _ = stderr_task.await;
 

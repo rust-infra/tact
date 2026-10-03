@@ -1,7 +1,5 @@
 # 工程问题与优化日志
 
-> Language: [English](./26_chapter_issue.md) · [中文](./26_chapter_issue_zh.md)
-
 本章是一份**按时间倒序的优化与 bugfix日志**，记录有用户可见或 API 可见行为变化的改动。它不是教程：每条写清问题、决策与代码 / 设计文档位置，避免后续重复踩坑。
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
@@ -31,6 +29,752 @@
 
 ---
 
+---
+
+---
+
+---
+
+---
+
+## 1. 2026-10-03 — DeepSeek `reasoning_content` 回传策略的缓存实测（待处理，无行为变更）
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization（仅记录；本轮未实施） |
+| **相关** | `crates/tact_llm/src/inject.rs`（`inject_reasoning_content()` 当前只有 Kimi 调用，DeepSeek 不回传）；`crates/tact_llm/src/test_deepseek_reasoning.rs`（400 契约的 live 测试）；`scripts/deepseek-reasoning-cache-probe.py`（复现脚本）；DeepSeek 官方文档 [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、[Context Caching](https://api-docs.deepseek.com/guides/kv_cache)、[Pricing](https://api-docs.deepseek.com/quick_start/pricing) |
+
+**症状 / 动机：** DeepSeek 官方 thinking mode 文档要求：请求带 `tools` 时，所有历史轮的 `reasoning_content` 必须完整回传（否则 400），且回传内容会被拼接进上下文。Tact 目前故意不回传（注释理由是"live API 接受且省略能保 KV cache 前缀稳定"），但"省略到底省不省缓存/钱"此前没有实测；社区常见的 `latest-only`（只回传最新一条）也需要数据判断。
+
+**实测（2026-10-03，`scripts/deepseek-reasoning-cache-probe.py`）：** 用 `deepseek-flash` 与 `deepseek-v4-flash`，thinking + tools，各 6 轮 × 三种策略（`full` = 每轮全量回传历史 thinking；`omit` = 完全不回传，即 Tact 当前 DeepSeek 行为；`latest` = 只保留最近一条），每轮间隔 3s 让磁盘缓存落盘：
+
+- `full` hit: `0 → 256 → 256 → 384 → 384 → 512`
+- `omit` hit: `0 → 256 → 256 → 256 → 384 → 384`
+- `latest` hit: `0 → 256 → 256 → 384 → 384 → 384`
+
+6 轮汇总（`deepseek-flash`，peak 价 cache hit $0.006/M、miss $0.3/M）：
+
+| 策略 | prompt | hit | miss | 估算成本（$/1M 等价） |
+|---|---|---|---|---|
+| `full` | 3016 | 1792 | 1224 | **377.95** |
+| `latest` | 2946 | 1664 | 1282 | 394.58 |
+| `omit` | 2898 | 1536 | 1362 | 417.82 |
+
+**观测：**
+
+1. **thinking 确实参与 prefix cache**：`full` 的 hit 随历史增长到 512/661（≈78%），说明回传的历史 thinking 被缓存并复用；每轮新生成的 thinking 只是尾部追加，不会让旧前缀失效。
+2. **破坏缓存的是"删改旧 thinking"**：`latest` 少掉最近一轮 assistant 段的命中，`omit` 增长更慢；两者都要为最近一轮多付 miss。
+3. **小 ctx 下 `full` 最省**：hit 价只有 miss 价的 ≈2%（50×），多携带的历史 thinking 以 hit 价买回，比 `omit`/`latest` 多出的 miss 便宜。
+4. **文档的 400 未被强制执行**：`omit` 与 `latest` 六轮全部 200；这是实测宽松，不是契约。
+5. 命中粒度为 128 token；样本只有 6 轮、约 600 token 的 prompt，绝对差值小，需要更长会话与更大 ctx 复测。
+
+**暂定决策 / 后续：** 本条目只记录发现，不改代码。判定式为 `full 更省 ⇔ R < m × (miss/hit)`：`R` = `full` 额外携带的累积 thinking token，`m` = `omit`/`latest` 每轮额外 miss token；`deepseek-flash` 价格比为 50×、`deepseek-chat`/pro 约 30×。小 ctx 下 `full` 更省；当 ctx 由大量 thinking 轮次堆到大尺寸（约 >50 轮 thinking 累积）时 `latest`/`omit` 可能反超，且 `latest` 一般略优于 `omit`。候选实现是 provider 级 `reasoning_echo = all | latest | none`（DeepSeek 默认值待真实 ctx / 长 thinking 复测后再定）。
+
+**变更后行为：** 无（仅记录）。
+
+**指针：** `crates/tact_llm/src/inject.rs::inject_reasoning_content`（目前仅 Kimi 调用）；`crates/tact_llm/src/test_deepseek_reasoning.rs`（live 契约测试，含 latest-only 场景）；`scripts/deepseek-reasoning-cache-probe.py`（`DS_MODEL` / `DS_TURNS` 可调，key 默认复用 `~/.tact/config.toml`）；DeepSeek Thinking Mode / Context Caching / Pricing 官方文档。
+
+## 1. 2026-10-03 — `[agent].memory_enabled`：Tact 持久记忆有了总开关
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/config/{types,resolve}.rs`；`crates/tact/src/agent/mod.rs`；`crates/tact/src/tool/{mod,registry}.rs`；`crates/tact-ui/src/{headless,interactive}.rs`；[Ch 3](./03_chapter_memory_zh.md)、[Ch 4](./04_chapter_prompt_zh.md)、[Ch 21](./21_chapter_config_zh.md)、`config.example.toml` |
+
+**症状 / 动机：** 在此之前 Tact 的记忆是强制的：只要 `~/.tact/memory/` 里有文件，每个任务开始时都会注入系统提示；`MEMORY_GUIDANCE` 无条件教模型何时保存；`save_memory` 工具也始终注册。想用 MCP（例如 Basic Memory）或其他方式管理长期记忆的用户无法关掉它，只能接受两套记忆并存、上下文被重复占用。
+
+**决策：** 新增 `[agent].memory_enabled`，默认 `true`，因此没有该键的既有配置行为完全不变。关闭时：`build_system_prompt` 不注入 memory 与 `MEMORY_GUIDANCE`；主 agent 改用 `toolset_with_memory(false)`，`save_memory` 不进入 router（从工具声明中消失，派发得到 `unknown tool`）。磁盘文件不删除，`MemoryManager` 的只读加载保持不变；子 agent 本来就没有 `save_memory`，不受影响。
+
+**变更后行为：** `memory_enabled = false` 时系统提示中既无 `# Memory guidance` 也无 `# Memories (persistent across sessions)`，工具表里无 `save_memory`；键缺省或为 `true` 时与旧版逐字节一致。该开关不是访问控制：模型仍可用 `read_file` / `bash` 直接读这些 Markdown。
+
+**指针：** 测试 `config::resolve::tests::memory_can_be_disabled_in_toml`、`tool::registry::tests::{memory_is_on_in_the_default_toolset,disabled_memory_removes_save_memory}`、`agent::tests::{enabled_memory_keeps_the_guidance_in_the_system_prompt,disabled_memory_is_absent_from_the_system_prompt}`；`config::types::tests::parse_full_config`。
+
+## 1. 2026-10-02 — `prompts/list` 与 `prompts/get`：最后一个 MCP 原语接通
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | 新增 `crates/tact/src/mcp/prompt.rs`（`McpPromptTool`、`list_mcp_prompts` / `get_mcp_prompt`、`render_prompt_listing` / `render_prompt_messages`、`prompt_tool_risk`）；`crates/tact/src/mcp/mod.rs`（`McpService::list_prompts` / `get_prompt`、`MockMcpService`、`McpServerInspection.prompts`、`MCP_RESOURCE_TIMEOUT` → `MCP_FETCH_TIMEOUT`）、`mcp/resource.rs`（`known_servers` 改 `pub(super)`）；`crates/tact/src/agent/{mod,tool_dispatch}.rs`；`crates/tact/src/config/{types,resolve}.rs`（`mcp.prompt_list_risk` / `prompt_get_risk`）；`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-10-02-mcp-prompts-design.md`；[Ch 8](./08_chapter_mcp_zh.md) Step 9 |
+
+**症状 / 动机：** 缺口表上只剩这一行，而它的否决理由（"prompt 模板是 server 编写的一串消息，而不是一次工具调用，在 Tact 的轮次结构里没有消费者"）**只管住了一半**：那是关于**把 prompt 推给模型**，Tact 至今也不做；它对**工具结果**不成立——`get_mcp_prompt` 把消息当文本返回，模型读它的方式与读一个 resource 完全相同，消费者问题在原语变成模型可调用的工具那一刻就没了。
+
+代价是可测的。用 JSON-RPC over stdio 直接问服务器（`initialize` + 四个 list），Basic Memory 4.0.0b1 广告 `tools 21 / resources 1 / templates 1 / prompts 4`，capabilities 里明确声明了 `prompts: {listChanged: false}`——不是"可能有"，是确实有四个（`continue_conversation`、`getting_started`、`recent_activity`、`search_knowledge_base`）。而 `tact-ui mcp get basic-memory` 对它们**一个字都不说**：一个被告知"从 `getting_started` 开始"的模型没有任何办法取到它，与 resources 接通前读不到 `memory://ai_assistant_guide` 是同一种死路。
+
+**决策：** 照 `resource.rs` 的形状补两个工具（`list_mcp_prompts` / `get_mcp_prompt`），派发、调度、risk、`mcp get` 全部沿用既有五处钩子。几处**非显然**的取舍：
+
+- **列表必须给出参数词汇**（`arguments: topic (required), project`）：看不见占位符的模板读起来就是"不需要参数"，然后带着未填充的模板去 `prompts/get`。
+- **参数只做字符串化与拒绝，不做猜测**：协议里 prompt 参数是 string map，数字/布尔转成字符串（`{"count": 3}` 的意图就是 `"3"`），对象/数组/null 则**指名报错**。静默丢弃会让 server 收到未填充的占位符却仍报成功——这正是本节要防的失败模式。
+- **消息按 server 给的顺序逐条渲染**，只标 role，不排序不合并：顺序本身就是指令。图像与内嵌 resource 只报大小不内联（复用 `render_resource_contents`），理由同 `read_mcp_resource`。
+- **两个 risk 键**（`mcp.prompt_list_risk` / `prompt_get_risk`），与资源那两个同权：名字属于 Tact，条目的 `tools.<name>.risk` 够不到；都默认 `high`。
+- **`MCP_RESOURCE_TIMEOUT` 改名 `MCP_FETCH_TIMEOUT`** 而不是再加一个常量：四个请求是同一类等待（server 自己索引里的列表，或取一个条目），每个原语一个名字只会让两个上限无理由地漂移。
+- **`mcp get` 新增 `prompts N available to \`list_mcp_prompts\``**：这是 prompts 在模型不问时唯一的可见处。
+
+**变更后行为：** `prompts/list` 与 `prompts/get` 全部接通，缺口表上 Prompts 那一行删除。模型可以 `list_mcp_prompts` 看参数、再 `get_mcp_prompt` 取回消息；`tact-ui mcp get basic-memory` 现在显示 `prompts  4 available to \`list_mcp_prompts\``。**仍未做**：把 prompt 暴露成 TUI slash 命令（MCP 规范称 prompt 是 user-controlled，slash 命令其实更贴合规范；推迟而非否决——本轮只回答"模型根本够不到"，不在同一个 diff 里再开一个用户可见面）；`prompts/list_changed` 仍未处理，理由与 resources 相同（按需取用，过期的数量不是正确性问题），且能查到的 server 都声明 `listChanged: false`。
+
+**指针：** `crates/tact/src/mcp/prompt.rs`；测试 `mcp::prompt::tests::*`（16 条）、`mcp::tests::mcp_client_gets_prompts_from_a_real_in_process_server`（**真实 rmcp 进程内 server**：广告一个 prompt 并把参数回显，证明 rmcp 调用形状与参数过线正确，这是 mock 证明不了的）、`agent::tool_dispatch::tests::{a_prompt_listing_is_a_successful_tool_result, a_prompt_get_requires_both_server_and_name, a_prompt_get_returns_the_messages, prompt_arguments_are_strings_and_a_bad_one_is_named, only_the_prompt_names_resolve_to_the_prompt_path}`、`config::resolve::tests::resolve_mcp_prompt_tool_risk_defaults_to_high_and_is_overridable`、`mcp_cli` 的 `prompts  4 available` 断言。
+
+## 1. 2026-10-02 — 三个僵尸钩子清掉，pre-push 的测试输出从 ~200 KB 压到 5 KB
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `scripts/check-rust.sh`（`cargo test … --verbose` → `--quiet`）；移出 `.githooks/pre-commit.sh`（版本控制内）与 `.git/hooks/{pre-push,post-commit}`（本地）；`scripts/install-git-hooks.sh`；[Ch 24](./24_chapter_testing_zh.md) §提交前 |
+
+**症状 / 动机：** 一次**成功**的 push 会打出约 200 KB 的测试日志。来源是 `cargo test --verbose`：它会回显每个 target 的完整 rustc/rustdoc 命令行，`-L native=…` 一行就几 KB（`git push` 输出的**最后 25 行**就有 86 KB）。这段 stdout 不只给人看，也会进 agent 的上下文，等于每次绿灯 push 都白烧一次。
+
+**决策：** 测试步骤改 `--quiet`（每个测试一个字符，无命令行回显）。绿灯 ~5 KB；红灯 1.4 KB 且**信息不缺**——用一个故意失败的测试实测过，quiet 模式下仍打印测试名、`file:line`、断言 diff 与 `test result: FAILED`，所以红行仍可诊断。
+
+同时清掉三个从未生效的钩子。它们本身就是陷阱：读起来像"gate"，照着它们判断会得出错的结论。
+
+| 文件 | 为什么是僵尸 |
+|---|---|
+| `.git/hooks/pre-push` | `core.hooksPath` 已改指 `.githooks`，git 不读它。内容是**四项**检查（含 `cargo build`、`--all-features`、全 workspace），与实际 gate 不符 |
+| `.git/hooks/post-commit` | Qoder tracker 上报（`\|\| true`）。自 2026-08-02 改指后从未运行，即**那之后没有 commit 被上报** |
+| `.githooks/pre-commit.sh` | 名字带 `.sh`，而 git 只认精确的 `pre-commit`。无任何脚本引用它，`install-git-hooks.sh` 也只 chmod `.githooks/pre-push` |
+
+**变更后行为：** push 绿灯输出约 5 KB。唯一生效路径仍是 `.githooks/pre-push` → `scripts/check-rust.sh`，三项检查：`cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings`（**无** `--all-features`）、`cargo test -p tact-ui -p tui -p tact -p tact_llm --quiet`（四个包，非全 workspace）；**无** `cargo build` 步骤（`cargo test` 自行构建所需目标）。warm 约 33 s。副作用：提交时不再有任何钩子做格式化（本来也没有），`cargo fmt` 仍需自己先跑。
+
+**指针：** `scripts/check-rust.sh`（`--quiet`，注释写明取舍：这段 stdout 会进 agent transcript）；验证 `git hook run pre-push` 退出 0、输出 5288 B；两个 `.git/hooks/*` 只是移出到 `.git/hooks/.removed-2026-10-02/`（未版本控制，可还原）。**`--quiet` 对 worktree 内的 push 暂不生效**：`.githooks/pre-push` 用 `ROOT=$(git rev-parse --show-toplevel)`，在 worktree 里那就是调用方的 worktree，而每个 worktree 有自己的 `scripts/check-rust.sh` 副本——要等这次改动 commit 且被该 worktree 检出。
+
+## 1. 2026-10-02 — 全局快捷键真正消费按键，`Ctrl+T` 不再顺手打出一个 `t`
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tui/src/handlers/mod.rs`（新增 `handle_global_shortcut` 与 `GLOBAL_SHORTCUTS` 表、`is_global_shortcut` / `global_shortcut_label(s)`）、`crates/tui/src/lib.rs`（`run_tui` 事件分发、`voice_keybind_conflict`）、`handlers/insert.rs`、`handlers/palette.rs`、`handlers/file_picker.rs`；`config.example.toml`、[Ch 21](./21_chapter_config_zh.md) §`[voice]`、[Ch 23](./23_chapter_tui_zh.md) §7 |
+
+**症状 / 动机：** 全局快捷键（`Ctrl+C/H/T/L/?`）在 `run_tui` 里只是「顺带执行一下」，事件**没有被消费**——同一个 `KeyEvent` 继续往下派发给当前输入模式的 handler，而那些 handler 的兜底分支只匹配 `KeyCode::Char(c)`、不看修饰键。于是按一次 `Ctrl+T` 做两件事：主题切到下一个，**同时**输入框里多出一个 `t`。`Ctrl+H`、`Ctrl+L`、`Ctrl+?`、`Ctrl+C` 同理；Palette 模式把字母塞进 `cmd_line`，FilePicker 模式把它塞进过滤词。
+
+**决策：** 把全局快捷键抽成 `handlers::handle_global_shortcut(app, &key) -> bool`，返回 `true` 即「已消费」，`lib.rs` 据此**不再往下派发**（`global_handled` 分支排在 voice keybind 与各模式 handler 之前）。同时给三个「会把字符写进缓冲区」的兜底分支加 `!CONTROL` 守卫：Insert 的输入框、Palette 的 `cmd_line`、FilePicker 的过滤词。规则是一句话：**`Ctrl+<char>` 要么是已绑定的快捷键，要么什么都不是——绝不退化成打出那个字母。** 只改 `insert.rs` 不够：另外两处是同一个 bug，留着会让这条规则在半数模式里不成立。
+
+**决策（第二半）：用户绑定不得占用这些键。** 消费的另一个后果是：派发到全局 handler 之后的任何东西都再也看不到该事件，所以 `voice.voice_keybind = "ctrl+t"` 这种配置**永远不可能触发**——按下只切主题，录制不启动，而且运行时毫无提示。取舍是「用户显式配置优先」还是「拒绝该配置」；选定**拒绝**：`run_tui` 在进入 raw mode **之前**报错退出，错误信息指名冲突的键与全部保留键。放在 TUI 层而不是配置解析层，是因为保留集必须来自 `GLOBAL_SHORTCUTS` 那张表——若在 `crates/tact` 里再抄一份键列表，新增全局快捷键时就会漂移，而漂移的表现恰好是「新键仍可被语音绑定、但永不触发」。
+
+**变更后行为：** `Ctrl+T` 只切主题，输入框不再出现 `t`；未绑定的 `Ctrl+<char>`（如 `Ctrl+G`）在三种模式里都不产生任何字符；无修饰键的普通字母照常输入。Insert 模式内既有的 `Ctrl+W/A/E/K/U/D/P/N/Z/Y`、`Ctrl+←/→`、`Ctrl+Home/End`、`Ctrl+Backspace` 不受影响——它们在兜底分支**之前**。`voice_keybind` 与 `Ctrl+C/H/T/L/?` 重合时启动即失败（实测：`ctrl+t` → `Error: voice.voice_keybind = "ctrl+t" is already taken by the built-in Ctrl+T shortcut. …`，exit 1，终端未被触碰）；`ctrl+g` / `ctrl+r` / `ctrl+,` 照常接受。
+
+**指针：** `crates/tui/src/handlers/mod.rs::handle_global_shortcut` / `GLOBAL_SHORTCUTS` / `is_global_shortcut`；`crates/tui/src/lib.rs`（`let global_handled = handle_global_shortcut(&mut app, &key);` 之后 `if global_handled { /* nothing else */ } else if voice_key_handled { … }`；`voice_keybind_conflict` 在 `run_tui` 解构 `TuiConfig` 之后、`enable_raw_mode()` 之前 `bail!`）；测试 `handlers::tests::every_global_shortcut_is_consumed` / `the_reserved_set_matches_the_dispatcher` / `an_unbound_ctrl_key_is_left_to_the_mode_handler` / `a_plain_letter_is_left_to_the_mode_handler`、`handlers::insert::tests::an_unbound_ctrl_key_types_nothing` / `a_plain_letter_still_types_itself`、`handlers::palette::tests::an_unbound_ctrl_key_does_not_type_into_the_palette`、`handlers::file_picker::tests::an_unbound_ctrl_key_does_not_filter_the_picker`、`voice_keybind_tests::a_binding_on_a_global_shortcut_is_refused` / `every_reserved_key_is_refused` / `a_free_binding_is_accepted`；[Ch 23](./23_chapter_tui_zh.md) §7、[Ch 21](./21_chapter_config_zh.md)。
+
+## 1. 2026-10-02 — 启动期间退出不再等 MCP 连完
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact-ui/src/interactive.rs`（`run_interactive`：`build_agent_for_interactive` 与 `tui_handle` 的 `tokio::select!`）；[Ch 23](./23_chapter_tui_zh.md) §1 |
+
+**症状 / 动机：** 启动后头十秒内按 `q`，终端已经恢复、`Bye! 🔔` 已经打印，但进程要再挂几秒到十几秒才真正退出——屏幕看起来已经结束了，shell 提示符就是不来。用 pty 探针量「打印 `Bye!`」到「进程真正退出」的差值（注意 TUI 默认是 **Insert** 模式，探针要先发 `Esc` 再发 `q`，否则 `q` 只是打进输入框）：
+
+| 退出时刻 | MCP server | `Bye!` 之后的死等 |
+|---|---|---|
+| 1.5 s | 无 | 0.01 s |
+| 4.4 s | 无 | 0.01 s |
+| 4.4 s | basic-memory + canva | **5.13 s** |
+| 25 s | basic-memory + canva | 0.35 s |
+
+**根因不是退出路径，是启动路径。** `run_interactive` 先 `build_agent_for_interactive(...).await`，再 `tui_handle.await`。TUI 跑在独立 task 上，所以 `q` 立刻结束 TUI 循环、恢复终端、打印告别语，但进程要等 agent 构建完才能退。构建里最贵的是连 MCP：`basic-memory`（stdio，Python/uv）约 5.7 s，`canva`（remote + OAuth）约 5.0 s 且每次启动 token refresh 都失败。连接本身**已经是并发**的（`FuturesUnordered`），所以耗时等于最慢那个 server。RUST_LOG 时间线钉死：t+4.45 按 `q` → t+9.2 canva 连接结束 → t+9.54 进程退出。25 s 之后再退只要 0.35 s，因为构建早就跑完了。
+
+**决策：** 让构建与 TUI **竞速**（`tokio::select!`）：TUI 先结束就丢弃构建、直接返回。丢弃是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程（rmcp `ChildWithCleanup::drop`），实测退出后无残留 `basic-memory` 进程。代价是这条路不打印 session id / stats：没有 agent 可总结，而且启动两秒就退出本来也无统计可言。**刻意不顺手改退出路径**：`shutdown_mcp` 用的是 rmcp 的 `cancel()`（`cancellation_token.cancel(); handle.await`，**无界等待**）而非 `close_with_timeout`，且 `disconnect_all` 是串行的；2 个 server 实测 0.35 s，现在不是瓶颈，留给单独一轮。
+
+**变更后行为：** 启动任意时刻退出都是立即的（三档 dwell 实测均为 0.00 s）；正常路径不变——启动已完成后退出仍打印 `[session id: ...]` 与 stats，仍走 SessionEnd hook + `shutdown_mcp`。
+
+**指针：** `crates/tact-ui/src/interactive.rs::run_interactive`（`let mut build = Box::pin(...)` + `tokio::select!`，TUI 分支 `tui??; return Ok(())`）；[Ch 23](./23_chapter_tui_zh.md) §1。**无自动化测试**：要稳定复现需要给构建注入可观测的延迟，现有 harness 的构建太快、跑不到这个竞态；证据是 pty 探针的前后对照（上表），改动后三档均为 0.00 s。
+
+## 1. 2026-10-02 — `/lang` 现在能把语言写进 `[ui] language`，下次启动读得回来
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`Language::as_str` / `parse`、`Eq`，新增 `lang_persist_prompt` / `lang_persisted_tmpl` / `lang_persist_failed_tmpl` / `lang_session_only_tmpl`）；`crates/tact/src/config/types.rs`（`UiTomlConfig.language`、`UiSettings.language`）、`resolve.rs`（`resolve_non_llm`，无 CLI flag）、`persist.rs`（`update_ui_language_in_toml`）、`mod.rs`（`persist_language`）；`crates/tui/src/widgets/state/mod.rs`（`SelectKind::PersistLang`）、`handlers/select.rs`（`start_language_toggle` / `open_language_persist_step` / `finish_language_persist`、`theme_config_available` → `ui_config_available`）、`widgets/state/app/config.rs`（`apply_language` 从 `toggle_language` 拆出）、`construct.rs`（`set_configured_language`）、`lib.rs`（`TuiConfig.language`）；spec `docs/superpowers/specs/2026-10-02-ui-language-persistence-design.md`；[Ch 23](./23_chapter_tui_zh.md) §6.10、[Ch 21](./21_chapter_config_zh.md) §4/§5/§6 |
+
+**症状 / 动机：** 上一轮的 `/theme` 已经能问一句「保存到配置文件？」并写 `[ui] theme`，`Ctrl+L` 旁边的 `/lang` 却仍然只有 `app.toggle_language()`：换完语言、本轮生效，下次启动回到英文，而且**没有任何地方能改这个结果**——`[ui]` 里根本没有语言这个键，TOML 里写了也没人读。于是「我明明切成中文了」只能靠每次重开再按一次来对抗。
+
+**决策：** 把语言提升为与主题并列的 `[ui]` 偏好，但**刻意不走同一条交互路径**。`/lang` 仍是翻转而不是选择器：只有两种语言，选择器的信息量抵不上一次回车。新增的是第二步——`SelectKind::PersistLang`，与 `PersistTheme` 分开而不是合并成一个「写哪个 `[ui]` 键」的变体，因为两者写进去的拼写不同（主题名 vs locale 标签）且各自用自己的话播报。为此 `theme_config_available()` 更名 `ui_config_available()`：两个命令都写 `[ui]`，必须对「这张表有没有文件可住」给出同一个答案。
+
+**写入的是 locale 标签，不是界面标签。** `Language::label()` 对中文返回 `中文`——那正是刚选了中文的人在屏幕上看到的字，而 `Language::parse()` 读不回来；写进文件就是一个下次启动静默失效的值。因此新增 `Language::as_str()`（`en` / `zh`）与 `parse()`（额外接受 `english` / `cn` / `chinese`，忽略大小写与首尾空格，其余返回 `None`），并由 `language_names_round_trip_through_the_config_spelling` 与 `confirming_save_writes_the_locale_tag_and_leaves_the_other_tables` 钉住。`parse()` 返回 `Option` 而不是自带回退，是为了让「配置说了什么」和「我们猜了什么」分开：未知取值由 `App::set_configured_language` 打 `tracing::warn!` 再回落英文，而不是假装配置本来就写着英文。
+
+**播报只发生一次。** 原先 `toggle_language` 一个函数同时做「翻转」和「播报」，`/lang` 若直接复用会先打印 `🌐 语言: 中文`、紧接着再打印「已保存 / 仅本次会话」——同一件事说两遍。拆成 `apply_language`（静默切换，并把新 `Messages` 快照推给 thinking / stream / tools 三个持有者）与 `toggle_language`（`apply_language` + 播报）后，`Ctrl+L` 走后者、`/lang` 走前者并让持久化步骤承担播报。这个拆分不是风格问题：`self.language` 是**渲染**路径读的，而组件的 `Messages` 在构造时就冻结了，只翻 `self.language` 会让切换前已存在的行在旧语言的外壳里被重绘。
+
+**变更后行为：** `/lang` 翻转语言后追加一步「将语言保存到配置文件？」（默认**否**，与 `/theme`、`/model` 手感一致）：选「是」写 `[ui] language`（`en` / `zh`），`config_path` 为空时不开这一步、直接播报「仅本次会话」；`Ctrl+L` 行为不变，只翻转不写文件。启动时读回 `[ui] language`，无法识别则告警 + 英文。**没有 CLI flag**：主题可能随终端而变，一次启动换一个说得通；语言属于使用者本人，`/lang` 写一次就够了——因此解析链只有「TOML → 默认值」两级。`config.example.toml` 与 [Ch 21](./21_chapter_config_zh.md) 的 `[ui]` 段、默认值表、§6 均同步。
+
+**指针：** `crates/tui/src/handlers/select.rs::start_language_toggle` / `open_language_persist_step` / `finish_language_persist`、`crates/tui/src/widgets/state/app/construct.rs::set_configured_language`、`crates/tact/src/config/persist.rs::update_ui_language_in_toml`。测试：`language_persist_step_asks_and_defaults_to_no`、`language_persist_step_reports_session_only_without_a_config_file`、`declining_to_persist_reports_a_session_only_language`、`confirming_save_writes_the_locale_tag_and_leaves_the_other_tables`、`apply_language_switches_without_announcing`、`language_names_round_trip_through_the_config_spelling`、`updates_ui_language_keeping_the_theme_line`、`ui_language_is_created_when_the_table_is_missing`。
+
+## 1. 2026-10-01 — 插件提供的 MCP server 现在可以被用户配置了（策略覆盖层）
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpServerPolicy::declares_policy` / `merged_under`、`resolve_servers`、`ResolvedServers::policy_overlays`、`McpLoadReport::policy_overlays`）；`crates/tact-ui/src/mcp_cli.rs`（`render_report` 的 `Policy overlays:` 段）；[Ch 08](./08_chapter_mcp_zh.md) §来源与优先级 |
+
+**症状 / 动机：** 上一轮把上下文成本摊开之后，Canva 一眼就很刺眼：45 个工具 = 102 KB ≈ 25.4k tokens/请求，其中 25 个是服务器自报只读。想给它收口，写配置，然后发现**写什么都没用**。用真实的插件复现：
+
+- 条目**带**传输（`command`/`url`）→ `mcp list` 老实打印 `Overridden declarations: canva … is shadowed by installed plugin`，但 `"enabled": false` 照样不生效——插件在优先级表里排最高，用户的 `enabled` 永远被顶掉。
+- 条目**不带**传输、只有 `tools` / `enabled_tools` → 这一条**彻底消失**：不在表格里，不在 skipped 里，没有任何一行字提到它。零反馈。
+
+第二行是真正的 bug，根因两处：`config.to_transport()` 为 `None` 时直接 `continue`，**在进入遮蔽记录之前**就丢了；随后 `skipped_remote.retain(|name| !index_of.contains_key(name))` 又把它从 skipped 里摘掉（那条 retain 的意图是「另一个 scope 已经声明了它，就别算 skipped」，但它连**策略**一起扔了）。于是插件 server 在结构上不可配置：唯一能改的文件是插件缓存里的 `.mcp.json`，而 `plugin update` 会覆盖它。
+
+**决策：** 不碰优先级，而是承认**没有传输、却声明了策略的条目根本不是 server 声明，是「策略覆盖层」**。它不遮蔽任何东西，而是在解析器跑完、`retain` 之前，折进赢得该名字的声明之下。合并规则是「赢家说过的字段归赢家，覆盖层只补空缺」——优先级一点没动，覆盖层永远不覆盖赢家写明的字段，只替沉默处说话。单工具条目按字段逐个合并（可以点名一个赢家没提过的工具而不抹掉其余），`enabled_tools` / `disabled_tools` 按整张列表合并（列表是一个决定，不是一组字段）。覆盖层里的 `"enabled"` 无效并记 warning：谁拥有传输谁决定跑不跑。
+
+**变更后行为：** 只写策略即可配置插件 server：
+
+```json
+{ "mcpServers": { "plugin__canva__canva": {
+    "enabled_tools": ["list-folder-items", "get-assets"],
+    "tools": { "fetch": { "risk": "read" } } } } }
+```
+
+实测（真实 Canva 插件）：`canva` 从 `connected (45 tools)` 变成 `connected (2 tools)`，`mcp get canva` 的成本行从 ≈25.4k 降到 `2 available (2.7 KB, ≈666 tokens per request)`。`mcp list` 单列一段、与 `Overridden declarations` 分开，因为两者说的是相反的事：
+
+```
+Policy overlays:
+  canva  policy overlaid from /proj/.tact/.mcp.json
+```
+
+名字谁都不属于的覆盖层仍是 `skipped (no usable command or url)`，写错名字不会消失；此前「无传输、也没声明任何策略」的条目行为完全不变（仍是 skipped）。
+
+**指针：** `crates/tact/src/mcp/mod.rs::McpServerPolicy::merged_under`、`resolve_servers`；测试 `a_policy_only_entry_overlays_the_declaration_that_owns_the_transport`、`an_overlay_never_outranks_a_field_the_winner_stated`、`an_overlay_adds_a_tool_without_dropping_the_winners_own`、`an_overlay_can_hide_tools_the_transport_owner_exposes`、`a_policy_only_entry_that_names_nobody_is_still_reported_as_skipped`、`a_policy_overlay_names_the_file_the_policy_came_from`。
+
+## 1. 2026-10-01 — `mcp get` 把每个 MCP 工具的上下文成本摊开
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`ExposedTools::tool_bytes`、`McpClient::tool_bytes`、`McpServerInspection::tool_bytes`）；`crates/tact-ui/src/mcp_cli.rs`（`format_bytes` / `format_tokens`、`render_server_detail`）；spec `docs/superpowers/specs/2026-10-01-mcp-tool-declaration-cost-design.md`；[Ch 08](./08_chapter_mcp_zh.md) §工具策略 |
+
+**症状 / 动机：** 每个 MCP 工具的名字、描述、input schema 都要在**每轮请求**里重发，而唯一能降低它的旋钮（`enabled_tools`）没有任何反馈：用户看到的是 `mcp list` 里的「21 tools」，看不到这等于多少上下文。以 Basic Memory 为例，21 个工具 = 34.6 KB ≈ 8.6k tokens/请求，而其中 `edit_note` 一个就 4.5 KB。
+
+**决策：** 先测量，再决定动什么。测了两个方向：
+
+1. **schema 瘦身**（折叠 `anyOf: [X, {type: null}]` → `X`、删 `title`、删 `default: null`）：21 个工具 34,631 B → 33,627 B，**只省 2%（≈251 tokens）**。字节大头是每个参数的 `description`，那是合法结构不是 pydantic 冗余——因此**不做**，收益远不抵多一层 schema 变换的维护与风险（有些 provider 对 schema 形状敏感）。
+2. **声明多少工具**：裁到 6 个（search_notes/read_note/write_note/build_context/recent_activity/list_directory）省 52%（4,098 tok），裁到 4 个省 66%（2,896 tok）。杠杆在这里，而字段早已存在。
+
+于是只做「可见性」：`derive_exposed` 在重建 spec 时顺手记下每个工具的声明字节数（`serde_json::to_string(spec).len()`，也就是真正发出去的那份），随 `McpServerInspection` 带到 CLI；`render_server_detail` 求和打印每轮估算、每个工具行尾附自己的字节数、并在首行点名 `enabled_tools`。不做自动裁剪：**裁掉工具就是丢能力**，哪几个属于工作流是用户的选择，Tact 只把价格标出来。
+
+**变更后行为：**
+
+```
+  tools   21 available (34 KB, ≈8.4k tokens per request — hide unused ones with `enabled_tools`):
+            mcp__basic-memory__search_notes  risk read (declared)  3.8 KB
+            mcp__basic-memory__edit_note     risk high (default)   4.5 KB
+```
+
+字节数是「从 Tact 发出去的 spec」量的，估算按 4 B/token（真实数字看底栏 `ctx`，来自 provider）；服务器没连上或没有工具时不打印这一行。
+
+**指针：** `crates/tact/src/mcp/mod.rs::derive_exposed`、`crates/tact-ui/src/mcp_cli.rs::render_server_detail`；测试 `the_detail_view_reports_what_the_tools_cost`。
+
+## 1. 2026-10-01 — `mcp get` 把服务器的只读声明起草成可粘贴的 `tools` 块
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact-ui/src/mcp_cli.rs`（`render_server_detail`、`suggested_risk_policy`）；[Ch 08](./08_chapter_mcp_zh.md) §工具策略 |
+
+**症状 / 动机：** Tact 刻意不采信服务器自报的 `readOnlyHint`（Ch 08 记录的理由：服务器会说谎；只读＋`openWorldHint` 是外泄通道）。代价落在默认体验上：一个什么都不声明的条目让**每个** MCP 工具都停在 `High`——以 Basic Memory（21 个工具、实测 15 个 `readOnlyHint: true`）为例，读一条自己的笔记也要批准一次，headless 下 `High` 直接被拒（`permission::ask_user`），整个 server 形同不可用。要么手写 15 条 `tools.<name>.risk`，要么把策略开成 fail-open。
+
+**决策：** 不动那条策略，改成**起草**：`mcp get <server>` 在工具列表之后，如果存在「服务器自报只读、条目尚未声明 risk」的工具，就打印一段 paste-ready 的 `"tools"` 块。只列这些工具，写死 `"risk": "read"`；服务器没声明只读的一律不出现，因此粘贴只会让策略更严、绝不会更松（fail-closed）。Tact 依然不施加声明——它只是把人的那半工作量（抄 15 个名字）变成一次复制，人 review 后粘贴即完成决策。键的对齐 padding 放在引号**之外**（放里面会把空格变成名字的一部分）。
+
+**变更后行为：** `mcp get basic-memory` 末尾多出：
+
+```
+  suggested risk policy — the server calls these read-only; review, then paste
+  into the entry's "tools" (Tact does not apply the claim itself):
+
+    "tools": {
+      "read_note":             { "risk": "read" },
+      …
+    }
+```
+
+服务器改工具集（`tools.listChanged: true`）后重跑一次即可重新起草；block 只在“有东西可加”时出现（全部声明过、或服务器什么都没声明，都不打印）。
+
+**指针：** `crates/tact-ui/src/mcp_cli.rs::suggested_risk_policy`、`the_detail_view_drafts_a_risk_policy_from_the_servers_own_claim`。
+
+## 1. 2026-10-01 — `/theme` 从「循环下一个」改成主题选择器
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tui/src/widgets/state/mod.rs`（`SelectKind::ThemePick` / `PersistTheme`）；`crates/tact/src/config/{mod.rs,persist.rs}`（`persist_theme`、`update_ui_theme_in_toml`、`set_scalar`）；`crates/tui/src/handlers/mod.rs`（`start_theme_picker`）；`crates/tui/src/handlers/select.rs`（确认/取消分支）；`crates/tui/src/widgets/state/app/config.rs`（`set_theme`、`theme_label`，`toggle_theme` 改为调用前者）；`crates/agent_tui_kit/src/theme.rs`（`ThemeName::all()` 转 pub、新增 `as_str()`）；`crates/agent_tui_kit/src/i18n.rs`（`theme_select_prompt` / `theme_persist_*` / `theme_session_only_tmpl`，`model_persist_yes|no` 更名 `persist_yes|no`，`cmd_theme` 描述）；spec `docs/superpowers/specs/2026-10-01-tui-theme-picker-design.md`；[Ch 23](./23_chapter_tui_zh.md) §主题 |
+
+**症状 / 动机：** `/theme` 只做一件事：`C::Theme => app.toggle_theme()`，即 `ThemeName::next()` 循环。内置主题有 12 个，想从 `ink`（config 默认）切到 `kawaii` 要按 6 次，而且每次都得盯着底栏看现在到哪了；`/model`、`/permission` 早就是选择器（列表 + 当前项标记 + Enter 确认），只有主题是异类。同一批主题名还散在两处：`toggle_theme` 里一个 12 分支的 `match`，以及（新加的）选择器需要同样的标签。
+
+**决策：** 引入 `SelectKind::ThemePick` 与 `start_theme_picker`，选项就是 `ThemeName::all()`（因此把 kit 里私有的 `all()` 转 pub——循环顺序不该让调用方靠 `next()` 绕一圈重建），当前主题那一行带 ` *` 后缀并**作为初始选中行**（不是停在第一行）。确认走新的 `App::set_theme(name)`，`toggle_theme` 退化为 `set_theme(self.theme.name.next())`——`Ctrl+T` 的「下一个」仍然可用，且两条路径共用同一个快照消息。12 个标签抽成 `theme_label(msgs, name)`，`toggle_theme`、选择器行、与 `theme_changed_tmpl` 都取它，避免同一主题出现两种拼写（`japanese` 的英文标签是 `Wa`、中文是 `和風`，这类非直译只有一处能改）。
+
+**变更后行为：** `/theme` 打开 12 行的选择器（`↑↓/j/k` 移动、Enter 应用、Esc 取消并保持原主题），开在当前主题上；`Ctrl+T` 仍循环。确认后追加一步「将主题保存到配置文件？」（默认**否**，与 `/model` 的手感一致）：选「是」调 `tact::config::persist_theme(ThemeName::as_str())` 写 `[ui] theme`，`settings.config_path` 为空时不问、直接播报「仅本次会话」。为此新增 `ThemeName::as_str()`（写进 TOML 的规范拼写，`theme_name_round_trips_through_as_str` 保证 `from_str` 能读回，否则下次启动会静默回落到默认主题）。命令描述同步改成「Choose a color theme (Ctrl+T cycles)」/「选择颜色主题（Ctrl+T 循环）」。
+
+**顺带修掉的存盘缺陷：** 加持久化时用临时文件测试 `ui.theme`，发现 `persist.rs` 的 `t.insert(key, value)` 会连**旧行的装饰一起换掉**——`model = "x"  # pinned for the ctx window` 的注释在每次 `/model` 存盘后消失，而该模块的文档注释声称「保留注释与原格式」。改为 `set_scalar()`：复用旧 item 的 `decor`，只替换值。五个 persist helper（model / model+budget / subagent / effort / theme）统一走它，`replacing_a_model_keeps_its_trailing_comment` 与 `updates_ui_theme_keeping_the_rest_of_the_file` 固定住这一行为。
+
+**指针：** `crates/tui/src/handlers/mod.rs::start_theme_picker`、`crates/tui/src/handlers/select.rs`（`SelectKind::ThemePick` 分支）、`crates/tui/src/widgets/state/app/config.rs::set_theme`。测试：`theme_command_opens_a_picker_marked_at_the_current_theme`（12 行、恰好一个 ` *`、开在该行）、`confirming_the_theme_picker_applies_the_chosen_theme`、`cancelling_the_theme_picker_keeps_the_theme`、`ctrl_t_still_cycles_themes`、`set_theme_switches_to_the_named_theme`。
+
+## 1. 2026-10-01 — palette / slash / file picker / select 弹窗改为取色自 theme，亮色主题下不再白底白字
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tui/src/render/popups/{slash_command,command_palette,file_picker}.rs`；`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`、`crates/agent_tui_kit/src/render/popups/select.rs`；`crates/tui/src/render/popup_scene_tests.rs`（4 个亮色主题回归测试）；[Ch 23](./23_chapter_tui_zh.md) §覆层弹窗 |
+
+**症状：** 覆层弹窗的**行内容**用字面量取色：`Color::White`（未选中行、选中行前景）、`Color::Cyan`（选中行）、`Color::DarkGray`（描述与分组标题）、`Color::Gray`（空提示）。而 chrome（`render_popup_chrome`）是 theme 感知的，它给弹窗铺 `bg(theme.bg)`——亮色主题的 `bg` 是 **White**。于是 `Light` / `InkLight` / `SolarizedLight` 下：未选中行 = 白底白字，**整张命令列表不可见**（实测缓冲：`fg=White bg=Reset` 叠在 `bg=White` 的框内）；选中行是 Dark 的 cyan，恰好等于 `Light` 的 `highlight`，而它的 `accent` 是蓝——高亮与强调色都不属于当前主题。`select`（权限/模型选择器）与 file picker 的选中行同样是 `White on highlight`，亮色主题高亮为亮色时读不清。
+
+**决策：** 行内容的取色与 chrome 对齐到同一套 theme 字段：未选中 `theme.fg`、次要用 `theme.muted`（描述、分组标题、空提示）、强调用 `theme.accent`、选中行统一为 `bg(theme.highlight).fg(theme.fg)`（深色主题下与旧的 White 完全等价，亮色主题下自动变成蓝底黑字）。`SelectPopupWidget` 因此多了 `muted_color` 构造参数（唯一调用方是 `render/popups/select.rs`，已传 `theme.muted`），选中行改用调用方给的 `fg_color` 而非字面量。file picker 的文件类型色（`.rs` → 橙、`.py` → 蓝 …）**保持**：那是有意的语法式调色板，不属于"伪装成主题色"的那一类。
+
+**变更后行为：** 12 个内置主题下，弹窗行内容都随主题走；`Dark` 的渲染与修复前逐字节相同（`theme.fg` = White、`theme.accent` = Cyan），亮色主题不再是白底白字。
+
+**指针：** `popup_scene_tests` 的 `slash_popup_rows_take_their_colors_from_the_theme`、`command_palette_selected_row_is_legible_on_a_light_theme`、`file_picker_selected_row_is_legible_on_a_light_theme`、`select_popup_rows_and_empty_hint_take_their_colors_from_the_theme`（用 `cell_at` 定位具体单元格断言 fg；把任一处改回 `Color::White` 都会让它们失败）。
+
+## 1. 2026-10-01 — skills 不再是斜杠一级命令，收进 `/skill <name>`
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization / breaking（发现层） |
+| **相关** | `crates/tui/src/widgets/state/app/config.rs`（`palette_commands` 只返内置）；`crates/tui/src/widgets/state/slash_command.rs`（`skill_candidates`：`/skill` 的动态子命令）；`crates/tui/src/handlers/skills.rs`（`invoke_skill`、`skill_args_from_subcommand_input`）；`crates/tui/src/handlers/palette.rs`；`crates/agent_tui_kit/src/render/slash_style.rs`（`SKILL_COMMAND`、`/skill <name>` 高亮）；`crates/agent_tui_kit/src/i18n.rs`（`skill_usage` / `cmd_skill`）；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 每装一个 skill，它就变成一条一级斜杠命令（`/code-reviewer`、`/lark-doc`…），混进 palette 与 `/` 弹出菜单。装几十个之后，`/mcp`、`/compact`、`/help` 淹没在一列 skill 名里；一级列表还随安装/卸载整体挪位（补全索引、分组标题、视觉记忆全部失效）。上一轮刚把 `/skills` 收成 `/skill list`，等于承认这条路径该有统一入口，但 skill 仍然各自占据一级。
+
+**决策：** 把 skills 从一级列表中**摘掉**，改挂在 `/skill` 之下——上一轮建好的 `Subcommand` 声明树正好给了挂载点：`/skill` 是唯一"子命令不全是静态"的命令，`skill_candidates()` 把 `skills_data` 变成它的动态子节点（名字序，过滤 token 与其它子命令一致）。三处配套：
+
+1. `palette_commands()` 只返内置命令（`App::slash_candidates` 是唯一知道 skill 的地方），Normal 面板与 Insert 弹窗因此天然只剩内置。
+2. `/skill <name> [args]` 运行一个 skill：`handle_skill_builtin_command` 新增该分支，与直接形式共用 `invoke_skill`（`$ARGUMENTS` 规则、`<skill>` 包装、提交只有一份实现，差别只是 log 回显 `/skill demo foo` 还是 `/demo foo`）。
+3. 冲突与高亮：名为 `list`/`reload` 的 skill 不进入 `/skill` 的补全（否则 `/skill list` 会出现两行同路径、无法区分），直接形式仍可运行；`split_skill_slash` 同时识别 `/skill demo` 与 `/demo`，把整段标为 accent+bold——kit 里的 `SKILL_COMMAND` 常量由 `the_kit_gather_command_is_the_hosts_skill_command` 钉住，重命名不会静默丢失高亮。
+
+直接形式 `/{name}` **保留**（不进任何列表）：它是已经形成的习惯，也是 Claude Code 的写法；收拢的是发现层，不是运行路径。
+
+**变更后行为：** 一级列表恒为 20/21 条内置命令，与装了多少 skill 无关；`/skill ` 弹出 `list` / `reload` + 所有 skill（`/skill co` 过滤到 `code-reviewer`），Tab 补成 `/skill code-reviewer `，Enter 直接跑；`/skill demo fix auth` 与 `/demo fix auth` 产出同一个 agent 任务。`/skill ` 的弹窗在几百个 skill 时仍受既有滚动窗口约束（`slash_popup_long_list_*` 测试已改到这一层）。
+
+**指针：** `crates/tui/src/widgets/state/app/config.rs`、`crates/tui/src/widgets/state/slash_command.rs`（`skill_candidates`）、`crates/tui/src/handlers/skills.rs`（`invoke_skill`、`skill_args_from_subcommand_input`）、`crates/agent_tui_kit/src/render/slash_style.rs`。
+
+## 1. 2026-10-01 — 子命令也能补全：`/skill ` 弹出 `list` / `reload`，Tab 逐层往下走
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Subcommand` + `subcommands()`）；`crates/tui/src/widgets/state/slash_command.rs`（`Candidate` + `App::slash_candidates`，取代 `matched_commands`）；`crates/tui/src/handlers/insert.rs`（空格 / Tab / Enter）；`crates/tui/src/render/popups/slash_command.rs`；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 斜杠弹窗只认命令名，而且空格一律关闭它（`KeyCode::Char(' ') if slash_command.active` 直接 `active = false`）。于是 `/skill ` 之后既没有提示也没有补全——`list` / `reload` 只存在于 `skill_usage` 这类用法字符串和文档里；`/plugin`（5 个子命令）、`/hooks`（3 个，还带 `--all` / `--source <label>`）、`/mcp`（3 个）同样如此。上一轮把 `/skills` 收成 `/skill list` 之后，这个缺口更明显了：命令变得需要记子命令，而补全只帮到命令名那一步。
+
+**决策：** 子命令从"handler 里的 `match` 字符串"变成**声明树**：`SlashCommand::subcommands()` → `Subcommand { name, hint, children, takes_value }`。`hint` 是弹窗右列显示的后续语法（`<server>`、`--all | --source <label>`），刻意不做翻译——那是语法，不是文案。补全状态机集中到 `App::slash_candidates()`（取代 `SlashCommandState::matched_commands`，顺带把 `palette_commands()` + `skill_name_set` + 模糊匹配这三处重复调用收进一个函数），候选 `Candidate` 携带**完整路径**（`plugin marketplace list`），因此 Tab 替换的是整段输入，而不是最后一个 token。三条规则：
+
+1. 候选形态按输入位置决定：还在打命令名 → 命令+skill 模糊匹配（原样）；命令名已完整且是内置命令 → 该命令的子命令（按光标下的 token 过滤）；其余（取值、skill 参数、未知 token）→ 空列表，不再弹出"无匹配"框盖在参数上。
+2. 空格只在**后续仍有候选**时保留弹窗（`/skill ` 保持，`/mcp auth ` 进入取值即关），这就是逐层补全得以成立的前提。
+3. Tab 补全到 `/{完整路径} ` 并继续打开下一层；Enter 只补全 `incomplete` 的候选（还有子节点，或 `takes_value`），完整的叶子直接执行——`/mcp auth` 上按 Enter 不会再打出一个用法提示。
+
+**变更后行为：** `/plugin ma` ⭢ Tab ⭢ Tab 得到 `/plugin marketplace list `；Normal 模式命令面板选中 `/skill` 之后同样直接打开子命令弹窗（后续无可补全项的命令，如 `/subagent_cancel`，不开）；`/hooks trust --` 列出 `--all` / `--source`；`/mcp auth` 按 Enter 只补成 `/mcp auth ` 等用户填 server；`/skill list` 按 Enter 直接执行。声明与 handler 的一致性由 `every_declared_subcommand_has_a_handler` 保证：它遍历 `subcommands()`，为每个叶子派发样例输入（`takes_value` 的补一个 `sample`），任何"能被补全却落到用法提示"的子命令都会失败——`/plugin install` 正是被它挡下的一条（该子命令**没有**声明，因为 TUI 的 handler 不接受它）。
+
+**指针：** `crates/tui/src/widgets/state/slash.rs`（`subcommands()`、`SKILL_/MCP_/PLUGIN_/HOOKS_SUBCOMMANDS`）、`crates/tui/src/widgets/state/slash_command.rs`（`slash_candidates`、`subcommand_candidates`）、`crates/tui/src/handlers/insert.rs`、`crates/tui/src/render/popups/slash_command.rs`。
+
+## 1. 2026-10-01 — `/skills` 与 `/skill-reload` 合并成 `/skill list` / `/skill reload`
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization / breaking rename |
+| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Skill` 取代 `Skills` + `SkillReload`）；`crates/tui/src/handlers/skills.rs`（新增 `handle_skill_builtin_command`）；`crates/tui/src/handlers/mod.rs`；`crates/tui/src/render/popups/command_palette.rs`；`crates/agent_tui_kit/src/i18n.rs`（`cmd_skill` 取代 `cmd_skills`/`cmd_skill_reload`，新增 `skill_usage`）；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 21](./21_chapter_config_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+
+**症状 / 动机：** 技能那两条命令是全表里唯一不成对的：`/skills` 平级列出技能，`/skill-reload` 平级重扫，而同类能力在别处都是「一个命令 + 子命令」——`/mcp list`、`/plugin list|reload|install`、`/hooks list|trust`。结果弹出面板里多出一条命令、两张图标、两个描述字段（`cmd_skills` / `cmd_skill_reload`），用户还得记住哪条是横线哪条是下划线。
+
+**决策：** 按 `/mcp` 的形态收成一条内置命令 `/skill`，两个子命令由 `handlers/skills.rs` 的 `handle_skill_builtin_command` 解析（子命令解析留在命令自己的模块里，与 `/mcp`、`/plugin`、`/hooks` 一致；面板只知道命令名）。`needs_args()` 增加 `Skill`，因此面板/弹出菜单回车补全成 `/skill ` 而不是立即执行；裸 `/skill` 与未知子命令都把 `/skill ` 留在输入框并闪 usage（`skill_usage`），与 `/mcp` 同一套手感。`/skill list` 是纯本地渲染（不打 agent），所以**不做** `/mcp list` 的 busy 拦截——任务进行中也能看列表。`i18n` 的两个 `cmd_*` 字段合并为一个 `cmd_skill`。
+
+**变更后行为：** `/skill list` 列出技能（分页 Markdown 表格），`/skill reload` 重扫技能根到共享 registry。`/skills` 与 `/skill-reload` 不再是命令名，输入它们既不会执行也不会被 skill 兜底——它们是普通文本，会当作消息发给 agent（弹出面板的模糊搜索输入 `skill` 即可找到新命令）。调用技能本身的路径完全没变（`/{skill-name}`）；因此名为 `skill` 的 skill 现在被内置命令顶掉，与既有「内置命令优先于同名 skill」规则一致（`mcp`、`plugin`、`hooks` 同名 skill 早已如此）。
+
+**指针：** `crates/tui/src/widgets/state/slash.rs`、`crates/tui/src/handlers/skills.rs`（`handle_skill_builtin_command`）、`crates/agent_tui_kit/src/i18n.rs`（`cmd_skill`、`skill_usage`）。
+
+## 1. 2026-10-01 — 列表与提示里的插件 MCP server 只显示短名，`/mcp auth canva` 直接可用
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`display_server_name` / `resolve_server_name` / `notice_lines` / `authorize_server`）；`crates/tact-ui/src/mcp_cli.rs`（`render_live_listing` / `render_report` / `render_server_detail` / `authorize` / `get_server` / `logout`）；spec `docs/superpowers/specs/2026-10-01-mcp-plugin-server-short-name-design.md`；[Ch 08](./08_chapter_mcp_zh.md) §全部来源 |
+
+**症状 / 动机：** 插件带来的 server 叫 `plugin__<plugin_id>__<server>`，而多数插件的 manifest id 与 server key 同名，于是 Canva 插件的提示读作：
+
+> MCP server plugin__canva__canva needs authorization — run /mcp auth plugin__canva__canva
+
+一行里出现两次的 20 字符名字淹没了这句话真正要传达的东西（哪个 server、要跑哪条命令），`/mcp list` 的表格、`mcp get` 的标题同样如此。
+
+**决策：** 前缀只在**命名**处保留——它仍然是配置键、OAuth 凭据文件名（`~/.tact/mcp/oauth/<name>.json`）和 agent 工具名前缀 `mcp__<server>__<tool>` 的来源，工具名一个字节都没变。展示与输入两端各自解决：
+
+- **展示**：新增 `tact::mcp::display_server_name`，把 `plugin__<id>__` 去掉（`plugin__demo__a__b` → `a__b`：切分在 `id` 后的第一个 `__`，因此 server key 自身可以含 `__`）。凡是面向用户出现 server 名的地方都改用它——`/mcp list`（TUI 与 CLI）的表格、`mcp get` 的标题、「needs authorization — run …」提示，以及 `mcp list` 的 Overridden / Filtered / Entry-keys 备注行与 `notice_lines` 的失败、覆盖、跳过提示；表格列宽也按显示名计算。
+- **输入**：新增 `tact::mcp::resolve_server_name`——先做**精确匹配**（自己声明的 server 永远不会被插件的短名顶掉），否则取唯一一个短名相等的已配置 server。`/mcp auth`、`mcp login`、`mcp get`、`mcp logout` 都先解析再动作，所以提示里印出的短名是一条能直接跑的命令。匹配到多个（两个插件都带 `canva`）或一个都没有时报错并列出候选，不做猜测。
+- `mcp get` 的标题用短名，但工具行仍是 `mcp__plugin__canva__canva__<tool>`——那才是 agent 真正要调用的名字。`mcp logout` 的解析是**尽力而为**：server 已从配置里删掉时仍按原样当作凭据名去删。
+
+**变更后行为：** 上面那句话变成 `MCP server canva needs authorization — run /mcp auth canva`，而 `/mcp auth canva`、`tact-ui mcp login canva`、`tact-ui mcp get canva` 都能工作；同一个用户自己声明的 `canva` 依旧优先命中自己。报告/列表里的所有 server 名（含 Overridden、Filtered、Entry-keys 备注行与失败提示）都一致地显示短名——同一行文字的两种写法比任一种单独出现都糟。`mcp remove` 不变：插件 server 任何文件都删不掉，没有短名可解析。`mcp__plugin__canva__canva__<tool>` 与凭据路径不变，故对 agent 完全无影响。
+
+**指针：** `crates/tact/src/mcp/mod.rs`（`display_server_name`、`resolve_server_name`、`resolve_name_against`、`notice_lines`）、`crates/tact-ui/src/mcp_cli.rs`。
+
+## 1. 2026-09-30 — 斜杠命令收进一个枚举，6 条描述不再显示成命令名
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix / refactor |
+| **相关** | 新增 `crates/tui/src/widgets/state/slash.rs`（`SlashCommand`）；`crates/tui/src/{widgets/state/mod.rs,widgets/state/app/config.rs,render/slash_style.rs,handlers/mod.rs}`；`crates/agent_tui_kit/src/i18n.rs`（5 个新字段 × 2 语言）；[Ch 23](./23_chapter_tui_zh.md) §3 |
+
+**症状 / 动机：** 22 个内置斜杠命令的名字被平行列在 5 个地方，其中两处已经漂移。
+
+- `PALETTE_COMMANDS` 的 `(name, desc)` **描述字段是死代码**——没有任何调用方读它（`palette_commands()` 忽略它改调 `localize_cmd_desc`，`slash_style.rs` 只取名字），而同一批英文文本又原样存在于 `i18n.rs`。
+- `localize_cmd_desc` 只有 16 条分支而命令有 22 个，多出来的 6 个落进 `_ => cmd.to_string()`：`/permission`、`/view-system-prompt`、`/compact`、`/mcp`、`/hooks`、`/stats` 在**中英两种语言下**都把命令名当自己的描述显示。没有测试、没有编译器检查——纯靠人记得改两个地方。
+- `execute_palette_command` 的 `_ => handled: false` 让漏写一个处理分支变成静默不处理，只有 `palette_commands_are_all_handled` 这一个测试兜着。
+
+**决策：** 引入 `SlashCommand` 枚举作为唯一来源。`ALL` 是弹出列表顺序，`name()` / `from_name()` 是用户输入的名字（逐变体 `#[strum(serialize = ...)]`，因为集合不规整：`model-subagent` 用连字符而 `subagent_cancel` 用下划线，从变体名推导会静默改命令名），`desc(msgs)` 是中英描述，`needs_args()` / `needs_account()` 是那两个原本散落在别处的 4 元素与 1 元素判断。`desc` 与 `handlers/mod.rs` 的 `run_command` 都是**穷尽匹配、无 `_` 分支**，因此新增命令时漏写描述或漏写处理分支都会编译失败。派发改成先 `from_name` 解析、不中再交给 skill——内置名赢过同名 skill 的优先级不变。`PALETTE_COMMANDS` 连同它的死描述字段一并删除；`CommandExecOutcome::{handled,unhandled}` 消掉了 21 处重复的结构体字面量。
+
+**变更后行为：** 22 个命令在中英两种语言下都有真实描述（补上 `cmd_view_system_prompt` / `cmd_compact` / `cmd_mcp` / `cmd_hooks` / `cmd_stats` 五对字符串，`/permission` 的字符串本就存在、只是缺分支）。新增测试：每个变体都在 `ALL` 里且不重复、`from_name` 往返、描述非空且不等于命令名、中英描述不相同、只有 `balance` 需要账户通道、带参数的四个命令恰好是 `plugin`/`mcp`/`hooks`/`subagent_cancel`。
+
+**不覆盖（刻意）：** 子命令解析——`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`——仍在各自的 handler 模块里按字符串切；顶层枚举碰不到它，那是另一个抽象。`run_command` 也仍是 22 个分支的一个函数，枚举不会让它变小（只是不再能漏）。
+
+**指针：** `crates/tui/src/widgets/state/slash.rs`、`crates/tui/src/handlers/mod.rs`（`run_command`）、`crates/agent_tui_kit/src/i18n.rs`（`cmd_*`）。
+
+## 1. 2026-09-30 — 英文册整体删除，本书只剩中文
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | docs / removal |
+| **相关** | `book/`（删除 27 个英文章节 + `index.md` + `mindmap.{md,html,png}` + `tact_book.xmind` + `book/output/`）、`AGENTS.md`（双语规则）、`book/index_zh.md`；全仓 72 个文件里的 203 处引用被改指 `*_zh.md` |
+
+**症状 / 动机：** 中英双册要一直成对维护——`AGENTS.md` 明确要求两册结构对齐（同样的标题、mermaid、表格），一次行为变更就得改两份，而实际阅读全部发生在中文册。`book/index_zh.md` 自己写着「英文为权威全文」，但没有任何机制保证这一点，靠的是每次改动都记得改两边。
+
+**决策：** 英文章节整体删除，`book/` 只保留中文。删除范围不止章节：`book/mindmap.md` / `mindmap.html` 里是 27 条指向英文 HTML 的导航链接，`book/output/` 是由英文源生成的 CHM 产物，都以英文册为前提。所有指向被删文件的引用改指 `*_zh.md`——不只是 `book/` 内部，还包括 `ARCHITECTURE.md`、`README.md`、`AGENTS.md`、`docs/`、`docs/superpowers/{specs,plans}/` 以及 `crates/` 里的文档注释。
+
+`_zh` 后缀**保留**：全仓有 436 处引用 `*_zh.md`，改名换来的只是好看一点，却要再动一遍所有链接；代价与收益不成比例。它现在只是历史命名，`book/index_zh.md` 与 `AGENTS.md` 都写明了这一点。`crates/`、`ARCHITECTURE.md`、`docs/` 仍是英文，只有本书是中文。
+
+**变更后行为：** `book/` 下只剩 `NN_chapter_<slug>_zh.md` 与 `index_zh.md`，章内不再有语言切换行。`AGENTS.md` 的双语对齐规则改为「本书只有中文，一章一文件，无需配对」。历史 plan / spec 文档里「双语」「both languages」之类的表述保持原样——它们记录的是当时确实发生过的事，不是现行约定。
+
+**顺带发现（未修）：** `crates/agent_tui_kit/README.md` 第 8 行把 `crates/protocol/src/agent.rs` 写成相对自身目录的链接，实际解析到 `crates/agent_tui_kit/crates/protocol/src/agent.rs`，是本次改动之前就存在的坏链。全仓其余 markdown 链接均已验证可解析。
+
+**指针：** `book/index_zh.md`（章节表 + 命名说明）、`AGENTS.md`（「Docs: sync at push time」一段）。
+
+## 1. 2026-09-30 — 私钥可被读取，且工具打印出来的东西没有任何脱敏
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix / security |
+| **相关** | `crates/tact/src/security/{sensitive,redact,mod}.rs`（新增）、`crates/tact/src/tool/metadata.rs`（`PermissionPolicy::{ReadPath,WritePath,PatchPaths,target,sensitive}`、`PermissionPromptPolicy::{PatchTarget,generate_key}`）、`crates/tact/src/agent/tool_dispatch.rs`（`preflight_tool_calls` 里的守卫、`run_tool_waves` 里的脱敏收口）、`crates/tact/src/permission/{mod,settings}.rs`、`crates/tact/src/tool/{progress,bash,read_file,read_image,edit_file,write_file,apply_patch}.rs`、`crates/tact/src/background.rs`；spec `docs/superpowers/specs/2026-09-30-sensitive-path-guard-and-secret-redaction-design.md`；[第 10 章 §12](./10_chapter_permission_zh.md) |
+
+**症状 / 动机：** `cat ~/.ssh/id_ed25519` 会在所有权限模式下静默执行，headless 也一样。`cat` 在只读白名单里，而 `split_plain_command` 接受词首 `~`——注释写着波浪号展开「无害」，因为白名单里的程序对它打开的文件依然只读。确实如此；文件的**内容**才是秘密。于是该命令被判为 `CapabilityRisk::Read`，而 `check_with_auto` 对 `Read` 的放行**早于** plan mode，也早于一切 settings 规则。`~/.netrc`、`~/.aws/credentials`、`grep -r token ~/.aws` 同理。另外，打印 `~/.claude/settings.json` 会暴露一个仍有效的 `ANTHROPIC_AUTH_TOKEN`，而工具结果路径上没有任何地方脱敏——工具返回什么，会话存储与 transcript 就存什么。
+
+**决策：** 两套机制，因为它们各自独立失效。
+
+*守卫*（`security::sensitive`）是一张有序注册表，列出「本性即秘密」的路径，分两个档位、且逃生口刻意不同。`Credential`——私钥、token 存储、`~/.netrc`、`~/.ssh/**`、`~/.aws/**`、`~/.kube/**`、`~/.gnupg/**`、`~/.config/{gh,gcloud,heroku,op}/**`、`*.pem` / `*.key` / `*.p12` / `*.keystore` / `*.kdbx`、`id_*`、`*_rsa`、`*.tfstate`、`credentials.json`、`secrets.{json,yml,toml}`、仓库内的 `.npmrc` / `.pypirc` / `.pgpass` / `.netrc`，以及携带 `env` token 的 agent 宿主配置（`~/.claude/settings.json`、`~/.codex/auth.json`、`~/.tact/settings.json`）——在**预检直接拒绝**，早于 `PreToolUse`、早于 `PermissionManager::check`，因此 `Auto` 模式、已持久化的 `allow` 规则、会话内 always-allow、`PermissionRequest` hook 都碰不到它。其逃生口是 `permissions.sensitive_paths.allow`，需要改文件：一键即可解除的拒绝不算拒绝。`Secret`——`.env`、shell history、`~/.ssh/config`——升级为 `High` 并走普通阶梯，于是 plan mode 拒绝、Default 询问、headless 拒绝，用户规则照常组合。
+
+*脱敏*（`security::redact`）是给「基于名字的分类器看不见的东西」兜底——`python -c "print(open('/home/me/.ssh/id_ed25519').read())"` 不提及任何切词器找得到的路径。分两级，因为无差别的键值规则会改写用户自己的源码与 fixture，模型就会对着本该写着 `token = "abc"` 的地方分析 `[redacted:value]`：`Basic`（只含高置信度形状，作用于**所有**结果）与 `Credential`（`Basic` 加结构感知规则，按守卫自己的命中逐调用选择）。标记只带类别、绝不含值的前缀。它在 `run_tool_waves` 的单一收口处运行，早于 `PostToolUse` hook，因此 hook、TUI 步骤详情、transcript 与会话存储看到同一个字符串。实时输出是单独一遍——`StreamRedactor` 只输出完整行，并整体压制私钥块——因为实时视图是命令还在跑时用户正在看的东西。工具**调用**输入与 `arg_full` 永不改动：模型自己发出的 `tool_use` 块必须逐字节原样回传。
+
+接线过程中暴露了两个同型权限缺陷，一并在这里修掉，因为「窄手势授予宽权限」与「宽读」是同一种缺陷：
+
+- `PermissionRule::generate` 在无法表达实参时会退回**裸规则**，而规则文法把值嵌在 `tool(field:pattern)` 里。于是任何含冒号的 `bash` 命令——`git commit -m "fix: thing"`——会把一次「Always allow this tool」点击变成持久化的、与输入无关的 `bash` 规则：此后所有命令、所有会话。现在它返回 `None`，并由 `AllowOutcome::NotNarrowable` 让 `tool_dispatch` 明说。
+- `apply_patch` 声明了 `permission_prompt: Path { field: "path" }`，而它的输入没有这个字段，于是同一条退路让一次点击授权了此后对任意文件的任意 patch。`PermissionPromptPolicy::PatchTarget` 把规则锚在 patch 的目标路径上，并且对多文件 patch 拒绝生成规则，而不是挑其中一个路径去授权其余。
+
+同时移除：`always_allowed_tools` 曾预置 `"read_file"`。在 `read_file` 始终是 `Read` 时它没有作用；一旦敏感目标能把它升级为 `High`，它就放行任意输入，`.env` 也不例外——列表里的裸名匹配所有输入。没有任何人授予过的 allowlist 条目不该压过守卫。
+
+**之后的行为：** `cat ~/.ssh/id_ed25519` 与 `cat ~/.netrc` 在所有模式下被拒绝，文案指明路径、类别与逃生口。`read_file(".env")` 在 Default 询问、在 Plan 与 headless 拒绝、在 Auto 放行。settings 里的 `allow: ["bash"]` 规则无法解除凭据拒绝，而 `sensitive_paths.allow` 条目可以。每个工具结果在任何读取者之前都会被扫描高置信度秘密形状，被守卫判为敏感的调用还会额外套用结构规则。源码与 diff 不受影响。`redaction.enabled = false` 全局关闭该遍处理；`level` 未设置或拼错时解析为 `basic`，绝不是 `off`。
+
+**未修复：** 这不是沙箱。两套机制都是同进程内基于名字与模式的判断，一条刻意绕行的路径即可击穿。执行边界是 `crates/tact/src/sandbox/`，它仅支持 Linux（macOS 上返回 `SandboxDegradation`）且默认关闭（`[tools] sandbox = false`）。MCP 工具的**输入**不被守卫扫描（其结果仍按 `Basic` 脱敏）。
+
+## 1. 2026-09-30 — Tact 自己的资源工具也有可声明的 risk 了
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/config/{types,resolve}.rs`（`McpTomlConfig::{resource_list_risk, resource_read_risk}`、`McpSettings`、`parse_mcp_tool_risk`）、`crates/tact/src/mcp/resource.rs`（`resource_tool_risk`、`resource_tool_risk_with`）、`crates/tact/src/agent/tool_dispatch.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-resource-tool-risk-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** `tools.<name>.risk` 寻址的是某个 server 的工具，而 Tact 的三个资源工具并不属于任何 server——它们是路由层提供的原生名字——因此没有条目能声明它们，它们按构造就是 `CapabilityRisk::High`。这是站得住脚的默认值，也是不可用的默认值：只有一个可信本地 server 的用户无法表达「列出来没问题、读取不行」，于是每次列表都要询问，而非交互运行会直接拒绝它们。记下这个缺口时只有两个这样的工具，现在有三个。
+
+**决策：** `[mcp]` 新增 `resource_list_risk`（`list_mcp_resources` + `list_mcp_resource_templates`）与 `resource_read_risk`（`read_mcp_resource`），两者使用与 `tools.<name>.risk` 相同的 `read` / `write` / `high` 词汇，且都默认 `high`，因此在你声明之前这次改动不可见。之所以分成两个键：这两件事并不相同——列表返回元数据且触及每个 server，读取返回的是从某一个 server 取回的第三方内容。放在 `[mcp]` 而不是 server 条目里正是要点——这些工具属于 Tact，这也是条目够不到它们的原因。`resource_tool_risk` 从 `config::try_settings()` 把工具解析成 `CapabilityRisk`，与 `normalize_mcp_capability` 并列，后者是 server 工具的唯一裁决点；其策略部分 `resource_tool_risk_with` 显式接收 settings，因此「工具到键」的映射无需安装进程级配置即可测试。`try_settings()` 返回 `None`——从未解析过配置的进程——会得到 `High`，所以未配置的路径是收紧的那一条；未知值会像未知的 `tools.<name>.risk` 一样被警告并忽略。
+
+**之后的行为：** server 工具的 risk 在条目里声明，Tact 资源工具的 risk 在 `[mcp]` 里声明，第 8 章的缺口表对两者都不再留行。给 `read_mcp_resource` 声明 `read` 会绕过计划模式——章节里把这一点明说，而不是留给人自己去发现——并且它仍然只是在陈述「不会写入」，而**不是**内容可以安全抓取：数据流这条轴依然不存在。
+
+**指引：** `config::resolve::tests::resolve_mcp_resource_tool_risk_defaults_to_high_and_is_overridable`、`mcp::resource::tests::{the_resource_tools_are_high_unless_something_declares_otherwise, a_listing_and_a_read_are_declared_separately}`。
+
+---
+
+## 1. 2026-09-30 — 管理员托管的 hook 文件凭权限而非开关免于审核
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/consts.rs`（`TactPath::managed_hooks_path`）、`crates/tact/src/plugin/hooks.rs`（`HookOrigin::Managed`、`is_admin_owned`、`admin_ownership_holds`、`collect_hook_sources_with`、`admit_trusted`）；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** Codex 可以不经审核地运行管理员下发的 hook 包，而当时记下的缺口说 Tact 没有对应物，因为这件事的两半都是「信任模型层面的决定且目前没有消费者」。但这两半并不是同一个决定，其中只有一半站得住。**效果**——管理员的 hook 不需要每个用户各自审核——恰恰是审核从未被设计去覆盖的场景：审核闸门存在是因为插件包是下载来的内容、project 文件是仓库内容，而一个只有管理员能写的文件两者都不是。
+
+**决策：** `/etc/tact/hooks.json` 成为一个 `HookOrigin::Managed` 来源，且**仅当**它属主为 root、且组与他人均不可写时才被接纳（`is_admin_owned`；其策略部分 `admin_ownership_holds` 单独抽出，因为测试无法创建 root 属主的文件）。任何无法确认该属性的情形——其它平台、不可读的文件、可被任意写入的文件——答案都是 `false`，该文件与其他所有来源一样走审核。`HookOrigin::Managed` 只会在该检查**之后**才产生，因此 `admit_trusted` 对这个来源直接受信、不查存储；而这些条目仍会带着路径出现在加载报告里，所以「免于审核」从不等于「隐形运行」。`bypass_trust` 本身刻意**不**实现：一个能关掉审核闸门的开关，任何能编辑配置文件的人都能设；而属性无法被「写不了这个文件的人」打开，并且在权限一旦不再是管理员专属时自动失效。其余情况的可脚本化等价做法仍是 `tact-ui hooks trust --all`。
+
+**之后的行为：** 管理员可以下发 hook 而不必让每个用户重新批准，且信任决策属于文件系统而非某个标志。属主非 root、或组/他人可写的托管文件会像其他文件一样重新走审核；托管来源被注册在最前，因此它的 `SessionStart` 上下文为会话定调，同时不打乱任何既有来源的顺序。第 9 章的缺口表现在只剩 `bypass_trust` 一行，并写明上述理由。
+
+**指引：** `plugin::hooks::tests::{a_managed_hook_needs_admin_ownership_not_a_switch, a_managed_source_is_admitted_without_the_store, an_ordinary_source_still_needs_review_next_to_a_managed_one}`。
+
+---
+
+## 1. 2026-09-30 — hook 也可以住在 `config.toml` 里，一个文件一个来源
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`HooksFile::from_toml_file`、`config_hook_paths`、`collect_hook_sources_with`）；spec `docs/superpowers/specs/2026-09-30-hooks-in-config-toml-design.md`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** Codex 接受 hook 的第三种写法——其 `config.toml` 里的 `[hooks]` 表——而 Tact 只读 `hooks.json`，所以从 Codex 带过来的配置必须手动搬运 hook。当时记下的反对理由是「第二种写法需要自己的一套优先级规则」，其中一半是成立的：hook 是叠加的，因此没有覆盖关系需要裁决，新来源唯一能扰动的是 `SessionStart` 上下文的拼接顺序。另一半——「`hooks.json` 才是工具写出来的东西」——是保留 `hooks.json` 的理由，而不是拒绝读取用户在 Tact 已经拥有的那个文件里手写的表的理由。
+
+**决策：** `[hooks]` 反序列化进 JSON 文件用的同一个 `HooksFile`，因此 TOML 与 JSON 两种写法是同一份实现：同样的字段、同样的校验、同样的审核，`type: "mcp_tool"` 在两者中都可用。配置文件里的其它表由 serde 忽略；hook 收集器**直接**读这些文件——`TactTomlConfig` 刻意不新增 `hooks` 字段——因为配置加载器会**合并**这三个文件的取值，而合并对 hook 是错的：hook 是按身份审核的，审核必须点名它来自哪个文件。于是每个声明了 `[hooks]` 的文件都成为自己的来源、以路径为标签，并且这些来源追加在两份 `hooks.json` 之后，因此没有任何既有顺序被改变。用户作用域的那个文件是用户 `hooks.json` 旁边的 `config.toml`，而不是重新查一次 `$HOME`，这同时让用户作用域的这一对可以作为单个值注入。没有 `[hooks]` 表的文件完全不产生来源；格式错误的文件会被警告并跳过，与格式错误的 `hooks.json` 完全一致。由于收集器复用了 `hooks_file_source`/`admit_trusted`，所有既有性质原样成立：条目一开始未审核、审核前绝不注册、修改定义即作废批准。
+
+**之后的行为：** `~/.tact/config.toml`、`<workdir>/config.toml` 或 `<workdir>/.tact/config.toml` 中任一的 `[hooks]` 表都是一等来源：`hooks list` 以路径点名它，`hooks trust --source <路径>` 按文件批准。`config.example.toml` 里带有两种类型的完整示例。托管 hooks 已在下一个提交中落地；只剩 `bypass_trust` 是最后一个有意留下的缺口，且它是信任模型决策而非缺失的写法：它是关闭审核闸门的开关，而 `tact-ui hooks trust --all` 是等价的可脚本化做法。
+
+**指引：** `plugin::hooks::tests::{a_hooks_table_in_config_toml_is_a_source_of_its_own, a_config_toml_without_a_hooks_table_contributes_nothing, two_config_files_stay_two_sources, an_mcp_tool_entry_can_be_declared_in_toml, the_users_config_toml_is_the_one_beside_its_hooks_json, config_hook_sources_come_after_the_hooks_json_ones}`。
+
+---
+
+## 1. 2026-09-30 — hook 可以是一次 MCP 工具调用，且其身份覆盖它真正执行的内容
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`HookKind`、`HookCommand::{kind, server, tool, arguments}`、`run_hook`、`run_mcp_tool_hook`、`finish_hook_output`、`report_hook_failure`、`definition_text`）、`crates/tact/src/mcp/mod.rs`（`mcp_tool_name`、`McpToolName::full_name`）；spec `docs/superpowers/specs/2026-09-30-mcp-tool-hook-handlers-design.md`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** hook 条目会声明一个 `type`，而 Tact 忽略它 —— 有没有 `command` 字符串决定一切。于是按 Codex 写法写的 `{"type": "mcp_tool", "server": …, "tool": …}` 条目**静默失效**：`server`、`tool`、`arguments` 甚至不是 `HookCommand` 的字段，serde 直接把它们丢掉；而 `run_command_hook` 在没有 command 时返回 `continue_default()`。hooks 子系统赖以存在的审核流程，因此可能请用户批准一个一旦批准也永远不会运行的定义。这个特性本身也有价值：策略可以住在那个已经持有集成工具的 MCP server 里，返回与 shell 脚本相同的 `{"decision": …}` / `{"hookSpecificOutput": …}` 形状，而不必让脚本重新实现 payload、决策契约与 `additionalContext` 解析。
+
+**决策：** hook 闭包以 `Fn(&Agent, …)` 注册，而 `MCPToolRouter::call` 取 `&self`，因此这个 handler 不需要任何新管道：`HookCommand::kind()` 解析出 `Command` / `McpTool { server, tool }` / `Invalid(reason)`，`run_hook` 据此分发 —— `type: "mcp_tool"`（或 `mcpTool`）调用 router，其余一律仍是命令，且刻意保持宽容，因为缺省或无法识别的 `type` 一直意味着「一条带 `command` 字符串的命令」。工具的结果走**同一个** `parse_output`，与命令 hook 的 stdout 完全一致，所以 JSON 决策会阻断、`additionalContextLimit` 会限定注入的上下文；`finish_hook_output` 与 `report_hook_failure` 被抽出，使两种类型不可能各自漂移；工具调用出错会像所有其他 hook 失败一样上报并继续。`arguments` 刻意是静态的 —— 把事件 payload 合并进去会让被审核的定义变成谎言。
+
+修这个 handler 还暴露出第二个值得单独写一行的缺陷：`admit_trusted` 对 `command.unwrap_or_default()` 求哈希，而对 `mcp_tool` 条目那就是**空字符串**。于是同一来源里的每个 `mcp_tool` 条目共享同一个身份 —— 批准一个就批准了其余全部，修改 `tool` 或 `arguments` 也不会让批准失效，审核列表还会在本该显示定义的地方显示一行空白。现在 `definition_text` 为哈希与列表产出 `mcp_tool <server>/<tool> <arguments>`。`mcp_tool_name` 也被抽出，因为 hook 路径与 `build_tool_specs` 都需要 `mcp__<server>__<tool>` 这一拼写，而路由正是以它为键。
+
+**之后的行为：** hook 可以是一次 MCP 工具调用；缺少 `server` 或 `tool` 的条目会被上报为无法运行，而不是静默失效。批准一个 `mcp_tool` hook 只放行那一个，修改它的 `tool` 或 `arguments` 会让它回到待审核。`config.toml` 内联 `[hooks]` 表、以及带 `bypass_trust` 的托管/企业 hooks 仍是有意留下的缺口 —— 前者需要为第二种拼写定义自己的优先级规则，后者是信任模型决策，因此都不会因为新增一种 handler 类型而被顺带反转。
+
+**指引：** `plugin::hooks::tests::{an_mcp_tool_hook_calls_the_servers_tool_with_its_arguments, an_mcp_tool_hook_reaches_the_conversation_with_its_context, an_mcp_tool_hooks_context_is_bounded_by_its_own_limit, a_broken_mcp_tool_hook_reports_and_continues, an_mcp_tool_hook_without_a_server_or_tool_is_named_not_ignored, a_hook_type_tact_does_not_know_is_still_a_command, two_mcp_tool_entries_are_not_the_same_definition, approving_one_mcp_tool_entry_admits_only_that_one, editing_an_mcp_tool_hooks_arguments_invalidates_its_approval}`。
+
+---
+
+## 1. 2026-09-30 — `list_mcp_resource_templates` 补上「只有模板」这条死路
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/resource.rs`（`McpResourceTool::Templates`、`LIST_RESOURCE_TEMPLATES_TOOL`、`McpClient::list_resource_templates`、`MCPToolRouter::list_resource_templates`、`render_resource_template_listing`）、`crates/tact/src/mcp/mod.rs`（`McpService::list_resource_templates`、`McpServerInspection::resource_templates`）、`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-resource-templates-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** Tact 只暴露了 Codex 三个原生资源工具中的两个，而缺的那一个并非无关紧要的省略。资源以**模板**方式寻址的 server 通过 `resources/list` 什么都不发布，于是它与「什么都没有」的 server 无法区分——而且 Tact 还把这件事说了出来：空列表写道「A server may still expose resource *templates*, which Tact does not list yet」，然后不提供任何找到它们的办法。模板本身也猜不出来：`memory://{topic}` 需要先知道占位符词汇才能读到任何东西——所以这条死路恰好就是工具那次改动刚刚消除的那一类。
+
+**决策：** 补上 Codex 的第三个工具 `list_mcp_resource_templates`，参数与 `list_mcp_resources` 一样是可选的 `server`；`McpResourceTool::ALL` 变为 list → templates → read，让打印 URI 的那个列表紧邻消费它的那个读工具。渲染会统一说明一次：必须先填充 `{…}` 占位符才能调用 `read_mcp_resource`——因为原样转述的模板只是一个会失败的 URI。Tact 报告模板、由模型完成替换——这既让读取路径保持逐字节精确，也不必发明一条规范在这里并未定义的 URI 展开规则。`McpService::list_resource_templates` 是**必需**方法而非带默认实现，与 `list_resources` 一致：一个默认返回空列表的实现会让「这个传输层问不了」与「server 什么都没发布」变得无法区分，而这正是资源那次工作特别在意的那一个区分。`McpServerInspection` 增加 `resource_templates`，于是 `mcp get` 能像它对 `resources` 那样把这两件事分开。而空的 `resources/list` 文案不再说谎：它现在点名 `list_mcp_resource_templates` 作为下一步调用，而不是声称模板无法列出。
+
+**之后的行为：** 只提供模板的 server 变得可发现：`mcp get <server>` 会同时打印 `resources  0` 与 `templates  3`，而 `list_mcp_resource_templates` 会把 `memory://{topic} — Note by topic` 连同替换规则一起交给模型。缺口表现在只剩下 Prompts 这一项：`prompts/list` 与 `prompts/get` 仍未实现，因为 prompt 模板是 server 编写的一串消息而非一次工具调用，在 Tact 的轮次结构里还没有消费者。
+
+**指引：** `mcp::resource::tests::{the_resource_tools_exist_only_while_a_server_is_connected, a_template_listing_teaches_the_substitution, a_template_name_round_trips, no_templates_is_stated_not_rendered_blank, a_template_only_server_no_longer_looks_empty, an_empty_listing_says_so_instead_of_printing_nothing}`、`agent::tool_dispatch::tests::{a_template_listing_reaches_the_model, only_the_resource_names_resolve_to_the_resource_path}`、`agent::tests::the_resource_tools_are_offered_only_with_a_connected_server`、`mcp_cli::tests::a_template_only_server_is_not_reported_as_an_empty_one`。
+
+---
+
+## 1. 2026-09-30 — MCP server 可以在会话中途增删工具，Tact 现在会注意到
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`ToolListChangedSignal`、`McpService::take_tools_changed`、`McpClient::refresh_tools_if_stale`、`derive_exposed`、`MCPToolRouter::refresh_changed`、`ToolListRefresh`、`ToolListReport`）、`crates/tact/src/mcp/remote.rs`（`serve_remote` 的 handler）、`crates/tact/src/agent/mod.rs`（`refresh_mcp_tools`）；spec `docs/superpowers/specs/2026-09-30-mcp-tool-list-changed-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** Tact 只在连接时对 server 的工具做一次快照。MCP 为「握手之后列表还会移动」这个场景定义了 `notifications/tools/list_changed`，而 Tact 对此是聋的——因为连接是以 `RunningService<RoleClient, ()>` 建立的：handler 是 unit 类型，于是 rmcp 的 `on_tool_list_changed` 是个空实现。一个在完成授权或索引之后才暴露更多工具的 server，永远停在握手时声明的那一份：模型从不知道那个工具存在，`mcp list` 也附和这份过期快照。而**移除**工具的 server 更糟——模型持续被提供一个已经失效的名字。唯一的补救是重启，或 `reload_mcp_router`——后者会重新拨号每一个 server，包括那些健康的。
+
+**决策：** `ToolListChangedSignal`——`Clone + Default`，内部是 `Arc<AtomicBool>`——被安装为连接的 handler（`signal.clone().serve(transport)`），克隆出的那一份交给 `RealMcpService`，于是 `McpService::take_tools_changed()` 能读到它（默认 `false`，因此测试替身或无法携带通知的传输层，永远不会表现为一个反复改变主意的 server）。handler **只记录**发生了变化，绝不重新拉取：刷新需要 `&mut McpClient`，在服务自身的通知任务里做会和驱动它的传输层争抢。标志为空时 `McpClient::refresh_tools_if_stale()` 是空操作，所以安静的 server 成本恰好为零；置位时它重新拉取，并通过 `derive_exposed` 重新推导条目过滤、`tool_specs` 与 `declared_read_only`——这正是连接时 `assemble` 用的那个 helper；两条路径若各自决定「server 暴露哪些工具」，迟早会产生看不见的分歧。`MCPToolRouter::refresh_changed()` 为每个真正移动过的 server 上报 `{ added, removed, newly_hidden }`，而 `Agent::refresh_mcp_tools()` 在每次 `agent_loop` 迭代的开头、构建请求之前运行，随后重建 `cached_tool_specs`。按请求而非按轮次刷新正是关键：工具列表是按请求发送的，所以中途到达的变化会在紧接着的那次调用就传达给模型。重新拉取失败时**保留原列表**——只有 server 自己能移除它的工具，一次瞬时的传输错误不该让一个可用的 server 看起来空了。系统提示里的 instructions 段落刻意不重新推导：instructions 来自 `initialize`，在一条连接的生命周期内不可能改变。
+
+**之后的行为：** 一个在授权或索引之后才揭示更多工具的 server，可以在同一会话内直接使用，无需重启，也无需重新拨号其他 server。变化与「读不到变化」都会以 `[mcp] <server> changed its tool list: added recall` / `... that could not be read: <原因>` 的形式出现——因为一个工具悄悄出现或消失，正是事后会被归咎于模型的那类事。`tools/list_changed` 的缺口行已删除；剩下的那一行只点名 `resources/list_changed` 与 `prompts/list_changed`，而这两者并非关键。
+
+**指引：** `mcp::tests::{a_list_changed_notification_makes_the_new_tool_callable, a_quiet_server_is_never_polled, a_refresh_re_derives_the_filter_and_the_read_only_claims, the_router_reports_what_moved_and_keeps_a_list_it_could_not_re_read}`、`agent::tests::a_server_that_grows_its_tool_list_reaches_the_next_request`。
+
+---
+
+## 1. 2026-09-30 — 高风险工具上的「Always allow this tool」被记录了，然后被忽略
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/permission/mod.rs`（`check_with_auto`、`is_always_allowed`、`allow_tool_with_input`）、`crates/tact/src/agent/tool_dispatch.rs`（`preflight_tool_calls`）；spec `docs/superpowers/specs/2026-09-30-mcp-tool-risk-design.md`；[第 10 章](./10_chapter_permission_zh.md) |
+
+**症状 / 动机：** 权限提示对**任何**风险档位都提供三个选项——允许一次、拒绝、**always allow this tool**。对 `CapabilityRisk::High` 工具，第三个选项会被记录却永远不会被读取：`check_with_auto` 在 High 分支上就返回了 `Ask`，**早于**查询内存允许列表，于是用户的点击被存下，下一次完全相同的调用又照问不误。这个手势是否生效取决于一件看不见的事：存在项目路径时，点击会把规则持久化到 `.tact/settings.json`，而 settings 分支对任何风险都认这条规则，所以它生效；在没有项目路径的情况下启动，同样一次点击只落进内存列表，然后无声地什么都不做。每个 MCP 工具都是 `High`，所以这不是边角情况，而是 MCP 的常态。
+
+**决策：** 高风险调用现在会查询允许列表，并在用户**针对完全相同的工具与输入**授予过允许时放行；否则仍然询问。这个授权放宽的是提示，而绝不是模式或规则：计划模式仍然最先判定，`Auto` 模式仍然更早短路，显式的 `deny`/`ask` 规则仍然优先，非交互运行仍然拒绝 High —— 因为全新的 headless 会话里列表只有 `read_file`，且从不从 settings 播种。`check` 上那份编号决策列表已同步重排，而把旧契约写死的那条测试（`high_risk_requires_approval_even_for_allowed_tool`）被改写为 `high_risk_is_allowed_only_after_an_explicit_allow`，它同时断言两半：首次调用询问，授权之后不再询问。
+
+**之后的行为：** 「always allow this tool」在任何风险档位上都名副其实，同一个手势在有或没有项目设置文件时表现一致。高风险工具首次仍会被询问，在计划模式下仍被拦截。
+
+**指引：** `permission::tests::{a_high_risk_tool_honours_a_granted_always_allow, a_high_risk_tool_still_asks_when_nothing_was_ever_allowed, a_granted_always_allow_does_not_unlock_plan_mode, an_explicit_deny_rule_still_outranks_a_granted_always_allow, high_risk_is_allowed_only_after_an_explicit_allow}`。
+
+---
+
+## 1. 2026-09-30 — MCP 工具的 risk 可以按工具声明，server 的只读声明只展示、不施加
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`ToolRisk`、`McpToolConfig::risk`、`McpProjectConfig::default_tool_risk`、`McpServerPolicy::risk_for`、`MCPToolRouter::risk_for`、`McpClient::declared_read_only`、`McpServerInspection::{declared_risks, declared_read_only}`）、`crates/tact/src/permission/mod.rs`（`normalize_mcp_capability`）、`crates/tact/src/agent/tool_dispatch.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-tool-risk-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** 两个缺口，都有实测。 (1) 每个 MCP 工具都解析为 `CapabilityRisk::High`，于是只读的检索工具每次调用都要询问，而在非交互运行中**所有** MCP 调用被直接拒绝（`ask_user` 对 High 拒绝）——唯一的出路是 `approval_mode: "auto"`，一个全有或全无的开关，其另一个效果就是跳过询问。条目无法既说「这个工具是只读的，信任它」，又不为它放弃计划模式。 (2) MCP 定义了 `Tool.annotations`（`readOnlyHint`、`destructiveHint`、`openWorldHint`），而 `build_tool_specs` 只读 `name` / `description` / `input_schema`，于是 server 自己的声明被丢弃，而不是展示给那个必须做信任决策的人。这两者之下还埋着一个问题：`McpToolConfig` 没有 `#[serde(flatten)] extra`，所以用户文件里的 `risk` 键会被 serde 无声丢弃——连 `unmodelled_keys` 都不会上报，因为它只看 `McpProjectConfig::extra`。
+
+**决策：** 两个 Tact 自有键——`tools.<name>.risk` 与条目级 `default_tool_risk`，取 `read` / `write` / `high`——经 `McpServerPolicy::risk_for`（覆盖优先于默认）与 `MCPToolRouter::risk_for`（回退到 `normalize_mcp_capability`，它被保留为「未声明即 High」这唯一具名之处）解析。两者都是已建模字段，都不出现在 unmodelled 中；未知值像 `approval_mode` 一样被警告并忽略，因此一个拼写错误不会让整个条目失败。这些档位刻意不是同一个旋钮：需要一个工具在无人值守时可用，就选 `write`（换来 headless 可用性与可粘滞的允许，且不触碰计划模式），而 `read` 是唯一会绕过计划模式的档位——与原生 `read_file` 做的是同一笔权衡——所以它只能被声明，绝不被推断。`approval_mode: "auto"` 仍然是询问轴上的**自动批准**，不重新分级 risk。另外，`readOnlyHint` 会从已暴露的工具上收集，暴露在 `McpServerInspection` 上并由 `mcp get` 标为 `(server-declared read-only)`，且**不**参与 `risk_for`：rmcp 自己的文档写明客户端「should never make tool use decisions based on ToolAnnotations received from untrusted servers」；而且一个诚实的 `readOnlyHint` 加上 `openWorldHint`，描述的是一个读取你的文件再发往别处的工具。
+
+**之后的行为：** 条目可以把只读的检索工具声明为 `read`（无人值守可用、不询问），或把必须在 headless 下运行的工具声明为 `write`；而它保持沉默的一切仍为 `High`，行为与从前完全一致。`mcp get <server>` 会在每个工具旁打印生效的 risk，标注 `(declared)` 或 `(default)`，因此声明过的档位永远不会与沉默的默认值混同；同时标出 server 自身的只读声明，让人有依据去写 risk。两个由路由层提供的资源工具仍为 `High`：它们不在任何 server 的 `tools` 映射里，没有声明能寻址到它们，第 8 章的缺口表现在如实这么写，取代了原先那条笼统的行。
+
+**指引：** `mcp::tests::{a_tool_risk_parses_its_three_tiers_and_nothing_else, a_declared_tool_risk_overrides_the_entry_default, an_entry_that_declares_no_risk_declares_none_at_all, an_unknown_tool_risk_is_ignored_rather_than_guessed, risk_keys_are_modelled_and_never_reported_as_unmodelled, the_router_resolves_a_declared_tier_and_defaults_the_rest_to_high, a_server_declared_read_only_tool_is_reported_but_never_downgrades_the_risk, an_exposed_only_declaration_is_what_gets_reported, a_read_only_hint_of_false_is_not_a_declaration}`、`mcp_cli::tests::the_detail_view_separates_a_declared_risk_from_the_default`。
+
+---
+
+## 1. 2026-09-30 — MCP resources 从「文档里的缺口」变成可读内容
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/resource.rs`（`McpResourceTool`、`resource_tool_specs`、`render_resource_listing`、`render_resource_contents`）、`crates/tact/src/mcp/mod.rs`（`McpService::{list_resources, read_resource}`、`McpServerInspection::resources`）、`crates/tact/src/agent/{mod,tool_dispatch}.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-resources-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**现象 / 动机：** Tact 只接入了 MCP 的一种原语——Tools。Resources（server 以 URI 寻址的只读内容）无处可去，而这个缺口是关键路径上的：Basic Memory 的 `instructions` 写着「read the `memory://ai_assistant_guide` resource」，所以 Tact 一旦开始投递这些 instructions，也就等于开始告诉模型一件它取不到的东西。死路比它取代的沉默更糟，因为模型现在知道自己缺了什么。
+
+**决策：** 对齐 Codex 新增两个原生工具——`list_mcp_resources`（`server` 可选）与 `read_mcp_resource`（`server`、`uri` 必填）——在 `agent::tool_dispatch` 中与 `mcp__…` 名字并列解析，实现为新的 `ResolvedTool::McpResource`。Resources 不是工具：它们没有输入 schema，无法各自变成一个 `mcp__<server>__<tool>` 条目。两者风险等级均为 `CapabilityRisk::High`（第三方内容，且一次列表会触及所有已配置 server）；调度上 `read_mcp_resource` 只作用于它指定的 server，而列表是 barrier。它们**只在有 server 连接时**存在，因此模型不会拿到一个只能回答「没有连接任何 MCP server」的工具。blob 只报告大小而不内联；列表为空时会点明 `resources/templates/list` 尚未读取，而不是让只提供模板的 server 看起来是空的；未知 server 会列出已连接的那些。`tact-ui mcp get <server>` 现在会显示 `resources  N available…`，或者明确区分地说明该 server 没有应答 `resources/list`——「一个都没发布」和「无法应答」是两件不同的事。
+
+**改后行为：** Basic Memory 的 guide 变得可达：`tact-ui mcp get basic-memory` 显示 `resources  1 available`，模型可以按需列出并读取。Codex 的第三个工具 `list_mcp_resource_templates` 仍未实现，章节的缺口表已如实写明。
+
+**指针：** `mcp::resource::tests::*`、`mcp::tests::mcp_client_reads_resources_from_a_real_in_process_server`、`agent::tool_dispatch::tests::{a_resource_listing_is_a_successful_tool_result, a_resource_read_returns_the_text, a_resource_read_requires_both_server_and_uri}`、`agent::tests::the_resource_tools_are_offered_only_with_a_connected_server`、`mcp_cli::tests::the_detail_view_separates_no_resources_from_no_answer`。
+
+---
+
+## 1. 2026-09-30 — MCP 条目可以透传环境变量，也可以限定单次工具调用
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpEnvVar`、`resolve_env_vars`、`McpProjectConfig::env_vars` / `tool_timeout_sec`、`McpServerPolicy::tool_timeout`、`McpClient::{connect, call_tool}`、`unmodelled_keys`）；spec `docs/superpowers/specs/2026-09-30-mcp-env-vars-and-tool-timeout-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**现象 / 动机：** 有两个 Codex 条目字段此前只是被解析并上报，而它们各自都有实际代价。`tool_timeout_sec` 不存在，于是所有 server 的每次 `tools/call` 都套用同一个固定 600 秒上限——一个本该快速失败的工具无法这样要求。`env_vars` 不存在，于是 server 的凭据只能通过 `env` 以字面量写进 `.mcp.json`，既把密钥留在磁盘上，也让这个文件无法分享。
+
+**决策：** `env_vars` 接受 Codex 的两种写法（`["TOKEN"]` 与 `[{"name": "TOKEN", "source": "local"}]`），并在 `McpClient::connect` 里于子进程启动**之前**完成解析，因此未设置的变量会让**该 server** 以 `env var \`X\` is not set` 失败，而不是启动一个之后在不相干的地方以认证错误失败的子进程。`source: "remote"` 以及任何未知 source 都会按名拒绝——Tact 没有远端 stdio 执行器，糊过去的做法等于静默丢掉取值。同名时字面量 `env` 条目优先，因为写下来的值就是用户的本意。`env_vars` 是 stdio 字段，因此在远程（`url`）条目上声明它会被并入 `unmodelled_keys` 报告，而不是被忽略。`tool_timeout_sec` 现在为单次 `tools/call` 设定按 server 的预算，超时报错会写明实际生效的预算；Tact 保留自己 600 秒的默认值，这样今天可用的条目不会开始失败。
+
+**改后行为：** `"env_vars": ["GITHUB_TOKEN"]` 让 server 拿到 token 而密钥不进入配置文件，`"tool_timeout_sec": 120` 限定某个 server 的单次调用。`mcp list` 不再把 `tool_timeout_sec` 列为未建模，并且只在 `env_vars` 无法生效的地方才点名它。
+
+**指针：** `mcp::tests::{env_vars_accept_the_shorthand_and_the_explicit_form, env_vars_are_resolved_from_the_process_environment, a_literal_env_entry_wins_over_env_vars, an_unset_env_var_fails_the_server_by_name, a_remote_env_vars_source_names_the_missing_executor, an_unknown_env_vars_source_names_the_allowed_set, env_vars_on_a_remote_entry_are_reported_as_unmodelled, env_vars_are_resolved_before_the_child_is_spawned, tool_timeout_sec_overrides_the_global_call_ceiling, tool_timeout_sec_is_no_longer_reported_as_unmodelled}`。
+
+---
+
+## 1. 2026-09-30 — `/hooks` 让 hook 在它触发的地方就能被审核
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature |
+| **相关** | `crates/protocol/src/agent.rs`（`UserCommand::{HooksList, HooksTrust, HooksForget}`）、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/hooks.rs`、`crates/agent_tui_kit/src/{bridge,i18n}.rs`、`crates/tui/src/widgets/state/mod.rs`；spec `docs/superpowers/specs/2026-09-30-tui-hooks-command-design.md`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**现象 / 动机：** hook 审核此前只有 CLI。TUI 只会提示 `1 hook needs review and was not run`，然后让用户退出、执行 `tact-ui hooks trust --all`、再开一个新会话——恰好是在用户最在意的那个时刻。`/mcp` 早就有了应用内审核入口，`/hooks` 没有，于是唯一展示该提示的界面，恰恰是唯一无法对它采取行动的界面。
+
+**决策：** 提供 `/hooks list`、`/hooks trust --all`、`/hooks trust --source <标签>`、`/hooks forget --all`，与 CLI 完全对应，并复用 `hooks_cli::render_hooks_listing`，使两个界面不会对同一批 hook 给出不同描述。解析按前缀而非按空白切分：来源标签是自由文本（`plugin ponytail`），切分会把 `--source` 的取值一分为二。裸 `/hooks trust` 只显示用法而不批准任何东西：误批准正是审核环节要防的事，而 `trust_hooks` 会在触碰存储之前就报错。实际工作由 driver 执行（只有 `tact` crate 能访问来源与 `~/.tact/hooks-state.json`）；`list` 与 `/mcp list` 一样仅在空闲时可用，`trust`/`forget` 则允许排队。确认信息会明确写出“下个会话生效”——hook 是在构建 agent 时注册的，只说“已批准”而不说“尚未运行”会错误描述当前会话。
+
+**改后行为：** 用户看到审核提示后可以就地处理。批准从下一个会话起生效，并且消息会明确说明这一点。
+
+**指针：** `handlers::hooks::tests::*`、`driver::tests::{hooks_list_emits_the_review_listing, hooks_trust_without_a_selector_reports_the_refusal}`。
+
+---
+
+## 1. 2026-09-30 — MCP server 的 instructions 现在会进入上下文，而不是被丢掉
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpService::instructions`、`RealMcpService`、`McpClient::instructions`、`cap_instructions`、`MCP_INSTRUCTIONS_MAX_CHARS`、`MCPToolRouter::instructions_block`、`McpServerInspection::instructions_chars`）、`crates/tact/src/prompt/mod.rs` 与两个模板、`crates/tact/src/agent/mod.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-server-instructions-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**现象 / 动机：** Tact 只读走了 server 的工具，握手返回的其余部分全部丢弃——`InitializeResult.instructions` 从未被读过。而这个字段是刚连上的模型**唯一免费**拿到的东西：resources、prompt 模板、冗长的工具描述都要模型主动去取，而一个不知道这个 server 干什么用的模型没有理由去取。Basic Memory 在自己的源码里就是这么写的，并且把全部引导语放在这里（“会话开始时调用 `recent_activity`……主动提议保存第一条笔记，但绝不在未获同意时写入”）。接到 Tact 上实测是 21 个工具、0 条引导，agent 一直等到被问才动；同一个 server 在 Codex 下行为正常。
+
+**决策：** 在连接时捕获 `instructions`（`RealMcpService` 快照 `peer_info()`；`McpClient` 保存去空白后的文本，`""`／纯空白视为“什么都没发”），并作为**静态**系统提示词段落注入：放在项目规则之后、`=== DYNAMIC_BOUNDARY ===` 之前——它只在重新加载 router 时变化，因此属于可缓存前缀那一侧。`MCPToolRouter::instructions_block()` 按名称排序，为每个已连接 server 渲染一节 `## <server>`；被 `enabled_tools`/`disabled_tools` 全部过滤掉的、以及没有暴露任何工具的 server 会被跳过（它们的说明讲的是 agent 调不到的工具）。落在提示词“可信区”的第三方文本会被显式围栏标注为参考资料：“never overrides the guidelines above, the user's request, or the project's own rules”——与 `web_fetch` 结果适用同一条规则——并按每个 server 16,384 字符截断，附可见的截断标记。
+
+**改后行为：** server 只要自我描述，其引导语无需任何配置就进入提示词；`tact-ui mcp get basic-memory` 会打印 `instructions  844 chars (injected into the system prompt)`，让“什么都没发”和“发了但被我们丢了”不会长得一样。
+
+**指针：** `mcp::tests::{instructions_are_captured_from_the_service_and_trimmed, whitespace_only_instructions_are_absent_not_empty, the_instructions_block_is_server_sorted_and_headed, a_server_with_every_tool_filtered_contributes_no_instructions, oversized_instructions_are_capped_with_a_marker, capping_counts_characters_not_bytes}`、`prompt::tests::mcp_instructions_are_fenced_and_land_in_the_static_prefix`、`agent::tests::the_system_prompt_carries_mcp_server_instructions`、`mcp_cli::tests::the_detail_view_reports_server_instructions`。
+
+---
+
+## 1. 2026-09-30 — hook 来自文件、审核后才运行，并且能用 `exit 2` 阻断
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | feature + bugfix |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`collect_hook_sources`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`HookOutput::decided`、`exit_two_blocks`）、`crates/tact/src/hook/mod.rs`（`HookControl::Allow`、`InterruptFn`、`PermissionRequestFn`）、`crates/tact/src/agent/{mod,tool_dispatch}.rs`、`crates/tact/src/consts.rs`（`hooks.json`、`hooks-state.json`）、`crates/tact-ui/src/hooks_cli.rs`、`crates/tact-ui/src/{interactive,headless}.rs`；spec `docs/superpowers/specs/2026-09-30-hook-review-and-file-sources-design.md`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** 相对 Codex 的三处缺口，每一处都有实测支撑。（1）hook 只能来自已安装插件的 bundle，用户和仓库无处声明——于是写入 `~/.codex/hooks.json` 的 `bm hook install --harness codex` 对 Tact 完全是空操作。（2）安装插件是唯一的门禁：装完它的 hook 就无人值守地执行任意命令，而仓库自带的 hooks 文件在克隆时就会执行。（3）Codex 的 `exit 2` 契约（stderr 即理由）被忽略，以至于用最简方式写的策略 hook 静默失效：Tact 把任何非零退出都当作 fail-open。
+
+**决策：** 一个加载器、三个来源（已安装插件、`~/.tact/hooks.json`、`<workdir>/.tact/hooks.json`），所有匹配的 hook 都运行，并按该顺序注册，因此现有插件的 `SessionStart` 上下文顺序不可能被打乱。每个 hook 定义默认**未审核**，在获批前**绝不注册**：身份是对「来源标签 + 事件 + matcher + 命令」的 SHA-256（因此改动命令即作废批准），存储放在 `~/.tact/hooks-state.json` 而非 `config.toml`（手改配置不该能授予执行权），无法解析的存储等同空存储。用 `tact-ui hooks list|trust|forget` 审核；加载报告会在与 MCP 报告相同的两条通道上点名未审核的 hook。`run_process` 现在返回退出状态与 stderr，`exit 2` 按 Codex 的事件表生效（`PreToolUse`/`PermissionRequest` 阻断、`PostToolUse` 结果转失败、`Stop`/`SubagentStop`/`UserPromptSubmit` 携 stderr 继续），且 JSON 决定永远优先于裸退出码——`additionalContext` 与 `systemMessage` 算附加而非决定。Codex 的 `additionalContextLimit` 在 hook 边界限制单个 hook 注入的上下文。`HookControl` 新增 `Allow`（hook 自行回答审批询问）：只在 `PreToolUse` 与 `PermissionRequest` 上有意义，任何 hook 的 `Block` 无论顺序都优先，且 `PermissionRequest` **只**在 Tact 即将询问时运行。用户取消时 `Interrupt` 每轮触发一次。
+
+**之后的行为：** 仓库可以附带 `.tact/hooks.json`，但在人工逐条批准前什么都不运行；`hooks list` 明确显示会运行什么、什么还在等待。带理由 `exit 2` 的 hook 按 Codex 文档阻断工具调用，而打印 JSON 决定的 hook 仍被尊重。`PermissionRequest` 让策略 hook 直接回答询问，于是不再弹出提示。
+
+**指向：** `plugin::hooks::tests::{a_hook_identity_covers_every_field_a_reviewer_sees, an_unreviewed_hook_is_read_and_then_refused, approving_one_definition_admits_only_that_one_across_a_reload, exit_two_with_a_reason_blocks_a_tool_call, a_json_decision_outranks_a_bare_exit_two, a_permission_request_hook_is_registered_and_can_allow, an_interrupt_hook_is_registered_and_runs_once_per_turn}`、`hooks_cli::tests::*`。
+
+---
+
+## 1. 2026-09-30 — Codex 的 MCP 单 server 字段从「只上报」变成「真支持」
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/mcp/mod.rs`（`McpServerPolicy`、`McpToolConfig`、`ApprovalMode`、`McpClient`、`McpLoadReport::filtered`）、`crates/tact/src/permission/mod.rs`（`check_with_auto`）、`crates/tact/src/compact/mod.rs`（`persist_large_output_over_tokens`、`spill_output`）、`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact-ui/src/mcp_cli.rs`；spec `docs/superpowers/specs/2026-09-30-mcp-tool-policy-design.md`；[第 8 章](./08_chapter_mcp_zh.md) |
+
+**症状 / 动机：** 四个 Codex 条目字段此前只被解析出来点名成「未建模」，用户写了等于没写。代价是可量化的：Basic Memory 暴露 21 个工具、schema 合计 34,652 字符（约 8.7k tokens），**每一轮请求**都要发一遍；只想要四个召回工具的用户仍要为 `delete_project`、`schema_diff` 之类付账。经冷 `uvx` 启动的 server 实测握手要 ~100 秒，撞上 Tact 固定的 60 秒上限后被报成永久失败，用户没有任何办法说「这个只是慢」。而所有 MCP 工具都解析为 `CapabilityRisk::High`，于是一个只读的召回工具每次调用都要确认——唯一的出口是在 `settings.json` 里逐个工具名写 allow 规则。
+
+**决策：** 按 Codex 自己的 snake_case 拼写把这些字段建模。`enabled_tools` / `disabled_tools` 过滤暴露面（拒绝列表在允许列表**之后**应用，与 Codex 文档一致），被隐藏的名字保留下来用于上报。`startup_timeout_sec`（以及 Codex 的毫秒别名 `startup_timeout_ms`，两者同时存在时秒优先）按 server 覆盖握手预算——Tact 刻意保留 60 秒作为**默认值**而不采用 Codex 的 10 秒，这样今天能用的条目不会在升级后开始超时。`default_tools_approval_mode` 与 `tools.<name>.approval_mode` 取 Codex 的 `auto | prompt | approve`，其中只有 `auto` 改变行为：它是**自动批准**而非重新分级，因为 `Read` 在**计划模式之前**就被放行，把这条策略映射成更低的 risk 等于让一个配置项解锁计划模式。因此 `PermissionManager::check_with_auto` 把它当作独立的一维，在计划模式、显式 `deny` 规则与显式 `ask` 规则之后才查询——server 自己的声明只能跳过**默认**询问，永远盖不过本地决定。`tools.<name>.output_token_limit` 通过既有的 `.tact/tool-results` 落盘机制给单工具一个结果预算（无条件的落盘主体从 `persist_large_output` 中抽了出来）；该字段存在于 Codex 的二进制里但不在其公开配置参考中，因此计 token 属 Tact 的解读。`omit_tools_from` 与 `tool_timeout_sec` 维持未建模并照常上报。
+
+**之后的行为：** 一个条目就能把 21 个工具的 server 收窄到 7 个、每轮省约 6k tokens，且不需要改 Tact 代码；慢启动器变成可配置而非直接失败；选择开启的工具不再询问，而计划模式与本地规则依然优先。隐藏工具绝不无声——`mcp list` 打印 **Filtered tools** 段落、`mcp get` 打印 `hidden` 行——但两者都不进入启动提示，理由与未建模字段相同。`mcp list` 的「Entry keys Tact does not model」段落现在只点名剩下两个确实未实现的字段。
+
+**指向：** `mcp::tests::{enabled_tools_limits_exposure_and_disabled_tools_wins, startup_timeout_accepts_seconds_and_the_millisecond_alias, a_per_tool_approval_mode_overrides_the_server_default, filtering_hides_tools_from_the_agent_and_reports_them}`、`permission::tests::{server_auto_approval_skips_the_default_high_risk_prompt, server_auto_approval_does_not_unlock_plan_mode, an_explicit_deny_rule_outranks_server_auto_approval, an_explicit_ask_rule_outranks_server_auto_approval}`、`compact::tests::a_per_tool_token_budget_spills_over_its_own_limit`、`mcp_cli::tests::{tools_hidden_by_the_entry_policy_are_named_in_the_listing, the_detail_view_names_hidden_tools_too}`。
+
+---
+
+## 1. 2026-09-29 — hook 的 payload 对齐 Codex schema，卡住的 hook 不再默默撒谎
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix + optimization |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`build_payload`、`run_command_hook`）、`crates/tact/src/hook/mod.rs`（`SessionStartSource`）、`crates/tact/src/agent/mod.rs`（`session_start_source`、`ensure_session`、`compact_history_with_trigger`）；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** 同一份契约上的四个缺口。（1）只有 `SessionStart` 带 `model` / `permission_mode`——而 Codex 要求**每个**事件都带，另外还有 `turn_id`（工具事件还有 `tool_use_id`），这些 Tact 一个都没发。（2）`transcript_path` 给的是 transcripts **目录**，插件会照着去打开一个目录。（3）`session_id` 是 `String::new()`——调用方从来没填过。（4）失败、超时或起不来的 hook 只产生一条 `tracing::warn!`，而默认的 `tact-ui` 会话从不把它写到任何地方：坏掉的插件 hook 看起来和安安静静的那个一模一样。
+
+**决策：** 在源头修契约，而不是逐个事件打补丁。`build_payload` 现在接收 agent，为每个事件填上 `model`、`permission_mode`、`turn_id` 与真实的 `session_id`；`transcript_path` 改为 `null`（诚实——Tact 没有单一的活动 transcript）；`source` 的取值变成真实的（`startup` / `resume` / `compact`，最后一种由压缩重新排队，与 Codex 做法一致）；`SessionStart` 现在按 **`continue: false`** 跳过这一轮（Codex 的字段——该 schema 里没有 `decision`），`systemMessage` 会作为提示显示；`run_command_hook` 会发出 `[plugin hook <Event> failed] <error>`，让失败可见。`async: true` 分支也不再为每个 hook 新建一个 tokio runtime——它直接在已有的 runtime 上 spawn。
+
+**之后的行为：** 照着 Codex schema 写的插件能读到它期望的值。压缩会以 `compact` 重跑 start hooks（每次压缩一次 hook 运行，与 Codex 相同）。失败的 hook 仍然 fail-open，但会被宣告。`SessionStart` 上的 `continue: false` 会跳过这一轮，并显示它的 `stopReason`。
+
+**指向：** `plugin::hooks::tests::{session_start_payload_carries_the_model_and_permission_mode, a_failing_hook_is_surfaced_to_the_ui}`、`agent::tests::session_start_context_survives_the_pre_turn_compaction`（现在还钉住 `compact` 重新排队）。
+
+---
+
+## 1. 2026-09-29 — 工具 hook 的 context 交给模型，而不是塞进一个没人读的字段
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`PreToolUse` / `PostToolUse` 闭包）、`crates/tact/src/agent/mod.rs`（`pending_hook_context`、`inject_pending_hook_context`、`record_hook_context`）；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** 两个工具 hook 产出的 `additionalContext` 去了虚空。`PreToolUse` 把它写进 `tool_use.input["_hook_context"]`——全树没有任何读取者，于是它留在了权限检查与工具本身都能看到的参数里；`PostToolUse` 则根本没读这个字段。想给工具调用做标注的插件（linter 建议、策略提示）等于写进了一个黑洞。
+
+**决策：** 两个事件都把 context 交给 `SessionStart` 用的同一条路径。因为这些 hook 只拿到 `&Agent`，它们往 `AgentRuntime::pending_hook_context`（`Arc<Mutex<VecDeque<…>>`，`pending_subagent_results` 已有的形状）里 push，`agent_loop` 在构造每个请求之前把它取走——于是模型读到的 context 与它所标注的工具调用相邻，正是 Codex 的 `record_additional_contexts` 放置它的位置。那个没人读的 `_hook_context` 键删掉了。
+
+**之后的行为：** `SessionStart`、`PreToolUse`、`PostToolUse` 都会记录 `<hook-context>` cell；加上 `SubagentStart` 与 `UserPromptSubmit`，这就是 Codex 提供 `additionalContext` 通道的全部事件集合。其余九个控制/观察类事件继续忽略它，与 Codex 一致。
+
+**指向：** `plugin::hooks::tests::tool_hook_context_is_collected_without_touching_the_arguments`（断言参数保持干净、两段 context 按序入队）、`agent::tests::agent_loop_records_tool_hook_context`。
+
+---
+
+## 1. 2026-09-29 — 插件的会话简报不再拖慢首帧
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/agent/mod.rs`（`session_start_hooks_pending`、`dispatch_session_start_hooks`、`Agent::model`）、`crates/tact/src/plugin/hooks.rs`（payload、`statusMessage`）、`crates/tact/src/permission/mod.rs`（`PermissionMode::hook_name`）、`crates/tact-ui/src/{interactive,headless}.rs`；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** `SessionStart` hook 在启动阶段、首帧之前逐个运行。插件 hook 是一个子进程：参考实现 `basic-memory` 的 hook 在本机实测**热启动约 8 秒**、**`uv` 缓存冷启动约 100 秒**，而该插件自己声明 `"timeout": 30`——于是冷启动那次会被直接杀掉、什么都拿不到。每次启动都在静默中付出这段延迟：插件的 `statusMessage` 只进 `tracing::debug!`，而 `tact-ui` 默认不装 subscriber。
+
+**决策：** 改在**第一轮**派发，而不是启动时；用 `AgentRuntime::session_start_hooks_pending` 保证它仍然只跑一次、且仍落在那轮用户消息之前。hook 之间**并发**执行（收集到的内容保持注册顺序），插件的 `statusMessage` 以 `AgentUpdate::Info` 发出，payload 补上 Codex 的 `session-start.command.input` 在 Claude 基础字段之外要求的两个字段——`model`（新增 `Agent::model()`）与 `permission_mode`（`PermissionMode::hook_name()`，Claude Code 词汇：`default` / `plan` / `acceptEdits`）。
+
+**之后的行为：** 启动不再等插件 hook；改由第一轮等待，并且屏幕上会显示插件自己的状态行，而它收集的 context 仍记在那轮用户消息之前。按 `payload["model"]` 或 `payload["permission_mode"]` 分支的插件现在读到的是值而不是 `null`。
+
+**指向：** `agent::tests::session_start_hooks_run_on_the_first_turn_and_only_once`、`plugin::hooks::tests::session_start_payload_carries_the_model_and_permission_mode`。`crate::config::test_support::install_default` 从 agent 测试中提取出来，好让 plugin 测试也能构造 `Agent`。
+
+---
+
+## 1. 2026-09-29 — 插件的 `SessionStart` context 真正进入模型，而不是只留一行日志
+
+| 字段 | 值 |
+|------|-----|
+| **类型** | bugfix |
+| **相关** | `crates/tact/src/plugin/hooks.rs`（`collect_session_start_output`、`parse_output`、`looks_like_json`）、`crates/tact/src/hook/mod.rs`（`SessionStartContext`、`<hook-context>` 标记）、`crates/tact/src/agent/mod.rs`（`pending_session_context`、`inject_pending_session_context`）、`crates/tact_llm/src/content.rs`（`MessageKind::HookContext`）、`crates/tact/src/compact/mod.rs`（`is_real_user_message`）、`crates/tui/src/widgets/state/app/messages.rs`（`load_history`）；[第 9 章](./09_chapter_hook_zh.md) |
+
+**症状 / 动机：** 插件的 `SessionStart` hook 会运行，但它的输出随后被丢掉：`additionalContext` 与 `systemPrompt` 都只记成 `not applied in v1` 的警告。参考实现 `basic-memory` 插件正是把整份会话简报以纯 stdout 形式打印在 `SessionStart` 上，于是装上它等于装了一个每次会话都执行、却什么都影响不到的 hook。
+
+**决策：** 按 Codex 的做法记录这段 context。Codex 的 `SessionStart` 处理把每个 `additionalContext` 原样变成它自己的一条 `role: "developer"` 消息并记入对话。Tact 的 `Role` 只有 user/assistant，所以同样的文本变成一条合成的 user 消息、用 `<hook-context>` 标记包起来——这正是本仓库 `<subagent-finished>` 与 `<context-handoff>` 已经在用的约定。这些标记承担了 `developer` 角色本会提供的来源信息，而且与内存中的 `MessageKind` 不同，它们在重新加载后依然存在。`systemPrompt` 保持不支持（v1）。
+
+**之后的行为：**
+
+- `SessionStart` hooks 收集到 `SessionStartContext`；`dispatch_session_start_hooks` 先暂存，`agent_loop` 在**本轮预压缩之后**、本轮用户消息之前取走它——每个片段一条消息。暂存这一步之所以必需，是因为 `ensure_session` 只在 context **为空**时才恢复历史；放在压缩之后则是因为 `build_compacted_history` 只保留真实 user turn，否则简报会在进入的同时被那次压缩丢掉（Codex 的 start hooks 同样跑在 `run_pre_sampling_compact` 之后）。
+- 超过约 2,500 token 的片段会全文写到 `<temp_dir>/hook_outputs/<session>/`，模型看到的是头尾预览加一句 `Full hook output saved to: <path>`（Codex 的 `HookOutputSpiller` 及其默认上限）；TUI 仍显示 hook 的完整文本。
+- 该消息携带 `MessageKind::HookContext`，因此压缩不会把它当成最近的「真实用户回合」保留，TUI 也把它渲染成系统提示而非用户发言。
+- stdout 看起来像 JSON 却解析失败时按失败的 hook 处理、不注入（`looks_like_json`，与 Codex 的 `output_parser` 一致）；纯文本与空 stdout 的行为不变。
+- 未变的部分：matcher 仍只对 `"startup"` 求值，所以插件的 `resume` / `compact` 分支永不触发，hook payload 里的 `session_id` 也仍为空。
+
+**指向：** `plugin::hooks::tests::{session_start_output_routes_its_context_to_the_agent, a_plugin_hook_command_reaches_the_session_start_context, start_hook_stdout_is_context_unless_it_looks_like_json}`（前两条已验证对旧的「丢弃」行为失败）、`agent::tests::{agent_loop_injects_session_start_context_as_its_own_message, session_start_context_survives_the_pre_turn_compaction}`（第二条已验证对「注入早于压缩」的旧顺序失败）、`agent::tests::an_oversized_hook_briefing_is_spilled_and_previewed`、`openai::responses::convert::tests::a_message_appended_after_the_baseline_keeps_it_reusable`、`compact::tests::hook_context_is_not_a_real_user_message`、`tui::widgets::state::app::messages::tests::load_history_renders_hook_context_as_a_system_notice`。
+
+---
 
 ## 1. 2026-09-29 — thinking 卡片跑完后说 `Thought`
 
@@ -316,7 +1060,6 @@
 **变更后行为：** 一轮结束后统计行在两种语言下都渲染为 `⎘  Task stats:⏱ mm:ss · model · N tokens …`；点击字形复制该轮的日志文本，其余任何一列——包括字形后面那个空格——仍然照常开始文本选择。本次改动之前写入的行保留 `[copy]` / `[复制]` 按钮且仍可点击。测试：`tui::widgets::state::app::agent::tests::{task_stats_block_skips_empty_parts,task_stats_block_localizes_the_prefix_and_keeps_the_icon_copy_button,task_stats_line_detection_covers_all_languages_and_legacy_rows}`、`tui::handlers::mouse::tests::{task_stats_copy_only_triggers_inside_button,task_stats_body_click_does_not_copy}`。
 
 ---
-
 
 ## 1. 2026-09-25 — 后台任务的 id 就钉在启动它的那张卡片上
 
@@ -620,7 +1363,6 @@
 
 ---
 
-
 ## 1. 2026-09-14 — 压缩日志：单位修正，且每次尝试都打印它的请求信封
 
 | Field | Value |
@@ -637,7 +1379,6 @@
 **指针：** `crates/tact/src/agent/mod.rs`（`think_block_bytes`、`[compact summary …]` / `[compact continue …]` 消息）；[第 5 章](./05_chapter_compact_zh.md)。
 
 ---
-
 
 ## 1. 2026-09-14 — 空闲状态栏把聚焦面板还回它自己的槽位
 
@@ -656,7 +1397,6 @@
 
 ---
 
-
 ## 1. 2026-09-14 — 步骤标签去掉分母
 
 | Field | Value |
@@ -674,7 +1414,6 @@
 
 ---
 
-
 ## 1. 2026-09-14 — 符号链接的 skill 能加载了，Assembled prompt 也显示它携带的 MCP skills
 
 | Field | Value |
@@ -691,7 +1430,6 @@
 **指针：** `crates/tact/src/skill/mod.rs`（`load_skills_from_dir_with_namespace`、`load_direct_plugin_skills`、`symlinked_skill_dir_is_loaded`、`symlinked_plugin_skill_dir_is_loaded`）；`crates/tui/src/system_prompt.rs`（`SKILL_PATH`、`extract_mcp_skill_paths`、`assemble_prompt_view` 及其 4 个测试）；`crates/tui/src/handlers/select.rs`（`SelectKind::ViewSystemPrompt`）；[Ch 2](./02_chapter_skill_zh.md) §2（发现根目录）· §6（系统提示词集成）；Ch 26 2026-09-10（skill 根收敛）。
 
 ---
-
 
 ## 1. 2026-09-14 — 实时耗时搬到底栏第 1 行，状态栏的步骤进度条一并删除
 
@@ -765,7 +1503,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — 已完成工具的输出：卡片收起为两行，无卡片的结果变得可打开
 
 | Field | Value |
@@ -787,7 +1524,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — `[agent]` 拒绝未知键：写错位置的 thinking 设置会报错，而不是凭空消失
 
 | Field | Value |
@@ -806,7 +1542,6 @@
 ---
 
 ---
-
 
 ## 1. 2026-09-13 — 移除 `[llm].max_tokens`，残留该键将直接报错
 
@@ -827,7 +1562,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — 底栏 `out` 显示请求参数本身，而不是推算出来的 reasoning 份额
 
 | Field | Value |
@@ -846,7 +1580,6 @@
 ---
 
 ---
-
 
 ## 1. 2026-09-13 — 显式配置压过内置模型→窗口映射，subagent 段不再被静默丢弃
 
@@ -870,7 +1603,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — 底栏 `out` 额度不再在会话首个 prompt 后跳变
 
 | Field | Value |
@@ -890,7 +1622,6 @@
 
 ---
 
-
 ## 1. 2026-09-13 — `[agent].max_tokens` 成为输出预算链上的真实一级
 
 | Field | Value |
@@ -909,7 +1640,6 @@
 ---
 
 ---
-
 
 ## 1. 2026-09-13 — 压缩摘要改用 effort 桶 + 分档阶梯，取代固定预留
 
@@ -1232,7 +1962,6 @@
 
 ---
 
-
 ## 1. 2026-09-11 — `/mcp list` 在 TUI 内提供实时的 MCP server 视图，且不重连
 
 | Field | Value |
@@ -1252,7 +1981,6 @@
 **Pointers：** `crates/protocol/src/agent.rs`（`UserCommand::McpList`）；`crates/tact/src/mcp/mod.rs`（`transport_kind`、`McpLiveStatus`、`McpServerView`、`describe_servers`、`describe_resolved`）；`crates/tact-ui/src/mcp_cli.rs`（`render_live_listing`）；`crates/tact-ui/src/driver.rs`（`UserCommand::McpList` 分支）；`crates/tui/src/handlers/mcp.rs`；`crates/agent_tui_kit/src/bridge.rs`（`TryFrom<UserCommand>`）。测试：`mcp::tests::{describe_resolved_classifies_against_the_live_connection_set,describe_resolved_lists_a_connected_oauth_server_as_connected}`；`mcp_cli::tests::{live_listing_has_a_row_per_server_with_its_status,live_listing_explains_how_to_configure_when_empty,live_listing_escapes_pipes_so_a_source_path_cannot_break_the_table}`；`driver::tests::mcp_list_emits_the_live_listing_without_reconnecting`；`handlers::mcp::tests::{mcp_list_queues_a_listing_request_when_idle,mcp_list_flashes_busy_instead_of_queueing_while_a_task_runs}`。
 
 ---
-
 
 ## 1. 2026-09-11 — Mermaid 弹窗显示渲染后的图，无法渲染时也会说明原因
 
@@ -1275,7 +2003,6 @@
 
 ---
 
-
 ## 1. 2026-09-11 — 压缩不再产生孤立的 `role: tool` 消息
 
 | Field | Value |
@@ -1295,7 +2022,6 @@
 
 ---
 
-
 ## 1. 2026-09-11 — `deepseek-v4-*` 实验变体使用 1M 窗口，不再落到 200K 默认值
 
 | Field | Value |
@@ -1312,7 +2038,6 @@
 **指针：** `crates/tact/src/config/resolve.rs`（`model_context_window_for_model`）。测试：`config::resolve::tests::resolve_model_context_window_maps_deepseek_v4_variants`。
 
 ---
-
 
 ## 1. 2026-09-11 — `/mcp auth` 可容忍杂散回环请求，且 token 交换有超时上限
 
@@ -1381,7 +2106,6 @@
 **指针：** `crates/tact-ui/src/driver.rs`（`stream_auth_progress`、`UserCommand::McpAuth`）。测试：`crates/tact-ui/src/driver.rs` 单元测试 `driver::tests::{auth_progress_reaches_the_user_before_the_flow_finishes,auth_progress_drains_lines_sent_at_completion}`；端到端回归 `crates/tact-ui/tests/mcp_auth_url_progress.rs`——用 `wiremock` 起一个模拟 OAuth provider 驱动 `handle_user_command`，在旧的缓冲实现下会失败。相关：Ch 8 §Step 1c（本次改动恢复的正是该处已记录的 `/mcp auth` 行为）。
 
 ---
-
 
 ## 1. 2026-09-11 — `mcp.oauth_client_name`：OAuth 注册身份，默认 `Codex`
 
@@ -1497,7 +2221,6 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 **指针：** `crates/tact/src/mcp/remote.rs`（`McpRemoteConfig`、`McpAuthConfig`、`serve_remote`、`resolve_remote_auth`、`stored_access_token_at`、`oauth_parameters`、`is_auth_required_error`、`authorize_remote_server`、`FileCredentialStore`、`await_oauth_callback`、`percent_decode`）；`crates/tact/src/mcp/mod.rs`（`McpTransportConfig`、`McpTransportKind`、`ConfiguredServer`、`to_transport`、`resolve_servers`、`ResolvedServers::configured`、`load_mcp_router_with_report`、`remote_config_for`、`authorize_server`、`McpLoadReport::{configured,pending_auth,notice_lines}`）；`crates/tact-ui/src/mcp_cli.rs`（`run_mcp_cli`、`render_report`、`status_for`）；`crates/tact/src/config/cli.rs`（`McpSubcommand`）；`crates/tact/src/agent/mod.rs`（`rebuild_cached_tool_specs`、`reload_mcp_router`）；`crates/tact/src/consts.rs`（`home_mcp_oauth_dir`）。测试：`remote_config_parses_url_headers_and_oauth`、`invalid_header_names_are_dropped_from_the_transport_config`、`oauth_token_becomes_the_bearer_auth_header`、`file_credential_store_round_trips_and_clears`、`callback_listener_{extracts_code_and_state,surfaces_denied_authorization,times_out_without_a_request}`、`commandless_entries_are_skipped_not_fatal_while_remote_entries_connect`、`remote_entry_with_oauth_needs_authorization_without_credentials`、`load_report_renders_pending_authorization`、`auth_required_detection_ignores_unrelated_errors`、`undeclared_auth_still_uses_a_stored_credential`、`oauth_parameters_default_when_auth_is_not_declared`、`mcp_cli::tests::{empty_report_explains_how_to_configure,renders_each_server_with_its_status,skipped_servers_are_listed_even_though_they_are_not_configured,a_server_with_no_recorded_outcome_is_not_reported_as_healthy}`。公网远程 server 的实网（可选）端到端检查：`crates/tact/tests/live_remote_mcp.rs`（`cargo test -p tact --test live_remote_mcp -- --ignored --nocapture`），覆盖 DeepWiki + Cloudflare Docs 连接并暴露 `mcp__<key>__*` 工具、Linear 的 401 被升级为 `pending_auth`、以及声明与不声明 `auth` 两种情况下都能产出授权 URL（对真实 provider 验证发现、动态注册与 PKCE S256）。文档：Ch 8 §3.2/Step 1b/1c/FAQ/缺口（双语）、Ch 21 插件段（双语）。
 
 ---
-
 
 ## 1. 2026-09-10 — `tracing-subscriber` 的 `default-features = false` 终于生效
 
@@ -2565,7 +3288,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | Thinking 卡片把总行数显示了两遍——顶部标题（`🧠 Thinking (N lines)`）与底部栏（`↕ 可见/N 行 …`）各一次；`bash` 命令输出卡片同样重复（顶部 `Live output (N lines)` / `Command output (N lines)`，底部 `preview/total 行` 提示）；`read_file` 卡片也是如此（顶部 `Read <路径> (N lines)`）。两者同时可见时，顶部计数与底部栏数字冗余。 |
 | 决策 | 卡片顶部标题不再携带行数：`🧠 Thinking`（active 与 completed 一致）、`Live output`（运行中 bash）、`Command output`（已完成 bash）、`Read <路径>`（read_file）。底部栏成为唯一计数来源（Thinking 的 `↕ visible/total 行`；命令输出溢出预览时的 `preview/total 行`）。删除不再使用的 `thinking_card_title_pl` 字段；`tool_live_output_title_tmpl` 去掉 `{}` 占位符并更名为 `tool_live_output_title`。 |
 | 改后行为 | Thinking 卡片显示 `🧠 Thinking` / `🧠 思考中`；运行中的 bash 卡片显示 `Live output` / `实时输出`；完成的命令卡片显示 `Command output`；Read 卡片显示 `Read <路径>`。所有行数都在卡片底部栏。Popup 标题不变（本就用命令文本或裸 `Command output`）。 |
-| 指针 | `crates/tui/src/i18n.rs`、`crates/tui/src/render/cells/thinking.rs`、`crates/tui/src/widgets/tool_widget.rs`（`detail_card_title`）、`crates/tui/src/render/cells/tool.rs`（`card_bottom_text`）；测试 `live_output_total_excludes_command_prefix_but_popup_keeps_it`、`log_tool_card_renders_when_scrolled_into_placeholder_rows`；[Ch 23](./23_chapter_tui.md) §render pipeline。 |
+| 指针 | `crates/tui/src/i18n.rs`、`crates/tui/src/render/cells/thinking.rs`、`crates/tui/src/widgets/tool_widget.rs`（`detail_card_title`）、`crates/tui/src/render/cells/tool.rs`（`card_bottom_text`）；测试 `live_output_total_excludes_command_prefix_but_popup_keeps_it`、`log_tool_card_renders_when_scrolled_into_placeholder_rows`；[Ch 23](./23_chapter_tui_zh.md) §render pipeline。 |
 
 ## 2. 2026-08-15 — Log 按词边界折行；文字选择交互对称化
 
@@ -2858,7 +3581,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | DeepSeek/Kimi 用户会得到明确的配置错误，不会进入未经验证的 Responses 路径。OpenAI 与明确配置的自定义 OpenAI-compatible provider 保留现有 Responses 路由。 |
 | 指针 | `crates/tact/src/config/resolve.rs`；provider 构造：`crates/tact_llm/src/provider.rs`；相关设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；压缩行为：第 5 章。 |
 
-
 ## 2. 2026-08-08 — OpenAI Responses 保留未知 wire item
 
 | 字段 | 值 |
@@ -2868,7 +3590,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 决策 | 在 typed normalization 之前先解析 raw Responses envelope；已知 item 正常转换，未知 input/output item 作为 raw JSON 保留。增加只由 Responses adapter 消费的 `ResponsesRequestOptions`，并提供保守的 provider capability metadata；只有出现可复现的 SDK 阻塞时才 fork `async-openai`。 |
 | 变更后行为 | 无害的未知流事件不再中断响应。未知 output item 可以跨普通/流式 turn、session state 序列化和下一次 Responses 请求保留。Responses 专用请求字段不会出现在 Chat Completions 或 Anthropic payload 中。 |
 | 指针 | `crates/tact_llm/src/openai/responses/wire.rs`、`request_options.rs`、`stream.rs`、`provider.rs`；设计：`docs/superpowers/specs/2026-08-08-openai-responses-complete-design.md`；计划：`docs/superpowers/plans/2026-08-08-responses-compatibility-foundation.md`；压缩：第 5 章与 `docs/compaction.md`。 |
-
 
 ## 2. 2026-08-08 — 主区域 Markdown 将完整 Mermaid fence 渲染为终端图
 
@@ -2883,7 +3604,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 ---
 
-
 ## 2. 2026-08-06 — OpenAI Responses 显示详细 reasoning summary
 
 | 字段 | 值 |
@@ -2895,8 +3615,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 变更后行为 | OpenAI Responses 的 thinking block 请求并显示详细 reasoning summary，不再使用自动摘要级别。 |
 | 指针 | 请求转换与回归断言：`crates/tact_llm/src/openai/responses/convert.rs`；相关 Responses 适配器：`crates/tact_llm/src/openai/responses/`。 |
 
-
-
 | 字段 | 值 |
 |------|-----|
 | 类型 | `bugfix` |
@@ -2905,7 +3623,6 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 决策 | 缓存换行时预先扣除该消息实际缩进；流式回复使用相同的回复缩进。`TextCell` 的选区换行直接使用扣除缩进后的可用宽度。 |
 | 变更后行为 | 主区域满行的普通、嵌套和流式文本会在实际可绘制宽度内换行，右侧字符不再丢失。 |
 | 指针 | 日志布局与换行缓存见 `render/log.rs`；文本绘制见 `render/cells/text.rs`；回归测试 `log_full_width_nested_line_wraps_before_indentation_clip`。 |
-
 
 | Field | Value |
 |-------|-------|

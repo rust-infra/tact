@@ -367,8 +367,10 @@ fn full_frame_skills_command_renders_list_with_separator() {
         },
     ];
 
-    execute_palette_command(&mut app, "skills");
-    execute_palette_command(&mut app, "skills");
+    app.input = "/skill list".to_string();
+    execute_palette_command(&mut app, "skill");
+    app.input = "/skill list".to_string();
+    execute_palette_command(&mut app, "skill");
 
     let title_idxs: Vec<_> = app
         .log

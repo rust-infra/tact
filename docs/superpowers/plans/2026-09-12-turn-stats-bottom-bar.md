@@ -42,8 +42,8 @@ Status: **implemented**
    `turn_stats_is_metadata_and_keeps_the_loading_placeholder` (written to fail
    first), then fixed.
 9. **Tests** — see below.
-10. **Docs** — `docs/token_usage_schema.md`, `book/23_chapter_tui.md` §6.6 +
-    `_zh.md`, `book/26_chapter_issue.md` + `_zh.md`.
+10. **Docs** — `docs/token_usage_schema.md`, `book/23_chapter_tui_zh.md` §6.6 +
+    `_zh.md`, `book/26_chapter_issue_zh.md`.
 11. **Verify** — `cargo test` per crate, `cargo clippy --all-targets`,
     `cargo fmt --check`, all with `no_proxy` set for loopback tests.
 

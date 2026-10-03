@@ -218,8 +218,10 @@ fn apply_hunk(lines: Vec<String>, hunk: &Hunk) -> Result<Vec<String>, String> {
 pub const APPLY_PATCH_METADATA: ToolMetadata = ToolMetadata {
     name: "apply_patch",
     description: "Apply a unified diff patch to files. Accepts standard unified diff format. Use dry_run=true to validate without modifying files.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Path { field: "path" },
+    permission: PermissionPolicy::PatchPaths,
+    permission_prompt: PermissionPromptPolicy::PatchTarget {
+        patch_field: "patch",
+    },
     resources: ResourcePolicy::PatchFiles {
         patch_field: "patch",
         dry_run_field: "dry_run",

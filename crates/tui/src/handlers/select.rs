@@ -1,6 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use tact_protocol::{UiResponse, UserCommand};
 
+use crate::i18n::Language;
+use crate::widgets::state::app::config::theme_label;
 use crate::widgets::state::{App, InputMode, ModelTarget, SelectKind};
 
 const THINKING_BUDGETS: [usize; 5] = [0, 8_000, 32_000, 64_000, 128_000];
@@ -209,6 +211,24 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         .send(UserCommand::SetPermissionMode(mode_str.to_string()));
                     app.input_mode = InputMode::Normal;
                 }
+                SelectKind::ThemePick => {
+                    // The options are `ThemeName::all()` in order, so the index
+                    // is the theme; the label carries a " *" marker for the
+                    // current one, which is why the name is not parsed back out
+                    // of `chosen`.
+                    let name = crate::theme::ThemeName::all()
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(app.theme.name);
+                    app.apply_theme(name);
+                    open_theme_persist_step(app, name, ui_config_available());
+                }
+                SelectKind::PersistTheme { name } => {
+                    finish_theme_persist(app, &chosen, name);
+                }
+                SelectKind::PersistLang { language } => {
+                    finish_language_persist(app, &chosen, language);
+                }
                 SelectKind::ModelPick(target) => {
                     open_second_step(app, strip_current_marker(&chosen), target);
                 }
@@ -285,11 +305,23 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                             .replace("{}", effort.as_str()),
                     );
                 }
+                // Esc on the "save to config?" step answers "no" rather than
+                // discarding the theme: it is already applied, and the model
+                // flows report the same thing on Esc.
+                SelectKind::PersistTheme { name } => {
+                    let label = theme_label(&msgs, name);
+                    app.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
+                }
+                SelectKind::PersistLang { language } => {
+                    let label = language.label();
+                    app.add_system_message(msgs.lang_session_only_tmpl.replace("{}", label));
+                }
                 SelectKind::Agent
                 | SelectKind::ModelPick(_)
                 | SelectKind::ModelProfileEffortPick { .. }
                 | SelectKind::ThinkBudgetPick { .. }
                 | SelectKind::ViewSystemPrompt
+                | SelectKind::ThemePick
                 | SelectKind::PermissionModePick => {
                     app.add_system_message(msgs.selection_cancelled.to_string());
                 }
@@ -512,10 +544,7 @@ fn apply_model_and_budget_pick(
     };
     app.select.set_local(
         persist_prompt.to_string(),
-        vec![
-            msgs.model_persist_yes.to_string(),
-            msgs.model_persist_no.to_string(),
-        ],
+        vec![msgs.persist_yes.to_string(), msgs.persist_no.to_string()],
         1,
         false,
     );
@@ -592,10 +621,7 @@ fn open_effort_persist_prompt(
     };
     app.select.set_local(
         msgs.model_persist_with_effort_prompt.to_string(),
-        vec![
-            msgs.model_persist_yes.to_string(),
-            msgs.model_persist_no.to_string(),
-        ],
+        vec![msgs.persist_yes.to_string(), msgs.persist_no.to_string()],
         1,
         false,
     );
@@ -612,7 +638,7 @@ fn finish_effort_persist(
 ) {
     let msgs = app.msgs();
     let effort_str = effort.as_str();
-    if chosen == msgs.model_persist_yes {
+    if chosen == msgs.persist_yes {
         match persist(model, effort_str) {
             Ok(()) => app.add_system_message(
                 msgs.model_persisted_with_effort_tmpl
@@ -653,7 +679,7 @@ fn finish_persist_budget(
             msgs.model_subagent_session_only_with_budget_tmpl,
         ),
     };
-    if chosen == msgs.model_persist_yes {
+    if chosen == msgs.persist_yes {
         let result = match target {
             ModelTarget::Main => tact::config::persist_active_provider_model_and_thinking_budget(
                 model,
@@ -678,6 +704,121 @@ fn finish_persist_budget(
             model,
             &budget_label,
         ));
+    }
+    app.input_mode = InputMode::Normal;
+}
+
+/// Whether there is a config file to write a `[ui]` preference into.
+///
+/// Shared by `/theme` and `/lang`: both persist through the same `[ui]` table,
+/// so both must agree on whether that table has a file to live in.
+fn ui_config_available() -> bool {
+    tact::config::try_settings().is_some_and(|settings| settings.config_path.is_some())
+}
+
+/// `/theme` second step: offer to write `[ui] theme` to the config file.
+///
+/// No config file means the choice stays session-only, and that is reported
+/// here rather than by opening a picker whose answer could not be honoured.
+/// `config_available` is a parameter so both branches are testable without
+/// installing process-global settings.
+fn open_theme_persist_step(app: &mut App, name: crate::theme::ThemeName, config_available: bool) {
+    let msgs = app.msgs();
+    if !config_available {
+        let label = theme_label(&msgs, name);
+        app.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
+        app.input_mode = InputMode::Normal;
+        return;
+    }
+    app.select_kind = SelectKind::PersistTheme { name };
+    app.select.set_local(
+        msgs.theme_persist_prompt.to_string(),
+        vec![msgs.persist_yes.to_string(), msgs.persist_no.to_string()],
+        // Default to No: writing a file is the deliberate choice, and the
+        // theme is already applied either way.
+        1,
+        false,
+    );
+    app.input_mode = InputMode::Select;
+}
+
+/// Apply the answer to the theme's "save to config?" step.
+fn finish_theme_persist(app: &mut App, chosen: &str, name: crate::theme::ThemeName) {
+    let msgs = app.msgs();
+    let label = theme_label(&msgs, name);
+    if chosen == msgs.persist_yes {
+        match tact::config::persist_theme(name.as_str()) {
+            Ok(()) => {
+                app.add_system_message(msgs.theme_persisted_tmpl.replace("{}", name.as_str()))
+            }
+            Err(error) => app.add_system_message(
+                msgs.theme_persist_failed_tmpl
+                    .replace("{}", &error.to_string()),
+            ),
+        }
+    } else {
+        app.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
+    }
+    app.input_mode = InputMode::Normal;
+}
+
+/// `/lang`: flip the language, then ask whether the choice should be saved.
+///
+/// One entry point because the flip and its persist step are one flow — the
+/// same reason `/theme`'s picker and its persist step share a caller. The
+/// config probe stays inside so no caller can ask without a file to ask about.
+pub(crate) fn start_language_toggle(app: &mut App) {
+    app.apply_language(app.language.next());
+    let language = app.language;
+    open_language_persist_step(app, language, ui_config_available());
+}
+
+/// `/lang` second step: offer to write `[ui] language` to the config file.
+///
+/// No config file means the locale reverts on the next launch, and saying so
+/// here is the point — a silent revert would look like the write failed.
+/// `config_available` is a parameter so both branches are testable without
+/// installing process-global settings.
+fn open_language_persist_step(app: &mut App, language: Language, config_available: bool) {
+    let msgs = app.msgs();
+    if !config_available {
+        let label = language.label();
+        app.add_system_message(msgs.lang_session_only_tmpl.replace("{}", label));
+        app.input_mode = InputMode::Normal;
+        return;
+    }
+    app.select_kind = SelectKind::PersistLang { language };
+    app.select.set_local(
+        msgs.lang_persist_prompt.to_string(),
+        vec![msgs.persist_yes.to_string(), msgs.persist_no.to_string()],
+        // Default to No: writing a file is the deliberate choice, and the
+        // language is already applied either way.
+        1,
+        false,
+    );
+    app.input_mode = InputMode::Select;
+}
+
+/// Apply the answer to the language's "save to config?" step.
+///
+/// The name written is [`Language::as_str`], never the display label — the
+/// label is `中文` for the language a Chinese user just picked, which is not a
+/// value the resolver could read back.
+fn finish_language_persist(app: &mut App, chosen: &str, language: Language) {
+    let msgs = app.msgs();
+    let label = language.label();
+    if chosen == msgs.persist_yes {
+        match tact::config::persist_language(language.as_str()) {
+            Ok(()) => {
+                app.add_system_message(msgs.lang_persisted_tmpl.replace("{}", language.as_str()))
+            }
+            Err(error) => app.add_system_message(
+                msgs.lang_persist_failed_tmpl
+                    .replace("{}", &error.to_string()),
+            ),
+        }
+    } else {
+        app.add_system_message(msgs.lang_session_only_tmpl.replace("{}", label));
     }
     app.input_mode = InputMode::Normal;
 }
@@ -822,6 +963,156 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::empty())
     }
 
+    /// `/theme` → the "save to config?" step, as if a config file existed.
+    #[test]
+    fn theme_persist_step_asks_and_defaults_to_no() {
+        let mut app = make_app();
+
+        open_theme_persist_step(&mut app, crate::theme::ThemeName::Nord, true);
+
+        assert!(matches!(app.select_kind, SelectKind::PersistTheme { .. }));
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert_eq!(
+            app.select.options,
+            vec!["Yes".to_string(), "No".to_string()]
+        );
+        assert_eq!(
+            app.select.selected, 1,
+            "No is the default: writing a file is the deliberate answer"
+        );
+        assert_eq!(app.select.prompt, "Save theme to config?");
+    }
+
+    /// Without a config file there is nothing to offer — say so instead of
+    /// asking a question whose "yes" cannot be honoured.
+    #[test]
+    fn theme_persist_step_reports_session_only_without_a_config_file() {
+        let mut app = make_app();
+
+        open_theme_persist_step(&mut app, crate::theme::ThemeName::Nord, false);
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(!matches!(app.select_kind, SelectKind::PersistTheme { .. }));
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("session only")),
+            "{:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn declining_to_persist_reports_a_session_only_theme() {
+        let mut app = make_app();
+
+        finish_theme_persist(&mut app, "No", crate::theme::ThemeName::Nord);
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("Nord") && item.raw.contains("session only")),
+            "{:?}",
+            app.log.items
+        );
+    }
+
+    /// `/lang` → the "save to config?" step, as if a config file existed.
+    #[test]
+    fn language_persist_step_asks_and_defaults_to_no() {
+        let mut app = make_app();
+
+        open_language_persist_step(&mut app, Language::Chinese, true);
+
+        assert!(matches!(app.select_kind, SelectKind::PersistLang { .. }));
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert_eq!(
+            app.select.options,
+            vec!["Yes".to_string(), "No".to_string()]
+        );
+        assert_eq!(
+            app.select.selected, 1,
+            "No is the default: writing a file is the deliberate answer"
+        );
+        assert_eq!(app.select.prompt, "Save language to config?");
+    }
+
+    /// Without a config file there is nothing to offer — say so instead of
+    /// asking a question whose "yes" cannot be honoured.
+    #[test]
+    fn language_persist_step_reports_session_only_without_a_config_file() {
+        let mut app = make_app();
+
+        open_language_persist_step(&mut app, Language::Chinese, false);
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(!matches!(app.select_kind, SelectKind::PersistLang { .. }));
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("session only")),
+            "{:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn declining_to_persist_reports_a_session_only_language() {
+        let mut app = make_app();
+
+        finish_language_persist(&mut app, "No", Language::Chinese);
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("中文") && item.raw.contains("session only")),
+            "{:?}",
+            app.log.items
+        );
+    }
+
+    /// The whole flow against a real file: the value written is the locale tag,
+    /// never the label. `中文` is what the user just picked and what the UI
+    /// draws, but the resolver reads `zh` back — a label in the file would be a
+    /// silent no-op on the next launch.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirming_save_writes_the_locale_tag_and_leaves_the_other_tables() {
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        let (_temp_dir, path) = install_models_config_with_path(vec![], "kimi-k2.5", 0);
+        let mut app = make_app();
+
+        start_language_toggle(&mut app);
+        assert_eq!(app.language, Language::Chinese);
+        assert!(matches!(app.select_kind, SelectKind::PersistLang { .. }));
+
+        // Default is "No"; step up to "Yes" and confirm. Driving by key rather
+        // than calling the finisher keeps the option string the one the user
+        // actually sees, in the language the toggle just switched to.
+        handle_select_mode(&mut app, key(KeyCode::Up));
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+
+        let config = std::fs::read_to_string(&path).unwrap();
+        assert!(config.contains("language = \"zh\""), "{config}");
+        assert!(
+            config.contains("[llm.providers.kimi]"),
+            "a [ui] write must not disturb the tables around it:\n{config}"
+        );
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("language = \"zh\"")),
+            "{:?}",
+            app.log.items
+        );
+    }
+
     fn seed_select(app: &mut App) -> tokio::sync::mpsc::UnboundedReceiver<UserCommand> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         // Swap in an observable command channel so tests can assert the
@@ -861,6 +1152,7 @@ mod tests {
                 snapshot_max_items: 80,
                 max_token_usage_bodies: tact::store::session_store::MAX_TOKEN_USAGE_BODIES,
                 micro_compact_enabled: true,
+                memory_enabled: true,
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
                 instruction_sources: tact::config::InstructionSources::default(),
@@ -868,6 +1160,7 @@ mod tests {
             },
             ui: tact::config::UiSettings {
                 theme: "retro".into(),
+                language: "en".into(),
                 vision_image: tact::config::VisionImageSettings {
                     compress: true,
                     max_edge: 1280,

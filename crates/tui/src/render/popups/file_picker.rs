@@ -44,7 +44,7 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
     let items: Vec<ListItem> = if app.file_picker.options.is_empty() {
         vec![ListItem::new(Span::styled(
             app.msgs().select_empty,
-            Style::default().fg(Color::Gray),
+            Style::default().fg(app.theme.muted),
         ))]
     } else {
         let selected = app
@@ -72,7 +72,9 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &App) {
                 };
 
                 let fg = if is_selected {
-                    Color::White
+                    // Over `theme.highlight`, so it has to come from the
+                    // theme: white-on-highlight disappears on light themes.
+                    app.theme.fg
                 } else {
                     // Color by type: folders use accent, files use extension color
                     if opt.ends_with('/') {

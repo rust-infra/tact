@@ -23,7 +23,7 @@ mod voice;
 pub(crate) use agent_tui_kit::state::account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
-pub(crate) use slash_command::SlashCommandState;
+pub(crate) use slash_command::{Candidate, SlashCommandState};
 
 pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItemKind, SystemMsgStyle};
 pub(crate) use agent_tui_kit::state::log_scroll::LogScroll;
@@ -49,36 +49,11 @@ pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceSta
 
 // ========== Basic Types ==========
 
-/// Commands shown in the command palette (triggered by `/`).
-pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
-    ("theme", "Toggle color theme"),
-    ("model", "Switch model for current provider"),
-    ("model-subagent", "Switch subagent model"),
-    ("permission", "Set permission mode (Default/Plan/Auto)"),
-    ("view-system-prompt", "View system prompt"),
-    ("save", "Save log to file"),
-    ("compact", "Compact conversation history"),
-    ("cancel", "Cancel current task"),
-    (
-        "subagent_cancel",
-        "Cancel a running subagent (usage: /subagent_cancel <child-id>)",
-    ),
-    ("quit", "Quit application"),
-    ("help", "Show help panel"),
-    ("history", "Show task history"),
-    ("skills", "List available skills"),
-    ("skill-reload", "Reload skills from disk"),
-    ("plugin", "Manage plugins and marketplaces"),
-    (
-        "mcp",
-        "Manage MCP servers (usage: /mcp auth <server> | /mcp list)",
-    ),
-    ("balance", "Query account balance (DeepSeek/Kimi)"),
-    ("lang", "Toggle language (EN/中文)"),
-    ("stats", "Show session statistics"),
-    ("tasks-dag", "Show task dependency DAG"),
-    ("background", "Check background task status"),
-];
+mod slash;
+
+pub(crate) use slash::SlashCommand;
+#[allow(unused_imports)] // Re-exported for tui's test code (the subcommand guard)
+pub(crate) use slash::Subcommand;
 
 /// Which agent a `/model` flow targets: the main agent or the configured
 /// subagent. The two-step model/effort/budget flow is expressed once and
@@ -128,6 +103,17 @@ pub(crate) enum SelectKind {
     ViewSystemPrompt,
     /// `/permission` picker — choose Default / Plan / Auto.
     PermissionModePick,
+    /// `/theme` picker — choose one of the built-in themes.
+    ThemePick,
+    /// `/theme` second step — offer to write `[ui] theme` to `config.toml`,
+    /// mirroring what `/model` asks before persisting.
+    PersistTheme { name: crate::theme::ThemeName },
+    /// `/lang` second step — offer to write `[ui] language` to `config.toml`.
+    ///
+    /// Separate from [`Self::PersistTheme`] rather than one "which `[ui]` key"
+    /// variant: the two write different spellings (a theme's canonical name vs
+    /// a locale tag) and report in their own words.
+    PersistLang { language: crate::i18n::Language },
 }
 
 /// A queued agent-originated select (`RequestSelect` / `RequestMultiSelect`)

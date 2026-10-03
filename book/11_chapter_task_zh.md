@@ -1,7 +1,5 @@
 # 任务与工具调度（Tasks and Tool Scheduling）
 
-> 语言：[中文](./11_chapter_task_zh.md) · [English](./11_chapter_task.md)
-
 本章说明 LLM 决定行动之后发生什么：Tact 如何将一组 `ToolUse` 块转为已执行命令、结果，以及下一轮对话。
 
 **勿与** [持久任务管理器](./19_chapter_persistent_tasks_zh.md)（`task_create` / `task_list` 工具）或 [子 Agent](./12_chapter_subagent_zh.md) 的 `spawn_subagent` spawn 工具混淆。
@@ -127,7 +125,7 @@ Wave 按序执行；同一 wave 内工具并发运行。
 
 - **只读**：一般允许。
 - **Write**：Default 模式询问（除非 allowlist）；Auto 模式自动批准；Plan 模式拒绝。
-- **高风险**：始终询问（即使 allowlist）；包括 `spawn_subagent`、破坏性工具名与危险 bash 模式。
+- **高风险**：首次询问；此后仅当有显式允许覆盖该确切工具与输入时才放行。包括 `spawn_subagent`、破坏性工具名与危险 bash 模式。
 
 分类规则、模式与 TUI 审批流程见 [权限模型](./10_chapter_permission_zh.md)。
 

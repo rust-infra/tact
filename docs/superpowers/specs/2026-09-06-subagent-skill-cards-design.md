@@ -165,7 +165,7 @@ You are a principal reviewer. …
 
 ## 6. 文档同步（双语）
 
-- `book/12_chapter_subagent.md` / `_zh.md`：
+- `book/12_chapter_subagent_zh.md` / `_zh.md`：
   - §2 `SubagentInput` 结构体与字段表补 `skill` 行；
   - 新小节（复用原 §2.1 位置）「Subagent skill cards」：目录、frontmatter、正文即角色、与主 agent skill 的隔离说明；
   - §5 Static prompt 段补技能卡拼接示例。

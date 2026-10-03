@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem},
 };
@@ -27,11 +27,12 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
     // -----
 
     let msgs = app.msgs();
-    let cmds = app.palette_commands();
-    let commands: Vec<(&str, &str)> = cmds.iter().map(|(c, d)| (c.as_str(), d.as_str())).collect();
-    let skill_names = crate::render::slash_style::skill_name_set(&app.skills_data);
-    let filtered = slash.matched_commands(&app.input, app.input_cursor, &commands, &skill_names);
-    let n = filtered.len();
+    // Theme, not literals: this popup used to draw cyan/white/dark-gray, which
+    // on a light theme is white items on the white popup background — the whole
+    // list, invisible.
+    let theme = app.theme;
+    let candidates = app.slash_candidates();
+    let n = candidates.len();
     if n == 0 {
         app.mouse.slash_popup_area = Rect::default();
         let hint_area = super::centered_list_popup_area(area, 40, 5);
@@ -49,7 +50,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
             inner.y,
             &Line::from(Span::styled(
                 msgs.palette_empty,
-                Style::default().fg(Color::Gray),
+                Style::default().fg(theme.muted),
             )),
             inner.width,
         );
@@ -61,8 +62,8 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
     // Build rows with section headers (headers are not selectable).
     let mut rows: Vec<SlashRow<'_>> = Vec::new();
     let mut last_section: Option<Section> = None;
-    for (i, &(_idx, (cmd, desc), _score)) in filtered.iter().enumerate() {
-        let section = if skill_names.contains(cmd) {
+    for (i, candidate) in candidates.iter().enumerate() {
+        let section = if candidate.is_skill {
             Section::Skills
         } else {
             Section::Commands
@@ -73,8 +74,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
         }
         rows.push(SlashRow::Item {
             global_idx: i,
-            cmd,
-            desc,
+            candidate,
         });
     }
 
@@ -109,7 +109,20 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
         0
     };
 
-    let accent = Color::Cyan;
+    let accent = theme.accent;
+    // Subcommand rows are a table (`/plugin uninstall  <name>`) and read better
+    // with their syntax column lined up; the command list is not (names there
+    // already reach the widest point).
+    let hint_column = candidates
+        .iter()
+        .all(|candidate| candidate.path.contains(' '))
+        .then(|| {
+            candidates
+                .iter()
+                .map(|candidate| candidate.path.chars().count())
+                .max()
+                .unwrap_or(0)
+        });
     let visible_end = (offset + window).min(rows.len());
     let items: Vec<ListItem> = rows[offset..visible_end]
         .iter()
@@ -122,51 +135,49 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
                 ListItem::new(Line::from(Span::styled(
                     format!(" {label}"),
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(theme.muted)
                         .add_modifier(Modifier::DIM | Modifier::BOLD),
                 )))
             }
             SlashRow::Item {
                 global_idx,
-                cmd,
-                desc,
+                candidate,
             } => {
                 let is_sel = *global_idx == selected;
                 let prefix = if is_sel { "▶ " } else { "  " };
-                // Calculate available width for description: inner_width minus overhead minus command name length
-                let max_desc = inner_width
-                    .saturating_sub(ROW_OVERHEAD + cmd.chars().count())
-                    .max(5);
-                let desc_short = truncate_chars(desc, max_desc);
+                // Calculate available width for the right column: inner_width
+                // minus overhead minus the completed path's length.
+                let path_width = hint_column.unwrap_or_else(|| candidate.path.chars().count());
+                let max_desc = inner_width.saturating_sub(ROW_OVERHEAD + path_width).max(5);
+                let desc_short = truncate_chars(&candidate.detail, max_desc);
+                // Pad the path so every detail column starts at the same x, but
+                // only where there is a column to align (see `hint_column`).
+                let left = match hint_column {
+                    Some(width) => format!(
+                        "{prefix}/{}{}",
+                        candidate.path,
+                        " ".repeat(width - candidate.path.chars().count() + 2)
+                    ),
+                    None => format!("{prefix}/{}  ", candidate.path),
+                };
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{prefix}/{cmd}"),
+                        left,
                         if is_sel {
                             Style::default().fg(accent).add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default().fg(Color::White)
+                            Style::default().fg(theme.fg)
                         },
                     ),
-                    Span::raw("  "),
-                    Span::styled(desc_short, Style::default().fg(Color::DarkGray)),
+                    Span::styled(desc_short, Style::default().fg(theme.muted)),
                 ]))
             }
         })
         .collect();
 
     let title = match last_section {
-        Some(Section::Skills)
-            if filtered
-                .iter()
-                .all(|(_, (c, _), _)| skill_names.contains(*c)) =>
-        {
-            msgs.slash_section_skills
-        }
-        Some(Section::Commands)
-            if filtered
-                .iter()
-                .all(|(_, (c, _), _)| !skill_names.contains(*c)) =>
-        {
+        Some(Section::Skills) if candidates.iter().all(|c| c.is_skill) => msgs.slash_section_skills,
+        Some(Section::Commands) if candidates.iter().all(|c| !c.is_skill) => {
             msgs.slash_section_commands
         }
         _ => msgs.slash_title_mixed,
@@ -201,8 +212,7 @@ enum SlashRow<'a> {
     Header(Section),
     Item {
         global_idx: usize,
-        cmd: &'a str,
-        desc: &'a str,
+        candidate: &'a crate::widgets::state::Candidate,
     },
 }
 

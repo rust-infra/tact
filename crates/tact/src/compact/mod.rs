@@ -18,7 +18,7 @@ use anyhow::Context as _;
 use tact_llm::{ContentBlock, Message, MessageContent, MessageKind, Role};
 use tokio::io::AsyncWriteExt;
 
-use crate::consts::TactPath;
+use crate::{consts::TactPath, hook::is_hook_context_text};
 
 /// How many recent tool results to preserve during micro-compaction;
 /// all earlier tool results with > 120 chars are replaced with a stub.
@@ -243,11 +243,16 @@ fn is_real_user_message(message: &Message) -> bool {
     if !matches!(message.role, Role::User) {
         return false;
     }
-    if message.is_summary() {
+    // Neither a compaction handoff nor hook-injected context is a user turn:
+    // keeping either as a "recent real user message" would make every
+    // compaction rebuild carry it forward.
+    if message.is_summary() || message.is_hook_context() {
         return false;
     }
     match &message.content {
-        MessageContent::Text { content } => !is_summary_message(content),
+        MessageContent::Text { content } => {
+            !is_summary_message(content) && !is_hook_context_text(content)
+        }
         MessageContent::Blocks { content } => content
             .iter()
             .any(|block| !matches!(block, ContentBlock::ToolResult { .. })),
@@ -555,7 +560,35 @@ pub async fn persist_large_output(
     if output.chars().count() <= PERSIST_THRESHOLD {
         return Ok(output.to_string());
     }
+    spill_output(tact_path, tool_use_id, output).await
+}
 
+/// [`persist_large_output`] with a per-tool budget instead of the global
+/// threshold.
+///
+/// Used for an MCP entry's `tools.<name>.output_token_limit`: one tool that
+/// returns long documents (a knowledge-graph `build_context`, say) should not
+/// need the whole session's threshold lowered to keep its result out of the
+/// context window.
+pub async fn persist_large_output_over_tokens(
+    tact_path: &TactPath,
+    tool_use_id: &str,
+    output: &str,
+    limit_tokens: usize,
+) -> anyhow::Result<String> {
+    if approx_text_tokens(output) <= limit_tokens {
+        return Ok(output.to_string());
+    }
+    spill_output(tact_path, tool_use_id, output).await
+}
+
+/// Writes one oversized tool output to disk and returns the preview the model
+/// sees in its place. Unconditional: callers own the "is it too big?" test.
+async fn spill_output(
+    tact_path: &TactPath,
+    tool_use_id: &str,
+    output: &str,
+) -> anyhow::Result<String> {
     let output_dir = tact_path.tool_results_dir();
     tokio::fs::create_dir_all(&output_dir)
         .await
@@ -679,12 +712,14 @@ mod tests {
 
     use super::{
         HANDOFF_CLOSE_TAG, HANDOFF_OPEN_TAG, KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS,
-        OMITTED_IMAGE, SUMMARY_PREFIX, approx_text_tokens, build_compacted_history,
-        collect_user_messages, estimate_context_tokens, estimate_message_tokens,
-        is_summary_message, persist_large_output, recent_messages_for_summary,
+        OMITTED_IMAGE, PERSIST_THRESHOLD, SUMMARY_PREFIX, approx_text_tokens,
+        build_compacted_history, collect_user_messages, estimate_context_tokens,
+        estimate_message_tokens, is_real_user_message, is_summary_message, persist_large_output,
+        persist_large_output_over_tokens, recent_messages_for_summary,
         retained_user_message_token_budget, should_auto_compact, summary_message, take_last_tokens,
         write_transcript,
     };
+    use crate::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
 
     #[test]
     fn should_auto_compact_uses_last_token_total_when_present() {
@@ -769,6 +804,30 @@ mod tests {
             "{HANDOFF_OPEN_TAG}\n{SUMMARY_PREFIX}\n\nhandoff\n{HANDOFF_CLOSE_TAG}"
         )));
         assert!(!is_summary_message("please fix the bug"));
+    }
+
+    /// Hook-injected context is not a user turn. Carrying it forward as a
+    /// "recent real user message" would re-emit it on every compaction rebuild
+    /// instead of letting it age out with the history it framed.
+    #[test]
+    fn hook_context_is_not_a_real_user_message() {
+        let cell = |kind: MessageKind| {
+            Message::new_text(
+                Role::User,
+                format!("{HOOK_CONTEXT_OPEN_TAG}\nbrief\n{HOOK_CONTEXT_CLOSE_TAG}"),
+            )
+            .with_kind(kind)
+        };
+
+        // As injected, and as a reload from disk delivers it — the kind is not
+        // serialized, so the markers alone have to carry the exclusion.
+        assert!(!is_real_user_message(&cell(MessageKind::HookContext)));
+        assert!(!is_real_user_message(&cell(MessageKind::Normal)));
+
+        assert!(is_real_user_message(&Message::new_text(
+            Role::User,
+            "fix the bug"
+        )));
     }
 
     #[test]
@@ -1110,8 +1169,32 @@ mod tests {
         assert!(output_dir.join("new.txt").exists());
     }
 
-    // ── proptest property-based tests ──────────────────────────────────
+    /// A per-tool budget (`tools.<name>.output_token_limit`) spills on its own
+    /// threshold, independently of the session-wide character rule.
+    #[tokio::test]
+    async fn a_per_tool_token_budget_spills_over_its_own_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let tact_path = crate::consts::TactPath::new(dir.path());
 
+        let small = "x".repeat(400);
+        let kept = persist_large_output_over_tokens(&tact_path, "small", &small, 500)
+            .await
+            .unwrap();
+        assert_eq!(kept, small, "under the budget the output is untouched");
+
+        let large = "x".repeat(4_000);
+        let spilled = persist_large_output_over_tokens(&tact_path, "large", &large, 500)
+            .await
+            .unwrap();
+        assert!(spilled.starts_with("<persisted-output>"), "{spilled}");
+        assert!(spilled.contains("large.txt"), "{spilled}");
+        // The global character threshold is deliberately *not* what triggered
+        // this: 4_000 characters is far below PERSIST_THRESHOLD.
+        assert!(large.chars().count() < PERSIST_THRESHOLD);
+        assert!(tact_path.tool_results_dir().join("large.txt").exists());
+    }
+
+    // ── proptest property-based tests ──────────────────────────────────
     use proptest::prelude::*;
 
     proptest! {

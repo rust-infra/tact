@@ -161,10 +161,14 @@ mod tests {
         let (sandbox, degraded) = resolve(true, &PathBuf::from("/tmp/ws"));
         match (sandbox, degraded) {
             (Some(sandbox), None) => {
+                // Read the backend on every platform: keeping the binding used
+                // only inside the `linux` assertion left it unused elsewhere,
+                // which `-D warnings` rejects.
+                let described = sandbox.describe();
                 #[cfg(target_os = "linux")]
-                assert_eq!(sandbox.describe(), "bwrap");
+                assert_eq!(described, "bwrap");
                 #[cfg(not(target_os = "linux"))]
-                panic!("no sandbox implementation exists on this platform");
+                panic!("no sandbox implementation exists on this platform (got {described})");
             }
             (None, Some(degraded)) => assert!(!degraded.reason.is_empty()),
             (Some(_), Some(_)) => panic!("a sandbox and a degradation are mutually exclusive"),

@@ -20,7 +20,12 @@ cargo fmt -- --check
 echo "==> cargo clippy --all-targets -- -D warnings"
 cargo clippy --all-targets -- -D warnings
 
-echo "==> cargo test -p tact-ui -p tui -p tact -p tact_llm --verbose"
-cargo test -p tact-ui -p tui -p tact -p tact_llm --verbose
+# `--quiet`: one character per test instead of one line per test, and no rustc
+# command lines. A green run then costs ~2 KB of terminal instead of ~200 KB —
+# which matters because this script's stdout is read by humans *and* pasted into
+# agent transcripts. libtest still prints the full failure block and the
+# `test result:` summary in quiet mode, so a red run stays diagnosable.
+echo "==> cargo test -p tact-ui -p tui -p tact -p tact_llm"
+cargo test -p tact-ui -p tui -p tact -p tact_llm --quiet
 
 echo "Rust checks passed."

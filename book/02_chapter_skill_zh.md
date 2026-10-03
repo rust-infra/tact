@@ -1,7 +1,5 @@
 # Skill 注册表
 
-> 语言：[中文](./02_chapter_skill_zh.md) · [English](./02_chapter_skill.md)
-
 本章说明 Tact 如何从磁盘加载**自定义指令文件**（skills）：扫描 `SKILL.md`、在系统提示词中暴露摘要、通过 `load_skill` 工具按需加载全文，以及从 TUI 用斜杠命令调用。
 
 Skills 与 [持久化记忆](./03_chapter_memory_zh.md) 相关但不同——skills 是作者编写的 playbook；memories 是对话中学到的事实。
@@ -212,30 +210,33 @@ pub async fn load_skill(ctx: ToolContext, input: LoadSkillInput) -> Result<Strin
 pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 ```
 
-在主 agent、子 agent 与交互 TUI 间共享（使 `/skill-reload` 保持一致）。若子 agent 工具集包含 `load_skill` 则可调用——当前 `subagent_toolset()` **未**注册 `load_skill`；仅主 agent 的 `toolset()` 有。
+在主 agent、子 agent 与交互 TUI 间共享（使 `/skill reload` 保持一致）。若子 agent 工具集包含 `load_skill` 则可调用——当前 `subagent_toolset()` **未**注册 `load_skill`；仅主 agent 的 `toolset()` 有。
 
 ---
 
 ## 7. TUI 斜杠调用
 
-已发现的 skills 出现在 Insert 模式 `/` 弹出菜单与 Normal 模式命令面板中，形式为 `/{name}`，附 frontmatter 描述。内置斜杠命令**优先于**同名 skill（冲突的 skill 不会出现在 skill 列表中）。
+已发现的 skills **不再是一级斜杠命令**：一级列表（Insert 模式 `/` 弹出菜单、Normal 模式命令面板）只有内置命令，否则装了几十个 skill 的机器上 `/mcp`、`/compact` 会被淹没，每装一个 skill 还会挪动整个一级列表。skills 收在 `/skill` 之下——`/skill ` 弹出 `list` / `reload` 之后就是每个 skill（附 frontmatter 描述，按名字排序），`/skill demo fix auth` 运行它并把 `fix auth` 当参数。一级列表不再列 skill，因此也不会再有「一级列表里混着 skill」的排序与分组问题。
 
 | Skill 类型 | 注册表名称 | Slash 调用 |
 |------------|------------|------------|
-| 独立 skill | `skill` | `/skill` |
-| 已安装插件 | `plugin:skill` | `/plugin:skill` |
+| 独立 skill | `demo` | `/skill demo`（推荐）或 `/demo` |
+| 已安装插件 | `plugin:brainstorming` | `/skill plugin:brainstorming` 或 `/plugin:brainstorming` |
 
-| 步骤 | 行为 |
+| 输入 | 行为 |
 |------|------|
-| 斜杠弹出菜单对 **skill** 按 Enter | **立即 Invoke** |
-| 斜杠弹出菜单对 skill 按 **Tab** | 仅自动补全为 `/name ` |
-| Tab 后再 Enter（可带可选 args） | 经 `handlers/skills.rs` **Invoke** |
-| 面板对 skill 按 Enter | 切到 Insert 并预填 `/name `（+ undo checkpoint） |
-| 内置命令 Enter | 立即执行（`/quit`、`/cancel` 等）；`/plugin` 仍只补全 |
+| `/skill demo` 或 `/skill demo args…` + Enter | **Invoke**：经 `handlers/skills.rs` 的 `invoke_skill` 提交 `<skill>` 任务（与直接形式共用同一实现，只是 log 里回显 `/skill demo args…`） |
+| `/skill `（或 `/skill re`）在弹出菜单中 | 列出 `list` / `reload` / 每个 skill；Tab 补全为 `/skill demo `，Enter 直接运行高亮的那个 |
+| `/demo` 或 `/demo args…`（直接形式，仍支持） | **Invoke**：仅凭输入解析，不走弹出菜单——skills 不再出现在一级列表里，这个形式保留给已经形成的习惯 |
+| `/skill list` | 列出已发现的 skills（分页 Markdown 表格，纯本地渲染，任务进行中也可用） |
+| `/skill reload` | 重扫 skill 根到共享 registry（TUI + agent），失效 visual cache |
+| 高亮 | 输入框与用户 log 行把 `/skill demo` 整体标为 accent+bold（`split_skill_slash` 同时识别 `/demo` 与 `/skill demo`） |
+
+> 名字冲突有三条规则，都是「内置优先」：名为 `skill` 的 skill 被内置 `/skill` 顶掉（`/skill` 走 `list` / `reload`）；名为 `list` / `reload` 的 skill 在 `/skill ` 补全里被内置子命令顶掉（不出现重复行，直接形式 `/list` 仍可运行）；其余同名内置命令（`help`、`cancel`…）从来都是内置赢。
 
 **发给 agent 的载荷**
 
-1. 日志/历史显示用户输入的斜杠行（如 `/demo foo`）。
+1. 日志/历史显示用户输入的斜杠行原样（如 `/skill demo foo` 或 `/demo foo`）。
 2. Agent 任务正文为 `<skill name="…">…</skill>`（与 Claude Code 兼容）：
    - 若 skill 正文含裸 `$ARGUMENTS`（非 `$ARGUMENTS[N]`）：替换为参数字符串（可为空）。
    - 否则若参数非空：在 skill 正文内追加 `\n\nARGUMENTS: {args}`。
@@ -243,7 +244,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 3. 系统提示词 `# Available skills` 节说明斜杠调用的 `<skill>` / `ARGUMENTS:`，避免模型与 `load_skill` 元数据混淆。
 4. 共享的 `submit_user_task` 与正常 Enter 提交一样驱动 Planning / 用户气泡 / 历史。
 
-`/skill-reload` 将 skill 根重新扫描到 TUI 与 agent `ToolContext` **共享**的 `Arc<Mutex<SkillRegistry>>`，刷新 TUI `SkillEntry` 列表并 bump 视觉缓存。下一任务的系统提示词 skill 摘要（及 `load_skill`）因此看到新注册表，无需重启。
+`/skill reload` 将 skill 根重新扫描到 TUI 与 agent `ToolContext` **共享**的 `Arc<Mutex<SkillRegistry>>`，刷新 TUI `SkillEntry` 列表并 bump 视觉缓存。下一任务的系统提示词 skill 摘要（及 `load_skill`）因此看到新注册表，无需重启。
 
 成功的 `/plugin install <plugin>@<marketplace>`、`/plugin uninstall <plugin>`、`/plugin update <plugin>` 与 `/plugin reload` 会在 worker 完成后执行相同的共享刷新。失败操作保持 registry 不变。插件提供的名称可包含 `:`（例如 `/superpowers:brainstorming`），刷新后仍按普通 slash skill 调用。
 
@@ -295,7 +296,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 | 无 glob / 启用列表 | 所有发现的 skills 都出现在 `describe_available()` 与斜杠面板 |
 | `$ARGUMENTS[N]` 未用 | 索引占位符原样保留（仅 Claude 兼容的裸 `$ARGUMENTS`） |
 
-`/skill-reload` 会立即变更共享注册表；下一次 `build_system_prompt` / `load_skill` 读取更新后的 map。
+`/skill reload` 会立即变更共享注册表；下一次 `build_system_prompt` / `load_skill` 读取更新后的 map。
 
 ---
 

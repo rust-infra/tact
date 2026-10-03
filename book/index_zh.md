@@ -1,21 +1,10 @@
 # Agent 开发教程（中文）
 
-> 语言：[中文](./index_zh.md) · [English](./index.md)
+本目录收集 Tact 及相关 agent 运行时的设计说明与动手教程。**本书只有中文版**：英文册已于
+2026-09-30 整体删除，`_zh.md` 后缀是历史命名，不再是「与英文成对」的意思。
 
-本目录收集 Tact 及相关 agent 运行时的设计说明与动手教程。英文为权威全文；中文章节与英文结构对齐，便于双开对照。
-
----
-
-## 中文命名约定
-
-| 类型 | 英文（权威） | 中文 |
-|------|--------------|------|
-| 首页 | `index.md` | `index_zh.md` |
-| 章节 | `NN_chapter_<slug>.md` | `NN_chapter_<slug>_zh.md` |
-
-示例：`05_chapter_compact.md` ↔ `05_chapter_compact_zh.md`。
-
-- 章内顶部有语言切换链接。
+`crates/` 的代码、注释、`ARCHITECTURE.md`、`docs/` 与 `docs/superpowers/` 仍为英文；只有本书
+是中文。
 
 ---
 
@@ -51,8 +40,6 @@
 | 25 | [Agent–TUI 协议](./25_chapter_protocol_zh.md) | `tact_protocol` 消息类型、计划步骤生命周期、任务级状态迁移 |
 | 26 | [工程问题与优化日志](./26_chapter_issue_zh.md) | 已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针） |
 | 27 | [Bash 沙箱](./27_chapter_sandbox_zh.md) | `bash` 的可选 OS 级沙箱：布尔开关、按平台选后端、bubblewrap 策略、降级与非覆盖范围 |
-
-英文目录与架构总览见 [index.md](./index.md)。
 
 ---
 
@@ -106,7 +93,7 @@ graph TB
 
 ## 如何阅读
 
-- **优先读 `_zh` 稿**；常量、代码地图以中英对齐为准。
+- 常量、代码地图与类型名保留英文原文，便于直接对照源码。
 - **运行时顺序**：第 1–11 章跟随 `agent_loop` 一回合；12–15 为工具族；**Ch 18** 收束主循环；**19** 深挖 TaskManager；**20** 幻觉模式；**21–22** 为启动与 UI；**24** 测试；**25** 协议状态机；**26** 为工程优化 / bugfix日志（有行为变更时按 `AGENTS.md` 追加）。
 - **压缩与恢复**：[上下文压缩](./05_chapter_compact_zh.md)、[错误恢复](./06_chapter_recovery_zh.md)。
 
@@ -114,7 +101,5 @@ graph TB
 
 ## 相关资源
 
-- 英文全书入口：[index.md](./index.md)
-- 思维导图：[mindmap.html](./mindmap.html)
 - 压缩调参：[docs/compaction.md](../docs/compaction.md)
 - 项目架构：[ARCHITECTURE.md](../ARCHITECTURE.md)

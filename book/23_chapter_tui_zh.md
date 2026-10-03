@@ -1,7 +1,5 @@
 # 终端 UI（TUI）
 
-> 语言：[中文](./23_chapter_tui_zh.md) · [English](./23_chapter_tui.md)
-
 本章描述 `tui` crate：`tact-ui` 如何通过 async channel 接线 agent 循环，以及**渲染层**如何在每个 tick 将 `App` 状态转为 ratatui 帧。
 
 更多实现细节（扩展配方、性能分析）见 [docs/tui_rendering.md](../docs/tui_rendering.md)。
@@ -54,9 +52,10 @@ sequenceDiagram
 
 1. `tact::config::init()` — 设置 + LLM provider（[Ch 21](./21_chapter_config_zh.md)）。
 2. 打开 SQLite session store，resolve `session_id`（`--session`、`--resume-last` 或新 UUID）。`--resume-last` 与 `--list-sessions` 按当前工作目录的 `root_dir` 过滤 session，忽略其他项目行。`SessionLockGuard` 在争用前重试 `try_lock_session`。
-3. 用 `toolset()`、MCP router、managers 与 `with_ui_channel(agent_tx)` 构建 `Agent`。
-4. 在独立 tokio task 上 spawn `tui::run_tui(...)`。
-5. 循环 `user_cmd_rx` — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
+3. 建好 channel / session store / skill registry 等，**先在独立 tokio task 上 spawn `tui::run_tui(...)`** —— 这些都不依赖 Agent，所以 TUI 先可见。
+4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`（`toolset()`、MCP router、managers、`with_ui_channel(agent_tx)`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
+5. 构建成功后 spawn driver task 跑 `user_cmd_rx` 循环 — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
+6. `tui_handle` 结束后等 driver 收尾（SessionEnd hook + `shutdown_mcp`），再打印 session id 与 stats。
 
 主题来自 `config::settings().ui.theme`（默认 `"ink"`）。
 
@@ -81,7 +80,7 @@ pub enum UserCommand {
 | 命令 | 来源 | `tui.rs` 中 handler |
 |------|------|---------------------|
 | **`SubmitTask`** | Insert 模式 Enter、slash 命令、`@` 文件选择器提交 —— **Planning/Executing 期间 Enter 改为排队**（Codex 风格"当前任务结束后提交"，见 §6.6） | 重置 `tool_use_counter`、清除 `cancel_flag`、`build_user_message`、`agent_loop`；仅 loop 成功且未取消时发出 `TaskComplete` |
-| **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop.md)） |
+| **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop_zh.md)） |
 | **`Compact`** | `/compact`（仅 idle 时） | `agent.compact_history(None)` → Responses provider 走原生 `/responses/compact`，其余 provider 走本地摘要（[Ch 5](./05_chapter_compact_zh.md)） |
 | **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 25](./25_chapter_protocol_zh.md)） |
 | **`QueryBackground`** | `/background` 或 `/background <id>` | `tool_context.background_manager.check(id)` → `MdInfo` 输出任务列表 / 单个任务 JSON（[Ch 13](./13_chapter_background_zh.md)） |
@@ -140,9 +139,9 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 |--------|---------|
 | `StreamChunk` | 追加到活跃 assistant 文本 cell |
 | `ThinkingChunk` | Thinking card / preview |
-| `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | 工具时间线（[Ch 11](./11_chapter_task.md)） |
+| `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | 工具时间线（[Ch 11](./11_chapter_task_zh.md)） |
 | `ToolProgress` | 更新匹配 active tool 的 1→3 行 live tail |
-| `RequestSelect` | 权限 popup（[Ch 10](./10_chapter_permission.md)） |
+| `RequestSelect` | 权限 popup（[Ch 10](./10_chapter_permission_zh.md)） |
 | `TokenUsage` | 状态栏计数 |
 | `TurnStats` | 状态栏回合计数（当前任务的 LLM 回合；cap 携带但不渲染） |
 | `ModelInfo` | 模型名 / 限制显示 |
@@ -166,7 +165,7 @@ match agent.agent_loop(Some(task_message)).await {
 }
 ```
 
-见 [Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration)。
+见 [Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)。
 
 ---
 
@@ -223,7 +222,7 @@ flowchart TB
 | `render/layout.rs`（tui） | 主内容路由（history、help、log + 可选 sticky tasks、popups）——纯编排 |
 | `render/log.rs`（tui） | Log `prepare_log_frame` 缓存重建（应用层 skill 样式）；纯渲染已移入 kit |
 | `render/log_style.rs`（tui） | 共享 log 文本样式 + skill restyle |
-| `render/slash_style.rs`（tui） | 薄包装：注入 `PALETTE_COMMANDS` 内置命令集到 kit `slash_style` |
+| `render/slash_style.rs`（tui） | 薄包装：把 `widgets/state/slash.rs` 的 `SlashCommand` 内置命令集注入 kit `slash_style` |
 | `render/popups/`（tui） | 应用层弹窗：palette、file picker、slash commands、task DAG、help（voice 键位）+ 应用 mouse 命中区的 wrapper |
 | `agent_tui_kit::render/bar.rs` | 顶栏 + 底栏统计（纯 `&RenderCtx`） |
 | `agent_tui_kit::render/input.rs` | 多行输入框、pending block、palette 命令行（纯） |
@@ -435,6 +434,8 @@ Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit �
 
 Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overlay 无论内容如何，外观上都属于统一家族。
 
+**内容行同样取色自 theme（2026-10-01 修）：** chrome 只画框和背景，行内容由各弹窗自己画——而 palette / slash commands / file picker / select 曾用字面量 `Color::White`、`Color::Cyan`、`Color::DarkGray`。亮色主题下 `theme.bg` 是白，框内每一条未选中行就是白底白字**完全不可见**（选中行又是暗色主题的 cyan，而亮色主题 accent 是蓝）。现在一律用 `theme.fg` / `theme.muted` / `theme.accent`，选中行固定是 `bg(theme.highlight).fg(theme.fg)` 这个组合，`popup_scene_tests` 里有四个按亮色主题断言具体单元格 fg 的回归测试。file picker 的文件类型色（`.rs` 橙、`.py` 蓝等）仍是有意为之的字面色板，见该文件注释。
+
 **Dirty 渲染：** 仅当 `app.dirty`、`Status::Done` 或 `!tools.active.is_empty()` 时运行 `terminal.draw`。绘制后清除 `dirty`。
 
 **Caches**（`LogScroll`）：
@@ -459,9 +460,11 @@ Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overl
 
 ### 6.10 渲染中的主题与 i18n
 
-颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `Ctrl+T` 循环主题；主题变化时 cache 失效防止 stale styled 行。
+颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `/theme` 打开选择器（`SelectKind::ThemePick`，开在**当前主题**那一行，选中的行带 ` *` 标记），`Ctrl+T` 仍是「下一个」的快捷循环；选择器走 `App::apply_theme`（静默应用，随后由持久化步骤报告），`Ctrl+T` 走 `App::set_theme`（应用 + 播报）。主题变化时 cache 失效防止 stale styled 行。
 
-UI 字符串集中在 `i18n.rs`（`English` / `Chinese`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言。
+UI 字符串集中在 `crates/agent_tui_kit/src/i18n.rs`（`Language::English` / `Language::Chinese`，每种语言一份 `Messages`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言，与 `Ctrl+T` 对称：走 `App::toggle_language`（应用 + 播报）。`/lang` 则与 `/theme` 对称：先经 `App::apply_language` **静默**翻转，再打开「保存到配置？」第二步（`SelectKind::PersistLang`，默认选 `No`），由这一步负责说话——一次动作只该播报一次。接受保存时写 `[ui] language`，写进去的是 `Language::as_str()` 的 locale 标签（`en` / `zh`）而**不是**界面标签（`中文`）：后者是画给人看的，解析器读不回来。没有配置文件时（`ui_config_available()` 为假，`/theme` 与 `/lang` 共用同一个探针）不开这一步，直接说明「仅本次会话」。启动时 `App::set_configured_language` 读回 `[ui] language`，未知取值告警并回落英文。
+
+`apply_language` 与 `toggle_language` 的分工不是风格问题：`self.language` 是**渲染**路径读的，而持有 `Messages` 快照的组件（thinking / stream / tools）在构造时就冻结了语言，所以两者都必须经 `apply_language` 把新快照推下去，否则日志里已存在的行会在旧语言的外壳里被重绘。`/lang` 之所以要拆出静默版，正是因为它的持久化步骤承担了播报。
 
 ### 6.11 Log 消息模型
 
@@ -482,7 +485,7 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `User` | `add_user_message` 产生的用户输入行 | 0 |
 | `AssistantMarkdown` | 流式或持久化的 assistant Markdown | `LOG_THINKING_INDENT + 1` |
 | `SystemPlain(style)` | 显式系统 / info 纯文本行 | `LOG_THINKING_INDENT + 1` |
-| `SystemMarkdown` | `/skills` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
+| `SystemMarkdown` | `/skill list` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
 | `SystemTool` | tool placeholder 与显式标记的 tool 行 | `LOG_TOOL_INDENT` |
 | `Thinking` | 为一个 direct Thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
 
@@ -689,7 +692,15 @@ sequenceDiagram
 
 ## 7. 输入模式与主题
 
-`widgets/state/mod.rs` 中 `InputMode`：`Normal`、`Insert`、`Palette`、`Select`、`FilePicker`。Handler 在 `crates/tui/src/handlers/`。Normal 模式 `/` 打开 command palette；Insert 模式 `/` 打开 slash-command popup（同一命令列表，分组为 **Commands** 然后 **Skills**）。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
+`widgets/state/mod.rs` 中 `InputMode`：`Normal`、`Insert`、`Palette`、`Select`、`FilePicker`。Handler 在 `crates/tui/src/handlers/`。Normal 模式 `/` 打开 command palette；Insert 模式 `/` 打开 slash-command popup（同一份内置命令列表）。**skills 不在这份列表里**：每个已安装 skill 曾经都是一级条目，装几十个就把 `/mcp`、`/compact` 淹没，也让一级列表随安装变化；它们现在挂在 `/skill` 之下（`/skill ` 弹出 `list` / `reload` + 所有 skill，`/skill demo …` 运行），直接形式 `/demo` 仍可用但不再出现在任何列表里。
+
+**全局快捷键先于模式派发，并且必须消费事件**：`Ctrl+C/H/T/L/?` 由 `handlers::handle_global_shortcut` 处理，返回 `true` 时 `run_tui` 不再把同一个 `KeyEvent` 交给模式 handler。模式 handler 的兜底分支只匹配 `KeyCode::Char(c)`、不看修饰键，所以"顺带执行一下"会让 `Ctrl+T` 既切主题又打出一个 `t`；三个会写字符的分支（Insert 输入框、Palette `cmd_line`、FilePicker 过滤词）因此都带 `!CONTROL` 守卫——`Ctrl+<char>` 要么是已绑定的快捷键，要么什么都不是。新增全局快捷键时，处理与消费要一起做。
+
+消费还有第二个后果：**没有任何东西能派发到这些键之后**，所以用户绑定（`voice.voice_keybind`）不能指到它们。`run_tui` 在进入 raw mode **之前**就拒绝这种配置并指名冲突的键，而不是让语音"看起来坏了"。保留集由 `GLOBAL_SHORTCUTS` 这张表定义（`handle_global_shortcut` 与 `is_global_shortcut` 同读一张表），新增一个全局快捷键即自动为语音保留它，不存在第二份列表可漂移。
+
+内置命令的唯一来源是 `widgets/state/slash.rs` 的 `SlashCommand` 枚举：`ALL` 决定弹出列表的顺序，`name()` / `from_name()` 是用户输入的名字，`desc(msgs)` 是中英描述，`needs_args()` 决定回车是补全还是执行，`subcommands()` 是**子命令树**（每个节点带 `hint`——弹窗右列显示的后续语法 `<server>`、`--all | --source <label>`，刻意不做翻译，因为那是语法不是文案；以及 `takes_value` / `children`，决定回车是补全还是执行）。这些都是**穷尽匹配**——新增一个命令时，漏写名字、漏写描述、漏写处理分支都会编译失败。派发在 `handlers/mod.rs` 的 `run_command`（同样无 `_` 分支）：先按枚举解析，不中再交给 skill，因此内置名始终赢过同名 skill。
+
+`/balance` 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；`/skill`、`/plugin`、`/mcp`、`/hooks`、`/subagent_cancel` 是五个需要参数的命令。**子命令补全**：`handlers/insert.rs` 与 `widgets/state/slash_command.rs` 共用 `App::slash_candidates()`，输入到子命令位置时弹窗列出下一层节点（`/skill `、`/plugin mar`、`/hooks trust --`、以及嵌套的 `/plugin marketplace `），Tab 逐层补全（`/plugin ma` ⭢ Tab `/plugin marketplace ` ⭢ Tab `/plugin marketplace list `），回车只补全**未完成**的候选——`takes_value` 或还有子节点的那种——完整的叶子直接执行。空格不再一律关闭弹窗：只有当后续无可补全项时才关（`/mcp auth ` 进入取值状态即关，`/skill ` 保持打开），这就是"复合命令"能逐层补全的原因。`slash_candidates` 命中取值、skill 参数或未知 token 时返回空列表（不打"无匹配"提示框）。**不覆盖**：子命令解析（`/skill list`、`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`）仍在各自的 handler 模块里按字符串切——但声明与 handler 由 `every_declared_subcommand_has_a_handler` 对齐：它遍历 `subcommands()` 给每个叶子派发样例输入，任何"能被补全却只会打印用法"的子命令都会让它失败。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
 
 ### Slash skills
 
@@ -699,16 +710,18 @@ sequenceDiagram
 |------|------|
 | Slash popup Enter 于 **skill** | **立即 Invoke**（无额外 args，除非已输入） |
 | Slash popup **Tab** 于 skill | 仅自动补全到 `/name ` — 可加可选 args，再 Enter 运行 |
-| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` …）；`/plugin` 仍只补全以便写子命令 |
-| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` 等） |
+| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` 等）；`/skill`、`/plugin` 只补全以便写子命令 |
+| Slash popup **Tab/Enter** 于**子命令** | 逐层补全：`/plugin ma` ⭢ Tab `/plugin marketplace ` ⭢ Tab `/plugin marketplace list `；带取值的候选（`/mcp auth`）只补到 `/mcp auth ` |
 | `/skill-name` 或 `/skill-name args` + Enter | **Invoke**：log 显示 slash 行；agent 收到 `<skill>` body（裸 `$ARGUMENTS` 替换，或有 args 时 append Claude 式 `ARGUMENTS:`） |
 | Palette Enter 于 skill | Insert 模式预填 `/name `（undo checkpoint 保留） |
-| `/skill-reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
+| Palette Enter 于带子命令的内置命令（`/skill`、`/plugin`、`/mcp`、`/hooks`） | 预填 `/cmd ` **并直接打开子命令弹窗**（后续无可补全项时不开，如 `/subagent_cancel `） |
+| `/skill list` | 列出可用技能（纯本地渲染，任务进行中也可用） |
+| `/skill reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
 | `/plugin …` | 排队安装、卸载、更新、列出、重载及 marketplace 操作；成功的 install/uninstall/update/reload 刷新共享 skills。`/plugin list` 渲染功能表（技能 / 命令 / 代理 / 钩子 / MCP） |
 
-输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill.md)。与模型 mid-turn 调用 `load_skill` 分离。
+输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill_zh.md)。与模型 mid-turn 调用 `load_skill` 分离。
 
-`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；normal 模式 `Ctrl+T` 循环。
+`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；`/theme` 选择、`Ctrl+T` 循环。选完会像 `/model` 一样问一句「将主题保存到配置文件？」（默认 **否**），选「是」写 `[ui] theme`（`tact::config::persist_theme`，`toml_edit` 只改这一行、保留行尾注释），没有配置文件或选「否」/Esc 时只对本次会话生效。
 
 ---
 
@@ -718,12 +731,12 @@ sequenceDiagram
 
 | 依赖 | 用途 |
 |------|------|
-| `get_skill_registry` | Skills（[Ch 2](./02_chapter_skill.md)） |
+| `get_skill_registry` | Skills（[Ch 2](./02_chapter_skill_zh.md)） |
 | `StoreRoot` + managers | Tasks、background、team、worktree |
-| `memory_manager` | Memory（[Ch 3](./03_chapter_memory.md)） |
-| `load_mcp_router` | MCP tools（[Ch 8](./08_chapter_mcp.md)） |
+| `memory_manager` | Memory（[Ch 3](./03_chapter_memory_zh.md)） |
+| `load_mcp_router` | MCP tools（[Ch 8](./08_chapter_mcp_zh.md)） |
 | `PermissionManager::try_new(PermissionMode::Default)` | **硬编码** — 见缺口 |
-| `open_sqlite_session_store` | Session + 输入历史（[Ch 1](./01_chapter_store.md)） |
+| `open_sqlite_session_store` | Session + 输入历史（[Ch 1](./01_chapter_store_zh.md)） |
 
 输入历史经 `history_save_tx` → `append_input_history` 异步追加。
 
@@ -733,7 +746,7 @@ DeepSeek/Kimi 启动时后台 task 查询一次余额并经 account channel 发�
 
 ## 9. 通知与配置
 
-桌面通知在 `Agent::emit_update` 内对 `TaskComplete` 与 `StepFailed` 触发，当 `config::settings().agent.notifications_enabled` 为 true（[Ch 17](./17_chapter_notify.md)）。
+桌面通知在 `Agent::emit_update` 内对 `TaskComplete` 与 `StepFailed` 触发，当 `config::settings().agent.notifications_enabled` 为 true（[Ch 17](./17_chapter_notify_zh.md)）。
 
 TUI 本身不对流式事件直接调用 notification API。
 
@@ -770,7 +783,7 @@ TUI 本身不对流式事件直接调用 notification API。
 
 | 缺口 | 详情 |
 |------|------|
-| **交互模式忽略 `permission_mode`** | TUI 始终 `PermissionMode::Default`；TOML/CLI `-m` 仅影响 headless（[Ch 10](./10_chapter_permission.md)） |
+| **交互模式忽略 `permission_mode`** | TUI 始终 `PermissionMode::Default`；TOML/CLI `-m` 仅影响 headless（[Ch 10](./10_chapter_permission_zh.md)） |
 | **`TaskComplete` 文本启发式** | 用 context 最后一条消息，非严格最后 assistant turn |
 | **无 live config reload** | UI 可循环主题；LLM/provider 变更需重启 |
 | **单 agent 实例** | 每 session driver 一个 in-flight `agent_loop`；无多路复用任务 |
@@ -782,9 +795,9 @@ TUI 本身不对流式事件直接调用 notification API。
 
 ## 相关文档
 
-- [Agent Main Loop](./18_chapter_agent_loop.md) — TUI 驱动内容
+- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — TUI 驱动内容
 - [Configuration](./21_chapter_config_zh.md) — 主题与启动标志
 - [LLM Providers](./22_chapter_llm_zh.md) — 流式与余额 API
-- [Permission Model](./10_chapter_permission.md) — `RequestSelect` 流程
+- [Permission Model](./10_chapter_permission_zh.md) — `RequestSelect` 流程
 - [docs/tui_rendering.md](../docs/tui_rendering.md) — 扩展配方与性能分析
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — tool block 渲染管线

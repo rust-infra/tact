@@ -152,7 +152,7 @@ fn log_scroll_offset_hides_early_lines() {
 #[test]
 fn tall_markdown_cell_is_fully_traversable() {
     // Regression: a whole-Markdown message taller than the viewport (a long
-    // `/skills` table) used to be reachable only at its top/bottom; the
+    // `/skill list` table) used to be reachable only at its top/bottom; the
     // middle rows could never be scrolled into view.
     let mut app = make_app();
     let mut md = String::from("## Big table\n\n| Row | V |\n| --- | --- |\n");

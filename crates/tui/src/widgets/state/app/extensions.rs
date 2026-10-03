@@ -131,7 +131,7 @@ impl App {
         }
     }
 
-    /// Renders `/plugin list` as a titled table block (same style as `/skills`).
+    /// Renders `/plugin list` as a titled table block (same style as `/skill list`).
     fn show_plugin_list(&mut self, plugins: &[tact::plugin::InstalledPlugin]) {
         self.add_new_line();
 

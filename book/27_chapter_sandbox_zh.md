@@ -1,7 +1,5 @@
 # Bash 沙箱（Bash Sandbox）
 
-> 语言：[中文](./27_chapter_sandbox_zh.md) · [English](./27_chapter_sandbox.md)
-
 本章说明 Tact 可选的 **OS 级 shell 沙箱**：`config.toml` 里一个布尔开关，把 `bash` 工具的 `sh -c` 进程包进平台的沙箱实现（Linux 用 `bubblewrap`），使得被批准命令引入的第三方代码——`cargo` 构建脚本、`npm` 生命周期脚本、测试二进制、`make` 配方——读不到宿主 home，也写不到工作区之外。**网络**是刻意保持共享的：沙箱约束的是文件系统，不是连通性。
 
 实现在 `crates/tact/src/sandbox/`（`mod.rs` 负责解析，`bwrap.rs` 是 Linux 后端）；唯一的调用点是 `crates/tact/src/tool/bash.rs`。权限模型完全不动：沙箱回答的是*命令能触达什么*，而不是*它能不能运行*（见[权限模型](./10_chapter_permission_zh.md)）。

@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use crate::team::{InboxMessage, TeammateRecord};
 
 /// Storage backend contract for the teammate manager.
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait TeamStore: Send + Sync {
     /// Creates a teammate. Errors when a teammate with the same name

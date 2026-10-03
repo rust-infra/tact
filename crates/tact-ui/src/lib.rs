@@ -2,6 +2,7 @@
 
 pub mod driver;
 pub mod headless_session;
+pub mod hooks_cli;
 pub mod mcp_cli;
 pub mod plugin_cli;
 pub mod session_lock;

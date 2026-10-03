@@ -478,7 +478,7 @@ fn pad_cell(cell: &str, width: usize) -> String {
 /// taken verbatim, so a `|` inside a cell (inline code, escaped pipe) is data,
 /// never a column separator. Column widths use Unicode display width so CJK
 /// headers/cells align with ASCII. The GFM header separator is synthesized;
-/// body rows whose cells are all dashes render as dashed dividers (`/skills`
+/// body rows whose cells are all dashes render as dashed dividers (`/skill list`
 /// style). When `available_width` is given, columns are shrunk to fit and long
 /// cells are wrapped *inside* the table layout (every wrapped sub-row keeps
 /// its pipes and padding), so the panel's line wrapper never breaks a row and
@@ -712,7 +712,7 @@ fn render_table_chunk(
         // horizontal rule so multi-row tables read as grid lines, not as one
         // blob of wrapped text. Wrapped sub-rows stay above the rule. A body
         // row followed by an explicit dash-only row already has its divider,
-        // so no extra rule is added there (`/skills` style).
+        // so no extra rule is added there (`/skill list` style).
         let is_body = row_idx >= 2;
         let is_last_row = row_idx + 1 == rows.len();
         let next_is_sep = rows.get(row_idx + 1).is_some_and(|r| {
@@ -1647,7 +1647,7 @@ Trailing prose.
 
     #[test]
     fn format_table_renders_row_separators_aligned() {
-        // `/skills` style: header separator plus a separator between rows.
+        // `/skill list` style: header separator plus a separator between rows.
         let headers = vec!["Skill".to_string(), "Description".to_string()];
         let rows = vec![
             vec!["a".to_string(), "first skill".to_string()],

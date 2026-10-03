@@ -1,6 +1,6 @@
 # Context Compaction
 
-Companion notes for tuning and quick reference. For the full interactive walkthrough (diagrams, loop ordering, envelope vs stub), see **[book/05_chapter_compact.md](../book/05_chapter_compact.md)** ([中文](../book/05_chapter_compact_zh.md)).
+Companion notes for tuning and quick reference. For the full interactive walkthrough (diagrams, loop ordering, envelope vs stub), see **[book/05_chapter_compact_zh.md](../book/05_chapter_compact_zh.md)**.
 
 tact implements **three-tier progressive compaction**:
 
@@ -15,7 +15,7 @@ tact implements **three-tier progressive compaction**:
 > threshold, and `compact_history` calls the native `POST /responses/compact`
 > endpoint, replacing the opaque protocol baseline (never the logical context).
 > Endpoints without native compaction are unsupported — no local-summary
-> fallback. See [book/05_chapter_compact.md](../book/05_chapter_compact.md).
+> fallback. See [book/05_chapter_compact_zh.md](../book/05_chapter_compact_zh.md).
 > The Responses wire baseline is retained as raw JSON. Known items are
 > normalized for Tact content, while unknown input/output items are preserved
 > and replayed on the next request instead of being silently dropped.
@@ -96,7 +96,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 - **Each loop iteration**: after `micro_compact`, `should_auto_compact` with `incoming = 0`:
   - **Primary:** `last_token_total + estimate_message_tokens(incoming) >= 80% of agent.model_context_window` (default **200,000** tokens)
   - **Fallback:** estimated context + incoming tokens reaches the same 80% threshold; ASCII is estimated at ~4 chars/token, non-ASCII conservatively at 1 char/token
-- Provider prompt-too-long recovery ([Ch 6](../book/06_chapter_recovery.md))
+- Provider prompt-too-long recovery ([Ch 6](../book/06_chapter_recovery_zh.md))
 - Successful manual `compact` tool (after tool results are appended; failed invocations do not rewrite history)
 
 ### Steps
@@ -104,7 +104,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 1. **`write_transcript`** (async) → unique `.tact/transcripts/transcript_{unix_nanos}_{collision}.jsonl`
 2. **Recent window** — select from the tail within the model budget and a 20k estimated-token cap; oversized messages become valid text-only views and images become omission markers
 3. **Summarize** — window-aware `create_message`: at most 2k **text** output tokens plus a reasoning bucket (`≤ 16k`) picked by a staged effort ladder (inherit → minimize → adapt from the observed `reasoning_tokens`), with output/headroom reserved; transient failures retry up to five times; a truncated summary is continued up to five times and then accepted best-effort, while abnormal stop reasons and empty summaries fail without replacing context
-4. **Replace** — Codex-style `[recent real User…] + [<context-handoff> summary cell]` (legacy: `compacted_context`); the handoff cell is a `User`-role message framed with `<context-handoff>` … `</context-handoff>` and marked `MessageKind::Summary` in memory (string fallback on reload); retained users reserve max output, system/tools/summary, and 20% headroom; block UI turns count as real users, tool-result-only blocks are excluded, and base64 is never truncated; a final full-request guard reduces retained users until the request fits
+4. **Replace** — Codex-style `[recent real User…] + [<context-handoff> summary cell]` (legacy: `compacted_context`); the handoff cell is a `User`-role message framed with `<context-handoff>` … `</context-handoff>` and marked `MessageKind::Summary` in memory (string fallback on reload); retained users reserve max output, system/tools/summary, and 20% headroom; block UI turns count as real users, tool-result-only blocks and hook-injected `<hook-context>` cells are excluded, and base64 is never truncated; a final full-request guard reduces retained users until the request fits
 5. **`replace_session_messages`** — SQLite matches the new context; message-id window reset; `last_token_total = 0`
 
 ### Recent files

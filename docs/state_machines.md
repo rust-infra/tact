@@ -6,7 +6,7 @@ This document describes the state machines used across the `tact` codebase. Most
 
 ## 0. Agent–TUI Protocol
 
-Full documentation: **[book/25_chapter_protocol.md](../book/25_chapter_protocol.md)**.
+Full documentation: **[book/25_chapter_protocol_zh.md](../book/25_chapter_protocol_zh.md)**.
 
 Covers `AgentUpdate` / `UserCommand` / `AccountUpdate` channels, plan step lifecycle, TUI `Status` / `InputMode` state diagrams, message categories, and typical ordering (incl. sequence diagram).
 
@@ -31,7 +31,7 @@ pub(crate) enum Status {
 }
 ```
 
-A pending select switches `InputMode` to `Select` while `Status` stays `Executing`. In interactive mode the popup is derived from the shared pending snapshot; in legacy/headless mode `AgentUpdate::RequestSelect` is the activation edge. Full diagrams: [book/25_chapter_protocol.md](../book/25_chapter_protocol.md) §4.
+A pending select switches `InputMode` to `Select` while `Status` stays `Executing`. In interactive mode the popup is derived from the shared pending snapshot; in legacy/headless mode `AgentUpdate::RequestSelect` is the activation edge. Full diagrams: [book/25_chapter_protocol_zh.md](../book/25_chapter_protocol_zh.md) §4.
 
 ### State transitions
 
@@ -270,7 +270,7 @@ stateDiagram-v2
     Ask --> Deny: user chooses deny
 ```
 
-The settings check applies after mode classification for Default-mode prompted capabilities. A matching settings deny always blocks execution. A matching ask displays the prompt. A matching allow skips the prompt except when the existing high-risk policy requires confirmation (high-risk always asks regardless of allow rules). Existing Plan and Auto mode semantics are unchanged.
+The settings check applies after mode classification for Default-mode prompted capabilities. A matching settings deny always blocks execution. A matching ask displays the prompt. A matching allow skips the prompt at **every** risk, high risk included. High risk is otherwise asked the first time and allowed afterwards only when an in-session allow covers that exact tool and input — a grant relaxes the prompt, never the mode. Existing Plan and Auto mode semantics are unchanged.
 
 ---
 

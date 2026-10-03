@@ -436,7 +436,9 @@ pub(crate) fn create_response_with_policy(
 mod tests {
     use super::super::ResponsesRequestOptions;
     use super::super::normalize::parse_compact_resource;
-    use super::{ResponsesRequestPolicy, create_response, message_to_input};
+    use super::{
+        ResponsesRequestPolicy, create_response, message_to_input, validate_conversion_state,
+    };
     use crate::{
         ContentBlock, CreateMessageParams, ImageSource, Message, OpenAiReasoningEffort,
         RequiredMessageParams, ResponsesConversationState, Role, Thinking, ThinkingType, Tool,
@@ -459,6 +461,30 @@ mod tests {
             logical_message_count: 1,
             logical_context_hash: context_hash(&request.messages[..1]).unwrap(),
         }
+    }
+
+    /// Appending a message after the baseline leaves it reusable — which is how
+    /// injected `SessionStart` context arrives (one synthetic user message on
+    /// the tail). Only a change *inside* the covered prefix is stale.
+    #[test]
+    fn a_message_appended_after_the_baseline_keeps_it_reusable() {
+        let mut request = request_with_history();
+        let state = state_covering_first_message(&request);
+        assert!(validate_conversion_state(&state, &request).is_ok());
+
+        request.messages.push(Message::new_text(
+            Role::User,
+            "<hook-context>\nresume from checkpoint 7\n</hook-context>",
+        ));
+        assert!(
+            validate_conversion_state(&state, &request).is_ok(),
+            "a tail append must not invalidate the baseline"
+        );
+
+        // Rewriting inside the covered prefix must still fail, so the check has
+        // not been weakened to make the append pass.
+        request.messages[0] = Message::new_text(Role::User, "something else");
+        assert!(validate_conversion_state(&state, &request).is_err());
     }
 
     fn compact_resource_without_compaction_item() -> serde_json::Value {

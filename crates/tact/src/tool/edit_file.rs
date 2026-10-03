@@ -31,7 +31,7 @@ pub struct EditFileInput {
 pub const EDIT_FILE_METADATA: ToolMetadata = ToolMetadata {
     name: "edit_file",
     description: "Replace exact text in a file.",
-    permission: PermissionPolicy::Write,
+    permission: PermissionPolicy::WritePath { path_field: "path" },
     permission_prompt: PermissionPromptPolicy::Path { field: "path" },
     resources: ResourcePolicy::WritePath { field: "path" },
     domain: ToolDomain::Generic,

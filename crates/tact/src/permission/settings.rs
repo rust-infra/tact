@@ -210,55 +210,56 @@ impl PermissionRule {
 
     /// Generate a permission rule from a tool metadata policy and current input.
     ///
-    /// - `Command { field }`: produces `tool(field:<command>)` if representable;
-    ///   falls back to bare rule if the value contains `)` or `:` in a way that
-    ///   makes the rule ambiguous.
-    /// - `Path { field }`: same as Command.
-    /// - `Question { field }`: same as Command.
-    /// - `Json`: bare tool rule (no field available generically).
+    /// Returns `None` when no rule that is **narrower than the whole tool** can
+    /// be expressed from this input, in which case the caller must record
+    /// nothing:
     ///
-    /// The generated pattern uses the current value as an exact glob (no
-    /// wildcard insertion) unless the value already contains `*` or `**`.
-    /// Values containing `(` or `)` cause a fallback to bare rule to avoid
-    /// ambiguous parsing.
-    pub fn generate(tool_name: &str, policy: PermissionPromptPolicy, input: &Value) -> Self {
-        match policy {
-            PermissionPromptPolicy::Command { field }
-            | PermissionPromptPolicy::Path { field }
-            | PermissionPromptPolicy::Question { field } => {
-                // Try to get the string value from the named field.
-                if let Some(Value::String(val)) = input.get(field) {
-                    // Check that the value doesn't contain delimiters that
-                    // would make argument-rule parsing ambiguous.
-                    if val.contains('(') || val.contains(')') || val.contains(':') {
-                        // Fall back to bare rule.
-                        return PermissionRule::Bare {
-                            tool: tool_name.to_string(),
-                        };
-                    }
-                    // Use the value as an exact glob pattern (no wildcard
-                    // insertion unless already present).
-                    let pattern = val.clone();
-                    // Compile immediately so the returned rule can be
-                    // matched without round-tripping through parse().
-                    let matcher = Glob::new(&pattern).ok().map(|g| g.compile_matcher());
-                    PermissionRule::Argument {
-                        tool: tool_name.to_string(),
-                        field: field.to_string(),
-                        pattern,
-                        matcher,
-                    }
-                } else {
-                    // Field not present or not a string — bare rule.
-                    PermissionRule::Bare {
-                        tool: tool_name.to_string(),
-                    }
-                }
-            }
-            PermissionPromptPolicy::Json => PermissionRule::Bare {
+    /// - `Json`: the prompt was tool-wide, so a bare rule is exactly what the
+    ///   user answered — `Some(Bare)`.
+    /// - `Command` / `Path` / `Question` / `PatchTarget`: the prompt named a
+    ///   specific argument, so the rule has to name it too. If the field is
+    ///   absent, is not a string, or its value contains a rule-grammar
+    ///   delimiter (`(`, `)`, `:` — the pattern is embedded in
+    ///   `tool(field:pattern)`), there is no way to say "this argument and not
+    ///   the others", and falling back to a bare rule would grant **more** than
+    ///   the user was asked about.
+    ///
+    /// That last case is not hypothetical: `bash` on any command containing a
+    /// colon (`git commit -m "fix: thing"`) used to generate a bare `bash`
+    /// rule, so one click on "Always allow this tool" permitted every future
+    /// shell command in every session.
+    #[must_use]
+    pub fn generate(
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> Option<Self> {
+        if matches!(policy, PermissionPromptPolicy::Json) {
+            return Some(PermissionRule::Bare {
                 tool: tool_name.to_string(),
-            },
+            });
         }
+
+        let (field, value) = policy.generate_key(input)?;
+        if value.contains('(') || value.contains(')') || value.contains(':') {
+            tracing::warn!(
+                "Not remembering a permission rule for {tool_name}: its {field} value contains a \
+                 rule-grammar delimiter, and a tool-wide rule would be broader than the prompt \
+                 the user answered."
+            );
+            return None;
+        }
+
+        // Use the value as an exact glob pattern (no wildcard insertion unless
+        // already present). Compiled immediately so the returned rule can be
+        // matched without round-tripping through `parse()`.
+        let matcher = Glob::new(&value).ok().map(|g| g.compile_matcher());
+        Some(PermissionRule::Argument {
+            tool: tool_name.to_string(),
+            field: field.to_string(),
+            pattern: value,
+            matcher,
+        })
     }
 }
 
@@ -321,8 +322,21 @@ impl EffectiveRules {
     }
 }
 
-/// The known permission sections stored in a JSON settings file.
+/// One settings file, parsed.
 ///
+/// A layer is what `load_from` merges: the project file wins where it speaks,
+/// the global file fills the rest.
+#[derive(Debug, Clone, Default)]
+struct Layer {
+    /// `None` when the file was missing or malformed.
+    doc: Option<Value>,
+    allow: Vec<String>,
+    ask: Vec<String>,
+    deny: Vec<String>,
+    security: crate::security::SecurityConfig,
+}
+
+/// The known permission sections stored in a JSON settings file.///
 /// The expected JSON shape is:
 /// ```json
 /// {
@@ -352,6 +366,9 @@ pub struct PermissionSettings {
     /// Effective deny rules (project + global merged).
     deny_rules: Vec<String>,
 
+    /// Effective sensitive-path/redaction config (project + global merged).
+    security: crate::security::SecurityConfig,
+
     /// Cached parsed effective rules, rebuilt whenever raw rule lists change.
     /// Avoids re-parsing every raw rule on every `PermissionManager::check` call.
     cached_effective: EffectiveRules,
@@ -374,26 +391,24 @@ impl PermissionSettings {
     /// This constructor is designed for tests that want to supply a
     /// specific global path without mutating the process-wide `$HOME`.
     pub fn load_from(project_path: &Path, global_path: Option<&Path>) -> Self {
-        let (project_doc, project_allow, project_ask, project_deny) =
-            Self::load_file(Some(project_path));
+        let project = Self::load_layer(Some(project_path));
+        let global = Self::load_layer(global_path);
 
-        let (_global_doc, global_allow, global_ask, global_deny) = Self::load_file(global_path);
+        let mut allow_rules = global.allow;
+        let mut ask_rules = global.ask;
+        let mut deny_rules = global.deny;
 
-        let mut allow_rules = global_allow;
-        let mut ask_rules = global_ask;
-        let mut deny_rules = global_deny;
-
-        for r in project_allow {
+        for r in project.allow {
             if !allow_rules.contains(&r) {
                 allow_rules.push(r);
             }
         }
-        for r in project_ask {
+        for r in project.ask {
             if !ask_rules.contains(&r) {
                 ask_rules.push(r);
             }
         }
-        for r in project_deny {
+        for r in project.deny {
             if !deny_rules.contains(&r) {
                 deny_rules.push(r);
             }
@@ -403,7 +418,7 @@ impl PermissionSettings {
         // A missing/malformed project file does NOT copy the global raw
         // document, so that a subsequent persist writes a fresh project
         // file rather than inheriting global-only fields/rules.
-        let project_doc = project_doc.unwrap_or(Value::Object(Map::new()));
+        let project_doc = project.doc.unwrap_or(Value::Object(Map::new()));
 
         // Build cached effective rules before moving the rule vectors.
         let cached = EffectiveRules::from_lists(&allow_rules, &ask_rules, &deny_rules);
@@ -414,6 +429,7 @@ impl PermissionSettings {
             allow_rules,
             ask_rules,
             deny_rules,
+            security: crate::security::SecurityConfig::merge(&global.security, &project.security),
             cached_effective: cached,
         }
     }
@@ -428,21 +444,25 @@ impl PermissionSettings {
     ///
     /// Returns `(doc, allow, ask, deny)` where `doc` is `None` when the file
     /// could not be read or parsed.
-    fn load_file(path: Option<&Path>) -> (Option<Value>, Vec<String>, Vec<String>, Vec<String>) {
+    /// Read a single settings file and extract everything this store uses.
+    ///
+    /// Every field is empty when the file is missing or malformed, which is how
+    /// the caller is told to treat the layer as absent.
+    fn load_layer(path: Option<&Path>) -> Layer {
         let path = match path {
             Some(p) => p,
-            None => return (None, vec![], vec![], vec![]),
+            None => return Layer::default(),
         };
 
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Missing file is normal — no rules.
-                return (None, vec![], vec![], vec![]);
+                return Layer::default();
             }
             Err(e) => {
                 tracing::warn!("Failed to read settings file {:?}: {}", path, e);
-                return (None, vec![], vec![], vec![]);
+                return Layer::default();
             }
         };
 
@@ -450,14 +470,27 @@ impl PermissionSettings {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Failed to parse settings file {:?}: {}", path, e);
-                return (None, vec![], vec![], vec![]);
+                return Layer::default();
             }
         };
 
         let doc_clone = doc.clone();
         let (allow, ask, deny) = extract_rule_lists(&doc);
 
-        (Some(doc_clone), allow, ask, deny)
+        Layer {
+            doc: Some(doc_clone),
+            allow,
+            ask,
+            deny,
+            security: crate::security::SecurityConfig::from_document(&doc),
+        }
+    }
+
+    /// The effective sensitive-path / redaction configuration (global merged
+    /// with project).
+    #[must_use]
+    pub fn security_config(&self) -> &crate::security::SecurityConfig {
+        &self.security
     }
 
     /// Return the effective allow rules.
@@ -1206,7 +1239,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test"}),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(rule, PermissionRule::Argument { .. }));
         assert_eq!(rule.tool_name(), "bash");
@@ -1219,7 +1253,8 @@ mod tests {
             "edit_file",
             PermissionPromptPolicy::Path { field: "path" },
             &serde_json::json!({"path": "src/main.rs"}),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(rule, PermissionRule::Argument { .. }));
         assert_eq!(rule.to_rule_string(), "edit_file(path:src/main.rs)");
@@ -1231,7 +1266,8 @@ mod tests {
             "ask_user",
             PermissionPromptPolicy::Question { field: "question" },
             &serde_json::json!({"question": "What is your name?"}),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(rule, PermissionRule::Argument { .. }));
         assert_eq!(
@@ -1246,65 +1282,52 @@ mod tests {
             "compact",
             PermissionPromptPolicy::Json,
             &serde_json::json!({"some_field": "value"}),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(rule, PermissionRule::Bare { .. }));
         assert_eq!(rule.to_rule_string(), "compact");
     }
 
+    /// A missing or non-string field means no argument-aware rule is
+    /// expressible. The old behaviour — a bare, tool-wide rule — granted more
+    /// than the prompt the user answered, so it is now `None`.
     #[test]
-    fn generate_command_falls_back_to_bare_when_field_missing() {
-        let rule = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"not_command": "value"}),
-        );
-
-        assert!(matches!(rule, PermissionRule::Bare { .. }));
-        assert_eq!(rule.tool_name(), "bash");
-    }
-
-    #[test]
-    fn generate_command_falls_back_to_bare_when_field_not_string() {
-        let rule = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"command": 42}),
-        );
-
-        assert!(matches!(rule, PermissionRule::Bare { .. }));
-    }
-
-    #[test]
-    fn generate_falls_back_to_bare_when_value_contains_delimiter() {
-        // Value containing '(' should trigger fallback to bare rule
-        let rule = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"command": "echo (hello)"}),
-        );
-
+    fn generate_refuses_when_the_field_is_missing_or_not_a_string() {
         assert!(
-            matches!(rule, PermissionRule::Bare { .. }),
-            "Expected bare rule fallback due to '(' delimiter, got: {:?}",
-            rule
+            PermissionRule::generate(
+                "bash",
+                PermissionPromptPolicy::Command { field: "command" },
+                &serde_json::json!({"not_command": "value"}),
+            )
+            .is_none()
         );
+        assert!(
+            PermissionRule::generate(
+                "bash",
+                PermissionPromptPolicy::Command { field: "command" },
+                &serde_json::json!({"command": 42}),
+            )
+            .is_none()
+        );
+    }
 
-        // Value containing ')' should also trigger fallback
-        let rule2 = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"command": "echo )"}),
-        );
-        assert!(matches!(rule2, PermissionRule::Bare { .. }));
-
-        // Value containing ':' should trigger fallback
-        let rule3 = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"command": "echo:hello"}),
-        );
-        assert!(matches!(rule3, PermissionRule::Bare { .. }));
+    /// The regression this whole change exists for: `git commit -m "fix: x"`
+    /// contains a `:`, and used to persist a bare `bash` rule — permission for
+    /// every future shell command.
+    #[test]
+    fn generate_refuses_a_value_containing_a_rule_delimiter() {
+        for command in ["echo (hello)", "echo )", "git commit -m \"fix: thing\""] {
+            let rule = PermissionRule::generate(
+                "bash",
+                PermissionPromptPolicy::Command { field: "command" },
+                &serde_json::json!({ "command": command }),
+            );
+            assert!(
+                rule.is_none(),
+                "a delimiter in {command:?} must not degrade to a tool-wide rule: {rule:?}"
+            );
+        }
     }
 
     #[test]
@@ -1313,7 +1336,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test -- --nocapture"}),
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             rule.to_rule_string(),
@@ -1327,9 +1351,58 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test *"}),
-        );
+        )
+        .unwrap();
 
         assert_eq!(rule.to_rule_string(), "bash(command:cargo test *)");
+    }
+
+    /// `apply_patch` used to declare a prompt field its input does not have,
+    /// so "Always allow this tool" persisted a bare `apply_patch` rule: one
+    /// click permitted every future patch, to any file.
+    #[test]
+    fn generate_patch_rule_is_keyed_on_the_single_target() {
+        let rule = PermissionRule::generate(
+            "apply_patch",
+            PermissionPromptPolicy::PatchTarget {
+                patch_field: "patch",
+            },
+            &serde_json::json!({
+                "patch": "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-old\n+new\n"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(rule.to_rule_string(), "apply_patch(patch:*notes.md*)");
+        assert!(!matches!(rule, PermissionRule::Bare { .. }));
+    }
+
+    /// A multi-file patch keyed on one of its paths would silently authorise
+    /// the others too, so it is not narrowable at all.
+    #[test]
+    fn generate_refuses_a_multi_file_patch() {
+        let rule = PermissionRule::generate(
+            "apply_patch",
+            PermissionPromptPolicy::PatchTarget {
+                patch_field: "patch",
+            },
+            &serde_json::json!({
+                "patch": "+++ b/a.rs\n+++ b/b.rs\n"
+            }),
+        );
+        assert!(rule.is_none());
+    }
+
+    #[test]
+    fn generate_refuses_a_patch_with_no_parseable_target() {
+        let rule = PermissionRule::generate(
+            "apply_patch",
+            PermissionPromptPolicy::PatchTarget {
+                patch_field: "patch",
+            },
+            &serde_json::json!({ "patch": "not a diff" }),
+        );
+        assert!(rule.is_none());
     }
 
     // ——— Round-trip parse + to_string —————————————————
@@ -1354,7 +1427,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test"}),
-        );
+        )
+        .unwrap();
         let s = rule.to_rule_string();
 
         // Re-parse and verify it still matches.
@@ -1485,7 +1559,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-
         let mut settings = PermissionSettings::load_from(&project_file, None);
 
         // Add a new rule
@@ -1526,6 +1599,52 @@ mod tests {
             .and_then(|v| v.as_array())
             .unwrap();
         assert_eq!(allow2.len(), 2, "Duplicate rule should not be added again");
+    }
+
+    /// The security sections ride in the same document, so persisting an allow
+    /// rule must not drop them — a "Always allow this tool" click would
+    /// otherwise silently re-enable the guard the user had configured.
+    #[test]
+    fn adding_rule_preserves_the_security_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            &project_file,
+            r#"{
+                "permissions": {
+                    "allow": [],
+                    "sensitive_paths": { "allow": ["~/.netrc"] },
+                    "redaction": { "level": "credential" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mut settings = PermissionSettings::load_from(&project_file, None);
+        assert_eq!(
+            settings.security_config().sensitive_paths.allow,
+            vec!["~/.netrc"]
+        );
+        assert_eq!(
+            settings.security_config().redaction.resolved_level(),
+            crate::security::RedactionLevel::Credential
+        );
+
+        settings.persist_project_allow("read_file(.env)").unwrap();
+
+        let content = std::fs::read_to_string(&project_file).unwrap();
+        let doc: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            doc.pointer("/permissions/sensitive_paths/allow/0")
+                .and_then(|v| v.as_str()),
+            Some("~/.netrc")
+        );
+        assert_eq!(
+            doc.pointer("/permissions/redaction/level")
+                .and_then(|v| v.as_str()),
+            Some("credential")
+        );
     }
 
     // ——— Persistence creates directory and pretty JSON ———————————
@@ -1848,7 +1967,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test --lib"}),
-        );
+        )
+        .unwrap();
 
         // The generated rule should match directly without round-tripping
         assert!(rule.matches("bash", &serde_json::json!({"command": "cargo test --lib"})));
@@ -1863,7 +1983,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test *"}),
-        );
+        )
+        .unwrap();
         assert!(wild_rule.matches("bash", &serde_json::json!({"command": "cargo test --lib"})));
         assert!(!wild_rule.matches("bash", &serde_json::json!({"command": "cargo build"})));
     }

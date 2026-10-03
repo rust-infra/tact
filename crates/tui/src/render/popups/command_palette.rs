@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, List, ListItem},
 };
@@ -24,8 +24,7 @@ fn cmd_emoji(cmd: &str, is_skill: bool) -> &'static str {
         "balance" => "💰",
         "lang" => "🌐",
         "model" => "🧠",
-        "skills" => "📋",
-        "skill-reload" => "🔄",
+        "skill" => "📋",
         "plugin" => "🧩",
         "background" => "🖥",
         _ => "⚡",
@@ -39,7 +38,7 @@ fn cmd_category(cmd: &str, is_skill: bool) -> &'static str {
     }
     match cmd {
         "save" | "cancel" | "subagent_cancel" | "quit" => "  Actions",
-        "help" | "history" | "skills" | "skill-reload" | "plugin" | "background" => "  Tools",
+        "help" | "history" | "skill" | "plugin" | "background" => "  Tools",
         "theme" | "lang" | "balance" | "model" => "  Settings",
         _ => "",
     }
@@ -84,7 +83,7 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
     let items: Vec<ListItem> = if filtered.is_empty() {
         vec![ListItem::new(Span::styled(
             msgs.palette_empty,
-            Style::default().fg(Color::Gray),
+            Style::default().fg(app.theme.muted),
         ))]
     } else {
         let selected = app.palette_selected.min(filtered.len().saturating_sub(1));
@@ -98,7 +97,7 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
                     results.push(ListItem::new(Line::from(Span::styled(
                         cat,
                         Style::default()
-                            .fg(Color::Rgb(100, 100, 120))
+                            .fg(app.theme.muted)
                             .add_modifier(ratatui::style::Modifier::DIM),
                     ))));
                 }
@@ -108,7 +107,9 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
             let is_selected = i == selected;
             let emoji = cmd_emoji(cmd, skill);
             let style = if is_selected {
-                Style::default().bg(app.theme.highlight).fg(Color::White)
+                // `theme.fg` over `theme.highlight`: white-on-highlight is
+                // unreadable on a light theme, where the highlight is bright.
+                Style::default().bg(app.theme.highlight).fg(app.theme.fg)
             } else {
                 Style::default().fg(app.theme.fg)
             };

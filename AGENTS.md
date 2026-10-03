@@ -10,16 +10,16 @@
 
 ## Docs: sync at push time, not per edit
 
-Code first, then before pushing diff against the trigger table and sync all touched docs in one pass. Bilingual pairs (`book/*.md` + `*_zh.md`) must stay structurally aligned (same headings/mermaid/tables); update both in one commit for behavioral changes.
+Code first, then before pushing diff against the trigger table and sync all touched docs in one pass. `book/` is **Chinese-only** (`*_zh.md`; the English chapters were deleted 2026-09-30 and the suffix is now historical naming) — one file per chapter, no pair to keep aligned. `crates/`, `ARCHITECTURE.md` and `docs/` remain English.
 
 | Trigger | Sync |
 |---|---|
-| Agent loop / compaction / recovery | `book/05_chapter_compact*.md`; skim `ARCHITECTURE.md` §6 / `docs/compaction.md` if drifting |
+| Agent loop / compaction / recovery | `book/05_chapter_compact_zh.md`; skim `ARCHITECTURE.md` §6 / `docs/compaction.md` if drifting |
 | Config / CLI flag rename / semantics | Documenting `book/` chapter, `config.example.toml`, relevant spec/plan |
 | TUI bottom-bar / token / cache display | `docs/token_usage_schema.md` + book section describing the bar |
 | New multi-step feature | Spec `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` (after approval) + plan `docs/superpowers/plans/YYYY-MM-DD-<topic>.md` |
-| Store / session persistence contracts | `book/01_chapter_store*.md` (+ `docs/token_usage_schema.md` if usage tables change) |
-| Shipped optimization / bugfix with user-visible change | Newest-first entry in `book/26_chapter_issue.md` **and** `_zh.md` (date, type, symptom, decision, observable behavior, pointers). Don't replace subsystem chapters |
+| Store / session persistence contracts | `book/01_chapter_store_zh.md` (+ `docs/token_usage_schema.md` if usage tables change) |
+| Shipped optimization / bugfix with user-visible change | Newest-first entry in `book/26_chapter_issue_zh.md` (date, type, symptom, decision, observable behavior, pointers). Don't replace subsystem chapters |
 
 Skip Ch 26 for pure refactors, test-only, and comment/typo-only edits.
 
@@ -34,7 +34,7 @@ Root cause: ratatui diffs cells and emits only changed ones, so a cell "restored
 5. **After wide graphemes (emoji/CJK, width 2)**, the row remainder must still carry base bg.
 6. **Every new render unit ships a buffer-level test** asserting blank cells carry `theme.bg` (patterns in `crates/tui/src/render/*_tests.rs`).
 
-Why: `book/26_chapter_issue.md` — 2026-07-27 "Log scroll restores the theme background", 2026-07-28 "Log left-border scrollbar residue", 2026-08-16 heading-band / overlay-popup entries.
+Why: `book/26_chapter_issue_zh.md` — 2026-07-27 "Log scroll restores the theme background", 2026-07-28 "Log left-border scrollbar residue", 2026-08-16 heading-band / overlay-popup entries.
 
 ## Compaction
 

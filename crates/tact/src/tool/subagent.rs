@@ -149,7 +149,7 @@ async fn run_subagent_stop_hooks(
     };
     for hook in hooks {
         match hook(&mut ctx).await {
-            Ok(crate::hook::HookControl::Continue) => {}
+            Ok(crate::hook::HookControl::Continue | crate::hook::HookControl::Allow) => {}
             Ok(crate::hook::HookControl::Block(reason)) => {
                 warn!("SubagentStop hook blocked (ignored): {reason}");
             }
@@ -510,7 +510,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         };
         for hook in &ctx.subagent_start_hooks {
             match hook(&mut start_ctx).await? {
-                crate::hook::HookControl::Continue => {}
+                crate::hook::HookControl::Continue | crate::hook::HookControl::Allow => {}
                 crate::hook::HookControl::Block(reason) => {
                     bail!("subagent start blocked by plugin hook: {reason}");
                 }

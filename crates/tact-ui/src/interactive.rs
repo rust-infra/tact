@@ -13,7 +13,7 @@ use tact::{
     subagent::{SharedSubagentManager, SubagentManager},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
-    tool::{ToolContext, toolset},
+    tool::{ToolContext, toolset_with_memory},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::get_llm_client;
@@ -123,13 +123,14 @@ async fn run_interactive_locked(
     let agent_session_store = session_store.clone();
 
     let theme = tact::config::settings().ui.theme.clone();
+    let language = tact::config::settings().ui.language.clone();
     let model_context_window = tact::config::settings().agent.model_context_window;
     let model_name = tact::config::settings().agent.model.clone();
     let model_max_tokens = tact::config::settings().agent.max_tokens;
     let model_thinking_budget = tact::config::settings().agent.thinking_budget;
     let account_enabled = account::is_supported();
     let tui_ui_responder = ui_responder.clone();
-    let tui_handle = tokio::spawn(Box::pin(async move {
+    let mut tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
             Some(account_rx)
         } else {
@@ -148,6 +149,7 @@ async fn run_interactive_locked(
             pending_ui: tui_ui_responder,
             history_save_tx,
             theme,
+            language,
             model_context_window,
             model_name,
             model_max_tokens,
@@ -208,7 +210,19 @@ async fn run_interactive_locked(
     // task). Instead the error is delivered into the running TUI as an
     // `AgentUpdate::Error`, the user quits normally, and `run_tui` restores
     // the terminal.
-    let driver = match build_agent_for_interactive(
+    //
+    // Raced against the TUI, because this is the slowest thing that happens
+    // after the UI appears: connecting MCP servers is a handshake per server,
+    // and a remote one can spend seconds on OAuth discovery before it fails.
+    // Awaiting it unconditionally made `q` look broken — the TUI printed its
+    // bye line and restored the terminal immediately, and then the process sat
+    // there until the last server finished connecting, with nothing on screen
+    // to say why. A user who quits during startup has nothing left to drive, so
+    // the build is dropped instead of waited out. That is safe: every MCP
+    // transport kills its child on drop, and the session simply ends with no
+    // agent, which is also why the session-id / stats lines below are skipped
+    // on this path — there is no agent to summarise.
+    let mut build = Box::pin(build_agent_for_interactive(
         tact_path,
         agent_tx.clone(),
         agent_skill_registry,
@@ -216,23 +230,36 @@ async fn run_interactive_locked(
         agent_session_store,
         work_dir,
         ui_responder,
-    )
-    .await
-    {
-        Ok(agent) => Some(tokio::spawn(run_command_loop_with_account(
-            agent,
-            user_cmd_rx,
-            image_work_dir,
-            Some(account_tx),
-        ))),
-        Err(err) => {
-            // Deliver the failure into the already-running TUI instead of
-            // propagating it past the raw-mode boundary. The TUI shows the
-            // error and the user quits normally (restoring the terminal).
-            let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "startup failed: {err:#}"
-            ))));
-            None
+    ));
+    let driver = tokio::select! {
+        // `biased`, so a build that is *already* finished is always used: the
+        // default random choice would occasionally drop a just-built agent
+        // because the TUI happened to become ready in the same poll, and the
+        // stats below would go missing for no reason the user could see.
+        biased;
+        built = &mut build => match built {
+            Ok(agent) => Some(tokio::spawn(run_command_loop_with_account(
+                agent,
+                user_cmd_rx,
+                image_work_dir,
+                Some(account_tx),
+            ))),
+            Err(err) => {
+                // Deliver the failure into the already-running TUI instead of
+                // propagating it past the raw-mode boundary. The TUI shows the
+                // error and the user quits normally (restoring the terminal).
+                let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                    "startup failed: {err:#}"
+                ))));
+                None
+            }
+        },
+        tui = &mut tui_handle => {
+            // Quit while the agent was still being built. `run_tui` has already
+            // restored the terminal and printed its goodbye, so the only thing
+            // left to do is to stop waiting for a build nobody will use.
+            tui??;
+            return Ok(());
         }
     };
 
@@ -302,7 +329,7 @@ async fn build_agent_for_interactive(
         let _ = agent_tx.send(AgentUpdate::Info(line));
     }
 
-    let mut tools = toolset();
+    let mut tools = toolset_with_memory(tact::config::settings().agent.memory_enabled);
     // Annotate `spawn_subagent` with the current subagent skill-card catalog
     // so the main agent can discover valid `skill:` names.
     tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
@@ -350,6 +377,9 @@ async fn build_agent_for_interactive(
     } else {
         tact_llm::get_provider().provider
     };
+    // Kept because the builder chain below takes ownership of `agent_tx`, and
+    // the hook review notices are produced after it.
+    let hook_notice_tx = agent_tx.clone();
     let mut agent = Agent::new(
         client.clone(),
         tool_context,
@@ -361,14 +391,22 @@ async fn build_agent_for_interactive(
     .with_ui_channel(agent_tx)
     .with_session(session_id, session_store)
     .with_provider_kind(provider_kind)
-    .with_session_start(|_at| Box::pin(async move { Ok(HookControl::Continue) }))
+    .with_session_start(|_at, _ctx| Box::pin(async move { Ok(HookControl::Continue) }))
     .with_pre_tool(|_at, _tool_use| Box::pin(async move { Ok(HookControl::Continue) }))
     .with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
-    // Claude plugin command hooks (SessionStart / UserPromptSubmit /
-    // PreToolUse / PostToolUse) from every installed plugin.
-    agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
-    // SessionStart hooks fire once per session, right after initialization.
-    agent.dispatch_session_start_hooks().await?;
+    // Command hooks (SessionStart / UserPromptSubmit / PreToolUse /
+    // PostToolUse / …) from installed plugins, `~/.tact/hooks.json` and
+    // `.tact/hooks.json`. A hook whose definition has not been reviewed is not
+    // registered, and the report names it here — a repository that ships hooks
+    // must not be able to run them silently.
+    let (hooked, hook_report) =
+        tact::plugin::apply_plugin_hooks_with_report(agent, tact_path.workdir())?;
+    agent = hooked;
+    for line in hook_report.notice_lines() {
+        let _ = hook_notice_tx.send(AgentUpdate::Info(line));
+    }
+    // `SessionStart` hooks run on the first turn (`Agent::agent_loop`), so a
+    // slow plugin hook does not delay the first frame.
 
     Ok(agent)
 }
