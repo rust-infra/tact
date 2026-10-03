@@ -37,6 +37,43 @@
 
 ---
 
+## 1. 2026-10-03 — DeepSeek `reasoning_content` 回传策略的缓存实测（待处理，无行为变更）
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization（仅记录；本轮未实施） |
+| **相关** | `crates/tact_llm/src/inject.rs`（`inject_reasoning_content()` 当前只有 Kimi 调用，DeepSeek 不回传）；`crates/tact_llm/src/test_deepseek_reasoning.rs`（400 契约的 live 测试）；`scripts/deepseek-reasoning-cache-probe.py`（复现脚本）；DeepSeek 官方文档 [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、[Context Caching](https://api-docs.deepseek.com/guides/kv_cache)、[Pricing](https://api-docs.deepseek.com/quick_start/pricing) |
+
+**症状 / 动机：** DeepSeek 官方 thinking mode 文档要求：请求带 `tools` 时，所有历史轮的 `reasoning_content` 必须完整回传（否则 400），且回传内容会被拼接进上下文。Tact 目前故意不回传（注释理由是"live API 接受且省略能保 KV cache 前缀稳定"），但"省略到底省不省缓存/钱"此前没有实测；社区常见的 `latest-only`（只回传最新一条）也需要数据判断。
+
+**实测（2026-10-03，`scripts/deepseek-reasoning-cache-probe.py`）：** 用 `deepseek-flash` 与 `deepseek-v4-flash`，thinking + tools，各 6 轮 × 三种策略（`full` = 每轮全量回传历史 thinking；`omit` = 完全不回传，即 Tact 当前 DeepSeek 行为；`latest` = 只保留最近一条），每轮间隔 3s 让磁盘缓存落盘：
+
+- `full` hit: `0 → 256 → 256 → 384 → 384 → 512`
+- `omit` hit: `0 → 256 → 256 → 256 → 384 → 384`
+- `latest` hit: `0 → 256 → 256 → 384 → 384 → 384`
+
+6 轮汇总（`deepseek-flash`，peak 价 cache hit $0.006/M、miss $0.3/M）：
+
+| 策略 | prompt | hit | miss | 估算成本（$/1M 等价） |
+|---|---|---|---|---|
+| `full` | 3016 | 1792 | 1224 | **377.95** |
+| `latest` | 2946 | 1664 | 1282 | 394.58 |
+| `omit` | 2898 | 1536 | 1362 | 417.82 |
+
+**观测：**
+
+1. **thinking 确实参与 prefix cache**：`full` 的 hit 随历史增长到 512/661（≈78%），说明回传的历史 thinking 被缓存并复用；每轮新生成的 thinking 只是尾部追加，不会让旧前缀失效。
+2. **破坏缓存的是"删改旧 thinking"**：`latest` 少掉最近一轮 assistant 段的命中，`omit` 增长更慢；两者都要为最近一轮多付 miss。
+3. **小 ctx 下 `full` 最省**：hit 价只有 miss 价的 ≈2%（50×），多携带的历史 thinking 以 hit 价买回，比 `omit`/`latest` 多出的 miss 便宜。
+4. **文档的 400 未被强制执行**：`omit` 与 `latest` 六轮全部 200；这是实测宽松，不是契约。
+5. 命中粒度为 128 token；样本只有 6 轮、约 600 token 的 prompt，绝对差值小，需要更长会话与更大 ctx 复测。
+
+**暂定决策 / 后续：** 本条目只记录发现，不改代码。判定式为 `full 更省 ⇔ R < m × (miss/hit)`：`R` = `full` 额外携带的累积 thinking token，`m` = `omit`/`latest` 每轮额外 miss token；`deepseek-flash` 价格比为 50×、`deepseek-chat`/pro 约 30×。小 ctx 下 `full` 更省；当 ctx 由大量 thinking 轮次堆到大尺寸（约 >50 轮 thinking 累积）时 `latest`/`omit` 可能反超，且 `latest` 一般略优于 `omit`。候选实现是 provider 级 `reasoning_echo = all | latest | none`（DeepSeek 默认值待真实 ctx / 长 thinking 复测后再定）。
+
+**变更后行为：** 无（仅记录）。
+
+**指针：** `crates/tact_llm/src/inject.rs::inject_reasoning_content`（目前仅 Kimi 调用）；`crates/tact_llm/src/test_deepseek_reasoning.rs`（live 契约测试，含 latest-only 场景）；`scripts/deepseek-reasoning-cache-probe.py`（`DS_MODEL` / `DS_TURNS` 可调，key 默认复用 `~/.tact/config.toml`）；DeepSeek Thinking Mode / Context Caching / Pricing 官方文档。
+
 ## 1. 2026-10-03 — `[agent].memory_enabled`：Tact 持久记忆有了总开关
 
 | 字段 | 值 |
