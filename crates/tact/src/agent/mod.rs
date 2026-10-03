@@ -5398,6 +5398,101 @@ mod tests {
         );
     }
 
+    /// A compaction re-queues the `SessionStart` hooks as `compact`; the
+    /// *next* turn must actually re-run them with that source and record the
+    /// new briefing. The sibling test only asserts the re-queue flag/source,
+    /// so this one drives the second turn to prove the checkpoint is
+    /// delivered rather than merely armed.
+    #[tokio::test]
+    async fn session_start_hooks_rerun_as_compact_after_a_compaction() {
+        ensure_config();
+        use std::sync::{Arc, Mutex};
+
+        let seen: Arc<Mutex<Vec<crate::hook::SessionStartSource>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let mock = MockClient::new(vec![
+            (
+                vec![make_text_block("## Handoff\nwe were mid-refactor")],
+                Some(StopReason::EndTurn),
+            ),
+            (vec![make_text_block("first")], Some(StopReason::EndTurn)),
+            (vec![make_text_block("second")], Some(StopReason::EndTurn)),
+        ]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("session_start_compact_rerun"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_session_start(move |agent, context| {
+            let recorder = recorder.clone();
+            let source = agent.runtime.session_start_source;
+            context.push_additional_context(&format!("brief:{}", source.as_str()));
+            Box::pin(async move {
+                recorder.lock().unwrap().push(source);
+                Ok(HookControl::Continue)
+            })
+        });
+        agent.agent_settings.model_context_window = 60_000;
+        agent.agent_settings.max_tokens = 100;
+
+        // A restored history large enough to trip the pre-turn compaction.
+        agent
+            .runtime
+            .context
+            .push(Message::new_text(Role::User, "x".repeat(300_000)));
+        assert!(agent.auto_compact_due(0), "the fixture must compact");
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .unwrap();
+        assert_eq!(
+            &*seen.lock().unwrap(),
+            &[crate::hook::SessionStartSource::Startup],
+            "the first turn runs the startup hooks once"
+        );
+        assert!(
+            agent.runtime.session_start_hooks_pending,
+            "the compaction re-queues them for the next turn"
+        );
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "again")))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            &*seen.lock().unwrap(),
+            &[
+                crate::hook::SessionStartSource::Startup,
+                crate::hook::SessionStartSource::Compact,
+            ],
+            "the re-queued hooks run with `compact` on the next turn"
+        );
+        let briefings: Vec<String> = agent
+            .runtime
+            .context
+            .iter()
+            .filter(|message| message.is_hook_context())
+            .map(|message| crate::extract_text(&message.content))
+            .collect();
+        assert!(
+            briefings.iter().any(|brief| brief.contains("brief:startup")),
+            "the startup briefing is recorded: {briefings:?}"
+        );
+        assert!(
+            briefings.iter().any(|brief| brief.contains("brief:compact")),
+            "the compact briefing is recorded: {briefings:?}"
+        );
+    }
+
     /// Startup must not wait for a plugin hook: the first turn runs them, which
     /// is still ahead of that turn's user message but no longer ahead of the
     /// first frame. `basic-memory`'s hook measured ~8s warm here.
