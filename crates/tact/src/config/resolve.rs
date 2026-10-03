@@ -537,6 +537,7 @@ struct NonLlmSettings {
     notifications_enabled: bool,
     snapshot_max_items: usize,
     micro_compact_enabled: bool,
+    memory_enabled: bool,
     max_token_usage_bodies: usize,
     skill_body_auto_inject: bool,
     skill_dirs: Vec<String>,
@@ -580,6 +581,8 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
     } else {
         toml_cfg.agent.micro_compact_enabled.unwrap_or(false)
     };
+
+    let memory_enabled = toml_cfg.agent.memory_enabled.unwrap_or(true);
 
     let max_token_usage_bodies = toml_cfg
         .agent
@@ -638,6 +641,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         notifications_enabled,
         snapshot_max_items,
         micro_compact_enabled,
+        memory_enabled,
         max_token_usage_bodies,
         skill_body_auto_inject,
         skill_dirs,
@@ -685,6 +689,7 @@ pub(super) fn resolve_non_llm_settings(
             notifications_enabled: non_llm.notifications_enabled,
             snapshot_max_items: non_llm.snapshot_max_items,
             micro_compact_enabled: non_llm.micro_compact_enabled,
+            memory_enabled: non_llm.memory_enabled,
             max_token_usage_bodies: non_llm.max_token_usage_bodies,
             skill_body_auto_inject: non_llm.skill_body_auto_inject,
             skill_dirs: non_llm.skill_dirs,
@@ -891,6 +896,7 @@ pub(super) fn resolve_config(
             notifications_enabled: non_llm.notifications_enabled,
             snapshot_max_items: non_llm.snapshot_max_items,
             micro_compact_enabled: non_llm.micro_compact_enabled,
+            memory_enabled: non_llm.memory_enabled,
             max_token_usage_bodies: non_llm.max_token_usage_bodies,
             skill_body_auto_inject: non_llm.skill_body_auto_inject,
             skill_dirs: non_llm.skill_dirs,
@@ -1355,10 +1361,20 @@ model = "gpt-4o"
             VisionImageSettings::DEFAULT_JPEG_QUALITY
         );
         assert!(!resolved.agent.micro_compact_enabled);
+        assert!(resolved.agent.memory_enabled);
         assert_eq!(
             resolved.agent.instruction_sources,
             InstructionSources::default()
         );
+    }
+
+    #[test]
+    fn memory_can_be_disabled_in_toml() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.memory_enabled = Some(false);
+
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert!(!resolved.agent.memory_enabled);
     }
 
     #[test]

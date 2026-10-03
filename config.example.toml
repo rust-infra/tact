@@ -204,6 +204,13 @@ mode = "default"
 # Truncate old tool results in context (default: true)
 # micro_compact_enabled = true
 
+# Enable Tact's persistent memory (default: true).
+#
+# When false: no memory block or memory guidance is injected into the system
+# prompt, and `save_memory` is not registered. Files under `~/.tact/memory`
+# are never deleted.
+# memory_enabled = true
+
 # How many request bodies `token_usages` keeps per session (default: 1).
 #
 # The column stores the whole serialized request — system prompt, tool schemas

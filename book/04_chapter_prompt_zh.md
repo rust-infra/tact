@@ -109,14 +109,15 @@ let prompt = SystemPrompt::builder()
     .guidelines([...])
     .constraints([...])
     .skills_available(self.tool_context.skill_registry.describe_available())
-    .memory(self.load_memory_prompt()?)
+    // `[agent].memory_enabled = false` 时两者都是空字符串，模板略去对应节。
+    .memory(if memory_enabled { self.load_memory_prompt()? } else { String::new() })
     .additional(cached_md_section(&mut cached_agents_md, || assemble_agents_md_prompt(workdir, &instruction_sources)))
     .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot))
-    .memory_guidance(MEMORY_GUIDANCE.trim())
+    .memory_guidance(if memory_enabled { MEMORY_GUIDANCE.trim() } else { "" })
     .build()?;
 ```
 
-`build_system_prompt()` 在**每个任务**开始时调用一次，位于 `agent_loop` 顶部、回合循环开始之前。同一渲染字符串在该任务内每次 LLM 请求复用，使提示词在回合间字节稳定，利于前缀 KV 缓存。`memory` 与 `dynamic_context` 在下一任务开始时重新求值；启用的指令文件（`AGENTS.md`）与目录快照**每会话组装一次**并缓存。
+`build_system_prompt()` 在**每个任务**开始时调用一次，位于 `agent_loop` 顶部、回合循环开始之前。同一渲染字符串在该任务内每次 LLM 请求复用，使提示词在回合间字节稳定，利于前缀 KV 缓存。`memory` 与 `dynamic_context` 在下一任务开始时重新求值；启用的指令文件（`AGENTS.md`）与目录快照**每会话组装一次**并缓存。`[agent].memory_enabled`（默认 `true`）关闭时，`# Memory guidance` 与 `## Memory` 两节都不出现，`save_memory` 工具也不注册（见 [持久记忆](./03_chapter_memory_zh.md) §5）。
 
 ### 3.3 指令文件来源（`instruction_sources`）
 
@@ -207,7 +208,7 @@ SystemPrompt::from(include_str!("my_template.md"))
 - **role** — 在 `/Users/rg/Projects/tact` 的 coding agent
 - **skills_available** — 五个 skill 摘要 + 斜杠 / `load_skill` 说明
 - **guidelines** / **constraints** — tact 内置默认
-- **memory_guidance** — 何时调用 `save_memory`
+- **memory_guidance** — 何时调用 `save_memory`（`[agent].memory_enabled = false` 时整节不出现）
 - **additional** — 项目 `AGENTS.md`（渲染在 `# Additional context` 下）
 - **memory** — 持久化 `~/.tact/memory/*.md` 内容
 - **dynamic_context** — 日期、workdir、模型、平台、目录快照

@@ -13,7 +13,7 @@ use tact::{
     subagent::{SharedSubagentManager, SubagentManager},
     task::{SharedTaskManager, TaskManager},
     team::{SharedTeammateManager, TeammateManager},
-    tool::{ToolContext, toolset},
+    tool::{ToolContext, toolset_with_memory},
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::get_llm_client;
@@ -100,7 +100,7 @@ async fn run_headless_locked(
         eprintln!("[mcp] {line}");
     }
 
-    let mut tools = toolset();
+    let mut tools = toolset_with_memory(tact::config::settings().agent.memory_enabled);
     // Annotate `spawn_subagent` with the current subagent skill-card catalog
     // so the main agent can discover valid `skill:` names.
     tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);

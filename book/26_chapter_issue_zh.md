@@ -37,6 +37,21 @@
 
 ---
 
+## 1. 2026-10-03 — `[agent].memory_enabled`：Tact 持久记忆有了总开关
+
+| 字段 | 值 |
+|-------|-------|
+| **类型** | optimization |
+| **相关** | `crates/tact/src/config/{types,resolve}.rs`；`crates/tact/src/agent/mod.rs`；`crates/tact/src/tool/{mod,registry}.rs`；`crates/tact-ui/src/{headless,interactive}.rs`；[Ch 3](./03_chapter_memory_zh.md)、[Ch 4](./04_chapter_prompt_zh.md)、[Ch 21](./21_chapter_config_zh.md)、`config.example.toml` |
+
+**症状 / 动机：** 在此之前 Tact 的记忆是强制的：只要 `~/.tact/memory/` 里有文件，每个任务开始时都会注入系统提示；`MEMORY_GUIDANCE` 无条件教模型何时保存；`save_memory` 工具也始终注册。想用 MCP（例如 Basic Memory）或其他方式管理长期记忆的用户无法关掉它，只能接受两套记忆并存、上下文被重复占用。
+
+**决策：** 新增 `[agent].memory_enabled`，默认 `true`，因此没有该键的既有配置行为完全不变。关闭时：`build_system_prompt` 不注入 memory 与 `MEMORY_GUIDANCE`；主 agent 改用 `toolset_with_memory(false)`，`save_memory` 不进入 router（从工具声明中消失，派发得到 `unknown tool`）。磁盘文件不删除，`MemoryManager` 的只读加载保持不变；子 agent 本来就没有 `save_memory`，不受影响。
+
+**变更后行为：** `memory_enabled = false` 时系统提示中既无 `# Memory guidance` 也无 `# Memories (persistent across sessions)`，工具表里无 `save_memory`；键缺省或为 `true` 时与旧版逐字节一致。该开关不是访问控制：模型仍可用 `read_file` / `bash` 直接读这些 Markdown。
+
+**指针：** 测试 `config::resolve::tests::memory_can_be_disabled_in_toml`、`tool::registry::tests::{memory_is_on_in_the_default_toolset,disabled_memory_removes_save_memory}`、`agent::tests::{enabled_memory_keeps_the_guidance_in_the_system_prompt,disabled_memory_is_absent_from_the_system_prompt}`；`config::types::tests::parse_full_config`。
+
 ## 1. 2026-10-02 — `prompts/list` 与 `prompts/get`：最后一个 MCP 原语接通
 
 | 字段 | 值 |

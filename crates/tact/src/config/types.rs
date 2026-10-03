@@ -147,6 +147,13 @@ pub struct AgentTomlConfig {
     /// Enable micro-compaction of old tool results (default: true)
     pub micro_compact_enabled: Option<bool>,
 
+    /// Enable Tact's persistent memory (default: true).
+    ///
+    /// When false, no memory block or memory guidance is injected into the
+    /// system prompt and the `save_memory` tool is not registered. Files under
+    /// `~/.tact/memory` are never deleted by this switch.
+    pub memory_enabled: Option<bool>,
+
     /// How many ordinary LLM-call request bodies `token_usages` keeps per
     /// session (default: 1).
     ///
@@ -410,6 +417,8 @@ pub struct AgentSettings {
     pub notifications_enabled: bool,
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
+    /// Whether Tact's persistent memory is active (prompt + `save_memory`).
+    pub memory_enabled: bool,
     /// Request bodies kept per session in `token_usages` (see
     /// [`AgentTomlConfig::max_token_usage_bodies`]).
     pub max_token_usage_bodies: usize,
@@ -560,6 +569,7 @@ mode = "auto"
 model_context_window = 500000
 snapshot_max_items = 120
 micro_compact_enabled = false
+memory_enabled = false
 max_token_usage_bodies = 3
 
 [ui]
@@ -583,6 +593,7 @@ vision_image.jpeg_quality = 75
         assert_eq!(cfg.agent.model_context_window, Some(500000));
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
         assert_eq!(cfg.agent.micro_compact_enabled, Some(false));
+        assert_eq!(cfg.agent.memory_enabled, Some(false));
         assert_eq!(cfg.agent.max_token_usage_bodies, Some(3));
         assert_eq!(cfg.ui.theme.as_deref(), Some("nord"));
         assert_eq!(cfg.ui.vision_image.compress, Some(false));

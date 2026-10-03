@@ -2468,6 +2468,17 @@ impl Agent {
         if matches!(&self.runtime.client, LlmProvider::OpenAiResponses(_)) {
             prompt_builder.template(responses_prompt_template());
         }
+        let memory_enabled = self.agent_settings.memory_enabled;
+        let memory = if memory_enabled {
+            self.load_memory_prompt()?
+        } else {
+            String::new()
+        };
+        let memory_guidance = if memory_enabled {
+            MEMORY_GUIDANCE.trim()
+        } else {
+            ""
+        };
         let prompt = prompt_builder
             .role(format!(
                 "You are a coding agent operating in {}.",
@@ -2496,7 +2507,7 @@ impl Agent {
                     reg.describe_available()
                 }
             })
-            .memory(self.load_memory_prompt()?)
+            .memory(memory)
             .additional(cached_md_section(&mut self.runtime.cached_agents_md, || {
                 assemble_agents_md_prompt(workdir, &self.agent_settings.instruction_sources)
             }))
@@ -2507,7 +2518,7 @@ impl Agent {
                 self.agent_settings.snapshot_max_items,
                 &self.agent_settings.model,
             ))
-            .memory_guidance(MEMORY_GUIDANCE.trim())
+            .memory_guidance(memory_guidance)
             .build()?;
 
         prompt
@@ -2845,6 +2856,7 @@ mod tests {
             notifications_enabled: false,
             max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
             micro_compact_enabled: true,
+            memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
@@ -3102,6 +3114,31 @@ mod tests {
 
         let prompt = agent.build_system_prompt().unwrap();
         assert!(!prompt.contains("# MCP server instructions"), "{prompt}");
+    }
+
+    #[test]
+    fn enabled_memory_keeps_the_guidance_in_the_system_prompt() {
+        ensure_config();
+        let mut agent = chat_completions_test_agent("memory_enabled_prompt");
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(prompt.contains("# Memory guidance"), "{prompt}");
+    }
+
+    #[test]
+    fn disabled_memory_is_absent_from_the_system_prompt() {
+        ensure_config();
+        let mut agent = chat_completions_test_agent("memory_disabled_prompt");
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+        agent.agent_settings.memory_enabled = false;
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(!prompt.contains("# Memory guidance"), "{prompt}");
+        assert!(
+            !prompt.contains("# Memories (persistent across sessions)"),
+            "{prompt}"
+        );
     }
 
     fn chat_completions_test_agent(context_name: &str) -> Agent {
@@ -4399,6 +4436,7 @@ mod tests {
             notifications_enabled: false,
             max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
             micro_compact_enabled: true,
+            memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
@@ -4438,6 +4476,7 @@ mod tests {
             notifications_enabled: false,
             max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
             micro_compact_enabled: true,
+            memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),

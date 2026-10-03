@@ -26,8 +26,12 @@ use super::{
 };
 
 /// Assembles the full tool set for the main agent loop.
-fn try_toolset() -> anyhow::Result<ToolRouter> {
-    ToolRouter::new()
+///
+/// `memory_enabled` mirrors `[agent].memory_enabled`: when false, `save_memory`
+/// is not registered, so it disappears from the advertised specs and dispatch
+/// rejects it as an unknown tool.
+fn try_toolset(memory_enabled: bool) -> anyhow::Result<ToolRouter> {
+    let router = ToolRouter::new()
         .route(AskUserTool)?
         .route(BashTool)?
         .route(BackgroundRunTool)?
@@ -38,8 +42,13 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
         .route(SleepTool)?
         .route(WriteFileTool)?
         .route(EditFileTool)?
-        .route(LoadSkillTool)?
-        .route(SaveMemoryTool)?
+        .route(LoadSkillTool)?;
+    let router = if memory_enabled {
+        router.route(SaveMemoryTool)?
+    } else {
+        router
+    };
+    router
         .route(CompactTool)?
         .route(SpawnSubagentTool)?
         .route(CheckSubagentTool)?
@@ -66,7 +75,12 @@ fn try_toolset() -> anyhow::Result<ToolRouter> {
 }
 
 pub fn toolset() -> ToolRouter {
-    try_toolset().expect("built-in tool metadata must be valid")
+    toolset_with_memory(true)
+}
+
+/// Tool set for the main agent, with Tact's persistent memory optionally off.
+pub fn toolset_with_memory(memory_enabled: bool) -> ToolRouter {
+    try_toolset(memory_enabled).expect("built-in tool metadata must be valid")
 }
 
 /// Assembles the restricted tool set for sub-agents.
@@ -81,4 +95,29 @@ fn try_subagent_toolset() -> anyhow::Result<ToolRouter> {
 
 pub fn subagent_toolset() -> ToolRouter {
     try_subagent_toolset().expect("subagent tool metadata must be valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(router: ToolRouter) -> Vec<String> {
+        router
+            .tool_specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect()
+    }
+
+    #[test]
+    fn memory_is_on_in_the_default_toolset() {
+        let names = names(toolset());
+        assert!(names.contains(&"save_memory".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn disabled_memory_removes_save_memory() {
+        let names = names(toolset_with_memory(false));
+        assert!(!names.contains(&"save_memory".to_string()), "{names:?}");
+    }
 }

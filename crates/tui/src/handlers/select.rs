@@ -1152,6 +1152,7 @@ mod tests {
                 snapshot_max_items: 80,
                 max_token_usage_bodies: tact::store::session_store::MAX_TOKEN_USAGE_BODIES,
                 micro_compact_enabled: true,
+                memory_enabled: true,
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
                 instruction_sources: tact::config::InstructionSources::default(),

@@ -173,6 +173,7 @@ mod tests {
                 notifications_enabled: false,
                 max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
                 micro_compact_enabled: true,
+                memory_enabled: true,
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
                 instruction_sources: crate::config::InstructionSources::default(),

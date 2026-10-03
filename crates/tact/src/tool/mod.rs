@@ -84,7 +84,7 @@ use load_skill::LoadSkillTool;
 use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
-pub use registry::{subagent_toolset, toolset};
+pub use registry::{subagent_toolset, toolset, toolset_with_memory};
 // Re-exported so `crate::agent::tool_dispatch` can do per-invocation resource
 // resolution for worktree-isolated `spawn_subagent` calls without naming the
 // private `subagent` module.
