@@ -37,6 +37,23 @@
 
 ---
 
+## 1. 2026-10-04 — 帮助面板不再每帧泄漏内存：`HelpWidget` 的生命周期拆成两个
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/agent_tui_kit/src/widgets/help_widget.rs`（结构体与 `new`）、`crates/tui/src/render/popups/help.rs`；Ch 23 §弹窗 |
+
+**Symptom / motivation:** `Ctrl+/` 打开帮助面板期间，每一帧都执行一次 `Box::leak(key_str.into_boxed_str())`。泄漏量很小（十来个字节／帧），但它是**无条件且持续**的——面板开着就一直漏，长时间挂着就是无界增长。根因不在泄漏点而在 API：`HelpWidget<'a>` 把 `msgs: &'a Messages`、`theme: &'a Theme` 与 `voice_keybind_label: Option<&'a str>` 绑成同一个生命周期，而标签是每帧从配置里的按键现拼的临时 `String`，要活到和 `msgs` 一样长就只能泄漏。
+
+**Decision:** `HelpWidget<'a, 'b>`——`'a` 给借用的内容（messages / theme），`'b` 给 voice 标签。两个生命周期是独立的，于是标签可以是一个普通的局部 `String`（调用点用 `voice_label.as_deref()` 借出）。没有改成让 widget 自己持有 `Option<String>`：那会让每次渲染都多一次分配，而两个生命周期是零成本的。
+
+**Behavior after:** 帮助面板的渲染结果**逐字节不变**（同一个 `&str` 内容、同样的样式与布局），变的是每帧不再泄漏。泄漏点连注释一起删掉（原注释写着"this is fine"，它并不 fine）。
+
+**Verification:** `cargo test -p agent_tui_kit --lib` 367 passed、`cargo test -p tui --lib` 620 passed；`cargo clippy --workspace --all-targets` 零告警。
+
+---
+
 ## 1. 2026-10-04 — `SkillManifest` 砍掉四个「只存不读」的字段，Claude 专属 frontmatter 不再假装支持
 
 | Field | Value |

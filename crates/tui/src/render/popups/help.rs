@@ -7,20 +7,20 @@ use crate::widgets::state::App;
 pub(crate) fn render_help_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let msgs = app.msgs();
     let theme = app.theme;
-    let voice_label: Option<&str> = app.voice_parsed_keybind.as_ref().map(|(m, k)| {
+    // Built fresh each frame, so it is an ordinary local `String`: the widget
+    // takes the label on its own lifetime (it used to require `'static`, which
+    // forced a `Box::leak` per frame).
+    let voice_label: Option<String> = app.voice_parsed_keybind.as_ref().map(|(m, k)| {
         let _ = m;
-        let key_str = match k {
+        match k {
             crossterm::event::KeyCode::Char(c) => {
                 let upper = c.to_uppercase().to_string();
                 format!("Ctrl+{upper}")
             }
             _ => format!("{:?}", k),
-        };
-        // Leak the string for the widget's static lifetime requirement
-        // (this is fine: the help panel is short-lived and rendered once per frame)
-        let leaked: &'static mut str = Box::leak(key_str.into_boxed_str());
-        leaked as &str
+        }
     });
-    let widget = agent_tui_kit::widgets::help_widget::HelpWidget::new(&msgs, &theme, voice_label);
+    let widget =
+        agent_tui_kit::widgets::help_widget::HelpWidget::new(&msgs, &theme, voice_label.as_deref());
     frame.render_widget(widget, area);
 }
