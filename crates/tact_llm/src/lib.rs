@@ -24,6 +24,8 @@ pub mod transport;
 pub mod types;
 
 #[cfg(test)]
+mod live_test_support;
+#[cfg(test)]
 mod test_deepseek_reasoning;
 #[cfg(test)]
 mod test_deepseek_responses;
