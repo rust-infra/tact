@@ -13,6 +13,7 @@ mod account;
 mod headless;
 mod interactive;
 mod permission;
+mod session_bootstrap;
 mod user_message;
 
 pub use headless::run_headless;
