@@ -127,42 +127,15 @@ fn parse_prompt_args(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use tact_protocol::{AgentUpdate, UserCommand};
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     use super::handle_mcp_command;
-    use crate::widgets::state::{App, Status};
-
-    fn make_app() -> (App, UnboundedReceiver<UserCommand>) {
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, user_cmd_rx) = unbounded_channel();
-        let (plugin_tx, _plugin_rx) = unbounded_channel();
-        let (_plugin_event_tx, plugin_event_rx) = unbounded_channel();
-        let (history_tx, _history_rx) = unbounded_channel();
-        (
-            App::new(
-                agent_rx,
-                None,
-                plugin_event_rx,
-                plugin_tx,
-                user_cmd_tx,
-                PathBuf::from("."),
-                Vec::new(),
-                "test-session".into(),
-                history_tx,
-                "retro".into(),
-                String::new(),
-                Vec::new(),
-            ),
-            user_cmd_rx,
-        )
-    }
+    use crate::test_fixtures::TestApp;
+    use crate::widgets::state::Status;
+    use tact_protocol::UserCommand;
 
     #[test]
     fn mcp_auth_queues_an_authorization_request() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp auth hosted".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -177,7 +150,7 @@ mod tests {
 
     #[test]
     fn mcp_login_is_an_alias_for_auth() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp login hosted".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -192,7 +165,7 @@ mod tests {
 
     #[test]
     fn bare_mcp_shows_usage_and_keeps_editing() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -205,7 +178,7 @@ mod tests {
 
     #[test]
     fn mcp_list_queues_a_listing_request_when_idle() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp list".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -220,7 +193,7 @@ mod tests {
 
     #[test]
     fn mcp_list_flashes_busy_instead_of_queueing_while_a_task_runs() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp list".into();
         app.status = Status::Executing {
             current_step: 0,
@@ -240,7 +213,7 @@ mod tests {
 
     #[test]
     fn mcp_prompts_queues_a_listing_request_when_idle() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp prompts".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -255,7 +228,7 @@ mod tests {
 
     #[test]
     fn mcp_prompts_can_name_one_server() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp prompts basic-memory".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -269,7 +242,7 @@ mod tests {
 
     #[test]
     fn mcp_prompts_flashes_busy_instead_of_queueing_while_a_task_runs() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp prompts".into();
         app.status = Status::Planning;
 
@@ -286,7 +259,7 @@ mod tests {
 
     #[test]
     fn mcp_prompt_queues_a_run_with_its_arguments() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp prompt basic-memory search_knowledge_base query=notes depth=2".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -311,7 +284,7 @@ mod tests {
     #[test]
     fn mcp_prompt_keeps_an_equals_inside_a_value() {
         // The split takes the *first* `=`, so a value that contains one survives.
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp prompt bm getting_started topic=a=b".into();
 
         let _ = handle_mcp_command(&mut app);
@@ -328,7 +301,7 @@ mod tests {
     fn mcp_prompt_refuses_a_token_without_an_equals_sign() {
         // A bare third token is either a positional argument the syntax does not
         // have or a mistyped pair; guessing would silently drop a value.
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp prompt bm getting_started notes".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -349,7 +322,7 @@ mod tests {
         // refusing it here would turn a completable command into the usage hint
         // `every_declared_subcommand_has_a_handler` exists to catch. The driver
         // says which piece is missing.
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp prompt sample".into();
 
         let outcome = handle_mcp_command(&mut app);
@@ -367,7 +340,7 @@ mod tests {
 
     #[test]
     fn bare_mcp_prompt_shows_usage_and_keeps_editing() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/mcp prompt".into();
 
         let outcome = handle_mcp_command(&mut app);

@@ -102,42 +102,14 @@ fn usage(app: &mut App) -> CommandExecOutcome {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use tact_protocol::{AgentUpdate, UserCommand};
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-
     use super::handle_hooks_command;
-    use crate::widgets::state::{App, Status};
-
-    fn make_app() -> (App, UnboundedReceiver<UserCommand>) {
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, user_cmd_rx) = unbounded_channel();
-        let (plugin_tx, _plugin_rx) = unbounded_channel();
-        let (_plugin_event_tx, plugin_event_rx) = unbounded_channel();
-        let (history_tx, _history_rx) = unbounded_channel();
-        (
-            App::new(
-                agent_rx,
-                None,
-                plugin_event_rx,
-                plugin_tx,
-                user_cmd_tx,
-                PathBuf::from("."),
-                Vec::new(),
-                "test-session".into(),
-                history_tx,
-                "retro".into(),
-                String::new(),
-                Vec::new(),
-            ),
-            user_cmd_rx,
-        )
-    }
+    use crate::test_fixtures::TestApp;
+    use crate::widgets::state::Status;
+    use tact_protocol::UserCommand;
 
     #[test]
     fn bare_hooks_lists_when_idle() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/hooks".into();
 
         let outcome = handle_hooks_command(&mut app);
@@ -152,7 +124,7 @@ mod tests {
 
     #[test]
     fn hooks_list_flashes_busy_instead_of_queueing_while_a_task_runs() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/hooks list".into();
         app.status = Status::Executing {
             current_step: 0,
@@ -172,7 +144,7 @@ mod tests {
 
     #[test]
     fn trust_all_queues_an_approval_of_everything() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/hooks trust --all".into();
 
         handle_hooks_command(&mut app);
@@ -188,7 +160,7 @@ mod tests {
 
     #[test]
     fn trust_source_queues_a_narrowed_approval() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/hooks trust --source plugin ponytail".into();
 
         handle_hooks_command(&mut app);
@@ -204,7 +176,7 @@ mod tests {
     fn trust_without_a_selector_only_shows_usage() {
         // Approving every hook by accident is exactly what the review step
         // exists to prevent, so a bare `trust` must not approve anything.
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/hooks trust".into();
 
         let outcome = handle_hooks_command(&mut app);
@@ -218,7 +190,7 @@ mod tests {
 
     #[test]
     fn forget_requires_an_explicit_all() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/hooks forget".into();
 
         let outcome = handle_hooks_command(&mut app);
@@ -237,7 +209,7 @@ mod tests {
 
     #[test]
     fn an_unknown_subcommand_shows_usage_and_keeps_editing() {
-        let (mut app, mut rx) = make_app();
+        let (mut app, mut rx) = TestApp::new().into_commands();
         app.input = "/hooks explain".into();
 
         let outcome = handle_hooks_command(&mut app);

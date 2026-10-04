@@ -586,11 +586,10 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
-    use tact_protocol::{
-        AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo,
-    };
+    use tact_protocol::{AgentUpdate, PlanStep, ThinkingChunk, ToolPresentationInfo};
 
     use super::*;
+    use crate::test_fixtures::StepCall;
     use crate::{
         render::test_harness::make_app,
         widgets::{
@@ -1376,29 +1375,12 @@ mod tests {
             "b1",
             HashMap::from([("command".to_string(), "echo hi".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: "echo hi".into(),
-            arg_full: "echo hi".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "echo hi".into(),
-                arg_full: Some("echo hi".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("hi\n".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "b1", "bash", "echo hi").started());
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "echo hi")
+                .detail("hi\n")
+                .finished(),
+        );
         app
     }
 
@@ -1630,29 +1612,12 @@ mod tests {
             "b1",
             HashMap::from([("command".to_string(), "echo hi".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: "echo hi".into(),
-            arg_full: "echo hi".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "echo hi".into(),
-                arg_full: Some("echo hi".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("hi\n".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "b1", "bash", "echo hi").started());
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "echo hi")
+                .detail("hi\n")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         // The collapsed block is exactly the two header rows, and its one target
@@ -1741,29 +1706,12 @@ mod tests {
             "b1",
             HashMap::from([("command".to_string(), long_command.to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: long_command.into(),
-            arg_full: long_command.into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: long_command.into(),
-                arg_full: Some(long_command.into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("done\n".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "b1", "bash", long_command).started());
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", long_command)
+                .detail("done\n")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         let msgs = app.msgs();
@@ -1832,29 +1780,13 @@ mod tests {
                 ("new_text".to_string(), "fn new()".to_string()),
             ]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "e1".into(),
-            tool_name: "edit_file".into(),
-            arg_summary: "src/lib.rs".into(),
-            arg_full: "src/lib.rs".into(),
-            presentation: ToolPresentationInfo::generic("edit_file"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "e1".into(),
-            result: StepResult {
-                tool: "edit_file".into(),
-                arg_summary: "src/lib.rs".into(),
-                arg_full: Some("src/lib.rs".into()),
-                status: StepStatus::Success,
-                message: "edited".into(),
-                detail: Some("- fn old()\n+ fn new()".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("edit_file"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "e1", "edit_file", "src/lib.rs").started());
+        app.handle_agent_update(
+            StepCall::new(0, "e1", "edit_file", "src/lib.rs")
+                .message("edited")
+                .detail("- fn old()\n+ fn new()")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         let msgs = app.msgs();
@@ -1893,29 +1825,12 @@ mod tests {
             "r1",
             HashMap::from([("path".to_string(), "src/lib.rs".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "r1".into(),
-            tool_name: "read_file".into(),
-            arg_summary: "src/lib.rs".into(),
-            arg_full: "src/lib.rs".into(),
-            presentation: ToolPresentationInfo::generic("read_file"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "r1".into(),
-            result: StepResult {
-                tool: "read_file".into(),
-                arg_summary: "src/lib.rs".into(),
-                arg_full: Some("src/lib.rs".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("fn main() {}\nfn helper() {}".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("read_file"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "r1", "read_file", "src/lib.rs").started());
+        app.handle_agent_update(
+            StepCall::new(0, "r1", "read_file", "src/lib.rs")
+                .detail("fn main() {}\nfn helper() {}")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         let msgs = app.msgs();
@@ -1964,29 +1879,19 @@ mod tests {
             "t1",
             HashMap::<String, String>::new(),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "t1".into(),
-            tool_name: "task_list".into(),
-            arg_summary: String::new(),
-            arg_full: String::new(),
-            presentation: task_presentation(),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "t1".into(),
-            result: StepResult {
-                tool: "task_list".into(),
-                arg_summary: String::new(),
-                arg_full: None,
-                status: StepStatus::Success,
-                message: "2 tasks".into(),
-                detail: Some("[1] pending  wire the parser\n[2] in_progress  run the suite".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: task_presentation(),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "task_list", String::new())
+                .presentation(task_presentation())
+                .started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "task_list", String::new())
+                .no_arg_full()
+                .message("2 tasks")
+                .detail("[1] pending  wire the parser\n[2] in_progress  run the suite")
+                .presentation(task_presentation())
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         let msgs = app.msgs();
@@ -2033,29 +1938,15 @@ mod tests {
             "s1",
             HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "s1".into(),
-            tool_name: "spawn_subagent".into(),
-            arg_summary: "audit the repo".into(),
-            arg_full: "audit the repo".into(),
-            presentation: ToolPresentationInfo::generic("spawn_subagent"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "s1".into(),
-            result: StepResult {
-                tool: "spawn_subagent".into(),
-                arg_summary: "audit the repo".into(),
-                arg_full: Some("audit the repo".into()),
-                status: StepStatus::Success,
-                message: "done".into(),
-                detail: Some("child summary".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("spawn_subagent"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "s1", "spawn_subagent", "audit the repo").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "s1", "spawn_subagent", "audit the repo")
+                .message("done")
+                .detail("child summary")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         assert!(

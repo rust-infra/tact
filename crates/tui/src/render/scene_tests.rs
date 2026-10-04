@@ -3,15 +3,13 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
-use tact_protocol::{
-    AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk,
-    ToolPresentationInfo,
-};
+use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepStatus, ThinkingChunk};
 
 use super::{
     render_status_bar,
     test_harness::{buffer_text, make_app, render_app_text},
 };
+use crate::test_fixtures::StepCall;
 use crate::{
     handlers::execute_palette_command,
     widgets::state::{App, HistoryEntry, InputMode, Status},
@@ -24,14 +22,7 @@ fn seed_executing_read_step(app: &mut App) {
         "tool_read_1",
         HashMap::from([("path".to_string(), "config.toml".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "tool_read_1".into(),
-        tool_name: "read_file".into(),
-        arg_summary: "config.toml".into(),
-        arg_full: "config.toml".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
-    });
+    app.handle_agent_update(StepCall::new(0, "tool_read_1", "read_file", "config.toml").started());
 }
 
 #[test]
@@ -91,29 +82,16 @@ fn full_frame_failed_tool_shows_in_log() {
         "tool_fail",
         HashMap::from([("path".to_string(), "missing.txt".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "tool_fail".into(),
-        tool_name: "read_file".into(),
-        arg_summary: "missing.txt".into(),
-        arg_full: "missing.txt".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "tool_fail".into(),
-        result: StepResult {
-            tool: "read_file".into(),
-            arg_summary: "missing.txt".into(),
-            arg_full: None,
-            status: StepStatus::Failed,
-            message: "file not found".into(),
-            detail: Some("No such file".into()),
-            duration_us: Some(500),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("read_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "tool_fail", "read_file", "missing.txt").started());
+    app.handle_agent_update(
+        StepCall::new(0, "tool_fail", "read_file", "missing.txt")
+            .no_arg_full()
+            .status(StepStatus::Failed)
+            .message("file not found")
+            .detail("No such file")
+            .duration_us(500)
+            .finished(),
+    );
 
     let text = render_app_text(&mut app, 120, 30);
 

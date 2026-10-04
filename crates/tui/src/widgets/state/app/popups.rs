@@ -1005,6 +1005,7 @@ mod tests {
         ToolPresentationInfo, ToolVisualKind,
     };
 
+    use crate::test_fixtures::StepCall;
     use crate::{
         render::test_harness::make_app,
         widgets::{
@@ -1036,29 +1037,17 @@ mod tests {
             tool_id,
             HashMap::from([("prompt".to_string(), "do it".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: tool_id.into(),
-            tool_name: "spawn_subagent".into(),
-            arg_summary: "do it".into(),
-            arg_full: "do it".into(),
-            presentation: subagent_presentation(),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: tool_id.into(),
-            result: StepResult {
-                tool: "spawn_subagent".into(),
-                arg_summary: "do it".into(),
-                arg_full: Some("do it".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some(format!("summary for {tool_id}")),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: subagent_presentation(),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, tool_id, "spawn_subagent", "do it")
+                .presentation(subagent_presentation())
+                .started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, tool_id, "spawn_subagent", "do it")
+                .detail(format!("summary for {tool_id}"))
+                .presentation(subagent_presentation())
+                .finished(),
+        );
         app.tools_mut().blocks.last().unwrap().phys_idx
     }
 
@@ -1216,14 +1205,11 @@ mod tests {
         let command = "cargo test --workspace --all-targets -- -D warnings";
         let mut presentation = ToolPresentationInfo::generic("background_run");
         presentation.keep_live = true;
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "bg1".into(),
-            tool_name: "background_run".into(),
-            arg_summary: command.into(),
-            arg_full: command.into(),
-            presentation,
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "bg1", "background_run", command)
+                .presentation(presentation)
+                .started(),
+        );
         app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
             tool_id: "bg1".into(),
             success: true,
@@ -1254,29 +1240,19 @@ mod tests {
         // missing from the popup entirely (the drawn error card keeps the error
         // first on purpose — that is what the preview shows).
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: "cargo build".into(),
-            arg_full: "cargo build --release".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "cargo build".into(),
-                arg_full: Some("cargo build --release".into()),
-                status: StepStatus::Failed,
-                message: "command failed".into(),
-                detail: Some("error: linker failed".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "cargo build")
+                .arg_full("cargo build --release")
+                .started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "cargo build")
+                .arg_full("cargo build --release")
+                .status(StepStatus::Failed)
+                .message("command failed")
+                .detail("error: linker failed")
+                .finished(),
+        );
 
         let output = app.tools_mut().blocks[0].output.clone();
         let popup = app.popup_from_tool_output(&output).expect("failed popup");
@@ -1292,29 +1268,15 @@ mod tests {
         // popup that opens from the hint must also carry *what the call was*,
         // and the hint's line count must count that line too.
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "t1".into(),
-            tool_name: "task_create".into(),
-            arg_summary: "# Task.1 · fix the popup".into(),
-            arg_full: "# Task.1 · fix the popup".into(),
-            presentation: ToolPresentationInfo::generic("task_create"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "t1".into(),
-            result: StepResult {
-                tool: "task_create".into(),
-                arg_summary: "# Task.1 · fix the popup".into(),
-                arg_full: Some("# Task.1 · fix the popup".into()),
-                status: StepStatus::Success,
-                message: "created task 1".into(),
-                detail: Some("created task 1\nsubject: fix the popup".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("task_create"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "task_create", "# Task.1 · fix the popup").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "task_create", "# Task.1 · fix the popup")
+                .message("created task 1")
+                .detail("created task 1\nsubject: fix the popup")
+                .finished(),
+        );
 
         let output = app.tools_mut().blocks[0].output.clone();
         assert!(output.layout.detail_collapsed);
@@ -1334,29 +1296,15 @@ mod tests {
     #[test]
     fn ask_user_popup_opens_with_the_question() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "a1".into(),
-            tool_name: "ask_user".into(),
-            arg_summary: "Which database should I use?".into(),
-            arg_full: "Which database should I use?".into(),
-            presentation: ToolPresentationInfo::generic("ask_user"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "a1".into(),
-            result: StepResult {
-                tool: "ask_user".into(),
-                arg_summary: "Which database should I use?".into(),
-                arg_full: Some("Which database should I use?".into()),
-                status: StepStatus::Success,
-                message: "User selected: B".into(),
-                detail: Some("User selected: B\nthe long note".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("ask_user"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "a1", "ask_user", "Which database should I use?").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "a1", "ask_user", "Which database should I use?")
+                .message("User selected: B")
+                .detail("User selected: B\nthe long note")
+                .finished(),
+        );
 
         let output = app.tools_mut().blocks[0].output.clone();
         let popup = app.popup_from_tool_output(&output).expect("ask popup");
@@ -1369,29 +1317,18 @@ mod tests {
     #[test]
     fn json_input_tool_popup_does_not_repeat_its_argument() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "m1".into(),
-            tool_name: "save_memory".into(),
-            arg_summary: r#"{"name":"tabs"}"#.into(),
-            arg_full: r#"{"name":"tabs","content":"use tabs","type":"user"}"#.into(),
-            presentation: ToolPresentationInfo::generic("save_memory"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "m1".into(),
-            result: StepResult {
-                tool: "save_memory".into(),
-                arg_summary: r#"{"name":"tabs"}"#.into(),
-                arg_full: Some(r#"{"name":"tabs","content":"use tabs"}"#.into()),
-                status: StepStatus::Success,
-                message: "Saved memory 'tabs'".into(),
-                detail: Some("Saved memory 'tabs'\npath: memory/tabs.md".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("save_memory"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "m1", "save_memory", r#"{"name":"tabs"}"#)
+                .arg_full(r#"{"name":"tabs","content":"use tabs","type":"user"}"#)
+                .started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "m1", "save_memory", r#"{"name":"tabs"}"#)
+                .arg_full(r#"{"name":"tabs","content":"use tabs"}"#)
+                .message("Saved memory 'tabs'")
+                .detail("Saved memory 'tabs'\npath: memory/tabs.md")
+                .finished(),
+        );
 
         let output = app.tools_mut().blocks[0].output.clone();
         let popup = app.popup_from_tool_output(&output).expect("memory popup");

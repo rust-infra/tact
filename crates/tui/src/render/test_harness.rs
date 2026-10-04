@@ -2,8 +2,6 @@
 
 #![allow(dead_code)]
 
-use std::path::PathBuf;
-
 use ratatui::{
     Frame, Terminal,
     backend::TestBackend,
@@ -11,7 +9,6 @@ use ratatui::{
     style::{Color, Modifier},
     widgets::ScrollbarState,
 };
-use tokio::sync::mpsc::unbounded_channel;
 
 use super::{
     log::render_log_panel, render_bottom_bar, render_command_palette, render_file_picker,
@@ -22,25 +19,7 @@ use crate::widgets::state::App;
 
 /// Build a minimal `App` for render tests (ink theme, empty log).
 pub fn make_app() -> App {
-    let (_agent_tx, agent_rx) = unbounded_channel();
-    let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
-    let (plugin_tx, _plugin_request_rx) = unbounded_channel();
-    let (_plugin_event_tx, plugin_rx) = unbounded_channel();
-    let (history_tx, _history_rx) = unbounded_channel();
-    App::new(
-        agent_rx,
-        None,
-        plugin_rx,
-        plugin_tx,
-        user_cmd_tx,
-        PathBuf::from("."),
-        Vec::new(),
-        "render-test".to_string(),
-        history_tx,
-        "ink".to_string(),
-        String::new(),
-        Vec::new(),
-    )
+    crate::test_fixtures::TestApp::with_identity("render-test", "ink").app
 }
 
 /// Flatten a ratatui buffer into plain text (one row per line).

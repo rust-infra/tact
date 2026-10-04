@@ -5,6 +5,7 @@ use std::time::Duration;
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
+use crate::test_fixtures::StepCall;
 use crate::widgets::state::{
     App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection, SurfaceId,
     ThinkingBlock, ThinkingPopup,
@@ -1243,7 +1244,7 @@ fn session_stats_popup_renders_gfm_table() {
 fn main_area_loading_spinner_when_executing() {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentUpdate, PlanStep, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, PlanStep};
 
     let mut app = make_app();
     app.status = crate::widgets::state::Status::Executing {
@@ -1256,14 +1257,7 @@ fn main_area_loading_spinner_when_executing() {
         "bash1",
         HashMap::from([("command".to_string(), "sleep 1".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bash1".into(),
-        tool_name: "bash".into(),
-        arg_summary: "sleep 1".into(),
-        arg_full: "sleep 1".into(),
-        presentation: ToolPresentationInfo::generic("bash"),
-    });
+    app.handle_agent_update(StepCall::new(0, "bash1", "bash", "sleep 1").started());
     app.append_blank(LogItemKind::SystemTool);
     app.loading_idx = Some(app.log.items.len().saturating_sub(1));
 
@@ -1279,7 +1273,7 @@ fn main_area_loading_spinner_when_executing() {
 fn open_diff_popup_after_edit_file_step_uses_git_diff() {
     use std::{collections::HashMap, process::Command};
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, PlanStep};
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -1316,29 +1310,14 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
             ("new_text".to_string(), "fn new() {}".into()),
         ]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "edit_popup".into(),
-        tool_name: "edit_file".into(),
-        arg_summary: path.clone(),
-        arg_full: path.clone(),
-        presentation: ToolPresentationInfo::generic("edit_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "edit_popup".into(),
-        result: StepResult {
-            tool: "edit_file".into(),
-            arg_summary: path.clone(),
-            arg_full: Some(path.clone()),
-            status: StepStatus::Success,
-            message: "wrote".into(),
-            detail: Some("fn new() {}".into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("edit_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "edit_popup", "edit_file", path.clone()).started());
+    app.handle_agent_update(
+        StepCall::new(0, "edit_popup", "edit_file", path.clone())
+            .message("wrote")
+            .detail("fn new() {}")
+            .duration_us(100)
+            .finished(),
+    );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
@@ -1472,7 +1451,7 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
 fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     use std::{collections::HashMap, process::Command};
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, PlanStep};
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-mp-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -1510,29 +1489,14 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
             ("new_text".to_string(), "a - b".into()),
         ]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "edit_calc".into(),
-        tool_name: "edit_file".into(),
-        arg_summary: path.clone(),
-        arg_full: path.clone(),
-        presentation: ToolPresentationInfo::generic("edit_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "edit_calc".into(),
-        result: StepResult {
-            tool: "edit_file".into(),
-            arg_summary: path.clone(),
-            arg_full: Some(path.clone()),
-            status: StepStatus::Success,
-            message: "wrote".into(),
-            detail: Some("fn add(a: i32, b: i32) -> i32 {\n    a - b\n}".into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("edit_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "edit_calc", "edit_file", path.clone()).started());
+    app.handle_agent_update(
+        StepCall::new(0, "edit_calc", "edit_file", path.clone())
+            .message("wrote")
+            .detail("fn add(a: i32, b: i32) -> i32 {\n    a - b\n}")
+            .duration_us(100)
+            .finished(),
+    );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
@@ -1564,7 +1528,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
 fn open_diff_popup_after_read_file_step_finish() {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, PlanStep};
 
     let mut app = make_app();
     let file = std::env::temp_dir().join(format!("tact-popup-{}.rs", std::process::id()));
@@ -1577,29 +1541,13 @@ fn open_diff_popup_after_read_file_step_finish() {
         "read_popup",
         HashMap::from([("path".to_string(), path.clone())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "read_popup".into(),
-        tool_name: "read_file".into(),
-        arg_summary: path.clone(),
-        arg_full: path.clone(),
-        presentation: ToolPresentationInfo::generic("read_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "read_popup".into(),
-        result: StepResult {
-            tool: "read_file".into(),
-            arg_summary: path.clone(),
-            arg_full: Some(path.clone()),
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: Some("fn popup_real_path() {}".into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("read_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "read_popup", "read_file", path.clone()).started());
+    app.handle_agent_update(
+        StepCall::new(0, "read_popup", "read_file", path.clone())
+            .detail("fn popup_real_path() {}")
+            .duration_us(100)
+            .finished(),
+    );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);

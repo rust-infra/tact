@@ -21,6 +21,9 @@ mod theme_detection;
 
 mod widgets;
 
+#[cfg(any(test, feature = "test-support"))]
+mod test_fixtures;
+
 #[cfg(feature = "test-support")]
 pub mod test_support;
 

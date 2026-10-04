@@ -577,38 +577,12 @@ pub(crate) fn handle_insert_mode(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use tact_protocol::{AgentUpdate, UserCommand};
-    use tokio::sync::mpsc::unbounded_channel;
 
     use super::{handle_insert_mode, insert_transcript};
+    use crate::test_fixtures::TestApp;
     use crate::widgets::state::{App, InputMode, Status};
-
-    fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
-        let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
-        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
-        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
-        let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
-        drop(agent_tx);
-        let app = App::new(
-            agent_rx,
-            None,
-            plugin_rx,
-            plugin_tx,
-            user_cmd_tx.clone(),
-            PathBuf::from("."),
-            Vec::new(),
-            "test-session".to_string(),
-            history_tx,
-            "retro".to_string(),
-            String::new(),
-            Vec::new(),
-        );
-        (app, user_cmd_rx)
-    }
+    use tact_protocol::UserCommand;
 
     #[test]
     fn an_unbound_ctrl_key_types_nothing() {
@@ -617,7 +591,7 @@ mod tests {
         // catch-all matched on `KeyCode` alone. `Ctrl+G` is bound nowhere — both
         // must type nothing.
         for c in ['t', 'g'] {
-            let (mut app, _user_cmd_rx) = make_app();
+            let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
             let user_cmd_tx = app.user_cmd_tx.clone();
             app.input = "abc".to_string();
             app.input_cursor = app.input.len();
@@ -635,7 +609,7 @@ mod tests {
 
     #[test]
     fn a_plain_letter_still_types_itself() {
-        let (mut app, _user_cmd_rx) = make_app();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.input = "ab".to_string();
         app.input_cursor = app.input.len();
@@ -652,7 +626,7 @@ mod tests {
 
     #[test]
     fn slash_quit_exits_without_submitting_task() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.input = "/quit".to_string();
         app.input_cursor = app.input.len();
@@ -672,7 +646,7 @@ mod tests {
 
     #[test]
     fn slash_cancel_sends_cancel_without_touching_queue() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Planning;
         // Queue a message while busy, then /cancel.
@@ -711,7 +685,7 @@ mod tests {
 
     #[test]
     fn slash_popup_enter_runs_selected_command() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.input = "/qu".to_string();
         app.input_cursor = app.input.len();
@@ -736,7 +710,7 @@ mod tests {
 
     #[test]
     fn slash_popup_enter_cancel_dispatches_while_executing() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Executing {
             current_step: 0,
@@ -764,7 +738,7 @@ mod tests {
 
     #[test]
     fn slash_popup_enter_with_no_match_falls_back_to_submit() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.input = "/zzzzzz".to_string();
         app.input_cursor = app.input.len();
@@ -790,7 +764,7 @@ mod tests {
 
     #[test]
     fn slash_cancel_idle_clears_input_and_does_not_dispatch() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Idle;
         app.input = "/cancel".to_string();
@@ -812,7 +786,7 @@ mod tests {
 
     #[test]
     fn slash_cancel_done_clears_input_and_does_not_dispatch() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Done;
         app.input = "/cancel".to_string();
@@ -835,7 +809,7 @@ mod tests {
     #[test]
     fn submit_not_rejected_when_model_context_window_is_tiny() {
         // Input length guard must not use model_context_window as a char limit.
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.model_context_window = 5;
         app.input = "hello world".to_string();
@@ -859,7 +833,7 @@ mod tests {
     #[test]
     fn submit_rejected_when_input_exceeds_char_limit() {
         // model_context_window must NOT control the insert-path char limit.
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.model_context_window = 200_000;
         app.input = "x".repeat(tact::consts::MAX_INPUT_CHARS + 1);
@@ -894,7 +868,7 @@ mod tests {
 
     #[test]
     fn submit_queued_while_agent_busy() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Planning;
         app.input = "do something".to_string();
@@ -921,7 +895,7 @@ mod tests {
 
     #[test]
     fn esc_with_pending_exits_insert_mode_and_keeps_queue() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Executing {
             current_step: 0,
@@ -959,7 +933,7 @@ mod tests {
 
     #[test]
     fn esc_without_pending_still_exits_insert_mode() {
-        let (mut app, _user_cmd_rx) = make_app();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.status = Status::Executing {
             current_step: 0,
@@ -984,7 +958,7 @@ mod tests {
     fn slash_popup_tab_only_autocompletes_a_skill() {
         use crate::widgets::state::SkillEntry;
 
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.skills_data = vec![SkillEntry {
             name: "demo".into(),
@@ -1016,7 +990,7 @@ mod tests {
         use crate::widgets::state::SkillEntry;
         use tact_protocol::UserCommand;
 
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.skills_data = vec![SkillEntry {
             name: "demo".into(),
@@ -1071,7 +1045,7 @@ mod tests {
 
     #[test]
     fn typing_a_space_keeps_the_popup_while_subcommands_remain() {
-        let (mut app, _rx) = make_app();
+        let (mut app, _rx) = TestApp::new().into_commands();
 
         type_keys(&mut app, "/skill ");
 
@@ -1094,7 +1068,7 @@ mod tests {
 
     #[test]
     fn tab_walks_down_nested_subcommands() {
-        let (mut app, _rx) = make_app();
+        let (mut app, _rx) = TestApp::new().into_commands();
 
         type_keys(&mut app, "/plugin ma");
         press(&mut app, KeyCode::Tab);
@@ -1111,7 +1085,7 @@ mod tests {
 
     #[test]
     fn enter_on_a_subcommand_that_needs_a_value_only_completes() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
 
         type_keys(&mut app, "/mcp au");
         press(&mut app, KeyCode::Enter);
@@ -1128,7 +1102,7 @@ mod tests {
 
     #[test]
     fn enter_on_a_complete_subcommand_runs_it() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.skills_data = vec![crate::widgets::state::SkillEntry {
             name: "code-reviewer".into(),
             description: "代码审查专家".into(),
@@ -1154,7 +1128,7 @@ mod tests {
 
     #[test]
     fn slash_popup_enter_on_plugin_autocompletes_for_subcommand() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         // Partial query as when picking from the slash palette.
         app.input = "/pl".to_string();
@@ -1202,7 +1176,7 @@ mod tests {
     fn plugin_skill_autocomplete_accepts_namespace_colon() {
         use crate::widgets::state::SkillEntry;
 
-        let (mut app, _user_cmd_rx) = make_app();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.skills_data = vec![SkillEntry {
             name: "demo:review".into(),
@@ -1234,7 +1208,7 @@ mod tests {
     fn slash_skill_without_args_invokes() {
         use crate::widgets::state::SkillEntry;
 
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.skills_data = vec![SkillEntry {
             name: "demo".into(),
@@ -1270,7 +1244,7 @@ mod tests {
     fn slash_skill_with_args_appends_arguments() {
         use crate::widgets::state::SkillEntry;
 
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.skills_data = vec![SkillEntry {
             name: "demo".into(),
@@ -1304,7 +1278,7 @@ mod tests {
 
     #[test]
     fn slash_popup_esc_closes_without_clearing_input() {
-        let (mut app, _user_cmd_rx) = make_app();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.input = "/he".to_string();
         app.input_cursor = app.input.len();

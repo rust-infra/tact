@@ -3,14 +3,13 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
-use tact_protocol::{
-    AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo,
-};
+use tact_protocol::{AgentUpdate, PlanStep, StepStatus, ThinkingChunk, ToolPresentationInfo};
 
 use super::log::render_log_panel;
 use super::test_harness::{
     buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
 };
+use crate::test_fixtures::StepCall;
 use crate::widgets::state::{App, LogItemKind, LogSelection, Status};
 use crate::widgets::tool_widget::TOOL_HEADER_ROWS;
 use agent_tui_kit::widgets::button::Button;
@@ -35,29 +34,15 @@ fn seed_tall_subagent_tool(app: &mut App, line_count: usize) {
         "sub-tall",
         HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "sub-tall".into(),
-        tool_name: "spawn_subagent".into(),
-        arg_summary: "audit the repo".into(),
-        arg_full: "audit the repo".into(),
-        presentation: ToolPresentationInfo::generic("spawn_subagent"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "sub-tall".into(),
-        result: StepResult {
-            tool: "spawn_subagent".into(),
-            arg_summary: "audit the repo".into(),
-            arg_full: Some("audit the repo".into()),
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: Some(output),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("spawn_subagent"),
-        },
-    });
+    app.handle_agent_update(
+        StepCall::new(0, "sub-tall", "spawn_subagent", "audit the repo").started(),
+    );
+    app.handle_agent_update(
+        StepCall::new(0, "sub-tall", "spawn_subagent", "audit the repo")
+            .detail(output)
+            .duration_us(100)
+            .finished(),
+    );
 }
 
 fn line_column_of(rendered: &str, needle: &str) -> Option<usize> {
@@ -429,29 +414,14 @@ fn theme_change_repaints_existing_tool_title_rows() {
             format!("theme-probe-{i}"),
             HashMap::from([("command".to_string(), "echo hi".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: i,
-            tool_id: format!("theme-probe-{i}"),
-            tool_name: "bash".into(),
-            arg_summary: "echo hi".into(),
-            arg_full: "echo hi".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: i,
-            tool_id: format!("theme-probe-{i}"),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "echo hi".into(),
-                arg_full: Some("echo hi".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("hi\n".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(i, format!("theme-probe-{i}"), "bash", "echo hi").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(i, format!("theme-probe-{i}"), "bash", "echo hi")
+                .detail("hi\n")
+                .finished(),
+        );
 
         // `toggle_theme` only changes `app.theme`; the blocks above are already
         // built and must still follow it.
@@ -549,14 +519,11 @@ fn running_background_card_shows_the_task_id() {
         "bg1",
         HashMap::from([("command".to_string(), "cargo build".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bg1".into(),
-        tool_name: "background_run".into(),
-        arg_summary: "cargo build".into(),
-        arg_full: "cargo build".into(),
-        presentation,
-    });
+    app.handle_agent_update(
+        StepCall::new(0, "bg1", "background_run", "cargo build")
+            .presentation(presentation)
+            .started(),
+    );
     // What `background_run` sends once the task exists.
     app.handle_agent_update(AgentUpdate::ToolMeta {
         tool_id: "bg1".into(),
@@ -593,29 +560,13 @@ fn completed_command_renders_header_rows_only() {
         "bash-collapsed",
         HashMap::from([("command".to_string(), "cargo build".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bash-collapsed".into(),
-        tool_name: "bash".into(),
-        arg_summary: "cargo build".into(),
-        arg_full: "cargo build".into(),
-        presentation: ToolPresentationInfo::generic("bash"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "bash-collapsed".into(),
-        result: StepResult {
-            tool: "bash".into(),
-            arg_summary: "cargo build".into(),
-            arg_full: Some("cargo build".into()),
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: Some("Compiling tact\ndone\n".into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("bash"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "bash-collapsed", "bash", "cargo build").started());
+    app.handle_agent_update(
+        StepCall::new(0, "bash-collapsed", "bash", "cargo build")
+            .detail("Compiling tact\ndone\n")
+            .duration_us(100)
+            .finished(),
+    );
 
     let block = app.tools().blocks.last().expect("tool block");
     assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
@@ -702,29 +653,14 @@ fn language_toggle_repaints_tool_card_chrome() {
         "bash-failed",
         HashMap::from([("command".to_string(), "false".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bash-failed".into(),
-        tool_name: "bash".into(),
-        arg_summary: "false".into(),
-        arg_full: "false".into(),
-        presentation: ToolPresentationInfo::generic("bash"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "bash-failed".into(),
-        result: StepResult {
-            tool: "bash".into(),
-            arg_summary: "false".into(),
-            arg_full: Some("false".into()),
-            status: StepStatus::Failed,
-            message: "exit 1".into(),
-            detail: Some("boom\n".into()),
-            duration_us: Some(1),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("bash"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "bash-failed", "bash", "false").started());
+    app.handle_agent_update(
+        StepCall::new(0, "bash-failed", "bash", "false")
+            .status(StepStatus::Failed)
+            .message("exit 1")
+            .detail("boom\n")
+            .finished(),
+    );
 
     // The card is built while the UI is still English; only then does the
     // language change.
@@ -903,30 +839,18 @@ fn subagent_cancel_button_rect_matches_the_drawn_glyphs() {
     )));
     let mut presentation = ToolPresentationInfo::generic("spawn_subagent");
     presentation.keep_live = true;
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "sub-live".into(),
-        tool_name: "spawn_subagent".into(),
-        arg_summary: "audit the repo".into(),
-        arg_full: "audit the repo".into(),
-        presentation: presentation.clone(),
-    });
+    app.handle_agent_update(
+        StepCall::new(0, "sub-live", "spawn_subagent", "audit the repo")
+            .presentation(presentation.clone())
+            .started(),
+    );
     // What the async branch sends back while the child keeps running.
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "sub-live".into(),
-        result: StepResult {
-            tool: "spawn_subagent".into(),
-            arg_summary: "audit the repo".into(),
-            arg_full: Some("audit the repo".into()),
-            status: StepStatus::Success,
-            message: "async_launched { child-123 }".into(),
-            detail: None,
-            duration_us: Some(1),
-            permission_label: None,
-            presentation,
-        },
-    });
+    app.handle_agent_update(
+        StepCall::new(0, "sub-live", "spawn_subagent", "audit the repo")
+            .message("async_launched { child-123 }")
+            .presentation(presentation)
+            .finished(),
+    );
 
     let terminal = render_log_panel_terminal(&mut app, 100, 20);
     let buffer = terminal.backend().buffer();

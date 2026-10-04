@@ -315,6 +315,7 @@ pub(super) fn handle_skill_command(app: &mut App, cmd: &str) -> Option<CommandEx
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::TestApp;
 
     #[test]
     fn skill_args_strips_command_prefix() {
@@ -488,37 +489,9 @@ mod tests {
 
     // ---- Codex-style queued submission (pending messages) ----
 
-    fn make_app_with_cmds() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
-        use std::path::PathBuf;
-
-        use tact_protocol::AgentUpdate;
-        use tokio::sync::mpsc::unbounded_channel;
-
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
-        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
-        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
-        let (history_tx, _history_rx) = unbounded_channel();
-        let app = App::new(
-            agent_rx,
-            None,
-            plugin_rx,
-            plugin_tx,
-            user_cmd_tx,
-            PathBuf::from("."),
-            Vec::new(),
-            "test-session".to_string(),
-            history_tx,
-            "retro".to_string(),
-            String::new(),
-            Vec::new(),
-        );
-        (app, user_cmd_rx)
-    }
-
     #[test]
     fn submit_user_task_queues_when_busy() {
-        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Executing {
             current_step: 0,
             total: 1,
@@ -542,7 +515,7 @@ mod tests {
 
     #[test]
     fn submit_user_task_dispatches_when_idle() {
-        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Idle;
 
         let ok = submit_user_task(&mut app, "go".into(), "go".into());
@@ -558,7 +531,7 @@ mod tests {
 
     #[test]
     fn submit_user_task_counts_session_turn_and_resets_llm_counter() {
-        let (mut app, _user_cmd_rx) = make_app_with_cmds();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Idle;
         // Stale per-task state from the previous turn must not leak.
         app.status_bar_mut().turn_llm = 7;
@@ -577,7 +550,7 @@ mod tests {
 
     #[test]
     fn queued_messages_each_count_as_a_session_turn() {
-        let (mut app, _user_cmd_rx) = make_app_with_cmds();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Idle;
         let _ = submit_user_task(&mut app, "one".into(), "one".into());
         assert_eq!(app.status_bar_mut().turn_user, 1);
@@ -604,7 +577,7 @@ mod tests {
 
     #[test]
     fn flush_pending_when_idle_submits_all_queued_in_order() {
-        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Executing {
             current_step: 0,
             total: 1,
@@ -634,7 +607,7 @@ mod tests {
 
     #[test]
     fn flush_pending_fires_on_done_too() {
-        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Executing {
             current_step: 0,
             total: 1,
