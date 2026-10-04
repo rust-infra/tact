@@ -27,13 +27,46 @@
 
 ---
 
----
+## 1. 2026-10-04 — 第二轮去重：footer 一种顺序、sticky 两面板共用窗口与时钟、删掉没有渲染者的 sticky 渲染器
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（含一处可见变化、一处 API 可见变化） |
+| **Related** | `agent_tui_kit::render::popups/mod.rs`（`COPY_SCROLL_CLOSE` / `SCROLL_CLOSE`）、`agent_tui_kit::state/sticky_panel.rs`、**删除** `agent_tui_kit::render/{mod,task_panel}.rs` 中的 `task_panel` 模块、`tact-ui/src/session_bootstrap.rs`（`open_session`）；Ch 23 §分层 + §Headless/交互启动、Ch 24 §测试 fixture、Ch 7 §元数据常量、`README.md` |
+
+**Symptom / motivation:** 第一轮（上一章条目）把弹窗侧收成组件后重跑重复扫描器，又暴露出五处「同一件事写多遍」。其一，六个弹窗各自把 `y copy / j/k scroll / Esc close` 三条 footer 提示抄一遍，且**顺序分两派**：`diff` / `subagent` / `thinking` 画 `Esc close` 在前，其余画它在前一条之后——没有任何理由说明 diff 弹窗的 footer 该和 code 弹窗不同。其二，`state/task_panel.rs` 与 `state/subagent_panel.rs` 是同一形状（分组行 + viewport 窗口 + 一行标题），`scroll_window`（含 `⋯ +N more · scroll ▼` 标记）与时长格式化逐字节相同。其三，`tact-ui` 的 `run_headless` / `run_interactive` 各自解析 session id（`--session` / `--resume-last` / 新 UUID）、建行、抢锁、注册、touch，21 行完全相同——上一轮只统一了 agent 构建，没到最外层。
+
+**Decision:**（1）footer 抽成两个常量：`COPY_SCROLL_CLOSE`（六个弹窗）与 `SCROLL_CLOSE`（只有 `system_prompt`——它是只读文本，没有 `y` 可复制，所以不能借前者的"前缀"来表达，否则那处不对称就看不见了）。顺序**统一为** `y copy | j/k scroll | Esc close`：三种提示的顺序不承载语义，保留两种只是在保留一个意外。（2）新增 `state/sticky_panel.rs`，承载 `scroll_window` 与 `elapsed_label`；两个面板各自保留 `format_duration` 入口作为委托（那是它们调用点与测试认识的名字）。（3）`tact-ui` 新增 `open_session`，返回**已持有**的锁——何时释放是唯一属于调用方的决定（headless 一回合后结束，TUI 在事件循环与 driver 任务之后）。（4）`agent_tui_kit::render::task_panel` 整个删除，而不是从它和 `sticky_host` 之间抽公共 chrome——见下。
+
+**Behavior after:** 用户可见的**唯一**变化是三个弹窗的 footer 顺序（`Esc close` 从 `j/k scroll` 之前挪到之后），键与文案一字未改。API 可见的变化是 `agent_tui_kit::render::task_panel` 不复存在：它在 `render/mod.rs` 里声明为 `pub mod`，但全仓库（含 `tests/`、`docs/`、glob re-export）没有任何一处引用它——tab 化的 `render::sticky_host` 早已取代它，而 shell 侧同名的 `crates/tui/src/render/task_panel.rs` 是包在 `sticky_host` 外面的 `&App` 包装。它内部还留着一份 `STICKY_BORDER_ROWS` / `sticky_host_visible` / `sticky_host_content_height` 与 sticky 方框 + 分隔线的**副本**，活的那份都在 `sticky_host.rs`——所以扫描器把这两个文件配成 17 + 16 行的"重复对"，而正确的动作是发现其中只有一个可达。其余改动（footer 常量、`sticky_panel`、`open_session`、`COPY_SCROLL_CLOSE` 的引入）渲染结果逐字节不变。
+
+**Verification:** `cargo test --workspace` 2617 passed / 0 failed（删除死模块前后同为 2617，证明无人依赖它）；`cargo clippy --workspace --all-targets` 零告警、`cargo fmt --all --check` 干净。新增测试：`sticky_panel` 的 7 条（窗口"标记替换最后一行"而非新增一行、末尾钳制、两个标记互斥——列表中部只画 `▼ more`；时长三段式与"未开始/时钟倒流无标签"）。顺带查证：`--resume-last` **在此之前没有任何测试覆盖**（全仓库没有一处构造 `CliArgs`），因为要钉住它得给 `tact-ui` 加 `clap` dev-dependency，并先回答"顶层 flag 允许出现在哪里"——这个问题的答案见下一条。
 
 ---
 
----
+## 1. 2026-10-04 — `README` 里那条把顶层 flag 写在子命令之后的命令，其实跑不起来
 
----
+| Field | Value |
+|-------|-------|
+| **Type** | docs fix（无行为变更；记录一个从未生效过的文档示例） |
+| **Related** | `README.md`（headless 示例）、`crates/tact/src/config/cli.rs`；与上一条的 `--resume-last` 查证同源 |
+
+**Symptom / motivation:** README 的 headless 示例写着 `tact-ui headless --model "…" "prompt"`。实测：
+
+```
+$ tact-ui headless --model x "p"
+error: unexpected argument '--model' found
+  tip: to pass '--model' as a value, use '-- --model'
+Usage: tact-ui headless <PROMPT>
+```
+
+`--model` 及其同族声明在顶层 `CliArgs` 上，clap 只有在它们被标为 `global` 时才接受写在子命令之后，而它们**从未**如此（`git log -S "global = true" -- config/cli.rs` 为空，示例自 #19 引入以来就是这个写法）。README 自身早已自相矛盾：紧接着的 `tact-ui -m plan headless "…"` 把 flag 放在能工作的位置。
+
+**Decision:** 改 README 到能用的顺序（`tact-ui --model "…" headless "…"`）。**没有**把那些 flag 标成 `global`：那会放宽每个子命令的文法，并可能与子命令自己的同名选项（`upgrade` 的 `--yes` / `--check` / `--repo`）相互遮蔽——那是关于 CLI 形态的决定，不是修一个笔误。
+
+**Behavior after:** 无行为变化；README 的两个示例不再互相矛盾。
+
+**Verification:** 用构建出的二进制分别验证两种写法（`--model` 在前 → 只报缺 `<PROMPT>`；在后 → `unexpected argument`）。
 
 ---
 
