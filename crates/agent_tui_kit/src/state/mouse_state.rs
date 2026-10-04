@@ -144,6 +144,12 @@ pub struct MouseState {
     /// selection popup area (used to route mouse-wheel scrolls to the popup's
     /// option list instead of the log behind it).
     pub select_popup_area: Rect,
+    /// command-palette area (used to route mouse-wheel scrolls to the popup's
+    /// command list instead of the log behind it).
+    pub palette_popup_area: Rect,
+    /// file-picker area (used to route mouse-wheel scrolls to the popup's
+    /// file list instead of the log behind it).
+    pub file_picker_popup_area: Rect,
     /// Cancel buttons for live async-subagent tool cards: `(child_id, rect)`.
     /// Refreshed every frame by the log renderer; a click sends
     /// `UserCommand::CancelSubagent { child_id }`.

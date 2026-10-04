@@ -1,6 +1,6 @@
 # 存储与持久化
 
-本章说明 Tact 的**磁盘持久化层**：`.tact/` 下的 JSON 文件存储，以及独立的 SQLite 会话数据库。二者共同保存对话历史、领域状态（background、队友等）与可观测性数据。
+本章说明 Tact 的**磁盘持久化层**：`.tact/` 下的 JSON 文件存储原语，以及独立的 SQLite 数据库。对话历史、领域状态（任务、background、队友、worktree）与可观测性数据**全部**存放在 SQLite 中；JSON store 目前没有领域消费者。
 
 记忆（[持久化记忆](./03_chapter_memory_zh.md)）使用用户级全局目录 `~/.tact/memory/` 下的 Markdown 文件，**不属于** JSON store API。
 
@@ -16,25 +16,16 @@ Tact 刻意拆分职责：
 | **SQLite store** | `<workdir>/.tact/tact.db` | `SessionStore` + `TaskStore` + `BackgroundStore` + `TeamStore` + `WorktreeStore` trait | 消息、token 用量、任务、background、team、worktrees、输入历史 |
 
 ```mermaid
-graph TB
-    subgraph Workdir["<workdir>"]
-        Tact[".tact/"]
-        Tact[".tact/"]
-        Skills["skills/（非 StoreRoot）"]
-    end
-
-    subgraph Tact
-        DB["tact.db — SQLite（消息、token 用量、任务、background、team、worktrees 等）"]
-    end
-
-    subgraph Claude
-        Mem["memory/*.md — 独立模块"]
-    end
-
-    SR[StoreRoot] --> Mem
-
-    SS[SessionStore + TaskStore + BackgroundStore + TeamStore + WorktreeStore] --> DB
+graph TD
+    root[<workdir>/.tact/] --> json[JSON store]
+    root --> db[tact.db SQLite]
+    root --> skills[skills/]
+    root --> bg[background/<id>.log]
+    ss[5 个 Store trait] --> db
+    mem[~/.tact/memory/]
 ```
+
+图中 `.tact/` 的四个条目里，只有前两个走存储 API：`JSON store` 是 `StoreRoot` / `Store<T>` / `CollectionStore<T>`（当前无领域消费者），`tact.db` 是上面那五个 Store trait 的 SQLite 落点。`skills/` 与 `background/<id>.log` 是**普通文件**，不属于 `StoreRoot`。`~/.tact/memory/` 是独立模块，不属于 JSON store API（见 [持久化记忆](./03_chapter_memory_zh.md)）。
 
 二者均在会话启动时在 `main.rs` 中初始化：`StoreRoot::new(tact_path.tact_dir())` 与 `open_sqlite_session_store(&tact_path.session_db_path())`。
 
@@ -58,7 +49,8 @@ pub struct StoreRoot { root: PathBuf }
 工厂方法：
 
 ```rust
-root.collection::<T>("tasks")?                   // CollectionStore<T>  （遗留 tasks — 不再读取）
+root.file::<T>(relative)?                        // Store<T> — 单文件（当前无调用者）
+root.collection::<T>(relative_dir)?              // CollectionStore<T> — 按键分文件（当前无调用者）
 ```
 
 ---
@@ -96,13 +88,7 @@ root.collection::<T>("tasks")?                   // CollectionStore<T>  （遗�
 
 非法 key（`/`、`\`、`.`、`..`）会被拒绝。
 
-### 示例：后台任务（遗留）
-
-```rust
-root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{id}.json（遗留）
-```
-
-任务、background、team、worktree 已不再使用 JSON store——它们存放在 SQLite 中（见 §6）。
+当前无领域模块使用：tasks、background、team、worktree 都已迁到 SQLite（见 §5、§6）。
 
 ---
 
@@ -115,7 +101,7 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 | `team.rs`（[团队协调](./14_chapter_team_zh.md)） | `tact.db` → `teammates`、`inbox_messages` 表 | `TeamStore`（SQLite） |
 | `worktree/`（[Worktree 泳道](./15_chapter_worktree_zh.md)） | `tact.db` → `worktrees`、`worktree_events` 表 | `WorktreeStore`（SQLite） |
 
-各领域模块包装原始 store（如 `SharedTaskManager` / `SharedBackgroundManager` / `SharedTeammateManager` / `SharedWorktreeManager` 包 `Arc<…>`——SQLite 连接池已串行化写入），并暴露面向工具的 API——调用方不应直接操作 `CollectionStore`。
+各领域模块包装原始 store（如 `SharedTaskManager` / `SharedBackgroundManager` / `SharedTeammateManager` / `SharedWorktreeManager` 包 `Arc<…>`——SQLite 连接池已串行化写入），并暴露面向工具的 API——调用方不应直接操作底层 store（`Store` / `CollectionStore` 当前已无任何调用者）。
 
 所有 SQLite store 按数据库文件共享同一个连接池：`store::sqlite::open_pool` 首次使用时打开并缓存连接池，向每个 store 分发一个引用计数句柄（`PoolRef`），因此单个进程对 `<workdir>/.tact/tact.db` 只使用一个连接池；最后一个持有它的 store 被释放时连接池随之关闭。
 
@@ -185,7 +171,7 @@ root.collection::<BackgroundRecord>("background/tasks")?   // background/tasks/{
 sequenceDiagram
     participant TUI as tact-ui
     participant Agent
-    participant JSON as StoreRoot / 领域模块
+    participant JSON as StoreRoot（JSON store，无领域消费者）
     participant SQL as SqliteSessionStore
 
     TUI->>JSON: StoreRoot::new(.tact/)
@@ -239,7 +225,7 @@ sequenceDiagram
 | 全新 SQLite schema | 主要为 `CREATE TABLE IF NOT EXISTS`；旧库通过 `PRAGMA` + `ALTER TABLE` 补上 `sessions.ref_id` |
 | Session store 可选 | 测试与部分调用方可不附加 SQLite |
 | 每 workdir 一个 Session DB | SQLite 当前位于 `<workdir>/.tact/tact.db`；`sessions.root_dir` 记录项目路径，供未来共享 `$HOME/.tact/tact.db` |
-| 遗留 JSON 文件 | `tasks/*.json`、`background/tasks/*.json`、`team/config.json`、`team/inbox/*.json`、`worktrees/index.json` 在 SQLite 迁移后不再读取；留在磁盘上，手动清理 |
+| 遗留 JSON 文件 | `tasks/*.json`、`background/tasks/*.json`、`team/config.json`、`team/inbox/*.json`、`worktrees/index.json`、`cron/scheduled_tasks.json` 在 SQLite 迁移（cron 子系统随后整体移除）后不再读取；留在磁盘上，手动清理。注意 `.tact/background/` 本身是**活目录**——当前 `background_run` 把全量日志写到该目录下的 `<id>.log`（见 [Ch 13](./13_chapter_background_zh.md) §2），只能删其中的 `background/tasks/` 子目录 |
 
 ---
 

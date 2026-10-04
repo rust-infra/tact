@@ -25,7 +25,14 @@ fn select_footer(ctx: &RenderCtx) -> Line<'static> {
         spans.push(Span::styled(label, Style::default().fg(muted)));
     };
     let mut spans: Vec<Span<'static>> = Vec::new();
-    push_hint(&mut spans, "↑↓/j/k", ctx.messages.select_hint_nav);
+    // `j`/`k` are filter characters on a filterable popup, so advertising them
+    // as navigation would be a lie. Agent-originated prompts keep them.
+    if ctx.select.filterable() {
+        push_hint(&mut spans, "↑↓", ctx.messages.select_hint_nav);
+        push_hint(&mut spans, "a-z", ctx.messages.select_hint_filter);
+    } else {
+        push_hint(&mut spans, "↑↓/j/k", ctx.messages.select_hint_nav);
+    }
     if ctx.select.multi {
         push_hint(&mut spans, "Space", ctx.messages.select_hint_toggle);
     }
@@ -37,17 +44,16 @@ fn select_footer(ctx: &RenderCtx) -> Line<'static> {
 /// Render the selection popup and return its outer rect (the app layer uses
 /// the rect to route mouse-wheel scrolls to the popup).
 pub fn render_select_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Rect {
-    let widget = SelectPopupWidget::new(
-        ctx.select,
-        ctx.theme.highlight,
-        ctx.theme.fg,
-        ctx.theme.muted,
-        ctx.theme.bottom_bar_bg,
-        ctx.messages.select_empty,
-        ctx.messages.select_arrow,
-    )
-    .with_border_type(ctx.theme.block_border_type())
-    .with_footer(select_footer(ctx));
+    // "No options" would be a lie about a list that has options and a filter
+    // that matches none of them.
+    let empty_text = if ctx.select.query.is_empty() {
+        ctx.messages.select_empty
+    } else {
+        ctx.messages.select_no_match
+    };
+    let widget =
+        SelectPopupWidget::new(ctx.select, ctx.theme, empty_text, ctx.messages.select_arrow)
+            .with_footer(select_footer(ctx));
     let popup_area = widget.popup_area(area);
     frame.render_widget(widget, area);
     popup_area

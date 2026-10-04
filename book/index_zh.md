@@ -46,47 +46,17 @@
 ## 总览架构
 
 ```mermaid
-graph TB
-    subgraph UI
-        TUI[tact-ui TUI]
-    end
-
-    subgraph Runtime["tact runtime"]
-        Agent[Agent / agent_loop]
-        Prompt[System Prompt]
-        Dispatch[Tool Dispatch]
-        Permissions[Permission Manager]
-        Hooks[Pre/Post Tool Hooks]
-    end
-
-    subgraph Tools
-        Native[Native Tools]
-        MCP[MCP ToolRouter]
-    end
-
-    subgraph Providers
-        LLM[tact_llm → LLM APIs]
-    end
-
-    subgraph Store
-        SQLite[(SQLite Session Store)]
-        Files[(.tact/ Store)]
-    end
-
-    MCPSrv[MCP Servers]
-
-    TUI -->|user input| Agent
-    Agent -->|updates| TUI
-    Agent --> Prompt
-    Agent -->|stream| LLM
-    Agent --> Dispatch
-    Dispatch --> Hooks
-    Dispatch --> Permissions
-    Dispatch --> Native
-    Dispatch --> MCP
-    MCP --> MCPSrv
-    Agent -->|messages & tokens| SQLite
-    Agent -->|skills, memory, tasks| Files
+graph TD
+    tui[tact-ui] --> agent[Agent]
+    agent --> sp[System Prompt]
+    agent --> llm[tact_llm]
+    agent --> db[SQLite / .tact/]
+    agent --> dispatch[Dispatch]
+    dispatch --> hooks[Hooks]
+    hooks --> perms[Permissions]
+    perms --> native[Native 工具]
+    perms --> mcp[MCP Router]
+    mcp --> servers[MCP Servers]
 ```
 
 ---

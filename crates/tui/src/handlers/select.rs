@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tact_protocol::{UiResponse, UserCommand};
 
 use crate::i18n::Language;
@@ -90,13 +90,40 @@ fn format_model_and_budget(template: &str, model: &str, budget: &str) -> String 
 
 /// Select popup mode key handling: up/down to navigate, Enter to confirm, Esc to cancel.
 /// Multi-select also uses Space to toggle checkboxes.
+///
+/// A *local* pick (`/model`, `/theme`, …) is also filterable: `/model` unions
+/// the config list with `/v1/models`, which is long enough to need it. Agent
+/// prompts are not — see [`SelectPopup::filterable`].
 pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
+    if app.select.filterable() {
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.select.push_query(c);
+                return;
+            }
+            KeyCode::Backspace => {
+                app.select.pop_query();
+                return;
+            }
+            // Esc means "clear the filter" while there is one, and "cancel"
+            // only once it is empty.
+            KeyCode::Esc if !app.select.query.is_empty() => {
+                app.select.clear_query();
+                return;
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Char(' ') if app.select.multi => {
             app.select.toggle_checked();
         }
         KeyCode::Enter => {
-            if app.select.options.is_empty() {
+            // Nothing to confirm: no options at all, or a filter that matches
+            // none of them. `confirm()` would otherwise hand back the stale
+            // index of a row that is not on screen.
+            if app.select.filtered_indices().is_empty() {
                 let msgs = app.msgs();
                 app.add_system_message(msgs.no_options.to_string());
                 app.input_mode = InputMode::Normal;
@@ -1274,6 +1301,93 @@ thinking_budget = {thinking_budget}
     }
 
     #[test]
+    fn typing_filters_a_local_pick() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Select;
+        app.select.set_local(
+            "Select model".into(),
+            vec!["kimi-for-coding".into(), "claude-sonnet".into()],
+            0,
+            true,
+        );
+
+        for c in "cl".chars() {
+            handle_select_mode(&mut app, key(KeyCode::Char(c)));
+        }
+
+        assert_eq!(app.select.query, "cl");
+        assert_eq!(app.select.filtered_indices(), vec![1]);
+        assert_eq!(app.select.selected, 1, "the cursor follows the filter");
+    }
+
+    #[test]
+    fn escape_clears_the_filter_before_it_cancels() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Select;
+        app.select
+            .set_local("Select model".into(), vec!["a".into(), "b".into()], 0, true);
+
+        handle_select_mode(&mut app, key(KeyCode::Char('b')));
+        assert_eq!(app.select.query, "b");
+
+        handle_select_mode(&mut app, key(KeyCode::Esc));
+        assert!(
+            app.select.query.is_empty(),
+            "the first Esc clears the filter"
+        );
+        assert!(
+            matches!(app.input_mode, InputMode::Select),
+            "…and leaves the popup open"
+        );
+
+        handle_select_mode(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn enter_with_a_filter_that_matches_nothing_confirms_nothing() {
+        let mut app = make_app();
+        app.input_mode = InputMode::Select;
+        app.select
+            .set_local("Select model".into(), vec!["a".into(), "b".into()], 0, true);
+
+        handle_select_mode(&mut app, key(KeyCode::Char('z')));
+        assert!(app.select.filtered_indices().is_empty());
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        let expected = app.msgs().no_options;
+        assert!(
+            app.log.items.iter().any(|item| item.raw.contains(expected)),
+            "an empty filter must report no options rather than confirming a \
+             row that is not on screen, got {:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn an_agent_prompt_ignores_typed_characters() {
+        let mut app = make_app();
+        let _rx = seed_select(&mut app);
+        assert!(!app.select.filterable());
+
+        // `Deny` is the second row; typing must neither filter nor move.
+        handle_select_mode(&mut app, key(KeyCode::Char('D')));
+        assert!(
+            app.select.query.is_empty(),
+            "a keystroke must not hide the choices an agent is waiting on"
+        );
+        assert_eq!(app.select.selected, 0);
+        assert_eq!(app.select.filtered_indices(), vec![0, 1]);
+
+        // `j`/`k` are still navigation there.
+        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.select.selected, 1);
+        handle_select_mode(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.select.selected, 0);
+    }
+
+    #[test]
     fn enter_confirms_selection_and_returns_to_normal() {
         let mut app = make_app();
         let mut rx = seed_select(&mut app);
@@ -1451,7 +1565,7 @@ thinking_budget = {thinking_budget}
             SelectKind::ModelPick(ModelTarget::Main)
         ));
 
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
@@ -1483,7 +1597,7 @@ thinking_budget = {thinking_budget}
         app.status_bar_mut().model_name = "status-before".to_string();
         app.status_bar_mut().model_thinking_budget = Some(32_000);
         start_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
@@ -1505,7 +1619,7 @@ thinking_budget = {thinking_budget}
         );
         let mut app = make_app();
         start_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert!(
@@ -1544,7 +1658,7 @@ thinking_budget = {thinking_budget}
 
         let mut app = make_app();
         start_subagent_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert!(matches!(
@@ -1583,7 +1697,7 @@ thinking_budget = {thinking_budget}
 
         let mut app = make_app();
         start_subagent_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j'))); // kimi-for-coding
+        handle_select_mode(&mut app, key(KeyCode::Down)); // kimi-for-coding
         handle_select_mode(&mut app, key(KeyCode::Enter)); // open budget picker
         handle_select_mode(&mut app, key(KeyCode::Enter)); // confirm prefocused 32K
 
@@ -1666,7 +1780,7 @@ thinking_budget = {thinking_budget}
 
         let mut app = make_app();
         start_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j'))); // k3-256k
+        handle_select_mode(&mut app, key(KeyCode::Down)); // k3-256k
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert!(matches!(
@@ -1753,9 +1867,9 @@ thinking_budget = {thinking_budget}
         );
         let mut app = make_app();
         start_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
@@ -1808,7 +1922,7 @@ thinking_budget = {thinking_budget}
         assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
 
         start_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Esc));
 
@@ -1827,9 +1941,9 @@ thinking_budget = {thinking_budget}
         );
         let mut app = make_app();
         start_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert!(matches!(
@@ -1855,9 +1969,9 @@ thinking_budget = {thinking_budget}
         let original = std::fs::read_to_string(&path).unwrap();
         let mut app = make_app();
         start_model_picker(&mut app);
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
-        handle_select_mode(&mut app, key(KeyCode::Char('j')));
+        handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
         assert!(matches!(
             app.select_kind,

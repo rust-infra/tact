@@ -182,12 +182,17 @@ pub struct Messages {
     pub popup_scroll_hint: &'static str,
     pub palette_empty: &'static str,
     pub select_empty: &'static str,
+    /// Shown instead of `select_empty` when a filter is active and matches
+    /// nothing — "no options" would be a lie about a list that has options.
+    pub select_no_match: &'static str,
     pub select_arrow: &'static str,
     /// Select popup footer hints (keys are rendered in accent, labels muted).
     pub select_hint_nav: &'static str,
     pub select_hint_confirm: &'static str,
     pub select_hint_cancel: &'static str,
     pub select_hint_toggle: &'static str,
+    /// Label for the `a-z` hint on filterable (local) picks.
+    pub select_hint_filter: &'static str,
     pub pending_cancel_btn: &'static str,
     pub subagent_cancel_btn: &'static str,
 
@@ -515,11 +520,13 @@ impl Messages {
             popup_scroll_hint: " [j/k] Scroll ",
             palette_empty: "No matching commands",
             select_empty: "No options",
+            select_no_match: "No matching options",
             select_arrow: "▶ ",
             select_hint_nav: " Select ",
             select_hint_confirm: " Confirm ",
             select_hint_cancel: " Cancel ",
             select_hint_toggle: " Toggle ",
+            select_hint_filter: " Filter ",
             pending_cancel_btn: "Cancel",
             subagent_cancel_btn: "Cancel",
 
@@ -819,11 +826,13 @@ impl Messages {
             popup_scroll_hint: " [j/k] 滚动 ",
             palette_empty: "没有匹配的命令",
             select_empty: "无选项",
+            select_no_match: "没有匹配的选项",
             select_arrow: "▶ ",
             select_hint_nav: " 选择 ",
             select_hint_confirm: " 确认 ",
             select_hint_cancel: " 取消 ",
             select_hint_toggle: " 勾选 ",
+            select_hint_filter: " 筛选 ",
             pending_cancel_btn: "取消",
             subagent_cancel_btn: "取消",
 

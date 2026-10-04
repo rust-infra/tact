@@ -73,7 +73,10 @@ through `TestBackend`, and prints the frame.
 `CodeBlock` / `MermaidBlock` / popup states · `PendingMessage`
 
 **Widgets** (`widgets/`): `ToolWidget` (builder → `ToolRenderOutput`),
-`HelpWidget`, `PopupWidget`, `SelectPopupWidget`.
+`HelpWidget`, `PopupWidget`, `ListPopup` (the shared list popup: geometry,
+chrome, scroll window, focused-row style, empty hint — see
+`docs/superpowers/specs/2026-10-04-list-popup-component-design.md`),
+`SelectPopupWidget` (a `ListPopup` with a prompt header).
 
 **Theme / i18n:** `Theme` + `ThemeName` (12 schemes), `Messages` by
 `Language` (EN/ZH).

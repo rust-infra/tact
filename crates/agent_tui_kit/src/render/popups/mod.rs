@@ -18,7 +18,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear},
+    widgets::{Block, Borders, Clear},
 };
 
 use crate::{
@@ -141,24 +141,6 @@ pub fn render_popup_chrome(
         block = block.title_bottom(Line::from(footer_spans).alignment(Alignment::Center));
     }
 
-    frame.render_widget(block, popup_area);
-    popup_inner(popup_area)
-}
-
-/// Clear + bordered frame for a list-style popup; returns the inner content area.
-pub fn render_list_popup_chrome(
-    frame: &mut Frame,
-    popup_area: Rect,
-    title: impl Into<ratatui::text::Line<'static>>,
-    border_type: BorderType,
-    bg: ratatui::style::Color,
-) -> Rect {
-    frame.render_widget(Clear, popup_area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(border_type)
-        .title(title)
-        .style(Style::default().bg(bg));
     frame.render_widget(block, popup_area);
     popup_inner(popup_area)
 }

@@ -43,27 +43,26 @@ pub async fn agent_loop(&mut self, initial_user_message: Option<Message>) -> Res
 ## 3. 一次迭代（LLM Turn）
 
 ```mermaid
-flowchart TD
-    Prompt[build_system_prompt<br/>每个 task 一次] --> Start
-    Start([循环顶]) --> Cancel{cancel_flag?}
-    Cancel -- yes --> ExitCancel[return Ok]
-    Cancel -- no --> Micro[micro_compact]
-    Micro --> Limit{context > limit?}
-    Limit -- yes --> AutoCompact[compact_history]
-    Limit -- no --> Stream[stream_message + tools + thinking]
-    AutoCompact --> Stream
-    Stream -->|Err| Recovery[recovery 分支]
-    Recovery --> Stream
-    Stream -->|Ok| PersistA[persist assistant message]
-    PersistA --> MaxTok{stop = MaxTokens?}
-    MaxTok -- yes --> Cont[continue recovery 路径]
-    Cont --> Stream
-    MaxTok -- no --> EndTurn{stop ≠ ToolUse?}
-    EndTurn -- yes --> ExitOk[return Ok]
-    EndTurn -- no --> Tools[execute_tool_call]
-    Tools --> PersistT[persist tool results]
-    PersistT --> Start
+graph TD
+    a_prompt[build_system_prompt 每个 task 一次] --> b_start[循环顶]
+    b_start --> c_cancel{cancel_flag?}
+    c_cancel -->|yes| d_exit[return Ok]
+    c_cancel -->|no| e_micro[micro_compact]
+    e_micro --> f_limit{context > limit?}
+    f_limit -->|yes| g_auto[compact_history]
+    f_limit -->|no| h_stream[stream_message + tools + thinking]
+    g_auto --> h_stream
+    h_stream -->|Err| i_recovery[recovery 分支]
+    h_stream -->|Ok| j_persist[persist assistant message]
+    j_persist --> k_max{stop = MaxTokens?}
+    k_max -->|yes| l_cont[continue recovery 路径]
+    k_max -->|no| m_end{stop ≠ ToolUse?}
+    m_end -->|yes| n_exit[return Ok]
+    m_end -->|no| o_tools[execute_tool_call]
+    o_tools --> p_persist[persist tool results]
 ```
+
+> `recovery 分支`、`continue recovery 路径` 与 `persist tool results` 之后都**回到循环顶**；渲染器不支持环回边，故省略，环回语义以本节正文为准。
 
 ### LLM 前步骤
 

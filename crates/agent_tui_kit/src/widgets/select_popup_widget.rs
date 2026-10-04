@@ -1,13 +1,18 @@
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Widget},
+    widgets::Widget,
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::{render::util::wrap_line, state::SelectPopup};
+use crate::{
+    render::util::wrap_line,
+    state::SelectPopup,
+    theme::Theme,
+    widgets::list_popup::{ListPopup, ListRow, SelectionStyle, window_offset},
+};
 
 /// Layout result for the select popup.
 pub struct SelectPopupLayout {
@@ -15,9 +20,13 @@ pub struct SelectPopupLayout {
     pub popup_area: Rect,
     /// Prompt lines (already truncated to fit the popup).
     pub prompt_lines: Vec<Line<'static>>,
+    /// The filter line (`> query`), present exactly when the popup is
+    /// filterable. It is reserved even while empty so the popup does not jump a
+    /// row on the first keystroke.
+    pub query_line: Option<Line<'static>>,
     /// Number of option rows visible inside the popup.
     pub visible: usize,
-    /// Scroll offset into `options` (index of the first visible option).
+    /// Scroll offset into the filtered options (index of the first visible one).
     pub offset: usize,
 }
 
@@ -26,7 +35,8 @@ pub struct SelectPopupLayout {
 /// The popup height is capped by `area`. The visible option window is derived
 /// from the focused index so the selected row is always on screen — once the
 /// option list overflows the popup, the window scrolls to keep the selection
-/// in view (same behavior as the slash-command popup for long lists).
+/// in view (the shared rule in [`window_offset`], as in every other list
+/// popup).
 ///
 /// `footer_width` is the display width of the bottom-border navigation hint;
 /// the popup is widened to fit it so the hint is never clipped.
@@ -36,8 +46,10 @@ pub fn select_popup_layout(
     fg_color: Color,
     footer_width: u16,
 ) -> SelectPopupLayout {
-    let option_count = state.options.len().max(1);
     let max_w = area.width.saturating_sub(4).max(1);
+    // The filter line is a header row of its own, always present for a
+    // filterable popup.
+    let query_rows = u16::from(state.filterable());
 
     // ~50% of screen width; still at least fit options / a readable minimum.
     const MIN_WIDTH: u16 = 36;
@@ -65,10 +77,14 @@ pub fn select_popup_layout(
     );
 
     let max_popup_h = area.height.saturating_sub(2).max(1);
-    // borders(2) + separator(1) + at least 1 list row; the navigation hint
-    // lives in the bottom border (`title_bottom`), so it consumes no content
-    // height.
-    let max_prompt_rows = max_popup_h.saturating_sub(2 + 1 + 1).max(1) as usize;
+    // borders(2) + separator(1) + filter line + at least 1 list row; the
+    // navigation hint lives in the bottom border (`title_bottom`), so it
+    // consumes no content height.
+    let header_fixed = 2 + 1 + query_rows;
+    // The prompt is the only elastic part — the filter line and one list row
+    // are not — so on a popup too short for both the prompt is dropped rather
+    // than pushing the focused row off the bottom.
+    let max_prompt_rows = max_popup_h.saturating_sub(header_fixed + 1) as usize;
     if prompt_lines.len() > max_prompt_rows {
         prompt_lines.truncate(max_prompt_rows);
         if let Some(last) = prompt_lines.last_mut() {
@@ -89,89 +105,69 @@ pub fn select_popup_layout(
     }
     let prompt_rows = prompt_lines.len() as u16;
 
-    // The option window must agree with the popup height: if the List were
+    // The option window must agree with the popup height: if the list were
     // sized to the full option count, the bottom rows would be clipped and
     // the selected row could land outside the visible content.
-    let max_list_rows = max_popup_h.saturating_sub(2 + 1 + prompt_rows).max(1) as usize;
-    let visible = option_count.min(max_list_rows);
-    let offset = scroll_offset(state.selected, option_count, visible);
+    let max_list_rows = max_popup_h
+        .saturating_sub(header_fixed + prompt_rows)
+        .max(1) as usize;
+    // The window counts *visible* options: a filter that matches three of
+    // forty rows shows three.
+    let visible_count = state.filtered_indices().len().max(1);
+    let visible = visible_count.min(max_list_rows);
+    let offset = window_offset(visible_count, state.selected, visible);
 
-    let popup_height = (prompt_rows + 1 + visible as u16 + 2).min(max_popup_h);
+    let popup_height = (prompt_rows + query_rows + 1 + visible as u16 + 2).min(max_popup_h);
     let popup_area =
         crate::render::popups::centered_list_popup_area(area, popup_width, popup_height);
 
     SelectPopupLayout {
         popup_area,
         prompt_lines,
+        query_line: (query_rows == 1).then(|| {
+            Line::from(vec![
+                Span::styled("> ", Style::default().fg(fg_color)),
+                Span::styled(state.query.clone(), Style::default().fg(fg_color)),
+            ])
+        }),
         visible,
         offset,
     }
 }
 
-/// Keep `selected` inside `[offset, offset + visible)` once the list overflows
-/// the popup. The selected row is pinned near the bottom with ~2 context rows
-/// below it, matching the slash-command popup anchor.
-fn scroll_offset(selected: usize, option_count: usize, visible: usize) -> usize {
-    if option_count <= visible {
-        return 0;
-    }
-    let max_offset = option_count.saturating_sub(visible);
-    let pin = visible.saturating_sub(3).min(visible.saturating_sub(1));
-    selected.saturating_sub(pin).min(max_offset)
-}
-
 /// Selection popup widget: displays prompt and option list centered, supports keyboard/mouse selection.
+///
+/// The list itself — window, focused-row band, empty hint — is the shared
+/// [`ListPopup`]. This type only supplies the prompt header and the option rows.
 pub struct SelectPopupWidget<'a> {
     state: &'a SelectPopup,
-    /// Highlight background color for selected item.
-    highlight_color: Color,
-    /// Normal option foreground color.
-    fg_color: Color,
-    /// Secondary text (the empty hint), so it stays legible on every theme.
-    muted_color: Color,
-    /// Popup background color.
-    bg_color: Color,
+    theme: &'a Theme,
     /// Hint text when there are no options.
     empty_text: &'static str,
     /// Selected item prefix arrow.
     arrow: &'static str,
-    /// Border type for the popup frame.
-    border_type: BorderType,
     /// Navigation hint rendered in the bottom border (e.g. `↑↓/j/k`).
-    footer: Option<ratatui::text::Line<'static>>,
+    footer: Option<Line<'static>>,
 }
 
 impl<'a> SelectPopupWidget<'a> {
     pub fn new(
         state: &'a SelectPopup,
-        highlight_color: Color,
-        fg_color: Color,
-        muted_color: Color,
-        bg_color: Color,
+        theme: &'a Theme,
         empty_text: &'static str,
         arrow: &'static str,
     ) -> Self {
         SelectPopupWidget {
             state,
-            highlight_color,
-            fg_color,
-            muted_color,
-            bg_color,
+            theme,
             empty_text,
             arrow,
-            border_type: BorderType::Rounded,
             footer: None,
         }
     }
 
-    /// Set a custom border type.
-    pub fn with_border_type(mut self, border_type: BorderType) -> Self {
-        self.border_type = border_type;
-        self
-    }
-
     /// Set the navigation hint rendered in the bottom border (styled spans).
-    pub fn with_footer(mut self, footer: ratatui::text::Line<'static>) -> Self {
+    pub fn with_footer(mut self, footer: Line<'static>) -> Self {
         self.footer = Some(footer);
         self
     }
@@ -184,103 +180,86 @@ impl<'a> SelectPopupWidget<'a> {
     /// Outer popup rect for the current state/area (used by the app layer to
     /// route mouse-wheel scrolls to the popup).
     pub fn popup_area(&self, area: Rect) -> Rect {
-        select_popup_layout(self.state, area, self.fg_color, self.footer_width()).popup_area
+        select_popup_layout(self.state, area, self.theme.fg, self.footer_width()).popup_area
+    }
+
+    /// The option rows the filter leaves visible, with the focus marker applied.
+    fn rows(&self) -> Vec<ListRow<'static>> {
+        self.state
+            .filtered_indices()
+            .into_iter()
+            .map(|i| {
+                let opt = &self.state.options[i];
+                let cursor = if i == self.state.selected {
+                    self.arrow
+                } else {
+                    "  "
+                };
+                let text = if self.state.multi {
+                    let mark = if self.state.checked.get(i).copied().unwrap_or(false) {
+                        "[x]"
+                    } else {
+                        "[ ]"
+                    };
+                    format!("{cursor}{mark} {opt}")
+                } else {
+                    format!("{cursor}{opt}")
+                };
+                // No focus-dependent color here: `SelectionStyle::Highlight`
+                // owns the focused row's foreground, so every row is built as
+                // if it were unfocused.
+                ListRow::item(vec![Span::styled(text, Style::default().fg(self.theme.fg))])
+            })
+            .collect()
     }
 }
 
 impl Widget for SelectPopupWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer)
-    where
-        Self: Sized,
-    {
+    fn render(self, area: Rect, buf: &mut Buffer) {
         let SelectPopupLayout {
             popup_area,
             prompt_lines,
-            visible,
-            offset,
-        } = select_popup_layout(self.state, area, self.fg_color, self.footer_width());
-        let prompt_rows = prompt_lines.len() as u16;
-
-        Clear.render(popup_area, buf);
-
+            query_line,
+            ..
+        } = select_popup_layout(self.state, area, self.theme.fg, self.footer_width());
+        let rows = self.rows();
+        // `selected` is an index into `options`; the window and the highlight
+        // need its position among the *visible* rows.
+        let selected_row = self
+            .state
+            .filtered_indices()
+            .iter()
+            .position(|&i| i == self.state.selected)
+            .unwrap_or(0);
         let title = if self.state.multi {
             " Multi-select "
         } else {
             " Select "
         };
-        let mut block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(self.border_type)
-            .title(title)
-            .style(Style::default().bg(self.bg_color));
-        if let Some(footer) = self.footer.clone() {
-            block = block.title_bottom(footer);
+
+        let mut header = prompt_lines;
+        if let Some(query_line) = query_line {
+            header.push(query_line);
         }
-        block.render(popup_area, buf);
 
-        let inner = crate::render::popups::popup_inner(popup_area);
-        let constraints = vec![
-            Constraint::Length(prompt_rows),
-            Constraint::Length(1),
-            Constraint::Length(visible as u16),
-        ];
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(constraints)
-            .split(inner);
-
-        Paragraph::new(prompt_lines).render(chunks[0], buf);
-
-        let items: Vec<ListItem> = if self.state.options.is_empty() {
-            vec![ListItem::new(Span::styled(
-                self.empty_text,
-                Style::default().fg(self.muted_color),
-            ))]
-        } else {
-            let selected = self
-                .state
-                .selected
-                .min(self.state.options.len().saturating_sub(1));
-            let end = (offset + visible).min(self.state.options.len());
-            self.state.options[offset..end]
-                .iter()
-                .enumerate()
-                .map(|(i, opt)| {
-                    let abs_i = offset + i;
-                    let is_focused = abs_i == selected;
-                    let style = if is_focused {
-                        // `fg` over `highlight`, not a literal white: on a
-                        // light theme the highlight is bright and white text
-                        // on it is the popup's only unreadable row.
-                        Style::default().bg(self.highlight_color).fg(self.fg_color)
-                    } else {
-                        Style::default().fg(self.fg_color)
-                    };
-                    let cursor = if is_focused { self.arrow } else { "  " };
-                    let text = if self.state.multi {
-                        let mark = if self.state.checked.get(abs_i).copied().unwrap_or(false) {
-                            "[x]"
-                        } else {
-                            "[ ]"
-                        };
-                        format!("{cursor}{mark} {opt}")
-                    } else {
-                        format!("{cursor}{opt}")
-                    };
-                    ListItem::new(Span::styled(text, style))
-                })
-                .collect()
-        };
-
-        List::new(items)
-            .block(Block::default())
-            .render(chunks[2], buf);
+        let mut popup = ListPopup::new(self.theme, &rows, popup_area.width, popup_area.height)
+            .title(title)
+            .selected_row(selected_row)
+            .empty_text(self.empty_text)
+            .selection(SelectionStyle::Highlight)
+            .bg(Some(self.theme.bottom_bar_bg))
+            .header(header);
+        if let Some(footer) = self.footer {
+            popup = popup.footer(footer);
+        }
+        popup.render(area, buf);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ThemeName;
 
     fn state_with(n: usize, selected: usize) -> SelectPopup {
         SelectPopup {
@@ -290,10 +269,14 @@ mod tests {
         }
     }
 
+    fn layout(state: &SelectPopup, area: Rect, footer_width: u16) -> SelectPopupLayout {
+        select_popup_layout(state, area, Theme::from(ThemeName::Dark).fg, footer_width)
+    }
+
     #[test]
     fn layout_window_shows_all_options_when_short() {
         let state = state_with(5, 3);
-        let layout = select_popup_layout(&state, Rect::new(0, 0, 100, 30), Color::White, 0);
+        let layout = layout(&state, Rect::new(0, 0, 100, 30), 0);
         assert_eq!(layout.visible, 5);
         assert_eq!(layout.offset, 0);
     }
@@ -303,8 +286,8 @@ mod tests {
         let state = state_with(5, 0);
         // Short options give a narrow popup; a wide footer must widen it so
         // the bottom-border hint is not clipped.
-        let no_footer = select_popup_layout(&state, Rect::new(0, 0, 100, 30), Color::White, 0);
-        let wide_footer = select_popup_layout(&state, Rect::new(0, 0, 100, 30), Color::White, 60);
+        let no_footer = layout(&state, Rect::new(0, 0, 100, 30), 0);
+        let wide_footer = layout(&state, Rect::new(0, 0, 100, 30), 60);
         assert!(
             wide_footer.popup_area.width > no_footer.popup_area.width,
             "popup must widen to fit the footer (no_footer={}, wide_footer={})",
@@ -316,7 +299,7 @@ mod tests {
     #[test]
     fn layout_window_scrolls_to_keep_selection_visible() {
         let state = state_with(30, 25);
-        let layout = select_popup_layout(&state, Rect::new(0, 0, 100, 30), Color::White, 0);
+        let layout = layout(&state, Rect::new(0, 0, 100, 30), 0);
         assert!(
             layout.visible < 30,
             "long list must cap the visible window (visible={})",
@@ -335,7 +318,7 @@ mod tests {
         let state = state_with(30, 25);
         // A 13-row terminal yields a ~7-row main area (status + input + bottom
         // bars take the rest); 7 rows fit exactly one option row.
-        let layout = select_popup_layout(&state, Rect::new(0, 0, 100, 7), Color::White, 0);
+        let layout = layout(&state, Rect::new(0, 0, 100, 7), 0);
         assert_eq!(layout.visible, 1, "7-row main area fits one list row");
         assert_eq!(layout.offset, 25, "window must jump to the selected row");
     }
@@ -343,7 +326,7 @@ mod tests {
     #[test]
     fn layout_window_clamps_at_the_end() {
         let state = state_with(30, 29);
-        let layout = select_popup_layout(&state, Rect::new(0, 0, 100, 30), Color::White, 0);
+        let layout = layout(&state, Rect::new(0, 0, 100, 30), 0);
         assert_eq!(
             layout.offset + layout.visible,
             30,

@@ -95,27 +95,33 @@ pub fn backoff_delay(attempt: u32) -> Duration {
 
 ## 5. agent_loop 中的恢复流程
 
+**发送失败时按错误文本分类：**
+
 ```mermaid
-flowchart TB
-    Send[stream_message] -->|Ok| Reset[transport_attempts = 0]
-    Send -->|Err| Classify{分类错误文本}
-
-    Classify -->|prompt 过长<br/>attempts < 3| Compact[compact_history]
-    Compact --> Retry([继续循环])
-
-    Classify -->|瞬态传输<br/>attempts < 3| Sleep[sleep backoff_delay]
-    Sleep --> Retry
-
-    Classify -->|均不匹配，或<br/>次数用尽| Fail([return Err])
-
-    Reset --> Stop{stop_reason?}
-    Stop -->|MaxTokens<br/>attempts < 3| Cont[执行 pending tools，<br/>选择续写提示]
-    Cont --> Retry
-    Stop -->|ToolUse| Tools[execute_tool_call]
-    Tools --> Retry
-    Stop -->|refusal| Refuse([return Err])
-    Stop -->|end_turn / stop_sequence| Done([return Ok])
+graph TD
+    a_send[stream_message] -->|Ok| b_reset[transport_attempts = 0]
+    a_send -->|Err| c_classify{分类错误文本}
+    c_classify --> d_compact[过长 compact_history]
+    c_classify --> e_sleep[瞬态 sleep backoff_delay]
+    c_classify --> f_fail[其他或次数用尽 return Err]
+    d_compact --> z_retry[↩ 继续循环]
+    e_sleep --> z_retry
 ```
+
+**正常返回后按 `stop_reason` 收尾：**
+
+```mermaid
+graph TD
+    a_reset[transport_attempts = 0] --> b_stop{stop_reason?}
+    b_stop --> c_cont[MaxTokens 续写]
+    b_stop --> d_tools[ToolUse 执行]
+    b_stop --> e_refuse[refusal 中止]
+    b_stop --> f_done[end_turn 收尾]
+    c_cont --> z_retry[↩ 继续循环]
+    d_tools --> z_retry
+```
+
+（两张图各自成环回到循环顶；渲染器不支持环，故用 `↩ 继续循环` 表示。）
 
 每次恢复都会在 TUI 中发出一行 `AgentUpdate::Info`，例如：
 

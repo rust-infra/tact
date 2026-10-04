@@ -8,65 +8,33 @@ Skills 与 [持久化记忆](./03_chapter_memory_zh.md) 相关但不同——ski
 
 ## 1. Skills 的用途
 
-Skill 是一份 Markdown 文档，教 agent 如何完成专项任务（编码规范、部署步骤、领域工作流）。Tact **不会**把完整 skill 正文注入每一轮提示——那会撑爆上下文。而是：
+Skill 是一份 Markdown 文档，教 agent 如何完成专项任务（编码规范、部署步骤、领域工作流）。默认情况下 Tact **不会**把完整 skill 正文注入每一轮提示——那会撑爆上下文。而是：
 
 | 阶段 | 模型看到的内容 |
 |------|----------------|
-| 每轮（系统提示词） | 通过 `describe_available()` 得到的 skill **名称与描述** |
+| 每轮（系统提示词） | 默认是 `describe_available()` 得到的 skill **名称与描述**；开启 `[agent].skill_body_auto_inject` 后改为 `describe_available_with_body()` 的**全文** |
 | 按需（`load_skill` 工具） | 包在 `<skill>` XML 标签中的全文（工具结果） |
 | TUI 斜杠 `/skill-name` | 调用时在**用户任务**中注入同样的 `<skill>` 包装（见 [§7](#7-tui-斜杠调用) 与 [TUI](./23_chapter_tui_zh.md)） |
 
-启动时只有摘要；模型调用 `load_skill` 或用户通过斜杠调用时才加载全文。Responses adapter 额外施加更严格的 skill 加载策略；见 [LLM Provider Layer](./22_chapter_llm_zh.md#62-responses-api)。
+启动时只有摘要；模型调用 `load_skill` 或用户通过斜杠调用时才加载全文。`[agent].skill_body_auto_inject`（默认 `false`，CLI `--skill-body-auto-inject`）把这层摘要整体换成全文，代价是每一轮请求都携带所有 skill 正文——除非某个 skill 必须无条件留在上下文中，否则保持默认；见 [配置](./21_chapter_config_zh.md)。Responses adapter 额外施加更严格的 skill 加载策略；见 [LLM Provider Layer](./22_chapter_llm_zh.md#62-responses-api)。
 
 ---
 
 ## 2. 架构概览
 
 ```mermaid
-graph TB
-    subgraph Disk["Skill 根目录"]
-        T["workdir/.tact/skills/**/SKILL.md"]
-        U["~/.tact/skills/**/SKILL.md"]
-        A["~/.agents/skills/**/SKILL.md"]
-        C["agent.skill_dirs 配置"]
-        I["~/.tact/plugins/cache/*/*/*/skills/*/SKILL.md"]
-    end
-
-    subgraph Startup["会话启动"]
-        TP[TactPath.skill_search_dirs]
-        SR[SkillRegistry.load_skills]
-        TP --> SR
-        Disk --> SR
-        I --> SR
-    end
-
-    subgraph Prompt["每个任务"]
-        BSP[build_system_prompt]
-        DA[describe_available]
-        BSP --> DA
-        DA --> SP["# Available skills"]
-    end
-
-    subgraph Tool["按需"]
-        LS[load_skill 工具]
-        LFT[load_full_text]
-        LS --> LFT
-        LFT --> Ctx["工具结果 → 对话"]
-    end
-
-    subgraph Tui["TUI 斜杠"]
-        SE[SkillEntry 列表]
-        INV[handlers/skills.rs invoke]
-        SUB[submit_user_task]
-        SE --> INV
-        INV --> SUB
-        SUB --> UserMsg["用户消息 → agent loop"]
-    end
-
-    SR --> DA
-    SR --> LFT
-    SR --> SE
+graph TD
+    s1_agents[全局 agents] --> reg
+    s2_tact[个人 tact] --> reg
+    s3_project[项目] --> reg
+    s4_config[配置] --> reg
+    s5_plugin[插件] --> reg
+    reg[SkillRegistry 共享] --> c1_prompt[系统提示词 摘要]
+    reg --> c2_tool[load_skill 全文]
+    reg --> c3_slash[TUI 斜杠 调用]
 ```
+
+> **写法说明**：Tact 自己的 mermaid 渲染器（`ratatui-markdown`）只吃扁平的 `graph TD/LR`——`[方框]` / `(圆角)` / `{菱形}` / `-->` / `---` 这一层。`subgraph` 不被识别，会被当成名为 `subgraph` / `end` 的普通节点画成一堆碎框；`-.->` 会让整张图解析失败并回退成代码块；标签里的 `&lt;` 会原样显示（直接写 `<workdir>` 即可）。所以这里不用子图：五个发现根扇入注册表，再扇出到三条消费路径；节点 id 的 `s1_` / `c1_` 前缀只是为了让渲染器按 id 排序时保持「加载顺序」与「消费顺序」。
 
 发现根目录（最具体者在前）：
 
@@ -95,9 +63,10 @@ graph TB
 pub struct SkillManifest {
     pub name: String,
     pub description: String,
-    pub path: PathBuf,   // 磁盘上 SKILL.md 的路径
 }
 ```
+
+**刻意收窄**：只保留真正被读取的两个字段。`path` 与 Claude Code 的 `argument-hint` / `allowed-tools` / `model` 曾在这里，但全仓库没有任何消费者——`pub` 字段在库 crate 里不触发 `dead_code`，所以编译器不会提示。存一个永不生效的字段等于向作者承诺它生效，2026-10-04 一并删除（见 [Ch 26](./26_chapter_issue_zh.md)）。要加字段，就在同一次改动里带上读它的代码。
 
 ### SkillDocument
 
@@ -141,6 +110,8 @@ description: Comprehensive Rust coding guidelines
 | `name` | `SKILL.md` 的父目录名 |
 | `description` | `"No description"` |
 
+Claude Code 的 `argument-hint` / `allowed-tools` / `model` **不解析、不存储、不生效**：`SkillFrontmatter` 只声明 `name` 与 `description`，其余键由 serde 静默忽略。它们此前也只是被存进 `SkillManifest` 而没有读取者；留下一个"看起来支持"的字段会让作者以为工具被限制了、模型被覆盖了（2026-10-04 删除，见 [Ch 26](./26_chapter_issue_zh.md)）。因此带这些键的 Claude skill 照常加载，只是这些键什么也不做。
+
 **无** frontmatter 的文件仍可加载——整文件作为正文（trim 后）。CRLF 行尾会规范化。
 
 开放 Agent Skills 规范**未**定义参数占位符。Tact 的 TUI 与 Claude Code 一致：调用时用裸 `$ARGUMENTS` 替换；若缺失则在 skill 正文内追加 `ARGUMENTS: …`（见 [§7](#7-tui-斜杠调用)）。包装在客户端侧完成；系统提示词告诉模型如何理解斜杠调用的 `<skill>` / `ARGUMENTS:`。
@@ -153,7 +124,7 @@ description: Comprehensive Rust coding guidelines
 - 匹配文件名恰好为 `SKILL.md` 的文件
 - 插入以 skill 名称为 key 的 `HashMap<String, SkillDocument>`
 
-随后，`get_skill_registry()` 会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill 名称添加前缀（`plugin:skill`）。**插件的扫描只有一层，不递归**：只读 `skills/<name>/SKILL.md`，更深的 `skills/group/<name>/SKILL.md` 会被忽略且没有任何提示。这与该格式来源的 Claude Code 插件布局一致——它与独立根之间的深度差异是刻意为之，由 `plugin_skills_only_load_direct_skill_children`（`skill/mod.rs`）固定住。同一插件的旧式 `commands/*.md` 斜杠命令随后加载（`load_plugin_commands`），同样是扁平的：只取 `commands/` 下的直接 `.md` 文件，绝不进子目录。命令名取文件 stem（`commands/commit.md` → `plugin:commit`），frontmatter 的 `description` / `argument-hint` / `allowed-tools` / `model` 解析进 manifest（后三者仅存储，v1 不强制执行）。
+随后，`get_skill_registry()` 会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill 名称添加前缀（`plugin:skill`）。**插件的扫描只有一层，不递归**：只读 `skills/<name>/SKILL.md`，更深的 `skills/group/<name>/SKILL.md` 会被忽略且没有任何提示。这与该格式来源的 Claude Code 插件布局一致——它与独立根之间的深度差异是刻意为之，由 `plugin_skills_only_load_direct_skill_children`（`skill/mod.rs`）固定住。同一插件的旧式 `commands/*.md` 斜杠命令随后加载（`load_plugin_commands`），同样是扁平的：只取 `commands/` 下的直接 `.md` 文件，绝不进子目录。命令名取文件 stem（`commands/commit.md` → `plugin:commit`），frontmatter 与独立 skill 走同一条解析（同样只认 `name` / `description`）。
 
 重名的独立 skill：后扫描的根**覆盖**先前的——无警告。同一根内，后遍历到的条目也会覆盖。插件 skill 位于独立的 `plugin:skill` 命名空间中。
 
@@ -166,16 +137,20 @@ description: Comprehensive Rust coding guidelines
 | `new(skill_dirs)` | 在一个或多个根上创建空注册表 |
 | `load_skills()` | 扫描所有根并填充 map |
 | `describe_available()` | 排序后的 `"- name: description"` 列表，供系统提示词使用 |
+| `describe_available_with_body()` | 同上，但每项是完整 `<skill>` 块（`skill_body_auto_inject` 开启时使用） |
 | `load_full_text(name)` | 完整 `<skill>` 块，或列出可用名称的错误字符串 |
 | `skills()` | 只读 map 访问 |
+| `skill_dirs()` | 只读根目录访问 |
 
-便捷构造函数：
+便捷构造函数与共享句柄：
 
 ```rust
 pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry>
+pub fn shared_skill_registry(workdir: impl AsRef<Path>) -> Result<SharedSkillRegistry>
+pub fn lock_skills(reg: &SharedSkillRegistry) -> MutexGuard<'_, SkillRegistry> // 从 poison 恢复
 ```
 
-在 `interactive.rs` / `headless.rs` 启动时使用；结果包装为 `ToolContext` 上的 `Arc<SkillRegistry>`。交互模式还将注册表条目映射为 TUI 的 `SkillEntry { name, description, body }`。
+`shared_skill_registry()` 在 `interactive.rs` / `headless.rs` 启动时使用；它内部调用 `get_skill_registry()`——先扫内置根，再按需追加 `[agent].skill_dirs`，最后加载已安装插件根——再把结果包进 `Arc<Mutex<_>>`。交互模式把该共享句柄放到 `ToolContext` 上——agent 工具与 TUI 共用同一把锁，`/skill reload` 因此对两边同时生效。TUI 的 `SkillEntry { name, description, body }` 是注册表条目的投影。
 
 ---
 
@@ -184,7 +159,14 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry>
 ### 系统提示词
 
 ```rust
-.skills_available(self.tool_context.skill_registry.describe_available())
+.skills_available({
+    let reg = crate::skill::lock_skills(&self.tool_context.skill_registry);
+    if self.agent_settings.skill_body_auto_inject {
+        reg.describe_available_with_body()
+    } else {
+        reg.describe_available()
+    }
+})
 ```
 
 在模板中渲染为 `# Available skills`。见 [系统提示词](./04_chapter_prompt_zh.md)——该节在动态边界之上（除非会话中途在磁盘上增删 skills 且未 reload，否则基本稳定）。
@@ -198,7 +180,7 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry>
 ```rust
 #[tool(name = "load_skill", description = "Load the full body of a named skill…")]
 pub async fn load_skill(ctx: ToolContext, input: LoadSkillInput) -> Result<String> {
-    Ok(ctx.skill_registry.load_full_text(&input.name))
+    Ok(crate::skill::lock_skills(&ctx.skill_registry).load_full_text(&input.name))
 }
 ```
 
@@ -244,11 +226,11 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 3. 系统提示词 `# Available skills` 节说明斜杠调用的 `<skill>` / `ARGUMENTS:`，避免模型与 `load_skill` 元数据混淆。
 4. 共享的 `submit_user_task` 与正常 Enter 提交一样驱动 Planning / 用户气泡 / 历史。
 
-`/skill reload` 将 skill 根重新扫描到 TUI 与 agent `ToolContext` **共享**的 `Arc<Mutex<SkillRegistry>>`，刷新 TUI `SkillEntry` 列表并 bump 视觉缓存。下一任务的系统提示词 skill 摘要（及 `load_skill`）因此看到新注册表，无需重启。
+`/skill reload` 将 skill 根重新扫描到 TUI 与 agent `ToolContext` **共享**的 `Arc<Mutex<SkillRegistry>>`，刷新 TUI `SkillEntry` 列表并 bump 视觉缓存。重扫在 `spawn_blocking` 里跑（扫描时持注册表锁，且同一时刻只允许一个在飞），结果经 oneshot 回到事件循环再落地，因此不会卡住 UI。下一任务的系统提示词 skill 摘要（及 `load_skill`）因此看到新注册表，无需重启。
 
 成功的 `/plugin install <plugin>@<marketplace>`、`/plugin uninstall <plugin>`、`/plugin update <plugin>` 与 `/plugin reload` 会在 worker 完成后执行相同的共享刷新。失败操作保持 registry 不变。插件提供的名称可包含 `:`（例如 `/superpowers:brainstorming`），刷新后仍按普通 slash skill 调用。
 
-高亮：`/skill-name` 使用 accent+bold；尾随参数使用主题前景色（`render/slash_style.rs`），输入框与用户日志行均如此。与内置命令冲突的名称不参与高亮（与面板一致）。
+高亮：`/skill-name` 使用 accent+bold；尾随参数使用主题前景色（纯函数在 `agent_tui_kit::render::slash_style`，`crates/tui/src/render/slash_style.rs` 只是注入本机内置命令表的薄封装），输入框与用户日志行均如此。与内置命令冲突的名称不参与高亮（与面板一致）。
 
 与模型在回合中途调用 `load_skill` 不同。
 
@@ -260,7 +242,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 |------|--------|--------|
 | 位置 | `.tact/skills/` + `~/.tact/skills/` + `~/.agents/skills/`（+ 可选 `skill_dirs`） | `~/.tact/memory/`（用户全局） |
 | 格式 | `SKILL.md` + 可选 frontmatter | `{name}.md` + 必需 frontmatter |
-| 提示词注入 | 始终摘要；正文按需 / 斜杠 | 每轮全文（动态节） |
+| 提示词注入 | 默认摘要（`skill_body_auto_inject` 可改为全文）；正文按需 / 斜杠 | 每轮全文（动态节） |
 | 写入路径 | 编辑磁盘文件（无 agent 工具） | `save_memory` 工具 |
 | 典型作者 | 开发者/团队 | 对话中的 agent |
 
@@ -270,17 +252,21 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/skill/mod.rs` | `SkillRegistry`、解析、`describe_available`、`load_full_text` |
+| `crates/tact/src/skill/mod.rs` | `SkillRegistry`、frontmatter 解析、插件扫描、`describe_available` / `describe_available_with_body`、`load_full_text`、`shared_skill_registry` / `lock_skills` |
 | `crates/tact/src/consts.rs` | `tact_skills_dir()`、`skill_search_dirs()` |
 | `crates/tact/src/tool/load_skill.rs` | `load_skill` 原生工具 |
-| `crates/tact/src/agent/mod.rs` | `build_system_prompt` 中的 `describe_available()` |
+| `crates/tact/src/agent/mod.rs` | `build_system_prompt` 中的 `describe_available[_with_body]()`（由 `skill_body_auto_inject` 选择） |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.skill_registry` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `LoadSkillTool` |
-| `crates/tact-ui/src/interactive.rs` | `get_skill_registry()` → TUI 的 `SkillEntry` |
-| `crates/tui/src/handlers/skills.rs` | 斜杠调用、`$ARGUMENTS`、`submit_user_task` |
+| `crates/tact-ui/src/interactive.rs`、`headless.rs` | `shared_skill_registry()` → TUI 的 `SkillEntry` |
+| `crates/tui/src/handlers/skills.rs` | `/skill` 子命令、斜杠调用、`$ARGUMENTS`、`submit_user_task` |
 | `crates/tui/src/handlers/insert.rs` | 斜杠弹出 Enter / Tab 自动补全 |
-| `crates/tui/src/handlers/palette.rs` | 面板 skill → Insert 预填 |
-| `crates/tui/src/render/slash_style.rs` | skill 与参数高亮 |
+| `crates/tui/src/handlers/palette.rs` | 面板 `/skill` → Insert 预填 |
+| `crates/tui/src/widgets/state/slash.rs` | `SlashCommand` 枚举与 `SKILL_SUBCOMMANDS` |
+| `crates/tui/src/widgets/state/slash_command.rs` | `/skill` 子命令 + 每个 skill 的候选列表 |
+| `crates/tui/src/widgets/state/app/background.rs` | off-loop `SkillsSnapshot` 重扫（`SkillsReloadSource`） |
+| `crates/agent_tui_kit/src/render/slash_style.rs` | `style_user_skill_line` / `split_skill_slash` / `SKILL_COMMAND`（纯函数） |
+| `crates/tui/src/render/slash_style.rs` | 注入本机内置命令表，re-export kit 函数 |
 | `crates/tui/src/render/input.rs`、`log.rs` | 应用斜杠高亮 |
 
 ---
@@ -292,9 +278,10 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 | 无 `save_skill` 工具 | 运行时 agent 不能写 skills |
 | 重名静默覆盖 | 扫描时 last-wins，无警告 |
 | 子 agent 无 `load_skill` | 受限工具集无法在隔离 worker 中加载 skills |
-| 无正文大小校验 | 超大 skill 加载时会淹没上下文（斜杠调用亦然） |
+| `load_skill` 无正文大小校验 | 工具路径把全文直接塞进上下文，没有上限；斜杠调用已受 `MAX_INPUT_CHARS`（500k 字符）保护，工具路径没有 |
 | 无 glob / 启用列表 | 所有发现的 skills 都出现在 `describe_available()` 与斜杠面板 |
 | `$ARGUMENTS[N]` 未用 | 索引占位符原样保留（仅 Claude 兼容的裸 `$ARGUMENTS`） |
+| Claude 专属 frontmatter 无效 | `argument-hint` / `allowed-tools` / `model` 不解析、不生效（见 [§4](#4-skillmd-文件格式)）——在 frontmatter 里声明它们既不会限制工具，也不会覆盖模型 |
 
 `/skill reload` 会立即变更共享注册表；下一次 `build_system_prompt` / `load_skill` 读取更新后的 map。
 

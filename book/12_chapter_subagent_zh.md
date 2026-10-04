@@ -280,10 +280,9 @@ let summary = subagent
 ### 13.1 任务依赖——为什么串行
 
 ```mermaid
-flowchart LR
-    T1["Task 1: 纯格式化函数 + i18n 清理<br/>产出: 6 个 icon 常量 + 5 个格式化函数"] --> T2
-    T2["Task 2: 重写 render_bottom_bar<br/>引用: T1 的 helper + Span + DropGroup"] --> T3
-    T3["Task 3: 文档 + Ch 26 日志<br/>反映: 最终代码状态"]
+graph TD
+    a_t1[Task 1 纯格式化函数 + i18n 清理 — 产出 6 个 icon 常量 + 5 个格式化函数] --> b_t2[Task 2 重写 render_bottom_bar — 引用 T1 的 helper]
+    b_t2 --> c_t3[Task 3 文档 + Ch 26 日志 — 反映最终代码状态]
 ```
 
 三个任务都改 `crates/tui/src/render/bar.rs`。SDD 禁止对共享文件并行 dispatch——控制器层面强制。
@@ -387,11 +386,10 @@ Brief 指定了不存在的 `WindowEntry`。实现者正确适配到 `UsageQuota
 Plan 引用了 `FocusedPanel::Plan` 和 `focus_plan` / `bottom_focus_log_plan` 等 i18n 字段。实际代码没有 `Plan` 变体——之前的重构已删除。
 
 ```mermaid
-flowchart LR
-    P["Plan 文档: FocusedPanel::Plan 存在"] -->|过时| A
-    C["仓库: 只有 FocusedPanel::Log, plan.rs 已删除"] -->|现实| A
-    A["实现者适配: FocusedPanel::Log => \"[Log]\""]
-    A --> R["评审者: ✅ 适配正确"]
+graph TD
+    a_p[Plan 文档要求 FocusedPanel::Plan] -->|过时| c_a[实现者适配为 FocusedPanel::Log]
+    b_c[仓库只有 FocusedPanel::Log] -->|现实| c_a
+    c_a --> d_r[评审者 ✅ 适配正确]
 ```
 
 实现者不是机械代码生成器——他们阅读真实代码库，检测偏差，适配。控制器判断适配是否可接受。

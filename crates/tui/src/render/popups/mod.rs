@@ -13,7 +13,6 @@ pub(crate) mod help;
 pub(crate) mod history;
 pub(crate) mod mermaid_popup;
 pub(crate) mod select;
-pub(crate) mod selectable_text {}
 pub(crate) mod slash_command;
 pub(crate) mod subagent_popup;
 pub(crate) mod system_prompt_popup;
@@ -21,7 +20,8 @@ pub(crate) mod task_dag_popup;
 pub(crate) mod thinking_popup;
 
 // Chrome helpers moved to the kit; re-export for the app-layer popups above.
+// The list-style popups no longer need them: `widgets::list_popup::ListPopup`
+// owns their chrome.
 pub(crate) use agent_tui_kit::render::popups::{
-    FooterHint, centered_list_popup_area, centered_popup_area, render_list_popup_chrome,
-    render_popup_chrome,
+    FooterHint, centered_popup_area, render_popup_chrome,
 };

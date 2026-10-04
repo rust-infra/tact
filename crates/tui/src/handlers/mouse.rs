@@ -26,36 +26,96 @@ fn point_in_rect(column: u16, row: u16, area: ratatui::layout::Rect) -> bool {
     column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
 }
 
+/// A list popup that owns the pointer, and therefore the wheel.
+///
+/// One table instead of one `if` per popup: a new list popup costs a variant
+/// here and a hit-area write in its renderer, and can no longer be forgotten
+/// (the palette and the file picker were, for as long as they existed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListPopupTarget {
+    Select,
+    Slash,
+    Palette,
+    FilePicker,
+}
+
+/// The list popup under `(column, row)`, if any.
+fn list_popup_at(app: &App, column: u16, row: u16) -> Option<ListPopupTarget> {
+    use crate::widgets::state::InputMode;
+
+    let hit = |area| point_in_rect(column, row, area);
+    let targets = [
+        (
+            ListPopupTarget::Select,
+            InputMode::Select,
+            app.mouse.select_popup_area,
+        ),
+        (
+            ListPopupTarget::Slash,
+            InputMode::Insert,
+            app.mouse.slash_popup_area,
+        ),
+        (
+            ListPopupTarget::Palette,
+            InputMode::Palette,
+            app.mouse.palette_popup_area,
+        ),
+        (
+            ListPopupTarget::FilePicker,
+            InputMode::FilePicker,
+            app.mouse.file_picker_popup_area,
+        ),
+    ];
+    targets
+        .into_iter()
+        .find(|(popup, mode, area)| {
+            let active = match popup {
+                // The slash popup lives in Insert mode, which is also the mode
+                // for plain typing — its own flag decides.
+                ListPopupTarget::Slash => app.slash_command.active,
+                _ => app.input_mode == *mode,
+            };
+            active && hit(*area)
+        })
+        .map(|(popup, _, _)| popup)
+}
+
+/// Move the focused row of the list popup under the pointer by one step.
+fn scroll_list_popup(app: &mut App, popup: ListPopupTarget, delta: i32) {
+    match popup {
+        ListPopupTarget::Select => {
+            if delta < 0 {
+                app.select.move_up();
+            } else {
+                app.select.move_down();
+            }
+        }
+        ListPopupTarget::Slash => app.step_slash_selection(delta),
+        ListPopupTarget::Palette => app.step_palette_selection(delta),
+        ListPopupTarget::FilePicker => {
+            if delta < 0 {
+                app.file_picker.move_up();
+            } else {
+                app.file_picker.move_down();
+            }
+        }
+    }
+}
+
 /// Dispatch a mouse event (scroll, click, drag, resize).
 pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            if app.input_mode == crate::widgets::state::InputMode::Select
-                && point_in_rect(mouse.column, mouse.row, app.mouse.select_popup_area)
-            {
-                app.select.move_up();
-                return;
-            }
-            if app.slash_command.active
-                && point_in_rect(mouse.column, mouse.row, app.mouse.slash_popup_area)
-            {
-                app.step_slash_selection(-1);
+            if let Some(popup) = list_popup_at(app, mouse.column, mouse.row) {
+                scroll_list_popup(app, popup, -1);
                 return;
             }
             let hit = panel_hit(app, mouse.column, mouse.row);
             handle_mouse_scroll_up(app, hit);
         }
         MouseEventKind::ScrollDown => {
-            if app.input_mode == crate::widgets::state::InputMode::Select
-                && point_in_rect(mouse.column, mouse.row, app.mouse.select_popup_area)
-            {
-                app.select.move_down();
-                return;
-            }
-            if app.slash_command.active
-                && point_in_rect(mouse.column, mouse.row, app.mouse.slash_popup_area)
-            {
-                app.step_slash_selection(1);
+            if let Some(popup) = list_popup_at(app, mouse.column, mouse.row) {
+                scroll_list_popup(app, popup, 1);
                 return;
             }
             let hit = panel_hit(app, mouse.column, mouse.row);
@@ -1179,6 +1239,62 @@ mod tests {
         assert_eq!(
             app.select.selected, 0,
             "wheel outside the select popup must not move selection"
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_over_palette_popup_steps_selection() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.mouse.palette_popup_area = Rect::new(20, 5, 60, 14);
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
+        assert_eq!(
+            app.palette_selected, 1,
+            "wheel down must advance the palette selection"
+        );
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollUp, 30, 8));
+        assert_eq!(
+            app.palette_selected, 0,
+            "wheel up must move the palette selection back"
+        );
+
+        // Wheel outside the recorded popup rect must not move the selection.
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 1, 20));
+        assert_eq!(
+            app.palette_selected, 0,
+            "wheel outside the palette popup must not move selection"
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_over_file_picker_steps_selection() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        app.file_picker.options = vec!["a.rs".into(), "b.rs".into(), "c.rs".into()];
+        app.mouse.file_picker_popup_area = Rect::new(20, 5, 60, 14);
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
+        assert_eq!(
+            app.file_picker.selected, 1,
+            "wheel down must advance the file-picker selection"
+        );
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollUp, 30, 8));
+        assert_eq!(
+            app.file_picker.selected, 0,
+            "wheel up must move the file-picker selection back"
+        );
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 1, 20));
+        assert_eq!(
+            app.file_picker.selected, 0,
+            "wheel outside the file-picker popup must not move selection"
         );
     }
 

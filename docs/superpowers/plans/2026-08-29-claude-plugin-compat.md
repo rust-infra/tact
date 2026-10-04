@@ -49,6 +49,7 @@
   - `get_skill_registry` 在 plugin skills 之后追加 plugin commands（需要 `PluginStore` 提供已安装插件根列表——复用 `installed_skill_roots` 的结构，新增 `installed_plugin_roots` 返回所有有效缓存根）。
   - 同一插件内 skills/commands 同名：后加载 commands 覆盖。
 - `SkillFrontmatter` 增加 `argument-hint` / `allowed-tools` / `model`（parse 并存入 `SkillManifest`，v1 不强制）。
+  - **2026-10-04 回退**：三字段没有任何读取者，已从 `SkillFrontmatter` / `SkillManifest` 删除（同时删掉 `SkillManifest::path`）。见 `book/26_chapter_issue_zh.md` 2026-10-04 条目。
 - 测试：commands 加载为 `plugin:foo`；无 name frontmatter 用文件名；同名覆盖顺序；frontmatter 新字段解析。
 
 ### T5 plugin store 提供通用根

@@ -17,17 +17,15 @@
 | 注意力 | 远处的大段工具 dump 稀释模型「此刻」真正需要的信号 |
 
 ```mermaid
-flowchart LR
-    subgraph Growth["长任务中上下文增长"]
-        U1[user] --> A1[assistant]
-        A1 --> T1[tool results × N]
-        T1 --> U2[user]
-        U2 --> A2[assistant]
-        A2 --> T2[更多 tools…]
-        T2 --> Huge["用量 → model_context_window"]
-    end
-    Huge -->|无压缩| Fail[API 拒绝 / 质量下降]
-    Huge -->|有压缩| Fit[装得下并继续]
+graph TD
+    u1[user] --> a1[assistant]
+    a1 --> t1[tool results × N]
+    t1 --> u2[user]
+    u2 --> a2[assistant]
+    a2 --> t2[更多 tools …]
+    t2 --> huge[用量 → model_context_window]
+    huge -->|无压缩| fail[API 拒绝 / 质量下降]
+    huge -->|有压缩| fit[装得下并继续]
 ```
 
 Tact 的答案是**渐进式防御**：先做免费的本地 stub，必要时再付一次摘要调用，并对单次超大输出做机会性落盘，避免其以全文进入窗口。
@@ -43,32 +41,21 @@ Tact 的答案是**渐进式防御**：先做免费的本地 stub，必要时再
 | 3 | `compact_history` | 一次额外 LLM 调用（本地）/ Responses 原生 `/responses/compact` | 80% 阈值、prompt-too-long、或 `compact` 工具 | Assistant/工具历史（保留近期真实 user + 摘要；完整 JSONL 在磁盘） |
 
 ```mermaid
-flowchart TB
-    subgraph L1["Level 1 — 溢出单条结果"]
-        Bash[成功的工具返回] --> Big{> 30k 字符?}
-        Big -->|yes| Disk1["写入 .tact/tool-results/id.txt"]
-        Disk1 --> Env["替换为 &lt;persisted-output&gt;"]
-        Big -->|no| Keep[保留全文]
-    end
-
-    subgraph L2["Level 2 — stub 旧结果"]
-        Turn[每个 agent_loop 回合] --> MC[micro_compact]
-        MC --> Stub["旧 ToolResult > 120 字符 → stub<br/>保留最近 12 条"]
-    end
-
-    subgraph L3["Level 3 — 摘要一切"]
-        Est{estimate > limit?} -->|yes| CH[compact_history]
-        Err[prompt-too-long] --> CH
-        Manual[compact 工具] --> CH
-        CH --> Disk2[JSONL transcript]
-        CH --> Sum[LLM 摘要 ≤ 2k tokens]
-        Sum --> One[context ← 近期 user + 摘要]
-    end
-
-    L1 -.->|防止洪泛| L2
-    L2 --> Est
-    Est -->|no| Prompt[组装 prompt / 调 LLM]
-    One --> Prompt
+graph TD
+    a_bash[L1 成功的工具返回] --> b_big{> 30k 字符?}
+    b_big -->|yes| c_disk[写入 tool-results/id.txt 并替换为 <persisted-output>]
+    b_big -->|no| d_keep[保留全文]
+    c_disk --> e_turn[L2 每个 agent_loop 回合]
+    d_keep --> e_turn
+    e_turn --> f_mc[micro_compact]
+    f_mc --> g_stub[旧 ToolResult > 120 字符 → stub]
+    g_stub --> h_est{L3 estimate > limit?}
+    h_est -->|yes| i_ch[compact_history]
+    h_est -->|no| j_prompt[组装 prompt / 调 LLM]
+    i_ch --> k_sum[LLM 摘要 ≤ 2k tokens]
+    i_ch --> l_disk[JSONL transcript 落盘]
+    k_sum --> m_one[context ← 近期 user + 摘要]
+    m_one --> j_prompt
 ```
 
 **心智模型：** Level 1 保护*本轮* stdout；Level 2 在不调 LLM 的情况下整理*历史形状*；Level 3 在 stub 仍不够时重置对话。
@@ -82,34 +69,32 @@ flowchart TB
 自上而下阅读循环：
 
 ```mermaid
-flowchart TD
-    Entry([agent_loop 入口]) --> EntrySize{"should_auto_compact?<br/>预留 incoming turn"}
-    EntrySize -->|yes| EntryAuto["emit [auto compact]<br/>compact_history(None)"]
-    EntryAuto --> Push[push user_turn_message]
-    EntrySize -->|no| Push
-    Push --> Start([循环迭代])
-    Start --> Cancel{已取消?}
-    Cancel -->|yes| Exit([return])
-    Cancel -->|no| MC[micro_compact context]
-    MC --> Size{"should_auto_compact?<br/>incoming = 0"}
-    Size -->|yes| Auto["emit [auto compact]<br/>compact_history(None)"]
-    Auto --> Build
-    Size -->|no| Build[build CreateMessageParams]
-    Build --> Stream[stream_message]
-    Stream -->|Ok| Assist[push assistant message]
-    Stream -->|prompt too long| Rec["[Recovery] compact<br/>compact_history(None)"]
-    Rec --> Start
-    Stream -->|transient| Backoff[sleep + retry]
-    Backoff --> Start
-    Assist --> Tools{有 tool_use?}
-    Tools -->|yes| Exec[execute_tool_call]
-    Exec --> Persist[push tool_result user message]
-    Persist --> Man{"manual_compact?<br/>仅 compact 工具成功时"}
-    Man -->|yes| MC2["[manual compact]<br/>compact_history(focus)"]
-    MC2 --> Start
-    Man -->|no| Start
-    Tools -->|no| Done{stop / continue?}
+graph TD
+    a_entry[agent_loop 入口] --> b_size{should_auto_compact? 预留 incoming turn}
+    b_size -->|yes| c_auto[emit auto compact · compact_history]
+    b_size -->|no| d_push[push user_turn_message]
+    c_auto --> d_push
+    d_push --> e_start[循环顶]
+    e_start --> f_cancel{已取消?}
+    f_cancel -->|yes| g_exit[return]
+    f_cancel -->|no| h_mc[micro_compact context]
+    h_mc --> i_size2{should_auto_compact? incoming = 0}
+    i_size2 -->|yes| j_auto2[emit auto compact · compact_history]
+    i_size2 -->|no| k_build[build CreateMessageParams]
+    j_auto2 --> k_build
+    k_build --> l_stream[stream_message]
+    l_stream -->|Ok| m_assist[push assistant message]
+    l_stream -->|transient| n_backoff[sleep + retry]
+    l_stream -->|prompt too long| o_rec[Recovery · compact]
+    m_assist --> p_tools{有 tool_use?}
+    p_tools -->|yes| q_exec[execute_tool_call]
+    p_tools -->|no| r_done[stop / continue?]
+    q_exec --> s_persist[push tool_result user message]
+    s_persist --> t_man{manual_compact?}
+    t_man -->|yes| u_mc2[manual compact · compact_history focus]
 ```
+
+> 上图中 `sleep + retry`、`Recovery · compact`、`manual compact` 三条分支结束后都**回到循环顶**（`循环顶` 那一步），`stop / continue?` 决定收尾还是继续——这里画成有向无环图，环回边在渲染器里会被压平，故省略。
 
 关键顺序：
 
@@ -148,26 +133,9 @@ flowchart TD
 ### 前后对比（示意）
 
 ```mermaid
-flowchart LR
-    subgraph Before["micro_compact 之前"]
-        R1["TR#1 长日志"]
-        R2["TR#2 文件 dump"]
-        R3["…"]
-        R12["TR#12"]
-        R13["TR#13 较近"]
-        R14["TR#14 最新"]
-    end
-
-    subgraph After["之后 — 保留最近 12"]
-        S1["stub"]
-        S2["stub"]
-        S3["…"]
-        K12["TR#12 完整"]
-        K13["TR#13 完整"]
-        K14["TR#14 完整"]
-    end
-
-    Before --> After
+graph LR
+    a_old[较旧 ToolResult] --> c_stub[替换为 stub 一行]
+    b_recent[最近 12 条] --> d_intact[保留完整正文]
 ```
 
 常量背后的经验法则：
@@ -230,12 +198,12 @@ pub fn estimate_context_tokens(messages: &[Message]) -> usize {
 ```
 
 ```mermaid
-flowchart TD
-    MC[micro_compact] --> Tok{tokens (+ incoming) ≥ window 的 80%?}
-    Tok -->|yes| Auto[auto compact_history]
-    Tok -->|no| Est["估算 context + incoming tokens<br/>≥ window 的 80%?"]
-    Est -->|yes| Auto
-    Est -->|no| Call[LLM 调用]
+graph TD
+    mc[micro_compact] --> tok{tokens + incoming ≥ window 的 80%?}
+    tok -->|yes| auto[auto compact_history]
+    tok -->|no| est[估算 context + incoming tokens ≥ 80%?]
+    est -->|yes| auto
+    est -->|no| call[LLM 调用]
 ```
 
 | 配置 | 默认 | 说明 |
@@ -294,15 +262,10 @@ sequenceDiagram
 **2. 近期窗口选择** — 从 `context` **末尾**向前，在模型窗口预算与 **20,000 估算 token 上限**内累加。超大消息转成合法的纯文本视图，图片变成省略占位符，不会切断 base64；无法容纳时不强塞消息。更早回合只靠 transcript + 摘要能推断的内容存活。
 
 ```mermaid
-flowchart LR
-    subgraph Context["完整 context（旧 → 新）"]
-        Old[… 早期回合 …]
-        Mid[中间]
-        New[近期 ≤ 20k 估算 token]
-    end
-    Old -.->|不送给摘要器| X[省略]
-    Mid -.->|不送| X
-    New -->|序列化进 prompt| SumLLM[摘要 LLM]
+graph TD
+    a_old[… 早期回合 …] --> d_omitted[省略 — 不送给摘要器]
+    b_mid[中间] --> d_omitted
+    c_new[近期 ≤ 20k 估算 token] --> e_sum[摘要 LLM]
 ```
 
 **3. 摘要调用** — 一次新的非流式 `create_message`（无 tools）；选择输入前先预留输出与 10% 安全余量。摘要**文本**部分沿用经典的 `min(窗口 × 20%, 2,000)` 输出预算。摘要请求不转发 Claude 式 thinking budget（思考对手交摘要价值不大），其 reasoning 预留是该次尝试**有效 effort 对应的绝对 token 桶**——`none` 0、`minimal`/`low` 2,000、`medium` 4,000、`high` 8,000、`xhigh`/`max` 16,000——追加在文本预算**之上**（`max_tokens` = 文本 + 桶）。当这次请求可能把信封花在推理上——即任何 effort 语义 provider（OpenAI / DeepSeek / Kimi k3 / 配置了 effort 的自定义 provider，含服务端默认档）——线上的 `max_tokens` 还会再被 `[agent] max_tokens` 兜底抬高，并以「固定指令仍放得下」为上限封顶。这类 provider **没有独立的 thinking 预算**，因此小于配置输出预算的信封可能被思考整个吃掉（实测：`max_tokens = 4000` → `reasoning_tokens = 4000`、摘要正文为零，而 DeepSeek 官方思考模式默认是 64K）。budget 语义 provider（Anthropic）在这里从不接收 thinking 预算，仍保持经典文本上限。预留走一条**分档 effort 阶梯**：
@@ -542,26 +505,9 @@ flowchart TD
 SQLite 侧同步：`replace_persisted_context` 用重建后的 context 重写 `messages` 表，保证**重开会话不会复活**压缩前的行。
 
 ```mermaid
-flowchart LR
-    subgraph Before["压缩前 context"]
-        B0["User 目标"]
-        B1["Assistant tool_use"]
-        B2["ToolResult 5k"]
-        B3["Assistant tool_use"]
-        B4["ToolResult 40k"]
-        B5["… N 条 …"]
-    end
-
-    subgraph After["压缩后 context"]
-        A0["近期真实 User<br/>+ 摘要 + recent_files"]
-    end
-
-    subgraph Disk["磁盘（非上下文）"]
-        D0["transcript_&lt;ts&gt;.jsonl<br/>压缩前全文"]
-    end
-
-    Before -->|write_transcript| D0
-    Before -->|LLM 摘要| A0
+graph TD
+    a_before[压缩前 context：User / tool_use / ToolResult 5k / 40k / … N 条] --> b_d0[transcript_<ts>.jsonl 落盘]
+    a_before --> c_after[近期真实 User + 摘要 + recent_files]
 ```
 
 **一句话：** 压缩后模型看到近期 user 意图、它自己写的**交接备忘录**与文件清单；assistant / 工具细节退居磁盘。
@@ -616,13 +562,13 @@ if name != "read_file" {
 有一个调用方会覆盖该阈值：MCP 条目的 `tools.<name>.output_token_limit` 会按自己的 token 预算通过 `persist_large_output_over_tokens` 落盘那一个工具的结果，信封完全相同。上面这条字符规则仍适用于没有声明该字段的所有工具。条目字段见[第 8 章](./08_chapter_mcp_zh.md)。
 
 ```mermaid
-flowchart TD
-    Out[成功的工具输出] --> Th{字符数 > 30_000?}
-    Th -->|no| Full[原样返回]
-    Th -->|yes| Write["fs::write .tact/tool-results/&lt;tool_use_id&gt;.txt"]
-    Write --> Prev["取前 2_000 字符"]
-    Prev --> Wrap["包进 &lt;persisted-output&gt; 信封"]
-    Wrap --> TR[context 中的 ToolResult 内容]
+graph TD
+    out[成功的工具输出] --> th{字符数 > 30_000?}
+    th -->|no| full[原样返回]
+    th -->|yes| write[fs::write .tact/tool-results/<tool_use_id>.txt]
+    write --> prev[取前 2_000 字符]
+    prev --> wrap[包进 <persisted-output> 信封]
+    wrap --> tr[context 中的 ToolResult 内容]
 ```
 
 替换形态：
@@ -650,18 +596,9 @@ Preview:
 ### Stub vs 信封
 
 ```mermaid
-flowchart TB
-    subgraph Micro["micro_compact stub"]
-        M1[历史中较旧的 ToolResult]
-        M2["[Earlier tool result compacted. …]"]
-        M1 --> M2
-    end
-
-    subgraph Spill["persist_large_output 信封"]
-        S1[本轮超大工具输出]
-        S2["&lt;persisted-output&gt; 路径 + 预览"]
-        S1 --> S2
-    end
+graph TB
+    a_m1[历史中较旧的 ToolResult] --> b_m2[Earlier tool result compacted. …]
+    c_s1[本轮超大工具输出] --> d_s2[<persisted-output> 路径 + 预览]
 ```
 
 | 标记 | 时机 | 含义 |
@@ -676,13 +613,12 @@ flowchart TB
 压缩通过 `TactPath` 在 workdir 下溢出两类产物：
 
 ```mermaid
-flowchart TB
-    WD["&lt;workdir&gt;"]
-    WD --> Tact[".tact/"]
-    Claude --> TR["transcripts/<br/>transcript_&lt;unix_nanos&gt;_&lt;n&gt;.jsonl"]
-    Claude --> OR["tool-results/<br/>&lt;tool_use_id&gt;.txt"]
-    WD --> Tact[".tact/tact.db"]
-    Tact --> Msg["messages 表<br/>（完整压缩时重写）"]
+graph TD
+    a_wd[<workdir>] --> b_tact[.tact/]
+    b_tact --> c_db[tact.db]
+    c_db --> d_msg[messages 表 — 完整压缩时重写]
+    b_tact --> e_tr[transcripts/<ts>.jsonl]
+    b_tact --> f_or[tool-results/<id>.txt]
 ```
 
 | 路径 | 写入方 | 内容 |

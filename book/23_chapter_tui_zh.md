@@ -192,26 +192,14 @@ match agent.agent_loop(Some(task_message)).await {
 渲染栈拆分为 `crates/agent_tui_kit/src/render/`（纯面板、状态模型、widgets）与 `crates/tui/src/render/` 应用层（入口点：每帧构建 `RenderCtx`、`prepare_*` 阶段、应用层弹窗）。对 agent 逻辑**只读**：handler 与 `handle_agent_update` 变更 `App`；render 函数读 `RenderCtx`（每帧由不相交的 `&` 借用构建一次）并写 ratatui `Buffer`。渲染代码唯一变更路径是显式 `Vec<RenderCommand>`，由 shell 在帧后 drain。
 
 ```mermaid
-flowchart TB
-    subgraph State
-        AgentRx[agent_rx drained]
-        App[App: messages, tools, scroll, popups]
-    end
-    subgraph Render
-        Bar[bar.rs status bars]
-        Layout[layout.rs main area]
-        Log[log.rs + log_column.rs]
-        Cells[cells/ Renderable units]
-        Input[input.rs]
-        Popups[popups/ overlays]
-    end
-    AgentRx --> App
-    App --> Bar
-    App --> Layout
-    Layout --> Log
-    Log --> Cells
-    App --> Input
-    App --> Popups
+graph TD
+    a_rx[agent_rx drained] --> b_app[App messages tools scroll popups]
+    b_app --> c_bar[bar.rs 状态栏]
+    b_app --> d_layout[layout.rs 主区]
+    b_app --> e_input[input.rs]
+    b_app --> f_popups[popups/ 浮层]
+    d_layout --> g_log[log.rs + log_column.rs]
+    g_log --> h_cells[cells/ Renderable units]
 ```
 
 ### 6.1 模块地图

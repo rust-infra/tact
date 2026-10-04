@@ -428,8 +428,18 @@ fn select_popup_shows_navigation_footer_hint() {
     let text = render_app_text(&mut app, 100, 30);
 
     assert!(
-        text.contains("↑↓/j/k"),
-        "select popup must show the j/k navigation hint in its footer, got:\n{text}"
+        text.contains("↑↓"),
+        "select popup must show the arrow navigation hint in its footer, got:\n{text}"
+    );
+    // A local pick is filterable, so `j`/`k` are filter characters here and
+    // must not be advertised as navigation.
+    assert!(
+        !text.contains("↑↓/j/k"),
+        "a filterable select must not advertise j/k as navigation, got:\n{text}"
+    );
+    assert!(
+        text.contains("a-z") && (text.contains("Filter") || text.contains("筛选")),
+        "select popup footer must offer the filter, got:\n{text}"
     );
     assert!(
         text.contains("Enter") && text.contains("Esc"),
@@ -464,6 +474,114 @@ fn select_popup_multi_shows_toggle_footer_hint() {
     );
 }
 
+/// The `/model` list is not a renderer of its own: `start_model_picker` builds
+/// a `SelectPopup` and `SelectPopupWidget` renders it through the shared
+/// `ListPopup`. This pins that path, marker and band included.
+#[test]
+fn model_picker_renders_through_the_shared_list_popup() {
+    use crate::widgets::state::{ModelTarget, SelectKind};
+
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select_kind = SelectKind::ModelPick(ModelTarget::Main);
+    // Exactly what `start_model_picker` builds: the current model carries `*`.
+    app.select.set_local(
+        "Select model".into(),
+        vec!["model-a".into(), "model-b *".into(), "model-c".into()],
+        1,
+        false,
+    );
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    // The current-model marker survives the migration.
+    let focused = cell_at(buf, "model-b *");
+    assert_eq!(focused.fg, app.theme.fg, "the focused row is theme.fg");
+    assert_eq!(focused.bg, app.theme.highlight, "on theme.highlight");
+
+    // And the band is the component's row-wide one, not a per-glyph patch.
+    let area = app.mouse.select_popup_area;
+    assert!(
+        !area.is_empty(),
+        "the model picker must record its mouse area"
+    );
+    let y = row_y(buf, "model-b *");
+    for x in (area.x + 1)..area.right() - 1 {
+        assert_eq!(
+            buf[(x, y)].bg,
+            app.theme.highlight,
+            "the focused model row's band must span the popup (x={x})"
+        );
+    }
+}
+
+/// Typing narrows the model list: the rows the filter hides must be gone, and
+/// the filter itself must be on screen.
+#[test]
+fn model_picker_filter_hides_the_rows_that_do_not_match() {
+    use crate::widgets::state::{ModelTarget, SelectKind};
+
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select_kind = SelectKind::ModelPick(ModelTarget::Main);
+    app.select.set_local(
+        "Select model".into(),
+        vec![
+            "kimi-k2.5".into(),
+            "kimi-for-coding".into(),
+            "claude-sonnet".into(),
+        ],
+        0,
+        false,
+    );
+
+    let unfiltered = render_popup_only(&mut app, 100, 30, |f, area, app| {
+        super::render_select_popup(f, area, app)
+    });
+    for model in ["kimi-k2.5", "kimi-for-coding", "claude-sonnet"] {
+        assert!(unfiltered.contains(model), "unfiltered list misses {model}");
+    }
+
+    for c in "cod".chars() {
+        app.select.push_query(c);
+    }
+    let filtered = render_popup_only(&mut app, 100, 30, |f, area, app| {
+        super::render_select_popup(f, area, app)
+    });
+
+    assert!(
+        filtered.contains("> cod"),
+        "the filter line must show what is being filtered on:\n{filtered}"
+    );
+    assert!(
+        filtered.contains("kimi-for-coding"),
+        "the match must stay:\n{filtered}"
+    );
+    for hidden in ["kimi-k2.5", "claude-sonnet"] {
+        assert!(
+            !filtered.contains(hidden),
+            "the filter must hide {hidden}:\n{filtered}"
+        );
+    }
+
+    // A filter that matches nothing says so, instead of claiming the list is
+    // empty.
+    app.select.clear_query();
+    app.select.push_query('z');
+    let empty = render_popup_only(&mut app, 100, 30, |f, area, app| {
+        super::render_select_popup(f, area, app)
+    });
+    assert!(
+        empty.contains(app.msgs().select_no_match),
+        "a filter matching nothing must say so:\n{empty}"
+    );
+}
+
 #[test]
 fn full_frame_file_picker_lists_options() {
     let mut app = make_app();
@@ -477,6 +595,121 @@ fn full_frame_file_picker_lists_options() {
     assert!(
         text.contains("Attach file") || text.contains("main.rs"),
         "file picker should list paths, got:\n{text}"
+    );
+}
+
+/// Render one list popup into its own buffer: no status bar or input box noise,
+/// so a row assertion is about the popup and nothing else.
+fn render_popup_only(
+    app: &mut App,
+    width: u16,
+    height: u16,
+    draw: fn(&mut ratatui::Frame, ratatui::layout::Rect, &mut App),
+) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            draw(frame, area, app);
+        })
+        .expect("draw");
+    buffer_text(terminal.backend().buffer())
+}
+
+fn render_palette_only(app: &mut App, width: u16, height: u16) -> String {
+    render_popup_only(app, width, height, |f, area, app| {
+        super::render_command_palette(f, area, app)
+    })
+}
+
+fn render_file_picker_only(app: &mut App, width: u16, height: u16) -> String {
+    render_popup_only(app, width, height, |f, area, app| {
+        super::render_file_picker(f, area, app)
+    })
+}
+
+#[test]
+fn command_palette_long_list_scrolls_selected_into_view() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Palette;
+    let quit = app
+        .palette_commands()
+        .iter()
+        .position(|(cmd, _)| cmd == "quit")
+        .expect("the palette lists quit");
+
+    // Short terminal: the frame fits two rows, so the window has to move.
+    app.palette_selected = quit;
+    let text = render_palette_only(&mut app, 100, 8);
+
+    assert!(
+        text.contains("quit"),
+        "the focused command must stay inside the popup:\n{text}"
+    );
+    assert!(
+        !text.contains("🎨"),
+        "the first command must have scrolled out of view:\n{text}"
+    );
+}
+
+#[test]
+fn command_palette_records_and_clears_mouse_area() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Palette;
+
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        !app.mouse.palette_popup_area.is_empty(),
+        "an open palette must record its area for mouse-wheel routing"
+    );
+
+    app.input_mode = InputMode::Normal;
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        app.mouse.palette_popup_area.is_empty(),
+        "a closed palette must clear its mouse area"
+    );
+}
+
+#[test]
+fn file_picker_long_list_scrolls_selected_into_view() {
+    let mut app = make_app();
+    app.input_mode = InputMode::FilePicker;
+    app.file_picker.options = (0..30).map(|i| format!("file-{i:02}.rs")).collect();
+    app.file_picker.current_dir = app.work_dir.clone();
+    app.file_picker.base_dir = app.work_dir.clone();
+    app.file_picker.selected = 25;
+
+    let text = render_file_picker_only(&mut app, 100, 12);
+
+    assert!(
+        text.contains("file-25.rs"),
+        "the focused file must stay inside the popup:\n{text}"
+    );
+    assert!(
+        !text.contains("file-00.rs"),
+        "the first file must have scrolled out of view:\n{text}"
+    );
+}
+
+#[test]
+fn file_picker_records_and_clears_mouse_area() {
+    let mut app = make_app();
+    app.input_mode = InputMode::FilePicker;
+    app.file_picker.options = vec!["src/main.rs".into()];
+
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        !app.mouse.file_picker_popup_area.is_empty(),
+        "an open file picker must record its area for mouse-wheel routing"
+    );
+
+    app.input_mode = InputMode::Normal;
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        app.mouse.file_picker_popup_area.is_empty(),
+        "a closed file picker must clear its mouse area"
     );
 }
 
@@ -1489,6 +1722,19 @@ fn popup_footer_swaps_the_copy_hint_for_the_confirmation_after_a_copy() {
 // (`Theme::bg`), so every unselected row was white-on-white — the command list
 // was invisible, and the highlighted row came out in Dark's cyan while the
 // theme's accent is blue. The colors now come from `Theme`.
+
+/// Row index of the first row whose flattened text contains `needle`.
+fn row_y(buf: &ratatui::buffer::Buffer, needle: &str) -> u16 {
+    for y in 0..buf.area.height {
+        let row: String = (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect();
+        if row.contains(needle) {
+            return y;
+        }
+    }
+    panic!("{needle:?} not found in:\n{}", buffer_text(buf));
+}
 
 /// The style of the cell where `needle` starts: scans the buffer cell by cell
 /// so a wide glyph (emoji, CJK) earlier in the row cannot shift the answer.

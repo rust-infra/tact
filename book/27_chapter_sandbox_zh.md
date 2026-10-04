@@ -45,14 +45,14 @@ if sandbox.is_some() {
 ## 2. fail-open，但绝不静默
 
 ```mermaid
-flowchart TD
-    CFG["[tools] sandbox"] --> RESOLVE["sandbox::resolve(enabled, work_dir)"]
-    RESOLVE -->|"false"| OFF["(None, None)<br/>直接 sh -c，保持安静"]
-    RESOLVE -->|"true"| PLAT["resolve_platform"]
-    PLAT -->|Linux| PROBE["BwrapSandbox::probe<br/>bwrap &lt;policy&gt; -- /bin/true"]
-    PLAT -->|"其他系统"| NOIMPL["(None, Some(reason))<br/>该平台尚无实现"]
-    PROBE -->|ok| ON["(Some(BwrapSandbox), None)"]
-    PROBE -->|fail| BROKEN["(None, Some(reason))<br/>bwrap 缺失 / 不可用"]
+graph TD
+    a_cfg[tools.sandbox 配置] --> b_resolve[sandbox::resolve enabled, work_dir]
+    b_resolve -->|false| c_off[None, None — 直接 sh -c]
+    b_resolve -->|true| d_plat[resolve_platform]
+    d_plat -->|Linux| e_probe[BwrapSandbox::probe]
+    d_plat -->|其他系统| f_noimpl[None, Some reason — 该平台尚无实现]
+    e_probe -->|ok| g_on[Some BwrapSandbox, None]
+    e_probe -->|fail| h_broken[None, Some reason — bwrap 缺失 / 不可用]
 ```
 
 任何没能产出沙箱的路径都会产出一个**原因**（`SandboxDegradation.reason`），并且降级会通过两个渠道告知：

@@ -29,15 +29,13 @@ pub fn notify(title: &str, message: &str) -> Result<()>;
 ## 2. 平台行为
 
 ```mermaid
-flowchart TD
-    Call["notify(title, message)"] --> Enabled{"is_enabled()?"}
-    Enabled -- No --> Skip["Ok(()) — no-op"]
-    Enabled -- Yes --> OS{"target_os?"}
-
-    OS -- macOS --> Script["osascript -e display notification"]
-    Script --> Result["Ok 或 osascript 错误"]
-
-    OS -- other --> NoOp["Ok(()) — 静默跳过"]
+graph TD
+    a_call[notify title, message] --> b_enabled{is_enabled?}
+    b_enabled -->|No| c_skip[Ok — no-op]
+    b_enabled -->|Yes| d_os{target_os?}
+    d_os -->|macOS| e_script[osascript -e display notification]
+    d_os -->|其他| f_noop[Ok — 静默跳过]
+    e_script --> g_result[Ok 或 osascript 错误]
 ```
 
 ### macOS

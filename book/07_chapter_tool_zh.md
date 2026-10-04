@@ -42,30 +42,15 @@ cached_tool_specs = tools.tool_specs().into_iter()
 ## 2. 架构概览
 
 ```mermaid
-graph TB
-    subgraph LLM["LLM 请求"]
-        Specs["ToolSpec 列表<br/>（原生 + MCP）"]
-    end
-
-    subgraph Agent["Agent::execute_tool_call"]
-        P1["Phase 1：hooks + 权限"]
-        P2["Phase 2：并行波次"]
-        P3["Phase 3：ToolResult 组装"]
-    end
-
-    subgraph Dispatch["Phase 2 路由"]
-        Check{"MCPToolRouter::is_mcp_tool?"}
-        TR[ToolRouter::call]
-        MCP[MCPToolRouter::call]
-    end
-
-    Specs --> Agent
-    P1 --> P2
-    P2 --> Check
-    Check -- 否 --> TR
-    Check -- 是 --> MCP
-    TR --> TC[ToolContext]
-    P2 --> P3
+graph TD
+    a_specs[LLM 请求 ToolSpec 列表 原生 + MCP] --> b_p1[Phase 1 hooks + 权限]
+    b_p1 --> c_p2[Phase 2 并行波次]
+    c_p2 --> d_check{MCPToolRouter::is_mcp_tool?}
+    d_check -->|否| e_tr[ToolRouter::call]
+    d_check -->|是| f_mcp[MCPToolRouter::call]
+    e_tr --> g_ctx[ToolContext]
+    f_mcp --> g_ctx
+    g_ctx --> h_p3[Phase 3 ToolResult 组装]
 ```
 
 ---

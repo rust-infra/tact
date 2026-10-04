@@ -18,7 +18,7 @@ use super::{
     render_input_box, render_main_area, render_select_popup, render_slash_command_popup,
     render_status_bar,
 };
-use crate::widgets::state::{App, InputMode};
+use crate::widgets::state::App;
 
 /// Build a minimal `App` for render tests (ink theme, empty log).
 pub fn make_app() -> App {
@@ -119,19 +119,12 @@ pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
     render_input_box(frame, chunks[2], app);
     render_bottom_bar(frame, chunks[3], app);
 
-    if app.input_mode == InputMode::Palette {
-        render_command_palette(frame, chunks[1], app);
-    }
-    // Rendered every frame: the function itself no-ops when the popup is
-    // inactive and is responsible for clearing the mouse hit area it records
+    // The four list popups render every frame: each one no-ops when its popup
+    // is inactive and is responsible for clearing the mouse hit area it records
     // while active.
+    render_command_palette(frame, chunks[1], app);
     render_select_popup(frame, chunks[1], app);
-    if app.input_mode == InputMode::FilePicker {
-        render_file_picker(frame, chunks[1], app);
-    }
-    // Rendered every frame: the function itself no-ops when the popup is
-    // inactive and is responsible for clearing the mouse hit area it records
-    // while active.
+    render_file_picker(frame, chunks[1], app);
     render_slash_command_popup(frame, chunks[1], app);
 }
 

@@ -123,38 +123,28 @@ pub struct PlanStep {
 assistant turn 中每次工具调用遵循 `tool_dispatch.rs` 固定的三阶段发出序列：
 
 ```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Planned: StepAdded
-    Planned --> Running: StepStarted
-    Running --> Running: ToolProgress *
-    Running --> Succeeded: StepFinished
-    Running --> Failed: StepFailed
-    Succeeded --> [*]
-    Failed --> [*]
+graph TD
+    a_planned[Planned] -->|StepStarted| b_running[Running]
+    b_running -->|StepFinished| c_succeeded[Succeeded]
+    b_running -->|StepFailed| d_failed[Failed]
+    b_running -->|ToolProgress| y_running[↩ 仍为 Running]
+    c_succeeded --> e_end[结束]
+    d_failed --> e_end
 ```
 
 权限模式为 `Ask` 时，**`StepStarted` 之后、工具运行之前**可能出现 `RequestSelect` popup。`Status` 保持 `Executing`；仅 `InputMode` 切换到 `Select`（[§4.3](#43-inputmode-叠加-requestselect)）。
 
 ```mermaid
-stateDiagram-v2
-    direction TB
-    [*] --> Planned: StepAdded
-    Planned --> Running: StepStarted
-    Running --> AwaitingChoice: RequestSelect
-    AwaitingChoice --> Running: 用户选择选项
-    AwaitingChoice --> Failed: 用户 Esc / deny
-    Running --> Succeeded: StepFinished
-    Running --> Failed: StepFailed
-    Succeeded --> [*]
-    Failed --> [*]
-
-    note right of AwaitingChoice
-        仅逻辑阶段。
-        TUI Status 仍为 Executing。
-        InputMode = Select。
-    end note
+graph TD
+    a_planned[Planned] -->|StepStarted| b_running[Running]
+    b_running -->|RequestSelect| c_await[AwaitingChoice]
+    c_await -->|用户选择选项| z_running[↩ 回到 Running]
+    c_await -->|Esc / deny| d_failed[Failed]
+    b_running -->|StepFinished| e_succeeded[Succeeded]
+    b_running -->|StepFailed| d_failed
 ```
+
+> `AwaitingChoice` **仅逻辑阶段**：TUI Status 仍为 `Executing`，`InputMode = Select`。
 
 | 阶段 | `AgentUpdate` | Agent 发出者 | TUI 效果 |
 |------|---------------|--------------|----------|
@@ -203,31 +193,17 @@ pub(crate) enum Status {
 ```
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Idle: startup
-
-    Idle --> Planning: Enter 提交任务
-    Planning --> Executing: StepAdded (ensure_executing_status)
-    Executing --> Executing: StepStarted (update current_step)
-
-    Executing --> Done: TaskComplete
-    Executing --> Idle: StepFailed
-    Executing --> Idle: Error(Other)
-
-    Done --> Idle: 2s timeout (maybe_expire_done_status)
-
-    note right of Planning
-        UserCommand::SubmitTask 已发送。
-        StreamChunk / ThinkingChunk 可能
-        在首个 StepAdded 之前到达。
-    end note
-
-    note right of Executing
-        UserCommand::Cancel 设置 cancel_flag
-        并发出 Info — Status 仍为 busy，
-        直到 TaskCancelled 回到 Idle。
-    end note
+graph TD
+    a_idle[Idle] --> b_plan[Planning · Enter 提交任务]
+    b_plan --> c_exec[Executing · StepAdded]
+    c_exec --> d_done[Done · TaskComplete]
+    c_exec --> z_idle[回到 Idle · 失败 / Error]
+    d_done --> y_idle[回到 Idle · 2s 超时]
+    c_exec --> x_exec[仍为 Executing]
 ```
+
+> - `Planning`：`UserCommand::SubmitTask` 已发送。`StreamChunk` / `ThinkingChunk` 可能在首个 `StepAdded` 之前到达。
+> - `Executing`：`UserCommand::Cancel` 设置 `cancel_flag` 并发出 `Info` —— Status 仍为 busy，直到 `TaskCancelled` 回到 `Idle`。
 
 | 从 | 到 | 触发 | 说明 |
 |----|-----|------|------|
@@ -247,35 +223,15 @@ stateDiagram-v2
 与 step 生命周期正交：哪些协议消息实际翻转 `Status`。
 
 ```mermaid
-flowchart LR
-    subgraph no_change["Status 不变"]
-        SC[StreamChunk]
-        TC[ThinkingChunk]
-        TU[TokenUsage]
-        MI[ModelInfo]
-        IN[Info]
-        RS[RequestSelect]
-        SA2[StepAdded after Executing]
-        SS[StepStarted]
-        TP[ToolProgress]
-        SF[StepFinished]
-    end
+graph TD
+    a_plan[Planning] --> b_exec[Executing · StepAdded first]
+    b_exec --> c_done[Done · TaskComplete]
+    a_plan --> z_idle[回到 Idle · TaskCancelled]
+    b_exec --> y_idle[回到 Idle · StepFailed / Error Other]
+    c_done --> x_idle[回到 Idle · 2s]
+```
 
-    subgraph transitions["Status 转换"]
-        SA1[StepAdded first] -->|Planning → Executing| EX[Executing]
-        TKC[TaskComplete] -->|→ Done| DN[Done]
-        TKX[TaskCancelled] -->|→ Idle| ID0[Idle]
-        SFL[StepFailed] -->|→ Idle| ID1[Idle]
-        ER[Error Other] -->|→ Idle| ID2[Idle]
-        DN -->|2s| ID3[Idle]
-    end
-
-    P[Planning] --> SA1
-    EX --> TKC
-    EX --> TKX
-    P --> TKX
-    EX --> SFL
-    EX --> ER
+**不翻转 `Status` 的更新**：`StreamChunk`、`ThinkingChunk`、`TokenUsage`、`ModelInfo`、`Info`、`RequestSelect`、`StepStarted`、`ToolProgress`、`StepFinished`，以及 `Executing` 之后的 `StepAdded`。
 ```
 
 | `AgentUpdate` | TUI `Status` / mode | 说明 |
@@ -297,40 +253,31 @@ flowchart LR
 在交互/broker 模式下，`Select` 由 `pending != empty` 推导；`RequestSelect` 事件只负责唤醒 TUI，`UiResponder::snapshot()` 才是权威。下面的 event-driven 转换描述没有 broker 的 legacy/headless 路径。
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Normal: startup
-
-    Normal --> Insert: i / Enter
-    Insert --> Normal: Esc
-
-    Normal --> Select: RequestSelect
-    Insert --> Select: RequestSelect
-    Select --> Normal: Enter 确认 / Esc 取消
-
-    note right of Select
-        到达时 Status = Executing。
-        Broker 模式：由 pending snapshot 推导。
-        Legacy：RequestSelect → UiResponse。
-    end note
+graph TD
+    a_normal[Normal] -->|i / Enter| b_insert[Insert]
+    b_insert -->|Esc| z_normal[↩ 回到 Normal]
+    a_normal -->|RequestSelect| c_select[Select]
+    b_insert -->|RequestSelect| c_select
+    c_select -->|Enter 确认 / Esc 取消| z_normal
 ```
+
+> `Select` 到达时 `Status = Executing`。Broker 模式：由 pending snapshot 推导；Legacy：`RequestSelect` → `UiResponse`。
 
 ### 4.4 `Executing` 内逻辑阶段
 
 `Status` 为 `Executing` 时，log panel 在流式与工具阶段间交替。这是**视图**状态，非独立 `Status` enum 值：
 
 ```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Streaming: StreamChunk / ThinkingChunk
-    Streaming --> Streaming: 更多 chunks
-    Streaming --> ToolPhase: StepAdded
-    ToolPhase --> ToolPhase: StepStarted / StepFinished / StepFailed
-    ToolPhase --> Streaming: 工具后 StreamChunk
-    ToolPhase --> Done: TaskComplete
-    Streaming --> Done: TaskComplete
-    ToolPhase --> Idle: StepFailed / Error
-    Streaming --> Idle: Error
+graph TD
+    a_stream[Streaming] --> b_tool[ToolPhase · StepAdded]
+    a_stream --> c_done[Done · TaskComplete]
+    b_tool --> c_done
+    b_tool --> z_idle[回到 Idle · 失败 / Error]
+    a_stream --> z_idle
+    b_tool --> y_loop[↩ 自环 / 回边]
 ```
+
+> 入口为 `Streaming`（首个 `StreamChunk` / `ThinkingChunk`）。`↩ 自环 / 回边` 是三条环的合并：`Streaming → Streaming`（更多 chunks）、`ToolPhase → ToolPhase`（`StepStarted` / `StepFinished` / `StepFailed`）、`ToolPhase → Streaming`（工具后 `StreamChunk`）。渲染器不支持环，故折成一个叶子节点。
 
 ---
 
@@ -348,31 +295,30 @@ Thinking 生命周期显式：`ThinkingChunk::Started` 打开区域，`Delta` �
 
 ## 6. `UserCommand` 转换
 
+**TUI Status：**
+
 ```mermaid
-flowchart TB
-    subgraph tui["TUI Status"]
-        I[Idle] -->|Enter| P[Planning]
-        P -->|StepAdded| E[Executing]
-        E -->|TaskComplete| D[Done]
-        D -->|2s| I
-        E -->|StepFailed / Error| I
-    end
-
-    subgraph driver["tact-ui driver"]
-        ST[SubmitTask] --> AL[agent_loop]
-        AL -->|Ok + !cancel| TC[emit TaskComplete]
-        AL -->|cancel_flag| XC[emit TaskCancelled]
-        CN[Cancel] --> CF[set cancel_flag + Info]
-    end
-
-    subgraph account["Account channel"]
-        QB[QueryBalance] --> QO[query_once]
-        QO --> AU[AccountUpdate → TUI]
-    end
-
-    P -.-> ST
-    CF -.-> E
+graph TD
+    a_idle[Idle] --> b_plan[Planning · Enter]
+    b_plan --> c_exec[Executing · StepAdded]
+    c_exec --> d_done[Done · TaskComplete]
+    c_exec --> z_idle[回到 Idle · StepFailed / Error]
+    d_done --> y_idle[回到 Idle · 2s]
 ```
+
+**driver 与 account 通道：**
+
+```mermaid
+graph TD
+    a_st[SubmitTask] --> b_al[agent_loop]
+    b_al -->|Ok 且未取消| c_tc[emit TaskComplete]
+    b_al -->|cancel_flag| d_xc[emit TaskCancelled]
+    e_cn[Cancel] --> f_cf[set cancel_flag + Info]
+    g_qb[QueryBalance] --> h_qo[query_once]
+    h_qo --> i_au[AccountUpdate → TUI]
+```
+
+两处跨图连线：`Planning` 由 `SubmitTask` 触发（图 1 的 `Planning` ← 图 2 的 `SubmitTask`）；`Cancel` 设置的 `cancel_flag` 让 `Executing` 收到 `TaskCancelled` 而回到 `Idle`（图 2 的 `set cancel_flag` → 图 1 的 `Executing`）。
 
 | 命令 | TUI 前置条件 | Handler 效果 |
 |------|--------------|--------------|

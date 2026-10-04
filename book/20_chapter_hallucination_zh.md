@@ -84,15 +84,14 @@ sequenceDiagram
 6. 用户不得不解释压缩的幻觉来重置上下文
 
 ```mermaid
-flowchart RL
-    subgraph Prompt["发送给 LLM 的压缩 prompt"]
-        PromptText["总结本次对话..."] --> ContextInput["消息: 只有 'call compact tool' + 回应"]
-    end
-    Prompt --> LLM --> Output["幻觉输出: Python 搜索系统"]
-    Output --> Injected["作为真实历史注入上下文"]
-    Injected --> Agent["Agent 在虚构前提上行动"]
-    Agent --> Bash["find . -name '*.py' → 空"]
-    Agent --> Confused["Agent 困惑: '这是一个 Rust 项目...'"]
+graph TD
+    a_prompt[压缩 prompt 总结本次对话…] --> b_ctx[消息 只有 call compact tool + 回应]
+    b_ctx --> c_llm[LLM]
+    c_llm --> d_out[幻觉输出 Python 搜索系统]
+    d_out --> e_inj[作为真实历史注入上下文]
+    e_inj --> f_agent[Agent 在虚构前提上行动]
+    f_agent --> g_bash[find . -name *.py → 空]
+    f_agent --> h_confused[Agent 困惑 这是一个 Rust 项目…]
 ```
 
 ### 1.4 根因

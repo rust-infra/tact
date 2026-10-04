@@ -116,6 +116,7 @@ Claude Code 官方说明：`commands/*.md` 与 `skills/<name>/SKILL.md` 加载�
 - `get_skill_registry` 在加载 plugin skills 后追加加载 plugin commands（遍历已安装插件根，`<cache>/commands` 存在时）。
 - 冲突语义：同一插件内 skills 与 commands 同名时，后加载的 commands 覆盖 skills（与 Claude Code 一致：命令优先）。加载顺序定为先 skills 后 commands。
 - frontmatter 扩展（`SkillFrontmatter` 增加字段，均 `Option`）：`argument-hint`（serde rename）、`allowed-tools`（逗号分隔字符串）、`model`。存入 `SkillManifest` 备用（v1 不强制执行）。
+  - **已被 2026-10-04 取代**：这三个字段始终没有消费者（"备用"从未被用上），只会让 skill 作者以为 `allowed-tools` / `model` 生效，已连同 `SkillManifest::path` 一并从 `SkillManifest` / `SkillFrontmatter` 删除。见 `book/26_chapter_issue_zh.md` 2026-10-04 条目与 `book/02_chapter_skill_zh.md` §3 / §4。
 
 ### 4.3 Phase 3 — MCP 从已安装插件加载
 

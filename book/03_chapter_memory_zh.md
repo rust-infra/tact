@@ -26,28 +26,14 @@ Memory 回答：*跨会话 agent 应记住什么，且无法从当前代码库�
 ## 2. 架构概览
 
 ```mermaid
-graph TB
-    subgraph Startup["会话启动 (headless.rs / interactive.rs)"]
-        TP[TactPath.home_memory_dir]
-        MM[MemoryManager]
-        TP --> MM
-        MM -->|load_all| Files["~/.tact/memory/*.md"]
-    end
-
-    subgraph Agent["每个 LLM 回合"]
-        BSP[build_system_prompt]
-        MM2[MemoryManager.load_memory_prompt]
-        BSP --> MM2
-        MM2 --> SP["系统提示词 § Memory"]
-    end
-
-    subgraph Tools["运行时写入"]
-        SM[save_memory 工具]
-        SM -->|save_memory + rebuild_index| Files
-        SM --> MM
-    end
-
-    Files --> MM2
+graph TD
+    tp[TactPath.home_memory_dir] --> mm[MemoryManager]
+    mm --> files[~/.tact/memory/*.md]
+    bsp[build_system_prompt] --> mm2[MemoryManager.load_memory_prompt]
+    mm2 --> sp[系统提示词 § Memory]
+    sm[save_memory 工具] --> files
+    sm --> mm
+    files --> mm2
 ```
 
 启动时，会话运行器（`tact-ui` headless / interactive）基于 `TactPath::home_memory_dir()` —— `$HOME/.tact/memory` —— 构造 `MemoryManager`，`load_all` 扫描该目录。由于目录位于用户主目录，记忆可**跨项目持久**；旧的项目本地路径（`TactPath::memory_dir()`，`<workdir>/.tact/memory`）仅在 `$HOME` 未设置时作为回退使用。同一 `Arc<Mutex<MemoryManager>>` 经 `ToolContext` 共享，供提示词渲染与 `save_memory` 使用。

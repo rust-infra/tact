@@ -23,6 +23,37 @@ impl App {
             .collect()
     }
 
+    /// Indices into [`Self::palette_commands`] that match the current
+    /// `cmd_line` filter.
+    ///
+    /// The one definition of "what the palette is showing": the renderer, the
+    /// Enter handler and the cursor step all read it, so the filtered list and
+    /// the highlighted row can never disagree.
+    pub(crate) fn palette_filtered(&self) -> Vec<usize> {
+        let filter = self.cmd_line.to_lowercase();
+        self.palette_commands()
+            .iter()
+            .enumerate()
+            .filter(|(_, (cmd, desc))| {
+                filter.is_empty()
+                    || cmd.to_lowercase().contains(&filter)
+                    || desc.to_lowercase().contains(&filter)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Move the palette cursor by `delta`, clamped to the filtered list.
+    pub(crate) fn step_palette_selection(&mut self, delta: i32) {
+        let len = self.palette_filtered().len();
+        if len == 0 {
+            self.palette_selected = 0;
+            return;
+        }
+        let last = len as i32 - 1;
+        self.palette_selected = (self.palette_selected as i32 + delta).clamp(0, last) as usize;
+    }
+
     pub(crate) fn save_history(&self, entry: &str) {
         let _ = self
             .history_save_tx

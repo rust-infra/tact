@@ -37,6 +37,53 @@
 
 ---
 
+## 1. 2026-10-04 — `SkillManifest` 砍掉四个「只存不读」的字段，Claude 专属 frontmatter 不再假装支持
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal |
+| **Related** | `crates/tact/src/skill/mod.rs`（`SkillManifest`、`SkillFrontmatter`、`load_skill_file` / `load_plugin_commands` 两处构造、测试 `claude_only_frontmatter_keys_are_ignored`）；Ch 02 §3 / §4 / §10 |
+
+**Symptom / motivation:** `SkillManifest` 有 6 个字段，实际只有 `name` 与 `description` 被读过。`path`、`argument_hint`、`allowed_tools`、`model` 在整个 workspace 零消费者——除构造点和测试外没有任何引用；TUI 侧走的是 `agent_tui_kit::SkillEntry { name, description, body }`，manifest 根本不过 crate 边界。编译器一直没提示，是因为 `pub` 字段在库 crate 里不触发 `dead_code`。代价不是那几行代码，而是**误导**：skill 作者在 frontmatter 写 `allowed-tools: Bash` 会以为工具被限制、写 `model: sonnet` 会以为模型被覆盖，实际两者都不生效，且没有任何提示。`SkillFrontmatter::argument_hint` 的注释还写着 "shows in /help"，而没有任何 `/help` 渲染它。
+
+**Decision:** 删除 `SkillManifest` 的 `path` / `argument_hint` / `allowed_tools` / `model`，以及 `SkillFrontmatter` 中对应的三个字段与 `#[serde(rename = "argument-hint")]` / `"allowed-tools"`；两个结构体都收缩为 `{ name, description }`。`SkillManifest` 的文档注释写明这是刻意收窄，并规定**再加字段必须同一次改动里带上它的消费者**。不选 `deny_unknown_fields`：那会让现存带这些键的 Claude skills 解析失败，代价远大于收益——serde 默认忽略未知键，正好是这里想要的行为。
+
+**Behavior after:** 带 `argument-hint` / `allowed-tools` / `model` 的 `SKILL.md` 与 `commands/*.md` 照常加载，`name` / `description` 正常解析，多出来的键被静默忽略——与改动前**行为一致**（它们此前也只是被存下来）。变的是"看起来支持"这件事消失了：这三个键在类型、代码与文档里都不再存在。测试 `command_frontmatter_extends_manifest` 改写成 `claude_only_frontmatter_keys_are_ignored`，断言同一块 frontmatter 里 `description` / `name` 仍解析、额外键不炸。
+
+**Verification:** `cargo test -p tact --lib skill::` 19 passed；`cargo clippy --all-targets -- -D warnings` 干净；`cargo test -p tact-ui -p tui -p tact -p tact_llm` 2210 passed / 0 failed。
+
+---
+
+## 1. 2026-10-04 — 本地选择弹窗可以输入筛选：`/model` 的长列表不再只能一路翻
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/agent_tui_kit/src/state/select_popup.rs`（`query` / `filterable` / `filtered_indices` / `push_query`…）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（筛选行 + 可见行映射）、`crates/agent_tui_kit/src/render/popups/select.rs`（footer 提示、空态文案）、`crates/agent_tui_kit/src/i18n.rs`（`select_hint_filter`、`select_no_match`）、`crates/tui/src/handlers/select.rs`（字符 / Backspace / Esc 三档语义）；spec `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`；Ch 23 |
+
+**Symptom / motivation:** `/model` 的候选是配置里的 `models = [...]` 与端点 `/v1/models` 的并集，可能几十上百条，而弹窗只能 ↑↓/j/k 一行行挪——没有任何办法按名字缩小范围。palette 与 slash 都能筛，是因为它们的状态里本来就有输入串；`SelectPopup` 从来没有查询字段，所以列表再长也只能翻。2026-10-04 把四处列表弹窗收进 `ListPopup` 之后这个问题更显眼：组件负责"渲染一组行"，而"哪些行"是调用方的数据问题，筛选需要的是状态而不是渲染。
+
+**Decision:** (1) `SelectPopup` 增加 `query`，`filtered_indices()` 用与 palette 相同的规则（大小写不敏感的子串匹配）返回可见行的**原始下标**；`selected` 始终是 `options` 的下标，不是可见行序号——`ThemePick`（下标即 `ThemeName::all()`）与 `PermissionModePick`（0/1/2 即三个模式）依赖这一点，筛选不能重新编号。(2) `move_up` / `move_down` 在可见集合内移动，所以筛选生效时跳过被隐藏的行；查询为空时可见集合就是全部，行为与原来完全一致。(3) **只有本地选择可筛选**：`filterable()` = `request_id.is_none()`。`/model`、`/model-subagent`、`/theme`、`/permission`、`/view-system-prompt`、effort / think-budget 后续选择都是 `set_local`；agent 发起的权限 / `ask_user` 用 `set` / `set_multi`，**保持只能方向键**——agent 正阻塞等待，误触一个字符不该把选项藏起来。(4) 可筛选弹窗固定多一行筛选行（`> 查询串`），即使为空也保留，避免第一个字符让弹窗长高一行；弹窗过矮时**优先丢掉 prompt 行**，保证筛选行与至少一行选项仍在。(5) 键位：可打印字符入查询、Backspace 退格、Esc 先清空筛选再取消；因此可筛选弹窗的底栏提示从 `↑↓/j/k` 改为 `↑↓`（`j`/`k` 现在是筛选字符），并新增 `a-z 筛选`。(6) 筛选无匹配时显示 `select_no_match`（"没有匹配的选项"），而不是 `select_empty`（"无选项"）——后者对一份有选项的列表是假话；此时 Enter 只报"无选项"，不会确认一个屏幕上看不见的行。
+
+**Behavior after:** `/model` 等本地选择弹窗可以直接打字筛选，光标自动落到第一个匹配项，↑↓ 只在匹配项之间移动；Esc 先清筛选、再按一次才取消；agent 发起的权限 / `ask_user` 弹窗完全不受影响（打字无效，`j`/`k` 仍是导航）；筛选无匹配时提示"没有匹配的选项"，Enter 不会误选。
+
+---
+
+## 1. 2026-10-04 — 列表弹窗收成一个组件：palette / file picker 补上滚动窗口与鼠标滚轮
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix（含重构） |
+| **Related** | `crates/agent_tui_kit/src/widgets/list_popup.rs`（新组件：`ListRow` / `ListPopup` / `window_offset` / `SelectionStyle`）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（改为委托渲染）、`crates/tui/src/render/popups/{command_palette,file_picker,slash_command}.rs`、`crates/tui/src/handlers/mouse.rs`（`list_popup_at` / `scroll_list_popup`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`palette_popup_area`、`file_picker_popup_area`）、`crates/tui/src/widgets/state/app/config.rs`（`palette_filtered`、`step_palette_selection`）；spec `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`；Ch 23；前身见下方 2026-08-29 条目 |
+
+**Symptom / motivation:** 列表型弹窗有四处（palette、file picker、slash、select），其中三处各自手写 chrome、选中行样式、空态与滚动逻辑。2026-08-29 只修了 slash 与 select：palette 与 file picker 仍然按 `count + 6` / `count + 5` 定高、把全部行交给 `List`，`List` 从第 0 行开始裁切——过滤后的列表一旦超出弹窗高度，选中行就落到折叠线以下，看起来像"列表卡住不滚动"。同样因为 `lib.rs` 按 `input_mode` 门控调用，这两个弹窗不记录鼠标矩形，滚轮落在它们身上会去滚背后的日志。此外：滚动 pin 公式 `visible - 3` 被写了三遍；空态、高亮样式（含"亮色主题下白底白字"的注释）各三遍；`truncate_chars` 在 palette 与 slash 各一份逐字相同；palette 的过滤谓词在渲染器与 Enter 处理器各一份，且光标只在渲染时被 clamp，键盘 ↓ 可以无限增长。
+
+**Decision:** (1) kit 新增 `ListPopup`，只负责四件事：几何（`centered_list_popup_area` + `popup_inner`）、chrome（`Clear` + 边框 + 标题 + 底部 footer）、滚动窗口（`window_offset`，全局唯一 pin 规则）、选中行样式与空态。行模型 `ListRow { spans, selectable }`：调用方只负责"行怎么拼"，分组标题用 `ListRow::header`（永不点亮）。(2) 尺寸策略留在调用点（palette 60% clamp `[60,120]`、file picker 固定 50、slash 按高度百分比、select 按内容与 footer 测量），组件只做上限截断，因此没有任何弹窗的边框移动。(3) 选中样式分两族：`Highlight`（palette / file picker / select，`theme.highlight` 铺满整行内宽、文字统一 `theme.fg`）与 `CallerStyled`（slash，保持 accent 无底色）。(4) 四个弹窗改为每帧无条件渲染、各自在非激活时清空自己记录的鼠标矩形（select / slash 早已如此，palette 与 file picker 此前做不到）；`handle_mouse_event` 的两条手写分支收敛成 `list_popup_at` + `scroll_list_popup` 查表。(5) `SelectPopupWidget` 的渲染委托给 `ListPopup`（prompt 作为 header 行），构造参数从 6 个颜色改为 `&Theme`，`select_popup_layout` 签名与测试保持不变。(6) `App::palette_filtered()` 成为过滤的唯一出处，`App::step_palette_selection(delta)` 统一带 clamp，键盘 ↑/↓ 与滚轮共用。
+
+**Behavior after:** palette 与 file picker 的长列表在任意终端高度下选中行始终可见，并且可以像 slash / select 一样用鼠标滚轮移动选中项（弹窗关闭后记录的鼠标矩形被清空）；palette 的 ↓ 不再越过列表末尾；四处弹窗的选中行高亮从"只覆盖字形列"变为铺满整行内宽；slash 弹窗内部背景改为 `theme.bottom_bar_bg`（此前是 `Clear` 之后的终端默认色）。`/model`、`/model-subagent`、`/theme`、`/permission`、`/view-system-prompt`、effort / think-budget 后续选择、以及 agent 发起的 `ask_user` / 权限弹窗都走 `SelectPopupWidget`，因此一并走组件（`/model` 的当前模型 `*` 标记保留，新增测试 `model_picker_renders_through_the_shared_list_popup` 钉住这条路径）。未改动：slash 弹窗仍用 `BorderType::Rounded` 与 accent 边框（即使主题的 `block_border_type()` 是 `Plain`），其选中行仍是 accent 无底色。
+
+---
+
 ## 1. 2026-10-03 — DeepSeek `reasoning_content` 回传策略的缓存实测（待处理，无行为变更）
 
 | 字段 | 值 |

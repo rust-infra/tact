@@ -23,16 +23,11 @@ MCP 用**单一协议**把它变成 **M + N**：
 ## 2. 三种角色
 
 ```mermaid
-graph TB
-    subgraph Host["MCP Host（AI 应用，如 Tact）"]
-        C1["MCP Client 1"]
-        C2["MCP Client 2"]
-    end
-    S1["MCP Server A（本地 stdio）"]
-    S2["MCP Server B（远程 HTTP）"]
-
-    C1 --- S1
-    C2 --- S2
+graph TD
+    a_host[MCP Host · Tact] --> b_c1[MCP Client 1]
+    a_host --> c_c2[MCP Client 2]
+    b_c1 --> d_s1[MCP Server A 本地 stdio]
+    c_c2 --> e_s2[MCP Server B 远程 HTTP]
 ```
 
 | 角色 | 是什么 | 做什么 |

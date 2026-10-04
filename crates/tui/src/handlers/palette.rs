@@ -7,18 +7,8 @@ use crate::widgets::state::{App, InputMode};
 pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Enter => {
-            let filter = app.cmd_line.to_lowercase();
             let commands = app.palette_commands();
-            let filtered: Vec<usize> = commands
-                .iter()
-                .enumerate()
-                .filter(|(_, (cmd, desc))| {
-                    filter.is_empty()
-                        || cmd.to_lowercase().contains(&filter)
-                        || desc.to_lowercase().contains(&filter)
-                })
-                .map(|(i, _)| i)
-                .collect();
+            let filtered = app.palette_filtered();
             if !filtered.is_empty() {
                 let idx = app.palette_selected.min(filtered.len() - 1);
                 let cmd = commands[filtered[idx]].0.clone();
@@ -77,14 +67,8 @@ pub(crate) fn handle_palette_mode(app: &mut App, key: KeyEvent) {
             app.cmd_line.pop();
             app.palette_selected = 0;
         }
-        KeyCode::Up => {
-            if app.palette_selected > 0 {
-                app.palette_selected -= 1;
-            }
-        }
-        KeyCode::Down => {
-            app.palette_selected += 1;
-        }
+        KeyCode::Up => app.step_palette_selection(-1),
+        KeyCode::Down => app.step_palette_selection(1),
         KeyCode::Esc => {
             app.cmd_line.clear();
             app.input_mode = InputMode::Normal;

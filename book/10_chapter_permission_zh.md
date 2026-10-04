@@ -143,26 +143,21 @@ pub enum PermissionMode {
 ```
 
 ```mermaid
-flowchart TD
-    TC["ToolUse { name, input }"] --> Risk["PermissionPolicy::resolve()"]
-    Risk -- Read --> Allow["Allow"]
-    Risk -- Write / High --> Plan{"Plan mode?"}
-
-    Plan -- Yes --> Deny["Deny"]
-    Plan -- No --> Auto{"Auto mode?"}
-
-    Auto -- Yes --> Allow
-    Auto -- No --> Settings{"Settings rule?"}
-
-    Settings -- Deny --> Deny
-    Settings -- Allow --> Allow
-    Settings -- Ask / none --> High{"High risk?"}
-
-    High -- Yes --> AllowList{"always_allowed_tools?"}
-    High -- No --> AllowList
-
-    AllowList -- Yes --> Allow
-    AllowList -- No --> Ask
+graph TD
+    a_risk[PermissionPolicy::resolve] --> b_risk{风险等级 Read?}
+    b_risk -->|Read| o1[Allow]
+    b_risk -->|Write / High| c_plan{Plan mode?}
+    c_plan -->|Yes| o2[Deny]
+    c_plan -->|No| d_auto{Auto mode?}
+    d_auto -->|Yes| o3[Allow]
+    d_auto -->|No| e_settings{Settings rule?}
+    e_settings -->|Deny| o4[Deny]
+    e_settings -->|Allow| o5[Allow]
+    e_settings -->|Ask / none| f_high{High risk?}
+    f_high -->|No| o6[Ask]
+    f_high -->|Yes| g_list{always_allowed_tools?}
+    g_list -->|Yes| o7[Allow]
+    g_list -->|No| o8[Ask]
 ```
 
 **High 与 allowlist：** High 首次无论如何都会询问。一旦有允许覆盖**该确切工具与输入**——裸名 `allow_tool`，或「Always allow this tool」写入的输入感知规则——High 就与其他风险一样被放行。计划模式与显式 `deny`/`ask` 规则仍然先判定，所以授权放宽的是询问，绝不是模式或规则。匹配的项目 settings **allow** 规则在第 5 步就能到达 High，甚至早于查询 allowlist。

@@ -42,16 +42,16 @@ use crate::{
     plugin::{PluginSkillRoot, PluginStore},
 };
 
+/// Metadata for one loaded skill.
+///
+/// Deliberately narrow. Claude Code's `argument-hint` / `allowed-tools` /
+/// `model` frontmatter is **not** parsed: a field that is stored but never
+/// enforced invites authors to rely on it, and nothing in Tact reads those
+/// keys, so they are ignored rather than carried for a consumer that does not
+/// exist. Re-adding one means adding its consumer in the same change.
 pub struct SkillManifest {
     pub name: String,
     pub description: String,
-    pub path: PathBuf,
-    /// Claude Code `argument-hint` frontmatter, if present.
-    pub argument_hint: Option<String>,
-    /// Claude Code `allowed-tools` frontmatter, if present (not yet enforced).
-    pub allowed_tools: Option<String>,
-    /// Claude Code `model` frontmatter, if present (not yet enforced).
-    pub model: Option<String>,
 }
 
 pub struct SkillDocument {
@@ -261,10 +261,6 @@ impl SkillRegistry {
             manifest: SkillManifest {
                 name: name.clone(),
                 description,
-                path: path.to_path_buf(),
-                argument_hint: meta.argument_hint,
-                allowed_tools: meta.allowed_tools,
-                model: meta.model,
             },
             body,
         };
@@ -320,10 +316,6 @@ impl SkillRegistry {
                     description: meta
                         .description
                         .unwrap_or_else(|| "No description".to_string()),
-                    path,
-                    argument_hint: meta.argument_hint,
-                    allowed_tools: meta.allowed_tools,
-                    model: meta.model,
                 },
                 body,
             };
@@ -393,19 +385,13 @@ impl SkillRegistry {
     }
 }
 
+/// The only frontmatter keys Tact reads. Anything else in the block — Claude
+/// Code's `argument-hint` / `allowed-tools` / `model` included — is ignored by
+/// serde, which is the point: see [`SkillManifest`].
 #[derive(Debug, Default, Deserialize)]
 struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
-    /// Claude Code `argument-hint` (shows in /help); parsed for display.
-    #[serde(default, rename = "argument-hint")]
-    argument_hint: Option<String>,
-    /// Claude Code `allowed-tools` (comma list); parsed but not enforced yet.
-    #[serde(default, rename = "allowed-tools")]
-    allowed_tools: Option<String>,
-    /// Claude Code `model` override; parsed but not enforced yet.
-    #[serde(default)]
-    model: Option<String>,
 }
 
 fn parse_frontmatter(text: &str) -> (SkillFrontmatter, String) {
@@ -735,8 +721,11 @@ mod tests {
         );
     }
 
+    /// Claude Code's `argument-hint` / `allowed-tools` / `model` are ignored,
+    /// not parsed: a key nobody enforces must not look supported. The keys it
+    /// does read still parse from the same block.
     #[test]
-    fn command_frontmatter_extends_manifest() {
+    fn claude_only_frontmatter_keys_are_ignored() {
         let dir = tempdir().unwrap();
         let commands_dir = dir.path().join("commands");
         fs::create_dir_all(&commands_dir).unwrap();
@@ -752,9 +741,8 @@ mod tests {
             .unwrap();
 
         let doc = registry.skills().get("plugin:build").expect("loaded");
-        assert_eq!(doc.manifest.argument_hint.as_deref(), Some("<target>"));
-        assert_eq!(doc.manifest.allowed_tools.as_deref(), Some("Bash, Read"));
-        assert_eq!(doc.manifest.model.as_deref(), Some("sonnet"));
+        assert_eq!(doc.manifest.name, "plugin:build");
+        assert_eq!(doc.manifest.description, "Build");
     }
 
     #[test]

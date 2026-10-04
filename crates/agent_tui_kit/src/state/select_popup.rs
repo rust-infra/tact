@@ -21,6 +21,10 @@ pub struct SelectPopup {
     /// When false, confirming does not append a separate log line (e.g. permission
     /// choices are already shown on the tool meta row).
     pub log_confirm: bool,
+    /// Filter typed into a local pick. Always empty for agent-originated
+    /// prompts, which are answered with the arrow keys only — see
+    /// [`SelectPopup::filterable`].
+    pub query: String,
 }
 
 impl Default for SelectPopup {
@@ -33,6 +37,7 @@ impl Default for SelectPopup {
             multi: false,
             checked: Vec::new(),
             log_confirm: true,
+            query: String::new(),
         }
     }
 }
@@ -53,6 +58,7 @@ impl SelectPopup {
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
+        self.query.clear();
     }
 
     /// Single-select popup (permission / default ask_user).
@@ -70,6 +76,7 @@ impl SelectPopup {
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
+        self.query.clear();
     }
 
     /// Multi-select popup (`ask_user` with `multi_select: true`).
@@ -88,6 +95,59 @@ impl SelectPopup {
         self.multi = true;
         self.checked = vec![false; n];
         self.log_confirm = log_confirm;
+        self.query.clear();
+    }
+
+    /// Whether the user may type to narrow this list.
+    ///
+    /// Local picks (`/model`, `/theme`, `/permission`, `/view-system-prompt`)
+    /// are the user's own list, and `/model` unions the config list with
+    /// `/v1/models`, so it is long enough to need a filter. Agent-originated
+    /// prompts are not: the agent is blocked waiting, and a stray keystroke
+    /// must not hide the choices.
+    pub fn filterable(&self) -> bool {
+        self.request_id.is_none()
+    }
+
+    /// Indices of the options matching the current query, in list order.
+    ///
+    /// Case-insensitive substring match — the palette's rule. An empty query
+    /// matches everything, so this is also the answer to "what is on screen"
+    /// for an unfiltered popup. The renderer and the movement helpers share it
+    /// so the window and the cursor can never disagree about the visible set.
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        let query = self.query.to_lowercase();
+        self.options
+            .iter()
+            .enumerate()
+            .filter(|(_, option)| query.is_empty() || option.to_lowercase().contains(&query))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Re-anchor the cursor on the first match after the query changed.
+    fn anchor_to_first_match(&mut self) {
+        if let Some(&first) = self.filtered_indices().first() {
+            self.selected = first;
+        }
+    }
+
+    /// Append a character to the filter.
+    pub fn push_query(&mut self, c: char) {
+        self.query.push(c);
+        self.anchor_to_first_match();
+    }
+
+    /// Delete the last filter character.
+    pub fn pop_query(&mut self) {
+        self.query.pop();
+        self.anchor_to_first_match();
+    }
+
+    /// Clear the filter (Esc's first meaning on a filterable popup).
+    pub fn clear_query(&mut self) {
+        self.query.clear();
+        self.anchor_to_first_match();
     }
 
     /// Consume and return the pending request id, if this was agent-originated.
@@ -131,6 +191,7 @@ impl SelectPopup {
         });
         self.multi = false;
         self.checked.clear();
+        self.query.clear();
         response
     }
 
@@ -144,17 +205,191 @@ impl SelectPopup {
         }
     }
 
-    /// Move selection down.
+    /// Move selection down, within the filtered set.
+    ///
+    /// With an empty query the filtered set is every option, so this is the
+    /// plain "next option" step; with a filter it skips the rows that are not
+    /// on screen. `selected` stays an index into `options`, which is what
+    /// `confirm()` reports — the callers that map the index to a semantic value
+    /// (`ThemePick` → `ThemeName::all()`, `PermissionModePick` → the three
+    /// modes) depend on that.
     pub fn move_down(&mut self) {
-        if self.selected + 1 < self.options.len() {
-            self.selected += 1;
+        let visible = self.filtered_indices();
+        if let Some(pos) = visible.iter().position(|&i| i == self.selected)
+            && let Some(&next) = visible.get(pos + 1)
+        {
+            self.selected = next;
         }
     }
 
-    /// Move selection up.
+    /// Move selection up, within the filtered set.
     pub fn move_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
+        let visible = self.filtered_indices();
+        if let Some(pos) = visible.iter().position(|&i| i == self.selected)
+            && pos > 0
+        {
+            self.selected = visible[pos - 1];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A local pick: filterable, the way `/model` opens one.
+    fn local(options: &[&str], selected: usize) -> SelectPopup {
+        let mut popup = SelectPopup::default();
+        popup.set_local(
+            "Select model".into(),
+            options.iter().map(|o| o.to_string()).collect(),
+            selected,
+            true,
+        );
+        popup
+    }
+
+    /// An agent prompt: not filterable.
+    fn agent(options: &[&str]) -> SelectPopup {
+        let mut popup = SelectPopup::default();
+        popup.set(
+            "Allow?".into(),
+            options.iter().map(|o| o.to_string()).collect(),
+            7,
+            true,
+        );
+        popup
+    }
+
+    #[test]
+    fn only_local_picks_are_filterable() {
+        assert!(local(&["a"], 0).filterable());
+        assert!(!agent(&["a"]).filterable());
+    }
+
+    #[test]
+    fn an_empty_query_shows_every_option() {
+        let popup = local(&["a", "b", "c"], 1);
+        assert_eq!(popup.filtered_indices(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn the_filter_matches_case_insensitively() {
+        let mut popup = local(&["Kimi-K2.5", "gpt-5", "KIMI-for-coding"], 0);
+        popup.push_query('k');
+        popup.push_query('i');
+        assert_eq!(
+            popup.filtered_indices(),
+            vec![0, 2],
+            "the query is lowercased, not the option"
+        );
+    }
+
+    #[test]
+    fn the_filter_matches_anywhere_in_the_label() {
+        let mut popup = local(&["kimi-k2.5", "kimi-for-coding"], 0);
+        popup.push_query('c');
+        popup.push_query('o');
+        popup.push_query('d');
+        assert_eq!(popup.filtered_indices(), vec![1]);
+    }
+
+    #[test]
+    fn typing_re_anchors_the_cursor_on_the_first_match() {
+        let mut popup = local(&["kimi-k2.5", "kimi-for-coding"], 0);
+        popup.push_query('c');
+        assert_eq!(
+            popup.selected, 1,
+            "the cursor must land on the row the filter leaves visible"
+        );
+    }
+
+    #[test]
+    fn deleting_a_character_widens_the_filter_again() {
+        let mut popup = local(&["kimi-for-coding", "claude-sonnet"], 0);
+        popup.push_query('c');
+        popup.push_query('l');
+        assert_eq!(
+            popup.filtered_indices(),
+            vec![1],
+            "only the label starting with `cl`"
+        );
+        popup.pop_query();
+        assert_eq!(
+            popup.filtered_indices(),
+            vec![0, 1],
+            "back to every label containing `c`"
+        );
+        popup.clear_query();
+        assert!(popup.query.is_empty());
+        assert_eq!(popup.selected, 0, "clearing re-anchors at the top");
+    }
+
+    #[test]
+    fn a_query_matching_nothing_leaves_no_visible_rows() {
+        let mut popup = local(&["kimi-k2.5"], 0);
+        popup.push_query('z');
+        assert!(popup.filtered_indices().is_empty());
+    }
+
+    #[test]
+    fn confirm_reports_the_original_option_index() {
+        // `ThemePick` and `PermissionModePick` map the confirmed index onto a
+        // semantic value, so filtering must not renumber the options.
+        let mut popup = local(&["theme-a", "theme-b", "theme-c"], 0);
+        popup.push_query('c');
+        assert_eq!(popup.confirm(), Some(2));
+    }
+
+    #[test]
+    fn movement_skips_the_rows_the_filter_hides() {
+        let mut popup = local(&["kimi-a", "gpt-b", "kimi-c"], 0);
+        popup.push_query('k');
+        assert_eq!(popup.filtered_indices(), vec![0, 2]);
+        assert_eq!(popup.selected, 0);
+
+        popup.move_down();
+        assert_eq!(popup.selected, 2, "the hidden row in between is skipped");
+        popup.move_down();
+        assert_eq!(popup.selected, 2, "and the cursor stops at the last match");
+
+        popup.move_up();
+        assert_eq!(popup.selected, 0);
+        popup.move_up();
+        assert_eq!(popup.selected, 0);
+    }
+
+    #[test]
+    fn movement_without_a_query_is_the_plain_next_option_step() {
+        let mut popup = local(&["a", "b", "c"], 0);
+        popup.move_down();
+        assert_eq!(popup.selected, 1);
+        popup.move_down();
+        popup.move_down();
+        assert_eq!(popup.selected, 2, "clamped at the end");
+        popup.move_up();
+        assert_eq!(popup.selected, 1);
+    }
+
+    #[test]
+    fn reopening_the_popup_clears_the_previous_query() {
+        let mut popup = local(&["a", "b"], 0);
+        popup.push_query('b');
+        assert!(!popup.query.is_empty());
+
+        popup.set_local("Again".into(), vec!["a".into(), "b".into()], 0, true);
+        assert!(
+            popup.query.is_empty(),
+            "a stale filter would hide options the new list does have"
+        );
+        assert_eq!(popup.filtered_indices(), vec![0, 1]);
+    }
+
+    #[test]
+    fn cancelling_clears_the_query() {
+        let mut popup = local(&["a", "b"], 0);
+        popup.push_query('b');
+        popup.cancel();
+        assert!(popup.query.is_empty());
     }
 }
