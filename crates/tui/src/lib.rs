@@ -163,6 +163,9 @@ pub struct TuiConfig {
     /// Configured UI language ("en" | "zh"); an unknown value falls back
     /// to English with a warning, the same contract as `theme`.
     pub language: String,
+    /// Config file `[ui]` preferences are written back to, or `None` when no
+    /// config file was loaded — the toggles then report "this session only".
+    pub ui_config_path: Option<PathBuf>,
     pub model_context_window: usize,
     /// Configured model name, shown in the bottom bar before the first LLM call.
     pub model_name: String,
@@ -201,6 +204,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         history_save_tx,
         theme,
         language,
+        ui_config_path,
         model_context_window,
         model_name,
         model_max_tokens,
@@ -250,6 +254,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     );
 
     app.set_configured_language(&language);
+    app.set_ui_config_path(ui_config_path);
     app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
@@ -266,10 +271,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.status_bar_mut().model_reasoning_effort = tact::config::try_settings()
         .and_then(|s| s.agent.reasoning_effort)
         .map(|effort| effort.as_str().to_string());
-    app.add_startup_logo();
-    let msgs = app.msgs();
-    app.add_system_message(msgs.startup_welcome.to_string());
-    app.add_system_message(msgs.startup_mode_hint.to_string());
+    app.add_startup_banner();
 
     if voice.enabled {
         let missing_api_key = matches!(voice.provider, tact::config::VoiceProvider::OpenAi)

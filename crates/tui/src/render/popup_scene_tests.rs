@@ -546,6 +546,16 @@ fn model_picker_filter_hides_the_rows_that_do_not_match() {
     for model in ["kimi-k2.5", "kimi-for-coding", "claude-sonnet"] {
         assert!(unfiltered.contains(model), "unfiltered list misses {model}");
     }
+    // An empty filter line says what it is: a magnifier and a grey placeholder,
+    // not a bare `>` that reads as another row of the list.
+    assert!(
+        unfiltered.contains('\u{1f50d}'),
+        "the filter line needs a search icon:\n{unfiltered}"
+    );
+    assert!(
+        unfiltered.contains(app.msgs().select_filter_placeholder),
+        "an empty filter line needs its placeholder:\n{unfiltered}"
+    );
 
     for c in "cod".chars() {
         app.select.push_query(c);
@@ -555,8 +565,12 @@ fn model_picker_filter_hides_the_rows_that_do_not_match() {
     });
 
     assert!(
-        filtered.contains("> cod"),
+        filtered.contains('\u{1f50d}') && filtered.contains("cod"),
         "the filter line must show what is being filtered on:\n{filtered}"
+    );
+    assert!(
+        !filtered.contains(app.msgs().select_filter_placeholder),
+        "the placeholder must give way to the query:\n{filtered}"
     );
     assert!(
         filtered.contains("kimi-for-coding"),

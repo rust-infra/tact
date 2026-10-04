@@ -270,6 +270,15 @@ pub struct App {
     pub(crate) loading_idx: Option<usize>,
     /// Current interface language.
     pub(crate) language: Language,
+    /// Config file a `[ui]` preference can be written back to, captured once at
+    /// startup by [`Self::set_ui_config_path`].
+    ///
+    /// Held here rather than re-read from the process-global settings on every
+    /// keystroke: `/theme`, `/lang`, `Ctrl+T` and `Ctrl+L` all need to know
+    /// whether there is a file to write, and they must all answer the same way.
+    /// `None` (the test default) means every one of them reports "this session
+    /// only" and nothing is written.
+    pub(crate) ui_config_path: Option<PathBuf>,
     /// Brief status bar notification (auto-clears after 3s).
     pub(crate) flash_msg: Option<(String, std::time::Instant)>,
     /// When the last copy landed; drives the popup footer's `✓ Copied` flash

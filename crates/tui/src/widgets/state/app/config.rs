@@ -60,17 +60,41 @@ impl App {
             .send((self.session_id.clone(), entry.to_string()));
     }
 
-    /// Cycle to the next built-in theme (`Ctrl+T`, and the old `/theme`).
+    /// Cycle to the next built-in theme (`Ctrl+T`).
+    ///
+    /// Unlike the `/theme` picker this path does not ask: it is the "just give
+    /// me the next one" shortcut, and a question on every press would defeat
+    /// it. The choice is written straight to `[ui] theme`, so the shortcut no
+    /// longer loses the theme on the next launch.
     pub(crate) fn toggle_theme(&mut self) {
-        self.set_theme(self.theme.name.next());
+        let name = self.theme.name.next();
+        self.apply_theme(name);
+        self.persist_theme_choice(name);
     }
 
-    /// Switch to one theme and say so — `Ctrl+T`, which has no persist step.
-    pub(crate) fn set_theme(&mut self, name: ThemeName) {
+    /// Switch the theme silently, then report the change and the write in one
+    /// message.
+    ///
+    /// The picker applies through [`Self::apply_theme`] and lets its own
+    /// persist step do the talking; this path has no step, so the message has
+    /// to carry both halves — which is why it never goes through a separate
+    /// "announce" call.
+    fn persist_theme_choice(&mut self, name: ThemeName) {
         let msgs = self.msgs();
-        self.apply_theme(name);
-        let label = theme_label(&msgs, name);
-        self.add_system_message(msgs.theme_changed_tmpl.replace("{}", label));
+        if !self.ui_config_available() {
+            let label = theme_label(&msgs, name);
+            self.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
+            return;
+        }
+        match tact::config::persist_theme(name.as_str()) {
+            Ok(()) => {
+                self.add_system_message(msgs.theme_persisted_tmpl.replace("{}", name.as_str()))
+            }
+            Err(error) => self.add_system_message(
+                msgs.theme_persist_failed_tmpl
+                    .replace("{}", &error.to_string()),
+            ),
+        }
     }
 
     /// Switch the theme silently.
@@ -142,9 +166,50 @@ impl App {
     /// Flip the UI language and say so — `Ctrl+L`, which has no persist step.
     pub(crate) fn toggle_language(&mut self) {
         let next = self.language.next();
-        let old_msgs = self.msgs();
         self.apply_language(next);
-        self.add_system_message(old_msgs.lang_changed_tmpl.replace("{}", next.label()));
+        self.persist_language_choice(next);
+    }
+
+    /// Cycle the language silently, then report the change and the write in one
+    /// message — the same contract as [`Self::persist_theme_choice`].
+    ///
+    /// The message is spoken in the language just switched *to*, matching what
+    /// the `/lang` picker's persist step already does.
+    fn persist_language_choice(&mut self, language: Language) {
+        let msgs = self.msgs();
+        if !self.ui_config_available() {
+            let label = language.label();
+            self.add_system_message(msgs.lang_session_only_tmpl.replace("{}", label));
+            return;
+        }
+        match tact::config::persist_language(language.as_str()) {
+            Ok(()) => {
+                self.add_system_message(msgs.lang_persisted_tmpl.replace("{}", language.as_str()))
+            }
+            Err(error) => self.add_system_message(
+                msgs.lang_persist_failed_tmpl
+                    .replace("{}", &error.to_string()),
+            ),
+        }
+    }
+
+    /// Record where a `[ui]` preference can be written back to.
+    ///
+    /// Called once at startup, after `App::new`, like
+    /// [`Self::set_configured_language`]. Left `None` (the test default) every
+    /// toggle reports "this session only" and writes nothing — which is also
+    /// what keeps the theme/lang tests from touching a file.
+    pub(crate) fn set_ui_config_path(&mut self, path: Option<std::path::PathBuf>) {
+        self.ui_config_path = path;
+    }
+
+    /// Whether there is a config file to write a `[ui]` preference into.
+    ///
+    /// Shared by `/theme`, `/lang`, `Ctrl+T` and `Ctrl+L`: all four persist
+    /// through the same `[ui]` table, so all four must agree on whether that
+    /// table has a file to live in.
+    pub(crate) fn ui_config_available(&self) -> bool {
+        self.ui_config_path.is_some()
     }
 
     /// Switch the language silently, handing the new [`Messages`] to every
@@ -193,11 +258,7 @@ pub(crate) fn theme_label(msgs: &Messages, name: ThemeName) -> &'static str {
 mod tests {
 
     use super::theme_label;
-    use crate::{
-        i18n::Language,
-        render::test_harness::make_app,
-        theme::{Theme, ThemeName},
-    };
+    use crate::{i18n::Language, render::test_harness::make_app, theme::ThemeName};
 
     #[test]
     fn toggle_theme_cycles_from_ink() {
@@ -216,20 +277,44 @@ mod tests {
     }
 
     #[test]
-    fn set_theme_switches_to_the_named_theme() {
+    fn toggle_theme_without_a_config_file_says_session_only() {
         let mut app = make_app();
-        assert_eq!(app.theme.name, ThemeName::Ink);
+        assert!(!app.ui_config_available(), "the test default is no file");
 
-        app.set_theme(ThemeName::SolarizedLight);
+        app.toggle_theme();
 
-        assert_eq!(app.theme.name, ThemeName::SolarizedLight);
-        assert_eq!(app.theme.fg, Theme::from(ThemeName::SolarizedLight).fg);
-        assert_eq!(app.theme.bg, Theme::from(ThemeName::SolarizedLight).bg);
+        assert_ne!(app.theme.name, ThemeName::Ink);
+        let label = theme_label(&app.msgs(), app.theme.name);
         assert!(
-            app.log.items.iter().any(|item| item
-                .raw
-                .contains(theme_label(&app.msgs(), ThemeName::SolarizedLight))),
-            "the switch must name the theme it moved to: {:?}",
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains(label) && item.raw.contains("session")),
+            "the shortcut must name the theme it moved to and admit it did not \
+             save: {:?}",
+            app.log.items
+        );
+    }
+
+    /// `Ctrl+T` used to apply and announce only, so the theme was back to the
+    /// configured one on the next launch. It now writes `[ui] theme` — the
+    /// write itself is covered in `handlers::select::tests`, where the config
+    /// fixture and the lock that serializes the global settings already live.
+    #[test]
+    fn a_config_file_means_a_real_write_attempt() {
+        let mut app = make_app();
+        app.set_ui_config_path(Some(std::path::PathBuf::from("/nonexistent/config.toml")));
+
+        app.toggle_theme();
+
+        // Whether the write lands or fails, the line must not be the
+        // session-only one: "no file" and "could not write" are different
+        // states and the user has to be able to tell them apart.
+        let label = theme_label(&app.msgs(), app.theme.name);
+        let session_only = app.msgs().theme_session_only_tmpl.replace("{}", label);
+        assert!(
+            !app.log.items.iter().any(|item| item.raw == session_only),
+            "a config file means a write is attempted: {:?}",
             app.log.items
         );
     }

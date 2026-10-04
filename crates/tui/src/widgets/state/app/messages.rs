@@ -67,6 +67,24 @@ pub(crate) fn find_task_stats_copy_button(raw: &str) -> Option<(usize, usize)> {
 }
 
 impl App {
+    /// The startup banner: the logo block, then the welcome and mode hints,
+    /// closed by the blank rows that keep them apart from everything else.
+    ///
+    /// The log is one scrolling column, so separation has to be written as
+    /// rows. With a single trailing row the first thing to land after startup
+    /// sat flush against "Current mode: …" — and that first thing is routinely
+    /// another system line (a `/theme` or `/model` write, a plugin's
+    /// `SessionStart` briefing, the restored session history), which then read
+    /// as one more line of the banner.
+    pub(crate) fn add_startup_banner(&mut self) {
+        self.add_startup_logo();
+        let msgs = self.msgs();
+        self.add_system_message(msgs.startup_welcome.to_string());
+        self.add_system_message(msgs.startup_mode_hint.to_string());
+        self.add_new_line();
+        self.add_new_line();
+    }
+
     pub(crate) fn add_startup_logo(&mut self) {
         let logo = [
             "  ████████╗ ",
@@ -152,6 +170,9 @@ impl App {
             tagline.to_string(),
             LogItemKind::SystemPlain(SystemMsgStyle::Default),
         );
+        // Two rows, so the banner reads as its own block rather than as the
+        // first three lines of the welcome text.
+        self.add_new_line();
         self.add_new_line();
     }
 

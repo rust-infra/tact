@@ -53,6 +53,7 @@ pub fn render_select_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Re
     };
     let widget =
         SelectPopupWidget::new(ctx.select, ctx.theme, empty_text, ctx.messages.select_arrow)
+            .with_filter_placeholder(ctx.messages.select_filter_placeholder)
             .with_footer(select_footer(ctx));
     let popup_area = widget.popup_area(area);
     frame.render_widget(widget, area);

@@ -59,16 +59,28 @@ and then `saved` / `session only` — the same thing twice. So the flip is split
 | Method | Effect | Caller |
 |---|---|---|
 | `apply_language(language)` | silent; sets `self.language` **and** pushes the new `Messages` to `thinking` / `stream` / `tools` | `/lang`, `set_configured_language` |
-| `toggle_language()` | `apply_language(self.language.next())` + announce | `Ctrl+L` |
+| `toggle_language()` | `apply_language(self.language.next())` + write `[ui] language` + one message | `Ctrl+L` |
 
 The split is not stylistic. `self.language` is what the *render* path reads, while the components
 snapshot their `Messages` at construction — flipping only `self.language` would redraw rows that
 already exist inside the old locale's chrome.
 
+> **Updated 2026-10-04.** `Ctrl+L` originally announced the flip without persisting it, so the same
+> complaint applied to the language: the choice was gone on the next launch. It now writes
+> `[ui] language` itself, mirroring `Ctrl+T` (see
+> [2026-10-01-tui-theme-picker-design.md](2026-10-01-tui-theme-picker-design.md) and the Ch 26 entry
+> for 2026-10-04). The announce-only template was removed with it.
+
 ### Shared config probe
 
 `theme_config_available()` becomes `ui_config_available()`. Both commands write the same `[ui]`
 table, so both must give the same answer to "does that table have a file to live in".
+
+> **Updated 2026-10-04.** The probe no longer reads the process-global settings on demand: it is
+> `App::ui_config_available()`, backed by `App::ui_config_path`, which `run_tui` captures once at
+> startup (via `TuiConfig::ui_config_path`). `Ctrl+T` and `Ctrl+L` are now callers too, and a global
+> read inside a key handler is what made the toggle tests write into whichever config file a
+> parallel test happened to have installed.
 
 ### `PersistLang` is its own variant
 

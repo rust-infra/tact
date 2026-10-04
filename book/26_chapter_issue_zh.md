@@ -54,18 +54,48 @@
 
 ---
 
+## 1. 2026-10-04 — 启动横幅与后续内容之间补上空行
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `crates/tui/src/widgets/state/app/messages.rs`（新增 `add_startup_banner`，`add_startup_logo` 尾部空行改两行）、`crates/tui/src/lib.rs`（启动三连调用收成一次）；Ch 23 |
+
+**Symptom / motivation:** 启动输出是三块——logo + `Tact Agent` + 一句随机标语、`Agent TUI started…` + `Current mode…`、以及之后的一切——但 log 只有一列，块与块之间只靠一行空行甚至零行分隔。横幅与欢迎语之间只有 1 行；欢迎语与**紧随其后的第一条系统消息**之间是 0 行，于是 `/theme`、`/model` 的写入回执、插件的 `SessionStart` 简报、恢复的会话历史，看上去都像横幅的又一行。
+
+**Decision:** 启动三块之间各留 **2 行空行**。`App::add_startup_banner()` 成为启动输出的唯一入口（logo → welcome → mode hint → 两行空行），`lib.rs` 里原来分开的三次调用收成一次；`add_startup_logo` 尾部的空行从 1 行改成 2 行，所以横幅自己也是一块而不是欢迎语的前三行。之所以写成行而不是"渲染时插空"：log 是单列追加，分隔只能是被追加的行。
+
+**Behavior after:** 启动后第一屏是三块分开的内容，之后落进来的任何一条系统消息/简报/历史都在两行空行之下开始，不再贴着 `Current mode: …`。新增测试 `startup_banner_separates_itself_from_what_follows` 直接断言 log items 的行距（mode hint 后两行必须为空、再下一行才是消息；welcome 之前两行为空）。
+
+---
+
+## 1. 2026-10-04 — `Ctrl+T` / `Ctrl+L` 的改动会落盘：快捷键不再丢主题和语言
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix |
+| **Related** | `crates/tui/src/widgets/state/app/config.rs`（`toggle_theme` / `toggle_language` / `persist_*_choice` / `ui_config_available` / `set_ui_config_path`）、`crates/tui/src/widgets/state/mod.rs`（`App::ui_config_path`）、`crates/tui/src/lib.rs`（`TuiConfig::ui_config_path`、启动时 `set_ui_config_path`）、`crates/tact-ui/src/interactive.rs`（传入 `settings().config_path`）、`crates/tui/src/handlers/select.rs`（`open_theme_persist_step` / `open_language_persist_step` 改用 `app.ui_config_available()`）、`crates/agent_tui_kit/src/i18n.rs`（删掉 `theme_changed_tmpl` / `lang_changed_tmpl`）；spec `docs/superpowers/specs/2026-10-01-tui-theme-picker-design.md`、`2026-10-02-ui-language-persistence-design.md`；Ch 23 §6.10 |
+
+**Symptom / motivation:** 偏好有两条路：`/theme`、`/lang` 会先静默应用再问「保存到配置？」（默认 `No`），而 `Ctrl+T`、`Ctrl+L` 只应用 + 播报一行，**从不写盘**。于是同一个选择，走选择器可能留住、走快捷键一定丢——下次启动回到配置里的那个主题/语言。`Ctrl+T` 是"快速下一个"，恰恰是最常用的那条路。
+
+**Decision:** (1) `Ctrl+T` / `Ctrl+L` 改为**静默应用 + 直接写 `[ui] theme` / `[ui] language` + 一条消息**说明结果（写成功 / 无配置文件 / 写失败）。不弹「要保存吗」：每按一次都问等于把这个快捷键废掉；也不发两条消息，所以旧的「应用 + 播报」入口 `set_theme` 直接删掉（它已无调用者），`theme_changed_tmpl` / `lang_changed_tmpl` 一并移除。(2) 「有没有配置文件可写」从**按键时现场读进程级全局**改成**启动时捕获一次**：`TuiConfig::ui_config_path` ← `interactive.rs` 从已解析的 `settings().config_path` 传入 → `run_tui` 在 `App::new` 之后调 `App::set_ui_config_path`（与 `set_configured_language` 同一套路）；`App::ui_config_available()` 是 `/theme`、`/lang`、`Ctrl+T`、`Ctrl+L` 四条路共用的唯一判据。为 `None` 时四者都报「仅本次会话」且不碰磁盘。(3) 语言消息用**切换后**的语言播报，与 `/lang` 的持久化步骤一致。
+
+**Behavior after:** `Ctrl+T` 换主题、`Ctrl+L` 换语言之后**立刻写入配置文件**，下次启动读得回来，消息里会说明写到了哪个键；没有配置文件时明确报「仅本次会话」而不是假装保存；写失败（权限、路径失效）报失败原因。选择器路径不变：仍然问一次、默认 `No`。副作用是"有没有配置文件"不再依赖进程级全局，于是主题/语言的单测不再可能去写另一个并行测试装上的临时配置文件——这正是原来那个 `ui_config_available()` 现场读全局留下的隐患。
+
+---
+
 ## 1. 2026-10-04 — 本地选择弹窗可以输入筛选：`/model` 的长列表不再只能一路翻
 
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/state/select_popup.rs`（`query` / `filterable` / `filtered_indices` / `push_query`…）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（筛选行 + 可见行映射）、`crates/agent_tui_kit/src/render/popups/select.rs`（footer 提示、空态文案）、`crates/agent_tui_kit/src/i18n.rs`（`select_hint_filter`、`select_no_match`）、`crates/tui/src/handlers/select.rs`（字符 / Backspace / Esc 三档语义）；spec `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`；Ch 23 |
+| **Related** | `crates/agent_tui_kit/src/state/select_popup.rs`（`query` / `filterable` / `filtered_indices` / `push_query`…）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（筛选行 + 可见行映射）、`crates/agent_tui_kit/src/render/popups/select.rs`（footer 提示、空态文案）、`crates/agent_tui_kit/src/i18n.rs`（`select_hint_filter`、`select_filter_placeholder`、`select_no_match`）、`crates/tui/src/handlers/select.rs`（字符 / Backspace / Esc 三档语义）；spec `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`；Ch 23 |
 
 **Symptom / motivation:** `/model` 的候选是配置里的 `models = [...]` 与端点 `/v1/models` 的并集，可能几十上百条，而弹窗只能 ↑↓/j/k 一行行挪——没有任何办法按名字缩小范围。palette 与 slash 都能筛，是因为它们的状态里本来就有输入串；`SelectPopup` 从来没有查询字段，所以列表再长也只能翻。2026-10-04 把四处列表弹窗收进 `ListPopup` 之后这个问题更显眼：组件负责"渲染一组行"，而"哪些行"是调用方的数据问题，筛选需要的是状态而不是渲染。
 
-**Decision:** (1) `SelectPopup` 增加 `query`，`filtered_indices()` 用与 palette 相同的规则（大小写不敏感的子串匹配）返回可见行的**原始下标**；`selected` 始终是 `options` 的下标，不是可见行序号——`ThemePick`（下标即 `ThemeName::all()`）与 `PermissionModePick`（0/1/2 即三个模式）依赖这一点，筛选不能重新编号。(2) `move_up` / `move_down` 在可见集合内移动，所以筛选生效时跳过被隐藏的行；查询为空时可见集合就是全部，行为与原来完全一致。(3) **只有本地选择可筛选**：`filterable()` = `request_id.is_none()`。`/model`、`/model-subagent`、`/theme`、`/permission`、`/view-system-prompt`、effort / think-budget 后续选择都是 `set_local`；agent 发起的权限 / `ask_user` 用 `set` / `set_multi`，**保持只能方向键**——agent 正阻塞等待，误触一个字符不该把选项藏起来。(4) 可筛选弹窗固定多一行筛选行（`> 查询串`），即使为空也保留，避免第一个字符让弹窗长高一行；弹窗过矮时**优先丢掉 prompt 行**，保证筛选行与至少一行选项仍在。(5) 键位：可打印字符入查询、Backspace 退格、Esc 先清空筛选再取消；因此可筛选弹窗的底栏提示从 `↑↓/j/k` 改为 `↑↓`（`j`/`k` 现在是筛选字符），并新增 `a-z 筛选`。(6) 筛选无匹配时显示 `select_no_match`（"没有匹配的选项"），而不是 `select_empty`（"无选项"）——后者对一份有选项的列表是假话；此时 Enter 只报"无选项"，不会确认一个屏幕上看不见的行。
+**Decision:** (1) `SelectPopup` 增加 `query`，`filtered_indices()` 用与 palette 相同的规则（大小写不敏感的子串匹配）返回可见行的**原始下标**；`selected` 始终是 `options` 的下标，不是可见行序号——`ThemePick`（下标即 `ThemeName::all()`）与 `PermissionModePick`（0/1/2 即三个模式）依赖这一点，筛选不能重新编号。(2) `move_up` / `move_down` 在可见集合内移动，所以筛选生效时跳过被隐藏的行；查询为空时可见集合就是全部，行为与原来完全一致。(3) **只有本地选择可筛选**：`filterable()` = `request_id.is_none()`。`/model`、`/model-subagent`、`/theme`、`/permission`、`/view-system-prompt`、effort / think-budget 后续选择都是 `set_local`；agent 发起的权限 / `ask_user` 用 `set` / `set_multi`，**保持只能方向键**——agent 正阻塞等待，误触一个字符不该把选项藏起来。(4) 可筛选弹窗固定多一行筛选行，即使为空也保留，避免第一个字符让弹窗长高一行；弹窗过矮时**优先丢掉 prompt 行**，保证筛选行与至少一行选项仍在。(5) 筛选行要一眼看出是输入框：`🔍`（accent）+ 查询串（`theme.fg`）+ 光标块（一个 `theme.fg` 作背景的空格）落在插入点；空查询时先画光标再画 `select_filter_placeholder` 灰字提示。最初用的是裸 `>`，在截图里读起来像列表的又一行——这也正是这次改动的由来；背景色方案被否掉，因为 `theme.input_box_bg` 在 12 个主题里有 6 个等于弹窗自己的 `bottom_bar_bg`，等于一半主题上看不见。(6) 键位：可打印字符入查询、Backspace 退格、Esc 先清空筛选再取消；因此可筛选弹窗的底栏提示从 `↑↓/j/k` 改为 `↑↓`（`j`/`k` 现在是筛选字符），并新增 `a-z 筛选`。(7) 筛选无匹配时显示 `select_no_match`（"没有匹配的选项"），而不是 `select_empty`（"无选项"）——后者对一份有选项的列表是假话；此时 Enter 只报"无选项"，不会确认一个屏幕上看不见的行。
 
-**Behavior after:** `/model` 等本地选择弹窗可以直接打字筛选，光标自动落到第一个匹配项，↑↓ 只在匹配项之间移动；Esc 先清筛选、再按一次才取消；agent 发起的权限 / `ask_user` 弹窗完全不受影响（打字无效，`j`/`k` 仍是导航）；筛选无匹配时提示"没有匹配的选项"，Enter 不会误选。
+**Behavior after:** `/model` 等本地选择弹窗可以直接打字筛选，光标自动落到第一个匹配项，↑↓ 只在匹配项之间移动；筛选行以 `🔍` 开头、带灰字占位提示和插入点光标块，空列表状态下也能看出这里可以输入；Esc 先清筛选、再按一次才取消；agent 发起的权限 / `ask_user` 弹窗完全不受影响（打字无效，`j`/`k` 仍是导航）；筛选无匹配时提示"没有匹配的选项"，Enter 不会误选。
 
 ---
 

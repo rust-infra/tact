@@ -1094,6 +1094,54 @@ fn copy_flash_persists_within_its_window() {
     );
 }
 
+/// The startup output is three blocks — banner, welcome/mode hints, then
+/// everything else — and the log is a single scrolling column, so the
+/// separation has to be written as rows.
+///
+/// Regression: with one trailing row the first system line to land after
+/// startup (a `/theme` or `/model` write, a plugin briefing, the restored
+/// session) sat flush against "Current mode: …" and read as part of the banner.
+#[test]
+fn startup_banner_separates_itself_from_what_follows() {
+    let mut app = make_app();
+    app.add_startup_banner();
+    app.add_system_message("✓ Saved theme = \"gruvbox-dark\" to config".into());
+
+    let rows: Vec<String> = app.log.items.iter().map(|item| item.raw.clone()).collect();
+    let hint = app.msgs().startup_mode_hint;
+    let hint_at = rows
+        .iter()
+        .position(|row| row == hint)
+        .expect("the mode hint is in the log");
+
+    for gap in 1..=2 {
+        assert!(
+            rows[hint_at + gap].is_empty(),
+            "row {gap} after the mode hint must be blank, got {:?}",
+            rows[hint_at + gap]
+        );
+    }
+    assert!(
+        rows[hint_at + 3].contains("Saved theme"),
+        "the next message starts after the gap, got {:?}",
+        rows[hint_at + 3]
+    );
+
+    // And the banner is its own block too: two rows under the tagline, then the
+    // welcome.
+    let welcome = app.msgs().startup_welcome;
+    let welcome_at = rows
+        .iter()
+        .position(|row| row == welcome)
+        .expect("the welcome is in the log");
+    assert!(
+        rows[welcome_at - 1].is_empty() && rows[welcome_at - 2].is_empty(),
+        "the banner must be followed by two blank rows, got {:?} / {:?}",
+        rows[welcome_at - 2],
+        rows[welcome_at - 1]
+    );
+}
+
 #[test]
 fn startup_logo_renders_in_full_frame() {
     let mut app = make_app();

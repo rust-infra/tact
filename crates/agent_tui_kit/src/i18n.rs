@@ -193,6 +193,9 @@ pub struct Messages {
     pub select_hint_toggle: &'static str,
     /// Label for the `a-z` hint on filterable (local) picks.
     pub select_hint_filter: &'static str,
+    /// Grey text inside an empty filter line, so the line reads as a search
+    /// box rather than as another row of the list.
+    pub select_filter_placeholder: &'static str,
     pub pending_cancel_btn: &'static str,
     pub subagent_cancel_btn: &'static str,
 
@@ -379,8 +382,6 @@ pub struct Messages {
     pub theme_persisted_tmpl: &'static str,
     pub theme_persist_failed_tmpl: &'static str,
     pub theme_session_only_tmpl: &'static str,
-    pub theme_changed_tmpl: &'static str,
-    pub lang_changed_tmpl: &'static str,
     /// `/lang` second step — offer to write `[ui] language`, the same question
     /// `/theme` asks, so a chosen locale can outlive the session.
     pub lang_persist_prompt: &'static str,
@@ -527,6 +528,7 @@ impl Messages {
             select_hint_cancel: " Cancel ",
             select_hint_toggle: " Toggle ",
             select_hint_filter: " Filter ",
+            select_filter_placeholder: "type to filter",
             pending_cancel_btn: "Cancel",
             subagent_cancel_btn: "Cancel",
 
@@ -700,8 +702,6 @@ impl Messages {
             theme_persisted_tmpl: "✓ Saved theme = \"{}\" to config",
             theme_persist_failed_tmpl: "✗ Failed to save theme: {}",
             theme_session_only_tmpl: "🎨 Theme: {} (this session only)",
-            theme_changed_tmpl: "🎨 Theme: {}",
-            lang_changed_tmpl: "🌐 Language: {}",
             lang_persist_prompt: "Save language to config?",
             lang_persisted_tmpl: "✓ Saved language = \"{}\" to config",
             lang_persist_failed_tmpl: "✗ Failed to save language: {}",
@@ -833,6 +833,7 @@ impl Messages {
             select_hint_cancel: " 取消 ",
             select_hint_toggle: " 勾选 ",
             select_hint_filter: " 筛选 ",
+            select_filter_placeholder: "输入以筛选",
             pending_cancel_btn: "取消",
             subagent_cancel_btn: "取消",
 
@@ -1006,8 +1007,6 @@ impl Messages {
             theme_persisted_tmpl: "✓ 已将 theme = \"{}\" 写入配置",
             theme_persist_failed_tmpl: "✗ 保存主题失败: {}",
             theme_session_only_tmpl: "🎨 主题: {}（仅本次会话）",
-            theme_changed_tmpl: "🎨 主题: {}",
-            lang_changed_tmpl: "🌐 语言: {}",
             lang_persist_prompt: "将语言保存到配置文件？",
             lang_persisted_tmpl: "✓ 已将 language = \"{}\" 写入配置",
             lang_persist_failed_tmpl: "✗ 保存语言失败: {}",

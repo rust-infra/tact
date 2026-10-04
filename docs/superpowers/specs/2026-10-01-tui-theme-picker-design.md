@@ -27,7 +27,12 @@ where the other designs live.
 | `/theme` | `SelectKind::ThemePick` over `ThemeName::all()`; the current row carries ` *` **and** is the initial selection (not parked on row one) |
 | Enter | Apply the highlighted theme, then ask about persisting it |
 | Esc | Keep the current theme, back to `InputMode::Normal` |
-| `Ctrl+T` | `toggle_theme` — the cheap "next one" path, unchanged |
+| `Ctrl+T` | `toggle_theme` — the cheap "next one" path: apply silently and write `[ui] theme` without asking |
+
+> **Updated 2026-10-04.** `Ctrl+T` originally applied and announced only, so the
+> theme reverted on the next launch while the picker's answer could stick. It now
+> persists too, and the single message reports the change *and* the write. See
+> the Ch 26 entry for 2026-10-04; `Ctrl+L` was given the same treatment.
 
 `ThemeName::all()` changed from private to `pub` for this: the picker needs the cycle order, and a
 caller should not have to reconstruct it by calling `next()` until it wraps.
@@ -40,10 +45,11 @@ twelve-arm `match` that used to live inside `toggle_theme` is gone.
 
 ### Two apply paths — one action, one message
 
-`set_theme` applies **and** announces; `apply_theme` applies silently. `Ctrl+T` goes through
-`set_theme`; the picker goes through `apply_theme` and lets its persist step do the talking. If the
-picker used `set_theme`, one action would print `🎨 Theme: Nord` and then `saved` / `session only` —
-the same thing twice.
+`apply_theme` applies silently; the picker goes through it and lets its persist step do the talking.
+`Ctrl+T` also applies silently, but then writes the theme itself and reports the change and the write
+in a single line — it has no step to defer to, and two messages for one keypress ("Theme: Nord" then
+"saved") would say the same thing twice. That is why `set_theme` (apply **and** announce) was removed
+on 2026-10-04: after the shortcut gained its own persist message it had no callers left.
 
 ### The persist step
 

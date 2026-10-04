@@ -151,6 +151,7 @@ impl App {
             spinner_frame: 0,
             loading_idx: None,
             language: Language::English,
+            ui_config_path: None,
             flash_msg: None,
             copy_flash_at: None,
             undo_stack: Vec::new(),

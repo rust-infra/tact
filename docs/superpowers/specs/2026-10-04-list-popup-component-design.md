@@ -165,10 +165,18 @@ So the filter lives where the options live:
   `Esc` clears the filter first and cancels only on the second press. `j`/`k`
   therefore stop being navigation there, and the footer says `↑↓` plus
   `a-z Filter` instead of `↑↓/j/k`.
-- The filter line (`> query`) is a reserved header row — present even while
-  empty, so the popup does not change height on the first keystroke. When the
-  popup is too short for prompt + filter + one option row, the **prompt** is
-  dropped: the filter line and one visible option are not negotiable.
+- The filter line is a reserved header row — present even while empty, so the
+  popup does not change height on the first keystroke. It reads as a text field
+  rather than as one more row of the list: a `🔍` in `theme.accent`, the query in
+  `theme.fg` (or a muted placeholder while empty), and a caret — a space with
+  `theme.fg` behind it — at the insertion point. The caret is always drawn,
+  because this line is the popup's only field and it always has the focus. A
+  bare `>` was tried and read as a list row; a background band was rejected
+  because `theme.input_box_bg` equals the popup's own `bottom_bar_bg` on six of
+  the twelve themes, so it would be invisible on half of them.
+- When the popup is too short for prompt + filter + one option row, the
+  **prompt** is dropped: the filter line and one visible option are not
+  negotiable.
 - A filter matching nothing shows `select_no_match`, not `select_empty`, and
   `Enter` refuses to confirm a row that is not on screen.
 

@@ -20,10 +20,6 @@ pub struct SelectPopupLayout {
     pub popup_area: Rect,
     /// Prompt lines (already truncated to fit the popup).
     pub prompt_lines: Vec<Line<'static>>,
-    /// The filter line (`> query`), present exactly when the popup is
-    /// filterable. It is reserved even while empty so the popup does not jump a
-    /// row on the first keystroke.
-    pub query_line: Option<Line<'static>>,
     /// Number of option rows visible inside the popup.
     pub visible: usize,
     /// Scroll offset into the filtered options (index of the first visible one).
@@ -124,12 +120,6 @@ pub fn select_popup_layout(
     SelectPopupLayout {
         popup_area,
         prompt_lines,
-        query_line: (query_rows == 1).then(|| {
-            Line::from(vec![
-                Span::styled("> ", Style::default().fg(fg_color)),
-                Span::styled(state.query.clone(), Style::default().fg(fg_color)),
-            ])
-        }),
         visible,
         offset,
     }
@@ -146,6 +136,8 @@ pub struct SelectPopupWidget<'a> {
     empty_text: &'static str,
     /// Selected item prefix arrow.
     arrow: &'static str,
+    /// Grey text inside the empty filter line.
+    filter_placeholder: &'static str,
     /// Navigation hint rendered in the bottom border (e.g. `↑↓/j/k`).
     footer: Option<Line<'static>>,
 }
@@ -162,8 +154,15 @@ impl<'a> SelectPopupWidget<'a> {
             theme,
             empty_text,
             arrow,
+            filter_placeholder: "",
             footer: None,
         }
+    }
+
+    /// Text drawn inside the filter line while it is empty.
+    pub fn with_filter_placeholder(mut self, placeholder: &'static str) -> Self {
+        self.filter_placeholder = placeholder;
+        self
     }
 
     /// Set the navigation hint rendered in the bottom border (styled spans).
@@ -181,6 +180,39 @@ impl<'a> SelectPopupWidget<'a> {
     /// route mouse-wheel scrolls to the popup).
     pub fn popup_area(&self, area: Rect) -> Rect {
         select_popup_layout(self.state, area, self.theme.fg, self.footer_width()).popup_area
+    }
+
+    /// The filter line: a search icon, the query (or its grey placeholder while
+    /// empty) and a caret block at the insertion point.
+    ///
+    /// The line is the popup's only text field, and it is always the focus, so
+    /// the caret is always drawn — without it the line read as one more row of
+    /// the list and the `>` that used to be there said nothing about typing.
+    fn filter_line(&self) -> Line<'static> {
+        let theme = self.theme;
+        // A space with the text colour behind it: the terminal-cursor look, and
+        // it needs no background of its own (the popup already paints one).
+        let caret = Span::styled(" ", Style::default().bg(theme.fg).fg(theme.bg));
+        let mut spans = vec![Span::styled(
+            "\u{1f50d} ",
+            Style::default().fg(theme.accent),
+        )];
+        if self.state.query.is_empty() {
+            spans.push(caret);
+            if !self.filter_placeholder.is_empty() {
+                spans.push(Span::styled(
+                    self.filter_placeholder,
+                    Style::default().fg(theme.muted),
+                ));
+            }
+        } else {
+            spans.push(Span::styled(
+                self.state.query.clone(),
+                Style::default().fg(theme.fg),
+            ));
+            spans.push(caret);
+        }
+        Line::from(spans)
     }
 
     /// The option rows the filter leaves visible, with the focus marker applied.
@@ -219,7 +251,6 @@ impl Widget for SelectPopupWidget<'_> {
         let SelectPopupLayout {
             popup_area,
             prompt_lines,
-            query_line,
             ..
         } = select_popup_layout(self.state, area, self.theme.fg, self.footer_width());
         let rows = self.rows();
@@ -238,8 +269,8 @@ impl Widget for SelectPopupWidget<'_> {
         };
 
         let mut header = prompt_lines;
-        if let Some(query_line) = query_line {
-            header.push(query_line);
+        if self.state.filterable() {
+            header.push(self.filter_line());
         }
 
         let mut popup = ListPopup::new(self.theme, &rows, popup_area.width, popup_area.height)
@@ -271,6 +302,89 @@ mod tests {
 
     fn layout(state: &SelectPopup, area: Rect, footer_width: u16) -> SelectPopupLayout {
         select_popup_layout(state, area, Theme::from(ThemeName::Dark).fg, footer_width)
+    }
+
+    /// Flatten a buffer into one string per row.
+    fn rows_text(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Render a local (filterable) pick with one option.
+    fn render_filterable(query: &str) -> (Buffer, Theme, Rect) {
+        let theme = Theme::from(ThemeName::Dark);
+        let mut state = SelectPopup::default();
+        state.set_local("Select model".into(), vec!["opt-00".into()], 0, true);
+        state.query = query.to_string();
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        SelectPopupWidget::new(&state, &theme, "No options", "▶ ")
+            .with_filter_placeholder("type to filter")
+            .render(area, &mut buf);
+        let inner = crate::render::popups::popup_inner(
+            select_popup_layout(&state, area, theme.fg, 0).popup_area,
+        );
+        (buf, theme, inner)
+    }
+
+    #[test]
+    fn an_empty_filter_line_shows_the_icon_the_placeholder_and_a_caret() {
+        let (buf, theme, inner) = render_filterable("");
+        // Header: prompt on the first row, the filter line on the second.
+        let line = &rows_text(&buf)[inner.y as usize + 1];
+
+        assert!(
+            line.contains('\u{1f50d}'),
+            "the filter line needs a search icon: {line:?}"
+        );
+        assert!(
+            line.contains("type to filter"),
+            "an empty filter line needs its placeholder: {line:?}"
+        );
+        // The caret sits at the insertion point — position 0, right after the
+        // icon — and is a solid block in the text colour.
+        let caret_x = inner.x + 3;
+        assert_eq!(buf[(caret_x, inner.y + 1)].bg, theme.fg, "caret block");
+        assert_eq!(buf[(caret_x, inner.y + 1)].fg, theme.bg);
+    }
+
+    #[test]
+    fn typing_replaces_the_placeholder_and_moves_the_caret() {
+        let (buf, theme, inner) = render_filterable("kim");
+        let line = &rows_text(&buf)[inner.y as usize + 1];
+
+        assert!(line.contains("kim"), "the query is on the line: {line:?}");
+        assert!(
+            !line.contains("type to filter"),
+            "the placeholder must give way: {line:?}"
+        );
+        let caret_x = inner.x + 3 + 3;
+        assert_eq!(
+            buf[(caret_x, inner.y + 1)].bg,
+            theme.fg,
+            "the caret follows the query"
+        );
+    }
+
+    #[test]
+    fn an_agent_prompt_has_no_filter_line() {
+        let theme = Theme::from(ThemeName::Dark);
+        let mut state = SelectPopup::default();
+        state.set("Allow?".into(), vec!["yes".into()], 7, true);
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        SelectPopupWidget::new(&state, &theme, "No options", "▶ ")
+            .with_filter_placeholder("type to filter")
+            .render(area, &mut buf);
+
+        let text = rows_text(&buf).join("\n");
+        assert!(!text.contains('\u{1f50d}'));
+        assert!(!text.contains("type to filter"));
     }
 
     #[test]

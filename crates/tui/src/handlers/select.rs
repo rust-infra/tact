@@ -248,7 +248,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         .copied()
                         .unwrap_or(app.theme.name);
                     app.apply_theme(name);
-                    open_theme_persist_step(app, name, ui_config_available());
+                    open_theme_persist_step(app, name, app.ui_config_available());
                 }
                 SelectKind::PersistTheme { name } => {
                     finish_theme_persist(app, &chosen, name);
@@ -735,20 +735,13 @@ fn finish_persist_budget(
     app.input_mode = InputMode::Normal;
 }
 
-/// Whether there is a config file to write a `[ui]` preference into.
-///
-/// Shared by `/theme` and `/lang`: both persist through the same `[ui]` table,
-/// so both must agree on whether that table has a file to live in.
-fn ui_config_available() -> bool {
-    tact::config::try_settings().is_some_and(|settings| settings.config_path.is_some())
-}
-
 /// `/theme` second step: offer to write `[ui] theme` to the config file.
 ///
 /// No config file means the choice stays session-only, and that is reported
 /// here rather than by opening a picker whose answer could not be honoured.
 /// `config_available` is a parameter so both branches are testable without
-/// installing process-global settings.
+/// installing process-global settings; production passes
+/// [`App::ui_config_available`].
 fn open_theme_persist_step(app: &mut App, name: crate::theme::ThemeName, config_available: bool) {
     let msgs = app.msgs();
     if !config_available {
@@ -797,7 +790,7 @@ fn finish_theme_persist(app: &mut App, chosen: &str, name: crate::theme::ThemeNa
 pub(crate) fn start_language_toggle(app: &mut App) {
     app.apply_language(app.language.next());
     let language = app.language;
-    open_language_persist_step(app, language, ui_config_available());
+    open_language_persist_step(app, language, app.ui_config_available());
 }
 
 /// `/lang` second step: offer to write `[ui] language` to the config file.
@@ -1113,6 +1106,8 @@ mod tests {
         let _lock = MODELS_TEST_LOCK.lock().await;
         let (_temp_dir, path) = install_models_config_with_path(vec![], "kimi-k2.5", 0);
         let mut app = make_app();
+        // The persist gate is the path captured at startup, not a global read.
+        app.set_ui_config_path(Some(path.clone()));
 
         start_language_toggle(&mut app);
         assert_eq!(app.language, Language::Chinese);
@@ -1905,6 +1900,60 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert_eq!(app.select.selected, 2);
+    }
+
+    /// `Ctrl+T` and `Ctrl+L` used to apply and announce only, so the choice was
+    /// gone on the next launch. They now write the same `[ui]` keys the pickers'
+    /// persist steps write, without asking — a question on every press would
+    /// defeat the shortcut.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_t_and_ctrl_l_write_the_ui_preferences() {
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        let (_temp_dir, path) = install_models_config_with_path(vec!["kimi-k2.5"], "kimi-k2.5", 0);
+
+        let mut app = make_app();
+        app.set_ui_config_path(Some(path.clone()));
+        assert!(app.ui_config_available());
+
+        app.toggle_theme();
+        let theme = app.theme.name.as_str().to_string();
+        app.toggle_language();
+        let language = app.language.as_str().to_string();
+
+        let config = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            config.contains(&format!("theme = \"{theme}\"")),
+            "[ui] theme must be written, got:\n{config}"
+        );
+        assert!(
+            config.contains(&format!("language = \"{language}\"")),
+            "[ui] language must be written, got:\n{config}"
+        );
+        // The rest of the file is the user's, and must survive.
+        assert!(
+            config.contains("model = \"kimi-k2.5\""),
+            "the write must not clobber the rest of the config:\n{config}"
+        );
+    }
+
+    /// With no config file the toggles must say so instead of pretending to
+    /// save.
+    #[test]
+    fn ctrl_t_without_a_config_file_stays_session_only() {
+        let mut app = make_app();
+        assert!(!app.ui_config_available(), "the test default is no file");
+
+        app.toggle_theme();
+
+        let label = theme_label(&app.msgs(), app.theme.name);
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains(label) && item.raw.contains("session")),
+            "expected the session-only line, got {:?}",
+            app.log.items
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

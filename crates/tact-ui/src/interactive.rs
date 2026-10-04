@@ -150,6 +150,7 @@ async fn run_interactive_locked(
             history_save_tx,
             theme,
             language,
+            ui_config_path: tact::config::settings().config_path.clone(),
             model_context_window,
             model_name,
             model_max_tokens,
