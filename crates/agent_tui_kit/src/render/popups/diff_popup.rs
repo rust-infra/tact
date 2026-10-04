@@ -175,24 +175,6 @@ pub fn prepare_diff_popup(popup: &mut DiffPopup, theme: &Theme) {
     }
 }
 
-/// Bottom-border hints for the tool popup. Every key is real for this popup —
-/// `handle_overlay_key` routes Esc / y / j-k here (unlike `g`/`G`, which the
-/// code / mermaid / dag / subagent popups own).
-const TOOL_POPUP_FOOTER: &[super::FooterHint] = &[
-    super::FooterHint {
-        key: "y",
-        label: " copy ",
-    },
-    super::FooterHint {
-        key: "Esc",
-        label: " close ",
-    },
-    super::FooterHint {
-        key: "j/k",
-        label: " scroll ",
-    },
-];
-
 pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> PopupMouseSurface {
     let mut surface = PopupMouseSurface::default();
     let code_bg = ctx.theme.code_block_bg();
@@ -228,7 +210,7 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
             ctx.theme,
             &popup.title,
             popup.tool_name.as_deref(),
-            Some(TOOL_POPUP_FOOTER),
+            Some(super::COPY_SCROLL_CLOSE),
             ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
         );
         frame.render_widget(Paragraph::new(body), inner);
@@ -335,7 +317,7 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
         ctx.theme,
         &title,
         popup.tool_name.as_deref(),
-        Some(TOOL_POPUP_FOOTER),
+        Some(super::COPY_SCROLL_CLOSE),
         ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
     );
     frame.render_widget(Paragraph::new(text), inner);

@@ -33,20 +33,7 @@ pub fn render_task_dag_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
     lines.push(Line::from(""));
     lines.extend(popup.lines.iter().cloned());
 
-    let footer: &[FooterHint] = &[
-        FooterHint {
-            key: "y",
-            label: " copy ",
-        },
-        FooterHint {
-            key: "j/k",
-            label: " scroll ",
-        },
-        FooterHint {
-            key: "Esc",
-            label: " close ",
-        },
-    ];
+    let footer: &[FooterHint] = super::COPY_SCROLL_CLOSE;
 
     surface.popup_area = ScrollableTextPopup::new(ctx.theme, " tasks-dag ", &lines)
         .scroll(popup.scroll as usize)

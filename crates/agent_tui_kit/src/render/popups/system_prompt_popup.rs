@@ -14,16 +14,7 @@ pub fn render_system_prompt_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx
     // scrolls internally so lines wrap at the renderer's max width.
     let body = ScrollableTextPopup::body_area(area);
     let lines = render_markdown_ratatui(&popup.source, ctx.theme, body.width as usize);
-    let footer: &[FooterHint] = &[
-        FooterHint {
-            key: "j/k",
-            label: " scroll ",
-        },
-        FooterHint {
-            key: "Esc",
-            label: " close ",
-        },
-    ];
+    let footer: &[FooterHint] = super::SCROLL_CLOSE;
     ScrollableTextPopup::new(ctx.theme, &format!(" {} ", popup.title), &lines)
         .scroll(popup.scroll as usize)
         .footer_hints(footer)

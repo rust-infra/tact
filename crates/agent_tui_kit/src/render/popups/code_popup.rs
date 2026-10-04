@@ -53,20 +53,7 @@ pub fn render_code_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
         )));
     }
 
-    let footer: &[FooterHint] = &[
-        FooterHint {
-            key: "y",
-            label: " copy ",
-        },
-        FooterHint {
-            key: "j/k",
-            label: " scroll ",
-        },
-        FooterHint {
-            key: "Esc",
-            label: " close ",
-        },
-    ];
+    let footer: &[FooterHint] = super::COPY_SCROLL_CLOSE;
 
     let popup_area = ScrollableTextPopup::new(ctx.theme, &format!(" {} ", lang), &lines)
         .scroll(popup.scroll as usize)

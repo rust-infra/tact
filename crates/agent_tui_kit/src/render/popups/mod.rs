@@ -54,6 +54,45 @@ pub struct FooterHint {
     pub label: &'static str,
 }
 
+/// The bottom-border hints a scrollable popup that answers `y` shows.
+///
+/// `y` copies, `j`/`k` scrolls, `Esc` closes, and all three keys are real: the
+/// host routes them through `handle_overlay_key` for exactly these popups.
+/// (`g`/`G` are the code / mermaid / dag / subagent popups' own extra.)
+///
+/// One order, because the order carried no meaning: the tool popups had drawn
+/// `Esc close` before `j/k scroll` while the rest drew it after, so the same
+/// three hints read differently depending on which popup was open.
+pub const COPY_SCROLL_CLOSE: &[FooterHint] = &[
+    FooterHint {
+        key: "y",
+        label: " copy ",
+    },
+    FooterHint {
+        key: "j/k",
+        label: " scroll ",
+    },
+    FooterHint {
+        key: "Esc",
+        label: " close ",
+    },
+];
+
+/// The two hints a scrollable popup that does not answer `y` shows.
+///
+/// The system-prompt popup is read-only text the user did not write and cannot
+/// copy from, so it must not advertise a copy key it does not handle.
+pub const SCROLL_CLOSE: &[FooterHint] = &[
+    FooterHint {
+        key: "j/k",
+        label: " scroll ",
+    },
+    FooterHint {
+        key: "Esc",
+        label: " close ",
+    },
+];
+
 /// Centered popup geometry (80% of parent, minimum 40×10).
 pub fn centered_popup_area(area: Rect) -> Rect {
     let popup_width = (area.width as f32 * 0.8).max(40.0) as u16;

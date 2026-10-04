@@ -69,20 +69,7 @@ pub fn render_thinking_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
     }
 
     let popup_area = super::centered_popup_area(area);
-    let footer: &[super::FooterHint] = &[
-        super::FooterHint {
-            key: "y",
-            label: " copy ",
-        },
-        super::FooterHint {
-            key: "Esc",
-            label: " close ",
-        },
-        super::FooterHint {
-            key: "j/k",
-            label: " scroll ",
-        },
-    ];
+    let footer: &[super::FooterHint] = super::COPY_SCROLL_CLOSE;
     let inner = super::render_popup_chrome(
         frame,
         popup_area,

@@ -217,20 +217,7 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
         .saturating_sub(super::title_close_suffix_width());
     let header = truncate_to_width(&header, available);
 
-    let footer: &[super::FooterHint] = &[
-        super::FooterHint {
-            key: "y",
-            label: " copy ",
-        },
-        super::FooterHint {
-            key: "Esc",
-            label: " close ",
-        },
-        super::FooterHint {
-            key: "j/k",
-            label: " scroll ",
-        },
-    ];
+    let footer: &[super::FooterHint] = super::COPY_SCROLL_CLOSE;
     let inner = super::render_popup_chrome(
         frame,
         popup_area,
