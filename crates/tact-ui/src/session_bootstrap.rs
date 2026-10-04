@@ -329,3 +329,76 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod session_open_tests {
+    use super::*;
+    use clap::Parser;
+
+    /// `--resume-last` had no test coverage before `open_session` existed: no
+    /// test in the workspace built a `CliArgs`, so nothing pinned which session
+    /// a run continues. It is the only decision in here, and getting it wrong
+    /// is silent — a fresh id looks exactly like a resumed one from the outside
+    /// until the user notices their history is gone.
+    #[tokio::test]
+    async fn open_session_resolves_the_id_the_args_ask_for() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tact_path = TactPath::new(tmp.path());
+        let store = tact::store::open_sqlite_session_store(&tact_path.session_db_path())
+            .await
+            .expect("session store");
+        let registry = SessionLockRegistry::new();
+        let root_dir = tact_path.workdir().display().to_string();
+
+        // A named id is taken as given.
+        let args = cli_args(&["--session", "fixed"]);
+        let (id, lock) = open_session(&args, &tact_path, &store, &registry)
+            .await
+            .expect("open");
+        assert_eq!(id, "fixed");
+        lock.release().await.expect("release");
+
+        for (label, extra) in [
+            ("with nothing to resume", &[][..]),
+            ("resuming with no history", &["--resume-last"][..]),
+        ] {
+            // Nothing to continue from — either explicitly asked or by default:
+            // a fresh id, and a real row behind it.
+            let args = cli_args(extra);
+            let (fresh, lock) = open_session(&args, &tact_path, &store, &registry)
+                .await
+                .expect("open");
+            assert!(
+                uuid::Uuid::parse_str(&fresh).is_ok(),
+                "{label}: expected a new id, got {fresh}"
+            );
+            let listed = store
+                .list_sessions(Some(&root_dir))
+                .await
+                .expect("list sessions");
+            assert!(
+                listed.iter().any(|s| s.id == fresh),
+                "{label}: open_session must leave a row behind, got {listed:?}"
+            );
+            lock.release().await.expect("release");
+
+            // ...and now there is history to resume from.
+            let args = cli_args(&["--resume-last"]);
+            let (resumed, lock) = open_session(&args, &tact_path, &store, &registry)
+                .await
+                .expect("open");
+            assert_eq!(resumed, fresh, "{label}: --resume-last must find it");
+            lock.release().await.expect("release");
+        }
+    }
+
+    /// Top-level flags precede the subcommand: they are declared on `CliArgs`
+    /// and not marked `global`. Pinned in `crates/tact` too; repeated here
+    /// because this is the argv the test above constructs.
+    fn cli_args(extra: &[&str]) -> CliArgs {
+        let mut argv = vec!["tact-ui"];
+        argv.extend_from_slice(extra);
+        argv.extend_from_slice(&["headless", "prompt"]);
+        CliArgs::parse_from(argv)
+    }
+}

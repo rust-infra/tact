@@ -300,3 +300,50 @@ pub enum MarketplaceSubcommand {
         name: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A top-level flag is accepted *before* the subcommand, and not after it.
+    ///
+    /// `--model` and its siblings are declared on `CliArgs` and none of them is
+    /// marked `global`, so the position is load-bearing for every documented
+    /// invocation — and it is what one README example had wrong
+    /// (`docs(readme): the example that puts a top-level flag after the
+    /// subcommand`). Pinned here rather than in a doc, because a doc does not
+    /// fail when it drifts.
+    #[test]
+    fn a_top_level_flag_belongs_before_the_subcommand() {
+        let before = CliArgs::parse_from(["tact-ui", "--model", "m", "headless", "p"]);
+        assert_eq!(before.model.as_deref(), Some("m"));
+        assert!(matches!(
+            before.command,
+            Some(CliCommand::Headless { ref prompt }) if prompt == "p"
+        ));
+
+        let after = CliArgs::try_parse_from(["tact-ui", "headless", "--model", "m", "p"]);
+        assert!(
+            after.is_err(),
+            "the top-level flags are not `global`: if this now parses, the form the \
+             README used to document works again and both should be updated together"
+        );
+    }
+
+    /// `--session` and `--resume-last` are alternatives, and `--list-sessions`
+    /// is a third thing that short-circuits before either is read.
+    #[test]
+    fn the_session_flags_parse_where_the_dispatcher_reads_them() {
+        let named = CliArgs::parse_from(["tact-ui", "--session", "abc", "headless", "p"]);
+        assert_eq!(named.session.as_deref(), Some("abc"));
+        assert!(!named.resume_last);
+        assert!(!named.list_sessions);
+
+        let resumed = CliArgs::parse_from(["tact-ui", "--resume-last", "headless", "p"]);
+        assert_eq!(resumed.session, None);
+        assert!(resumed.resume_last);
+
+        let listed = CliArgs::parse_from(["tact-ui", "--list-sessions"]);
+        assert!(listed.list_sessions);
+    }
+}
