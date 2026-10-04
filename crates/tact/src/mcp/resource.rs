@@ -24,7 +24,7 @@
 //! connected: with an empty router the tools are not advertised at all, so the
 //! model is never handed a tool that cannot do anything.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use rmcp::model::{
     ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
 };
@@ -251,28 +251,13 @@ impl MCPToolRouter {
     /// Returns a rendered listing rather than the raw models: this is a tool
     /// result the model reads, and URIs are what it needs to copy.
     pub async fn list_resources(&self, server: Option<&str>) -> Result<String> {
-        let names = self.known_servers();
-        if names.is_empty() {
-            bail!("no MCP servers are connected");
-        }
-
-        let selected: Vec<&str> = match server {
-            Some(server) => {
-                let client = self.clients.get(server).with_context(|| {
-                    format!(
-                        "unknown MCP server {server} (connected: {})",
-                        names.join(", ")
-                    )
-                })?;
-                vec![client.server_name.as_str()]
-            }
-            None => names.iter().map(String::as_str).collect(),
-        };
+        let selected = self.selected_servers(server)?;
 
         let mut results = Vec::with_capacity(selected.len());
         for name in selected {
-            let client = &self.clients[name];
-            results.push((name.to_string(), client.list_resources().await));
+            let client = &self.clients[&name];
+            let listed = client.list_resources().await;
+            results.push((name, listed));
         }
         Ok(render_server_results(
             "resources/list",
@@ -288,28 +273,13 @@ impl MCPToolRouter {
     /// to discover the URIs of a server that publishes nothing through
     /// `resources/list`.
     pub async fn list_resource_templates(&self, server: Option<&str>) -> Result<String> {
-        let names = self.known_servers();
-        if names.is_empty() {
-            bail!("no MCP servers are connected");
-        }
-
-        let selected: Vec<&str> = match server {
-            Some(server) => {
-                let client = self.clients.get(server).with_context(|| {
-                    format!(
-                        "unknown MCP server {server} (connected: {})",
-                        names.join(", ")
-                    )
-                })?;
-                vec![client.server_name.as_str()]
-            }
-            None => names.iter().map(String::as_str).collect(),
-        };
+        let selected = self.selected_servers(server)?;
 
         let mut results = Vec::with_capacity(selected.len());
         for name in selected {
-            let client = &self.clients[name];
-            results.push((name.to_string(), client.list_resource_templates().await));
+            let client = &self.clients[&name];
+            let listed = client.list_resource_templates().await;
+            results.push((name, listed));
         }
         Ok(render_server_results(
             "resources/templates/list",
@@ -320,21 +290,9 @@ impl MCPToolRouter {
 
     /// Reads one resource and renders its contents for the model.
     pub async fn read_resource(&self, server: &str, uri: &str) -> Result<String> {
-        let client = self.clients.get(server).with_context(|| {
-            format!(
-                "unknown MCP server {server} (connected: {})",
-                self.known_servers().join(", ")
-            )
-        })?;
+        let client = self.client(server)?;
         let result = client.read_resource(uri).await?;
         Ok(render_resource_contents(uri, &result.contents))
-    }
-
-    /// Connected server names, sorted.
-    pub(super) fn known_servers(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.clients.keys().cloned().collect();
-        names.sort();
-        names
     }
 }
 

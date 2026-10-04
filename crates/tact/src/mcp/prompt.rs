@@ -24,7 +24,7 @@
 //! Like the resource tools, these are resolved in `agent::tool_dispatch` against
 //! the live router and only exist while a server is connected.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use rmcp::model::{
     GetPromptRequestParams, GetPromptResult, JsonObject, Prompt, PromptMessageContent,
     PromptMessageRole,
@@ -214,28 +214,13 @@ impl MCPToolRouter {
     /// result the model reads, and the prompt names plus their argument
     /// vocabulary are what it needs to copy.
     pub async fn list_prompts(&self, server: Option<&str>) -> Result<String> {
-        let names = self.known_servers();
-        if names.is_empty() {
-            bail!("no MCP servers are connected");
-        }
-
-        let selected: Vec<&str> = match server {
-            Some(server) => {
-                let client = self.clients.get(server).with_context(|| {
-                    format!(
-                        "unknown MCP server {server} (connected: {})",
-                        names.join(", ")
-                    )
-                })?;
-                vec![client.server_name.as_str()]
-            }
-            None => names.iter().map(String::as_str).collect(),
-        };
+        let selected = self.selected_servers(server)?;
 
         let mut results = Vec::with_capacity(selected.len());
         for name in selected {
-            let client = &self.clients[name];
-            results.push((name.to_string(), client.list_prompts().await));
+            let client = &self.clients[&name];
+            let listed = client.list_prompts().await;
+            results.push((name, listed));
         }
         Ok(super::render_server_results(
             "prompts/list",
@@ -254,12 +239,7 @@ impl MCPToolRouter {
         name: &str,
         arguments: Option<JsonObject>,
     ) -> Result<String> {
-        let client = self.clients.get(server).with_context(|| {
-            format!(
-                "unknown MCP server {server} (connected: {})",
-                self.known_servers().join(", ")
-            )
-        })?;
+        let client = self.client(server)?;
         let result = client.get_prompt(name, arguments).await?;
         Ok(render_prompt_messages(name, &result))
     }

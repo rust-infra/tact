@@ -2634,6 +2634,47 @@ impl MCPToolRouter {
         McpToolName::try_from(name).ok().map(|p| p.server)
     }
 
+    /// Connected server names, sorted.
+    ///
+    /// The order is the rendering order: a listing that walked the `HashMap`
+    /// would reshuffle its sections between two identical calls.
+    pub(crate) fn known_servers(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.clients.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// One connected server by name.
+    ///
+    /// The error lists what *is* connected: a typo'd `server` argument is the
+    /// likeliest cause, and the connected names are what make it fixable in one
+    /// step. One definition, so the four callers cannot drift apart on the
+    /// wording of the failure they share.
+    pub(crate) fn client(&self, server: &str) -> Result<&McpClient> {
+        self.clients.get(server).with_context(|| {
+            format!(
+                "unknown MCP server {server} (connected: {})",
+                self.known_servers().join(", ")
+            )
+        })
+    }
+
+    /// The servers a listing spans: all of them, or the one `server` names.
+    ///
+    /// An empty router is an error rather than an empty listing — "no MCP
+    /// servers are connected" is a fact the caller cannot read off a result
+    /// with no sections in it. An unknown name is an error for the same reason.
+    pub(crate) fn selected_servers(&self, server: Option<&str>) -> Result<Vec<String>> {
+        let names = self.known_servers();
+        if names.is_empty() {
+            bail!("no MCP servers are connected");
+        }
+        match server {
+            Some(server) => Ok(vec![self.client(server)?.server_name.clone()]),
+            None => Ok(names),
+        }
+    }
+
     /// Whether the server's entry declares `approval_mode: "auto"` for a tool.
     ///
     /// False for an unknown server or tool, so an unresolvable name keeps the
@@ -4039,6 +4080,53 @@ mod tests {
         assert_eq!(
             router.server_summaries(),
             vec![("demo".to_string(), 1), ("other".to_string(), 1)]
+        );
+    }
+
+    /// The single place that decides which servers a listing spans, and the
+    /// single place that words the "unknown server" failure.
+    ///
+    /// Both are shared by four callers, so what they promise is pinned here
+    /// rather than incidentally through whichever caller a test happens to
+    /// exercise.
+    #[test]
+    fn server_selection_is_sorted_and_names_what_is_connected() {
+        let mut router = MCPToolRouter::new();
+        // Registered out of order on purpose: a listing that walked the map
+        // would reshuffle its sections between two identical calls.
+        for name in ["zeta", "alpha"] {
+            router.register_client(client_with_instructions(name, vec![], ""));
+        }
+
+        assert_eq!(router.known_servers(), vec!["alpha", "zeta"]);
+        assert_eq!(
+            router.selected_servers(None).unwrap(),
+            vec!["alpha", "zeta"]
+        );
+        assert_eq!(router.selected_servers(Some("zeta")).unwrap(), vec!["zeta"]);
+
+        let unknown = router
+            .selected_servers(Some("nope"))
+            .unwrap_err()
+            .to_string();
+        assert!(unknown.contains("unknown MCP server nope"), "{unknown}");
+        assert!(unknown.contains("connected: alpha, zeta"), "{unknown}");
+
+        // The single-server lookup is the same decision, so it must word the
+        // failure the same way instead of drifting into a second phrasing.
+        let missing = match router.client("nope") {
+            Ok(_) => panic!("an unknown server must not resolve"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(missing, unknown);
+    }
+
+    #[test]
+    fn an_empty_router_refuses_to_list_rather_than_returning_nothing() {
+        let router = MCPToolRouter::new();
+        assert_eq!(
+            router.selected_servers(None).unwrap_err().to_string(),
+            "no MCP servers are connected"
         );
     }
 
