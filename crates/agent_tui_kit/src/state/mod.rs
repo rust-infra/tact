@@ -13,6 +13,7 @@ pub mod plan_panel;
 pub mod select_popup;
 pub mod selection;
 pub mod status_bar_state;
+pub mod sticky_panel;
 pub mod stream_parser;
 pub mod stream_state;
 pub mod subagent_panel;
