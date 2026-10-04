@@ -5484,11 +5484,15 @@ mod tests {
             .map(|message| crate::extract_text(&message.content))
             .collect();
         assert!(
-            briefings.iter().any(|brief| brief.contains("brief:startup")),
+            briefings
+                .iter()
+                .any(|brief| brief.contains("brief:startup")),
             "the startup briefing is recorded: {briefings:?}"
         );
         assert!(
-            briefings.iter().any(|brief| brief.contains("brief:compact")),
+            briefings
+                .iter()
+                .any(|brief| brief.contains("brief:compact")),
             "the compact briefing is recorded: {briefings:?}"
         );
     }
