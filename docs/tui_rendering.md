@@ -41,6 +41,12 @@ crates/tui/src/render/            # shell layer: `&App` entry points + App-level
     ├── task_dag_popup.rs
     └── thinking_popup.rs
 
+Test fixtures live one level up, in `crates/tui/src/test_fixtures.rs`: `TestApp`
+(the one test `App`, plus the receivers a test splits off) and `StepCall` (the
+one tool-call builder, producing a `StepStarted` or a `StepFinished`).
+`render`'s `test_harness::make_app` delegates to `TestApp::with_identity` so a
+render test keeps asking for the `ink` theme by name.
+
 crates/agent_tui_kit/src/render/  # pure drawing: `&RenderCtx`, no `App`
 ├── mod.rs
 ├── bar.rs              # top status bar + 2-row bottom bar

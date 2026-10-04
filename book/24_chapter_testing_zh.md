@@ -97,6 +97,13 @@ Pre-push 运行 `./scripts/check-rust.sh`（fmt check、clippy、集成测试）
 - `draw_full_ui` — 镜像 `lib.rs` 布局（status、main、input、bottom、palette/select/file-picker/slash overlays）
 - `render_app_text` / `render_main_area_text` — 将 buffer 压平为纯文本供断言
 
+### 测试 fixture（`crates/tui/src/test_fixtures.rs`）
+
+两个 fixture 各自有唯一一份定义，取代了过去散落各处的抄写：
+
+- `TestApp` — 每个测试要驱动的 App。`handlers/` 下曾有 6 份 `make_app()`（5 个 `unbounded_channel` + 12 参数的 `App::new`，差别只在返回哪个 receiver）。现在 `TestApp::new().into_commands()` / `into_plugin_requests()` 取回要断言的那个 receiver；`render` 侧的 `test_harness::make_app()` 也委托给它，用 `with_identity("render-test", "ink")` 显式要 `ink` 主题（渲染测试断言的是主题产出的颜色，不能吃默认值）。
+- `StepCall` — 一次工具调用：host 在调用开始时发的 `StepStarted` 与结束时的 `StepFinished`。这两个字面量分别有 8 行和 16 行，在渲染/处理器测试里出现了 75 次。默认值就是那些字面量绝大多数使用的值（成功、1µs、该工具的 generic presentation、`arg_full` 等于 summary），差异用 setter 表达——在意某个字段的测试就在那一行写出来。
+
 **覆盖包括：** idle/executing/done、tool cards、stream/thinking、errors、token/model info、command palette、slash commands、file picker（空 + 选中行）、diff/code/thinking popups（scroll + write_file gutter + bash output）、真实 `StepFinished` 后 `open_diff_popup`、Normal mode、`RequestSelect` 权限询问全帧（选择弹窗）、plan 多步、log 中 markdown/code cards、窄终端。
 
 **Handler 测试：** `file_picker.rs`、`select.rs`、`palette.rs`、`normal.rs`、`mouse.rs`（键盘、滚轮、tool 双击）。

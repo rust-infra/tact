@@ -152,6 +152,18 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
 
 手动 `impl Tool`（例如测试里）仍可用于自定义工具。
 
+### 元数据常量
+
+工具的身份、权限声明与呈现策略声明为 `*_METADATA` 常量（`ToolMetadata`，定义在 `crates/tact/src/tool/metadata.rs`）。多数工具的形状是重复的，因此 `metadata.rs` 提供三个 const 构造器，覆盖其中逐字相同的三种：
+
+| 构造器 | 形状 | 使用者 |
+|--------|------|--------|
+| `read_json(name, desc, display)` | `Read` + `Independent`，输入按 JSON 摘要 | 八个只读列举类工具（`load_skill`、`check_subagent`、`worktree_list` …） |
+| `team_write(…)` | `Write` + `SharedState { scope: "team" }` | 队友/消息族六个（`spawn_teammate`、`send_message` …） |
+| `barrier_write(…)` | `Write` + `Barrier` | `worktree_create`、`worktree_remove` |
+
+**只收逐字相同的。** 与三者「近似但不完全相同」的工具保留自己的字面量：`sleep` 差 `visual_kind`、`save_memory` 差 `permission`、`compact` 差 `resources`、task 族差 `domain`。给预设加例外会让它同时对八个工具正确、对第九个错误——`metadata.rs` 的测试把「共享的那一半」逐字段钉住，并断言三个预设之间只差「权限 + 资源声明」这两项。
+
 ---
 
 ## 7. 工作区路径安全
@@ -258,13 +270,14 @@ pipeline 来绕过应用缓冲。
 | 文件 | 职责 |
 |------|------|
 | `crates/tact/src/tool/mod.rs` | `Tool`、`ToolContext`、`ToolRouter`、`input_schema` |
+| `crates/tact/src/tool/metadata.rs` | `ToolMetadata` 与各策略类型；三个共享形状的 const 构造器 `read_json` / `team_write` / `barrier_write` |
 | `crates/tact/src/tool/registry.rs` | `toolset()`、`subagent_toolset()` |
 | `crates/tact/src/tool/path.rs` | 工作区路径校验 |
 | `crates/tact/src/tool/*.rs` | 各工具实现 |
 | `crates/tact/src/agent/tool_dispatch.rs` | `run_native_tool`、三阶段流水线 |
 | `crates/tact/src/agent/mod.rs` | `all_tool_specs`、agent 构造 |
 | `crates/tool_refactor_macros/` | `#[tool]` 过程宏 |
-| `crates/tact-ui/src/headless.rs`, `interactive.rs` | 构建 `ToolContext`，向 `Agent::new` 传入 `toolset()` |
+| `crates/tact-ui/src/session_bootstrap.rs` | 构建 `ToolContext` 与 agent（两个前端共用） |
 
 ---
 

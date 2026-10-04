@@ -53,7 +53,7 @@ sequenceDiagram
 1. `tact::config::init()` — 设置 + LLM provider（[Ch 21](./21_chapter_config_zh.md)）。
 2. 打开 SQLite session store，resolve `session_id`（`--session`、`--resume-last` 或新 UUID）。`--resume-last` 与 `--list-sessions` 按当前工作目录的 `root_dir` 过滤 session，忽略其他项目行。`SessionLockGuard` 在争用前重试 `try_lock_session`。
 3. 建好 channel / session store / skill registry 等，**先在独立 tokio task 上 spawn `tui::run_tui(...)`** —— 这些都不依赖 Agent，所以 TUI 先可见。
-4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`（`toolset()`、MCP router、managers、`with_ui_channel(agent_tx)`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
+4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`。构建本身（`toolset()`、MCP router、五个 manager、`ToolContext`、`with_ui_channel(agent_tx)`）与 headless 共用 `crates/tact-ui/src/session_bootstrap.rs` 的 `bootstrap_session`；两个前端只在两处不同：启动提示的出口（`Notices`：stderr 或 `AgentUpdate::Info`），以及有没有 UI 通道（`UiWiring`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
 5. 构建成功后 spawn driver task 跑 `user_cmd_rx` 循环 — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
 6. `tui_handle` 结束后等 driver 收尾（SessionEnd hook + `shutdown_mcp`），再打印 session id 与 stats。
 
@@ -62,6 +62,8 @@ sequenceDiagram
 ### Headless（`tact-ui headless "prompt"`）
 
 `crates/tact-ui/src/headless.rs` 中的 `run_headless`。无 TUI 运行单次 `agent_loop`，最终文本打印到 stdout，发送桌面通知。由于没有 live card，工具进度保持仅输出最终结果。使用 config 驱动的权限模式 — 与交互模式相同。
+
+agent 构建与交互模式共用 `session_bootstrap::bootstrap_session`（见上）。两处差异是刻意的：启动提示走 stderr（`Notices::Stderr`，另有交互模式不报的 `[permission: …]` 一行——TUI 的状态栏已经在显示权限模式），且没有 UI 通道（`ui: None`）。`ensure_session` 留在 headless 侧：它只有一次 `agent_loop`，必须在开跑前恢复历史；TUI 交给 `agent_loop` 自己做。
 
 ---
 
@@ -224,7 +226,7 @@ graph TD
 | `agent_tui_kit::render/renderable.rs` | `Renderable` trait |
 | `agent_tui_kit::render/util.rs` | `wrap_line`、tool 缩进常量 |
 | `agent_tui_kit::render/cells/` | `text`、`thinking`、`tool`、`code`、`separator`、`markdown` |
-| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select/task-dag + `scrollable_popup` 骨架 + chrome helpers |
+| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select/task-dag + `scrollable_popup` 骨架 + chrome helpers（含 `render_popup_scrollbar`，与骨架共用的滚动条绘制） |
 | `agent_tui_kit::widgets/` | `ToolWidget`、`HelpWidget`、`PopupWidget`、`SelectPopupWidget` |
 
 支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`BackgroundPanelState`、`MouseState`、`FilteredList`、`TaskDagPopup`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`SelectKind`）。
