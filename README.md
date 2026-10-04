@@ -183,7 +183,7 @@ tact-ui
 tact-ui headless "Fix all clippy warnings in src/ and run cargo test"
 
 # With specific model
-tact-ui headless --model "claude-sonnet-4-20250514" "Refactor the error handling in lib.rs"
+tact-ui --model "claude-sonnet-4-20250514" headless "Refactor the error handling in lib.rs"
 
 # Plan-only mode (review before execution)
 tact-ui -m plan headless "Add rate limiting to the API client"
