@@ -9,13 +9,7 @@
 //! `prepare_subagent_popup` rebuilds the layout cache (side effect on the
 //! popup state); `render_subagent_popup` only reads it.
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::Style,
-    text::Line,
-    widgets::{Paragraph, Scrollbar, ScrollbarState},
-};
+use ratatui::{Frame, layout::Rect, style::Style, text::Line, widgets::Paragraph};
 
 use super::PopupMouseSurface;
 use crate::{
@@ -265,12 +259,7 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
         hit_rows.push(display.hit_row(screen_y, body_area.x));
     }
 
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
-    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
+    super::render_popup_scrollbar(frame, popup_area, total, content_height, scroll);
 
     surface.popup_area = popup_area;
     surface.body_area = body_area;

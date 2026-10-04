@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Text},
-    widgets::{Paragraph, Scrollbar, ScrollbarState, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 use super::{FooterHint, centered_popup_area, render_popup_chrome};
@@ -99,12 +99,7 @@ impl<'a> ScrollableTextPopup<'a> {
         let para = Paragraph::new(text).wrap(Wrap { trim: false });
         frame.render_widget(para, inner);
 
-        let scrollbar =
-            Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-        let mut state = ScrollbarState::new(total)
-            .viewport_content_length(content_height)
-            .position(scroll);
-        frame.render_stateful_widget(scrollbar, popup_area, &mut state);
+        super::render_popup_scrollbar(frame, popup_area, total, content_height, scroll);
 
         popup_area
     }

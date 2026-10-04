@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear},
+    widgets::{Block, Borders, Clear, Scrollbar, ScrollbarState},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -80,6 +80,34 @@ pub fn popup_inner(area: Rect) -> Rect {
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     )
+}
+
+/// Draw a popup's vertical scrollbar down the right edge of `popup_area`.
+///
+/// Note the rect: the bar belongs on the popup's border column, which
+/// [`popup_inner`] has already excluded from the body. Drawing it at the body's
+/// right edge would sit it one column inside the border.
+///
+/// `viewport` is how many rows are visible and `offset` the first row drawn.
+/// The caller owns both, deliberately: the writers that clamp to
+/// `total - viewport` count *display* rows, while the diff popup counts source
+/// lines and lets the last one reach the top. What is shared — and was written
+/// out four times — is the bar's geometry and that `offset` must be the very
+/// value the caller sliced its rows with, or the bar points somewhere the
+/// content does not.
+pub fn render_popup_scrollbar(
+    frame: &mut Frame,
+    popup_area: Rect,
+    total: usize,
+    viewport: usize,
+    offset: usize,
+) {
+    let scrollbar =
+        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
+    let mut state = ScrollbarState::new(total)
+        .viewport_content_length(viewport)
+        .position(offset);
+    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 }
 
 /// Key that means "copy" in every popup footer. `render_popup_chrome` is the

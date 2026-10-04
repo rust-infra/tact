@@ -11,7 +11,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Paragraph, Scrollbar, ScrollbarState},
+    widgets::Paragraph,
 };
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
@@ -340,12 +340,7 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
     );
     frame.render_widget(Paragraph::new(text), inner);
 
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
-    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
+    super::render_popup_scrollbar(frame, popup_area, total, content_height, scroll);
 
     surface.popup_area = popup_area;
     surface.body_area = body_area;

@@ -1972,3 +1972,41 @@ fn no_theme_draws_a_popup_row_in_its_own_background_color() {
         unreadable.join("\n")
     );
 }
+
+/// The scrollbar is drawn over the *popup* rect, not the body.
+///
+/// Four popups reach the bar through
+/// `agent_tui_kit::render::popups::render_popup_scrollbar`, so a wrong rect here
+/// moves the bar inward in all of them at once. `popup_inner` has already
+/// excluded the border, so the bar's column is the last column of `popup_area`
+/// and one past the body's right edge.
+#[test]
+fn the_popup_scrollbar_uses_the_popup_column_not_the_body_column() {
+    let popup_area = ratatui::layout::Rect::new(5, 2, 12, 6);
+    let backend = TestBackend::new(30, 12);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| {
+            agent_tui_kit::render::popups::render_popup_scrollbar(frame, popup_area, 40, 6, 0);
+        })
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    let bar_col = popup_area.right() - 1;
+    let painted = (popup_area.y..popup_area.bottom())
+        .filter(|y| buf[(bar_col, *y)].symbol() != " ")
+        .count();
+    assert!(
+        painted > 0,
+        "the bar drew nothing in the popup's right column"
+    );
+
+    // Nothing may land in the column just outside the popup.
+    for y in popup_area.y..popup_area.bottom() {
+        assert_eq!(
+            buf[(popup_area.right(), y)].symbol(),
+            " ",
+            "the bar spilled past the popup at row {y}"
+        );
+    }
+}
