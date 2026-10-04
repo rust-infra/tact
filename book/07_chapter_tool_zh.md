@@ -164,6 +164,8 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
 
 **只收逐字相同的。** 与三者「近似但不完全相同」的工具保留自己的字面量：`sleep` 差 `visual_kind`、`save_memory` 差 `permission`、`compact` 差 `resources`、task 族差 `domain`。给预设加例外会让它同时对八个工具正确、对第九个错误——`metadata.rs` 的测试把「共享的那一半」逐字段钉住，并断言三个预设之间只差「权限 + 资源声明」这两项。
 
+**字段名必须三处一致。** 一份元数据最多会把同一个输入字段名写三遍：决定风险的 `permission`、决定「始终允许」规则键的 `permission_prompt`、以及变成卡片标题的 `argument_summary`（`"command"` / `"path"` / `"patch"`）。它们是三个独立字面量，且**没有任何下游会互相比较**——各自只读自己那一份。写错一处不是外观问题：提示会问一个路径而调度器保留另一个，或者「始终允许」规则会挂在风险判定从未用过的字段上。`crates/tact/src/tool/registry.rs` 的 `every_tool_names_one_input_field_across_its_policies` 在**组装后的 toolset** 上逐工具断言这三者一致（新增工具若不一致，即使每个策略单独看都合法也会失败）。
+
 ---
 
 ## 7. 工作区路径安全
