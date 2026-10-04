@@ -6,7 +6,7 @@ use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate};
 use crate::{
     account,
     driver::run_command_loop_with_account,
-    session_bootstrap::{Notices, UiWiring, bootstrap_session},
+    session_bootstrap::{Notices, UiWiring, bootstrap_session, open_session},
     session_lock::{SessionLockGuard, SessionLockRegistry},
 };
 
@@ -16,26 +16,8 @@ pub async fn run_interactive(
     session_store: DynSessionStore,
     lock_registry: Arc<SessionLockRegistry>,
 ) -> anyhow::Result<()> {
-    let root_dir = tact_path.workdir().display().to_string();
-    let session_id = if let Some(ref id) = args.session {
-        id.clone()
-    } else if args.resume_last {
-        let sessions = session_store.list_sessions(Some(&root_dir)).await?;
-        sessions
-            .into_iter()
-            .next()
-            .map(|s| s.id)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-    } else {
-        uuid::Uuid::new_v4().to_string()
-    };
-
-    session_store
-        .ensure_session_row(&session_id, &root_dir, "")
-        .await?;
-    let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
-    lock_registry.register(session_lock.clone()).await;
-    session_store.touch_session(&session_id, &root_dir).await?;
+    let (session_id, session_lock) =
+        open_session(&args, &tact_path, &session_store, lock_registry.as_ref()).await?;
 
     let run_result = run_interactive_locked(
         args,

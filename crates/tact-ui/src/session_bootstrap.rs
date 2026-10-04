@@ -20,6 +20,7 @@ use std::sync::Arc;
 use tact::{
     Agent, AgentSystemPrompt,
     background::{BackgroundManager, SharedBackgroundManager},
+    config::CliArgs,
     consts::TactPath,
     mcp::load_mcp_router_with_report,
     memory::memory_manager,
@@ -37,7 +38,10 @@ use tact_llm::get_llm_client;
 use tact_protocol::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::permission::permission_mode_from_config;
+use crate::{
+    permission::permission_mode_from_config,
+    session_lock::{SessionLockGuard, SessionLockRegistry},
+};
 
 /// Where a session's startup notices go.
 ///
@@ -106,6 +110,43 @@ fn stderr_line(tag: &str, message: &str) -> String {
 pub struct UiWiring {
     pub tx: UnboundedSender<AgentUpdate>,
     pub responder: UiResponder,
+}
+
+/// Resolve (or start) this run's session, and take its lock.
+///
+/// Both frontends do this as their first act, and the steps are not separable:
+/// the row has to exist before the lock can name it, the lock has to be held
+/// before anything writes, and the touch is what makes `--resume-last` find
+/// this session next time. Returns the id and the *held* lock; releasing it is
+/// the caller's, because when a run is over is the one thing the two frontends
+/// disagree about.
+pub async fn open_session(
+    args: &CliArgs,
+    tact_path: &TactPath,
+    session_store: &DynSessionStore,
+    lock_registry: &SessionLockRegistry,
+) -> anyhow::Result<(String, Arc<SessionLockGuard>)> {
+    let root_dir = tact_path.workdir().display().to_string();
+    let session_id = if let Some(ref id) = args.session {
+        id.clone()
+    } else if args.resume_last {
+        let sessions = session_store.list_sessions(Some(&root_dir)).await?;
+        sessions
+            .into_iter()
+            .next()
+            .map(|s| s.id)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
+
+    session_store
+        .ensure_session_row(&session_id, &root_dir, "")
+        .await?;
+    let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
+    lock_registry.register(session_lock.clone()).await;
+    session_store.touch_session(&session_id, &root_dir).await?;
+    Ok((session_id, session_lock))
 }
 
 /// Build the main agent: everything both frontends do identically.
