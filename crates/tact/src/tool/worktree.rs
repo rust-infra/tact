@@ -18,24 +18,11 @@ pub struct WorktreeCreateInput {
     pub base_ref: Option<String>,
 }
 
-pub const WORKTREE_CREATE_METADATA: ToolMetadata = ToolMetadata {
-    name: "worktree_create",
-    description: "Create an isolated git worktree lane.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Barrier,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree Create",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const WORKTREE_CREATE_METADATA: ToolMetadata = ToolMetadata::barrier_write(
+    "worktree_create",
+    "Create an isolated git worktree lane.",
+    "🌿 Worktree Create",
+);
 
 #[tool]
 /// # Errors
@@ -56,24 +43,11 @@ pub async fn worktree_create(ctx: ToolContext, input: WorktreeCreateInput) -> Re
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorktreeListInput {}
 
-pub const WORKTREE_LIST_METADATA: ToolMetadata = ToolMetadata {
-    name: "worktree_list",
-    description: "List tracked worktree lanes.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree List",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const WORKTREE_LIST_METADATA: ToolMetadata = ToolMetadata::read_json(
+    "worktree_list",
+    "List tracked worktree lanes.",
+    "🌿 Worktree List",
+);
 
 #[tool]
 /// # Errors
@@ -88,24 +62,11 @@ pub struct WorktreeNameInput {
     pub name: String,
 }
 
-pub const WORKTREE_STATUS_METADATA: ToolMetadata = ToolMetadata {
-    name: "worktree_status",
-    description: "Show git status for a worktree lane.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree Status",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const WORKTREE_STATUS_METADATA: ToolMetadata = ToolMetadata::read_json(
+    "worktree_status",
+    "Show git status for a worktree lane.",
+    "🌿 Worktree Status",
+);
 
 #[tool]
 /// # Errors
@@ -157,24 +118,11 @@ pub struct WorktreeEventsInput {
     pub limit: Option<usize>,
 }
 
-pub const WORKTREE_EVENTS_METADATA: ToolMetadata = ToolMetadata {
-    name: "worktree_events",
-    description: "List recent worktree lifecycle events.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree Events",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const WORKTREE_EVENTS_METADATA: ToolMetadata = ToolMetadata::read_json(
+    "worktree_events",
+    "List recent worktree lifecycle events.",
+    "🌿 Worktree Events",
+);
 
 #[tool]
 /// # Errors
@@ -190,24 +138,11 @@ pub struct WorktreeRemoveInput {
     pub name: String,
 }
 
-pub const WORKTREE_REMOVE_METADATA: ToolMetadata = ToolMetadata {
-    name: "worktree_remove",
-    description: "Remove a tracked git worktree lane (e.g. a finished subagent's lane). Fails if the worktree has uncommitted changes; refuses to remove the lane of a subagent that is still running.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Barrier,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "🌿 Worktree Remove",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const WORKTREE_REMOVE_METADATA: ToolMetadata = ToolMetadata::barrier_write(
+    "worktree_remove",
+    "Remove a tracked git worktree lane (e.g. a finished subagent's lane). Fails if the worktree has uncommitted changes; refuses to remove the lane of a subagent that is still running.",
+    "🌿 Worktree Remove",
+);
 
 #[tool]
 /// # Errors

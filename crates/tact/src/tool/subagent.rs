@@ -752,24 +752,11 @@ pub struct WaitSubagentInput {
     pub timeout_ms: Option<u64>,
 }
 
-pub const CHECK_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
-    name: "check_subagent",
-    description: "Check subagent run status.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "🤖 Subagent Check",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const CHECK_SUBAGENT_METADATA: ToolMetadata = ToolMetadata::read_json(
+    "check_subagent",
+    "Check subagent run status.",
+    "🤖 Subagent Check",
+);
 
 pub const CANCEL_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "cancel_subagent",
@@ -790,24 +777,11 @@ pub const CANCEL_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     argument_summary: ArgumentSummaryPolicy::Json,
 };
 
-pub const WAIT_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
-    name: "wait_subagent",
-    description: "Block until a background subagent finishes (or times out), returning its summary. Polls the subagent run record so the parent can spawn several subagents in parallel, then wait on each instead of burning turns polling check_subagent.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "⏳ Subagent Wait",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const WAIT_SUBAGENT_METADATA: ToolMetadata = ToolMetadata::read_json(
+    "wait_subagent",
+    "Block until a background subagent finishes (or times out), returning its summary. Polls the subagent run record so the parent can spawn several subagents in parallel, then wait on each instead of burning turns polling check_subagent.",
+    "⏳ Subagent Wait",
+);
 
 #[tool]
 /// # Errors

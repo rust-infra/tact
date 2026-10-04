@@ -36,8 +36,6 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
 use tact_protocol::AgentUpdate;
-#[cfg(test)]
-use tact_protocol::ToolVisualKind;
 
 use crate::{
     ToolSpec, background::SharedBackgroundManager, memory::MemoryManager, task::SharedTaskManager,
@@ -370,24 +368,8 @@ mod tests {
 
     struct EchoTool;
 
-    pub const ECHO_METADATA: ToolMetadata = ToolMetadata {
-        name: "echo",
-        description: "Echo text with a prefix.",
-        permission: PermissionPolicy::Read,
-        permission_prompt: PermissionPromptPolicy::Json,
-        resources: ResourcePolicy::Independent,
-        domain: ToolDomain::Generic,
-        presentation: ToolPresentation {
-            visual_kind: ToolVisualKind::Generic,
-            display_name: "echo",
-            live_output: LiveOutputPolicy::Standard,
-            detail: DetailPolicy::Result,
-            popup: PopupPolicy::None,
-            compact_result_to_meta: false,
-        },
-        output: OutputPolicy::KeepInline,
-        argument_summary: ArgumentSummaryPolicy::Json,
-    };
+    pub const ECHO_METADATA: ToolMetadata =
+        ToolMetadata::read_json("echo", "Echo text with a prefix.", "echo");
 
     #[async_trait]
     impl Tool for EchoTool {

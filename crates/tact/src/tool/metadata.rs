@@ -19,6 +19,7 @@ use crate::permission::CapabilityRisk;
 // ---------------------------------------------------------------------------
 
 /// Static metadata for a native tool, declared as a constant beside the handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolMetadata {
     pub name: &'static str,
     pub description: &'static str,
@@ -29,6 +30,95 @@ pub struct ToolMetadata {
     pub presentation: ToolPresentation,
     pub output: OutputPolicy,
     pub argument_summary: ArgumentSummaryPolicy,
+}
+
+impl ToolMetadata {
+    /// A read-only tool with no target path that takes its input as JSON.
+    ///
+    /// Eight of the native tools are exactly this and nothing about them needs
+    /// to differ, so the shape is stated once instead of re-typed per tool.
+    ///
+    /// A tool that needs even one field different does not belong here: it
+    /// spells out its own literal. A preset quietly grown an exception would be
+    /// a description that is right for seven tools and wrong for the eighth.
+    pub const fn read_json(
+        name: &'static str,
+        description: &'static str,
+        display_name: &'static str,
+    ) -> Self {
+        Self::plain(
+            name,
+            description,
+            display_name,
+            PermissionPolicy::Read,
+            ResourcePolicy::Independent,
+        )
+    }
+
+    /// A tool that writes the `team` scope: the teammate/messaging family.
+    ///
+    /// They serialize among themselves through that shared scope while still
+    /// overlapping file reads — see [`ResourcePolicy::SharedState`].
+    pub const fn team_write(
+        name: &'static str,
+        description: &'static str,
+        display_name: &'static str,
+    ) -> Self {
+        Self::plain(
+            name,
+            description,
+            display_name,
+            PermissionPolicy::Write,
+            ResourcePolicy::SharedState { scope: "team" },
+        )
+    }
+
+    /// A tool that must not run alongside any other: [`ResourcePolicy::Barrier`].
+    pub const fn barrier_write(
+        name: &'static str,
+        description: &'static str,
+        display_name: &'static str,
+    ) -> Self {
+        Self::plain(
+            name,
+            description,
+            display_name,
+            PermissionPolicy::Write,
+            ResourcePolicy::Barrier,
+        )
+    }
+
+    /// The domain, presentation, output and argument-summary every preset
+    /// shares; only the permission and the resource claim vary between them.
+    ///
+    /// Private on purpose: a caller outside this module picking the remaining
+    /// fields à la carte is the duplication these presets exist to remove.
+    const fn plain(
+        name: &'static str,
+        description: &'static str,
+        display_name: &'static str,
+        permission: PermissionPolicy,
+        resources: ResourcePolicy,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            permission,
+            permission_prompt: PermissionPromptPolicy::Json,
+            resources,
+            domain: ToolDomain::Generic,
+            presentation: ToolPresentation {
+                visual_kind: ToolVisualKind::Generic,
+                display_name,
+                live_output: LiveOutputPolicy::Standard,
+                detail: DetailPolicy::Result,
+                popup: PopupPolicy::None,
+                compact_result_to_meta: false,
+            },
+            output: OutputPolicy::KeepInline,
+            argument_summary: ArgumentSummaryPolicy::Json,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +532,7 @@ pub enum PopupPolicy {
     SubagentTranscript,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolPresentation {
     pub visual_kind: ToolVisualKind,
     pub display_name: &'static str,
@@ -664,5 +755,80 @@ mod tests {
         let result = "ok".to_string().into_tool_call_result();
         assert_eq!(result.content, "ok");
         assert!(result.effects.is_empty());
+    }
+
+    /// The shared half of the presets, spelled out.
+    ///
+    /// Seventeen constants are built from these three constructors, so this is
+    /// the one place a change to the common shape would show up: the compiler
+    /// would accept a preset that quietly started naming a different display
+    /// or a different output policy, and every tool using it would inherit it.
+    #[test]
+    fn the_shared_preset_shape_is_what_the_listing_tools_rely_on() {
+        let metadata = ToolMetadata::read_json("name", "description", "Display");
+        assert_eq!(metadata.name, "name");
+        assert_eq!(metadata.description, "description");
+        assert_eq!(metadata.permission_prompt, PermissionPromptPolicy::Json);
+        assert_eq!(metadata.domain, ToolDomain::Generic);
+        assert_eq!(metadata.output, OutputPolicy::KeepInline);
+        assert_eq!(metadata.argument_summary, ArgumentSummaryPolicy::Json);
+        assert_eq!(
+            metadata.presentation,
+            ToolPresentation {
+                visual_kind: ToolVisualKind::Generic,
+                display_name: "Display",
+                live_output: LiveOutputPolicy::Standard,
+                detail: DetailPolicy::Result,
+                popup: PopupPolicy::None,
+                compact_result_to_meta: false,
+            }
+        );
+    }
+
+    /// The presets differ in exactly two fields, and each names its own claim.
+    ///
+    /// Stated as a comparison rather than three field dumps: "these are the
+    /// same tool with a different permission and resource claim" is the reason
+    /// they are presets at all, and it is the property that would be lost if
+    /// one of them grew a third difference.
+    #[test]
+    fn the_presets_differ_only_in_the_claim_they_make() {
+        let read = ToolMetadata::read_json("n", "d", "P");
+        let team = ToolMetadata::team_write("n", "d", "P");
+        let barrier = ToolMetadata::barrier_write("n", "d", "P");
+
+        assert_eq!(
+            (read.permission, read.resources),
+            (PermissionPolicy::Read, ResourcePolicy::Independent)
+        );
+        // The scope string is load-bearing: it is what serializes the
+        // teammate tools against each other and nobody else.
+        assert_eq!(
+            (team.permission, team.resources),
+            (
+                PermissionPolicy::Write,
+                ResourcePolicy::SharedState { scope: "team" }
+            )
+        );
+        assert_eq!(
+            (barrier.permission, barrier.resources),
+            (PermissionPolicy::Write, ResourcePolicy::Barrier)
+        );
+
+        let baseline = ToolMetadata {
+            permission: read.permission,
+            resources: read.resources,
+            ..read
+        };
+        for other in [team, barrier] {
+            assert_eq!(
+                ToolMetadata {
+                    permission: read.permission,
+                    resources: read.resources,
+                    ..other
+                },
+                baseline
+            );
+        }
     }
 }
