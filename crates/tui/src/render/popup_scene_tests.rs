@@ -6,7 +6,7 @@ use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
 use crate::widgets::state::{
-    App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection,
+    App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection, SurfaceId,
     ThinkingBlock, ThinkingPopup,
 };
 
@@ -317,14 +317,14 @@ fn slash_popup_records_and_clears_mouse_area() {
 
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        !app.mouse.slash_popup_area.is_empty(),
+        !app.mouse.area(SurfaceId::SlashPopup).is_empty(),
         "active slash popup must record its area for mouse-wheel routing"
     );
 
     app.slash_command.active = false;
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        app.mouse.slash_popup_area.is_empty(),
+        app.mouse.area(SurfaceId::SlashPopup).is_empty(),
         "closed slash popup must clear its mouse area"
     );
 }
@@ -408,14 +408,14 @@ fn select_popup_records_and_clears_mouse_area() {
 
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        !app.mouse.select_popup_area.is_empty(),
+        !app.mouse.area(SurfaceId::SelectPopup).is_empty(),
         "active select popup must record its area for mouse-wheel routing"
     );
 
     app.input_mode = InputMode::Normal;
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        app.mouse.select_popup_area.is_empty(),
+        app.mouse.area(SurfaceId::SelectPopup).is_empty(),
         "closed select popup must clear its mouse area"
     );
 }
@@ -505,7 +505,7 @@ fn model_picker_renders_through_the_shared_list_popup() {
     assert_eq!(focused.bg, app.theme.highlight, "on theme.highlight");
 
     // And the band is the component's row-wide one, not a per-glyph patch.
-    let area = app.mouse.select_popup_area;
+    let area = app.mouse.area(SurfaceId::SelectPopup);
     assert!(
         !area.is_empty(),
         "the model picker must record its mouse area"
@@ -674,14 +674,14 @@ fn command_palette_records_and_clears_mouse_area() {
 
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        !app.mouse.palette_popup_area.is_empty(),
+        !app.mouse.area(SurfaceId::PalettePopup).is_empty(),
         "an open palette must record its area for mouse-wheel routing"
     );
 
     app.input_mode = InputMode::Normal;
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        app.mouse.palette_popup_area.is_empty(),
+        app.mouse.area(SurfaceId::PalettePopup).is_empty(),
         "a closed palette must clear its mouse area"
     );
 }
@@ -715,14 +715,14 @@ fn file_picker_records_and_clears_mouse_area() {
 
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        !app.mouse.file_picker_popup_area.is_empty(),
+        !app.mouse.area(SurfaceId::FilePickerPopup).is_empty(),
         "an open file picker must record its area for mouse-wheel routing"
     );
 
     app.input_mode = InputMode::Normal;
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        app.mouse.file_picker_popup_area.is_empty(),
+        app.mouse.area(SurfaceId::FilePickerPopup).is_empty(),
         "a closed file picker must clear its mouse area"
     );
 }
@@ -746,7 +746,7 @@ fn tool_popup_bottom_border_names_the_tool_and_its_keys() {
     seed_diff_popup(&mut app);
 
     let terminal = render_main_area_terminal(&mut app, 100, 30);
-    let area = app.mouse.diff_popup_area;
+    let area = app.mouse.area(SurfaceId::DiffPopup);
     assert!(!area.is_empty(), "tool popup must have rendered");
 
     // Read the bottom border row itself: the tool id belongs there, not on the
@@ -1043,7 +1043,7 @@ fn thinking_popup_selection_reverses_selected_body_text_only() {
             .contains(Modifier::REVERSED)
     );
     assert!(
-        !buffer[(app.mouse.thinking_popup_area.x, row.screen_y)]
+        !buffer[(app.mouse.area(SurfaceId::ThinkingPopup).x, row.screen_y)]
             .modifier
             .contains(Modifier::REVERSED)
     );
@@ -1667,6 +1667,54 @@ fn tasks_dag_popup_renders_mermaid_markdown() {
     );
 }
 
+/// Buffer-level background check for the `/tasks-dag` overlay.
+///
+/// It is the newest popup drawn through the kit's `ScrollableTextPopup`
+/// skeleton, and the log behind it is full of wide (CJK / box-drawing) glyphs —
+/// exactly the case where a cell "restored" by a narrower repaint keeps a stale
+/// style. Every cell of the popup rect must therefore carry `theme.bg`, not just
+/// the rows that happen to hold text (see `docs/tui_rendering.md` and the
+/// no-shadow rule in `AGENTS.md`).
+#[test]
+fn tasks_dag_popup_paints_the_theme_background_over_its_whole_rect() {
+    use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
+
+    let mut app = make_app();
+    // Seed the log with wide glyphs so a leave-behind would be visible.
+    app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+        "│ ── 中文宽字符 ── │\n".repeat(4),
+    ));
+    app.task_panel_mut().apply_snapshot(vec![TaskSnapshot {
+        id: 1,
+        subject: "root".into(),
+        status: TaskStatusSnapshot::Pending,
+        owner: String::new(),
+        blocks: vec![2],
+        blocked_by: Vec::new(),
+        ..Default::default()
+    }]);
+    app.open_task_dag_popup();
+
+    let terminal = render_main_area_terminal(&mut app, 100, 30);
+    let area = app.mouse.area(SurfaceId::TaskDagPopup);
+    assert!(!area.is_empty(), "the overlay must have rendered");
+
+    let buffer = terminal.backend().buffer();
+    let theme_bg = app.theme.bg;
+    let mut wrong = Vec::new();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if buffer[(x, y)].bg != theme_bg {
+                wrong.push(format!("({x},{y}) bg={:?}", buffer[(x, y)].bg));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "every cell of the popup must carry the theme background; offenders: {wrong:?}"
+    );
+}
+
 #[test]
 fn popup_footer_swaps_the_copy_hint_for_the_confirmation_after_a_copy() {
     let mut app = make_app();
@@ -1686,7 +1734,7 @@ fn popup_footer_swaps_the_copy_hint_for_the_confirmation_after_a_copy() {
     // A copy landed: the footer confirms instead of offering the key.
     app.copy_text("fn main() {}");
     let terminal = render_main_area_terminal(&mut app, 100, 30);
-    let area = app.mouse.code_popup_area;
+    let area = app.mouse.area(SurfaceId::CodePopup);
     assert!(!area.is_empty(), "code popup must have rendered");
     let buffer = terminal.backend().buffer();
     let bottom: String = (0..buffer.area.width)

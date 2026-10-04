@@ -282,6 +282,7 @@ impl MockShell {
                     mermaid_popup: None,
                     system_prompt_popup: None,
                     subagent_popup: None,
+                    task_dag_popup: None,
                     task_history: &[],
                     select: &SelectPopup::default(),
                     task_panel: &TaskPanelState::default(),

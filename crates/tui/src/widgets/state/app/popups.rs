@@ -199,17 +199,17 @@ impl App {
     /// Returns `true` if an overlay was active (click is consumed).
     pub(crate) fn close_overlay_on_outside_click(&mut self, column: u16, row: u16) -> bool {
         let area = if self.thinking_mut().popup.is_some() {
-            Some(self.mouse.thinking_popup_area)
+            Some(self.mouse.area(SurfaceId::ThinkingPopup))
         } else if self.tools_mut().popup.is_some() {
-            Some(self.mouse.diff_popup_area)
+            Some(self.mouse.area(SurfaceId::DiffPopup))
         } else if self.code_popup.is_some() {
-            Some(self.mouse.code_popup_area)
+            Some(self.mouse.area(SurfaceId::CodePopup))
         } else if self.mermaid_popup.is_some() {
-            Some(self.mouse.mermaid_popup_area)
+            Some(self.mouse.area(SurfaceId::MermaidPopup))
         } else if self.task_dag_popup.is_some() {
-            Some(self.mouse.task_dag_popup_area)
+            Some(self.mouse.area(SurfaceId::TaskDagPopup))
         } else if self.has_subagent_popup() {
-            Some(self.mouse.subagent_popup_area)
+            Some(self.mouse.area(SurfaceId::SubagentPopup))
         } else {
             None
         };
@@ -323,7 +323,7 @@ impl App {
     /// preserves scroll / selection).
     pub(crate) fn close_subagent_popup(&mut self) {
         self.active_subagent_popup = None;
-        self.mouse.subagent_popup_area = Rect::default();
+        self.mouse.clear_area(SurfaceId::SubagentPopup);
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
         self.mouse.popup_text_drag_origin = None;
@@ -516,7 +516,7 @@ impl App {
     /// Close the thinking popup.
     pub(crate) fn close_thinking_popup(&mut self) {
         self.thinking_mut().popup = None;
-        self.mouse.thinking_popup_area = Rect::default();
+        self.mouse.clear_area(SurfaceId::ThinkingPopup);
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
         self.mouse.popup_text_drag_origin = None;
@@ -849,7 +849,7 @@ impl App {
     /// Close the file content popup.
     pub(crate) fn close_diff_popup(&mut self) {
         self.tools_mut().popup = None;
-        self.mouse.diff_popup_area = Rect::default();
+        self.mouse.clear_area(SurfaceId::DiffPopup);
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
         self.mouse.popup_text_drag_origin = None;
@@ -946,7 +946,7 @@ impl App {
     /// Close the Mermaid source popup.
     pub(crate) fn close_mermaid_popup(&mut self) {
         self.mermaid_popup = None;
-        self.mouse.mermaid_popup_area = Rect::default();
+        self.mouse.clear_area(SurfaceId::MermaidPopup);
     }
 
     /// Copy the Mermaid fence body to the clipboard.
@@ -1010,7 +1010,7 @@ mod tests {
         widgets::{
             state::{
                 App, DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, SubagentPopup,
-                ThinkingPopup,
+                SurfaceId, ThinkingPopup,
             },
             tool_widget::{ToolPhase, ToolWidget},
         },
@@ -1084,7 +1084,8 @@ mod tests {
     fn close_diff_popup_clears_mouse_state_before_reopen() {
         let mut app = make_app();
         app.tools_mut().popup = Some(inline_popup("old"));
-        app.mouse.diff_popup_area = Rect::new(5, 5, 20, 10);
+        app.mouse
+            .set_area(SurfaceId::DiffPopup, Rect::new(5, 5, 20, 10));
         app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
         app.mouse.popup_text_hit_rows = vec![PopupHitRow {
             screen_y: 6,
@@ -1098,7 +1099,7 @@ mod tests {
         app.close_diff_popup();
         app.tools_mut().popup = Some(inline_popup("new"));
 
-        assert_eq!(app.mouse.diff_popup_area, Rect::default());
+        assert_eq!(app.mouse.area(SurfaceId::DiffPopup), Rect::default());
         assert_eq!(app.mouse.popup_text_body_area, Rect::default());
         assert!(app.mouse.popup_text_hit_rows.is_empty());
         assert!(app.mouse.popup_text_drag_origin.is_none());
@@ -1159,7 +1160,8 @@ mod tests {
     fn close_thinking_popup_clears_selectable_mouse_state() {
         let mut app = make_app();
         app.thinking_mut().popup = Some(thinking_popup(Some(PopupTextSelection::new(0, 5))));
-        app.mouse.thinking_popup_area = Rect::new(5, 5, 20, 10);
+        app.mouse
+            .set_area(SurfaceId::ThinkingPopup, Rect::new(5, 5, 20, 10));
         app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
         app.mouse.popup_text_hit_rows = vec![PopupHitRow {
             screen_y: 6,
@@ -1173,7 +1175,7 @@ mod tests {
         app.close_thinking_popup();
 
         assert!(app.thinking_mut().popup.is_none());
-        assert_eq!(app.mouse.thinking_popup_area, Rect::default());
+        assert_eq!(app.mouse.area(SurfaceId::ThinkingPopup), Rect::default());
         assert_eq!(app.mouse.popup_text_body_area, Rect::default());
         assert!(app.mouse.popup_text_hit_rows.is_empty());
         assert!(app.mouse.popup_text_drag_origin.is_none());

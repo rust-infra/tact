@@ -232,7 +232,7 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
             ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
         );
         frame.render_widget(Paragraph::new(body), inner);
-        surface.diff_popup_area = popup_area;
+        surface.popup_area = popup_area;
         surface.body_area = body_area;
         return surface;
     };
@@ -347,7 +347,7 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
         .position(scroll);
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
-    surface.diff_popup_area = popup_area;
+    surface.popup_area = popup_area;
     surface.body_area = body_area;
     surface.hit_rows = hit_rows;
     surface

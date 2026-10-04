@@ -1,16 +1,21 @@
-/// Select popup state: independently manages prompt, options, selected index,
-/// and the request id used to answer agent-originated requests.
+use super::filtered_list::FilteredList;
+
+/// Select popup state: a [`FilteredList`] plus the flags that make it a
+/// *prompt* rather than a picker.
 ///
 /// The popup no longer holds a oneshot sender. Agent-originated selects carry a
 /// `request_id`; confirming or cancelling produces a [`tact_protocol::UiResponse`]
 /// that the caller (the TUI) sends over the reverse command channel.
+///
+/// `Deref`/`DerefMut` expose the list's `options` / `query` / `selected` and its
+/// cursor methods, so a call site reads `popup.options` exactly as it did when
+/// those were fields here — while the filter and cursor rules live in one place
+/// instead of a copy per picker.
 pub struct SelectPopup {
+    /// Options, filter and cursor.
+    pub list: FilteredList,
     /// Popup prompt text.
     pub prompt: String,
-    /// Option list.
-    pub options: Vec<String>,
-    /// Index of the currently focused option (cursor).
-    pub selected: usize,
     /// Request id for agent-originated selects (`RequestSelect` /
     /// `RequestMultiSelect`); `None` for local TUI flows like `/model`.
     pub request_id: Option<u64>,
@@ -21,23 +26,31 @@ pub struct SelectPopup {
     /// When false, confirming does not append a separate log line (e.g. permission
     /// choices are already shown on the tool meta row).
     pub log_confirm: bool,
-    /// Filter typed into a local pick. Always empty for agent-originated
-    /// prompts, which are answered with the arrow keys only — see
-    /// [`SelectPopup::filterable`].
-    pub query: String,
+}
+
+impl std::ops::Deref for SelectPopup {
+    type Target = FilteredList;
+
+    fn deref(&self) -> &FilteredList {
+        &self.list
+    }
+}
+
+impl std::ops::DerefMut for SelectPopup {
+    fn deref_mut(&mut self) -> &mut FilteredList {
+        &mut self.list
+    }
 }
 
 impl Default for SelectPopup {
     fn default() -> Self {
         Self {
+            list: FilteredList::default(),
             prompt: String::new(),
-            options: Vec::new(),
-            selected: 0,
             request_id: None,
             multi: false,
             checked: Vec::new(),
             log_confirm: true,
-            query: String::new(),
         }
     }
 }
@@ -52,13 +65,11 @@ impl SelectPopup {
         log_confirm: bool,
     ) {
         self.prompt = prompt;
-        self.options = options;
-        self.selected = selected.min(self.options.len().saturating_sub(1));
+        self.list.reset(options, selected);
         self.request_id = None;
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
-        self.query.clear();
     }
 
     /// Single-select popup (permission / default ask_user).
@@ -70,13 +81,11 @@ impl SelectPopup {
         log_confirm: bool,
     ) {
         self.prompt = prompt;
-        self.options = options;
-        self.selected = 0;
+        self.list.reset(options, 0);
         self.request_id = Some(request_id);
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
-        self.query.clear();
     }
 
     /// Multi-select popup (`ask_user` with `multi_select: true`).
@@ -89,13 +98,11 @@ impl SelectPopup {
     ) {
         let n = options.len();
         self.prompt = prompt;
-        self.options = options;
-        self.selected = 0;
+        self.list.reset(options, 0);
         self.request_id = Some(request_id);
         self.multi = true;
         self.checked = vec![false; n];
         self.log_confirm = log_confirm;
-        self.query.clear();
     }
 
     /// Whether the user may type to narrow this list.
@@ -109,58 +116,19 @@ impl SelectPopup {
         self.request_id.is_none()
     }
 
-    /// Indices of the options matching the current query, in list order.
-    ///
-    /// Case-insensitive substring match — the palette's rule. An empty query
-    /// matches everything, so this is also the answer to "what is on screen"
-    /// for an unfiltered popup. The renderer and the movement helpers share it
-    /// so the window and the cursor can never disagree about the visible set.
-    pub fn filtered_indices(&self) -> Vec<usize> {
-        let query = self.query.to_lowercase();
-        self.options
-            .iter()
-            .enumerate()
-            .filter(|(_, option)| query.is_empty() || option.to_lowercase().contains(&query))
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// Re-anchor the cursor on the first match after the query changed.
-    fn anchor_to_first_match(&mut self) {
-        if let Some(&first) = self.filtered_indices().first() {
-            self.selected = first;
-        }
-    }
-
-    /// Append a character to the filter.
-    pub fn push_query(&mut self, c: char) {
-        self.query.push(c);
-        self.anchor_to_first_match();
-    }
-
-    /// Delete the last filter character.
-    pub fn pop_query(&mut self) {
-        self.query.pop();
-        self.anchor_to_first_match();
-    }
-
-    /// Clear the filter (Esc's first meaning on a filterable popup).
-    pub fn clear_query(&mut self) {
-        self.query.clear();
-        self.anchor_to_first_match();
-    }
-
     /// Consume and return the pending request id, if this was agent-originated.
     pub fn take_request_id(&mut self) -> Option<u64> {
         self.request_id.take()
     }
 
     /// Focused index for single-select (no side effects). No-op for multi.
+    ///
+    /// Shadows [`FilteredList::confirm`], which has no multi concept.
     pub fn confirm(&mut self) -> Option<usize> {
         if self.multi {
             return None;
         }
-        Some(self.selected.min(self.options.len().saturating_sub(1)))
+        self.list.confirm()
     }
 
     /// All checked indices for multi-select (may be empty).
@@ -202,33 +170,6 @@ impl SelectPopup {
         let i = self.selected.min(self.options.len().saturating_sub(1));
         if let Some(slot) = self.checked.get_mut(i) {
             *slot = !*slot;
-        }
-    }
-
-    /// Move selection down, within the filtered set.
-    ///
-    /// With an empty query the filtered set is every option, so this is the
-    /// plain "next option" step; with a filter it skips the rows that are not
-    /// on screen. `selected` stays an index into `options`, which is what
-    /// `confirm()` reports — the callers that map the index to a semantic value
-    /// (`ThemePick` → `ThemeName::all()`, `PermissionModePick` → the three
-    /// modes) depend on that.
-    pub fn move_down(&mut self) {
-        let visible = self.filtered_indices();
-        if let Some(pos) = visible.iter().position(|&i| i == self.selected)
-            && let Some(&next) = visible.get(pos + 1)
-        {
-            self.selected = next;
-        }
-    }
-
-    /// Move selection up, within the filtered set.
-    pub fn move_up(&mut self) {
-        let visible = self.filtered_indices();
-        if let Some(pos) = visible.iter().position(|&i| i == self.selected)
-            && pos > 0
-        {
-            self.selected = visible[pos - 1];
         }
     }
 }

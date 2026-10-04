@@ -1,3 +1,5 @@
+use agent_tui_kit::state::{clamp_step, contains_ignore_case};
+
 use crate::{
     i18n::Messages,
     theme::{Theme, ThemeName},
@@ -30,14 +32,13 @@ impl App {
     /// Enter handler and the cursor step all read it, so the filtered list and
     /// the highlighted row can never disagree.
     pub(crate) fn palette_filtered(&self) -> Vec<usize> {
-        let filter = self.cmd_line.to_lowercase();
-        self.palette_commands()
+        let commands = self.palette_commands();
+        let filter = self.cmd_line.as_str();
+        commands
             .iter()
             .enumerate()
             .filter(|(_, (cmd, desc))| {
-                filter.is_empty()
-                    || cmd.to_lowercase().contains(&filter)
-                    || desc.to_lowercase().contains(&filter)
+                contains_ignore_case(cmd, filter) || contains_ignore_case(desc, filter)
             })
             .map(|(i, _)| i)
             .collect()
@@ -46,12 +47,7 @@ impl App {
     /// Move the palette cursor by `delta`, clamped to the filtered list.
     pub(crate) fn step_palette_selection(&mut self, delta: i32) {
         let len = self.palette_filtered().len();
-        if len == 0 {
-            self.palette_selected = 0;
-            return;
-        }
-        let last = len as i32 - 1;
-        self.palette_selected = (self.palette_selected as i32 + delta).clamp(0, last) as usize;
+        self.palette_selected = clamp_step(len, self.palette_selected, delta);
     }
 
     pub(crate) fn save_history(&self, entry: &str) {
@@ -155,6 +151,7 @@ impl App {
             mermaid_popup: self.mermaid_popup.as_ref(),
             system_prompt_popup: self.system_prompt_popup.as_ref(),
             subagent_popup: self.subagent_popup(),
+            task_dag_popup: self.task_dag_popup.as_ref(),
             task_history: &self.task_history,
             select: &self.select,
             task_panel: self.task_panel().state(),

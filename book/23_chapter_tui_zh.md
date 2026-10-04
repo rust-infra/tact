@@ -38,7 +38,7 @@ sequenceDiagram
 
 `AgentUpdate`、`UserCommand` 与 `AccountUpdate` 定义在 `tact_protocol`。`PluginRequest` 与 `PluginEvent` 定义在 `tact::plugin`；`tact-ui` 启动 worker，TUI 在渲染前 drain plugin event。
 
-**分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands、task DAG）。
+**分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands）。
 
 **组件注册表（whole-App 切换，2026-08-23）：** kit 的组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` / `subagent_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`TurnStats`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）、`SubagentsChanged`（subagent panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
 
@@ -224,10 +224,16 @@ graph TD
 | `agent_tui_kit::render/renderable.rs` | `Renderable` trait |
 | `agent_tui_kit::render/util.rs` | `wrap_line`、tool 缩进常量 |
 | `agent_tui_kit::render/cells/` | `text`、`thinking`、`tool`、`code`、`separator`、`markdown` |
-| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select + chrome helpers |
+| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select/task-dag + `scrollable_popup` 骨架 + chrome helpers |
 | `agent_tui_kit::widgets/` | `ToolWidget`、`HelpWidget`、`PopupWidget`、`SelectPopupWidget` |
 
-支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`BackgroundPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
+支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`BackgroundPanelState`、`MouseState`、`FilteredList`、`TaskDagPopup`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`SelectKind`）。
+
+**弹窗侧的统一（2026-10-04）：** 三处「同一件事写多遍」各自收成一个类型／一张表。
+
+- **命中区 → 一张表。** `MouseState` 不再持有 13 个独立的 `*_area` 字段，而是 `areas: [Rect; SurfaceId::COUNT]`，由 `SurfaceId` 枚举索引（`Log` / `TaskPanel` / 各弹窗）；入口是 `set_area` / `clear_area` / `hits`。判定"这个弹窗此刻是否活跃"不再查 `input_mode`——渲染器在未激活时会 `clear_area`，零尺寸矩形天然不含任何点。`crates/tui/src/handlers/mouse.rs` 的 `ListPopupTarget` 被删除：命中阶梯遍历 `SurfaceId::LIST_POPUPS`，滚轮分派是对 `SurfaceId` 穷尽的 `match`。`PopupMouseSurface` 的 5 个按弹窗命名的字段（`code_popup_area` …）收成单一 `popup_area`——每次渲染只有一个弹窗作画，那 5 个字段实际是个"每次只用一个成员"的联合结构。`popup_text_body_area` / `popup_text_hit_rows` **刻意不进表**：thinking / diff / subagent 共用同一个文本选择槽（同时只会开一个），一个槽就是它的正确形状。
+- **列表状态 → `FilteredList`。** options + query + cursor 的规则（大小写不敏感子串、游标 clamp、以及"游标索引**原始** options 而非可见子集"）此前在 `SelectPopup` / `FilePicker` / palette / slash 各有一份。现在 `FilteredList` 持有它，`SelectPopup` 用 `Deref`/`DerefMut` 嵌入（`select.options` / `select.selected = x` 形式的调用点无需改动），palette / slash / FilePicker 共用自由函数 `contains_ignore_case` 与 `clamp_step`。FilePicker 的 options 是每次 `refresh` 从文件系统重建的**派生缓存**，所以它共享的是游标步进而非过滤器。
+- **chrome → 只有 kit 在画。** `ScrollableTextPopup` 新增 `body_area(area)`（需要"先按弹窗宽度渲染内容、再交给骨架"的调用者用它取得几何），`system_prompt_popup` / `mermaid_popup` 收进骨架；`TaskDagPopup` 状态与 `render_task_dag_lines` 从 `crates/tui` 下沉到 `agent_tui_kit::state::task_dag`，渲染器落在 kit，tui 只留"宽度变化时重建缓存"的 prepare 阶段。`crates/tui/src/render/popups/mod.rs` 现在只剩 `render_with_ctx`（构建 `RenderCtx`）与 `record_popup_area` / `record_text_popup`（应用命中区）两个 helper，不再转发 `render_popup_chrome`。App 层最后一个自己画边框的弹窗就此消失。
 
 ### 6.2 帧管线
 

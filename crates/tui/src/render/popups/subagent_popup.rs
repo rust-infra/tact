@@ -4,7 +4,7 @@
 
 use ratatui::{Frame, layout::Rect};
 
-use crate::widgets::state::App;
+use crate::widgets::state::{App, SurfaceId};
 
 pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     // Prepare: rebuild the layout cache when stale (live output grows,
@@ -28,12 +28,8 @@ pub(crate) fn render_subagent_popup(frame: &mut Frame, area: Rect, app: &mut App
             );
         }
     }
-    let ctx = app.render_ctx();
-    let surface =
-        agent_tui_kit::render::popups::subagent_popup::render_subagent_popup(frame, area, &ctx);
-    if !surface.subagent_popup_area.is_empty() {
-        app.mouse.subagent_popup_area = surface.subagent_popup_area;
-        app.mouse.popup_text_body_area = surface.body_area;
-        app.mouse.popup_text_hit_rows = surface.hit_rows;
-    }
+    let surface = super::render_with_ctx(app, frame, area, |frame, area, ctx| {
+        agent_tui_kit::render::popups::subagent_popup::render_subagent_popup(frame, area, ctx)
+    });
+    super::record_text_popup(app, SurfaceId::SubagentPopup, surface);
 }

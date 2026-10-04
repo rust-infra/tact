@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod background_panel;
+pub mod filtered_list;
 pub mod log;
 pub mod log_scroll;
 pub mod mouse_state;
@@ -15,6 +16,7 @@ pub mod status_bar_state;
 pub mod stream_parser;
 pub mod stream_state;
 pub mod subagent_panel;
+pub mod task_dag;
 pub mod task_panel;
 pub mod thinking;
 pub mod tool_state;
@@ -22,6 +24,7 @@ pub mod ui_types;
 
 pub use account::AccountState;
 pub use background_panel::BackgroundPanelState;
+pub use filtered_list::{FilteredList, clamp_step, contains_ignore_case};
 pub use log::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle, log_indent_at};
 pub use log_scroll::LogScroll;
 pub use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};
@@ -32,6 +35,7 @@ pub use status_bar_state::StatusBarState;
 pub use stream_parser::StreamEvent;
 pub use stream_state::StreamState;
 pub use subagent_panel::SubagentPanelState;
+pub use task_dag::{DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines};
 pub use task_panel::TaskPanelState;
 pub use thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup, ThinkingState, find_thinking_at_logical,

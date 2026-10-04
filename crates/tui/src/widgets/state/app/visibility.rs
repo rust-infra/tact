@@ -167,7 +167,7 @@ impl App {
     ) -> Option<(usize, usize)> {
         let phys_idx = self.visible_message_index(logical_idx)?;
         let raw_text = &self.log.items.get(phys_idx)?.raw;
-        let wrap_width = self.mouse.log_area.width.saturating_sub(2) as usize;
+        let wrap_width = self.mouse.area(SurfaceId::Log).width.saturating_sub(2) as usize;
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
         let indent = self.nested_log_indent(phys_idx) as usize;

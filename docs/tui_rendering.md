@@ -122,7 +122,8 @@ terminal.draw(|f| {
 | `show_help == true` | Full-screen help panel |
 | default | 100% log panel (single-column; no side panel or divider) |
 
-It also updates `app.mouse.log_area` from the layout result for later mouse hit testing.
+It also records the log's rect (`app.mouse.set_area(SurfaceId::Log, ..)`) from the layout
+result for later mouse hit testing.
 
 ---
 
@@ -343,7 +344,8 @@ Popups usually:
 - Render `Clear` first to erase the background
 - No drop shadow (avoids dark bands on some terminals)
 - Show hints like `[y] Copy`, `[Esc] Close`, `[j/k] Scroll`
-- Record their area in `app.mouse.*_popup_area` for click-outside-to-close
+- Record their area via `app.mouse.set_area(SurfaceId::<Popup>, ..)` for click-outside-to-close
+  (one indexed table keyed by `SurfaceId`, not one field per popup)
 
 ---
 

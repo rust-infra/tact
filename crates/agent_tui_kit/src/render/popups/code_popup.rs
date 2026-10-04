@@ -4,25 +4,12 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Paragraph, Scrollbar, ScrollbarState, Wrap},
+    text::{Line, Span},
 };
 
-use super::PopupMouseSurface;
+use super::{FooterHint, PopupMouseSurface, scrollable_popup::ScrollableTextPopup};
 use crate::render::ctx::RenderCtx;
 
-//    total = 10 lines, content_height = 4, scroll = 3
-//
-//    lines[0]  ─┐
-//    lines[1]   │ skipped (above visible area)
-//    lines[2]  ─┘
-//    lines[3]  ─┐ ← start_line = 3
-//    lines[4]   │
-//    lines[5]   │ visible in viewport
-//    lines[6]  ─┘ ← end_line = min(3+4, 10) = 7
-//    lines[7]  ─┐
-//    lines[8]   │ skipped (below visible area)
-//    lines[9]  ─┘
 pub fn render_code_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> PopupMouseSurface {
     let mut surface = PopupMouseSurface::default();
     let Some(popup) = &ctx.code_popup else {
@@ -32,80 +19,61 @@ pub fn render_code_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
         return surface;
     }
     let block = &ctx.code_blocks[popup.block_idx];
-    let lines: Vec<&str> = block.content.lines().collect();
-    let total = lines.len();
+    let raw_lines: Vec<&str> = block.content.lines().collect();
+    let total = raw_lines.len();
     if total == 0 {
         return surface;
     }
-
-    let popup_area = super::centered_popup_area(area);
 
     let lang = if popup.lang.is_empty() {
         "code"
     } else {
         &popup.lang
     };
-    let footer: &[super::FooterHint] = &[
-        super::FooterHint {
-            key: "y",
-            label: " copy ",
-        },
-        super::FooterHint {
-            key: "j/k",
-            label: " scroll ",
-        },
-        super::FooterHint {
-            key: "Esc",
-            label: " close ",
-        },
-    ];
-    let inner = super::render_popup_chrome(
-        frame,
-        popup_area,
-        ctx.theme,
-        &format!(" {} ", lang),
-        None,
-        Some(footer),
-        ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
-    );
 
-    let content_height = inner.height as usize;
-    let max_scroll = total.saturating_sub(1);
-    let scroll = (popup.scroll as usize).min(max_scroll);
-    let start_line = scroll;
-    let end_line = (scroll + content_height).min(total);
+    // Build content lines: header + code rows (truncated to popup width).
+    // The popup width is ~80% of the frame; the inner width is 2 cells narrower.
+    let popup_width = super::centered_popup_area(area).width;
+    let max_chars = popup_width.saturating_sub(4) as usize;
 
-    let mut text = Text::default();
     let title_style = Style::default()
         .fg(ctx.theme.accent)
         .add_modifier(Modifier::BOLD);
-    text.push_line(Line::from(Span::styled(
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(total + 2);
+    lines.push(Line::from(Span::styled(
         format!("```{} ({} lines)", lang, total),
         title_style,
     )));
-    text.push_line(Line::from(""));
-
-    // Render code lines, truncating to popup width minus borders/padding
-    let max_chars = popup_area.width.saturating_sub(4) as usize;
-    for &line in &lines[start_line..end_line] {
+    lines.push(Line::from(""));
+    for line in raw_lines {
         let display: String = line.chars().take(max_chars).collect();
-        text.push_line(Line::from(Span::styled(
+        lines.push(Line::from(Span::styled(
             display,
             Style::default().fg(ctx.theme.fg),
         )));
     }
 
-    let para = Paragraph::new(text).wrap(Wrap { trim: false });
+    let footer: &[FooterHint] = &[
+        FooterHint {
+            key: "y",
+            label: " copy ",
+        },
+        FooterHint {
+            key: "j/k",
+            label: " scroll ",
+        },
+        FooterHint {
+            key: "Esc",
+            label: " close ",
+        },
+    ];
 
-    frame.render_widget(para, inner);
+    let popup_area = ScrollableTextPopup::new(ctx.theme, &format!(" {} ", lang), &lines)
+        .scroll(popup.scroll as usize)
+        .footer_hints(footer)
+        .copy_done(ctx.copy_flash.then_some(ctx.messages.popup_copy_done))
+        .render(frame, area);
 
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
-    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
-
-    surface.code_popup_area = popup_area;
+    surface.popup_area = popup_area;
     surface
 }

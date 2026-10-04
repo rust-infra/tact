@@ -2,7 +2,7 @@ use ratatui::{Frame, layout::Rect, style::Style, text::Span};
 
 use agent_tui_kit::widgets::list_popup::{ListPopup, ListRow, SelectionStyle};
 
-use crate::widgets::state::{App, InputMode};
+use crate::widgets::state::{App, InputMode, SurfaceId};
 
 /// Map command name to emoji icon for palette display.
 fn cmd_emoji(cmd: &str, is_skill: bool) -> &'static str {
@@ -48,7 +48,7 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut Ap
     if app.input_mode != InputMode::Palette {
         // Called every frame; the hit area recorded while active must not
         // outlive the popup (see `render_select_popup`).
-        app.mouse.palette_popup_area = Rect::default();
+        app.mouse.clear_area(SurfaceId::PalettePopup);
         return;
     }
 
@@ -117,7 +117,8 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut Ap
         .selection(SelectionStyle::Highlight)
         .bg(Some(app.theme.bottom_bar_bg));
 
-    app.mouse.palette_popup_area = popup.layout(area).popup_area;
+    app.mouse
+        .set_area(SurfaceId::PalettePopup, popup.layout(area).popup_area);
     frame.render_widget(popup, area);
 }
 

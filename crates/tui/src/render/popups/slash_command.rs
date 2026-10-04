@@ -8,14 +8,14 @@ use ratatui::{
 
 use agent_tui_kit::widgets::list_popup::{ListPopup, ListRow, SelectionStyle};
 
-use crate::widgets::state::{App, Candidate};
+use crate::widgets::state::{App, Candidate, SurfaceId};
 
 /// Reserved overhead per item row: prefix("▶ "|"  ") 2 + "/" 1 + "  " separator 2.
 const ROW_OVERHEAD: usize = 5;
 
 pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     if !app.slash_command.active {
-        app.mouse.slash_popup_area = Rect::default();
+        app.mouse.clear_area(SurfaceId::SlashPopup);
         return;
     }
 
@@ -35,7 +35,7 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
     let theme = app.theme;
     let candidates = app.slash_candidates();
     if candidates.is_empty() {
-        app.mouse.slash_popup_area = Rect::default();
+        app.mouse.clear_area(SurfaceId::SlashPopup);
         let hint = ListPopup::new(&theme, &[], 40, 5)
             .title(format!(
                 "{}{}",
@@ -138,7 +138,8 @@ pub(crate) fn render_slash_command_popup(frame: &mut Frame, area: Rect, app: &mu
 
     // Expose the popup rect so mouse-wheel scrolls over the list move the
     // selection instead of scrolling the log behind the popup.
-    app.mouse.slash_popup_area = popup.layout(area).popup_area;
+    app.mouse
+        .set_area(SurfaceId::SlashPopup, popup.layout(area).popup_area);
     frame.render_widget(popup, area);
 }
 

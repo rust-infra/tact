@@ -7,14 +7,14 @@ use ratatui::{
 
 use agent_tui_kit::widgets::list_popup::{ListPopup, ListRow, SelectionStyle};
 
-use crate::widgets::state::{App, InputMode};
+use crate::widgets::state::{App, InputMode, SurfaceId};
 
 /// Render a centered file-picker popup listing files under the project root.
 pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.input_mode != InputMode::FilePicker {
         // Called every frame; the hit area recorded while active must not
         // outlive the popup (see `render_select_popup`).
-        app.mouse.file_picker_popup_area = Rect::default();
+        app.mouse.clear_area(SurfaceId::FilePickerPopup);
         return;
     }
 
@@ -96,6 +96,7 @@ pub(crate) fn render_file_picker(frame: &mut Frame, area: Rect, app: &mut App) {
         .selection(SelectionStyle::Highlight)
         .bg(Some(app.theme.bottom_bar_bg));
 
-    app.mouse.file_picker_popup_area = popup.layout(area).popup_area;
+    app.mouse
+        .set_area(SurfaceId::FilePickerPopup, popup.layout(area).popup_area);
     frame.render_widget(popup, area);
 }

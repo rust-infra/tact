@@ -1,3 +1,5 @@
+use agent_tui_kit::state::clamp_step;
+
 use super::slash::SlashCommand;
 
 /// Slash command autocomplete popup state, triggered by '/' at the start of
@@ -308,12 +310,7 @@ impl super::App {
         if n == 0 {
             return;
         }
-        if delta < 0 {
-            self.slash_command.selected = self.slash_command.selected.saturating_sub(1);
-        } else {
-            let max = n.saturating_sub(1);
-            self.slash_command.selected = (self.slash_command.selected + 1).min(max);
-        }
+        self.slash_command.selected = clamp_step(n, self.slash_command.selected, delta);
     }
 }
 

@@ -17,15 +17,13 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarState},
 };
 
-use unicode_width::UnicodeWidthStr;
-
 use super::PopupMouseSurface;
 use crate::{
     render::{
         ctx::RenderCtx,
-        input::truncate_to_width,
         render_md::render_markdown_tui,
         selectable_text::{PopupLayoutCache, layout_all_display_rows},
+        util::truncate_to_width,
     },
     state::{SubagentPopup, ToolState},
     theme::Theme,
@@ -222,7 +220,7 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
     // Title row is: "{header} [x]" inside the 2-cell border; `header` already
     // carries its own leading/trailing spaces.
     let available = (popup_area.width.saturating_sub(2) as usize)
-        .saturating_sub(UnicodeWidthStr::width(" [x]"));
+        .saturating_sub(super::title_close_suffix_width());
     let header = truncate_to_width(&header, available);
 
     let footer: &[super::FooterHint] = &[
@@ -274,7 +272,7 @@ pub fn render_subagent_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
         .position(scroll);
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
-    surface.subagent_popup_area = popup_area;
+    surface.popup_area = popup_area;
     surface.body_area = body_area;
     surface.hit_rows = hit_rows;
     surface

@@ -4,7 +4,7 @@ use ratatui::{
     widgets::Borders,
 };
 
-use crate::widgets::state::App;
+use crate::widgets::state::{App, SurfaceId};
 
 /// Main content area layout, switching between history, help, or the Log panel
 /// based on current display state. The Log panel is always single-column and
@@ -33,9 +33,9 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     if sticky_h == 0 {
-        app.mouse.task_panel_area = Rect::default();
+        app.mouse.clear_area(SurfaceId::TaskPanel);
         app.mouse.sticky_tab_areas.clear();
-        app.mouse.log_area = area;
+        app.mouse.set_area(SurfaceId::Log, area);
         app.log_scroll.height = area.height.saturating_sub(2);
         super::log::render_log_panel(frame, area, app);
     } else {
@@ -43,7 +43,7 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(sticky_h)])
             .split(area);
-        app.mouse.log_area = chunks[0];
+        app.mouse.set_area(SurfaceId::Log, chunks[0]);
         // Log omits bottom border; sticky draws LEFT|RIGHT|BOTTOM to close the box.
         super::log::render_log_panel_with_borders(
             frame,

@@ -1,17 +1,20 @@
 //! Task dependency DAG → Mermaid → ratatui-markdown rendering.
 
 use ratatui::text::Line;
-use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
 
-use crate::{render::render_md::render_markdown_with_tables, theme::Theme};
+use crate::{
+    protocol::{TaskSnapshot, TaskStatusSnapshot},
+    render::render_md::render_markdown_with_tables,
+    theme::Theme,
+};
 
 /// Width used to pre-render the DAG before the popup's actual width is known
 /// (the popup re-renders at its real width on the first frame).
-pub(crate) const DEFAULT_DAG_RENDER_WIDTH: usize = 100;
+pub const DEFAULT_DAG_RENDER_WIDTH: usize = 100;
 
 /// Overlay popup holding the pre-rendered DAG lines.
 #[derive(Debug, Clone)]
-pub(crate) struct TaskDagPopup {
+pub struct TaskDagPopup {
     pub lines: Vec<Line<'static>>,
     pub scroll: u16,
     /// Mermaid source (for copy).
@@ -21,7 +24,7 @@ pub(crate) struct TaskDagPopup {
 }
 
 /// Build a Mermaid `flowchart TD` from task snapshots (`blocks` edges).
-pub(crate) fn tasks_to_mermaid(tasks: &[TaskSnapshot]) -> String {
+pub fn tasks_to_mermaid(tasks: &[TaskSnapshot]) -> String {
     let mut out = String::from("flowchart TD\n");
     if tasks.is_empty() {
         out.push_str("  empty[\"(no tasks)\"]\n");
@@ -76,7 +79,7 @@ fn tasks_to_markdown(tasks: &[TaskSnapshot], source: &str) -> String {
 }
 
 /// Render the task DAG (mermaid diagram + legend) via ratatui-markdown.
-pub(crate) fn render_task_dag_lines(
+pub fn render_task_dag_lines(
     tasks: &[TaskSnapshot],
     theme: &Theme,
     width: usize,

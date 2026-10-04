@@ -54,6 +54,25 @@
 
 ---
 
+## 1. 2026-10-04 — 弹窗收成组件：命中区一张表、列表状态一个类型、chrome 只有 kit 在画
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization |
+| **Related** | `agent_tui_kit::state::{mouse_state (SurfaceId), filtered_list, task_dag}`、`agent_tui_kit::render::popups::{scrollable_popup, task_dag_popup}`、`crates/tui/src/render/popups/`、`crates/tui/src/handlers/mouse.rs`；Ch 23 §分层 |
+
+**Symptom / motivation:** kit/app 拆分完成后，弹窗侧还留着三处「同一件事写三遍以上」：其一，`MouseState` 有 13 个彼此独立的 `*_area` 字段，同一份"哪个弹窗在哪个矩形里"的信息还要在 `PopupMouseSurface`（5 选 1 的联合结构）和 `mouse.rs` 的命中阶梯里各写一遍——`mouse.rs` 的注释自己记着 palette 与 file picker 曾经**漏写**命中区、滚轮一直在滚背后的 log；其二，`SelectPopup` / `FilePicker` / palette / slash 各自实现了一份"过滤 + 游标"（第三条规则——游标索引的是**原始** options 而非可见子集——只在一处有注释解释，靠约定维持）；其三，`ScrollableTextPopup` 骨架只有 `code_popup` 用，另有四个弹窗手写 chrome + `Paragraph` + `Scrollbar`，`task_dag_popup` 甚至是唯一还在**应用层**手画边框的弹窗。
+
+**Decision:**（1）新增 `SurfaceId` 枚举 + `MouseState::areas: [Rect; N]` 索引表，`set_area` / `clear_area` / `hits` 三个入口；`PopupMouseSurface` 的 5 个按弹窗命名的字段收成单一 `popup_area`（每次渲染只会有一个弹窗作画）；`mouse.rs` 删掉 `ListPopupTarget`，命中阶梯与滚动分派改由 `SurfaceId::LIST_POPUPS` + 一个对 `SurfaceId` 穷尽的 `match` 驱动。命中判定不再单独查 `input_mode`：渲染器在未激活时会清掉自己的矩形，零尺寸矩形天然不含任何点。（2）新增 `FilteredList`（options + query + cursor）与自由函数 `contains_ignore_case` / `clamp_step`；`SelectPopup` 通过 `Deref`/`DerefMut` 嵌入它，因此 `select.options` / `select.selected = x` 这类调用点**一行未改**；palette / slash / FilePicker 复用同一份匹配规则与游标步进（FilePicker 的 options 是每次 `refresh` 重建的派生缓存，所以它共享的是游标步进，不是过滤器）。（3）给 `ScrollableTextPopup` 加 `body_area(area)`（"先量后渲"的几何入口），把 `system_prompt_popup` / `mermaid_popup` 收进骨架，并把 `TaskDagPopup` 状态与 `render_task_dag_lines` 整体下沉到 kit。
+
+**Behavior after:** 弹窗外观基本不变，只有一处可见差异：`/tasks-dag` 的标题行（`Tasks DAG (N lines)` 与空行）从"钉在顶部、正文在其下滚动"变成**随正文一起滚动**——与 `code_popup` 的既有行为一致；在默认的 `scroll = 0` 下两者完全相同。除此之外，`crates/tui/src/render/popups/` 里**再没有任何一处自己画边框**：`mod.rs` 中 `FooterHint` / `centered_popup_area` / `render_popup_chrome` 的转发在改动后变成 unused 警告，正是这件事的证据。新增弹窗的成本从"字段 + 渲染器写入 + 命中阶梯 + 滚动分派"四处降为"一个 `SurfaceId` 变体"，漏写会编译或测试失败而不是静默失灵。
+
+**Verification:** `agent_tui_kit` 367 + `tui` 620 = 987 passed，`tact-ui` 69 + 集成用例全绿；`cargo clippy --workspace --all-targets` 零告警、`cargo fmt --all` 干净；`cargo run -p agent_tui_kit --example mock_agent` 正常渲染；`cargo tree -p agent_tui_kit` 仍不含 `tact` / `tact_llm`。新增测试：`surface_ids_are_dense_and_counted`（枚举与表必须同构）、`a_cleared_surface_never_hits`、`hit_testing_uses_half_open_bounds`、`title_close_suffix_width_matches_what_the_chrome_draws`（chrome 与 subagent 标题宽度计算不允许再漂移）、`FilteredList` 的 10 条。
+
+---
+
+---
+
 ## 1. 2026-10-04 — `SkillManifest` 砍掉四个「只存不读」的字段，Claude 专属 frontmatter 不再假装支持
 
 | Field | Value |

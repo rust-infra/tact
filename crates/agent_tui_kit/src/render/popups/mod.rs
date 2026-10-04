@@ -8,9 +8,11 @@ pub mod code_popup;
 pub mod diff_popup;
 pub mod history;
 pub mod mermaid_popup;
+pub mod scrollable_popup;
 pub mod select;
 pub mod subagent_popup;
 pub mod system_prompt_popup;
+pub mod task_dag_popup;
 pub mod thinking_popup;
 
 use ratatui::{
@@ -20,6 +22,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     theme::Theme,
@@ -28,14 +31,18 @@ use crate::{
 
 /// Mouse hit areas a popup render pass returns for the host to apply after
 /// the frame (kit renderers stay pure; `MouseState` lives in the app).
+///
+/// One popup draws per pass, so there is a single [`Self::popup_area`] slot —
+/// the five per-popup fields this replaced (`code_popup_area` …) were a union
+/// of which exactly one member was ever set, which is a struct pretending to
+/// be five.
 #[derive(Default, Clone)]
 pub struct PopupMouseSurface {
-    pub code_popup_area: Rect,
-    pub mermaid_popup_area: Rect,
-    pub thinking_popup_area: Rect,
-    pub subagent_popup_area: Rect,
-    pub diff_popup_area: Rect,
+    /// Outer rect of the popup this pass drew (empty when it drew nothing).
+    pub popup_area: Rect,
+    /// Selectable body rect inside the popup's border.
     pub body_area: Rect,
+    /// One hit row per rendered body row, in screen order.
     pub hit_rows: Vec<crate::state::PopupHitRow>,
     /// Render-time cache write-back: the selection text the thinking popup
     /// computed for its active block (host applies it to the popup state).
@@ -79,6 +86,21 @@ pub fn popup_inner(area: Rect) -> Rect {
 /// one place that swaps it for the success confirmation.
 const COPY_HINT_KEY: &str = "y";
 
+/// The close affordance drawn at the end of a chrome popup's title row.
+///
+/// One definition, two consumers: the chrome that draws it and
+/// [`title_close_suffix_width`], which `subagent_popup` uses to reserve room
+/// for it before truncating a long title. They used to spell `"[x]"` twice and
+/// could silently drift, clipping or over-truncating the title row.
+pub const POPUP_CLOSE_MARKER: &str = "[x]";
+
+/// Display width of the title-row close affordance — the separating space plus
+/// [`POPUP_CLOSE_MARKER`], i.e. what `render_popup_chrome` appends after the
+/// caller's title.
+pub fn title_close_suffix_width() -> usize {
+    1 + UnicodeWidthStr::width(POPUP_CLOSE_MARKER)
+}
+
 /// RN-style popup chrome: Clear + styled border block + title row + optional footer.
 ///
 /// `footer_note` is free-form text drawn at the *front* of the bottom border,
@@ -106,7 +128,7 @@ pub fn render_popup_chrome(
             Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled("[x]", Style::default().fg(theme.muted)),
+        Span::styled(POPUP_CLOSE_MARKER, Style::default().fg(theme.muted)),
     ];
 
     let mut block = Block::default()
@@ -175,5 +197,18 @@ mod tests {
         assert_eq!(popup.height, 12);
         assert_eq!(popup.x, 26);
         assert_eq!(popup.y, 14);
+    }
+
+    /// The chrome draws `" "` + [`POPUP_CLOSE_MARKER`], and `subagent_popup`
+    /// reserves [`title_close_suffix_width`] for it. If either side grows the
+    /// suffix without the other, the subagent title row clips or over-truncates:
+    /// this is the test that fails first.
+    #[test]
+    fn title_close_suffix_width_matches_what_the_chrome_draws() {
+        let drawn = format!(" {POPUP_CLOSE_MARKER}");
+        assert_eq!(
+            title_close_suffix_width(),
+            UnicodeWidthStr::width(drawn.as_str())
+        );
     }
 }

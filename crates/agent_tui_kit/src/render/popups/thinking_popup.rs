@@ -166,7 +166,7 @@ pub fn render_thinking_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
         .position(scroll);
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 
-    surface.thinking_popup_area = popup_area;
+    surface.popup_area = popup_area;
     surface.body_area = body_area;
     surface.hit_rows = hit_rows;
     // The active popup's selection cache is updated by the host after the frame.

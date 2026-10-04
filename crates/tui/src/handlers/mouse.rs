@@ -5,8 +5,8 @@ use tact_protocol::UserCommand;
 
 use super::{scroll_active_sticky, sticky_scrollable};
 use crate::widgets::state::{
-    App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition, VoicePhase,
-    VoiceStartResult,
+    App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, SurfaceId, TextPosition,
+    VoicePhase, VoiceStartResult,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -17,8 +17,8 @@ pub(crate) struct MousePanelHit {
 
 fn panel_hit(app: &App, column: u16, row: u16) -> MousePanelHit {
     MousePanelHit {
-        in_log: point_in_rect(column, row, app.mouse.log_area),
-        in_task_panel: point_in_rect(column, row, app.mouse.task_panel_area),
+        in_log: app.mouse.hits(SurfaceId::Log, column, row),
+        in_task_panel: app.mouse.hits(SurfaceId::TaskPanel, column, row),
     }
 }
 
@@ -26,79 +26,63 @@ fn point_in_rect(column: u16, row: u16, area: ratatui::layout::Rect) -> bool {
     column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
 }
 
-/// A list popup that owns the pointer, and therefore the wheel.
-///
-/// One table instead of one `if` per popup: a new list popup costs a variant
-/// here and a hit-area write in its renderer, and can no longer be forgotten
-/// (the palette and the file picker were, for as long as they existed).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ListPopupTarget {
-    Select,
-    Slash,
-    Palette,
-    FilePicker,
-}
-
 /// The list popup under `(column, row)`, if any.
-fn list_popup_at(app: &App, column: u16, row: u16) -> Option<ListPopupTarget> {
-    use crate::widgets::state::InputMode;
-
-    let hit = |area| point_in_rect(column, row, area);
-    let targets = [
-        (
-            ListPopupTarget::Select,
-            InputMode::Select,
-            app.mouse.select_popup_area,
-        ),
-        (
-            ListPopupTarget::Slash,
-            InputMode::Insert,
-            app.mouse.slash_popup_area,
-        ),
-        (
-            ListPopupTarget::Palette,
-            InputMode::Palette,
-            app.mouse.palette_popup_area,
-        ),
-        (
-            ListPopupTarget::FilePicker,
-            InputMode::FilePicker,
-            app.mouse.file_picker_popup_area,
-        ),
-    ];
-    targets
-        .into_iter()
-        .find(|(popup, mode, area)| {
-            let active = match popup {
-                // The slash popup lives in Insert mode, which is also the mode
-                // for plain typing — its own flag decides.
-                ListPopupTarget::Slash => app.slash_command.active,
-                _ => app.input_mode == *mode,
-            };
-            active && hit(*area)
-        })
-        .map(|(popup, _, _)| popup)
+///
+/// One table (`SurfaceId::LIST_POPUPS`) instead of one `if` per popup: a new
+/// list popup costs a variant plus a hit-area write in its renderer, and can no
+/// longer be forgotten (the palette and the file picker were, for as long as
+/// they existed).
+///
+/// No `input_mode` check: a popup's renderer clears its area when it is not
+/// active, and a cleared surface has a zero-size rect no point can fall inside.
+/// The slash popup used to need a special case here precisely because activity
+/// was inferred from the mode rather than from the surface.
+fn list_popup_at(app: &App, column: u16, row: u16) -> Option<SurfaceId> {
+    SurfaceId::LIST_POPUPS
+        .iter()
+        .copied()
+        .find(|id| app.mouse.hits(*id, column, row))
 }
 
 /// Move the focused row of the list popup under the pointer by one step.
-fn scroll_list_popup(app: &mut App, popup: ListPopupTarget, delta: i32) {
+///
+/// The `match` is exhaustive over the surfaces that own a cursor; a surface
+/// without one falls through to `None` (nothing to scroll) rather than being
+/// silently ignored by a `_` arm that would also swallow a new popup.
+fn scroll_list_popup(app: &mut App, popup: SurfaceId, delta: i32) -> bool {
     match popup {
-        ListPopupTarget::Select => {
+        SurfaceId::SelectPopup => {
             if delta < 0 {
                 app.select.move_up();
             } else {
                 app.select.move_down();
             }
+            true
         }
-        ListPopupTarget::Slash => app.step_slash_selection(delta),
-        ListPopupTarget::Palette => app.step_palette_selection(delta),
-        ListPopupTarget::FilePicker => {
+        SurfaceId::SlashPopup => {
+            app.step_slash_selection(delta);
+            true
+        }
+        SurfaceId::PalettePopup => {
+            app.step_palette_selection(delta);
+            true
+        }
+        SurfaceId::FilePickerPopup => {
             if delta < 0 {
                 app.file_picker.move_up();
             } else {
                 app.file_picker.move_down();
             }
+            true
         }
+        SurfaceId::Log
+        | SurfaceId::TaskPanel
+        | SurfaceId::CodePopup
+        | SurfaceId::MermaidPopup
+        | SurfaceId::ThinkingPopup
+        | SurfaceId::SubagentPopup
+        | SurfaceId::DiffPopup
+        | SurfaceId::TaskDagPopup => false,
     }
 }
 
@@ -275,11 +259,11 @@ fn handle_voice_button_click(app: &mut App) {
 fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     app.mouse.popup_text_drag_origin = None;
     let popup_area = if app.thinking_mut().popup.is_some() {
-        app.mouse.thinking_popup_area
+        app.mouse.area(SurfaceId::ThinkingPopup)
     } else if app.has_subagent_popup() {
-        app.mouse.subagent_popup_area
+        app.mouse.area(SurfaceId::SubagentPopup)
     } else {
-        app.mouse.diff_popup_area
+        app.mouse.area(SurfaceId::DiffPopup)
     };
     let inside_popup = point_in_rect(mouse.column, mouse.row, popup_area);
     app.close_overlay_on_outside_click(mouse.column, mouse.row);
@@ -323,9 +307,14 @@ fn popup_text_hit(app: &App, column: u16, row: u16, clamp_vertical: bool) -> Opt
 fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.focused_panel = FocusedPanel::Log;
     let visual_base = app.log_viewport_top();
-    let visual_row = visual_base + mouse.row.saturating_sub(app.mouse.log_area.y + 1) as usize;
+    let visual_row = visual_base
+        + mouse
+            .row
+            .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
     let line_idx = app.logical_from_visual(visual_row);
-    let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
+    let col = mouse
+        .column
+        .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
 
     let now = std::time::Instant::now();
     let pos = (mouse.column, mouse.row);
@@ -477,9 +466,14 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.mouse.dragging_log && hit.in_log {
         let visual_base = app.log_viewport_top();
-        let visual_row = visual_base + mouse.row.saturating_sub(app.mouse.log_area.y + 1) as usize;
+        let visual_row = visual_base
+            + mouse
+                .row
+                .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
         let line_idx = app.logical_from_visual(visual_row);
-        let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
+        let col = mouse
+            .column
+            .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
         if line_idx < app.total_log_lines()
             && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
         {
@@ -649,7 +643,8 @@ mod tests {
             started_at: None,
             completed_at: None,
         }];
-        app.mouse.task_panel_area = Rect::new(0, 10, 40, 1);
+        app.mouse
+            .set_area(SurfaceId::TaskPanel, Rect::new(0, 10, 40, 1));
 
         // Click outside tab strip (x>=18) toggles expand when both tabs aren't shown.
         handle_mouse_event(&mut app, mouse_down(20, 10));
@@ -672,7 +667,8 @@ mod tests {
         app.task_panel_mut().expanded = false;
         app.background_panel_mut().apply_running(1);
         app.background_panel_mut().expanded = false;
-        app.mouse.task_panel_area = Rect::new(0, 10, 60, 1);
+        app.mouse
+            .set_area(SurfaceId::TaskPanel, Rect::new(0, 10, 60, 1));
         // Renderer populates these each frame; the test stands in for it.
         app.mouse.sticky_tab_areas = vec![
             (StickyTab::Tasks, Rect::new(0, 10, 7, 1)),
@@ -726,7 +722,8 @@ mod tests {
             started_at: None,
             finished_at: None,
         }];
-        app.mouse.task_panel_area = Rect::new(0, 10, 60, 1);
+        app.mouse
+            .set_area(SurfaceId::TaskPanel, Rect::new(0, 10, 60, 1));
         // Renderer populates these each frame; the test stands in for it.
         app.mouse.sticky_tab_areas = vec![
             (StickyTab::Tasks, Rect::new(0, 10, 7, 1)),
@@ -940,8 +937,9 @@ mod tests {
     fn app_with_selectable_tool_popup() -> App {
         let mut app = make_app();
         app.add_system_message("under the popup".into());
-        app.mouse.log_area = Rect::new(0, 0, 40, 20);
-        app.mouse.diff_popup_area = Rect::new(5, 5, 24, 8);
+        app.mouse.set_area(SurfaceId::Log, Rect::new(0, 0, 40, 20));
+        app.mouse
+            .set_area(SurfaceId::DiffPopup, Rect::new(5, 5, 24, 8));
         app.mouse.popup_text_body_area = Rect::new(6, 6, 22, 5);
         app.mouse.popup_text_hit_rows = vec![
             popup_hit_row(6, 10, 0, "alpha"),
@@ -967,8 +965,9 @@ mod tests {
 
     fn app_with_selectable_thinking_popup() -> App {
         let mut app = make_app();
-        app.mouse.log_area = Rect::new(0, 0, 40, 20);
-        app.mouse.thinking_popup_area = Rect::new(5, 5, 24, 8);
+        app.mouse.set_area(SurfaceId::Log, Rect::new(0, 0, 40, 20));
+        app.mouse
+            .set_area(SurfaceId::ThinkingPopup, Rect::new(5, 5, 24, 8));
         app.mouse.popup_text_body_area = Rect::new(6, 6, 22, 5);
         app.mouse.popup_text_hit_rows = vec![
             popup_hit_row(6, 6, 0, "alpha"),
@@ -1191,7 +1190,8 @@ mod tests {
                 body: String::new(),
             })
             .collect();
-        app.mouse.slash_popup_area = Rect::new(20, 5, 60, 14);
+        app.mouse
+            .set_area(SurfaceId::SlashPopup, Rect::new(20, 5, 60, 14));
 
         handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
         assert_eq!(
@@ -1226,7 +1226,8 @@ mod tests {
             0,
             false,
         );
-        app.mouse.select_popup_area = Rect::new(20, 5, 60, 14);
+        app.mouse
+            .set_area(SurfaceId::SelectPopup, Rect::new(20, 5, 60, 14));
 
         handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
         assert_eq!(app.select.selected, 1, "wheel down must advance selection");
@@ -1248,7 +1249,8 @@ mod tests {
 
         let mut app = make_app();
         app.input_mode = InputMode::Palette;
-        app.mouse.palette_popup_area = Rect::new(20, 5, 60, 14);
+        app.mouse
+            .set_area(SurfaceId::PalettePopup, Rect::new(20, 5, 60, 14));
 
         handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
         assert_eq!(
@@ -1277,7 +1279,8 @@ mod tests {
         let mut app = make_app();
         app.input_mode = InputMode::FilePicker;
         app.file_picker.options = vec!["a.rs".into(), "b.rs".into(), "c.rs".into()];
-        app.mouse.file_picker_popup_area = Rect::new(20, 5, 60, 14);
+        app.mouse
+            .set_area(SurfaceId::FilePickerPopup, Rect::new(20, 5, 60, 14));
 
         handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
         assert_eq!(
@@ -2125,7 +2128,7 @@ mod tests {
     /// `handle_mouse_event` clicks can resolve positions.
     fn app_with_clickable_log() -> App {
         let mut app = make_app();
-        app.mouse.log_area = Rect::new(0, 0, 40, 10);
+        app.mouse.set_area(SurfaceId::Log, Rect::new(0, 0, 40, 10));
         app
     }
 

@@ -293,11 +293,10 @@ mod tests {
     use crate::theme::ThemeName;
 
     fn state_with(n: usize, selected: usize) -> SelectPopup {
-        SelectPopup {
-            options: (0..n).map(|i| format!("opt-{i:02}")).collect(),
-            selected,
-            ..SelectPopup::default()
-        }
+        let mut popup = SelectPopup::default();
+        popup.list.options = (0..n).map(|i| format!("opt-{i:02}")).collect();
+        popup.list.selected = selected;
+        popup
     }
 
     fn layout(state: &SelectPopup, area: Rect, footer_width: u16) -> SelectPopupLayout {
