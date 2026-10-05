@@ -105,7 +105,7 @@ mod render_tests {
     #[test]
     fn bottom_bar_shows_uptime_on_row_1_without_elapsed() {
         let mut app = make_app();
-        app.last_prompt_elapsed_secs = Some(65); // 01:05 — belongs on task-end separator now
+        app.last_prompt_elapsed_secs = Some(65); // 01:05 — belongs to the log's stats row now
         app.status_bar_mut().model_name = "mock-model".into();
         app.status_bar_mut().token_total = 42;
         app.workspace_dir = "/tmp/tact-ws".into();
@@ -261,9 +261,9 @@ mod render_tests {
     /// with the percentage the same day took it to 86. This test is the guard:
     /// if a future segment pushes the row past ~100 columns it will start
     /// silently dropping segments on ordinary terminals, which is the exact
-    /// problem this compaction fixed. The task clock that row 1 gained on
-    /// 2026-09-14 has its own guard in
-    /// `bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`.
+    /// problem this compaction fixed. Row 1 no longer carries a task clock
+    /// (2026-10-05): the live one lives on the log's task-stats row, the frozen
+    /// one on row 2.
     #[test]
     fn bottom_bar_fits_every_segment_in_100_columns() {
         let mut app = make_app();
@@ -306,14 +306,14 @@ mod render_tests {
         }
     }
 
-    /// Width budget with the task clock on row 1: permission, path, uptime, the
-    /// live elapsed and the branch all survive at 100 columns.
+    /// Width budget for row 1: permission, path, uptime and branch all survive
+    /// at 100 columns.
     ///
-    /// The elapsed is the last droppable of the row (pushed after uptime), so it
-    /// is the first segment to go on a narrower terminal — the row sheds the
-    /// transient task clock before the session uptime and the cwd.
+    /// Row 1 carries no task clock any more (2026-10-05) — the live one is the
+    /// log's task-stats row — so what used to be the first segment to go is
+    /// simply not there.
     #[test]
-    fn bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns() {
+    fn bottom_bar_fits_row_1_in_100_columns() {
         let mut app = make_app();
         app.workspace_dir = "/tmp/tact-ws".into();
         app.status_bar_mut().model_name = "deepseek-v4".into();
@@ -328,12 +328,16 @@ mod render_tests {
         let text = buffer_text(terminal.backend().buffer());
         let row1 = text.lines().next().unwrap_or_default().to_string();
 
-        for marker in ["/tmp/tact-ws", "Up", "Elapsed 01:05", "main"] {
+        for marker in ["/tmp/tact-ws", "Up", "main"] {
             assert!(
                 row1.contains(marker),
                 "row 1 dropped {marker:?} at 100 columns (budget exceeded), got:\n{row1}"
             );
         }
+        assert!(
+            !row1.contains("Elapsed") && !row1.contains("01:05"),
+            "row 1 must not carry a task clock, got:\n{row1}"
+        );
     }
 
     /// Segment order on row 2: `ctx` → cache → turns → timing.
@@ -517,14 +521,11 @@ mod render_tests {
         );
     }
 
-    /// The live task elapsed renders on row 1, directly after the uptime.
-    ///
-    /// Moved there (from the top status bar) 2026-09-14: row 1 carries the two
-    /// clocks that describe *this run* — the process uptime and the task
-    /// elapsed — while row 2 keeps the token/ctx readouts and the frozen
-    /// per-turn timing.
+    /// The live task clock never reaches the bottom bar (2026-10-05): it is the
+    /// log's task-stats row. Row 2 keeps only the *frozen* turn timing, which is
+    /// absent until a turn has finished.
     #[test]
-    fn bottom_bar_puts_live_elapsed_next_to_uptime_on_row_1() {
+    fn bottom_bar_never_shows_the_live_task_clock() {
         let mut app = make_app();
         app.workspace_dir = "/tmp/tact-ws".into();
         app.status_bar_mut().model_name = "mock-model".into();
@@ -539,24 +540,16 @@ mod render_tests {
 
         let text = buffer_text(terminal.backend().buffer());
         let row1 = text.lines().next().unwrap_or_default().to_string();
-        let row2 = text.lines().nth(1).unwrap_or_default().to_string();
-        let pos = |needle: &str| {
-            row1.find(needle)
-                .unwrap_or_else(|| panic!("{needle:?} missing from row 1:\n{row1}"))
-        };
-        let elapsed_at = pos("Elapsed 01:05");
         assert!(
-            pos("Up 00:0") < elapsed_at,
-            "the elapsed must follow the uptime, got:\n{row1}"
+            row1.contains("Up 00:0") && row1.contains("main"),
+            "row 1 keeps the uptime and the branch, got:\n{row1}"
         );
-        assert!(
-            elapsed_at < pos("main"),
-            "the elapsed must precede the branch, got:\n{row1}"
-        );
-        assert!(
-            !row2.contains("Elapsed") && !row2.contains("01:05"),
-            "the live clock belongs to row 1 only, got:\n{row2}"
-        );
+        for banned in ["Elapsed", "01:05", "⏱"] {
+            assert!(
+                !text.contains(banned),
+                "{banned:?} must not render while only the live clock exists, got:\n{text}"
+            );
+        }
     }
 
     /// No task in flight → no elapsed segment on either row (`task_start_time`
@@ -580,20 +573,18 @@ mod render_tests {
         );
     }
 
-    /// Row-1 drop order with the task clock on the row: the transient elapsed
-    /// goes first, then the session uptime, then the cwd.
+    /// Row-1 drop order: the session uptime goes before the cwd.
     ///
     /// Probing a range of widths and comparing the first width each segment
     /// survives is robust; asserting on one fixed width is not.
     #[test]
-    fn bottom_bar_drops_the_task_elapsed_before_uptime_and_path() {
+    fn bottom_bar_drops_uptime_before_path() {
         let mut app = make_app();
         app.workspace_dir = "/tmp/tact-ws".into();
         app.status_bar_mut().model_name = "mock-model".into();
         app.status_bar_mut().git_branch = "main".into();
         app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
 
-        let mut first_elapsed: Option<u16> = None;
         let mut first_uptime: Option<u16> = None;
         let mut first_path: Option<u16> = None;
         for width in 10u16..=140 {
@@ -605,9 +596,6 @@ mod render_tests {
                 })
                 .expect("draw");
             let text = buffer_text(terminal.backend().buffer());
-            if first_elapsed.is_none() && text.contains("Elapsed") {
-                first_elapsed = Some(width);
-            }
             if first_uptime.is_none() && text.contains("Up ") {
                 first_uptime = Some(width);
             }
@@ -616,13 +604,8 @@ mod render_tests {
             }
         }
 
-        let elapsed_w = first_elapsed.expect("elapsed segment never rendered at any probed width");
         let uptime_w = first_uptime.expect("uptime segment never rendered at any probed width");
         let path_w = first_path.expect("path segment never rendered at any probed width");
-        assert!(
-            elapsed_w > uptime_w,
-            "the elapsed must drop before the uptime (elapsed at {elapsed_w}, uptime at {uptime_w})"
-        );
         assert!(
             uptime_w > path_w,
             "the uptime must drop before the path (uptime at {uptime_w}, path at {path_w})"
@@ -630,8 +613,8 @@ mod render_tests {
     }
 
     /// The status bar carries the step label only — no `[████░░] n%` gauge, no
-    /// running clock (both left it on 2026-09-14; the clock moved to bottom-bar
-    /// row 1, next to the uptime), and no denominator after the step number.
+    /// running clock (both left it on 2026-09-14; the live clock is the log's
+    /// task-stats row), and no denominator after the step number.
     #[test]
     fn status_bar_executing_shows_the_step_label_without_a_gauge() {
         let mut app = make_app();

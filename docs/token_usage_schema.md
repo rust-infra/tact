@@ -323,10 +323,9 @@ These segments are droppable on narrow terminals. Push order on the row is
 `ctx > cache > turns > timing`. The row is **85–86 columns** with every segment
 populated (the `out` value moves it by one), enforced by
 `render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`. Row 1
-drops in the reverse of its own push order — `elapsed > uptime > path`, i.e. the
-transient task clock goes first and the cwd last — pinned by
-`bottom_bar_drops_the_task_elapsed_before_uptime_and_path` and
-`bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`.
+carries no task clock (2026-10-05 — the live one is the log's task-stats row);
+its droppables go `uptime > path`, pinned by
+`bottom_bar_drops_uptime_before_path` and `bottom_bar_fits_row_1_in_100_columns`.
 
 **Subagent tool-card display:** A subagent's model name and token total
 are shown on the tool card's meta row (e.g. `🤖 deepseek-v3 · ⚡ 4.2K`)

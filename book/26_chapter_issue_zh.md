@@ -27,6 +27,25 @@
 
 ---
 
+## 1. 2026-10-06 — 底栏不再外显实时耗时
+
+| Field | Value |
+|-------|-------|
+| **Type** | removal（用户可见：底栏第 1 行不再有 `⏱ 耗时 mm:ss` / `⏱ Elapsed mm:ss` 段） |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`、`crates/agent_tui_kit/src/i18n.rs`（`bottom_elapsed` 删除）、`crates/tui/src/render/bar.rs`（测试）；`docs/tui_rendering.md`、`docs/token_usage_schema.md`、Ch 23 §6.6 |
+
+**现象 / 动机：** 实时任务耗时在底栏第 1 行又出现一次。同一只钟在日志的 task-stats 行（2026-10-05 那条，居中常驻）已经每秒读得到，底栏那一段是第二份；它当初（2026-09-14）从顶栏搬下来，是为了给"本次运行花了多久"找地方，而那个地方现在有了。
+
+**决策：** 删掉 `format_task_elapsed` 与它在第 1 行的 `DropGroup`；`Messages::bottom_elapsed`（`Elapsed` / `耗时`）随之成为死键，一并删除。`RenderCtx::task_start_time` **保留**——task-stats 行读它。第 2 行的 `⏱ mm:ss · 均 mm:ss` **不动**：那是**已结束**回合的耗时与会话平均，与实时那只钟不是同一个量。
+
+**改后行为：** 底栏第 1 行 = 权限模式、cwd、运行（`Up`）、分支、账户；窄终端丢弃顺序变为 `运行 > cwd`（原为 `实时耗时 > 运行 > cwd`）。实时耗时只在日志的 task-stats 行。第 2 行照旧在回合结束后给出上一回合耗时与平均。
+
+**Verification:** `bottom_bar_never_shows_the_live_task_clock`（设了 `task_start_time` 后两行都不出现 `Elapsed`/`01:05`/`⏱`）、`bottom_bar_fits_row_1_in_100_columns`（原 `…_fits_the_task_elapsed_on_row_1_in_100_columns`，改为断言第 1 行没有时钟）、`bottom_bar_drops_uptime_before_path`（原 `…_drops_the_task_elapsed_before_uptime_and_path`）。fmt/clippy 干净；推送门全绿（tact 1183、tui 638、agent_tui_kit 378、tact-ui 272）。
+
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs`（第 1 行 groups）、`crates/tui/src/render/bar.rs`（测试）；Ch 23 §6.6、`docs/tui_rendering.md`、`docs/token_usage_schema.md`。
+
+---
+
 ## 1. 2026-10-05 — task-end 分隔线不再内嵌耗时
 
 | Field | Value |
@@ -1734,6 +1753,8 @@ Policy overlays:
 **之后的行为：** `Executing` 渲染 `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`；第 1 行在任务运行时渲染 `… │ ⊙ 运行 00:03 │ ⏱ 耗时 00:12 │ ⎇ main`，无任务在跑时该段直接**不渲染**（不是渲染成空）——`task_start_time` 为 `None`，`format_task_elapsed` 返回 `""`。它作为第 1 行最后一个可丢弃段推入，因此丢弃顺序为 `实时耗时 > 运行 > cwd`：先丢临时的任务时钟，再丢会话运行，最后才是路径（权限模式、分支与账户永不丢弃）。第 2 行恢复原样：所有段填充时 85–86 列；第 1 行五段在 100 列内仍全部保留，由 `bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns` 与 `bottom_bar_drops_the_task_elapsed_before_uptime_and_path` 钉住。位置由 `bottom_bar_puts_live_elapsed_next_to_uptime_on_row_1`（断言第 1 行顺序，并断言第 2 行**不带**该时钟）与 `bottom_bar_omits_live_elapsed_without_a_task` 钉住；状态栏一侧由 `status_bar_executing_shows_the_step_label_without_a_gauge` 与 `status_bar_planning_has_no_elapsed` 钉住。第 2 行的预算测试 `bottom_bar_fits_every_segment_in_100_columns` 回到 2026-09-14 之前的形式，因为第 2 行不再有时钟。*（同日稍后被取代：步骤标签去掉了分母，`Executing` 渲染 `正在执行步骤 4` / `Executing step 4`——见最新条目。）*
 
 **指针：** `crates/agent_tui_kit/src/render/bar.rs`（`format_task_elapsed` 文档、`render_bottom_bar` 第 1 行 groups、`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（上面六个测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6（顶栏、第 1 行、第 2 行、瘦身与回合耗时各段）；`docs/token_usage_schema.md` §"Session Stats Display"。
+
+**已被取代（2026-10-05）：** 实时任务耗时不再落在底栏第 1 行——它现在是日志的 task-stats 行；`format_task_elapsed` 与第 1 行那一段已删除（见 2026-10-06 那条）。第 2 行的冻结合耗时不变。
 
 ---
 
@@ -4698,7 +4719,7 @@ spinner dirty；轮询间隔不变。Done 继续靠 `should_repaint` 强制重�
 |------|------|
 | 代码 | `crates/tui/src/render/cells/separator.rs`、`widgets/state/app/popups.rs`、`render/bar.rs` |
 
-**已被取代（2026-10-05）：** 分隔线不再渲染那个标签——同一轮耗时已经在它下面的 task-stats 行与底栏第 2 行各出现一次。sentinel 仍带秒数，`add_task_end_separator` 仍在冻结 `task_start_time`；底栏第 1 行自 2026-09-14 起另有一段**实时**任务耗时。见本日 "task-end 分隔线不再内嵌耗时"。
+**已被取代（2026-10-05）：** 分隔线不再渲染那个标签——同一轮耗时已经在它下面的 task-stats 行与底栏第 2 行各出现一次。sentinel 仍带秒数，`add_task_end_separator` 仍在冻结 `task_start_time`；实时任务耗时另在日志的 task-stats 行（底栏第 1 行那一段已于 2026-10-06 删除）。见本日 "task-end 分隔线不再内嵌耗时"。
 
 ---
 

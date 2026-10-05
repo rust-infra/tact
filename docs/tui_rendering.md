@@ -185,16 +185,16 @@ deepseek-v4-flash  out 128K  think high  ctx 4% 45K/1M  ▣ 30%  ⟳ 12  ⇅ 3  
 |------|---------|-------------|
 | Dim | icons, separators | `theme.muted_fg()` |
 | Primary | model, `out`, `think`, ctx meter | `theme.fg` |
-| Secondary | path, uptime, task elapsed, cache %, turns, timing, permission `default` | `theme.bottom_bar_fg` |
+| Secondary | path, uptime, cache %, turns, timing, permission `default` | `theme.bottom_bar_fg` |
 | Accent | branch (`⎇ name`) | `theme.accent` |
 | Success / Error | balance & quota availability; permission `auto` | `theme.success` / `theme.error` |
 | Warning | permission `plan` | `theme.warning` |
 
 **Narrow-width drop order** (each row independently; `fit_row_spans` drops from the end of the group list, and push order *is* survival priority):
-Row 1 drops **task elapsed → uptime → path** (permission mode, branch and account are never dropped).
+Row 1 drops **uptime → path** (permission mode, branch and account are never dropped). It carries no task clock: the live one is the log's task-stats row (2026-10-05).
 Row 2 drops **timing → turns → cache → ctx** (model, `out` and `think` are never dropped, so `ctx` survives longest among the droppable segments).
 
-**Helpers:** Pure formatting functions — `format_task_elapsed`, `format_quota_value`, `format_model_name`, `format_max_out_tokens`, `format_think_segment`, `format_balance_entry`, `format_quota_window`, `format_cache_pct`, `format_context_meter`, `format_mm_ss`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`, `context_usage_pct`, `group_total_width`, `fit_row_spans`, `build_account_spans` — are unit-tested in `agent_tui_kit::render::bar::render_tests`, and the App-level integration/width-budget tests live in `crates/tui/src/render/bar.rs::render_tests`.
+**Helpers:** Pure formatting functions — `format_quota_value`, `format_model_name`, `format_max_out_tokens`, `format_think_segment`, `format_balance_entry`, `format_quota_window`, `format_cache_pct`, `format_context_meter`, `format_mm_ss`, `format_turn_user`, `format_turn_llm`, `format_turn_timing`, `context_usage_pct`, `group_total_width`, `fit_row_spans`, `build_account_spans` — are unit-tested in `agent_tui_kit::render::bar::render_tests`, and the App-level integration/width-budget tests live in `crates/tui/src/render/bar.rs::render_tests`.
 
 ---
 
