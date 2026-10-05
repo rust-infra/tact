@@ -294,9 +294,13 @@ pub enum AgentUpdate {
     /// stdout is neither a user turn nor Tact's own notice. The message is
     /// recorded with `<hook-context>` framing, but the TUI strips that before
     /// rendering, so without a label the reader cannot tell a plugin's briefing
-    /// from a system message Tact wrote itself. The payload is the hook's own
-    /// text; the label is the TUI's to draw.
-    HookContext(String),
+    /// from a system message Tact wrote itself. `source` names the hook that
+    /// produced the text (`plugin codex`, `~/.tact/hooks.json`) when the caller
+    /// knows it; the label itself is the TUI's to draw.
+    HookContext {
+        source: Option<String>,
+        text: String,
+    },
     /// Pre-rendered Markdown to show in the modal popup instead of the
     /// transcript, headed by `title`.
     ///

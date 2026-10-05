@@ -1445,7 +1445,7 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        app.append_hook_context_markdown(&body);
+        app.append_hook_context_markdown(Some("plugin demo"), &body);
 
         let terminal = crate::render::test_harness::render_log_panel_terminal(&mut app, 100, 40);
         let (x, y) = glyph_origin(terminal.backend().buffer(), "hookcontext");

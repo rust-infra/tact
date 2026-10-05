@@ -29,10 +29,10 @@ use crate::{
     },
     config::{self, AgentSettings},
     hook::{
-        HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG, Hook, HookControl, HookTypes, InterruptFn,
-        NotificationFn, PermissionRequestFn, PostCompactFn, PostToolUseFailureFn, PostToolUseFn,
-        PreCompactFn, PreToolUseFn, SessionEndFn, SessionStartContext, SessionStartFn,
-        SessionStartSource, StopFn, TaskCompletedFn, UserPromptSubmitFn,
+        Hook, HookContextChunk, HookControl, HookTypes, InterruptFn, NotificationFn,
+        PermissionRequestFn, PostCompactFn, PostToolUseFailureFn, PostToolUseFn, PreCompactFn,
+        PreToolUseFn, SessionEndFn, SessionStartContext, SessionStartFn, SessionStartSource,
+        StopFn, TaskCompletedFn, UserPromptSubmitFn, frame_hook_context,
     },
     invoke_hooks,
     mcp::{MCPToolRouter, McpLoadReport},
@@ -374,7 +374,9 @@ pub struct AgentRuntime {
     /// [`Agent::ensure_session`] loads history only into an *empty* context —
     /// injecting during `dispatch_session_start_hooks` (which runs before the
     /// session is ensured) would suppress the history restore entirely.
-    pub pending_session_context: Vec<String>,
+    /// Context collected by [`Self::dispatch_session_start_hooks`], drained
+    /// once by `Agent::inject_pending_session_context` before the first turn.
+    pub pending_session_context: Vec<HookContextChunk>,
     /// Whether the `Interrupt` hooks have run for this turn.
     ///
     /// Cancellation is observed at several points in the loop; the hooks are
@@ -398,7 +400,7 @@ pub struct AgentRuntime {
     /// drains it before building the next request, so the model reads the
     /// context alongside the tool call it annotates. Same shape as
     /// [`Self::pending_subagent_results`].
-    pub pending_hook_context: Arc<Mutex<VecDeque<String>>>,
+    pub pending_hook_context: Arc<Mutex<VecDeque<HookContextChunk>>>,
 }
 
 /// How the agent builds its system prompt.
@@ -1699,7 +1701,7 @@ impl Agent {
     /// call it annotates (Codex records it the same way, right after the hook
     /// returns).
     async fn inject_pending_hook_context(&mut self) -> Result<()> {
-        let chunks: Vec<String> = {
+        let chunks: Vec<HookContextChunk> = {
             let mut queue = self.runtime.pending_hook_context.lock_recover();
             queue.drain(..).collect()
         };
@@ -1712,16 +1714,21 @@ impl Agent {
     /// Records one hook-context chunk as its own synthetic user message.
     ///
     /// The reader gets the hook's full text; only the model's copy is budgeted
-    /// (Codex shows the whole hook output in its run summary).
-    async fn record_hook_context(&mut self, chunk: &str) -> Result<()> {
+    /// (Codex shows the whole hook output in its run summary). The source is
+    /// framed onto the message as well, so a session that reloads from disk can
+    /// still say which hook spoke.
+    async fn record_hook_context(&mut self, chunk: &HookContextChunk) -> Result<()> {
         let session_id = self.runtime.session_id.clone().unwrap_or_default();
-        let body = spill_hook_context(chunk, &session_id);
-        let framed = format!("{HOOK_CONTEXT_OPEN_TAG}\n{body}\n{HOOK_CONTEXT_CLOSE_TAG}");
+        let body = spill_hook_context(&chunk.text, &session_id);
+        let framed = frame_hook_context(chunk.source.as_deref(), &body);
         self.push_message(
             Message::new_text(Role::User, framed).with_kind(MessageKind::HookContext),
         )
         .await?;
-        self.emit_update(AgentUpdate::HookContext(chunk.to_string()));
+        self.emit_update(AgentUpdate::HookContext {
+            source: chunk.source.clone(),
+            text: chunk.text.clone(),
+        });
         Ok(())
     }
 
@@ -5277,16 +5284,16 @@ mod tests {
         )
         .with_ui_channel(tx)
         .with_session_start(|_agent, context| {
-            context.push_additional_context(BRIEF);
+            context.push_additional_context(Some("plugin demo"), BRIEF);
             // Blank output must not produce an empty message.
-            context.push_additional_context("   \n  ");
+            context.push_additional_context(None, "   \n  ");
             Box::pin(async { Ok(HookControl::Continue) })
         });
 
         agent.dispatch_session_start_hooks().await.unwrap();
         assert_eq!(
             agent.runtime.pending_session_context,
-            vec![BRIEF.to_string()]
+            vec![HookContextChunk::new(Some("plugin demo"), BRIEF)]
         );
 
         agent
@@ -5305,11 +5312,24 @@ mod tests {
         );
         let text = crate::extract_text(&injected.content);
         assert!(
-            text.starts_with(HOOK_CONTEXT_OPEN_TAG) && text.ends_with(HOOK_CONTEXT_CLOSE_TAG),
+            crate::hook::is_hook_context_text(&text)
+                && text.ends_with(crate::hook::HOOK_CONTEXT_CLOSE_TAG),
             "context is framed: {text}"
         );
-        assert!(text.contains(BRIEF), "context body survives: {text}");
-        assert_eq!(agent.runtime.pending_session_context, Vec::<String>::new());
+        assert_eq!(
+            crate::hook::hook_context_source(&text),
+            Some("plugin demo"),
+            "the source rides on the frame so a reload still knows it: {text}"
+        );
+        assert_eq!(
+            crate::hook::hook_context_body(&text),
+            BRIEF,
+            "the body is what the hook printed: {text}"
+        );
+        assert!(
+            agent.runtime.pending_session_context.is_empty(),
+            "the queue is drained"
+        );
 
         // The turn's own message still follows it.
         assert!(matches!(
@@ -5320,11 +5340,14 @@ mod tests {
         // The TUI is told what was injected, without the framing.
         let mut notices = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::HookContext(md) = update {
-                notices.push(md);
+            if let AgentUpdate::HookContext { source, text } = update {
+                notices.push((source, text));
             }
         }
-        assert_eq!(notices, vec![BRIEF.to_string()]);
+        assert_eq!(
+            notices,
+            vec![(Some("plugin demo".to_string()), BRIEF.to_string())]
+        );
     }
 
     /// The briefing outlives the pre-turn compaction it arrives with.
@@ -5358,7 +5381,7 @@ mod tests {
         )
         .with_ui_channel(tx)
         .with_session_start(|_agent, context| {
-            context.push_additional_context(BRIEF);
+            context.push_additional_context(Some("plugin demo"), BRIEF);
             Box::pin(async { Ok(HookControl::Continue) })
         });
         agent.agent_settings.model_context_window = 60_000;
@@ -5433,7 +5456,10 @@ mod tests {
         .with_session_start(move |agent, context| {
             let recorder = recorder.clone();
             let source = agent.runtime.session_start_source;
-            context.push_additional_context(&format!("brief:{}", source.as_str()));
+            context.push_additional_context(
+                Some("plugin demo"),
+                &format!("brief:{}", source.as_str()),
+            );
             Box::pin(async move {
                 recorder.lock().unwrap().push(source);
                 Ok(HookControl::Continue)
@@ -5529,7 +5555,7 @@ mod tests {
             let seen = seen.clone();
             Box::pin(async move {
                 seen.fetch_add(1, Ordering::SeqCst);
-                context.push_additional_context("brief");
+                context.push_additional_context(None, "brief");
                 Ok(HookControl::Continue)
             })
         });
@@ -5629,7 +5655,7 @@ mod tests {
             .pending_hook_context
             .lock()
             .unwrap()
-            .push_back("pre context".to_string());
+            .push_back(HookContextChunk::new(Some("plugin demo"), "pre context"));
 
         agent
             .agent_loop(Some(Message::new_text(Role::User, "hi")))

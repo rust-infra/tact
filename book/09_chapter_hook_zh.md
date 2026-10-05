@@ -351,7 +351,7 @@ hook 收集到的 context 落在 `AgentRuntime::pending_session_context` 上，�
 
 插件这条路径还会补齐 Codex 的 `session-start.command.input` 在 Claude 基础字段之外要求的两个字段——`model` 与 `permission_mode`（后者用 Tact 映射过去的 Claude Code 词汇：`default` / `plan` / `acceptEdits`）——并通过 `AgentUpdate::Info` 把插件自己的 `statusMessage` 显示出来，让要跑几秒的 hook 有反馈而不是一片沉默。
 
-这个时机与「一片段一条消息」的规则与 Codex 一致：它的 `SessionStart` 处理把每个 `additionalContext` 各记为一条 `developer` 角色消息，而它的 start hooks 也跑在 `run_pre_sampling_compact` 之后。Tact 的消息模型只有 user/assistant，所以改由 `<hook-context>` 标记来承载来源信息 —— 而且与内存中的 kind 不同，这些标记在重新加载后依然存在。stdout 看起来像 JSON 却解析失败时，按失败的 hook 处理而非注入，与 Codex 的 `looks_like_json` 检查一致。
+这个时机与「一片段一条消息」的规则与 Codex 一致：它的 `SessionStart` 处理把每个 `additionalContext` 各记为一条 `developer` 角色消息，而它的 start hooks 也跑在 `run_pre_sampling_compact` 之后。Tact 的消息模型只有 user/assistant，所以改由 `<hook-context>` 标记来承载来源信息 —— 而且与内存中的 kind 不同，这些标记在重新加载后依然存在。**来源本身也写在标记上**：`<hook-context source="plugin codex">`，因为正文之外没有第二个落点，而读者需要知道是哪个 hook 说的（`HookContextChunk` 把 label 从注册侧一路带到注入点；无法写成裸属性值的 label 直接丢弃，不转义）。stdout 看起来像 JSON 却解析失败时，按失败的 hook 处理而非注入，与 Codex 的 `looks_like_json` 检查一致。
 
 matcher 匹配的是**真实的** `source`：全新会话是 `startup`，`ensure_session` 恢复了历史则是 `resume`，而压缩重新排队这批 hook 时是 `compact`。最后一种正是插件在上下文被摘要掉之后重新定位的手段——参考实现 `basic-memory` 插件就是这样请求一份需要人工撰写的 checkpoint——代价是每次压缩多跑一次 hook，与 Codex 完全一致。
 

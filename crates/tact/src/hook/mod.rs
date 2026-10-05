@@ -41,6 +41,82 @@ use crate::{LoopState, compact::CompactTrigger};
 pub const HOOK_CONTEXT_OPEN_TAG: &str = "<hook-context>";
 pub const HOOK_CONTEXT_CLOSE_TAG: &str = "</hook-context>";
 
+/// Marker prefix every hook-context message starts with.
+///
+/// [`HOOK_CONTEXT_OPEN_TAG`] is the attribute-free spelling; a frame may carry
+/// the source instead (`<hook-context source="plugin codex">`), so recognition
+/// compares against the prefix rather than the whole tag.
+const HOOK_CONTEXT_MARKER: &str = "<hook-context";
+
+/// One chunk of hook-injected context and the source that produced it.
+///
+/// The source travels with the text because the reader is shown it: a hook's
+/// stdout renders as a labelled block, and "which hook said this" is the first
+/// thing that label has to answer. `None` is a chunk that reached the queue
+/// without one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookContextChunk {
+    pub source: Option<String>,
+    pub text: String,
+}
+
+impl HookContextChunk {
+    #[must_use]
+    pub fn new(source: Option<&str>, text: &str) -> Self {
+        Self {
+            source: source.map(str::to_string),
+            text: text.to_string(),
+        }
+    }
+}
+
+/// Frames one chunk as the user message the model reads.
+///
+/// The source rides on the tag rather than in the body: a reloaded session can
+/// only recover what the text itself carries, and the reader is shown the same
+/// attribution the model is. A label that cannot be spelled as a bare attribute
+/// value is dropped rather than escaped — the body is what matters, and a
+/// malformed frame would defeat the marker that identifies it.
+#[must_use]
+pub fn frame_hook_context(source: Option<&str>, body: &str) -> String {
+    let attr = source
+        .filter(|label| !label.is_empty() && !label.contains(['"', '\\', '\n']))
+        .map(|label| format!(" source=\"{label}\""))
+        .unwrap_or_default();
+    format!("{HOOK_CONTEXT_MARKER}{attr}>\n{body}\n{HOOK_CONTEXT_CLOSE_TAG}")
+}
+
+/// True when `text` is a hook-injected context cell (see
+/// [`HOOK_CONTEXT_OPEN_TAG`]).
+pub fn is_hook_context_text(text: &str) -> bool {
+    text.trim_start().starts_with(HOOK_CONTEXT_MARKER)
+}
+
+/// The source recorded on a hook-context cell, when it carried one.
+#[must_use]
+pub fn hook_context_source(text: &str) -> Option<&str> {
+    let rest = text.trim().strip_prefix(HOOK_CONTEXT_MARKER)?;
+    let attrs = &rest[..rest.find('>')?];
+    let value = attrs.trim().strip_prefix("source=")?.trim_matches('"');
+    (!value.is_empty()).then_some(value)
+}
+
+/// Returns the context carried by a `<hook-context>` cell, or `text`
+/// unchanged when it is not one — the inverse of [`frame_hook_context`].
+pub fn hook_context_body(text: &str) -> &str {
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix(HOOK_CONTEXT_MARKER) else {
+        return text;
+    };
+    let Some(open_end) = rest.find('>') else {
+        return text;
+    };
+    rest[open_end + 1..]
+        .strip_suffix(HOOK_CONTEXT_CLOSE_TAG)
+        .map(str::trim)
+        .unwrap_or(text)
+}
+
 /// Why the `SessionStart` hooks are running.
 ///
 /// Codex's `source` matcher vocabulary: a plugin writes `startup|resume|compact`
@@ -67,24 +143,6 @@ impl SessionStartSource {
             Self::Compact => "compact",
         }
     }
-}
-
-/// True when `text` is a hook-injected context cell (see
-/// [`HOOK_CONTEXT_OPEN_TAG`]).
-pub fn is_hook_context_text(text: &str) -> bool {
-    text.trim_start().starts_with(HOOK_CONTEXT_OPEN_TAG)
-}
-
-/// Returns the context carried by a `<hook-context>` cell, or `text`
-/// unchanged when it is not one — the inverse of the framing
-/// `Agent::inject_pending_session_context` applies.
-pub fn hook_context_body(text: &str) -> &str {
-    let trimmed = text.trim();
-    trimmed
-        .strip_prefix(HOOK_CONTEXT_OPEN_TAG)
-        .and_then(|rest| rest.strip_suffix(HOOK_CONTEXT_CLOSE_TAG))
-        .map(str::trim)
-        .unwrap_or(text)
 }
 
 #[derive(Debug)]
@@ -154,15 +212,20 @@ pub enum HookControl {
 #[derive(Debug, Clone, Default)]
 pub struct SessionStartContext {
     /// Context chunks, one message each, in hook-registration order.
-    pub additional_contexts: Vec<String>,
+    pub additional_contexts: Vec<HookContextChunk>,
 }
 
 impl SessionStartContext {
     /// Records one chunk, ignoring blank output.
-    pub fn push_additional_context(&mut self, text: &str) {
+    ///
+    /// `source` names the hook that produced it (a plugin's label, a hooks
+    /// file's path). It is kept with the text so the reader can be told which
+    /// hook spoke.
+    pub fn push_additional_context(&mut self, source: Option<&str>, text: &str) {
         let trimmed = text.trim();
         if !trimmed.is_empty() {
-            self.additional_contexts.push(trimmed.to_string());
+            self.additional_contexts
+                .push(HookContextChunk::new(source, trimmed));
         }
     }
 }
@@ -545,4 +608,43 @@ macro_rules! invoke_hooks {
 
         anyhow::Ok(control)
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_carries_its_source_and_gives_it_back() {
+        let framed = frame_hook_context(Some("plugin codex"), "brief body");
+        assert!(is_hook_context_text(&framed), "{framed}");
+        assert_eq!(hook_context_source(&framed), Some("plugin codex"));
+        assert_eq!(hook_context_body(&framed), "brief body");
+    }
+
+    #[test]
+    fn a_frame_without_a_source_is_the_plain_tag() {
+        let framed = frame_hook_context(None, "brief body");
+        assert!(framed.starts_with(HOOK_CONTEXT_OPEN_TAG), "{framed}");
+        assert_eq!(hook_context_source(&framed), None);
+        assert_eq!(hook_context_body(&framed), "brief body");
+    }
+
+    /// A label that cannot be spelled as a bare attribute value is dropped
+    /// rather than escaped: the body matters more than the attribution, and a
+    /// malformed frame would stop the cell from being recognized at all.
+    #[test]
+    fn an_unspellable_source_is_dropped_not_escaped() {
+        let framed = frame_hook_context(Some("bad \" label"), "brief body");
+        assert_eq!(hook_context_source(&framed), None);
+        assert_eq!(hook_context_body(&framed), "brief body");
+        assert!(is_hook_context_text(&framed), "{framed}");
+    }
+
+    #[test]
+    fn a_plain_message_is_not_hook_context() {
+        assert!(!is_hook_context_text("just a user turn"));
+        assert_eq!(hook_context_body("just a user turn"), "just a user turn");
+        assert_eq!(hook_context_source("just a user turn"), None);
+    }
 }

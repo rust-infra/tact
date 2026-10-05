@@ -5,7 +5,7 @@ use ratatui::{
 };
 use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
-use tact::hook::{hook_context_body, is_hook_context_text};
+use tact::hook::{hook_context_body, hook_context_source, is_hook_context_text};
 
 use agent_tui_kit::widgets::button::{Button, ButtonTheme, ButtonVariant};
 
@@ -226,7 +226,10 @@ impl App {
                     match msg.role {
                         Role::User => {
                             if is_hook_context_cell(&msg) {
-                                self.append_hook_context_markdown(hook_context_body(content));
+                                self.append_hook_context_markdown(
+                                    hook_context_source(content),
+                                    hook_context_body(content),
+                                );
                                 continue;
                             }
                             // Seed the session turn counter: persisted user
@@ -324,27 +327,40 @@ impl App {
     /// bar holds what is shown together (blank rows included), and the tail is
     /// cut at a paragraph-safe boundary so a briefing does not push the
     /// conversation off the log — the reader's full copy stays in the popup.
-    pub(crate) fn append_hook_context_markdown(&mut self, body: &str) {
+    pub(crate) fn append_hook_context_markdown(&mut self, source: Option<&str>, body: &str) {
         let label = self.msgs().hook_context_label;
         let hint = self.msgs().hook_context_expand_hint;
         let bar = HOOK_CONTEXT_GUTTER;
         let total = body.lines().count();
-        let header = format!("{bar}{HOOK_CONTEXT_MARK} {label} · {total} lines · {hint}");
+        let mut spans = vec![
+            Span::styled(bar, Style::default().fg(self.theme.accent)),
+            Span::styled(
+                format!("{HOOK_CONTEXT_MARK} {label}"),
+                Style::default()
+                    .fg(self.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+        let mut header = format!("{bar}{HOOK_CONTEXT_MARK} {label}");
+        if let Some(source) = source {
+            spans.push(Span::styled(
+                format!(" · {source}"),
+                Style::default().fg(self.theme.muted_fg()),
+            ));
+            header.push_str(&format!(" · {source}"));
+        }
+        spans.push(Span::styled(
+            format!(" · {total} lines · "),
+            Style::default().fg(self.theme.muted_fg()),
+        ));
+        spans.push(Span::styled(
+            hint,
+            Style::default().fg(self.theme.muted_fg()),
+        ));
+        header.push_str(&format!(" · {total} lines · {hint}"));
+
         self.log.append_msg_with_popup(
-            Line::from(vec![
-                Span::styled(bar, Style::default().fg(self.theme.accent)),
-                Span::styled(
-                    format!("{HOOK_CONTEXT_MARK} {label}"),
-                    Style::default()
-                        .fg(self.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(" · {total} lines · "),
-                    Style::default().fg(self.theme.muted_fg()),
-                ),
-                Span::styled(hint, Style::default().fg(self.theme.muted_fg())),
-            ]),
+            Line::from(spans),
             header,
             LogItemKind::SystemPlain(SystemMsgStyle::Default),
             body.to_string(),
@@ -580,10 +596,7 @@ mod tests {
             .with_kind(tact_llm::MessageKind::HookContext),
             tact_llm::Message::new_text(
                 tact_llm::Role::User,
-                format!(
-                    "{}\nfrom disk\n{}",
-                    HOOK_CONTEXT_OPEN_TAG, HOOK_CONTEXT_CLOSE_TAG
-                ),
+                tact::hook::frame_hook_context(Some("plugin codex"), "from disk"),
             ),
             tact_llm::Message::new_text(tact_llm::Role::User, "real".to_string()),
         ]);
@@ -601,6 +614,10 @@ mod tests {
         assert!(
             raws.iter().any(|raw| raw.contains("from disk")),
             "a reloaded session is recognized by its markers: {raws:?}"
+        );
+        assert!(
+            raws.iter().any(|raw| raw.contains("plugin codex")),
+            "a reloaded session still knows which hook spoke: {raws:?}"
         );
         assert!(
             !raws.iter().any(|raw| raw.contains(HOOK_CONTEXT_OPEN_TAG)),
@@ -638,12 +655,19 @@ mod tests {
         };
 
         let mut app = make_app();
-        app.append_hook_context_markdown("first paragraph\n\nsecond paragraph");
+        app.append_hook_context_markdown(
+            Some("plugin demo"),
+            "first paragraph\n\nsecond paragraph",
+        );
 
         let text = render_log_panel_text(&mut app, 80, 24);
         assert!(
             text.contains(app.msgs().hook_context_label),
             "the header names the block: {text}"
+        );
+        assert!(
+            text.contains("plugin demo"),
+            "the header names the hook that spoke: {text}"
         );
         assert!(
             text.contains("3 lines"),
@@ -692,7 +716,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        app.append_hook_context_markdown(&body);
+        app.append_hook_context_markdown(Some("plugin demo"), &body);
 
         let header = &app.log.items[0];
         assert_eq!(

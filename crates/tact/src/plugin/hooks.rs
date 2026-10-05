@@ -48,8 +48,9 @@ use crate::{
     compact::CompactTrigger,
     consts::{PluginDirs, PluginHome},
     hook::{
-        HookControl, NotificationContext, SessionStartContext, SubagentStartContext,
-        SubagentStartFn, SubagentStopContext, SubagentStopFn, ToolResult, ToolUse,
+        HookContextChunk, HookControl, NotificationContext, SessionStartContext,
+        SubagentStartContext, SubagentStartFn, SubagentStopContext, SubagentStopFn, ToolResult,
+        ToolUse,
     },
     plugin::PluginStore,
     utils::LockExt,
@@ -749,9 +750,13 @@ fn parse_output(stdout: &str, event_name: &str) -> HookOutput {
 /// this step is the bug it replaces — `additionalContext` was logged as a
 /// warning and dropped, which made the reference `basic-memory` plugin's
 /// session briefing inert.
-fn collect_session_start_output(output: &HookOutput, context: &mut SessionStartContext) {
+fn collect_session_start_output(
+    output: &HookOutput,
+    context: &mut SessionStartContext,
+    source: Option<&str>,
+) {
     if let Some(additional) = &output.additional_context {
-        context.push_additional_context(additional);
+        context.push_additional_context(source, additional);
     }
 }
 
@@ -1779,12 +1784,14 @@ fn apply_hook_sources(
             let matcher = matcher.matcher.clone();
             let command = command.clone();
             let dirs = source.dirs.clone();
+            let hook_source = source.label.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_session_start(
                 move |agent: &crate::Agent, context: &mut SessionStartContext| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
+                    let hook_source = hook_source.clone();
                     let work_dir = work_dir.clone();
                     Box::pin(async move {
                         // The Claude `source` matcher vocabulary
@@ -1819,7 +1826,7 @@ fn apply_hook_sources(
                             Some(agent),
                         )
                         .await;
-                        collect_session_start_output(&output, context);
+                        collect_session_start_output(&output, context, Some(&hook_source));
                         // Codex's `SessionStart` schema has no `decision`; the
                         // stop is `continue: false` with an optional reason.
                         Ok(if output.stop {
@@ -1874,11 +1881,13 @@ fn apply_hook_sources(
             let matcher = matcher.matcher.clone();
             let command = command.clone();
             let dirs = source.dirs.clone();
+            let label = source.label.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_pre_tool(move |agent: &crate::Agent, tool_use: &mut ToolUse| {
                 let matcher = matcher.clone();
                 let command = command.clone();
                 let dirs = dirs.clone();
+                let label = label.clone();
                 let work_dir = work_dir.clone();
                 let tool_name = tool_use.name.clone();
                 let tool_input = tool_use.input.clone();
@@ -1914,7 +1923,7 @@ fn apply_hook_sources(
                             .runtime
                             .pending_hook_context
                             .lock_recover()
-                            .push_back(extra);
+                            .push_back(HookContextChunk::new(Some(&label), &extra));
                     }
                     Ok(output.control)
                 })
@@ -1963,6 +1972,7 @@ fn apply_hook_sources(
             let matcher = matcher.matcher.clone();
             let command = command.clone();
             let dirs = source.dirs.clone();
+            let label = source.label.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_hook(
                 move |agent: &crate::Agent,
@@ -1972,6 +1982,7 @@ fn apply_hook_sources(
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
+                    let label = label.clone();
                     let work_dir = work_dir.clone();
                     let tool_name = tool_use.name.clone();
                     let tool_input = tool_use.input.clone();
@@ -2008,7 +2019,7 @@ fn apply_hook_sources(
                                 .runtime
                                 .pending_hook_context
                                 .lock_recover()
-                                .push_back(extra);
+                                .push_back(HookContextChunk::new(Some(&label), &extra));
                         }
                         Ok(output.control)
                     })
@@ -2501,10 +2512,14 @@ mod tests {
                 ..HookOutput::default()
             },
             &mut context,
+            Some("plugin demo"),
         );
         assert_eq!(
             context.additional_contexts,
-            vec!["graph: resume from checkpoint 7".to_string()]
+            vec![HookContextChunk::new(
+                Some("plugin demo"),
+                "graph: resume from checkpoint 7"
+            )]
         );
 
         // A blocking run still hands over the context it produced.
@@ -2516,8 +2531,12 @@ mod tests {
                 ..HookOutput::default()
             },
             &mut blocked,
+            None,
         );
-        assert_eq!(blocked.additional_contexts, vec!["ctx".to_string()]);
+        assert_eq!(
+            blocked.additional_contexts,
+            vec![HookContextChunk::new(None, "ctx")]
+        );
     }
 
     #[test]
@@ -2593,10 +2612,13 @@ mod tests {
         .await;
 
         let mut context = SessionStartContext::default();
-        collect_session_start_output(&output, &mut context);
+        collect_session_start_output(&output, &mut context, Some("plugin demo"));
         assert_eq!(
             context.additional_contexts,
-            vec!["graph: resume from checkpoint 7".to_string()]
+            vec![HookContextChunk::new(
+                Some("plugin demo"),
+                "graph: resume from checkpoint 7"
+            )]
         );
     }
 
@@ -3272,13 +3294,16 @@ mod tests {
             tact_protocol::StepStatus::Success
         )?;
 
-        let collected: Vec<String> = {
+        let collected: Vec<HookContextChunk> = {
             let mut queue = agent.runtime.pending_hook_context.lock().unwrap();
             queue.drain(..).collect()
         };
         assert_eq!(
             collected,
-            vec!["pre context".to_string(), "post context".to_string()],
+            vec![
+                HookContextChunk::new(Some("plugin demo"), "pre context"),
+                HookContextChunk::new(Some("plugin demo"), "post context"),
+            ],
             "both tool events hand their context to the next request"
         );
         Ok(())

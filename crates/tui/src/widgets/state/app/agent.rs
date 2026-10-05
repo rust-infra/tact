@@ -407,8 +407,8 @@ impl App {
             // labelled. The `<hook-context>` framing is stripped before it
             // reaches the log, so the label is what keeps a hook's output from
             // reading as a notice Tact wrote itself.
-            AgentUpdate::HookContext(msg) => {
-                self.append_hook_context_markdown(&msg);
+            AgentUpdate::HookContext { source, text } => {
+                self.append_hook_context_markdown(source.as_deref(), &text);
             }
             // Pre-rendered Markdown for a modal read-out (`/stats`,
             // `/background`): unlike `MdInfo` it does not join the log, so
@@ -2196,7 +2196,10 @@ mod lifecycle_tests {
     #[test]
     fn hook_context_update_is_labelled_but_md_info_is_not() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::HookContext("brief body".into()));
+        app.handle_agent_update(AgentUpdate::HookContext {
+            source: Some("plugin demo".into()),
+            text: "brief body".into(),
+        });
         app.handle_agent_update(AgentUpdate::MdInfo("plain notice".into()));
 
         let raws: Vec<&str> = app.log.items.iter().map(|item| item.raw.as_str()).collect();
