@@ -195,8 +195,11 @@ sequenceDiagram
 | 文件 | 角色 |
 |------|------|
 | `crates/tact/src/store/mod.rs` | `StoreRoot`、`Store<T>`、`CollectionStore<T>` |
+| `crates/tact/src/store/sqlite.rs` | 共享 `SqlitePool`（每个 db 一份、引用计数）与各域共用的毫秒时间戳转换（`now_millis` / `from_millis`——后者决定"读不出来的时间戳"回退为 `Utc::now()`） |
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait、`DynSessionStore`、`open_sqlite_session_store` |
 | `crates/tact/src/store/session_store/sqlite.rs` | 全新 schema（`CREATE TABLE IF NOT EXISTS`）、`SqliteSessionStore` 实现 |
+| `crates/tact/src/store/subagent_store/mod.rs` | `SubagentStore` trait（async：create/update/get/list） |
+| `crates/tact/src/store/subagent_store/sqlite.rs` | `SqliteSubagentStore` — `subagent_runs` 表 |
 | `crates/tact/src/store/task_store/mod.rs` | `TaskStore` trait（async：create/get/update/list/delete） |
 | `crates/tact/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — `tasks` + `task_dependencies` 表、`BEGIN IMMEDIATE` 事务、`busy_timeout` |
 | `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait（async：upsert/get/list） |
