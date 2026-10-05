@@ -51,6 +51,31 @@
 
 ---
 
+## 1. 2026-10-05 — 任务统计行在任务运行时常驻在日志底部，实时刷新
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：任务在跑时，日志面板最后一行常驻 `Task stats:⏱ mm:ss · model · N tokens (…)`，每秒与每次 LLM 调用刷新） |
+| **Related** | `crates/agent_tui_kit/src/render/stats_line.rs`（新）、`crates/agent_tui_kit/src/render/{log,mod}.rs`、`crates/tui/src/render/log.rs`（`prepare_log_frame`）、`crates/tui/src/widgets/state/app/messages.rs`（`add_task_stats_block`）；`docs/token_usage_schema.md`、Ch 23 §6.6 / §6.11 |
+
+**现象 / 动机：** 每轮结束的统计行（耗时 · 模型 · tokens 明细）只在回合**结束**时写进日志，而它读的正是底栏一直在维护的计数器。于是任务跑到一半想看"这轮烧了多少 token / 模型是谁 / 跑了多久"，只能等；等它出现时又被后续内容顶上去，要翻回去找。
+
+**决策：** 任务在跑时，把**同一行**画在 Log 面板的**最后一行内容行**上，每帧重画（空闲 tick 每秒、`TokenUsage` 每次 LLM 调用），不进 `log_items[]`。
+
+- **一个 builder，两处渲染。** `stats_line::task_stats_body(msgs, secs, status_bar)` 同时喂给实时行与 `App::add_task_stats_block` 的冻结行——两处不可能漂移。冻结行仍然带 `⎘` 复制按钮；实时行不带，因为回合中途复制会静默漏掉尚未 flush 的流式文本（`copy_turn_ending_at_stats` 只读 `log_items[].raw`）。
+- **让出行，而不是覆盖行。** 实时行不占 physical 索引（选区、卡片、滚动锚点不受影响），它占的那一行由 `live_stats_reserve` 从 `log_scroll.height` 里扣掉（tui 的 `prepare_log_frame`，在取 `&mut app.log_scroll` 之前直接读 `app.task_start_time`，避免 `render_ctx()` 的整 `App` 借用冲突）。窄到连一行日志都留不下时（内容行 ≤ 1）整行不画。
+- **空闲不画。** 回合结束时冻结行恰好写在实时行原来的位置，读数不跳；空闲时再画一份就是花掉每一帧一行去重复日志里已有的数字。
+- 渲染遵循"每个渲染单元自绘背景"：整行先铺 `theme.bg` 再写字，否则行变短时尾部会残留上一帧的样式（AGENTS.md 渲染不变式）。
+- **鼠标命中按视口收口。** 面板内容区从此可能比视口高（实时行 + 下边框各占一行），`handle_log_click` / `handle_mouse_drag` 新增 `below_log_viewport`：落在视口下方的行不解析成日志行——否则点实时行会在"刚好藏在它下面"的那一行上起一个看不见的选区（长行折行时那一行确实属于某条逻辑行，所以旧逻辑会接受它）。这同时修掉了点下边框行的同类错位。
+
+**改后行为：** 任务在跑时，日志面板最后一行始终是实时统计行（`Task stats:⏱ 00:45 · deepseek-flash · 64246 tokens (prompt 60826 · completion 3420 · cache 60032 · reasoning 1810)`），紧贴在面板下边框之上；回合结束那一刻它消失，冻结行在同一位置出现。空闲会话的日志一行都不多花。点实时行或下边框不再起选区。
+
+**Verification:** 新增 tui `live_stats_row_sits_on_the_last_content_row_while_a_task_runs`、`live_stats_row_is_absent_when_no_task_is_in_flight`、`live_stats_row_takes_its_row_from_the_viewport_not_from_the_log`（最新一行日志仍可见）、`live_stats_row_paints_the_theme_bg_across_its_tail`、`the_live_row_hands_off_to_the_frozen_row`、`a_click_on_a_row_below_the_viewport_starts_no_selection`；kit `body_matches_the_frozen_row_shape`（逐字节锁定与冻结行同形）、`body_skips_the_model_and_the_token_detail_when_empty`、`body_is_localized_and_clamps_negative_seconds`。fmt/clippy 干净；推送门全绿（tact 1183、tui 637、agent_tui_kit 378、tact-ui 272）。
+
+**Pointers:** `crates/agent_tui_kit/src/render/stats_line.rs`（`task_stats_body` / `live_stats_reserve` / `live_stats_row` / `render_live_stats_band`）、`render_log_panel_pure` 末尾的调用点、`crates/tui/src/render/log.rs::prepare_log_frame`、`crates/tui/src/handlers/mouse.rs::below_log_viewport`；Ch 23 §6.6（底栏）与 §6.11（Log 消息模型）、`docs/token_usage_schema.md` 的 "Per-Turn Stats Line (TUI)"。
+
+---
+
 ## 1. 2026-10-05 — hook 注入的上下文变成带标签的竖条块：`AgentUpdate::HookContext`
 
 | Field | Value |

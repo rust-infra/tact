@@ -869,3 +869,125 @@ fn subagent_cancel_button_rect_matches_the_drawn_glyphs() {
     );
     assert!(Button::hit_test(*rect, col, row));
 }
+
+/// The live stats row is a *row of the panel*, not a log item: while a task is
+/// in flight the last content row carries the line the task-end block will
+/// freeze into the log, so the turn's numbers are readable without scrolling to
+/// the end of the turn.
+#[test]
+fn live_stats_row_sits_on_the_last_content_row_while_a_task_runs() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+    app.status_bar_mut().model_name = "deepseek-flash".into();
+    app.status_bar_mut().token_prompt = 60_826;
+    app.status_bar_mut().token_completion = 3_420;
+    app.status_bar_mut().token_total = 64_246;
+
+    let text = render_log_panel_text(&mut app, 120, 12);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[10].contains(
+            "Task stats:⏱ 01:05 · deepseek-flash · 64246 tokens (prompt 60826 · completion 3420)"
+        ),
+        "the live line must be drawn on the last content row (10), got:\n{text}"
+    );
+    assert!(
+        lines[11].contains('─'),
+        "the box's bottom border stays below the live line, got:\n{text}"
+    );
+    assert!(
+        text.contains("task body"),
+        "the log keeps its own rows, got:\n{text}"
+    );
+}
+
+#[test]
+fn live_stats_row_is_absent_when_no_task_is_in_flight() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.status_bar_mut().model_name = "deepseek-flash".into();
+    app.status_bar_mut().token_total = 10;
+
+    let text = render_log_panel_text(&mut app, 120, 12);
+    assert!(
+        !text.contains("Task stats:"),
+        "idle must not spend a log row on live stats, got:\n{text}"
+    );
+}
+
+/// The live row comes out of the viewport, not out of the log: the newest log
+/// line must stay on screen above it.
+#[test]
+fn live_stats_row_takes_its_row_from_the_viewport_not_from_the_log() {
+    let mut app = make_app();
+    seed_many_numbered_lines(&mut app, 30);
+    app.task_start_time = Some(chrono::Local::now());
+    app.status_bar_mut().model_name = "mock-model".into();
+    app.log_scroll.visual_top = usize::MAX;
+
+    let text = render_log_panel_text(&mut app, 80, 12);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines.iter().any(|line| line.contains("log-row-29")),
+        "the newest log row must stay visible above the live row, got:\n{text}"
+    );
+    assert!(
+        lines[10].contains("Task stats:"),
+        "the live row is the last content row, got:\n{text}"
+    );
+}
+
+/// Render invariant (AGENTS.md): the live row paints its own background across
+/// the whole row, so a shorter line leaves no residue in the tail.
+#[test]
+fn live_stats_row_paints_the_theme_bg_across_its_tail() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now());
+    app.status_bar_mut().model_name = "m".into();
+
+    let terminal = render_log_panel_terminal(&mut app, 60, 12);
+    let buffer = terminal.backend().buffer();
+    let bg = app.theme.bg;
+    for x in 1..59 {
+        let cell = &buffer[(x, 10)];
+        assert_eq!(cell.bg, bg, "live row cell at x={x} must carry theme.bg");
+    }
+}
+
+/// The handoff: the frozen row written at task end says exactly what the live
+/// row was saying, because both come from `stats_line::task_stats_body`.
+#[test]
+fn the_live_row_hands_off_to_the_frozen_row() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+    app.status_bar_mut().model_name = "deepseek-flash".into();
+    app.status_bar_mut().token_total = 100;
+
+    let live = render_log_panel_text(&mut app, 120, 12);
+    assert!(
+        live.lines()
+            .nth(10)
+            .is_some_and(|l| l.contains("Task stats:⏱ 01:05 · deepseek-flash · 100 tokens")),
+        "got:\n{live}"
+    );
+
+    app.last_prompt_elapsed_secs = Some(65);
+    app.task_start_time = None;
+    app.add_task_stats_block();
+
+    let frozen = render_log_panel_text(&mut app, 120, 12);
+    assert!(
+        frozen.contains("Task stats:⏱ 01:05 · deepseek-flash · 100 tokens"),
+        "the frozen row must repeat the live row's numbers, got:\n{frozen}"
+    );
+    assert!(
+        !frozen
+            .lines()
+            .nth(10)
+            .is_some_and(|l| l.contains("Task stats:")),
+        "the live row must be gone once the task ends, got:\n{frozen}"
+    );
+}

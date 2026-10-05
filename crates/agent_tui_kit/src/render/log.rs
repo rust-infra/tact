@@ -29,6 +29,7 @@ use crate::{
         ctx::RenderCtx,
         log_column::LogColumnRenderer,
         renderable::Renderable,
+        stats_line::{live_stats_row, render_live_stats_band},
         util::LOG_THINKING_INDENT,
     },
     state::{LogItemKind, find_thinking_at_logical, log_indent_at},
@@ -413,6 +414,16 @@ pub fn render_log_panel_pure(
     // left chrome because unchanged border cells are skipped by Buffer::diff. Force-emit the
     // left border every frame so those residues cannot persist.
     restamp_log_left_border(frame.buffer_mut(), area, borders, ctx.theme);
+
+    // Live task stats: while a task is in flight the panel's last content row
+    // carries the same line the task-end block will freeze into the log (the
+    // app reserved the row — see `stats_line::live_stats_reserve`), so the
+    // per-turn numbers are readable without scrolling to the end of the turn.
+    if ctx.task_start_time.is_some()
+        && let Some(row) = live_stats_row(area, borders)
+    {
+        render_live_stats_band(frame, row, ctx);
+    }
 
     LogRenderOutput {
         cancel_buttons,

@@ -56,6 +56,15 @@ pub(crate) fn render_log_panel_with_borders(
         .state()
         .buffer
         .as_str();
+    // While a task is in flight the kit draws the live stats line on the Log's
+    // last content row; the viewport gives that row up so no log line hides
+    // behind it. Read straight off the field — `render_ctx()` would borrow the
+    // whole `App` against `prepare_log_frame`'s `&mut app.log_scroll`.
+    let reserve = agent_tui_kit::render::stats_line::live_stats_reserve(
+        area,
+        borders,
+        app.task_start_time.is_some(),
+    );
     prepare_log_frame(
         &mut app.log_scroll,
         &app.log,
@@ -65,6 +74,7 @@ pub(crate) fn render_log_panel_with_borders(
         messages,
         area,
         borders,
+        reserve,
     );
     let ctx = app.render_ctx();
     let output = render_log_panel_pure(frame, area, &ctx, borders);
@@ -101,6 +111,7 @@ fn prepare_log_frame(
     messages: agent_tui_kit::i18n::Messages,
     area: Rect,
     borders: Borders,
+    reserve: u16,
 ) {
     let top = u16::from(borders.contains(Borders::TOP));
     let bottom = u16::from(borders.contains(Borders::BOTTOM));
@@ -115,7 +126,10 @@ fn prepare_log_frame(
     // │                     │  ← area.y + area.height - 2 (内容区最后一行)
     // └─────────────────────┘  ← area.y + area.height - 1 (下边框，占 1 行)
     // area.height.saturating_sub(top+bottom) = 内容区可用行数 = visible_height
-    log_scroll.height = area.height.saturating_sub(top + bottom);
+    // `reserve` is the live stats line's row: it is *inside* the box, on the
+    // content area's last row, so it comes out of the scrollable height while
+    // the border stays where it is.
+    log_scroll.height = area.height.saturating_sub(top + bottom + reserve);
     let visible_height = log_scroll.height as usize;
     // 两行做两件事：
     // 和 `height` 同样的 `saturating_sub`：

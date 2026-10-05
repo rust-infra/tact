@@ -370,6 +370,8 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 - 第 1 行：权限模式、cwd、运行（`⊙ 运行 …` / `⊙ Up …`）、实时任务耗时（`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`——紧跟在运行之后，因为描述*本次运行*的两只时钟该挨着读；无任务在跑时整段省略；作为本行最后一个可丢弃段推入，窄终端上它第一个被丢）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
 - 第 2 行：模型名、`输出`（即 `max_tokens` **原值**——请求真正发出去的那个数字：Responses 协议下是 `max_output_tokens`，chat completions / Anthropic 下是 `max_tokens`。即使对 effort 语义模型也**不扣** reasoning 份额：推理与正文的切分由服务端按次请求决定，所以这里报告的是"要了什么"，而不是猜出来的值——估算 reasoning 预留是压缩路径的职责，不是读数该做的事。见 2026-09-13 条目）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、`ctx` 用量（`ctx 4% 45K/1M`——百分比在前，绝对 used/window 在后；进度条已于 2026-09-12 去掉，因为它只是把百分比用字符又画了一遍）、`▣` 缓存命中率、回合计数（`⟳ 12` = 会话用户回合，以及 `⇅ 3` = 当前任务的 agent-loop 回合——任务的首次 LLM 调用前隐藏），以及回合耗时（`⏱ 02:05` = 上一完成回合，加 `均 01:45` = 会话平均；回合完成前不显示平均）。段落用两个空格连接。窄终端优先丢弃：回合耗时 → 回合计数 → 缓存 → ctx——即 `ctx` 存活最久。
 
+**实时任务统计行（2026-10-05）：** 任务在跑时，`Task stats:⏱ mm:ss · model · N tokens (…)` 这一行不再只在回合结束时出现——kit 把它画在 Log 面板的**最后一行内容行**上（`render_log_panel_pure` → `stats_line::render_live_stats_band`），每秒（空闲 tick）与每次 LLM 调用（`TokenUsage`）重画；它占的那一行由 `prepare_log_frame` 从 Log 视口里扣掉（`stats_line::live_stats_reserve`，只有一行）。任务结束时该行消失，`App::add_task_stats_block` 在同一个位置写下冻结版，两者共用 `stats_line::task_stats_body` 一个 builder，所以读数不会跳。它不是 log item，不占 physical 索引，`⎘` 复制按钮只留在冻结行上（回合中途复制会漏掉尚未 flush 的流式文本）。详见 [§6.11](#611-log-消息模型) 与 `docs/token_usage_schema.md`。
+
 **第 2 行瘦身（2026-09-12）：** 新增回合段后第 2 行涨到约 138 列，普通终端已开始丢段。该行被压到 **90 列**，且不丢失任何独立信息（同日 ctx 调整后为 86 列）。遵循的规则是**一个值只留一种渲染**：(1) **删除** `∑ₜₒₖ {total}` 段——它读的是 `ctx` 段已渲染为 `used` 的同一个 `StatusBarState.token_total`（精确整数仍保留在任务 stats 块与 `/stats` 中）；(2) `max_out_token` → `out`；(3) `cache%` → 裸 `▣ 30%`；(4) 两个计数都去掉 `turns` 文字，只剩 `⟳ 12 ⇅ 3`。宽度预算由 `bottom_bar_fits_every_segment_in_100_columns` 锁定（85–86 列，随 `out` 取值浮动一位）；2026-09-14 新增到第 1 行的任务耗时另有预算测试（`bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`）。
 
 **ctx 恢复百分比、去掉进度条（2026-09-12，同日）：** 上面的瘦身一度删掉了 ctx 的 `pct%` 而保留 `■`/`·` 进度条。同日反转：进度条**删除**，百分比前置——`ctx [▍···] 45K/1M` → **`ctx 4% 45K/1M`**（24 → 17 → 14 列）。理由：进度条只是把百分比用字符又画了一遍，而只有 `45K/1M` 时读者得自己做除法才能回答"离自动压缩还有多远"。绝对 `used/window` 保留——比率无法替代它来自的两个计数。缓存 `▣` 段也移到紧接 `ctx` **之后**、回合计数**之前**，让两个会话级比率挨着读；push 顺序现为 `model → out → think → ctx → cache → turns → timing`，窄终端存活顺序为 `ctx > cache > 回合计数 > 回合耗时`。
@@ -510,6 +512,8 @@ hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者�
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
 | **Loading placeholder** | `app.loading_idx` 处一行 blank `SystemTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
 | **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线，居中嵌入 `耗时 MM:SS` / `Elapsed MM:SS` |
+
+**实时任务统计行不是 log 行。** 上表最后一行说的是冻结版；任务在跑时，同一行文本由 kit 直接画在面板的最后一行内容行上（见 §6.6），既不进 `log_items[]` 也不占 physical 索引——选区、卡片与滚动锚点的键因此不受影响，Log 视口按 `stats_line::live_stats_reserve` 让出那一行。
 
 若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `log_items[]` 重复文本：
 

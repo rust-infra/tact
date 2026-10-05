@@ -304,6 +304,16 @@ fn popup_text_hit(app: &App, column: u16, row: u16, clamp_vertical: bool) -> Opt
         .map(|hit_row| hit_row.hit(column))
 }
 
+/// True when `visual_row` falls below the drawn log viewport.
+///
+/// The Log panel's content area can be taller than the viewport: the live task
+/// stats row is drawn on its last content row, and the bottom border takes one
+/// more. Those rows own no log line, so a click or drag there must not resolve
+/// to whatever row happens to sit just below the viewport.
+fn below_log_viewport(app: &App, visual_base: usize, visual_row: usize) -> bool {
+    visual_row >= visual_base + app.log_scroll.height as usize
+}
+
 fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.focused_panel = FocusedPanel::Log;
     let visual_base = app.log_viewport_top();
@@ -311,6 +321,11 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         + mouse
             .row
             .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
+    if below_log_viewport(app, visual_base, visual_row) {
+        app.mouse.log_selection = None;
+        app.mouse.dragging_log = false;
+        return;
+    }
     let line_idx = app.logical_from_visual(visual_row);
     let col = mouse
         .column
@@ -490,6 +505,9 @@ fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
             + mouse
                 .row
                 .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
+        if below_log_viewport(app, visual_base, visual_row) {
+            return;
+        }
         let line_idx = app.logical_from_visual(visual_row);
         let col = mouse
             .column
@@ -2087,6 +2105,33 @@ mod tests {
 
         let expected = Some(LogSelection::span(0, 0, "你好世界".len()));
         assert_eq!(app.mouse.log_selection, expected);
+    }
+
+    /// The Log panel's content area is taller than its viewport once a row is
+    /// reserved (the live task-stats row sits on the last content row): a click
+    /// on a reserved row must not resolve to a line hidden just below the
+    /// viewport. One long message wraps over several visual rows, so row 4 is
+    /// still inside a *valid* logical line — the viewport bound is what stops
+    /// it.
+    #[test]
+    fn a_click_on_a_row_below_the_viewport_starts_no_selection() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("x".repeat(200));
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 40, 10);
+        app.log_scroll.height = 4; // rows 1..=4 are the viewport; row 5 is reserved
+
+        handle_mouse_event(&mut app, mouse_down(1, 3));
+        assert!(
+            app.mouse.log_selection.is_some(),
+            "a row inside the viewport still selects"
+        );
+
+        handle_mouse_event(&mut app, mouse_down(1, 5));
+        assert!(
+            app.mouse.log_selection.is_none(),
+            "a reserved row owns no log line"
+        );
+        assert!(!app.mouse.dragging_log);
     }
 
     #[test]

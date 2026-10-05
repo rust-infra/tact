@@ -513,37 +513,22 @@ impl App {
     /// Reads the already-frozen `last_prompt_elapsed_secs` and the status-bar
     /// token/model snapshots; deliberately adds no new state (YAGNI — the data
     /// is already collected by `add_task_end_separator` / `TokenUsage` /
-    /// `ModelInfo` updates). The leading copy affordance (`⎘`, an icon so it
-    /// needs no translation) copies this turn's log text — from the previous
-    /// stats row, or session start, up to but not including this stats row.
+    /// `ModelInfo` updates). The body comes from
+    /// `agent_tui_kit::render::stats_line::task_stats_body` — the same builder
+    /// the kit draws live on the Log's last row while the task runs, so the row
+    /// the reader watched and the row frozen here cannot drift.
+    ///
+    /// The leading copy affordance (`⎘`, an icon so it needs no translation)
+    /// copies this turn's log text — from the previous stats row, or session
+    /// start, up to but not including this stats row.
     pub(crate) fn add_task_stats_block(&mut self) {
         let secs = self.last_prompt_elapsed_secs.unwrap_or(0).max(0);
-        let mm_ss = format!("{:02}:{:02}", secs / 60, secs % 60);
-
-        let mut parts = vec![format!("⏱ {mm_ss}")];
-        if !self.status_bar_mut().model_name.is_empty() {
-            parts.push(self.status_bar_mut().model_name.clone());
-        }
-        let tokens = self.status_bar_mut().token_total;
-        if tokens > 0 {
-            let mut detail = format!("{tokens} tokens");
-            let sub: Vec<String> = [
-                ("prompt", self.status_bar_mut().token_prompt),
-                ("completion", self.status_bar_mut().token_completion),
-                ("cache", self.status_bar_mut().token_cache_hit),
-                ("reasoning", self.status_bar_mut().token_reasoning),
-            ]
-            .into_iter()
-            .filter(|(_, v)| *v > 0)
-            .map(|(k, v)| format!("{k} {v}"))
-            .collect();
-            if !sub.is_empty() {
-                detail.push_str(&format!(" ({})", sub.join(" · ")));
-            }
-            parts.push(detail);
-        }
         let msgs = self.msgs();
-        let body = format!("{}{}", msgs.task_stats_prefix, parts.join(" · "));
+        let body = agent_tui_kit::render::stats_line::task_stats_body(
+            &msgs,
+            secs,
+            self.status_bar().state(),
+        );
         // The copy affordance is drawn by the shared button component; keep
         // `raw` glyph-for-glyph identical to the line so the byte-based
         // selection and click mapping stay aligned.
