@@ -12,7 +12,7 @@ pub mod convert;
 pub mod error;
 pub mod hook_select;
 pub mod inject;
-pub(crate) mod lock;
+pub mod lock;
 pub mod mock;
 pub mod models;
 pub mod openai;
