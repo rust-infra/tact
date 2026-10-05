@@ -19,9 +19,7 @@ use crate::{
     render::{
         cells::{
             code::render_code_cards,
-            separator::{
-                MessageSeparator, TaskEndSeparator, is_task_end_separator, task_end_elapsed_secs,
-            },
+            separator::{MessageSeparator, TaskEndSeparator, is_task_end_separator},
             text::TextCell,
             thinking::ThinkingCell,
             tool::ToolCell,
@@ -315,19 +313,13 @@ pub fn render_log_panel_pure(
             continue;
         }
 
-        // Task-end rule: full-width line with centered elapsed label.
+        // Task-end rule: a full-width accent line. It draws no elapsed label —
+        // the turn's clock is the task-stats row right below it (and the bottom
+        // bar's turn segment), so the rule is only the turn boundary.
         if let Some(phys) = phys_idx
             && is_task_end_separator(&ctx.log.items[phys].raw)
         {
-            let raw = &ctx.log.items[phys].raw;
-            let msgs = &ctx.messages;
-            let sep = match task_end_elapsed_secs(raw) {
-                Some(secs) => {
-                    TaskEndSeparator::with_elapsed(ctx.theme.accent, msgs.bottom_elapsed, secs)
-                }
-                None => TaskEndSeparator::new(ctx.theme.accent),
-            };
-            renderer.push(vs_cache[logical_i], sep);
+            renderer.push(vs_cache[logical_i], TaskEndSeparator::new(ctx.theme.accent));
             logical_i += 1;
             continue;
         }

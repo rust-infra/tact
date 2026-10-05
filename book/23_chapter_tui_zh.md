@@ -367,7 +367,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 **顶栏**（`render_status_bar`）：输入模式、焦点面板标签（`FocusedPanel` 目前只有 `Log`，但每个状态分支都会渲染该槽位）、`Status`（Idle / Planning / Executing / Done）、`Idle` 下的主题/语言提示。覆盖：临时 `flash_msg`。`Executing` 时还会显示步骤标签（`正在执行步骤 4` / `Executing step 4`，2026-09-14 起不再带分母）与并行工具数（`并行中 1` / `running 1`）；`[████░░] n%` 进度条与实时任务耗时已于 2026-09-14 一并删除——进度条只是把步骤数用字符重画一遍，耗时则下移到第 1 行紧挨运行（见下），因此顶栏不再渲染任何自有数字。
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
-- 第 1 行：权限模式、cwd、运行（`⊙ 运行 …` / `⊙ Up …`）、实时任务耗时（`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`——紧跟在运行之后，因为描述*本次运行*的两只时钟该挨着读；无任务在跑时整段省略；作为本行最后一个可丢弃段推入，窄终端上它第一个被丢）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
+- 第 1 行：权限模式、cwd、运行（`⊙ 运行 …` / `⊙ Up …`）、实时任务耗时（`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`——紧跟在运行之后，因为描述*本次运行*的两只时钟该挨着读；无任务在跑时整段省略；作为本行最后一个可丢弃段推入，窄终端上它第一个被丢）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时不在这条底栏的冻结段里，而在 **task-stats 行**（`⏱ mm:ss`，见下）。
 - 第 2 行：模型名、`输出`（即 `max_tokens` **原值**——请求真正发出去的那个数字：Responses 协议下是 `max_output_tokens`，chat completions / Anthropic 下是 `max_tokens`。即使对 effort 语义模型也**不扣** reasoning 份额：推理与正文的切分由服务端按次请求决定，所以这里报告的是"要了什么"，而不是猜出来的值——估算 reasoning 预留是压缩路径的职责，不是读数该做的事。见 2026-09-13 条目）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、`ctx` 用量（`ctx 4% 45K/1M`——百分比在前，绝对 used/window 在后；进度条已于 2026-09-12 去掉，因为它只是把百分比用字符又画了一遍）、`▣` 缓存命中率、回合计数（`⟳ 12` = 会话用户回合，以及 `⇅ 3` = 当前任务的 agent-loop 回合——任务的首次 LLM 调用前隐藏），以及回合耗时（`⏱ 02:05` = 上一完成回合，加 `均 01:45` = 会话平均；回合完成前不显示平均）。段落用两个空格连接。窄终端优先丢弃：回合耗时 → 回合计数 → 缓存 → ctx——即 `ctx` 存活最久。
 
 **实时任务统计行（2026-10-05）：** 任务在跑时，`Task stats:⏱ mm:ss · model · N tokens (…)` 这一行不再只在回合结束时出现——kit 把它画在 Log 面板的**最后一行内容行**上（`render_log_panel_pure` → `stats_line::render_live_stats_band`），每秒（空闲 tick）与每次 LLM 调用（`TokenUsage`）重画；它占的那一行由 `prepare_log_frame` 从 Log 视口里扣掉（`stats_line::live_stats_reserve`，只有一行）。任务结束时该行消失，`App::add_task_stats_block` 在同一个位置写下冻结版，两者共用 `stats_line::task_stats_body` 一个 builder，所以读数不会跳。它不是 log item，不占 physical 索引，`⎘` 复制按钮只留在冻结行上（回合中途复制会漏掉尚未 flush 的流式文本）。详见 [§6.11](#611-log-消息模型) 与 `docs/token_usage_schema.md`。
@@ -511,7 +511,7 @@ hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者�
 | **Tool blocks** | Blank placeholder 行（`SystemTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
 | **Loading placeholder** | `app.loading_idx` 处一行 blank `SystemTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
-| **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线，居中嵌入 `耗时 MM:SS` / `Elapsed MM:SS` |
+| **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线（2026-10-05 起不再内嵌耗时——那一轮的墙钟时间由 task-stats 行与底栏第 2 行给出；raw 里的秒数仍保留，只是不画） |
 
 **实时任务统计行不是 log 行。** 上表最后一行说的是冻结版；任务在跑时，同一行文本由 kit 直接画在面板的最后一行内容行上（见 §6.6），既不进 `log_items[]` 也不占 physical 索引——选区、卡片与滚动锚点的键因此不受影响，Log 视口按 `stats_line::live_stats_reserve` 让出那一行。
 

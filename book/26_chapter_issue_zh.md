@@ -27,27 +27,22 @@
 
 ---
 
-## 1. 2026-10-05 — hook 输出有了显示开关：`[ui] hook_output` + `/hook-output`
+## 1. 2026-10-05 — task-end 分隔线不再内嵌耗时
 
 | Field | Value |
 |-------|-------|
-| **Type** | optimization（用户可见：新增 `[ui] hook_output`（默认 `true`）与 `/hook-output`，关掉后日志里不再出现 hook 的进度行与注入的上下文块） |
-| **Related** | `crates/tact/src/config/{types,resolve,persist,mod}.rs`、`crates/tui/src/{lib,handlers/mod,handlers/palette,widgets/state/mod}.rs`、`crates/tui/src/widgets/state/app/{config,construct,messages}.rs`、`crates/agent_tui_kit/src/i18n.rs`；`config.example.toml`；Ch 21 §5、Ch 09 §10 |
+| **Type** | optimization（用户可见：回合结束的实线不再居中写 `耗时 MM:SS` / `Elapsed MM:SS`） |
+| **Related** | `crates/agent_tui_kit/src/render/cells/separator.rs`、`crates/agent_tui_kit/src/render/log.rs`、`crates/tui/src/widgets/state/app/popups.rs`；Ch 23 §6.6 / §6.11 |
 
-**Symptom / motivation:** hook 注入的上下文块（2026-10-05 上面那条）与进度行都是**无条件**画进日志的。对 basic-memory 这类每轮都说话的插件，一屏里插一段简报是噪音；而读者能做的只有关掉整个 hook——那会让模型也拿不到上下文。要的是"我不看，但它照旧进模型"。
+**现象 / 动机：** 同一轮耗时在一屏里出现三次：task-end 分隔线居中一处、紧跟其下的 task-stats 行 `⏱ mm:ss`、底栏第 2 行 `⏱ mm:ss · 均 …`。实时统计行上线后（同日上一条），第一处纯属重复——它离统计行只有两行。
 
-**Decision:** 新增 `[ui] hook_output`（`Option<bool>`，缺省 `true`），`/hook-output` 翻转并写盘。**门设在行进入日志的那一刻**，不是在渲染层：
+**决策：** `TaskEndSeparator` 只画实线：删掉 `with_elapsed` / `ruled_with_label` / `format_mm_ss` 与 `elapsed_label` 字段，渲染分支不再需要 `ctx.messages`。sentinel raw **仍然带秒数**（`\x07tact-task-end\x1f{secs}`）——它是这一行的识别键，也是该轮墙钟时间唯一的持久化副本；只是不再画出来。`add_task_end_separator` 照旧冻结 `last_prompt_elapsed_secs`（统计行要读）并累计底栏的回合耗时，全部不变。
 
-- `App::append_hook_context_markdown` 开头直接 `return`；`App::apply_hook_status` 同样——**两半都要看**，因为它是"开/合"一对 update，只看开头会让**完成**那半给一个被跳过的 id 补上一行孤儿。
-- 不在渲染层跳过：日志的物理索引是选区、卡片、滚动锚点的键（`LogItemKind::HookStatus(id)` 就是靠它找行原地改写）。一行"画的时候跳过"仍然占掉一个索引，等于把一个看不见的行塞进所有索引映射里。
+**改后行为：** 回合结束只有一条全宽强调色实线。耗时读 task-stats 行与底栏第 2 行。旧会话里已经写出的分隔线同样不再显示标签——判定发生在渲染时（按 raw），不依赖写时的形状。
 
-**只影响显示。** hook 照常运行，stdout 照常作为 `<hook-context>` 消息进入对话；要停 hook 用 `/hooks`（或 `[hooks]`）。`/hook-output` 的形状是 `Ctrl+T` 那种（翻转 → 写盘 → 一条消息说清"现在是开还是关"+"存了没存"），不是 `/theme` 那种先弹选择器再问"要不要保存"：布尔没有列表可选，没有 picker step 可以挂那个问题。三种结局（写入成功 / 没有配置文件 / 写入失败）各自一条文案，与 theme/lang 一致——"没有文件"和"写不进去"是两种状态，读者必须能分辨。
+**Verification:** kit `task_end_separator_draws_no_elapsed_label`（40 列逐格等于 `─`×40）；tui `log_task_end_separator_renders_solid_rule` 改为断言不出现 `Elapsed`、且 `last_prompt_elapsed_secs == Some(65)`（冻结值仍到达统计行）。fmt/clippy 干净；推送门全绿（tact 1183、tui 637、agent_tui_kit 378、tact-ui 272）。
 
-**Behavior after:** `/hook-output` 打印 `👁 Hook output: shown in the log (saved to config)` / `🙈 Hook output: hidden from the log (this session only)`（中英各自本地化）。`[ui] hook_output = false` 后重启，日志里既没有 `▎ ⌁ hook · …` 进度行，也没有 `▎ ⌁ hook context · …` 块——一行都不进。翻回 `true` 立即恢复（开关不是单向闩）。已有会话里已经画出来的行不会被回收，它管的是之后进日志的东西。
-
-**Verification:** 新增 tui `hook_output_off_keeps_hook_rows_out_of_the_log`（关掉后进度行的**开与合**都不产生行；再打开能恢复）、`toggle_hook_output_flips_and_says_session_only_without_a_file`；tact `updates_ui_hook_output_keeping_the_other_preferences`（落成 TOML **布尔**而不是字符串——`Option<bool>` 读回 `"false"` 会解析失败并静默回到默认）、`ui_hook_output_is_created_when_the_table_is_missing`、resolve 默认值断言。`palette_commands_are_all_handled` 自动覆盖新命令的分派。fmt/clippy 干净；推送门全绿（tact 1183、tui 631、agent_tui_kit 375、tact-ui 272）。
-
-**Pointers:** `crates/tact/src/config/mod.rs::persist_hook_output`、`crates/tact-ui/src/interactive.rs`（`TuiConfig.hook_output`）、`crates/tui/src/widgets/state/app/config.rs::toggle_hook_output`、`crates/tui/src/widgets/state/slash.rs::SlashCommand::HookOutput`；Ch 21 §5、Ch 09 §10、`config.example.toml` 的 `[ui]`。
+**Pointers:** `crates/agent_tui_kit/src/render/cells/separator.rs`、`render_log_panel_pure` 的 task-end 分支、`crates/tui/src/widgets/state/app/popups.rs::add_task_end_separator`；Ch 23 §6.6 / §6.11。
 
 ---
 
@@ -73,6 +68,30 @@
 **Verification:** 新增 tui `live_stats_row_sits_on_the_last_content_row_while_a_task_runs`、`live_stats_row_is_absent_when_no_task_is_in_flight`、`live_stats_row_takes_its_row_from_the_viewport_not_from_the_log`（最新一行日志仍可见）、`live_stats_row_paints_the_theme_bg_across_its_tail`、`the_live_row_hands_off_to_the_frozen_row`、`a_click_on_a_row_below_the_viewport_starts_no_selection`；kit `body_matches_the_frozen_row_shape`（逐字节锁定与冻结行同形）、`body_skips_the_model_and_the_token_detail_when_empty`、`body_is_localized_and_clamps_negative_seconds`。fmt/clippy 干净；推送门全绿（tact 1183、tui 637、agent_tui_kit 378、tact-ui 272）。
 
 **Pointers:** `crates/agent_tui_kit/src/render/stats_line.rs`（`task_stats_body` / `live_stats_reserve` / `live_stats_row` / `render_live_stats_band`）、`render_log_panel_pure` 末尾的调用点、`crates/tui/src/render/log.rs::prepare_log_frame`、`crates/tui/src/handlers/mouse.rs::below_log_viewport`；Ch 23 §6.6（底栏）与 §6.11（Log 消息模型）、`docs/token_usage_schema.md` 的 "Per-Turn Stats Line (TUI)"。
+
+---
+
+## 1. 2026-10-05 — hook 输出有了显示开关：`[ui] hook_output` + `/hook-output`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：新增 `[ui] hook_output`（默认 `true`）与 `/hook-output`，关掉后日志里不再出现 hook 的进度行与注入的上下文块） |
+| **Related** | `crates/tact/src/config/{types,resolve,persist,mod}.rs`、`crates/tui/src/{lib,handlers/mod,handlers/palette,widgets/state/mod}.rs`、`crates/tui/src/widgets/state/app/{config,construct,messages}.rs`、`crates/agent_tui_kit/src/i18n.rs`；`config.example.toml`；Ch 21 §5、Ch 09 §10 |
+
+**Symptom / motivation:** hook 注入的上下文块（同日的 hook context 条目，见本条目下方）与进度行都是**无条件**画进日志的。对 basic-memory 这类每轮都说话的插件，一屏里插一段简报是噪音；而读者能做的只有关掉整个 hook——那会让模型也拿不到上下文。要的是"我不看，但它照旧进模型"。
+
+**Decision:** 新增 `[ui] hook_output`（`Option<bool>`，缺省 `true`），`/hook-output` 翻转并写盘。**门设在行进入日志的那一刻**，不是在渲染层：
+
+- `App::append_hook_context_markdown` 开头直接 `return`；`App::apply_hook_status` 同样——**两半都要看**，因为它是"开/合"一对 update，只看开头会让**完成**那半给一个被跳过的 id 补上一行孤儿。
+- 不在渲染层跳过：日志的物理索引是选区、卡片、滚动锚点的键（`LogItemKind::HookStatus(id)` 就是靠它找行原地改写）。一行"画的时候跳过"仍然占掉一个索引，等于把一个看不见的行塞进所有索引映射里。
+
+**只影响显示。** hook 照常运行，stdout 照常作为 `<hook-context>` 消息进入对话；要停 hook 用 `/hooks`（或 `[hooks]`）。`/hook-output` 的形状是 `Ctrl+T` 那种（翻转 → 写盘 → 一条消息说清"现在是开还是关"+"存了没存"），不是 `/theme` 那种先弹选择器再问"要不要保存"：布尔没有列表可选，没有 picker step 可以挂那个问题。三种结局（写入成功 / 没有配置文件 / 写入失败）各自一条文案，与 theme/lang 一致——"没有文件"和"写不进去"是两种状态，读者必须能分辨。
+
+**Behavior after:** `/hook-output` 打印 `👁 Hook output: shown in the log (saved to config)` / `🙈 Hook output: hidden from the log (this session only)`（中英各自本地化）。`[ui] hook_output = false` 后重启，日志里既没有 `▎ ⌁ hook · …` 进度行，也没有 `▎ ⌁ hook context · …` 块——一行都不进。翻回 `true` 立即恢复（开关不是单向闩）。已有会话里已经画出来的行不会被回收，它管的是之后进日志的东西。
+
+**Verification:** 新增 tui `hook_output_off_keeps_hook_rows_out_of_the_log`（关掉后进度行的**开与合**都不产生行；再打开能恢复）、`toggle_hook_output_flips_and_says_session_only_without_a_file`；tact `updates_ui_hook_output_keeping_the_other_preferences`（落成 TOML **布尔**而不是字符串——`Option<bool>` 读回 `"false"` 会解析失败并静默回到默认）、`ui_hook_output_is_created_when_the_table_is_missing`、resolve 默认值断言。`palette_commands_are_all_handled` 自动覆盖新命令的分派。fmt/clippy 干净；推送门全绿（tact 1183、tui 631、agent_tui_kit 375、tact-ui 272）。
+
+**Pointers:** `crates/tact/src/config/mod.rs::persist_hook_output`、`crates/tact-ui/src/interactive.rs`（`TuiConfig.hook_output`）、`crates/tui/src/widgets/state/app/config.rs::toggle_hook_output`、`crates/tui/src/widgets/state/slash.rs::SlashCommand::HookOutput`；Ch 21 §5、Ch 09 §10、`config.example.toml` 的 `[ui]`。
 
 ---
 
@@ -4677,6 +4696,8 @@ spinner dirty；轮询间隔不变。Done 继续靠 `should_repaint` 强制重�
 | 指针 | 路径 |
 |------|------|
 | 代码 | `crates/tui/src/render/cells/separator.rs`、`widgets/state/app/popups.rs`、`render/bar.rs` |
+
+**已被取代（2026-10-05）：** 分隔线不再渲染那个标签——同一轮耗时已经在它下面的 task-stats 行与底栏第 2 行各出现一次。sentinel 仍带秒数，`add_task_end_separator` 仍在冻结 `task_start_time`；底栏第 1 行自 2026-09-14 起另有一段**实时**任务耗时。见本日 "task-end 分隔线不再内嵌耗时"。
 
 ---
 

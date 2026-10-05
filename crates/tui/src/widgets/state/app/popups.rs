@@ -455,7 +455,9 @@ impl App {
         self.log.remove_msg(idx);
     }
 
-    /// Sentinel row — rendered as a full-width rule with frozen elapsed label.
+    /// Sentinel row — rendered as a plain full-width rule. The seconds it
+    /// freezes are shown by the task-stats row (`add_task_stats_block`) and by
+    /// the bottom bar's turn segment, never by the rule itself.
     pub(crate) fn add_task_end_separator(&mut self) {
         let secs = if let Some(start) = self.task_start_time.take() {
             let s = chrono::Local::now()

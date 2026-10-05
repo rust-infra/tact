@@ -257,9 +257,17 @@ fn log_task_end_separator_renders_solid_rule() {
         text.contains('─'),
         "task-end separator should render solid rule, got:\n{text}"
     );
+    // The frozen seconds stay in the sentinel (and reach the task-stats row),
+    // but the rule itself no longer draws them: the number is already on the
+    // stats row below and in the bottom bar's turn segment.
     assert!(
-        text.contains("Elapsed 01:05"),
-        "task-end separator should embed frozen elapsed, got:\n{text}"
+        !text.contains("Elapsed"),
+        "the rule must not draw an elapsed label, got:\n{text}"
+    );
+    assert_eq!(
+        app.last_prompt_elapsed_secs,
+        Some(65),
+        "the turn's wall clock must still be frozen for the stats row"
     );
 }
 
