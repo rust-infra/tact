@@ -311,10 +311,7 @@ mod tests {
     use crate::task::TaskUpdate;
 
     fn temp_db(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("tact-taskstore-test-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("tact.db")
+        crate::store::test_support::temp_db("tact-taskstore-test", name)
     }
 
     #[tokio::test]

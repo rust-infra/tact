@@ -154,10 +154,7 @@ mod tests {
     use super::*;
 
     fn temp_db(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("tact-wtstore-test-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("tact.db")
+        crate::store::test_support::temp_db("tact-wtstore-test", name)
     }
 
     fn record(name: &str, task_id: Option<u64>) -> WorktreeRecord {
