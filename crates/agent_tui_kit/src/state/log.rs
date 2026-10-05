@@ -94,6 +94,13 @@ pub struct LogItem {
     pub raw: String,
     pub kind: LogItemKind,
     pub markdown_cell: Option<MarkdownCell>,
+    /// Full text this row opens in the read-out popup when double-clicked.
+    ///
+    /// A row that carries one is a **control**, not text: the mouse handler
+    /// opens the popup instead of starting a selection. That is how a block too
+    /// long to show inline (a hook's briefing) still keeps its whole body one
+    /// gesture away without the log having to hold a second copy.
+    pub popup_source: Option<String>,
 }
 
 impl std::fmt::Debug for LogItem {
@@ -103,6 +110,7 @@ impl std::fmt::Debug for LogItem {
             .field("raw", &self.raw)
             .field("kind", &self.kind)
             .field("has_markdown_cell", &self.markdown_cell.is_some())
+            .field("has_popup_source", &self.popup_source.is_some())
             .finish()
     }
 }
@@ -114,7 +122,17 @@ impl LogItem {
             raw,
             kind,
             markdown_cell: None,
+            popup_source: None,
         }
+    }
+
+    /// Make this row open `source` in the read-out popup on a double-click.
+    ///
+    /// Consumes and returns the row so a constructor call can wear it inline.
+    #[must_use]
+    pub fn with_popup_source(mut self, source: String) -> Self {
+        self.popup_source = Some(source);
+        self
     }
 
     pub fn markdown(raw: String, theme: &Theme, kind: LogItemKind) -> Self {
@@ -124,6 +142,7 @@ impl LogItem {
             raw,
             kind,
             markdown_cell: Some(markdown_cell),
+            popup_source: None,
         }
     }
 
@@ -146,6 +165,7 @@ impl LogItem {
             raw,
             kind,
             markdown_cell: Some(markdown_cell),
+            popup_source: None,
         }
     }
 }
@@ -161,6 +181,18 @@ impl LogCoordinator {
     /// Append one log row, keeping all row metadata together in `items`.
     pub fn append_msg(&mut self, line: Line<'static>, raw: String, kind: LogItemKind) {
         self.items.push(LogItem::new(line, raw, kind));
+    }
+
+    /// Append one log row that opens `popup_source` on a double-click.
+    pub fn append_msg_with_popup(
+        &mut self,
+        line: Line<'static>,
+        raw: String,
+        kind: LogItemKind,
+        popup_source: String,
+    ) {
+        self.items
+            .push(LogItem::new(line, raw, kind).with_popup_source(popup_source));
     }
 
     /// Append a whole-Markdown notice as a single log item.

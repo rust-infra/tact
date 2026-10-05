@@ -429,6 +429,10 @@ pub struct Messages {
     /// the `<hook-context>` framing is stripped both render as system markdown.
     /// This label is the only thing that tells the reader which one it is.
     pub hook_context_label: &'static str, // "hook context" / "hook 上下文"
+    /// How the reader opens a hook block's full text (the header's tail).
+    pub hook_context_expand_hint: &'static str, // "double-click" / "双击展开"
+    /// Tail of a truncated hook block: `… {} more lines · {}`.
+    pub hook_context_more_tmpl: &'static str, // "… {} more lines · {}" / "… 还有 {} 行 · {}"
 }
 
 impl Messages {
@@ -748,6 +752,8 @@ impl Messages {
             task_stats_prefix: "Task stats:",
             task_stats_copy_btn: "⎘",
             hook_context_label: "hook context",
+            hook_context_expand_hint: "double-click",
+            hook_context_more_tmpl: "… {} more lines · {}",
         }
     }
 
@@ -1053,6 +1059,8 @@ impl Messages {
             task_stats_prefix: "任务统计：",
             task_stats_copy_btn: "⎘",
             hook_context_label: "hook 上下文",
+            hook_context_expand_hint: "双击展开",
+            hook_context_more_tmpl: "… 还有 {} 行 · {}",
         }
     }
 }

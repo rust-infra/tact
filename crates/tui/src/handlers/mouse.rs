@@ -339,6 +339,26 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         return;
     };
 
+    // A row carrying its own popup source is a control, not text: a
+    // double-click opens the full body it stands for (a hook block's header and
+    // its "more lines" tail both do this), and a single click must not leave an
+    // invisible selection behind on a row the reader cannot select.
+    if let Some(source) = app
+        .log
+        .items
+        .get(phys_idx)
+        .and_then(|item| item.popup_source.clone())
+    {
+        let title = app.log.items[phys_idx].raw.clone();
+        if app.mouse.click_count == 2 {
+            app.open_markdown_popup(title, source);
+        } else {
+            app.mouse.log_selection = None;
+            app.mouse.dragging_log = false;
+        }
+        return;
+    }
+
     // Whole-Markdown rows are cards: the MarkdownCell renderer draws no
     // selection overlay, so refuse to create an invisible selection here
     // (symmetric with rendering).
@@ -1414,6 +1434,39 @@ mod tests {
         let opened = app.tools_mut().popup.is_some();
         app.tools_mut().popup = None;
         opened
+    }
+
+    /// A hook block's header is a control: a double-click opens the whole body
+    /// (the log only holds the head of it), and a single click selects nothing.
+    #[test]
+    fn double_click_on_a_hook_header_opens_the_full_body() {
+        let mut app = make_app();
+        let body = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.append_hook_context_markdown(&body);
+
+        let terminal = crate::render::test_harness::render_log_panel_terminal(&mut app, 100, 40);
+        let (x, y) = glyph_origin(terminal.backend().buffer(), "hookcontext");
+
+        handle_log_click(&mut app, mouse_down(x, y));
+        assert!(app.system_prompt_popup.is_none(), "one click opens nothing");
+        assert!(
+            app.mouse.log_selection.is_none(),
+            "a control row must not start a selection"
+        );
+
+        handle_log_click(&mut app, mouse_down(x, y));
+        let popup = app
+            .system_prompt_popup
+            .as_ref()
+            .expect("double-click opens the read-out popup");
+        assert!(
+            popup.source.contains("line 20"),
+            "the popup carries the whole body, not the head: {}",
+            popup.source
+        );
     }
 
     /// Does a double-click at (`column`, `row`) open the Thinking card's popup?

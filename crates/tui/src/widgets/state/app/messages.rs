@@ -24,6 +24,32 @@ const HOOK_CONTEXT_GUTTER: &str = "▎ ";
 /// Prefixes a hook block's header row. A provenance marker, not a status glyph.
 const HOOK_CONTEXT_MARK: &str = "⌁";
 
+/// Source lines of a hook block kept inline before the rest moves to the popup.
+const HOOK_CONTEXT_INLINE_LINES: usize = 8;
+
+/// Cut a hook body to `max_lines`, closing any fence the cut ran through.
+///
+/// Returns the head and the number of source lines dropped. Cutting inside a
+/// fenced block would leave the fence open, and the Markdown renderer would
+/// then swallow every row after it into the code block — so an odd number of
+/// fence markers in the head gets a closing one appended.
+fn truncate_hook_body(body: &str, max_lines: usize) -> (String, usize) {
+    let lines: Vec<&str> = body.lines().collect();
+    if lines.len() <= max_lines {
+        return (body.to_string(), 0);
+    }
+    let head = &lines[..max_lines];
+    let fences = head
+        .iter()
+        .filter(|line| line.trim_start().starts_with("```"))
+        .count();
+    let mut kept = head.join("\n");
+    if fences % 2 == 1 {
+        kept.push_str("\n```");
+    }
+    (kept, lines.len() - max_lines)
+}
+
 /// True for a cell carrying hook-injected context (`<hook-context>`) instead
 /// of a user turn.
 ///
@@ -287,22 +313,24 @@ impl App {
         }
     }
 
-    /// Append hook-injected context: a labelled header row, then the body
-    /// behind a left bar.
+    /// Append hook-injected context: a labelled header row, then the head of
+    /// the body behind a left bar, with the whole text one double-click away.
     ///
     /// The body renders through the same Markdown pipeline as
     /// [`Self::append_system_markdown`] — the caller has already stripped the
     /// `<hook-context>` framing — which is exactly why the block needs a shape
     /// of its own: without it a hook's stdout and a markdown notice Tact wrote
-    /// itself are the same rows. The header names the source, the bar holds the
-    /// whole block together (blank rows included), and the line count tells the
-    /// reader how much they are scrolling past.
+    /// itself are the same rows. The header names the block and counts it, the
+    /// bar holds what is shown together (blank rows included), and the tail is
+    /// cut at a paragraph-safe boundary so a briefing does not push the
+    /// conversation off the log — the reader's full copy stays in the popup.
     pub(crate) fn append_hook_context_markdown(&mut self, body: &str) {
         let label = self.msgs().hook_context_label;
+        let hint = self.msgs().hook_context_expand_hint;
         let bar = HOOK_CONTEXT_GUTTER;
-        let lines = body.lines().count();
-        let header = format!("{bar}{HOOK_CONTEXT_MARK} {label} · {lines} lines");
-        self.append_msg(
+        let total = body.lines().count();
+        let header = format!("{bar}{HOOK_CONTEXT_MARK} {label} · {total} lines · {hint}");
+        self.log.append_msg_with_popup(
             Line::from(vec![
                 Span::styled(bar, Style::default().fg(self.theme.accent)),
                 Span::styled(
@@ -312,15 +340,19 @@ impl App {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" · {lines} lines"),
+                    format!(" · {total} lines · "),
                     Style::default().fg(self.theme.muted_fg()),
                 ),
+                Span::styled(hint, Style::default().fg(self.theme.muted_fg())),
             ]),
             header,
             LogItemKind::SystemPlain(SystemMsgStyle::Default),
-        );
-        self.log.append_markdown_with_gutter(
             body.to_string(),
+        );
+
+        let (head, dropped) = truncate_hook_body(body, HOOK_CONTEXT_INLINE_LINES);
+        self.log.append_markdown_with_gutter(
+            head,
             &self.theme,
             LogItemKind::SystemMarkdown,
             Gutter {
@@ -328,6 +360,23 @@ impl App {
                 color: self.theme.accent,
             },
         );
+        if dropped > 0 {
+            let more = self
+                .msgs()
+                .hook_context_more_tmpl
+                .replacen("{}", &dropped.to_string(), 1)
+                .replacen("{}", hint, 1);
+            let raw = format!("{bar}{more}");
+            self.log.append_msg_with_popup(
+                Line::from(Span::styled(
+                    raw.clone(),
+                    Style::default().fg(self.theme.muted_fg()),
+                )),
+                raw,
+                LogItemKind::SystemPlain(SystemMsgStyle::Default),
+                body.to_string(),
+            );
+        }
     }
 
     /// Append a task-completion stats block right after the task-end separator.
@@ -601,6 +650,10 @@ mod tests {
             "the header counts the body it heads: {text}"
         );
         assert!(
+            text.contains(app.msgs().hook_context_expand_hint),
+            "the header says how to reach the whole body: {text}"
+        );
+        assert!(
             text.contains("first paragraph") && text.contains("second paragraph"),
             "the body is rendered, not swallowed: {text}"
         );
@@ -623,6 +676,59 @@ mod tests {
         assert!(
             barred_rows >= 3,
             "header plus every body row wears the bar, got {barred_rows}: {text}"
+        );
+    }
+
+    /// A briefing longer than the inline budget keeps its head in the log and
+    /// puts the rest behind the popup — and a cut inside a fence closes it, so
+    /// the rows after the block are not swallowed into the code block.
+    #[test]
+    fn hook_context_truncates_a_long_body_and_keeps_the_rest_reachable() {
+        let mut app = make_app();
+        let body = format!(
+            "head line\n```text\n{}\n```\ntail line",
+            (1..=20)
+                .map(|i| format!("fenced {i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        app.append_hook_context_markdown(&body);
+
+        let header = &app.log.items[0];
+        assert_eq!(
+            header.popup_source.as_deref(),
+            Some(body.as_str()),
+            "the header stands for the whole body"
+        );
+        let more = app
+            .log
+            .items
+            .iter()
+            .find(|item| item.raw.contains("more lines"))
+            .expect("a row that says how much was left out");
+        assert_eq!(
+            more.popup_source.as_deref(),
+            Some(body.as_str()),
+            "the tail row opens the same full body"
+        );
+
+        let shown = app
+            .log
+            .items
+            .iter()
+            .find(|item| item.markdown_cell.is_some())
+            .expect("the head is rendered");
+        assert_eq!(
+            shown.raw.matches("```").count() % 2,
+            0,
+            "a cut fence is closed: {}",
+            shown.raw
+        );
+        assert!(shown.raw.contains("head line"), "{}", shown.raw);
+        assert!(
+            !shown.raw.contains("tail line"),
+            "the body was actually cut: {}",
+            shown.raw
         );
     }
 
