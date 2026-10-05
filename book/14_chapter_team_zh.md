@@ -115,7 +115,7 @@ pub struct SharedTeammateManager {
 }
 ```
 
-每个公开方法委托给 async 门面。共享句柄在 `ToolContext.teammate_manager`，在 `tui.rs` 启动时构造一次：
+每个公开方法委托给 async 门面。共享句柄在 `ToolContext.teammate_manager`，在 `session_bootstrap::bootstrap_session` 里构造一次（headless 与交互两个前端共用）：
 
 ```rust
 let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&tact_path.session_db_path()).await?);
@@ -147,7 +147,7 @@ let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&tact_pat
 | `crates/tact/src/tool/team.rs` | 八个 `#[tool]` 包装 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.teammate_manager` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 team 工具 |
-| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 启动时从 `tact.db` 构造 manager |
+| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` 构造 manager；headless / 交互共用 |
 
 ---
 

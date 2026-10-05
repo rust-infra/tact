@@ -14,15 +14,19 @@
 
 | 策略 | 触发条件 | 动作 | 计数器 |
 |------|----------|------|--------|
-| **Compact** | LLM 错误匹配 `is_prompt_too_long_error` | `compact_history()` 后重试本轮 | `compact_attempts` |
-| **Backoff** | LLM 错误匹配 `is_transient_transport_error` | 睡眠 `backoff_delay(attempt)` 后重试 | `transport_attempts` |
+| **Compact** | 错误分类为 `PromptTooLong`（见 §3） | `compact_history()` 后重试本轮 | `compact_attempts` |
+| **Backoff** | 错误分类为 `Transient`（见 §3） | 睡眠 `backoff_delay(attempt)` 后重试 | `transport_attempts` |
 | **Continue** | 流式成功但 `stop_reason = MaxTokens` | 追加 `CONTINUATION_MESSAGE` 作为用户轮次 | `continuation_attempts` |
 
-三者共用同一上限：
+三者**各有自己的上限**，不共用一个数（`crates/tact/src/recovery.rs`）：
 
 ```rust
-pub const MAX_RECOVERY_ATTEMPTS: u32 = 3;
+pub const MAX_COMPACT_ATTEMPTS: u32 = 3;       // prompt-too-long 压缩重试
+pub const MAX_TRANSPORT_ATTEMPTS: u32 = 10;    // 瞬态网络重试
+pub const MAX_CONTINUATION_ATTEMPTS: u32 = 3;  // MaxTokens 续写
 ```
+
+传输错误更宽容（长任务可能连续遇到多次间歇失败），压缩与续写各 3 次。另有两个只属于**摘要调用内部**的预算，不是循环级计数器：`MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS`（5，摘要调用的瞬态重试）与 `MAX_COMPACT_SUMMARY_ATTEMPTS`（5，截断续写，见 [上下文压缩](./05_chapter_compact_zh.md) §5）。
 
 当某计数器超过上限（或错误不匹配任何类别）时，`agent_loop` 返回错误，本轮真正失败。
 
@@ -53,7 +57,13 @@ pub struct RecoveryState {
 
 ## 3. 错误分类
 
-两个分类器都作用于**小写化的错误字符串**（`error.to_string().to_lowercase()`），而非类型化错误——LLM 层把 provider 失败以文本形式抛出。
+入口是 `classify_llm_error` / `classify_error`，**先看类型，再退回文本**：
+
+1. **类型优先。** `LlmError::HttpError { status, .. }` 直接按状态码判定：`429` / `408` 与所有 `5xx` 是 `Transient`（`is_transient_http_status`），其余 `4xx` 先不急着判死——过长的 prompt 通常也报 400，所以非瞬态状态码还会再做一次文本判定，能识别成 `PromptTooLong` 就仍可恢复。
+2. **文本兜底。** 没有状态码的错误（`Request` / `Auth` 等，以及传输层以 reqwest 散文形式到达的失败）走 `classify_text`：小写化后匹配下面的子串。
+3. `classify_error` 在 `anyhow::Error` 上先 `downcast_ref::<LlmError>()`——`Agent::stream_message` 保留了类型化 cause，因此循环实际走的是类型路径；downcast 失败才退化为纯文本。
+
+文本兜底之所以仍存在：没有类型就没有办法把一个 429 和一句读起来像 429 的散文区分开（测试 `boxed_errors_are_classified_through_the_typed_cause` 钉住这一点）。
 
 ### Prompt 过长
 
@@ -68,7 +78,7 @@ pub fn is_prompt_too_long_error(error_text: &str) -> bool {
 
 ### 瞬态传输
 
-匹配以下任一子串：`timeout`、`timed out`、`rate limit`、`too many requests`、`unavailable`、`connection`、`overloaded`、`temporarily`、`econnreset`、`broken pipe`。
+匹配以下任一子串：`timeout`、`timed out`、`rate limit`、`too many requests`、`unavailable`、`connection`、`overloaded`、`temporarily`、`econnreset`、`broken pipe`、`http request failed`、`error sending request`。
 
 分类顺序很重要：prompt-too-long **优先**检查，因此同时提到上下文长度与连接问题的错误会走压缩而非重试。
 
@@ -95,12 +105,12 @@ pub fn backoff_delay(attempt: u32) -> Duration {
 
 ## 5. agent_loop 中的恢复流程
 
-**发送失败时按错误文本分类：**
+**发送失败时分类错误（类型优先，文本兜底）：**
 
 ```mermaid
 graph TD
     a_send[stream_message] -->|Ok| b_reset[transport_attempts = 0]
-    a_send -->|Err| c_classify{分类错误文本}
+    a_send -->|Err| c_classify{classify_llm_error}
     c_classify --> d_compact[过长 compact_history]
     c_classify --> e_sleep[瞬态 sleep backoff_delay]
     c_classify --> f_fail[其他或次数用尽 return Err]
@@ -127,7 +137,7 @@ graph TD
 
 ```text
 [Recovery] compact (1/3): context too large
-[Recovery] backoff (2/3): retrying in 4.3s — http request failed: error sending request for url
+[Recovery] backoff (2/10): retrying in 4.3s — http request failed: error sending request for url
 [Recovery] continue (1/3): output truncated
 ```
 
@@ -193,7 +203,7 @@ if !has_tool_calls_now && assistant.content.as_deref().unwrap_or("").is_empty() 
 
 | 文件 | 职责 |
 |------|------|
-| `crates/tact/src/recovery.rs` | `RecoveryState`、分类器、`backoff_delay`、`CONTINUATION_MESSAGE`、`MAX_RECOVERY_ATTEMPTS` |
+| `crates/tact/src/recovery.rs` | `RecoveryState`、分类器（`classify_llm_error` / `classify_error` / `classify_text`）、`is_transient_http_status`、`backoff_delay`、`CONTINUATION_MESSAGE`、`MAX_COMPACT_ATTEMPTS` / `MAX_TRANSPORT_ATTEMPTS` / `MAX_CONTINUATION_ATTEMPTS` |
 | `crates/tact/src/agent/mod.rs` | `agent_loop` 中的恢复分支；计数器重置；`compact_history` 调用 |
 | `crates/tact/src/compact/mod.rs` | compact 策略使用的压缩原语 |
 | `docs/state_machines.md` | 含恢复转移的状态机图 |
@@ -204,13 +214,12 @@ if !has_tool_calls_now && assistant.content.as_deref().unwrap_or("").is_empty() 
 
 | 缺口 | 说明 |
 |------|------|
-| 基于字符串的分类 | 对小写错误文本做匹配很脆弱；provider 改措辞就会漏检 |
+| 文本兜底仍脆弱 | 有类型时按状态码判定；但 `Request` / `Auth` 一类无状态码的失败仍靠小写子串匹配，provider 改措辞就会漏检 |
 | 过宽的传输模式 | `"connection"` 会匹配许多无关错误（例如 echo 进 LLM 失败的 tool 错误） |
 | `compact_attempts` 循环内从不重置 | 长会话中任意三次 prompt-too-long 就会耗尽该 loop 的预算 |
 | 空 assistant 变通是事后补丁 | `sanitize_assistant_messages` 在消息已在 context 里之后才修补；真正修复应是在 `agent_loop` 避免持久化 |
-| `create_message` 无重试 | `compact_history` 自身的摘要调用没有恢复——瞬态失败会直接中止循环 |
 | 基于时钟的抖动 | 亚秒时间戳在某些调度器下可预测；同时重试可能碰撞 |
-| 无用户可配置上限 | `MAX_RECOVERY_ATTEMPTS` 与延迟是编译期常量 |
+| 无用户可配置上限 | `MAX_COMPACT_ATTEMPTS` / `MAX_TRANSPORT_ATTEMPTS` / `MAX_CONTINUATION_ATTEMPTS` 与延迟都是编译期常量 |
 
 ---
 

@@ -169,7 +169,7 @@ pub fn lock_skills(reg: &SharedSkillRegistry) -> MutexGuard<'_, SkillRegistry> /
 })
 ```
 
-在模板中渲染为 `# Available skills`。见 [系统提示词](./04_chapter_prompt_zh.md)——该节在动态边界之上（除非会话中途在磁盘上增删 skills 且未 reload，否则基本稳定）。
+在模板中渲染为 `# Available skills`。模板在 `skills_available` 内容之外**固定补两段**：一段解释用户斜杠调用留下的 `<skill name="…">…</skill>` / `ARGUMENTS:` 块（避免与 `load_skill` 元数据混淆），另一段是**加载策略**——「问候、闲聊、普通问题不要调用 `load_skill`；只有用户显式斜杠调用或明确要求时才加载；skill 描述不得把自己的调用写成强制」。策略段是模型不滥用 `load_skill` 的依据；Responses 模板同样带这两段。见 [系统提示词](./04_chapter_prompt_zh.md)——该节在动态边界之上（除非会话中途在磁盘上增删 skills 且未 reload，否则基本稳定）。
 
 `# Available skills` **只来自磁盘**：注册表里从来不会有 MCP server 提供的东西。MCP server 是在*工具描述*里宣传自己 skill 的（`skill://<server>/<skill>/SKILL.md`），Tact 原样转发，因此请求确实携带它们，而 system prompt 对此一字不提。`/view-system-prompt` 弹窗的 "Assembled current prompt" 视图会在末尾的 `## MCP skills` 段列出这些路径。
 
@@ -223,7 +223,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
    - 若 skill 正文含裸 `$ARGUMENTS`（非 `$ARGUMENTS[N]`）：替换为参数字符串（可为空）。
    - 否则若参数非空：在 skill 正文内追加 `\n\nARGUMENTS: {args}`。
    - 否则：正文原样。
-3. 系统提示词 `# Available skills` 节说明斜杠调用的 `<skill>` / `ARGUMENTS:`，避免模型与 `load_skill` 元数据混淆。
+3. 系统提示词 `# Available skills` 节说明斜杠调用的 `<skill>` / `ARGUMENTS:`，并附上加载策略（问候 / 闲聊 / 普通问题不得调用 `load_skill`；skill 描述不得把自己的调用写成强制）。
 4. 共享的 `submit_user_task` 与正常 Enter 提交一样驱动 Planning / 用户气泡 / 历史。
 
 `/skill reload` 将 skill 根重新扫描到 TUI 与 agent `ToolContext` **共享**的 `Arc<Mutex<SkillRegistry>>`，刷新 TUI `SkillEntry` 列表并 bump 视觉缓存。重扫在 `spawn_blocking` 里跑（扫描时持注册表锁，且同一时刻只允许一个在飞），结果经 oneshot 回到事件循环再落地，因此不会卡住 UI。下一任务的系统提示词 skill 摘要（及 `load_skill`）因此看到新注册表，无需重启。

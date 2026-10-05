@@ -61,26 +61,35 @@ graph TD
 
 ```rust
 pub struct ToolContext {
-    pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
+    pub skill_registry: SharedSkillRegistry,
+    pub subagent_start_hooks: Vec<Arc<dyn SubagentStartFn>>,   // dispatch 时打戳
+    pub subagent_stop_hooks: Vec<Arc<dyn SubagentStopFn>>,
     pub memory_manager: Arc<Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
     pub background_manager: SharedBackgroundManager,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
+    pub subagent_manager: SharedSubagentManager,
     pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    pub ui_responder: UiResponder,               // ask_user / 权限选择 的请求-应答注册表
     pub progress_reporter: ToolProgressReporter,
     pub cancel_flag: Arc<AtomicBool>,
     pub bash_timeout_secs: u64,
-    pub sandbox: Option<Arc<dyn Sandbox>>,          // 启动时解析一次
+    pub bash_nice: i32,                          // 默认 10；0 关闭
+    pub sandbox: Option<Arc<dyn Sandbox>>,       // 启动时解析一次
     pub sandbox_degraded: Option<Arc<SandboxDegradation>>,
+    pub session_id: Option<String>,              // with_session 时有值
+    pub session_store: Option<DynSessionStore>,
+    pub permission_snapshot: Option<PermissionSnapshot>,   // spawn_subagent 继承父级权限
+    pub subagent_results: Option<Arc<Mutex<VecDeque<SubagentResult>>>>,
 }
 ```
 
-由 UI 入口构建一次，每次 tool call 克隆。文件工具相对 `work_dir` 解析路径。
-`for_invocation(tool_id)` 为本次调用绑定新的 `ToolProgressReporter`；
+在 `session_bootstrap::bootstrap_session` 里构建一次（两个前端共用），每次 tool call 克隆。文件工具相对 `work_dir` 解析路径。
+`for_invocation(tool_id)` 为本次调用绑定新的 `ToolProgressReporter`；`for_invocation_with_redaction` 额外设置实时输出脱敏级别（流式与最终结果分开处理）。
 `cancel_flag` 与 agent runtime 共享，`bash_timeout_secs` 携带 resolved 墙钟时限。
-当 `ui_tx` 缺失或已关闭时，reporter 为 no-op。
+当 `ui_tx` 缺失或已关闭时，reporter 为 no-op；`ui_responder` 为空时 `ask_user` 干净失败而不是挂在一个没人应答的提示上。
 
 ---
 
@@ -108,7 +117,9 @@ Spec 通过 `OnceLock` 只算一次——正常用法下首次 `tool_specs()` �
 
 ### 主 agent（`toolset()`）
 
-注册 40+ 工具，含文件系统、shell、web、任务、团队、worktree、memory、skills、压缩与子 agent  spawn。完整列表见 `crates/tact/src/tool/mod.rs` 第 116–157 行。
+`try_toolset()`（`crates/tact/src/tool/registry.rs` 第 33–75 行）注册 **35 个**工具：文件系统、shell、后台任务、任务、团队、worktree、memory、skills、压缩与子 agent spawn。`save_memory` 随 `[agent].memory_enabled` 增删，因此关闭 memory 时是 34 个。
+
+**注意 `apply_patch` 不在其中。** 它的模块（`tool/apply_patch.rs`）与 `APPLY_PATCH_METADATA` 都还在，但 `454367d6` 把它从 registry 的 import 中删掉后再没有任何 toolset 注册它——模型无法调用。`edit_file` 恢复之后它就退出了工具面，残留的元数据是孤儿（见 [任务与工具调度](./11_chapter_task_zh.md) §3）。
 
 ### 子 agent（`subagent_toolset()`）
 
@@ -270,12 +281,16 @@ pipeline 来绕过应用缓冲。
 
 | 模块 | 工具名 | 备注 |
 |------|--------|------|
-| `read_file.rs`, `write_file.rs`, `edit_file.rs` | 文件 I/O | 路径安全；`read_file` 流式 PARTIAL 分页 |
+| `read_file.rs` / `write_file.rs` / `edit_file.rs` | `read_file`、`write_file`、`edit_file` | 路径安全；`read_file` 流式 PARTIAL 分页 |
+| `read_image.rs` | `read_image` | 图像输入（视觉模型） |
 | `bash.rs` | `bash` | 校验 shell；流式 pipe、超时、process-group 取消 |
-| `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory_zh.md)（英文） |
-| `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill_zh.md)（英文） |
-| `task.rs`, `subagent.rs` | `spawn_subagent` | 用 `subagent_toolset()` spawn 子 agent |
-| `compact/mod.rs` | `compact` | 上下文压缩触发 |
+| `background_run.rs` | `background_run`、`check_background`、`wait_background` | 见 [后台任务](./13_chapter_background_zh.md) |
+| `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory_zh.md) |
+| `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill_zh.md) |
+| `task.rs` | `task_create` / `task_get` / `task_list` / `task_update` | 见 [持久任务](./19_chapter_persistent_tasks_zh.md) |
+| `subagent.rs` | `spawn_subagent` / `check_subagent` / `wait_subagent` / `cancel_subagent` | 用 `subagent_toolset()` spawn 子 agent |
+| `compact.rs` | `compact` | 上下文压缩触发（Responses 下不注册） |
+| `apply_patch.rs` | —（未注册） | 模块与元数据保留，但没有任何 toolset 注册它 |
 
 ---
 

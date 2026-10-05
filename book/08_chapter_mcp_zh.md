@@ -692,7 +692,7 @@ sequenceDiagram
 | Prompts | `crates/tact/src/mcp/prompt.rs` | `list_mcp_prompts` / `get_mcp_prompt`：`prompts/list` 与 `prompts/get`，按 role 渲染消息；参数只做字符串化与拒绝，不猜占位符 |
 | Agent 集成 | `crates/tact/src/agent/mod.rs` | `Agent::new` 合并 tool spec；每轮 LLM 用 `all_tool_specs()` |
 | 并行调度 | `crates/tact/src/agent/tool_schedule.rs` | 同 Server 串行；不同 Server 可并行 |
-| 入口 | `crates/tact-ui/src/headless.rs`, `interactive.rs` | 启动时 `load_mcp_router()` |
+| 入口 | `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里 `load_mcp_router_with_report()`（两个前端共用）；报告经 `Notices` 输出，`mcp_cli.rs` 另有一条 CLI 路径 |
 
 ### 6.1 工具命名与路由
 
@@ -724,7 +724,7 @@ mcp__demo__postgres__query
 - **同一 Server** 上多个工具：**串行**（避免连接竞态）
 - **不同 Server** 上的工具：**可并行**
 
-见 `crates/tact/src/agent/tool_schedule.rs` 中的 `mcp_tool_resources` 及相关测试。
+见 `crates/tact/src/agent/tool_schedule.rs` 的 `mcp_server_resources(server)` 及相关测试（`mcp_tools_on_same_server_serialize` / `mcp_tools_on_different_servers_run_in_parallel`）。它给每个 server 一个 `__mcp__<server>` 写标记，而不是把 MCP 一律当 barrier；server 名为空时才退化为 `ToolResources::barrier()`。Tact 自己的资源 / prompt 工具另算：`read_mcp_resource` / `get_mcp_prompt` 显式给了 `server` 时用同一个 per-server 标记，不给 `server` 的列表才是 barrier——列表可能触及每个 server。
 
 ---
 

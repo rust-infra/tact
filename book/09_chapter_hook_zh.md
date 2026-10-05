@@ -121,10 +121,22 @@ Hooks 以 trait object 存在 agent 上：
 ```rust
 pub enum Hook {
     SessionStart(Box<dyn SessionStartFn>),
+    UserPromptSubmit(Box<dyn UserPromptSubmitFn>),
     PreToolUse(Box<dyn PreToolUseFn>),
+    PermissionRequest(Box<dyn PermissionRequestFn>),
     PostToolUse(Box<dyn PostToolUseFn>),
+    Interrupt(Box<dyn InterruptFn>),
+    Stop(Box<dyn StopFn>),
+    SessionEnd(Box<dyn SessionEndFn>),
+    PreCompact(Box<dyn PreCompactFn>),
+    PostCompact(Box<dyn PostCompactFn>),
+    PostToolUseFailure(Box<dyn PostToolUseFailureFn>),
+    Notification(Box<dyn NotificationFn>),
+    TaskCompleted(Box<dyn TaskCompletedFn>),
 }
 ```
+
+13 个变体。`HookTypes` 是同一枚举的 strum discriminant（`#[strum_discriminants(name(HookTypes))]`），供 `hooks_by_type` / `invoke_hooks!` 过滤用——所以**新增一个 hook 事件只需给 `Hook` 加一个变体**，过滤与分发自动跟上。`SubagentStart` / `SubagentStop` 不在这里（见 §2）。
 
 可直接注册闭包——任何签名正确的 `Send + Sync` 异步闭包都实现对应 trait。
 
@@ -228,7 +240,7 @@ hook 文件是可执行的配置，而仓库可以附带 `.tact/hooks.json`—�
 
 输出契约以 **Codex**（`codex-rs/hooks`）为准：`decision` / `reason`、`hookSpecificOutput.additionalContext`、`suppressOutput`、`continue` 与 `command` handler 才是 Tact 建模并遵守的部分。只属于 Claude 的输出有意不实现——这里没有 `systemPrompt` 处理，因为没有插件能合法发出它（Claude 的 SessionStart 文档列的是 `additionalContext` / `initialUserMessage` / `watchPaths` / `sessionTitle` / `reloadSkills`，而 Codex 的 schema 恰好只有 `hookEventName` + `additionalContext`）。
 
-已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks_with_report`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把**已审核**的那些注册到 `Agent` 上，覆盖十五个映射事件中的十三个（`SubagentStart` / `SubagentStop` 改由 `plugin_subagent_*_hooks` 构建 `ToolContext` 闭包）：
+已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks_with_report`（`crates/tact/src/plugin/hooks.rs`）在 `session_bootstrap::bootstrap_session` 中把**已审核**的那些注册到 `Agent` 上（两个前端共用同一次注册），覆盖十五个映射事件中的十三个（`SubagentStart` / `SubagentStop` 改由 `plugin_subagent_*_hooks` 构建 `ToolContext` 闭包）：
 
 - `SessionStart` — matcher 与真实的 `source`（`startup` / `resume` / `compact`）匹配；`additionalContext`（JSON，或纯 stdout —— 参考实现 `basic-memory` 插件正是以这种形式打印它的简报）会在第一轮之前被记录为一条合成的 `<hook-context>` user 消息；`continue: false` 会跳过这一轮（该 schema 里没有 `decision`）。
 - `UserPromptSubmit` — matcher 匹配 prompt 文本；`additionalContext` 输出追加到用户 prompt。
@@ -400,7 +412,8 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 | `crates/tact/src/agent/mod.rs` | `pre_tool`、`post_tool`、`session_start`、`hooks_by_type` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call` 中的 PreToolUse / PostToolUse 调用 |
 | `crates/tact/src/permission/mod.rs` | PreToolUse 之后运行；与 hooks 分离 |
-| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources` / `config_hook_paths`（六个来源）、`HooksFile::{from_file, from_toml_file}`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`run_hook`（按 `HookCommand::kind` 分发）、`run_command_hook`、`run_mcp_tool_hook`、`definition_text`、`build_payload` |
+| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources` / `collect_hook_sources_with` / `config_hook_paths`（**七个**来源，即 §6 表）、`HooksFile::{from_file, from_toml_file}`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`run_hook`（按 `HookCommand::kind` 分发）、`run_command_hook`、`run_mcp_tool_hook`、`definition_text`、`build_payload` |
+| `crates/tact-ui/src/session_bootstrap.rs` | `apply_plugin_hooks_with_report` 的调用点（两个前端共用），以及 `plugin_subagent_start_hooks` / `plugin_subagent_stop_hooks` 到 `ToolContext` 的打戳 |
 | `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget` 及其渲染函数 |
 | `crates/tui/src/handlers/hooks.rs` | `/hooks list` / `trust` / `forget` —— 解析与空闲门控；实际工作由 driver 执行 |
 | `crates/tact-ui/src/driver.rs` | `UserCommand::Hooks{List,Trust,Forget}` → `survey_hooks` / `trust_hooks` / `forget_hook_trust`，经 `Info` / `MdInfo` 通道上报 |

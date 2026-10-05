@@ -45,7 +45,7 @@ pub struct BackgroundTaskRecord {
 }
 ```
 
-**混合存储（hybrid）。** DB 记录保留元数据与输出前 50,000 字符（有界、轮询便宜），而 **完整** stdout+stderr 流随到达即追加写入 `<workdir>/.tact/background/<id>.log`。`output_path` 字段指向该文件，agent（或人）可用 `bash` 工具 `tail` / `grep` 全量日志，而无需把 50k JSON 塞进 context。文件创建是 best-effort：失败时任务照常运行，DB 记录仍持有截断输出。
+**混合存储（hybrid）。** DB 记录保留元数据与输出的**最后** 50,000 字符（`OutputAccumulator` 超过 `MAX_OUTPUT_CHARS` 时 `keep_last`，丢的是**最旧**的部分——记的是尾部，不是开头），而 **完整** stdout+stderr 流随到达即追加写入 `<workdir>/.tact/background/<id>.log`。`output_path` 字段指向该文件，agent（或人）可用 `bash` 工具 `tail` / `grep` 全量日志，而无需把 50k JSON 塞进 context。文件创建是 best-effort：失败时任务照常运行，DB 记录仍持有截断输出。
 
 `BackgroundManager` 持有 store 与 id 源：
 
@@ -97,7 +97,7 @@ sequenceDiagram
 | 超时 | **没有。** 任务一直运行到命令退出或会话被取消——构建与测试套件可以跑任意久 |
 | 取消 | 会话的取消标志（Esc / 取消）会终止该会话所有运行中的任务：标志在进度 tick（约 50 ms）上被检查，`SIGKILL` 发给任务的**进程组**，因此 `cargo`/`npm` 等孙进程随 shell 一起死，而不是变成孤儿继续跑。status 变为 `Error`，内容为 `Cancelled by the user` |
 | 实时推送 | stdout/stderr 增量读取并以 `AgentUpdate::ToolProgress` 推送（约 50ms 一批，实时预览保留最近 ~4 KB）；不再等完成后一次性缓冲 |
-| 输出上限 | stdout+stderr 前 50,000 字符持久化到记录；**全量**输出追加到 `<workdir>/.tact/background/<id>.log`（见 `output_path`） |
+| 输出上限 | stdout+stderr 的**最后** 50,000 字符持久化到记录（`MAX_OUTPUT_CHARS`，超出丢最旧）；**全量**输出按到达顺序追加到 `<workdir>/.tact/background/<id>.log`（见 `output_path`） |
 | 退出码 | 非零退出 → `Error`；退出码本身不记录 |
 | 进程清理 | `kill_on_drop(true)` — future 被 drop 时子进程被 kill |
 
@@ -117,7 +117,7 @@ ID 为原子计数器低 32 位，格式化为 8 位十六进制（`{:08x}`）�
 
 ## 5. 启动时崩溃恢复
 
-`BackgroundManager::new`（在 `headless.rs` / `interactive.rs` 会话启动时调用）扫描 `background_tasks` 表并修复孤儿：仍标记 `running` 的记录属于已不存在的进程，重写为：
+`BackgroundManager::new`（在 `session_bootstrap::bootstrap_session` 里随会话启动调用，headless 与交互两个前端共用）扫描 `background_tasks` 表并修复孤儿：仍标记 `running` 的记录属于已不存在的进程，重写为：
 
 ```text
 status: error
@@ -149,7 +149,7 @@ output: "Process interrupted (agent restarted)"
 | `crates/tact/src/shell.rs` | 与 `bash` 共享的 `validate_shell_command` blocklist |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.background_manager` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的后台工具 |
-| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 启动时从 `tact.db` 构造 manager |
+| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` 构造 manager；headless / 交互共用 |
 | `docs/state_machines.md` | 后台 job 状态图 |
 
 ---
@@ -160,7 +160,7 @@ output: "Process interrupted (agent restarted)"
 |------|------|
 | 只能靠取消提前结束 | 没有按任务 kill 的工具：要结束运行中的任务就得取消回合（会停掉该会话**所有**任务）。模型可用的 `kill_background` 是后续可做的 |
 | 模型无完成 push | TUI 卡片会收到 `BackgroundTaskFinished`，但 **模型** 不会被动收到任何东西：它必须主动问（`wait_background`、`background_run(wait_ms:)`）或轮询 `check_background` |
-| 输出交错丢失 | stdout 与 stderr 完成后拼接，非按时间合并 |
+| 交错只有到达顺序 | stdout 与 stderr 由两个并发 reader 读出，按**到达顺序**合并进同一个缓冲（`OutputAccumulator::push`），没有逐行时间戳——合并后无法还原两个流各自的真实时序 |
 | 退出码丢弃 | 合并输出文本之外的失败原因不可用 |
 | 日志文件 best-effort | `<workdir>/.tact/background/<id>.log` 创建失败时，仅剩 DB 截断记录 |
 | 日志文件累积 | `.tact/background/*.log` 从不清理（生命周期与 `background_tasks` 表一致） |

@@ -42,42 +42,39 @@ Sandbox    = 执行边界   （运行中的命令能访问什么？）
 ### 核心类型
 
 ```rust
-pub enum CapabilitySource { Native, Mcp }
-
 pub enum CapabilityRisk { Read, Write, High }
-
-pub struct CapabilityIntent {
-    pub source: CapabilitySource,
-    pub server: Option<String>,  // MCP server 段（若有）
-    pub tool: String,              // 解析后的短工具名
-    pub risk: CapabilityRisk,
-}
 ```
 
-`normalize_capability(tool_name, tool_input)` 是唯一入口。它解析工具名，再调用 `classify_risk()`。
+没有单独的"意图"结构体，也没有按工具名做字符串匹配的 `classify_risk`。风险由工具**自己的元数据**算出——`ToolMetadata.permission`（一份 `PermissionPolicy`）解析本次输入：
 
-### Native 与 MCP 工具名
+```rust
+metadata.permission.resolve(&tool_use.input)   // → CapabilityRisk
+```
 
-| 模式 | 示例 | 解析结果 |
-|------|------|----------|
-| Native | `read_file` | `source = Native`，`tool = "read_file"` |
-| MCP | `mcp__demo__db__query` | `source = Mcp`，`server = Some("demo__db")`，`tool = "query"` |
+预检对每个已解析调用取风险的来源（`crates/tact/src/agent/tool_dispatch.rs`）：
 
-MCP 名使用前缀 `mcp__`，随后 `server__tool`，以 **最右侧** 的 `__` 分割（因此 server ID 可含下划线）。
+| 解析结果 | 风险来源 |
+|----------|----------|
+| `ResolvedTool::Native { metadata }` | `metadata.permission.resolve(&input)` |
+| `ResolvedTool::Mcp { server, tool }` | server 条目的 `tools.<name>.risk` / `default_tool_risk`；静默条目保持 **High** |
+| `ResolvedTool::McpResource` / `McpPrompt` | Tact 自己的资源 / prompt 工具，没有 server 条目能声明它们，因此由 `[mcp]` 的 `resource_*_risk` / `prompt_*_risk` 决定，默认 High |
+| `ResolvedTool::Unknown` | **High** |
+
+### 工具名与 MCP 名
+
+工具名只用于**匹配规则与显示**（`mcp__demo__db__query` → server `demo__db`、tool `query`，以**最右侧**的 `__` 分割，因此 server ID 可含下划线）。分类不再读工具名：名字是字符串，策略是数据。
 
 ### 风险规则
 
-分类是启发式的——基于工具名前缀，对 `bash` 则基于命令字符串：
+`PermissionPolicy` 七个变体，`resolve` 是唯一的分类入口（`crates/tact/src/tool/metadata.rs`）：
 
 | 风险 | 规则 |
 |------|------|
-| **Read** | 使用 `PermissionPolicy::Read` 的工具（如 `read_file`）；可证明只读的 shell 命令（见 [§7](#7-shell-高风险检测)） |
-| **Write** | 使用 `PermissionPolicy::Write` 的工具；无法证明只读的 shell 工具命令（`bash` / `background_run` / `worktree_run`） |
-| **High** | 使用 `PermissionPolicy::High` 的工具（如 `spawn_subagent`）；以 `sudo ` 或 `su ` 开头的 shell 命令 |
+| **Read** | `Read`（无路径目标的元数据类工具，如 `sleep`、`load_skill`）；`ReadPath { path_field }` 目标不敏感时（`read_file` / `read_image`）；`ShellCommand` 且命令**可证明只读**（见 [§7](#7-shell-高风险检测)） |
+| **Write** | `Write`；`WritePath { path_field }` 目标不敏感时（`write_file` / `edit_file`）；`PatchPaths` 目标不敏感时；`ShellCommand` 但命令无法证明只读 |
+| **High** | `High`（如 `spawn_subagent`）；`ReadPath` / `WritePath` / `PatchPaths` 命中敏感目标时；`ShellCommand` 的命令串提到敏感路径（`sensitive::classify_command` 命中），或以 `sudo ` / `su ` 开头 |
 
 `shell.rs` 另有执行期硬拦截列表，即使权限已批准也会拒绝部分危险命令（见 [§7](#7-shell-高风险检测)）。
-
-MCP 工具使用各自的 metadata / 默认值；dispatch 关卡将未知工具视为 **High**。
 
 ---
 
@@ -240,7 +237,7 @@ pub fn is_high_risk_shell_command(command: &str) -> bool;
 pub fn validate_shell_command(command: &str) -> Result<()>;
 ```
 
-`is_high_risk_shell_command` 将命令小写并检查被拦截子串：
+`is_high_risk_shell_command` 是**执行层**的门（`validate_shell_command` 是它唯一的调用方），不是风险分类器——把两者混为一谈会以为 `sudo` 之所以弹窗是因为这张表，其实是因为 `PermissionPolicy::ShellCommand` 里的 `sudo `/`su ` 前缀判定。它将命令小写并检查被拦截子串，命中即在 spawn 前拒绝，即使用户已批准：
 
 | 模式 | 效果 |
 |------|------|
@@ -290,8 +287,8 @@ sequenceDiagram
     end
 ```
 
-1. **权限层** — `classify_risk` 用 `is_high_risk_shell_command` 标记 High risk → 始终 `Ask`（只读 bash 除外）。
-2. **执行层** — `bash` 与 `background_run` 在 spawn 前调用 `validate_shell_command`。被拦截的命令即使用户已批准也会失败。
+1. **权限层** — `PermissionPolicy::ShellCommand::resolve` 先跑敏感命令扫描（`sensitive::classify_command`），再查 `sudo ` / `su ` 前缀，命中即 **High** → 始终 `Ask`；可证明只读的命令归 **Read**（直接放行）；其余归 **Write**。
+2. **执行层** — `bash` 与 `background_run` 在 spawn 前调用 `validate_shell_command` → `is_high_risk_shell_command`。被拦截的命令即使用户已批准也会失败。
 
 无害的破坏性路径可在执行层通过但仍可能提示：例如 `rm -rf ./build` 通过 `validate_shell_command` 但分类为 **Write**，Default 模式会先询问。
 
@@ -408,20 +405,21 @@ mode = "default"   # "default" | "plan" | "auto"
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`、`PermissionManager`、`normalize_capability`、分类启发式、`AllowOutcome` |
+| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`、`PermissionMode`、`PermissionManager`（`check` / `check_with_auto` / `ask_user` / `allow_tool_with_input`）、`PermissionDecision`、`AllowOutcome`、`format_permission_prompt` |
 | `crates/tact/src/security/sensitive.rs` | 敏感路径注册表、两个档位、`Scanner`、`classify_command`、`refusal_text` |
 | `crates/tact/src/security/redact.rs` | `redact`、`level_for_call`、`StreamRedactor` |
 | `crates/tact/src/security/mod.rs` | `SecurityConfig` 解析与 global+project 合并 |
 | `crates/tact/src/shell.rs` | 共享高风险 shell 模式；执行时 `validate_shell_command` 拦截 |
 | `crates/tact/src/agent/tool_dispatch.rs` | 预检权限；`RequestSelect` 处理；`StepFinished` 上的 `permission_label` |
 | `crates/tact/src/agent/mod.rs` | `AgentRuntime.permission_manager` |
-| `crates/tact/src/tool/metadata.rs` | `PermissionPolicy`（含 `ReadPath` / `WritePath` / `PatchPaths`）、`PermissionPromptPolicy::PatchTarget` |
+| `crates/tact/src/tool/metadata.rs` | `PermissionPolicy`（`Read` / `Write` / `High` / `ReadPath` / `WritePath` / `PatchPaths` / `ShellCommand`）与其 `resolve` 分类入口、`PermissionPromptPolicy::PatchTarget` |
+| `crates/tact/src/tool/readonly_shell.rs` | `is_read_only_shell_command` — `ShellCommand` 的只读白名单 |
 | `crates/tact/src/tool/progress.rs` | `ToolProgressReporter`——实时输出脱敏及其 flush |
 | `crates/tact/src/tool/bash.rs` | spawn shell 前调用 `validate_shell_command`；并 flush 脱敏器 |
 | `crates/tact/src/background.rs` | 后台 shell 命令同样校验 |
 | `crates/tact/src/tool/subagent.rs` | 子 agent 用 `Default` 模式；继承 `ui_tx` |
 | `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
-| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 会话启动时构造 `PermissionManager` |
+| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里构造 `PermissionManager`（`try_new_with_settings`）；headless / 交互共用 |
 | `crates/tact/src/config/types.rs` | `[permission] mode` TOML schema |
 | `crates/tui/src/widgets/state/app/agent.rs` | 处理 `AgentUpdate::RequestSelect` |
 | `crates/protocol/src/lib.rs` | `AgentUpdate::RequestSelect`、`StepResult.permission_label` |
@@ -464,7 +462,7 @@ mode = "default"   # "default" | "plan" | "auto"
 |------|------|----------|
 | `read_file`、`read_image` | `ReadPath { path_field }` | 路径（绝对路径或以 `~` 开头时跳过——`safe_path` 本来就会拒绝，在必然报错前弹窗只是噪音） |
 | `edit_file`、`write_file` | `WritePath { path_field }` | 路径 |
-| `apply_patch` | `PatchPaths` | 每个 `+++ b/<path>` / `+++ <path>` 头，复用调度器同一套提取 |
+| `apply_patch` | `PatchPaths` | 每个 `+++ b/<path>` / `+++ <path>` 头，复用调度器同一套提取（**注意**：`apply_patch` 当前没有任何 toolset 注册它，这一行只在它被重新接线后生效——见 [工具系统](./07_chapter_tool_zh.md) §5） |
 | `bash`、`background_run`、`worktree_run` | `ShellCommand { command_field }` | 命令字符串的词元，且**先于**只读分类器 |
 
 `classify_command` 先去掉引号再切分（因此 `~/.ss"h"/id_rsa` 会还原成 shell 实际传入的词元），并按 shell 元字符切分，这也是重定向目标（`> .env`）能被抓到的原因。不含 `.` 与 `/` 的裸词只与 `BARE_SECRET_NAMES` 比对——否则像 `"foo_rsa"` 这样的 grep 模式会换来一次拒绝。它**不**解析命令替换、变量，或 `python -c`。

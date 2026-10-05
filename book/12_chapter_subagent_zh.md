@@ -15,10 +15,10 @@
 | 入口 | TUI / headless `agent_loop` | 父级在工具执行期间调用 `spawn_subagent` |
 | 对话历史 | 完整会话 context | 仅单条 user prompt（无父级消息） |
 | System prompt | 动态 Tera 模板（skills、memory、AGENTS.md） | 固定静态字符串 |
-| Native 工具 | `toolset()`（约 40 个） | `subagent_toolset()`（5 个） |
+| Native 工具 | `toolset()`（35 个，`save_memory` 随 `memory_enabled` 增删） | `subagent_toolset()`（5 个） |
 | MCP 工具 | 自 config 加载 | **无**（`MCPToolRouter::new()`） |
 | Hook | 父级已注册 hook | 空 hook 列表 |
-| Session SQLite | 有（在 `tui.rs` 接线时） | **有** — 新建子 session；`sessions.ref_id` = 父 id（父无 session 时为 `''`） |
+| Session SQLite | 有（`session_bootstrap::bootstrap_session` 接线） | **有** — 新建子 session；`sessions.ref_id` = 父 id（父无 session 时为 `''`） |
 | Permission manager | 父级模式 | **继承** — 从父级实时快照克隆（mode + always-allowed 列表 + settings），经 `PermissionManager::from_snapshot` |
 | TUI 通道 | 父级 `ui_tx` | **打标** — 流式/步骤以 `ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡；`RequestSelect*` 透传（加 `[Subagent]` 前缀） |
 | Cancel 标志 | 主 runtime 共享 | **独立** — 用户对父级 Cancel 不会停止进行中的子 agent |
@@ -137,9 +137,9 @@ sequenceDiagram
 
 与主 agent 相比 notable **省略**：
 
-- 无 `spawn_subagent`、`load_skill`、`save_memory`、`compact`、web 工具、LSP、`apply_patch`、batch 工具
-- 无 team、worktree 或持久任务管理工具
-- 无 MCP 前缀工具
+- 无 `spawn_subagent`、`load_skill`、`save_memory`、`compact`、`apply_patch`、`read_image`、`ask_user`
+- 无 team、worktree、后台任务或持久任务管理工具
+- 无 MCP 前缀工具，也无 Tact 的 MCP 资源 / prompt 工具
 
 默认五件套由单元测试 `subagent_toolset_has_five_tools` 强制。
 
@@ -168,13 +168,13 @@ You are a principal reviewer. …
 
 `build_system_prompt()` 每轮 verbatim 返回该字符串 —— 无 skill 摘要、memory 注入、AGENTS.md 或目录快照。主 agent 差异见 [System Prompt](./04_chapter_prompt_zh.md)。
 
-压缩与恢复 **仍** 在子 agent 循环内运行（[上下文压缩](./05_chapter_compact_zh.md)、[错误恢复](./06_chapter_recovery_zh.md)）：`micro_compact`、`compact_history`、transport 重试与 continuation 消息适用于子 agent 私有 `runtime.context`。
+压缩与恢复 **仍** 在子 agent 循环内运行（[上下文压缩](./05_chapter_compact_zh.md)、[错误恢复](./06_chapter_recovery_zh.md)）：`micro_compact`（默认关闭，与主 agent 同一开关）、`compact_history`、transport 重试与 continuation 消息都作用于子 agent 私有的 `runtime.context`。
 
 ---
 
 ## 6. 权限与 UI
 
-`spawn_subagent` 在 `PermissionManager::classify_risk` 中分类为 **High** 风险 —— Default 模式始终触发 Ask，即使 allowlist，因其将完整 shell 与文件系统访问委托给嵌套 agent。
+`spawn_subagent` 的 `ToolMetadata.permission` 声明 `PermissionPolicy::High`，因此 Default 模式始终触发 Ask，即使 allowlist，因其将完整 shell 与文件系统访问委托给嵌套 agent。（风险来自元数据，不是按工具名匹配的分类器——见 [权限模型](./10_chapter_permission_zh.md) §2。）
 
 **权限继承（Claude 风格）：** `execute_tool_call` 在 wave 运行前将 `PermissionSnapshot`（mode + 会话内 always-allowed 列表 + 已加载 settings）stamp 到 `ToolContext` 上，`spawn_subagent` 用 `PermissionManager::from_snapshot(...)` 构建子级 manager。父级 `Default` → 子 `Default`，`Plan` → 子 `Plan`（只读），`Auto` → 子 `Auto`（sticky）。子级 `consecutive_denials` 计数归零。无父 agent 的 orphan/test context 回退到旧行为：`PermissionMode::Default` + 从磁盘加载 settings。这也修复了只读逃逸：`Plan` 父级不再能 spawn 一个可写文件的 `Default` 子级。
 
@@ -184,7 +184,7 @@ You are a principal reviewer. …
 
 ## 7. 调度交互
 
-在 `crates/tact/src/agent/tool_schedule.rs` 中，`spawn_subagent` 声明 `ResourcePolicy::Barrier`。普通的（共享文件系统）`spawn_subagent` 调用绝不与同一 wave 中任何其他工具并行 —— 见 [任务与工具调度](./11_chapter_task_zh.md)。该场景的后台并行来自 `tokio::spawn`（`run_in_background`），而非放宽 wave 调度。
+`spawn_subagent` 的 `ToolMetadata.resources` 声明 `ResourcePolicy::Barrier`。普通的（共享文件系统）`spawn_subagent` 调用绝不与同一 wave 中任何其他工具并行 —— 见 [任务与工具调度](./11_chapter_task_zh.md)。该场景的后台并行来自 `tokio::spawn`（`run_in_background`），而非放宽 wave 调度。
 
 **worktree 隔离的 spawn 是例外。** `execute_tool_call` 按调用解析资源（`crates/tact/src/agent/tool_dispatch.rs` 的 `tool_resources_for`）：`worktree: true` 的 `spawn_subagent` 映射为 `ToolResources::independent()` —— 其文件影响被限定在泳道内，因此可与同一 wave 中其他工具（包括其他隔离子 agent）并行 fan-out，而不会与主树竞争。这正是 2026-08-26 异步子 agent 设计评审中的 "worktree follow-up"：一旦每个子 agent 拥有作用域化文件系统，阻塞型子 agent 的同一 wave fan-out 就安全了。注意：worktree 是**组织边界**，**不是** OS 沙箱 —— 子 agent 的 `bash` 仍可访问泳道之外；隔离只是防止*常规*路径冲突编辑互相碰撞。
 
@@ -228,7 +228,7 @@ let summary = subagent
 |--|-------------------|-------------------------|
 | 运行 LLM 循环 | 是，嵌套 `agent_loop` | 否 — 仅 roster 条目 |
 | 隔离 | 全新 context，5 个工具 | N/A |
-| 持久化 | 独立 SQLite session（`ref_id`→父） | `.tact/team/` JSON |
+| 持久化 | 独立 SQLite session（`ref_id`→父） | SQLite `teammates` + `inbox_messages` 表（遗留 `team/*.json` 不再读取） |
 | 用例 | 委托聚焦的编码工作 | 多 agent 协调协议 |
 
 见 [团队协调](./14_chapter_team_zh.md)。
@@ -240,8 +240,8 @@ let summary = subagent
 | 文件 | 角色 |
 |------|------|
 | `crates/tact/src/tool/subagent.rs` | `spawn_subagent` + `check_subagent` + `wait_subagent` + `cancel_subagent` handler — spawn、同步/异步循环、summary 提取、resume、max_turns |
-| `crates/tact/src/tool/mod.rs` | `SpawnSubagentTool` / `CheckSubagentTool` 实现；`ToolContext` 上的 `permission_snapshot` + `subagent_results` + `subagent_manager` |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `SpawnSubagentTool` + `CheckSubagentTool`；`subagent_toolset()` |
+| `crates/tact/src/tool/mod.rs` | `ToolContext` 上的 `permission_snapshot` + `subagent_results` + `subagent_manager`（工具结构体由 `#[tool]` 宏生成，见 `tool/subagent.rs`） |
+| `crates/tact/src/tool/registry.rs` | `toolset()` 中的四个子 agent 工具（`SpawnSubagentTool` / `CheckSubagentTool` / `WaitSubagentTool` / `CancelSubagentTool`）；`subagent_toolset()` |
 | `crates/tact/src/agent/mod.rs` | `Agent::new`、`agent_loop`（drain + max_turns）、`ensure_session`、`pending_subagent_results` |
 | `crates/tact/src/agent/tool_dispatch.rs` | stamp `permission_snapshot` + `subagent_results`；输入感知 `keep_live` |
 | `crates/tact/src/permission/mod.rs` | `PermissionSnapshot`、`snapshot()`/`from_snapshot()` |

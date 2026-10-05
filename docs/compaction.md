@@ -96,6 +96,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 - **Each loop iteration**: after `micro_compact`, `should_auto_compact` with `incoming = 0`:
   - **Primary:** `last_token_total + estimate_message_tokens(incoming) >= 80% of agent.model_context_window` (default **200,000** tokens)
   - **Fallback:** estimated context + incoming tokens reaches the same 80% threshold; ASCII is estimated at ~4 chars/token, non-ASCII conservatively at 1 char/token
+  - **Responses exception:** `Agent::auto_compact_due` uses the provider-reported `last_token_total` only — the logical-context estimate is deliberately excluded, because native compaction shrinks the wire baseline, not the logical context, so an estimate-driven trigger would re-fire forever. No usage yet ⇒ no trigger
 - Provider prompt-too-long recovery ([Ch 6](../book/06_chapter_recovery_zh.md))
 - Successful manual `compact` tool (after tool results are appended; failed invocations do not rewrite history)
 
@@ -118,7 +119,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 | Setting | Default | Effect |
 |---------|---------|--------|
 | `agent.model_context_window` | 200,000 | Token window: auto Tier-3 trigger at 80% + TUI usage meter; nonzero values must exceed `max_tokens` |
-| `agent.micro_compact_enabled` | `true` | Tier-2 stub pass (`--no-micro-compact` disables) |
+| `agent.micro_compact_enabled` | `false` | Tier-2 stub pass — **opt-in** (`true` enables it; `--no-micro-compact` only forces it off, which is already the default) |
 
 Breaking rename from `context_limit_chars` / `--context-limit-chars` — **no silent alias**.
 

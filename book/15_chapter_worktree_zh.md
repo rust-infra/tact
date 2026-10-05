@@ -107,7 +107,7 @@ sequenceDiagram
 
 ## 5. 并发与接线
 
-`SharedWorktreeManager` 包装 `Arc<WorktreeManager>`——无 mutex，SQLite 连接池串行化写入（与 task/background/team manager 一致）。在 `tui.rs` 启动时构造：
+`SharedWorktreeManager` 包装 `Arc<WorktreeManager>`——无 mutex，SQLite 连接池串行化写入（与 task/background/team manager 一致）。在 `session_bootstrap::bootstrap_session` 里构造一次（headless 与交互两个前端共用）：
 
 ```rust
 let worktree_manager =
@@ -146,7 +146,7 @@ let worktree_manager =
 | `crates/tact/src/tool/worktree.rs` | 六个 `#[tool]` 封装 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.worktree_manager` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 worktree 工具 |
-| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 从 `tact.db` + workdir 构造 manager |
+| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` + workdir 构造 manager；headless / 交互共用 |
 
 ---
 

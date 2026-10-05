@@ -201,7 +201,12 @@ mode = "default"
 # Max entries in the system-prompt project structure snapshot (default: 80)
 # snapshot_max_items = 80
 
-# Truncate old tool results in context (default: true)
+# Truncate old tool results in context (default: false — opt in).
+#
+# Off by default since 2026-07-24: the stub pass invalidates the prompt prefix
+# cache on providers with automatic prefix caching, and `read_file` returns
+# bounded pages of its own, so the pass costs more than it saves. Set `true` to
+# enable it; `--no-micro-compact` can only force it off.
 # micro_compact_enabled = true
 
 # Enable Tact's persistent memory (default: true).

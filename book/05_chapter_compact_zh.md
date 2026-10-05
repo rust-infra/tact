@@ -37,7 +37,7 @@ Tact 的答案是**渐进式防御**：先做免费的本地 stub，必要时再
 | 层级 | 机制 | 成本 | 时机 | 从*上下文*中失去什么 |
 |------|------|------|------|----------------------|
 | 1 | `persist_large_output` | 免费（磁盘 I/O） | 任意成功的原生或 MCP 结果 > 30,000 字符（**`read_file` 除外**） | 完整输出（磁盘保留 + 预览） |
-| 2 | `micro_compact` | 免费 | 每个 LLM 回合开始 | 旧 tool-result 正文（留下 stub） |
+| 2 | `micro_compact` | 免费 | 每个 LLM 回合开始（**默认关闭**，需 `[agent].micro_compact_enabled = true`，见 §9） | 旧 tool-result 正文（留下 stub） |
 | 3 | `compact_history` | 一次额外 LLM 调用（本地）/ Responses 原生 `/responses/compact` | 80% 阈值、prompt-too-long、或 `compact` 工具 | Assistant/工具历史（保留近期真实 user + 摘要；完整 JSONL 在磁盘） |
 
 ```mermaid
@@ -99,16 +99,16 @@ graph TD
 关键顺序：
 
 1. **入口路径** — 在 push 用户 turn 之前，`should_auto_compact` 会预留 `estimate(user_turn)`，避免刚 append 就立刻撑爆窗口。
-2. **每次循环迭代** — 在模型请求前（含工具后的续写 / recovery）先跑 `micro_compact`，再跑 `should_auto_compact(incoming = 0)`。
+2. **每次循环迭代** — 在模型请求前（含工具后的续写 / recovery）先跑 `micro_compact`（默认关闭时立即返回，见 §9），再跑 `should_auto_compact(incoming = 0)`。
 3. **工具执行之后** — 只有**成功**的 `compact` 工具才会设置 `manual_compact`；该路径调用 `compact_history(focus)` 后回到循环顶部。失败 / 被拒绝的 compact 调用不会改写历史。
-4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_RECOVERY_ATTEMPTS`（3）。细节见 [错误恢复](./06_chapter_recovery_zh.md)。
+4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_COMPACT_ATTEMPTS`（3，`crates/tact/src/recovery.rs`）。细节见 [错误恢复](./06_chapter_recovery_zh.md)。
 5. **手动 `compact` 工具** 不能在工具处理函数*内部*改写 context（API 有效性）。Dispatch 仅在成功时记录 flag；`compact_history` 在 tool results **追加之后**再跑。
 
 ---
 
 ## 3. 微压缩（Micro-Compaction）
 
-`micro_compact(messages, enabled)` 在每次模型请求前运行（可通过配置关闭，见 §9）。只触碰包含 `ContentBlock::ToolResult` 的 **user 角色**消息。完整自动压缩也会在此时执行（`incoming = 0`）；入口路径会在 push 前单独预留 incoming user turn。
+`micro_compact(messages, enabled)` 在每次模型请求前运行，但 **`enabled` 默认是 `false`**：自 2026-07-24（`5cb59451`）起 micro-compact 改为**按需开启**——`[agent].micro_compact_enabled = true` 才跑（见 §9）。`--no-micro-compact` 是绝对的「强制关闭」，只能把 TOML 里显式写下的 `true` 覆盖回 `false`，无法开启——在默认配置下它是多余的。只触碰包含 `ContentBlock::ToolResult` 的 **user 角色**消息。完整自动压缩也会在此时执行（`incoming = 0`）；入口路径会在 push 前单独预留 incoming user turn。
 
 ```rust
 const KEEP_RECENT_TOOL_RESULTS: usize = 12;
@@ -171,6 +171,8 @@ OR 两侧都与同一 **token** 窗口比较，且两侧都预留了输出预算
 - **入口（`agent_loop`）**：先对**旧历史** compact（`incoming_turn_tokens = estimate(user_turn)`），再 `push` 本轮原文。
 - **循环内 / recovery / 手动**：本轮已在 context → `incoming_turn_tokens = 0`。
 
+**Responses 例外**：`Agent::auto_compact_due` 对 OpenAI Responses 只认 provider 回报的 `last_token_total`，**不用**逻辑 context 的估算。原因是原生压缩只收缩 wire 基线、不缩小逻辑 context——若让估算参与触发，它会在一个已经压缩过的 context 上永远重触发。因此该路径下 `last_token_total == 0`（尚无用量）时一律不触发，也不做「`max_tokens` 单独越线」的兜底。
+
 摘要后重建（Codex 风格）：**`[近期真实 User…] + [<context-handoff> summary cell]`**，不再是单条 summary。交接摘要是一条带 `<context-handoff>` … `</context-handoff>` 包裹、内存中标记为 `MessageKind::Summary` 的 `User` 角色消息，是**一等公民 cell**：按类型检测（reload 会话回退到 `SUMMARY_PREFIX` 字符串匹配）、永远不会被当成真实 user turn，即使 provider 合并连续 user 消息也能靠标签区分。重建分为三步：
 
 1. **`collect_user_messages`** — 遍历整个 context，用 `is_real_user_message` 挑出真实 user turn（排除工具结果组成的 block 消息、旧 summary 消息、hook 注入的 `<hook-context>` cell 和非 User 角色）。
@@ -183,7 +185,7 @@ OR 两侧都与同一 **token** 窗口比较，且两侧都预留了输出预算
 
 | 阶段 | 余量 | 用途 |
 |------|------|------|
-| 摘要器 **输入** 预算 | 窗口的 **10%** | `compact_history_with_mode` — 确保摘要指令 + 历史尾部在调用 LLM 前有足够空间 |
+| 摘要器 **输入** 预算 | 窗口的 **10%** | `compact_history_local_with_mode` — 确保摘要指令 + 历史尾部在调用 LLM 前有足够空间 |
 | 重建 **最终请求** 安全兜底 | 窗口的 **20%** | `compact_rebuild_headroom_tokens` — 确保压缩后请求（system + tools + 保留用户 + 摘要 + max_output）不会溢出 |
 
 以 200,000 token 窗口为例，摘要器输入余量为 10% = 20,000 tokens，重建兜底为 20% = 40,000 tokens。两者都用于吸收估算误差、JSON 序列化开销，以及保守估算与 provider tokenizer 之间的差异。百分比向上取整，不会向下少留。
@@ -208,7 +210,7 @@ graph TD
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
-| `agent.model_context_window` | **200,000** | Tokens；CLI `--model-context-window` / TOML。由 `context_limit_chars` **破坏性重命名** — **无静默别名**。解析顺序：CLI > `[agent]` > 内置模型→窗口映射（如 `deepseek-v4-pro`、`claude-opus-4-7`、`gpt-5.6-sol` → 1M）> 默认 200,000。该映射是未配置模型时的回退，因此过时的手工值会低估长上下文模型。 |
+| `agent.model_context_window` | **200,000** | Tokens；CLI `--model-context-window` / TOML。由 `context_limit_chars` **破坏性重命名** — **无静默别名**。解析顺序：CLI > `[agent]` > 内置模型→窗口映射（如 `deepseek-v4-pro`、`claude-opus-4-7` → 1,000,000；`gpt-5.6-sol` → 1,050,000）> 默认 200,000。该映射是未配置模型时的回退，因此过时的手工值会低估长上下文模型。 |
 
 压缩完成后会把 `last_token_total` **清零**（摘要调用本身的 usage 是大 prompt，不能代表新 context 体积）；下一轮主循环 LLM 再写入新的用量。见 §11。
 
@@ -625,7 +627,8 @@ graph TD
 |------|--------|------|
 | `.tact/transcripts/transcript_<ts>.jsonl` | `write_transcript` | 压缩前完整对话 |
 | `.tact/tool-results/<id>.txt` | `persist_large_output` | 超大原生/MCP 输出全文 |
-| `.tact/tact.db` messages | `replace_session_messages` | 压缩后的保留 user + 摘要 context |
+| `.tact/tact.db` messages | `replace_session_messages` | 本地压缩后的保留 user + 摘要 context |
+| `.tact/tact.db` messages + `responses_states` | `replace_session_messages_and_provider_state` | Responses 原生压缩：逻辑 context 与协议基线在**同一事务**里替换，避免磁盘上分叉 |
 
 每次写入后，每个溢出目录最多保留修改时间最新的 100 个文件；更旧的普通文件会被删除。
 
@@ -637,7 +640,7 @@ graph TD
 |------|------|------|
 | `agent.model_context_window`（`--model-context-window`） | 200,000 | Token 窗口：80% 时自动压缩 + TUI 用量条；非零时必须大于 `max_tokens`。解析顺序：CLI > `[agent]` > 模型→窗口映射（如 `deepseek-v4-pro` → 1M）> 默认值 |
 | `agent.max_tokens` | 8,000（Kimi K2.x 32,000） | 回复预算、压缩重建时的预留、自动触发的预留——以及 effort 语义 provider 上摘要信封的**下限**（以「指令仍放得下」封顶）；budget 语义 provider 仍保持经典 `min(窗口 × 20%, 2,000)` 文本上限 |
-| `agent.micro_compact_enabled`（`--no-micro-compact`） | `true` | 启用每轮 stub |
+| `agent.micro_compact_enabled`（`--no-micro-compact`） | **`false`** | 每轮 stub 的开关。默认关闭（opt-in）：TOML 里写 `true` 才启用；`--no-micro-compact` 只能强制关闭，无法开启 |
 
 经 `crates/tact/src/config/` 分层解析（CLI > TOML > 默认）。编译期常量（`KEEP_RECENT_TOOL_RESULTS`、`PERSIST_THRESHOLD` …）**尚不可配置**。
 
@@ -680,7 +683,7 @@ flowchart LR
 
 ### 11.1 Micro Compact 已知问题
 
-微截断（Tier 2）以节省上下文为代价换取可用性，但有以下副作用：
+微截断（Tier 2）以节省上下文为代价换取可用性。它自 2026-07-24 起**默认关闭**（见 §9），下面这些副作用正是保持 opt-in 的原因；开启后逐一适用：
 
 | 问题 | 描述 |
 |------|------|
@@ -695,7 +698,7 @@ flowchart LR
 
 | 想法 | 描述 | 优先级 |
 |------|------|--------|
-| **上下文窗口阈值触发** | 仅在上下文使用量超过阈值（如 `model_context_window` 的 50%）时才运行 micro_compact，而非每轮都跑。这样在大部分会话中保持前缀缓存完整，只在真正有内存压力时才截断 | 高 |
+| **上下文窗口阈值触发** | 仅在上下文使用量超过阈值（如 `model_context_window` 的 50%）时才运行 micro_compact，而非每轮都跑。这样在大部分会话中保持前缀缓存完整，只在真正有内存压力时才截断——也是让 micro-compact 能安全恢复默认开启的前提 | 高 |
 | **选择性工具截断** | 排除已自带边界的工具免于截断（如 `read_file` 分页结果），因它们的输出很可能被再次引用。仅截断 `ls`、`echo`、`bash` 等瞬态输出。同时保护前缀缓存不被频繁失效 | 高 |
 | **语义重要性评分** | 对工具结果按重要性打分（如后续是否有引用它的轮次），即使旧的也保留重要的 | 中 |
 | **可配置阈值** | 将 `KEEP_RECENT_TOOL_RESULTS` 和 120 字符 stub 阈值改为运行时可配置，而非编译期常量 | 低 |
