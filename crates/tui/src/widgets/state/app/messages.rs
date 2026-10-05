@@ -191,7 +191,7 @@ impl App {
                     match msg.role {
                         Role::User => {
                             if is_hook_context_cell(&msg) {
-                                self.append_system_markdown(hook_context_body(content));
+                                self.append_hook_context_markdown(hook_context_body(content));
                                 continue;
                             }
                             // Seed the session turn counter: persisted user
@@ -276,6 +276,27 @@ impl App {
             // usize::MAX is correctly clipped by render_log_panel based on visual line count
             self.scroll_log_to_bottom();
         }
+    }
+
+    /// Append hook-injected context, labelled with where it came from.
+    ///
+    /// The body renders exactly as [`Self::append_system_markdown`] does — the
+    /// caller has already stripped the `<hook-context>` framing — which is why
+    /// the label exists: without it a hook's stdout and a markdown notice Tact
+    /// wrote itself are the same row. One dim row is the whole difference.
+    pub(crate) fn append_hook_context_markdown(&mut self, body: &str) {
+        let label = self.msgs().hook_context_label.to_string();
+        self.append_msg(
+            Line::from(Span::styled(
+                label.clone(),
+                Style::default()
+                    .fg(self.theme.muted_fg())
+                    .add_modifier(Modifier::ITALIC),
+            )),
+            label,
+            LogItemKind::SystemPlain(SystemMsgStyle::Default),
+        );
+        self.append_system_markdown(body.to_string());
     }
 
     /// Append a task-completion stats block right after the task-end separator.
@@ -459,6 +480,10 @@ mod tests {
 
     /// Hook-injected context is shown as a system notice, not as something the
     /// user typed, and does not count as a turn.
+    ///
+    /// It also carries a provenance label: the `<hook-context>` framing is
+    /// stripped, so without the label the reader cannot tell a plugin's briefing
+    /// from a markdown notice Tact wrote itself — both are `SystemMarkdown`.
     #[test]
     fn load_history_renders_hook_context_as_a_system_notice() {
         let mut app = make_app();
@@ -500,6 +525,25 @@ mod tests {
         assert!(
             !raws.iter().any(|raw| raw.contains(HOOK_CONTEXT_OPEN_TAG)),
             "the framing is not shown to the reader: {raws:?}"
+        );
+
+        let label = app.msgs().hook_context_label;
+        assert_eq!(
+            raws.iter().filter(|raw| raw.contains(label)).count(),
+            2,
+            "every hook cell is labelled, live and reloaded alike: {raws:?}"
+        );
+        let label_at = raws
+            .iter()
+            .position(|raw| raw.contains(label))
+            .expect("a label row");
+        let body_at = raws
+            .iter()
+            .position(|raw| raw.contains("brief body"))
+            .expect("a body row");
+        assert!(
+            label_at < body_at,
+            "the label leads the body it names: {raws:?}"
         );
     }
 

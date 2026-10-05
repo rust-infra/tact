@@ -421,6 +421,14 @@ pub struct Messages {
     // ---- 任务统计行 ----
     pub task_stats_prefix: &'static str, // "Task stats:" / "任务统计：" (no emoji — it rendered too wide)
     pub task_stats_copy_btn: &'static str, // "⎘" — an icon, so it is locale-independent
+
+    // ---- hook 注入的上下文 ----
+    /// Provenance label drawn above hook-injected context.
+    ///
+    /// A hook's stdout is neither a user turn nor a notice Tact wrote, but once
+    /// the `<hook-context>` framing is stripped both render as system markdown.
+    /// This label is the only thing that tells the reader which one it is.
+    pub hook_context_label: &'static str, // "hook context" / "hook 上下文"
 }
 
 impl Messages {
@@ -739,6 +747,7 @@ impl Messages {
             scroll_indicator_tmpl: "↕ {}/{} ",
             task_stats_prefix: "Task stats:",
             task_stats_copy_btn: "⎘",
+            hook_context_label: "hook context",
         }
     }
 
@@ -1043,6 +1052,7 @@ impl Messages {
             scroll_indicator_tmpl: "↕ {}/{} ",
             task_stats_prefix: "任务统计：",
             task_stats_copy_btn: "⎘",
+            hook_context_label: "hook 上下文",
         }
     }
 }

@@ -1721,7 +1721,7 @@ impl Agent {
             Message::new_text(Role::User, framed).with_kind(MessageKind::HookContext),
         )
         .await?;
-        self.emit_update(AgentUpdate::MdInfo(chunk.to_string()));
+        self.emit_update(AgentUpdate::HookContext(chunk.to_string()));
         Ok(())
     }
 
@@ -5320,7 +5320,7 @@ mod tests {
         // The TUI is told what was injected, without the framing.
         let mut notices = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::MdInfo(md) = update {
+            if let AgentUpdate::HookContext(md) = update {
                 notices.push(md);
             }
         }

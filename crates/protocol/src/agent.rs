@@ -288,6 +288,15 @@ pub enum AgentUpdate {
     /// tables / fenced code keep their formatting), unlike [`Info`] which is
     /// treated as short single-line system text.
     MdInfo(String),
+    /// Hook-injected context, delivered whole (one shot) and **labelled**.
+    ///
+    /// Same body rendering as [`Self::MdInfo`], different provenance: a hook's
+    /// stdout is neither a user turn nor Tact's own notice. The message is
+    /// recorded with `<hook-context>` framing, but the TUI strips that before
+    /// rendering, so without a label the reader cannot tell a plugin's briefing
+    /// from a system message Tact wrote itself. The payload is the hook's own
+    /// text; the label is the TUI's to draw.
+    HookContext(String),
     /// Pre-rendered Markdown to show in the modal popup instead of the
     /// transcript, headed by `title`.
     ///

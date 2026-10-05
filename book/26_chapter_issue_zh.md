@@ -27,6 +27,25 @@
 
 ---
 
+## 1. 2026-10-05 — hook 注入的上下文带上来路标签：`AgentUpdate::HookContext`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：日志里多一行 dim italic 的 `hook context` / `hook 上下文`） |
+| **Related** | `crates/protocol/src/agent.rs`（新变体）、`crates/tact/src/agent/mod.rs::record_hook_context`、`crates/tui/src/widgets/state/app/{agent,messages}.rs`、`crates/agent_tui_kit/src/i18n.rs`；Ch 09 §10 |
+
+**Symptom / motivation:** hook 的 stdout 被包成 `<hook-context>` 的合成 user 消息（`MessageKind::HookContext`），TUI 渲染时把标签剥掉、转走 `append_system_markdown` → `LogItemKind::SystemMarkdown`。而 `SystemMarkdown` 正是 Tact 自己发 markdown 通知（`AgentUpdate::MdInfo`：`/mcp list`、`/hooks list`、`/background`）用的同一个 kind——**同样的样式、零标识**。于是读者看到一段简报，无法判断它是插件注入的、Tact 自己写的、还是模型说的（2026-10-05 的实际反馈："哪些是 LLM 返回的，哪些是 basic memory 输出的？视觉上看不出来"）。压缩后的那次注入尤其误导：`checkpoint_prompt` 与 brief 由 `_build_brief` 拼成**一条** stdout，渲染出来像两段互不相干的系统输出。
+
+**Decision:** 给 hook 注入单开一条 update 通道，而不是复用 `MdInfo`——`MdInfo` 还服务上面那几个读盘命令，改它会把标签带到那些地方。新增 `AgentUpdate::HookContext(String)`；`record_hook_context` 改发它（payload 仍是 hook 原文，标签是渲染层的事）。渲染统一走新的 `App::append_hook_context_markdown`：先一行 `muted_fg()` + `ITALIC` 的 `hook_context_label`，再照旧 `append_system_markdown`。**live 路径**（`record_hook_context` → update）与 **reload 路径**（`load_history` 靠 `<hook-context>` 标记识别）共用这一个入口，所以两条路的标签不会分叉。存储形态不变（DB / transcript 里仍是包着标签的 user 消息），因此旧会话重载后同样带标签。
+
+**Behavior after:** hook 注入的上下文前多一行 dim italic 的 `hook context`（中文 `hook 上下文`），紧随其后才是正文；`MdInfo` 的其它用途保持无标签。`AgentUpdate` 的消费方只有 TUI 一处，headless 不做穷举匹配，故无其它适配点。
+
+**Verification:** `cargo check --workspace --all-targets` 与 `cargo fmt -- --check` 干净；`cargo test -p tui --lib` 全绿。新增 `hook_context_update_is_labelled_but_md_info_is_not`（live 路径：只有 hook cell 带标签）；扩展 `load_history_renders_hook_context_as_a_system_notice`，断言标签恰好出现两次（注入一次 + 重载一次）且**先于**它所标注的正文。
+
+**指针：** `crates/tui/src/widgets/state/app/messages.rs::append_hook_context_markdown`、`crates/tui/src/widgets/state/app/agent.rs`（`AgentUpdate::HookContext` 分支）；Ch 09 §10（SessionStart 与 `<hook-context>` 的去处）。
+
+---
+
 ## 1. 2026-10-05 — 插件的 MCP 声明只收集一次：`plugin.json#mcpServers` 指过的文件不再被根扫描重读
 
 | Field | Value |

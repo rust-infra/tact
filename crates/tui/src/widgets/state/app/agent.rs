@@ -403,6 +403,13 @@ impl App {
             AgentUpdate::MdInfo(msg) => {
                 self.append_system_markdown(msg);
             }
+            // Hook-injected context: the same markdown body as `MdInfo`, but
+            // labelled. The `<hook-context>` framing is stripped before it
+            // reaches the log, so the label is what keeps a hook's output from
+            // reading as a notice Tact wrote itself.
+            AgentUpdate::HookContext(msg) => {
+                self.append_hook_context_markdown(&msg);
+            }
             // Pre-rendered Markdown for a modal read-out (`/stats`,
             // `/background`): unlike `MdInfo` it does not join the log, so
             // opening a listing does not push the conversation off screen.
@@ -2183,6 +2190,30 @@ mod lifecycle_tests {
                 .items
                 .last()
                 .is_some_and(|item| item.raw.contains("Cancelling"))
+        );
+    }
+
+    #[test]
+    fn hook_context_update_is_labelled_but_md_info_is_not() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::HookContext("brief body".into()));
+        app.handle_agent_update(AgentUpdate::MdInfo("plain notice".into()));
+
+        let raws: Vec<&str> = app.log.items.iter().map(|item| item.raw.as_str()).collect();
+        assert!(
+            raws.iter().any(|raw| raw.contains("brief body")),
+            "the hook body is kept: {raws:?}"
+        );
+        assert!(
+            raws.iter().any(|raw| raw.contains("plain notice")),
+            "MdInfo still renders unlabelled: {raws:?}"
+        );
+        assert_eq!(
+            raws.iter()
+                .filter(|raw| raw.contains(app.msgs().hook_context_label))
+                .count(),
+            1,
+            "only the hook cell is labelled: {raws:?}"
         );
     }
 
