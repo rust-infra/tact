@@ -3,14 +3,9 @@ use base64::Engine as _;
 use image::GenericImageView;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
-use crate::tool::{
-    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
-    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolCallResult, ToolContext, ToolDomain,
-    ToolMetadata, ToolPresentation, safe_path,
-};
+use crate::tool::{ToolCallResult, ToolContext, ToolMetadata, safe_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadImageInput {
@@ -18,26 +13,12 @@ pub struct ReadImageInput {
     pub file_path: String,
 }
 
-pub const READ_IMAGE_METADATA: ToolMetadata = ToolMetadata {
-    name: "read_image",
-    description: "Read a PNG/JPEG/WebP/GIF file and return the image itself to a vision model.",
-    permission: PermissionPolicy::ReadPath {
-        path_field: "file_path",
-    },
-    permission_prompt: PermissionPromptPolicy::Path { field: "file_path" },
-    resources: ResourcePolicy::ReadPath { field: "file_path" },
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::FileRead,
-        display_name: "🌄 Read Image",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Path { field: "file_path" },
-};
+pub const READ_IMAGE_METADATA: ToolMetadata = ToolMetadata::path_read(
+    "read_image",
+    "Read a PNG/JPEG/WebP/GIF file and return the image itself to a vision model.",
+    "🌄 Read Image",
+    "file_path",
+);
 
 fn is_supported_image_ext(ext: &str) -> bool {
     matches!(

@@ -1,14 +1,9 @@
 use std::str::FromStr;
 
-use crate::tool::{
-    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
-    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation, ToolDomain, ToolMetadata,
-    ToolPresentation,
-};
+use crate::tool::{TaskOperation, ToolMetadata};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
 use crate::{
@@ -24,24 +19,12 @@ pub struct TaskCreateInput {
     pub description: Option<String>,
 }
 
-pub const TASK_CREATE_METADATA: ToolMetadata = ToolMetadata {
-    name: "task_create",
-    description: "Create a new persistent task.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::SharedState { scope: "task" },
-    domain: ToolDomain::Task(TaskOperation::Create),
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Task,
-        display_name: "📋 Task",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const TASK_CREATE_METADATA: ToolMetadata = ToolMetadata::task_write(
+    "task_create",
+    "Create a new persistent task.",
+    "📋 Task",
+    TaskOperation::Create,
+);
 
 #[tool]
 /// # Errors
@@ -75,24 +58,12 @@ pub struct TaskGetInput {
     pub task_id: u64,
 }
 
-pub const TASK_GET_METADATA: ToolMetadata = ToolMetadata {
-    name: "task_get",
-    description: "Get full details of a task by ID.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Task(TaskOperation::Get),
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Task,
-        display_name: "📋 Task",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const TASK_GET_METADATA: ToolMetadata = ToolMetadata::task_read(
+    "task_get",
+    "Get full details of a task by ID.",
+    "📋 Task",
+    TaskOperation::Get,
+);
 
 #[tool]
 /// # Errors
@@ -106,24 +77,12 @@ pub async fn task_get(ctx: ToolContext, input: TaskGetInput) -> Result<String> {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskListInput {}
 
-pub const TASK_LIST_METADATA: ToolMetadata = ToolMetadata {
-    name: "task_list",
-    description: "List all tasks with status summary.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Task(TaskOperation::List),
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Task,
-        display_name: "📋 Task",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const TASK_LIST_METADATA: ToolMetadata = ToolMetadata::task_read(
+    "task_list",
+    "List all tasks with status summary.",
+    "📋 Task",
+    TaskOperation::List,
+);
 
 #[tool]
 /// # Errors
@@ -149,24 +108,12 @@ pub struct TaskUpdateInput {
     pub add_blocks: Vec<u64>,
 }
 
-pub const TASK_UPDATE_METADATA: ToolMetadata = ToolMetadata {
-    name: "task_update",
-    description: "Update a task's status, owner, or dependencies.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::SharedState { scope: "task" },
-    domain: ToolDomain::Task(TaskOperation::Update),
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Task,
-        display_name: "📋 Task",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const TASK_UPDATE_METADATA: ToolMetadata = ToolMetadata::task_write(
+    "task_update",
+    "Update a task's status, owner, or dependencies.",
+    "📋 Task",
+    TaskOperation::Update,
+);
 
 #[tool]
 /// # Errors

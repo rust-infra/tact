@@ -154,7 +154,9 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
 
 ### 元数据常量
 
-工具的身份、权限声明与呈现策略声明为 `*_METADATA` 常量（`ToolMetadata`，定义在 `crates/tact/src/tool/metadata.rs`）。多数工具的形状是重复的，因此 `metadata.rs` 提供三个 const 构造器，覆盖其中逐字相同的三种：
+工具的身份、权限声明与呈现策略声明为 `*_METADATA` 常量（`ToolMetadata`，定义在 `crates/tact/src/tool/metadata.rs`）。37 个常量里 23 个由 `metadata.rs` 的 const 构造器生成，分两层：
+
+**预设：整份形状完全一致**（成员之间没有任何字段不同）：
 
 | 构造器 | 形状 | 使用者 |
 |--------|------|--------|
@@ -162,9 +164,19 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
 | `team_write(…)` | `Write` + `SharedState { scope: "team" }` | 队友/消息族六个（`spawn_teammate`、`send_message` …） |
 | `barrier_write(…)` | `Write` + `Barrier` | `worktree_create`、`worktree_remove` |
 
-**只收逐字相同的。** 与三者「近似但不完全相同」的工具保留自己的字面量：`sleep` 差 `visual_kind`、`save_memory` 差 `permission`、`compact` 差 `resources`、task 族差 `domain`。给预设加例外会让它同时对八个工具正确、对第九个错误——`metadata.rs` 的测试把「共享的那一半」逐字段钉住，并断言三个预设之间只差「权限 + 资源声明」这两项。
+**家族：只在「作用于什么」上不同**（第四个参数就是那唯一变化的东西，且它是数据——哪个 task 操作、哪个输入字段）：
 
-**字段名必须三处一致。** 一份元数据最多会把同一个输入字段名写三遍：决定风险的 `permission`、决定「始终允许」规则键的 `permission_prompt`、以及变成卡片标题的 `argument_summary`（`"command"` / `"path"` / `"patch"`）。它们是三个独立字面量，且**没有任何下游会互相比较**——各自只读自己那一份。写错一处不是外观问题：提示会问一个路径而调度器保留另一个，或者「始终允许」规则会挂在风险判定从未用过的字段上。`crates/tact/src/tool/registry.rs` 的 `every_tool_names_one_input_field_across_its_policies` 在**组装后的 toolset** 上逐工具断言这三者一致（新增工具若不一致，即使每个策略单独看都合法也会失败）。
+| 构造器 | 变化的那一项 | 使用者 |
+|--------|--------------|--------|
+| `path_read(name, desc, display, path_field)` | 承载路径的字段名 | `read_file`（`"path"`）、`read_image`（`"file_path"`） |
+| `task_read(name, desc, display, op)` | `TaskOperation` | `task_get`、`task_list` |
+| `task_write(…)` | `TaskOperation` | `task_create`、`task_update` |
+
+`path_read` 的参数在等价的字面量里出现**四次**——风险判定、提示键、「始终允许」规则、卡片标题——四者必须同名；参数化让它们成为同一个值。
+
+**其余 14 个保留字面量。** 判据不是「差几个字段」而是差的**是不是数据**：一个工具*做什么*（`output` 策略、`live_output`、`permission`、`visual_kind`、`argument_summary`）是它自己的声明，藏进构造器等于把答案藏起来。所以 `bash` / `background_run` / `worktree_run`（差 `output` / `live_output`）、`check_background` / `wait_background`（差 `visual_kind`）、`write_file` / `edit_file`（差 `visual_kind` + `detail`）、`sleep`、`compact`、`save_memory`、`cancel_subagent`、`apply_patch`、`ask_user`、`spawn_subagent` 各写自己的字面量。`metadata.rs` 的测试把每一层钉住：预设「共享的那一半」逐字段、三个预设之间只差「权限 + 资源声明」、三个家族之间只差被参数化的那一项。
+
+**字段名必须三处一致。** 一份元数据最多会把同一个输入字段名写三遍：决定风险的 `permission`、决定「始终允许」规则键的 `permission_prompt`、以及变成卡片标题的 `argument_summary`（`"command"` / `"path"` / `"patch"`）。它们是三个独立字面量，且**没有任何下游会互相比较**——各自只读自己那一份。写错一处不是外观问题：提示会问一个路径而调度器保留另一个，或者「始终允许」规则会挂在风险判定从未用过的字段上。`crates/tact/src/tool/registry.rs` 的 `every_tool_names_one_input_field_across_its_policies` 在**组装后的 toolset** 上逐工具断言这三者一致（新增工具若不一致，即使每个策略单独看都合法也会失败）。构造器只是把这个不变式写得更难违反，它不能替代这条测试。
 
 ---
 

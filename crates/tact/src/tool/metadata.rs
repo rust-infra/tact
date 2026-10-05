@@ -119,6 +119,94 @@ impl ToolMetadata {
             argument_summary: ArgumentSummaryPolicy::Json,
         }
     }
+
+    /// A tool whose target is one input field holding a path it only reads.
+    ///
+    /// The field name appears four times in the equivalent literal — the risk,
+    /// the prompt an "always allow" is keyed on, the reservation the scheduler
+    /// makes, and the card's title — and all four have to agree. Here they are
+    /// one argument.
+    pub const fn path_read(
+        name: &'static str,
+        description: &'static str,
+        display_name: &'static str,
+        path_field: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            permission: PermissionPolicy::ReadPath { path_field },
+            permission_prompt: PermissionPromptPolicy::Path { field: path_field },
+            resources: ResourcePolicy::ReadPath { field: path_field },
+            domain: ToolDomain::Generic,
+            presentation: ToolPresentation {
+                visual_kind: ToolVisualKind::FileRead,
+                display_name,
+                live_output: LiveOutputPolicy::Standard,
+                detail: DetailPolicy::Result,
+                popup: PopupPolicy::None,
+                compact_result_to_meta: false,
+            },
+            output: OutputPolicy::KeepInline,
+            argument_summary: ArgumentSummaryPolicy::Path { field: path_field },
+        }
+    }
+
+    /// The task tools: one per [`TaskOperation`], which is the only thing that
+    /// distinguishes them.
+    ///
+    /// Both take the `task` scope, so the reading one is a plain read while the
+    /// writing one is a `SharedState` write: two task writes serialize through
+    /// that scope without blocking file reads.
+    pub const fn task_read(
+        name: &'static str,
+        description: &'static str,
+        display_name: &'static str,
+        operation: TaskOperation,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            permission: PermissionPolicy::Read,
+            permission_prompt: PermissionPromptPolicy::Json,
+            resources: ResourcePolicy::Independent,
+            domain: ToolDomain::Task(operation),
+            presentation: Self::task_presentation(display_name),
+            output: OutputPolicy::KeepInline,
+            argument_summary: ArgumentSummaryPolicy::Json,
+        }
+    }
+
+    /// [`Self::task_read`]'s writing half.
+    pub const fn task_write(
+        name: &'static str,
+        description: &'static str,
+        display_name: &'static str,
+        operation: TaskOperation,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            permission: PermissionPolicy::Write,
+            permission_prompt: PermissionPromptPolicy::Json,
+            resources: ResourcePolicy::SharedState { scope: "task" },
+            domain: ToolDomain::Task(operation),
+            presentation: Self::task_presentation(display_name),
+            output: OutputPolicy::KeepInline,
+            argument_summary: ArgumentSummaryPolicy::Json,
+        }
+    }
+
+    const fn task_presentation(display_name: &'static str) -> ToolPresentation {
+        ToolPresentation {
+            visual_kind: ToolVisualKind::Task,
+            display_name,
+            live_output: LiveOutputPolicy::Standard,
+            detail: DetailPolicy::Result,
+            popup: PopupPolicy::None,
+            compact_result_to_meta: false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +870,79 @@ mod tests {
                 popup: PopupPolicy::None,
                 compact_result_to_meta: false,
             }
+        );
+    }
+
+    /// The three families are parameterized by *data* — which task operation,
+    /// which input field — and by nothing else.
+    ///
+    /// That is the whole justification for a constructor here, so it is
+    /// asserted rather than assumed. A member that grew a second difference
+    /// would mean the constructor is hiding a decision instead of naming the
+    /// one thing that varies, which is the line between this and the presets
+    /// above: those serve tools that agree on everything, and a tool that
+    /// differs in what it *does* keeps its own literal.
+    #[test]
+    fn the_families_differ_only_in_the_data_they_are_parameterized_by() {
+        let get = ToolMetadata::task_read("n", "d", "P", TaskOperation::Get);
+        let list = ToolMetadata::task_read("n", "d", "P", TaskOperation::List);
+        assert_eq!(get.domain, ToolDomain::Task(TaskOperation::Get));
+        assert_eq!(list.domain, ToolDomain::Task(TaskOperation::List));
+        assert_eq!(
+            ToolMetadata {
+                domain: get.domain,
+                ..list
+            },
+            get,
+            "one task read differs from the other only in the operation"
+        );
+
+        let create = ToolMetadata::task_write("n", "d", "P", TaskOperation::Create);
+        let update = ToolMetadata::task_write("n", "d", "P", TaskOperation::Update);
+        assert_eq!(create.domain, ToolDomain::Task(TaskOperation::Create));
+        assert_eq!(
+            ToolMetadata {
+                domain: create.domain,
+                ..update
+            },
+            create
+        );
+
+        // One argument, four fields, all carrying the same name: the prompt
+        // cannot ask about a path the scheduler did not reserve.
+        for field in ["path", "file_path"] {
+            let metadata = ToolMetadata::path_read("n", "d", "P", field);
+            assert_eq!(
+                metadata.permission,
+                PermissionPolicy::ReadPath { path_field: field }
+            );
+            assert_eq!(
+                metadata.permission_prompt,
+                PermissionPromptPolicy::Path { field }
+            );
+            assert_eq!(metadata.resources, ResourcePolicy::ReadPath { field });
+            assert_eq!(
+                metadata.argument_summary,
+                ArgumentSummaryPolicy::Path { field }
+            );
+        }
+    }
+
+    /// A task write takes the `task` scope; a task read does not.
+    #[test]
+    fn the_task_families_split_on_what_they_claim() {
+        let read = ToolMetadata::task_read("n", "d", "P", TaskOperation::Get);
+        let write = ToolMetadata::task_write("n", "d", "P", TaskOperation::Create);
+        assert_eq!(
+            (read.permission, read.resources),
+            (PermissionPolicy::Read, ResourcePolicy::Independent)
+        );
+        assert_eq!(
+            (write.permission, write.resources),
+            (
+                PermissionPolicy::Write,
+                ResourcePolicy::SharedState { scope: "task" }
+            )
         );
     }
 
