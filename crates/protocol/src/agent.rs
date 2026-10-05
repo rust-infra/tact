@@ -301,6 +301,23 @@ pub enum AgentUpdate {
         source: Option<String>,
         text: String,
     },
+    /// A plugin hook's own progress line, with a lifetime.
+    ///
+    /// A plugin declares `statusMessage` because its hook is a subprocess that
+    /// can take seconds (a cold `uv run --script` has taken ~100s on this
+    /// machine): the reader has to see that something is running, and has to see
+    /// it stop claiming that once the hook returned. The row is keyed by `id`
+    /// and rewritten in place — never removed, because removing a log row
+    /// shifts every physical index the TUI keys selection and cards on.
+    ///
+    /// `elapsed_ms` is the state: `None` while the hook runs, the measured time
+    /// once it returned (success or failure — the line is a trace either way).
+    HookStatus {
+        id: u64,
+        source: Option<String>,
+        message: String,
+        elapsed_ms: Option<u64>,
+    },
     /// Pre-rendered Markdown to show in the modal popup instead of the
     /// transcript, headed by `title`.
     ///

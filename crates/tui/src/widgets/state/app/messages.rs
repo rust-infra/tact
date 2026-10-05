@@ -50,6 +50,16 @@ fn truncate_hook_body(body: &str, max_lines: usize) -> (String, usize) {
     (kept, lines.len() - max_lines)
 }
 
+/// How long a hook took, at the precision a reader can use: milliseconds under
+/// a second, one decimal above it.
+fn format_hook_elapsed(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
+}
+
 /// True for a cell carrying hook-injected context (`<hook-context>`) instead
 /// of a user turn.
 ///
@@ -314,6 +324,75 @@ impl App {
             // usize::MAX is correctly clipped by render_log_panel based on visual line count
             self.scroll_log_to_bottom();
         }
+    }
+
+    /// Show, or finish, a plugin hook's progress line.
+    ///
+    /// The row is keyed by the id the agent handed out and **rewritten in
+    /// place** on completion: removing it would shift every physical index the
+    /// selection, the cards and the scroll anchors are keyed on. The plugin's
+    /// own wording survives both states — what changes is the styling (accent
+    /// while it runs, muted once it is a record) and the measured time, so the
+    /// line stops claiming to be loading without the reader losing which hook
+    /// it was.
+    pub(crate) fn apply_hook_status(
+        &mut self,
+        id: u64,
+        source: Option<&str>,
+        message: &str,
+        elapsed_ms: Option<u64>,
+    ) {
+        let (line, raw) = self.hook_status_line(source, message, elapsed_ms);
+        let kind = LogItemKind::HookStatus(id);
+        match self.log.items.iter().position(|item| item.kind == kind) {
+            Some(idx) => {
+                self.log.items[idx] = LogItem::new(line, raw, kind);
+                // The row count did not change, and the cache's validity token
+                // is the count — so it has to be moved off `items.len()` by
+                // hand or the old text would be reused verbatim.
+                self.log_scroll.visual_cache_ver = usize::MAX;
+            }
+            None => self.append_msg(line, raw, kind),
+        }
+    }
+
+    /// One progress line: `▎ ⌁ hook · <source> · <message> · <elapsed>`.
+    fn hook_status_line(
+        &self,
+        source: Option<&str>,
+        message: &str,
+        elapsed_ms: Option<u64>,
+    ) -> (Line<'static>, String) {
+        let bar = HOOK_CONTEXT_GUTTER;
+        let label = self.msgs().hook_status_label;
+        // Running wears the accent the hook block will wear; finished drops to
+        // muted, which is what tells the reader the wait is over.
+        let (mark, text) = match elapsed_ms {
+            None => (self.theme.accent, self.theme.fg),
+            Some(_) => (self.theme.muted_fg(), self.theme.muted_fg()),
+        };
+        let mut head = label.to_string();
+        if let Some(source) = source {
+            head.push_str(&format!(" · {source}"));
+        }
+        let mut spans = vec![
+            Span::styled(bar, Style::default().fg(mark)),
+            Span::styled(
+                format!("{HOOK_CONTEXT_MARK} {head}"),
+                Style::default().fg(mark),
+            ),
+            Span::styled(format!(" · {message}"), Style::default().fg(text)),
+        ];
+        let mut raw = format!("{bar}{HOOK_CONTEXT_MARK} {head} · {message}");
+        if let Some(ms) = elapsed_ms {
+            let elapsed = format_hook_elapsed(ms);
+            spans.push(Span::styled(
+                format!(" · {elapsed}"),
+                Style::default().fg(self.theme.muted_fg()),
+            ));
+            raw.push_str(&format!(" · {elapsed}"));
+        }
+        (Line::from(spans), raw)
     }
 
     /// Append hook-injected context: a labelled header row, then the head of
@@ -754,6 +833,72 @@ mod tests {
             "the body was actually cut: {}",
             shown.raw
         );
+    }
+
+    /// A hook's progress line has a lifetime: it appears while the subprocess
+    /// runs, and the completion rewrites **that same row** — not a second one,
+    /// and not a stale "Loading…" left behind. The row keeps its index because
+    /// removing it would shift every physical index the TUI keys on.
+    #[test]
+    fn hook_status_is_rewritten_in_place_when_the_hook_returns() {
+        let mut app = make_app();
+        let label = app.msgs().hook_status_label;
+        app.apply_hook_status(
+            7,
+            Some("plugin codex"),
+            "Loading Basic Memory context",
+            None,
+        );
+
+        let running = app.log.items.last().expect("a progress row");
+        assert_eq!(running.kind, LogItemKind::HookStatus(7));
+        assert_eq!(
+            running.raw,
+            format!("▎ ⌁ {label} · plugin codex · Loading Basic Memory context"),
+            "the running line names the hook and quotes the plugin"
+        );
+        assert_eq!(
+            running.line.spans[0].style.fg,
+            Some(app.theme.accent),
+            "running wears the accent the block will wear"
+        );
+        let idx = app.log.items.len() - 1;
+
+        app.apply_hook_status(
+            7,
+            Some("plugin codex"),
+            "Loading Basic Memory context",
+            Some(8200),
+        );
+
+        assert_eq!(
+            app.log.items.len(),
+            idx + 1,
+            "the completion rewrites the row instead of adding one"
+        );
+        let done = &app.log.items[idx];
+        assert_eq!(done.kind, LogItemKind::HookStatus(7));
+        assert_eq!(
+            done.raw,
+            format!("▎ ⌁ {label} · plugin codex · Loading Basic Memory context · 8.2s")
+        );
+        assert_eq!(
+            done.line.spans[0].style.fg,
+            Some(app.theme.muted_fg()),
+            "a finished line reads as a record, not as an activity"
+        );
+        assert_ne!(
+            app.log_scroll.visual_cache_ver,
+            app.log.items.len(),
+            "the row count did not change, so the cache token has to be moved by hand"
+        );
+    }
+
+    #[test]
+    fn hook_elapsed_prefers_milliseconds_under_a_second() {
+        assert_eq!(format_hook_elapsed(340), "340ms");
+        assert_eq!(format_hook_elapsed(1000), "1.0s");
+        assert_eq!(format_hook_elapsed(100_400), "100.4s");
     }
 
     #[test]

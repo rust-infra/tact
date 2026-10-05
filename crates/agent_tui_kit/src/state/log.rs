@@ -69,15 +69,23 @@ pub enum LogItemKind {
     SystemMarkdown,
     SystemTool,
     Thinking,
+    /// A plugin hook's progress line, keyed by the id the agent handed out.
+    ///
+    /// The id is what lets the completion update find the row it must rewrite:
+    /// the row keeps its physical index (removing one would shift every index
+    /// the selection and the cards are keyed on), so the only way back to it is
+    /// a value it carries itself.
+    HookStatus(u64),
 }
 
 impl LogItemKind {
     pub fn log_indent(self) -> u16 {
         match self {
             Self::User => 0,
-            Self::AssistantMarkdown | Self::SystemPlain(_) | Self::SystemMarkdown => {
-                LOG_THINKING_INDENT + 1
-            }
+            Self::AssistantMarkdown
+            | Self::SystemPlain(_)
+            | Self::SystemMarkdown
+            | Self::HookStatus(_) => LOG_THINKING_INDENT + 1,
             Self::SystemTool => LOG_TOOL_INDENT,
             Self::Thinking => LOG_THINKING_INDENT,
         }

@@ -135,6 +135,7 @@ pub fn render_log_panel_pure(
                 LogItemKind::SystemPlain(_)
                 | LogItemKind::SystemMarkdown
                 | LogItemKind::SystemTool
+                | LogItemKind::HookStatus(_)
                 | LogItemKind::Thinking => "system",
             };
 

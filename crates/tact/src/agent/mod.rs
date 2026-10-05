@@ -401,6 +401,13 @@ pub struct AgentRuntime {
     /// context alongside the tool call it annotates. Same shape as
     /// [`Self::pending_subagent_results`].
     pub pending_hook_context: Arc<Mutex<VecDeque<HookContextChunk>>>,
+    /// Hands out the ids that tie a hook's progress line to its completion.
+    ///
+    /// Atomic because the `SessionStart` hooks run concurrently and each only
+    /// ever sees `&Agent`; a plain counter would need a lock to be shared, and
+    /// the ids have to be unique across those parallel runs or one hook's
+    /// "finished" would rewrite another's line.
+    pub hook_status_seq: std::sync::atomic::AtomicU64,
 }
 
 /// How the agent builds its system prompt.
@@ -507,6 +514,7 @@ impl Agent {
                 session_start_hooks_pending: true,
                 session_start_source: SessionStartSource::Startup,
                 pending_hook_context: Arc::new(Mutex::new(VecDeque::new())),
+                hook_status_seq: std::sync::atomic::AtomicU64::new(1),
             },
             tool_context,
             tools,
@@ -1709,6 +1717,17 @@ impl Agent {
             self.record_hook_context(&chunk).await?;
         }
         Ok(())
+    }
+
+    /// Reserves the id for one hook's progress line.
+    ///
+    /// The caller emits [`AgentUpdate::HookStatus`] twice with the same id —
+    /// once when the hook starts, once when it returns — and the TUI rewrites
+    /// that one row instead of leaving a stale "Loading…" behind.
+    pub fn next_hook_status_id(&self) -> u64 {
+        self.runtime
+            .hook_status_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Records one hook-context chunk as its own synthetic user message.

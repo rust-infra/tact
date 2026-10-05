@@ -24,7 +24,7 @@ pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
 pub(crate) use slash_command::{Candidate, SlashCommandState};
 
-pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItemKind, SystemMsgStyle};
+pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle};
 pub(crate) use agent_tui_kit::state::log_scroll::LogScroll;
 #[allow(unused_imports)] // PopupHitRow is re-exported for tui's test code (hit-row helpers)
 pub(crate) use agent_tui_kit::state::mouse_state::{

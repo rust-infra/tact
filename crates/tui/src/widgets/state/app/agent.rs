@@ -410,6 +410,17 @@ impl App {
             AgentUpdate::HookContext { source, text } => {
                 self.append_hook_context_markdown(source.as_deref(), &text);
             }
+            // A plugin hook's own progress line: shown while the subprocess
+            // runs, rewritten in place once it returns. The row keeps its index
+            // — only its styling and the measured time change.
+            AgentUpdate::HookStatus {
+                id,
+                source,
+                message,
+                elapsed_ms,
+            } => {
+                self.apply_hook_status(id, source.as_deref(), &message, elapsed_ms);
+            }
             // Pre-rendered Markdown for a modal read-out (`/stats`,
             // `/background`): unlike `MdInfo` it does not join the log, so
             // opening a listing does not push the conversation off screen.

@@ -183,6 +183,15 @@ pub struct HookCommand {
     /// rather than at whatever the session allows.
     #[serde(default, rename = "additionalContextLimit")]
     pub additional_context_limit: Option<usize>,
+    /// The hooks file this entry was admitted from (`plugin codex`,
+    /// `~/.tact/hooks.json`), stamped by [`admit_trusted`].
+    ///
+    /// `#[serde(skip)]` is load-bearing: this label names the hook in the review
+    /// and in the log, so a hooks file must not be able to spell it for itself.
+    /// It is not part of [`hook_definition_hash`] either — that takes the label
+    /// as its own argument, so stamping changes no hook's identity.
+    #[serde(skip)]
+    pub source: Option<String>,
     /// `type: "mcp_tool"` — the MCP server whose tool this hook calls.
     ///
     /// Modelled rather than left to serde's unknown-field handling: before this,
@@ -368,6 +377,7 @@ async fn run_mcp_tool_hook(
 
     let name = crate::mcp::mcp_tool_name(server, tool);
     let arguments = command.arguments.clone().unwrap_or_else(|| json!({}));
+    let status = open_hook_status(command, Some(agent));
     // The hook's own budget, not the server's `tool_timeout_sec`: this timeout
     // belongs to the definition the user reviewed.
     let call = agent.mcp_router.call(&name, arguments);
@@ -378,6 +388,7 @@ async fn run_mcp_tool_hook(
         },
         None => call.await,
     };
+    close_hook_status(command, Some(agent), status);
 
     match outcome {
         Ok(text) => {
@@ -418,16 +429,21 @@ pub async fn run_command_hook(
         // Fire-and-forget on the runtime we are already on: a plugin that opts
         // into `async` does not want its result, and building a second runtime
         // per hook just to run one process was pure overhead.
+        //
+        // No progress line either: this call returns before the process does,
+        // so there is nobody left to close the row — and a "Loading…" that can
+        // never finish is the exact defect the pair exists to fix.
         tokio::spawn(async move {
             let _ = run_process(&expanded, &work_dir, &dirs, &payload, None).await;
         });
         return HookOutput::continue_default();
     }
 
+    let status = open_hook_status(command, agent);
     let payload = build_payload(input, agent);
     // Claude semantics: default 60s; an explicit `0` disables the timeout.
     let timeout_secs = resolve_timeout(command.timeout);
-    match run_process(
+    let output = match run_process(
         &expand_plugin_placeholders(raw, &dirs),
         &input.work_dir,
         &dirs,
@@ -468,7 +484,53 @@ pub async fn run_command_hook(
             report_hook_failure(input, agent, &format!("{error}"));
             HookOutput::continue_default()
         }
-    }
+    };
+    close_hook_status(command, agent, status);
+    output
+}
+
+/// Opens a hook's progress line, returning what [`close_hook_status`] needs to
+/// finish it.
+///
+/// `None` when the plugin declared no `statusMessage` or there is no UI to tell:
+/// a hook with nothing to say must not produce a row. The row is deliberately
+/// *not* opened for `async` hooks — see `run_command_hook`.
+fn open_hook_status(
+    command: &HookCommand,
+    agent: Option<&crate::Agent>,
+) -> Option<(u64, std::time::Instant)> {
+    let agent = agent?;
+    let message = command.status_message.as_deref()?;
+    let id = agent.next_hook_status_id();
+    agent.emit_update(AgentUpdate::HookStatus {
+        id,
+        source: command.source.clone(),
+        message: message.to_string(),
+        elapsed_ms: None,
+    });
+    Some((id, std::time::Instant::now()))
+}
+
+/// Closes the row [`open_hook_status`] opened: same id, same wording, now muted
+/// and timed.
+///
+/// The plugin's own words are kept rather than rewritten — what changes is the
+/// styling and the measured time, which is what stops the line claiming to be
+/// loading. Failure closes the row too: the line is a trace, not a verdict.
+fn close_hook_status(
+    command: &HookCommand,
+    agent: Option<&crate::Agent>,
+    opened: Option<(u64, std::time::Instant)>,
+) {
+    let (Some(agent), Some((id, started_at))) = (agent, opened) else {
+        return;
+    };
+    agent.emit_update(AgentUpdate::HookStatus {
+        id,
+        source: command.source.clone(),
+        message: command.status_message.clone().unwrap_or_default(),
+        elapsed_ms: Some(started_at.elapsed().as_millis() as u64),
+    });
 }
 
 /// Applies the post-processing every hook kind shares.
@@ -1195,7 +1257,13 @@ fn admit_trusted(source: &HookSource, trust: &HookTrust, report: &mut HookLoadRe
                 };
                 if source.origin == HookOrigin::Managed || trust.is_trusted(&summary.hash) {
                     report.trusted.push(summary);
-                    kept_commands.push(command.clone());
+                    // Stamped here, at the one place that knows the file a hook
+                    // came from: the runners only ever see a `HookCommand`, and
+                    // a hook's progress line has to name its source.
+                    kept_commands.push(HookCommand {
+                        source: Some(source.label.clone()),
+                        ..command.clone()
+                    });
                 } else {
                     report.pending.push(summary);
                 }
@@ -1802,14 +1870,10 @@ fn apply_hook_sources(
                         if !matcher_matches(matcher.as_deref(), source) {
                             return Ok(HookControl::Continue);
                         }
-                        // The plugin's own status line, surfaced rather than
-                        // logged: this hook is a subprocess that can take
-                        // seconds (a cold `uv run --script` took ~100s here),
-                        // and silence while the first turn waits reads as a
-                        // hang.
-                        if let Some(status) = command.status_message.as_deref() {
-                            agent.emit_update(AgentUpdate::Info(status.to_string()));
-                        }
+                        // The plugin's own status line is surfaced by
+                        // `run_command_hook`, which every event goes through —
+                        // including this one. A `statusMessage` no longer has to
+                        // be wired per event to be visible.
                         let output = run_hook(
                             &command,
                             &dirs,
@@ -2582,6 +2646,104 @@ mod tests {
         assert!(output.additional_context.is_none());
     }
 
+    /// The source label is stamped at admission, and a hooks file cannot spell
+    /// it: the label names a hook in the review and in the log, so it has to
+    /// come from the file *we* read, never from the file's own text.
+    #[test]
+    fn admission_stamps_the_source_and_ignores_a_declared_one() {
+        let hooks: HooksFile = serde_json::from_str(
+            r#"{ "hooks": { "Stop": [ { "hooks": [
+                 { "type": "command", "command": "true", "source": "spoofed" } ] } ] } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            hooks.hooks["Stop"][0].hooks[0].source, None,
+            "a declared label must not survive parsing"
+        );
+
+        let dir = tempdir().unwrap();
+        let source = HookSource {
+            label: "plugin demo".to_string(),
+            origin: HookOrigin::UserFile,
+            dirs: PluginDirs::from(dir.path()),
+            hooks,
+        };
+        let admitted = admit_trusted(
+            &source,
+            &HookTrust::trusting_everything(),
+            &mut HookLoadReport::default(),
+        );
+        assert_eq!(
+            admitted.hooks["Stop"][0].hooks[0].source.as_deref(),
+            Some("plugin demo"),
+            "the label comes from the source we read"
+        );
+    }
+
+    /// Every event's `statusMessage` reaches the UI, not just `SessionStart`'s:
+    /// the pair is opened by the runner both hook kinds share, so a plugin that
+    /// declares one on `PreCompact` is heard too. Before this, only the
+    /// `SessionStart` path surfaced it and every other event's line went to
+    /// `tracing::debug!` — which `tact-ui` never installs a subscriber for.
+    #[tokio::test]
+    async fn a_pre_compact_status_line_is_opened_and_closed() {
+        crate::config::test_support::install_default();
+
+        let dir = tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let agent = crate::Agent::new(
+            tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(Vec::new())),
+            crate::tool::test_support::test_context("hook_status"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            crate::AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        let command = HookCommand {
+            ty: Some("command".into()),
+            command: Some("true".into()),
+            status_message: Some("Checkpointing Codex work to Basic Memory".into()),
+            source: Some("plugin demo".into()),
+            ..Default::default()
+        };
+        run_command_hook(
+            &command,
+            dir.path(),
+            &HookRunInput {
+                session_id: "s1".into(),
+                work_dir: dir.path().to_path_buf(),
+                hook_event_name: "PreCompact",
+                event: json!({ "trigger": "auto" }),
+            },
+            Some(&agent),
+        )
+        .await;
+
+        let mut statuses = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let AgentUpdate::HookStatus {
+                id,
+                source,
+                message,
+                elapsed_ms,
+            } = update
+            {
+                statuses.push((id, source, message, elapsed_ms));
+            }
+        }
+        assert_eq!(statuses.len(), 2, "opened and closed: {statuses:?}");
+        assert_eq!(statuses[0].0, statuses[1].0, "both halves share the id");
+        assert_eq!(statuses[0].1.as_deref(), Some("plugin demo"));
+        assert_eq!(statuses[0].2, "Checkpointing Codex work to Basic Memory");
+        assert_eq!(statuses[0].3, None, "the first half is still running");
+        assert!(statuses[1].3.is_some(), "the second half is timed");
+    }
+
     /// End-to-end through the command runner, in the shape the reference
     /// `basic-memory` plugin uses (plain-text stdout): the briefing becomes
     /// session context instead of a dropped warning.
@@ -3182,16 +3344,40 @@ mod tests {
             "Codex's required field, in the vocabulary plugins expect: {payload}"
         );
 
-        let mut status = None;
+        // The plugin's status line reaches the UI **twice under one id**: once
+        // while the subprocess runs, once when it returns. That pairing is what
+        // lets the reader's row stop claiming to be loading without losing
+        // which hook it was.
+        let mut statuses = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::Info(text) = update {
-                status = Some(text);
+            if let AgentUpdate::HookStatus {
+                id,
+                source,
+                message,
+                elapsed_ms,
+            } = update
+            {
+                statuses.push((id, source, message, elapsed_ms));
             }
         }
         assert_eq!(
-            status.as_deref(),
-            Some("Loading demo context"),
-            "the plugin's status line reaches the UI"
+            statuses.len(),
+            2,
+            "one progress line, opened and closed: {statuses:?}"
+        );
+        assert_eq!(
+            statuses[0].0, statuses[1].0,
+            "both halves have to share the id, or the row is never rewritten"
+        );
+        assert_eq!(statuses[0].1.as_deref(), Some("plugin demo"));
+        assert_eq!(statuses[0].2, "Loading demo context");
+        assert_eq!(
+            statuses[0].3, None,
+            "the first half says it is still running"
+        );
+        assert!(
+            statuses[1].3.is_some(),
+            "the second half carries the measured time: {statuses:?}"
         );
     }
 

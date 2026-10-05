@@ -433,6 +433,8 @@ pub struct Messages {
     pub hook_context_expand_hint: &'static str, // "double-click" / "双击展开"
     /// Tail of a truncated hook block: `… {} more lines · {}`.
     pub hook_context_more_tmpl: &'static str, // "… {} more lines · {}" / "… 还有 {} 行 · {}"
+    /// Names a plugin hook's progress line: `▎ ⌁ {label} · <source> · …`.
+    pub hook_status_label: &'static str, // "hook" / "hook"
 }
 
 impl Messages {
@@ -754,6 +756,7 @@ impl Messages {
             hook_context_label: "hook context",
             hook_context_expand_hint: "double-click",
             hook_context_more_tmpl: "… {} more lines · {}",
+            hook_status_label: "hook",
         }
     }
 
@@ -1061,6 +1064,7 @@ impl Messages {
             hook_context_label: "hook 上下文",
             hook_context_expand_hint: "双击展开",
             hook_context_more_tmpl: "… 还有 {} 行 · {}",
+            hook_status_label: "hook",
         }
     }
 }

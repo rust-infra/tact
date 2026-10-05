@@ -52,6 +52,29 @@ popup 走一条新的**通用**机制而不是给 hook 特判：`LogItem` 新增
 
 ---
 
+## 1. 2026-10-05 — hook 的进度行有寿命了：`AgentUpdate::HookStatus` 一对 id
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：hook 的进度行现在会变成 muted 的完成记录并带上耗时，且**每个事件**都看得见，不再只有 SessionStart） |
+| **Related** | `crates/protocol/src/agent.rs`、`crates/tact/src/agent/mod.rs`（`hook_status_seq` / `next_hook_status_id`）、`crates/tact/src/plugin/hooks.rs`（`open/close_hook_status`、`admit_trusted`、`HookCommand::source`）、`crates/agent_tui_kit/src/state/{log,i18n}.rs`、`crates/agent_tui_kit/src/render/log.rs`、`crates/tui/src/widgets/state/app/{agent,messages}.rs`；Ch 09 §10 |
+
+**Symptom / motivation:** 插件在 `hooks.json` 里声明 `statusMessage`（basic-memory：SessionStart 是 `Loading Basic Memory context`），Tact 把它当 `AgentUpdate::Info` 打成一条普通 system 行。两个毛病：**(1) 瞬时状态被渲染成永久消息**——hook 跑完（热启动几秒，冷启动实测约 100s）那行还留在日志里，永远写着 "Loading"；**(2) 没有归属**，看不出是哪个 hook 在跑，而同色的普通 system 行也可能是 Tact 自己发的。
+
+**Decision:** 给这行一个**寿命**，用一对 update 表示开与合：`AgentUpdate::HookStatus { id, source, message, elapsed_ms }`，`elapsed_ms: None` = 运行中、`Some(ms)` = 已返回（成功失败一视同仁，它是一条记录）。id 由 agent 发放（`AgentRuntime::hook_status_seq`，`AtomicU64`）——SessionStart 的多个 hook 是**并发**跑的、各自只拿 `&Agent`，普通计数器要么得加锁、要么会撞号，而撞号意味着一家的"完成"改写另一家的行。
+
+**关键取舍：原地改写，不删行。** TUI 侧新增 `LogItemKind::HookStatus(id)`，把 id 带在行上；完成时按 id 找到那一行并**改写**。**不删**是因为日志的物理索引是选区、卡片、滚动锚点的键——删一行会让它们全部错位，这正是 `render/log.rs` 里"用 cell 覆盖占位行"那套纪律存在的原因。附带一个坑：视觉缓存的有效性 token 就是行数（`visual_cache_ver == items.len()`），而改写**不改变行数**，所以必须手动把 token 移开（置 `usize::MAX`），否则渲染会原样复用旧文本——这条有测试钉住。
+
+**Behavior after:** 运行时是 `▎ ⌁ hook · plugin codex · Loading Basic Memory context`（accent，与随后的上下文块同一套 `▎`/`⌁` 词汇）；返回后**同一行**变为 muted 并追加实测耗时：`… · Loading Basic Memory context · 8.2s`。插件的文案原样保留（Tact 不改写插件的话），变的是样式与时间——行不再谎称在加载，读者也没丢掉"是哪个 hook"。
+
+**顺带把"只有 SessionStart 看得见"这个洞补了。** 原来 `statusMessage` 只在 SessionStart 那条路径抛给 UI，其它事件只进 `tracing::debug!`——而 `tact-ui` 默认不装 subscriber，所以 basic-memory 为 PreCompact 声明的 `Checkpointing Codex work to Basic Memory` 从来没出现过。修法不是逐个事件补两行 emit（十五个注册点），而是**把这一对放进两种 hook 共用的 runner**（`run_command_hook` / `run_mcp_tool_hook`），于是每个事件自动获得进度行；SessionStart 那条专用的 emit 随之删掉。这要求 runner 知道来源，而它只看得见 `HookCommand`，所以在**准入处**（`admit_trusted`，唯一知道"这条 hook 来自哪个文件"的地方）给 `HookCommand` 盖一个 `source: Option<String>`：`#[serde(skip)]` 是关键——label 决定 hook 在审查与日志里的名字，绝不能让 hooks 文件自己写；它也不进 `hook_definition_hash`（那个函数把 label 当独立参数收），所以盖章不改变任何 hook 的身份，已批准的 hook 不会失效。`async` 型 hook **不开**进度行：这种调用在子进程结束前就返回了，没有人能合上那一行，而永远停在 "Loading" 正是这次要修的毛病。
+
+**Verification:** `cargo fmt -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo check --workspace --all-targets` 干净；推送门测试全绿（tact 1181、tui 628、agent_tui_kit 375、tact-ui 272）。新增：tui `hook_status_is_rewritten_in_place_when_the_hook_returns`（行数不变、同一 id、耗时追加、accent → muted、缓存 token 已移开）、`hook_elapsed_prefers_milliseconds_under_a_second`；tact `a_pre_compact_status_line_is_opened_and_closed`（非 SessionStart 事件也开合并闭合同一 id）、`admission_stamps_the_source_and_ignores_a_declared_one`（准入盖章，且文件里写 `"source": "spoofed"` 解析后仍是 `None`）；扩展 `session_start_payload_carries_the_model_and_permission_mode`——断言 status 行**恰好两条且同 id**，第一条 `elapsed_ms: None`、第二条 `Some(..)`。
+
+**指针：** `crates/tui/src/widgets/state/app/messages.rs::{apply_hook_status,hook_status_line,format_hook_elapsed}`、`crates/agent_tui_kit/src/state/log.rs::LogItemKind::HookStatus`、`crates/tact/src/agent/mod.rs::next_hook_status_id`、`crates/tact/src/plugin/hooks.rs::{open_hook_status,close_hook_status,admit_trusted,HookCommand::source}`；Ch 09 §10。
+
+---
+
 ## 1. 2026-10-05 — 插件的 MCP 声明只收集一次：`plugin.json#mcpServers` 指过的文件不再被根扫描重读
 
 | Field | Value |
