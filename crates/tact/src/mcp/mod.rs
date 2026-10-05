@@ -1375,6 +1375,12 @@ fn collect_plugin_mcp_servers(
             }
         };
 
+    // Files the manifest already pointed at. A Codex bundle commonly declares
+    // `"mcpServers": "./.mcp.json"` *and* ships that file at its root, so
+    // without this the same declaration is collected twice and the resolver
+    // reports the plugin shadowing itself.
+    let mut declared_files: BTreeSet<PathBuf> = BTreeSet::new();
+
     let manifest_path = root.root.join(".codex-plugin").join("plugin.json");
     if manifest_path.is_file() {
         let raw = fs::read_to_string(&manifest_path)
@@ -1382,7 +1388,8 @@ fn collect_plugin_mcp_servers(
         match serde_json::from_str::<PluginManifest>(&raw) {
             Ok(manifest) => {
                 match plugin_manifest_mcp_servers(&root.root, manifest.mcp_servers.as_ref()) {
-                    Ok(configs) => {
+                    Ok((configs, file)) => {
+                        declared_files.extend(file);
                         for (name, config) in configs {
                             accept(servers, name, config);
                         }
@@ -1408,11 +1415,16 @@ fn collect_plugin_mcp_servers(
     // working directory — that role belongs to `<workdir>/.tact/.mcp.json`.
     //
     // `.mcp.json` is the Codex bundle name; `mcp.json` is the Agent Plugins
-    // §7.2.1 core path. The Codex name wins when a bundle ships both.
-    for file_name in [".mcp.json", "mcp.json"] {
-        let mcp_path = root.root.join(file_name);
-        if !mcp_path.is_file() {
-            continue;
+    // §7.2.1 core path. The Codex name wins when a bundle ships both, so only
+    // the first name that exists is read — and never a file the manifest
+    // already named, which would collect every server in it twice.
+    let root_file = [".mcp.json", "mcp.json"]
+        .into_iter()
+        .map(|file_name| root.root.join(file_name))
+        .find(|path| path.is_file());
+    if let Some(mcp_path) = root_file {
+        if declared_files.contains(&fold_path(&mcp_path)) {
+            return Ok(());
         }
         let raw = fs::read_to_string(&mcp_path)
             .with_context(|| format!("failed to read {}", mcp_path.display()))?;
@@ -1536,13 +1548,16 @@ fn resolve_plugin_command(command: &str, dirs: &PluginDirs) -> Option<String> {
 /// `"mcpServers": "./.mcp.json"`. Agent Plugins 1.0.0 itself declares MCP only
 /// in the root `mcp.json` and forbids this field, but the Codex compatibility
 /// layout is what installed bundles actually ship, so both shapes are read.
+///
+/// The second element is the file a path-shaped declaration resolved to, so the
+/// caller can avoid reading the same bundle file a second time.
 fn plugin_manifest_mcp_servers(
     root: &Path,
     declared: Option<&Value>,
-) -> Result<HashMap<String, McpProjectConfig>> {
+) -> Result<(HashMap<String, McpProjectConfig>, Option<PathBuf>)> {
     match declared {
-        None | Some(Value::Null) => Ok(HashMap::new()),
-        Some(Value::Object(map)) => Ok(serde_json::from_value(Value::Object(map.clone()))?),
+        None | Some(Value::Null) => Ok((HashMap::new(), None)),
+        Some(Value::Object(map)) => Ok((serde_json::from_value(Value::Object(map.clone()))?, None)),
         Some(Value::String(path)) => {
             let resolved = fold_path(&root.join(path));
             if !resolved.starts_with(root) {
@@ -1550,7 +1565,7 @@ fn plugin_manifest_mcp_servers(
             }
             let raw = fs::read_to_string(&resolved)
                 .with_context(|| format!("failed to read {}", resolved.display()))?;
-            parse_plugin_mcp_document(&raw)
+            Ok((parse_plugin_mcp_document(&raw)?, Some(resolved)))
         }
         Some(other) => bail!("mcpServers must be an object or a path, found {other}"),
     }
@@ -3565,7 +3580,7 @@ mod tests {
     use std::{
         borrow::Cow,
         collections::{BTreeMap, HashMap},
-        path::Path,
+        path::{Path, PathBuf},
         sync::Arc,
     };
 
@@ -3634,7 +3649,8 @@ mod tests {
         assert_eq!(manifest.version.as_deref(), Some("1.0.0"));
         let servers =
             plugin_manifest_mcp_servers(Path::new("/plugins/demo"), manifest.mcp_servers.as_ref())
-                .expect("an inline map is a valid declaration");
+                .expect("an inline map is a valid declaration")
+                .0;
         let echo = servers.get("echo").expect("echo is declared");
         assert_eq!(echo.command.as_deref(), Some(expected.command.as_str()));
         assert_eq!(echo.args, expected.args);
@@ -3804,7 +3820,7 @@ mod tests {
         let manifest: PluginManifest =
             serde_json::from_str(r#"{"name":"demo","mcpServers":"./.mcp.json"}"#).unwrap();
 
-        let servers =
+        let (servers, declared_file) =
             plugin_manifest_mcp_servers(dir.path(), manifest.mcp_servers.as_ref()).unwrap();
 
         assert_eq!(
@@ -3814,6 +3830,11 @@ mod tests {
                 .command
                 .as_deref(),
             Some("node")
+        );
+        assert_eq!(
+            declared_file.as_deref(),
+            Some(dir.path().join(".mcp.json").as_path()),
+            "the file the manifest named is reported so it is not read twice"
         );
     }
 
@@ -3923,25 +3944,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn installed_plugin_mcp_servers_scans_cache_roots() {
-        let home = tempfile::tempdir().unwrap();
-        let plugin_home = PluginHome::from_home(home.path());
+    /// Commits one installed plugin at `<cache>/acme/demo/abc123`, so the
+    /// collector has a cache root to scan, and returns that root.
+    fn install_demo_plugin(plugin_home: &PluginHome) -> PathBuf {
         let plugin_root = plugin_home.cache.join("acme/demo/abc123");
         std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
-        std::fs::write(
-            plugin_root.join(".codex-plugin/plugin.json"),
-            r#"{ "name": "demo", "mcpServers": { "fromManifest": { "command": "cat" } } }"#,
-        )
-        .unwrap();
-        std::fs::write(
-            plugin_root.join(".mcp.json"),
-            r#"{
-                "fromDotMcp": { "type": "stdio", "command": "node", "args": ["srv.js"] },
-                "remote": { "type": "http", "url": "https://mcp.example.com/api" }
-            }"#,
-        )
-        .unwrap();
         let store = PluginStore::new(plugin_home.clone());
         store
             .commit_install(
@@ -3963,6 +3970,27 @@ mod tests {
                 &plugin_root,
             )
             .unwrap();
+        plugin_root
+    }
+
+    #[test]
+    fn installed_plugin_mcp_servers_scans_cache_roots() {
+        let home = tempfile::tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+        let plugin_root = install_demo_plugin(&plugin_home);
+        std::fs::write(
+            plugin_root.join(".codex-plugin/plugin.json"),
+            r#"{ "name": "demo", "mcpServers": { "fromManifest": { "command": "cat" } } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join(".mcp.json"),
+            r#"{
+                "fromDotMcp": { "type": "stdio", "command": "node", "args": ["srv.js"] },
+                "remote": { "type": "http", "url": "https://mcp.example.com/api" }
+            }"#,
+        )
+        .unwrap();
 
         let servers = installed_plugin_mcp_servers(&plugin_home).unwrap();
 
@@ -3990,6 +4018,61 @@ mod tests {
             .find(|(name, _)| name == "plugin__demo__remote")
             .unwrap();
         assert_eq!(remote.url.as_deref(), Some("https://mcp.example.com/api"));
+    }
+
+    /// The Codex bundle shape: the manifest points at the bundle's own
+    /// `.mcp.json`, which the root scan finds as well. Collecting it twice makes
+    /// the resolver report the plugin's declaration shadowing itself.
+    #[test]
+    fn manifest_pointer_at_the_root_file_collects_it_once() {
+        let home = tempfile::tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+        let plugin_root = install_demo_plugin(&plugin_home);
+        std::fs::write(
+            plugin_root.join(".codex-plugin/plugin.json"),
+            r#"{ "name": "demo", "mcpServers": "./.mcp.json" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join(".mcp.json"),
+            r#"{ "srv": { "type": "stdio", "command": "uvx", "args": ["basic-memory", "mcp"] } }"#,
+        )
+        .unwrap();
+
+        let servers = installed_plugin_mcp_servers(&plugin_home).unwrap();
+
+        let names: Vec<_> = servers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["plugin__demo__srv"]);
+        assert_eq!(servers[0].1.args, vec!["basic-memory", "mcp"]);
+    }
+
+    /// A bundle that ships both root names: `.mcp.json` is the Codex bundle
+    /// name and wins, and the Agent Plugins `mcp.json` is not read at all.
+    #[test]
+    fn codex_root_file_wins_over_the_agent_plugins_name() {
+        let home = tempfile::tempdir().unwrap();
+        let plugin_home = PluginHome::from_home(home.path());
+        let plugin_root = install_demo_plugin(&plugin_home);
+        std::fs::write(
+            plugin_root.join(".codex-plugin/plugin.json"),
+            r#"{ "name": "demo" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join(".mcp.json"),
+            r#"{ "codex": { "type": "stdio", "command": "cat" } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin_root.join("mcp.json"),
+            r#"{ "core": { "type": "stdio", "command": "node" } }"#,
+        )
+        .unwrap();
+
+        let servers = installed_plugin_mcp_servers(&plugin_home).unwrap();
+
+        let names: Vec<_> = servers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["plugin__demo__codex"]);
     }
 
     #[test]

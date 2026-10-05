@@ -27,6 +27,32 @@
 
 ---
 
+## 1. 2026-10-05 — 插件的 MCP 声明只收集一次：`plugin.json#mcpServers` 指过的文件不再被根扫描重读
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix（报告层可见：一条自相矛盾的遮蔽报告消失；`.mcp.json` 与 `mcp.json` 并存时的胜者由 `mcp.json` 改回 `.mcp.json`） |
+| **Related** | `crates/tact/src/mcp/mod.rs`（`collect_plugin_mcp_servers`、`plugin_manifest_mcp_servers`）；Ch 08 §插件提供的 server；条目 2026-08-29（引入"两处都扫"）、2026-09-10（让 `mcpServers` 接受相对路径） |
+
+**Symptom / motivation:** 装上 `codex@basic-memory` 插件后，`mcp list` 打印出一段自己跟自己打架的报告——来源与目标**都是那一行字**：
+
+```
+Overridden declarations:
+  basic-memory  installed plugin (/Users/rg/.tact/plugins) is shadowed by installed plugin (/Users/rg/.tact/plugins)
+```
+
+根因是同一个 bundle 用两种方式声明了同一份文件：`.codex-plugin/plugin.json` 里 `"mcpServers": "./.mcp.json"`（Codex bundle 的常见写法，2026-09-10 起支持），而插件根的 `.mcp.json` 又会被独立扫一遍（2026-08-29 起）。同一个 server 名于是被 push 两次，解析器如实记下"后者覆盖前者"——但两条的 source 标签逐字相同，报告读起来是"插件在跟自己打架"，实际只是同一份声明被读了两遍。同一段代码里还藏着第二个不一致：根文件循环写成 `for file_name in [".mcp.json", "mcp.json"]`，**两个都会读**，而它正上方的注释写着 "The Codex name wins when a bundle ships both"；由于解析器是"后者胜"，先 push 的 `.mcp.json` 反而被后 push 的 `mcp.json` 顶掉——实际胜者与注释相反。
+
+**Decision:** 让"声明过"这件事本身成为去重的依据，而不是给某个名字开后门。（1）`plugin_manifest_mcp_servers` 额外返回**路径形态的声明解析到的那个文件**（内联对象形态返回 `None`），`collect_plugin_mcp_servers` 收在 `declared_files` 里，根扫描按 `fold_path` 归一后跳过它——只有真正读成功才登记，所以 manifest 声明不可用时根扫描照旧兜底。（2）根扫描改为只取第一个存在的名字（`[".mcp.json", "mcp.json"].find(is_file)`），让代码兑现注释里已经写下的规则。**没有**按 server 名在整个插件内去重：两个**不同**文件里的同名 server 是真实冲突，应该继续由解析器如实报出来。（3）manifest 内联对象与根 `.mcp.json` 的合并语义原样保留（它们是不同文件，不是同一份声明的两条路径）。
+
+**Behavior after:** 一个插件对同一个 server 只产生一条声明，`Overridden declarations` 不再出现自遮蔽行；`.mcp.json` 与 `mcp.json` 并存时只读 `.mcp.json`，Agent Plugins §7.2.1 的核心名不再参与。真实插件复核：`mcp list` 的 server 行由 3 条（含重复）回到 2 条。
+
+**Verification:** `cargo test -p tact --lib mcp::` 181 passed / 0 failed；`cargo clippy -p tact --lib --tests` 与 `cargo fmt --check` 干净。新增测试 `manifest_pointer_at_the_root_file_collects_it_once`（该 bundle 的形态，断言恰好一条）、`codex_root_file_wins_over_the_agent_plugins_name`；既有 `installed_plugin_mcp_servers_scans_cache_roots` 未改，继续钉住"manifest 内联对象 + 根 `.mcp.json` 仍合并"。安装样板抽成 `install_demo_plugin` 供三条复用。
+
+**指针：** `crates/tact/src/mcp/mod.rs::collect_plugin_mcp_servers`（`declared_files` 与 `root_file`）、`plugin_manifest_mcp_servers`（返回 `(configs, Option<PathBuf>)`）；Ch 08；同类条目 2026-10-01（策略覆盖层）。
+
+---
+
 ## 1. 2026-10-04 — 第二轮去重：footer 一种顺序、sticky 两面板共用窗口与时钟、删掉没有渲染者的 sticky 渲染器
 
 | Field | Value |
