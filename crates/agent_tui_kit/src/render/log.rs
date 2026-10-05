@@ -119,8 +119,17 @@ pub fn render_log_panel_pure(
         let phys_idx = ctx.log_scroll.visible_indices.get(logical_i).copied();
 
         // Compute the byte-range selection for this logical row, if any.
+        //
+        // A bared row is a container's rail (a hook block's header or its "… N
+        // more lines" tail) and is refused a selection at click time, so it must
+        // not paint one either: `TextCell`'s selection overlay re-wraps the raw
+        // text, which would drop the bar and widen the row by the gutter's
+        // columns. Refusing it here keeps the rail unbroken mid-drag.
         let selection_range = ctx.mouse.log_selection.and_then(|sel| {
             let phys = phys_idx?;
+            if ctx.log.items[phys].gutter.is_some() {
+                return None;
+            }
             sel.byte_range_for(phys, ctx.log.items[phys].raw.len())
         });
 
@@ -136,6 +145,7 @@ pub fn render_log_panel_pure(
                 | LogItemKind::SystemMarkdown
                 | LogItemKind::SystemTool
                 | LogItemKind::HookStatus(_)
+                | LogItemKind::HookContext
                 | LogItemKind::Thinking => "system",
             };
 

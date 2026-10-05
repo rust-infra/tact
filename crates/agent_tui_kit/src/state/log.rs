@@ -8,7 +8,7 @@ use ratatui::{style::Color, text::Line};
 
 use crate::{
     render::cells::markdown::{Gutter, MarkdownCell},
-    render::util::{LOG_THINKING_INDENT, LOG_TOOL_INDENT},
+    render::util::{LOG_THINKING_INDENT, LOG_TOOL_BLOCK_INDENT, LOG_TOOL_INDENT},
     theme::Theme,
 };
 
@@ -76,18 +76,31 @@ pub enum LogItemKind {
     /// the selection and the cards are keyed on), so the only way back to it is
     /// a value it carries itself.
     HookStatus(u64),
+    /// Hook-injected context: the labelled header row, the barred body, and the
+    /// row that says how much of it was left out.
+    ///
+    /// One kind for the whole block because they share a column — the hook
+    /// block sits where the tool blocks sit, so its bar reads as a sibling of
+    /// their cards rather than as a rail of its own.
+    ///
+    /// "Where the tool blocks sit" is [`LOG_TOOL_BLOCK_INDENT`], not
+    /// [`LOG_TOOL_INDENT`]: a rendered tool block insets its whole area by the
+    /// former (`ToolCell::render_partial`), and that is the only tool column a
+    /// reader ever sees. The latter belongs to the blank placeholder rows a
+    /// tool block overwrites, which are never on screen.
+    HookContext,
 }
 
 impl LogItemKind {
     pub fn log_indent(self) -> u16 {
         match self {
             Self::User => 0,
-            Self::AssistantMarkdown
-            | Self::SystemPlain(_)
-            | Self::SystemMarkdown
-            | Self::HookStatus(_) => LOG_THINKING_INDENT + 1,
+            Self::AssistantMarkdown | Self::SystemPlain(_) | Self::SystemMarkdown => {
+                LOG_THINKING_INDENT + 1
+            }
             Self::SystemTool => LOG_TOOL_INDENT,
             Self::Thinking => LOG_THINKING_INDENT,
+            Self::HookStatus(_) | Self::HookContext => LOG_TOOL_BLOCK_INDENT,
         }
     }
 
@@ -109,6 +122,16 @@ pub struct LogItem {
     /// long to show inline (a hook's briefing) still keeps its whole body one
     /// gesture away without the log having to hold a second copy.
     pub popup_source: Option<String>,
+    /// Bar this row wears down its left edge, if any.
+    ///
+    /// A row property rather than a prefix in [`Self::line`], because the bar
+    /// belongs to **every visual row** the row wraps into: a `▎` typed into the
+    /// text marks the first visual row and leaves the continuation bare, which
+    /// punches a hole in a container's left rail exactly when the panel is
+    /// narrow. A Markdown row draws its own bar
+    /// ([`MarkdownCell::with_gutter`]); a text row's is inserted by the host's
+    /// wrap pass, which is why the row has to declare it here.
+    pub gutter: Option<Gutter>,
 }
 
 impl std::fmt::Debug for LogItem {
@@ -119,6 +142,7 @@ impl std::fmt::Debug for LogItem {
             .field("kind", &self.kind)
             .field("has_markdown_cell", &self.markdown_cell.is_some())
             .field("has_popup_source", &self.popup_source.is_some())
+            .field("has_gutter", &self.gutter.is_some())
             .finish()
     }
 }
@@ -131,6 +155,7 @@ impl LogItem {
             kind,
             markdown_cell: None,
             popup_source: None,
+            gutter: None,
         }
     }
 
@@ -143,6 +168,13 @@ impl LogItem {
         self
     }
 
+    /// Make this row wear `gutter` down its left edge on every visual row.
+    #[must_use]
+    pub fn with_gutter(mut self, gutter: Gutter) -> Self {
+        self.gutter = Some(gutter);
+        self
+    }
+
     pub fn markdown(raw: String, theme: &Theme, kind: LogItemKind) -> Self {
         let markdown_cell = MarkdownCell::new(&raw, theme).with_indent(LOG_THINKING_INDENT + 1);
         Self {
@@ -151,14 +183,16 @@ impl LogItem {
             kind,
             markdown_cell: Some(markdown_cell),
             popup_source: None,
+            gutter: None,
         }
     }
 
     /// A whole-Markdown row wearing `gutter` down its left edge.
     ///
-    /// The indent matches [`Self::markdown`] — the gutter is drawn *at* the
-    /// content column, not left of it, so a bared block lines up with the
-    /// plain markdown around it.
+    /// The gutter is drawn *at* the kind's column, not left of it, so a bared
+    /// block lines up with the rows it belongs beside — the hook block shares
+    /// the tool *block* column, which is why the indent follows the kind
+    /// instead of a constant.
     pub fn markdown_with_gutter(
         raw: String,
         theme: &Theme,
@@ -166,7 +200,7 @@ impl LogItem {
         gutter: Gutter,
     ) -> Self {
         let markdown_cell = MarkdownCell::new(&raw, theme)
-            .with_indent(LOG_THINKING_INDENT + 1)
+            .with_indent(kind.log_indent())
             .with_gutter(gutter);
         Self {
             line: Line::from(""),
@@ -174,6 +208,7 @@ impl LogItem {
             kind,
             markdown_cell: Some(markdown_cell),
             popup_source: None,
+            gutter: Some(gutter),
         }
     }
 }
@@ -199,8 +234,39 @@ impl LogCoordinator {
         kind: LogItemKind,
         popup_source: String,
     ) {
-        self.items
-            .push(LogItem::new(line, raw, kind).with_popup_source(popup_source));
+        self.push_popup_row(line, raw, kind, popup_source, None);
+    }
+
+    /// Like [`Self::append_msg_with_popup`], but the row wears `gutter` down
+    /// its left edge — on every visual row it wraps into, not just the first.
+    ///
+    /// This is how the two *text* rows of a bared container (a hook block's
+    /// header and its "… N more lines" tail) keep the rail unbroken; the body
+    /// between them is a Markdown row and draws its own bar.
+    pub fn append_bared_msg_with_popup(
+        &mut self,
+        line: Line<'static>,
+        raw: String,
+        kind: LogItemKind,
+        popup_source: String,
+        gutter: Gutter,
+    ) {
+        self.push_popup_row(line, raw, kind, popup_source, Some(gutter));
+    }
+
+    fn push_popup_row(
+        &mut self,
+        line: Line<'static>,
+        raw: String,
+        kind: LogItemKind,
+        popup_source: String,
+        gutter: Option<Gutter>,
+    ) {
+        let mut item = LogItem::new(line, raw, kind).with_popup_source(popup_source);
+        if let Some(gutter) = gutter {
+            item = item.with_gutter(gutter);
+        }
+        self.items.push(item);
     }
 
     /// Append a whole-Markdown notice as a single log item.
@@ -366,6 +432,14 @@ mod tests {
         );
         assert_eq!(LogItemKind::SystemTool.log_indent(), LOG_TOOL_INDENT);
         assert_eq!(LogItemKind::Thinking.log_indent(), LOG_THINKING_INDENT);
+        // The hook block shares the column a rendered tool block insets to,
+        // not the placeholder column `SystemTool` reserves.
+        assert_eq!(LogItemKind::HookContext.log_indent(), LOG_TOOL_BLOCK_INDENT);
+        assert_eq!(
+            LogItemKind::HookStatus(1).log_indent(),
+            LOG_TOOL_BLOCK_INDENT
+        );
+        assert_ne!(LOG_TOOL_BLOCK_INDENT, LOG_TOOL_INDENT);
         assert!(LogItemKind::User.is_user());
         assert!(!LogItemKind::AssistantMarkdown.is_user());
     }

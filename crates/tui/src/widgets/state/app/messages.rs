@@ -402,25 +402,37 @@ impl App {
     /// [`Self::append_system_markdown`] — the caller has already stripped the
     /// `<hook-context>` framing — which is exactly why the block needs a shape
     /// of its own: without it a hook's stdout and a markdown notice Tact wrote
-    /// itself are the same rows. The header names the block and counts it, the
-    /// bar holds what is shown together (blank rows included), and the tail is
-    /// cut at a paragraph-safe boundary so a briefing does not push the
-    /// conversation off the log — the reader's full copy stays in the popup.
+    /// itself are the same rows. The header names the block and says how to
+    /// open it, the bar holds what is shown together (blank rows included), and
+    /// the tail is cut at a paragraph-safe boundary so a briefing does not push
+    /// the conversation off the log — the reader's full copy stays in the popup.
+    ///
+    /// The header carries **no** line count. It sits at the tool block's indent
+    /// (`LOG_TOOL_BLOCK_INDENT`), so the four fields it could name — block,
+    /// source, size, gesture — have to fit in what is left of a narrow panel,
+    /// and the size is the one that is already stated elsewhere: the tail row
+    /// gives the count that was *hidden* (`… 9 more lines`), and a block that
+    /// hid nothing is entirely on screen. Keeping it cost eleven columns and
+    /// wrapped the header at 60 columns wide.
     pub(crate) fn append_hook_context_markdown(&mut self, source: Option<&str>, body: &str) {
         let label = self.msgs().hook_context_label;
         let hint = self.msgs().hook_context_expand_hint;
         let bar = HOOK_CONTEXT_GUTTER;
-        let total = body.lines().count();
-        let mut spans = vec![
-            Span::styled(bar, Style::default().fg(self.theme.accent)),
-            Span::styled(
-                format!("{HOOK_CONTEXT_MARK} {label}"),
-                Style::default()
-                    .fg(self.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
-        let mut header = format!("{bar}{HOOK_CONTEXT_MARK} {label}");
+        // The bar is the row's gutter, not the first span of its text: a `▎`
+        // typed into the text marks only the first visual row, so a header that
+        // wraps would leave its continuation outside the rail. See
+        // `LogItem::gutter`.
+        let gutter = Gutter {
+            glyph: bar,
+            color: self.theme.accent,
+        };
+        let mut spans = vec![Span::styled(
+            format!("{HOOK_CONTEXT_MARK} {label}"),
+            Style::default()
+                .fg(self.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )];
+        let mut header = format!("{HOOK_CONTEXT_MARK} {label}");
         if let Some(source) = source {
             spans.push(Span::styled(
                 format!(" · {source}"),
@@ -429,47 +441,37 @@ impl App {
             header.push_str(&format!(" · {source}"));
         }
         spans.push(Span::styled(
-            format!(" · {total} lines · "),
+            format!(" · {hint}"),
             Style::default().fg(self.theme.muted_fg()),
         ));
-        spans.push(Span::styled(
-            hint,
-            Style::default().fg(self.theme.muted_fg()),
-        ));
-        header.push_str(&format!(" · {total} lines · {hint}"));
+        header.push_str(&format!(" · {hint}"));
 
-        self.log.append_msg_with_popup(
+        self.log.append_bared_msg_with_popup(
             Line::from(spans),
             header,
-            LogItemKind::SystemPlain(SystemMsgStyle::Default),
+            LogItemKind::HookContext,
             body.to_string(),
+            gutter,
         );
 
         let (head, dropped) = truncate_hook_body(body, HOOK_CONTEXT_INLINE_LINES);
-        self.log.append_markdown_with_gutter(
-            head,
-            &self.theme,
-            LogItemKind::SystemMarkdown,
-            Gutter {
-                glyph: bar,
-                color: self.theme.accent,
-            },
-        );
+        self.log
+            .append_markdown_with_gutter(head, &self.theme, LogItemKind::HookContext, gutter);
         if dropped > 0 {
             let more = self
                 .msgs()
                 .hook_context_more_tmpl
                 .replacen("{}", &dropped.to_string(), 1)
                 .replacen("{}", hint, 1);
-            let raw = format!("{bar}{more}");
-            self.log.append_msg_with_popup(
+            self.log.append_bared_msg_with_popup(
                 Line::from(Span::styled(
-                    raw.clone(),
+                    more.clone(),
                     Style::default().fg(self.theme.muted_fg()),
                 )),
-                raw,
-                LogItemKind::SystemPlain(SystemMsgStyle::Default),
+                more,
+                LogItemKind::HookContext,
                 body.to_string(),
+                gutter,
             );
         }
     }
@@ -615,6 +617,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::render::test_harness::make_app;
+    use agent_tui_kit::render::util::{LOG_TOOL_BLOCK_INDENT, LOG_TOOL_INDENT};
     use tact::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
 
     #[test]
@@ -749,12 +752,25 @@ mod tests {
             "the header names the hook that spoke: {text}"
         );
         assert!(
-            text.contains("3 lines"),
-            "the header counts the body it heads: {text}"
-        );
-        assert!(
             text.contains(app.msgs().hook_context_expand_hint),
             "the header says how to reach the whole body: {text}"
+        );
+        // The header carries no size: at the tool block's indent it is the
+        // field that pushes the header onto a second row in a narrow panel,
+        // and it is the one the reader can already work out — the tail row
+        // states what was hidden, and a block that hid nothing is all on
+        // screen. The header must therefore stay on one row at 60 columns.
+        assert!(
+            !text.contains("3 lines"),
+            "the header must not spend columns on the count: {text}"
+        );
+        let narrow = render_log_panel_text(&mut app, 60, 24);
+        assert!(
+            narrow
+                .lines()
+                .any(|row| row.contains(app.msgs().hook_context_label)
+                    && row.contains(app.msgs().hook_context_expand_hint)),
+            "the header fits one row at 60 columns: {narrow}"
         );
         assert!(
             text.contains("first paragraph") && text.contains("second paragraph"),
@@ -779,6 +795,75 @@ mod tests {
         assert!(
             barred_rows >= 3,
             "header plus every body row wears the bar, got {barred_rows}: {text}"
+        );
+
+        // The block sits in the *tool block* column — the one `ToolCell`
+        // insets its whole area to, which is where a tool block's title, its
+        // meta row and its detail card's border all start. `LOG_TOOL_INDENT`
+        // is **not** that column: it belongs to the blank placeholder rows a
+        // tool block overwrites, so aligning to it leaves the bar four columns
+        // left of every tool row a reader can see.
+        let terminal = render_log_panel_terminal(&mut app, 80, 24);
+        let buf = terminal.backend().buffer();
+        let bar_x = buffer_first_char_x(buf, '▎').expect("the hook bar is drawn");
+        // Header and body share the one column: a bar anywhere else would mean
+        // the block's rows disagree about where the block starts.
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].symbol() == "▎" {
+                    assert_eq!(x, bar_x, "row {y} has a bar out of column");
+                }
+            }
+        }
+        // `render_log_panel` draws its left border in column 0, so the panel's
+        // first content column is 1.
+        let inner_x = 1;
+        assert_eq!(
+            bar_x,
+            inner_x + LOG_TOOL_BLOCK_INDENT,
+            "the hook bar must sit in the tool block column, not the placeholder one"
+        );
+        assert_ne!(
+            bar_x,
+            inner_x + LOG_TOOL_INDENT,
+            "`LOG_TOOL_INDENT` is the placeholder column; nothing visible is drawn there"
+        );
+    }
+
+    /// The block's left rail is unbroken, wrapped rows included.
+    ///
+    /// The header and the "… N more lines" tail are *text* rows, so a `▎` typed
+    /// into their text marks only the first visual row and leaves the
+    /// continuation bare — a hole in the rail, appearing exactly when the panel
+    /// is narrow enough to force the wrap. Both rows therefore carry their bar
+    /// as a row gutter (`LogItem::gutter`), and the wrap pass paints it on every
+    /// row it produces.
+    #[test]
+    fn hook_context_rail_has_no_hole_when_rows_wrap() {
+        use crate::render::test_harness::{buffer_first_char_x, render_log_panel_terminal};
+
+        let mut app = make_app();
+        let body = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.append_hook_context_markdown(Some("plugin codex"), &body);
+
+        // Narrow enough that the header *and* the truncated tail both wrap.
+        let terminal = render_log_panel_terminal(&mut app, 40, 24);
+        let buf = terminal.backend().buffer();
+        let bar_x = buffer_first_char_x(buf, '▎').expect("a bar on screen");
+        let barred: Vec<u16> = (0..buf.area.height)
+            .filter(|&y| buf[(bar_x, y)].symbol() == "▎")
+            .collect();
+        assert!(
+            barred.len() >= 5,
+            "header, body and tail rows all wear the bar: {barred:?}"
+        );
+        assert_eq!(
+            barred,
+            (barred[0]..=*barred.last().unwrap()).collect::<Vec<u16>>(),
+            "a wrapped row dropped its bar, leaving a hole in the rail"
         );
     }
 

@@ -45,7 +45,10 @@ pub struct Gutter {
 
 impl Gutter {
     /// Columns the gutter costs the content it precedes.
-    fn cols(self) -> u16 {
+    ///
+    /// Public because a *text* row wearing a bar has to narrow its wrap by the
+    /// same amount, and it does that in the host's wrap pass rather than here.
+    pub fn cols(self) -> u16 {
         self.glyph.chars().count() as u16
     }
 }

@@ -1,6 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::Borders,
 };
@@ -234,8 +235,30 @@ fn prepare_log_frame(
                 if super::cells::separator::is_task_end_separator(&log.items[phys_idx].raw) {
                     vec![Line::default()]
                 } else {
+                    let item = &log.items[phys_idx];
                     let indent = log_indent_at(log, phys_idx) as usize;
-                    wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
+                    // A row that wears a bar pays for it out of the same budget
+                    // the indent comes from, and gets the bar on **every** row
+                    // it wraps into: the bar is the container's left rail, so a
+                    // continuation without it is a hole in the rail. A Markdown
+                    // row does this itself (`MarkdownCell::with_gutter`); this
+                    // is the text-row half of the same rule.
+                    let gutter = item.gutter;
+                    let gutter_cols = gutter.map_or(0, |g| g.cols()) as usize;
+                    let mut wrapped = wrap_line(
+                        &line,
+                        wrap_width.saturating_sub(indent + gutter_cols).max(1),
+                    );
+                    if let Some(gutter) = gutter {
+                        let bar = Span::styled(
+                            gutter.glyph,
+                            Style::default().fg(gutter.color).bg(theme.bg),
+                        );
+                        for line in &mut wrapped {
+                            line.spans.insert(0, bar.clone());
+                        }
+                    }
+                    wrapped
                 }
             } else {
                 // The stream row uses the same reply indent as its TextCell.
