@@ -7,7 +7,8 @@ use tact_protocol::{AgentUpdate, PlanStep, StepStatus, ThinkingChunk, ToolPresen
 
 use super::log::render_log_panel;
 use super::test_harness::{
-    buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
+    buffer_has_bg, buffer_has_modifier, buffer_text, make_app, render_log_panel_terminal,
+    render_log_panel_text,
 };
 use crate::test_fixtures::StepCall;
 use crate::widgets::state::{App, LogItemKind, LogSelection, Status};
@@ -962,6 +963,33 @@ fn live_stats_row_paints_the_theme_bg_across_its_tail() {
         let cell = &buffer[(x, 10)];
         assert_eq!(cell.bg, bg, "live row cell at x={x} must carry theme.bg");
     }
+}
+
+/// The live row is a HUD on the turn boundary, not a log row: it is centered
+/// in the panel (the full-width rule above it is the boundary, and the clock
+/// that used to sit centered *in* that rule now sits centered under it).
+#[test]
+fn live_stats_row_is_centered_in_the_panel() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now());
+    app.status_bar_mut().model_name = "mock-model".into();
+    app.status_bar_mut().token_total = 100;
+
+    let terminal = render_log_panel_terminal(&mut app, 120, 12);
+    let buffer = terminal.backend().buffer();
+    // Measure the padding between the two border columns, cell by cell (a wide
+    // glyph's continuation cell is blank, so char counting would be off).
+    let blank = |x: u16| buffer[(x, 10)].symbol().trim().is_empty();
+    let left = (1..119).take_while(|&x| blank(x)).count();
+    let right = (1..119).rev().take_while(|&x| blank(x)).count();
+
+    assert!(left > 0, "a centered row is not flush left");
+    assert!(
+        left.abs_diff(right) <= 1,
+        "the live row must be centered, got left={left} right={right}:\n{}",
+        buffer_text(buffer)
+    );
 }
 
 /// The handoff: the frozen row written at task end says exactly what the live

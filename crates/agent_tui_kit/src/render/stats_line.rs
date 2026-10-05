@@ -14,7 +14,7 @@
 
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Borders, Paragraph},
@@ -110,6 +110,12 @@ fn live_elapsed_secs(ctx: &RenderCtx) -> i64 {
 
 /// Draw the live stats line over `area`.
 ///
+/// The line is **centered**: it is a HUD strip on the turn boundary, not a log
+/// row — the rule above it is full-width, and the number that used to sit
+/// centered in that rule now sits centered under it. (The frozen row written at
+/// task end stays left-aligned: it is a transcript row with a `⎘` affordance,
+/// not a HUD.)
+///
 /// The whole row is painted with the theme background first — a row that only
 /// paints its glyphs leaves the previous frame's style in the tail (AGENTS.md
 /// render invariant), which shows up as a band when the line gets shorter.
@@ -129,7 +135,12 @@ pub fn render_live_stats_band(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         body,
         Style::default().fg(theme.accent).bg(theme.bg),
     ));
-    frame.render_widget(Paragraph::new(line).style(base), area);
+    frame.render_widget(
+        Paragraph::new(line)
+            .alignment(Alignment::Center)
+            .style(base),
+        area,
+    );
 }
 
 #[cfg(test)]
