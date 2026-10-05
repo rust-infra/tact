@@ -992,6 +992,50 @@ fn live_stats_row_is_centered_in_the_panel() {
     );
 }
 
+/// Padding `(left, right)` of the row carrying `Task stats:` in a buffer,
+/// measured inside the panel's two border columns.
+fn stats_row_padding(buffer: &ratatui::buffer::Buffer) -> (usize, usize) {
+    let row = (0..buffer.area.height)
+        .find(|&y| {
+            (1..buffer.area.width - 1)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains("Task stats:")
+        })
+        .expect("a stats row in the buffer");
+    let blank = |x: u16| buffer[(x, row)].symbol().trim().is_empty();
+    let left = (1..buffer.area.width - 1).take_while(|&x| blank(x)).count();
+    let right = (1..buffer.area.width - 1)
+        .rev()
+        .take_while(|&x| blank(x))
+        .count();
+    (left, right)
+}
+
+/// The frozen row — the task-end stats block written into the log — is centered
+/// like the live band it replaces. Its pad is baked into the *line* (never into
+/// `raw`, which the `⎘` byte mapping reads), so it re-centers whenever the
+/// panel width changes.
+#[test]
+fn frozen_stats_row_is_centered_like_the_live_row() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.last_prompt_elapsed_secs = Some(65);
+    app.status_bar_mut().model_name = "deepseek-flash".into();
+    app.status_bar_mut().token_total = 100;
+    app.add_task_end_separator();
+    app.add_task_stats_block();
+
+    let terminal = render_log_panel_terminal(&mut app, 120, 12);
+    let (left, right) = stats_row_padding(terminal.backend().buffer());
+    assert!(left > 0, "a centered row is not flush left");
+    assert!(
+        left.abs_diff(right) <= 1,
+        "the frozen row must be centered, got left={left} right={right}:\n{}",
+        buffer_text(terminal.backend().buffer())
+    );
+}
+
 /// The handoff: the frozen row written at task end says exactly what the live
 /// row was saying, because both come from `stats_line::task_stats_body`.
 #[test]

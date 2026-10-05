@@ -14,11 +14,12 @@
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::Rect,
     style::Style,
     text::{Line, Span},
     widgets::{Borders, Paragraph},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::{i18n::Messages, state::StatusBarState};
 
@@ -96,6 +97,26 @@ pub fn live_stats_row(area: Rect, borders: Borders) -> Option<Rect> {
     })
 }
 
+/// Leading pad that centers `text_width` columns inside `content_width`.
+///
+/// The one centering rule for the stats line, in both of its spellings: the
+/// live band places its text with it, and the frozen log row has it baked into
+/// its line by the app's wrap pass.
+pub fn center_pad(content_width: usize, text_width: usize) -> u16 {
+    (content_width.saturating_sub(text_width) / 2) as u16
+}
+
+/// The part of [`center_pad`] a **log row** carries inside its own text.
+///
+/// A log row is drawn at its indent (`log_indent_at`), so only the centering
+/// beyond that indent can be baked in — a pad smaller than the indent cannot
+/// move the row left of it. The app's click path subtracts `indent + this` from
+/// a column before mapping it to a byte offset, which is why both sides have to
+/// come through here.
+pub fn stats_row_pad(content_width: usize, indent: u16, text_width: usize) -> u16 {
+    center_pad(content_width, text_width).saturating_sub(indent)
+}
+
 /// Live wall clock of the task in flight.
 fn live_elapsed_secs(ctx: &RenderCtx) -> i64 {
     ctx.task_start_time
@@ -110,11 +131,11 @@ fn live_elapsed_secs(ctx: &RenderCtx) -> i64 {
 
 /// Draw the live stats line over `area`.
 ///
-/// The line is **centered**: it is a HUD strip on the turn boundary, not a log
-/// row — the rule above it is full-width, and the number that used to sit
-/// centered in that rule now sits centered under it. (The frozen row written at
-/// task end stays left-aligned: it is a transcript row with a `⎘` affordance,
-/// not a HUD.)
+/// The line is **centered** ([`center_pad`]): it is a HUD strip on the turn
+/// boundary, not a log row — the rule above it is full-width, and the number
+/// that used to sit centered in that rule now sits centered under it. The
+/// frozen row written at task end lands on the same column: it bakes the same
+/// pad into its line.
 ///
 /// The whole row is painted with the theme background first — a row that only
 /// paints its glyphs leaves the previous frame's style in the tail (AGENTS.md
@@ -131,16 +152,12 @@ pub fn render_live_stats_band(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
     }
 
     let body = task_stats_body(&ctx.messages, live_elapsed_secs(ctx), ctx.status_bar);
+    let pad = center_pad(area.width as usize, UnicodeWidthStr::width(body.as_str())) as usize;
     let line = Line::from(Span::styled(
-        body,
+        format!("{}{}", " ".repeat(pad), body),
         Style::default().fg(theme.accent).bg(theme.bg),
     ));
-    frame.render_widget(
-        Paragraph::new(line)
-            .alignment(Alignment::Center)
-            .style(base),
-        area,
-    );
+    frame.render_widget(Paragraph::new(line).style(base), area);
 }
 
 #[cfg(test)]

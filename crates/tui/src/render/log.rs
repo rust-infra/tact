@@ -259,10 +259,29 @@ fn prepare_log_frame(
                     // is the text-row half of the same rule.
                     let gutter = item.gutter;
                     let gutter_cols = gutter.map_or(0, |g| g.cols()) as usize;
+                    // A task-stats row is centered like the live band that
+                    // preceded it, and the pad is baked **into the line only**:
+                    // `raw` is what the `⎘` byte mapping reads, so padding it
+                    // would shift that hit test. The click path recomputes the
+                    // same pad through `stats_line::stats_row_pad`.
+                    let pad = if crate::widgets::state::is_task_stats_line(&item.raw) {
+                        agent_tui_kit::render::stats_line::stats_row_pad(
+                            wrap_width,
+                            indent as u16,
+                            unicode_width::UnicodeWidthStr::width(item.raw.as_str()),
+                        ) as usize
+                    } else {
+                        0
+                    };
                     let mut wrapped = wrap_line(
                         &line,
-                        wrap_width.saturating_sub(indent + gutter_cols).max(1),
+                        wrap_width.saturating_sub(indent + gutter_cols + pad).max(1),
                     );
+                    if pad > 0 && !wrapped.is_empty() {
+                        // `render_line` gives a bg-less span the row's surface
+                        // colour, so plain spaces are enough here.
+                        wrapped[0].spans.insert(0, Span::raw(" ".repeat(pad)));
+                    }
                     if let Some(gutter) = gutter {
                         let bar = Span::styled(
                             gutter.glyph,

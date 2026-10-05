@@ -399,6 +399,16 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         return;
     }
 
+    // A task-stats row is a HUD, not transcript text: it is centered by a pad
+    // baked into its line, which the selection overlay (it re-wraps `raw`) does
+    // not know about. Refuse the selection here, symmetric with rendering — the
+    // `⎘` button above is the only thing on the row that answers a click.
+    if crate::widgets::state::is_task_stats_line(&app.log.items[phys_idx].raw) {
+        app.mouse.log_selection = None;
+        app.mouse.dragging_log = false;
+        return;
+    }
+
     let thinking_hit = app
         .find_thinking_at_logical(line_idx)
         .map(|(thinking_phys, _, _)| thinking_phys);
@@ -516,8 +526,12 @@ fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
             && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
         {
             // Markdown cards carry no selection overlay: stop the selection at
-            // the last text row instead of extending invisibly into one.
-            if app.is_markdown_row(phys) {
+            // the last text row instead of extending invisibly into one. Same
+            // for a task-stats row, whose centering pad the overlay does not
+            // reproduce.
+            if app.is_markdown_row(phys)
+                || crate::widgets::state::is_task_stats_line(&app.log.items[phys].raw)
+            {
                 return;
             }
             if let Some(ref mut sel) = app.mouse.log_selection {
@@ -2134,6 +2148,63 @@ mod tests {
         assert!(!app.mouse.dragging_log);
     }
 
+    /// The `⎘` on a frozen stats row is centered with the row, and the click
+    /// that lands on the glyph must still copy the turn — which means the pad
+    /// the render baked into the line is subtracted on the way to the byte
+    /// offset. The click is aimed at the *drawn* glyph, not at column 1.
+    #[test]
+    fn a_click_on_the_centered_stats_button_copies_the_turn() {
+        let mut app = app_with_clickable_log();
+        app.add_user_message("the turn".into());
+        app.add_system_message("the answer".into());
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_stats_block();
+
+        let terminal = crate::render::test_harness::render_log_panel_terminal(&mut app, 40, 10);
+        let buffer = terminal.backend().buffer();
+        let (x, y) = (1..39)
+            .flat_map(|x| (1..9).map(move |y| (x, y)))
+            .find(|&(x, y)| buffer[(x, y)].symbol() == "⎘")
+            .expect("the ⎘ glyph on the frozen stats row");
+        assert!(
+            x > 1,
+            "the row is centered, so the glyph is not at column 1"
+        );
+
+        handle_mouse_event(&mut app, mouse_down(x, y));
+        assert!(
+            app.copy_flash_at.is_some(),
+            "a click on the centered ⎘ must copy the turn"
+        );
+    }
+
+    /// The rest of a stats row is a HUD, not text: it takes no selection, since
+    /// the overlay re-wraps `raw` and would draw the highlight where the baked
+    /// centering pad is not.
+    #[test]
+    fn a_click_on_a_stats_row_body_starts_no_selection() {
+        let mut app = app_with_clickable_log();
+        app.add_user_message("the turn".into());
+        app.add_system_message("the answer".into());
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_stats_block();
+
+        let terminal = crate::render::test_harness::render_log_panel_terminal(&mut app, 40, 10);
+        let buffer = terminal.backend().buffer();
+        let (_, y) = (1..39)
+            .flat_map(|x| (1..9).map(move |y| (x, y)))
+            .find(|&(x, y)| buffer[(x, y)].symbol() == "⎘")
+            .expect("the ⎘ glyph on the frozen stats row");
+
+        // Well past the button glyphs, still on the row.
+        handle_mouse_event(&mut app, mouse_down(30, y));
+        assert!(
+            app.mouse.log_selection.is_none(),
+            "a stats row is a HUD: it takes no selection"
+        );
+        assert!(!app.mouse.dragging_log);
+    }
+
     #[test]
     fn click_below_last_message_clears_selection() {
         let mut app = app_with_clickable_log();
@@ -2195,18 +2266,26 @@ mod tests {
         app.log_scroll.visual_start = vec![0, 1, 2, 3];
 
         // Stats row is logical 2 (visual row 2 → mouse row 3). Raw row is
-        // `⎘  Task stats:⏱ 00:05`, drawn with this kind's 3-column indent, so
-        // the icon glyph itself is mouse column 4 and the button's byte range is
-        // the icon alone (bytes 0..3). A successful copy appends a notice row.
+        // `⎘  Task stats:⏱ 00:05`, drawn with this kind's 3-column indent plus
+        // the centering pad the row carries, so the icon glyph itself is mouse
+        // column 4 + pad and the button's byte range is the icon alone
+        // (bytes 0..3). A successful copy appends a notice row.
+        let raw = app.log.items.last().expect("stats row").raw.clone();
+        let pad = agent_tui_kit::render::stats_line::stats_row_pad(
+            app.mouse.area(SurfaceId::Log).width as usize - 2,
+            3,
+            unicode_width::UnicodeWidthStr::width(raw.as_str()),
+        );
+        let icon_col = 4 + pad;
         let before = app.log.items.len();
         // One column past the glyph is the separator gap, outside the range.
-        handle_mouse_event(&mut app, mouse_down(5, 3));
+        handle_mouse_event(&mut app, mouse_down(icon_col + 1, 3));
         assert_eq!(
             app.log.items.len(),
             before,
             "the gap after the icon is not the button"
         );
-        handle_mouse_event(&mut app, mouse_down(4, 3));
+        handle_mouse_event(&mut app, mouse_down(icon_col, 3));
         assert!(
             app.log.items.len() > before,
             "clicking the copy icon should copy this turn"

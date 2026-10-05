@@ -2019,10 +2019,15 @@ mod lifecycle_tests {
 
     #[test]
     fn task_stats_row_draws_exactly_what_it_stores_as_raw() {
-        // The row is clickable and selectable through `raw` byte offsets, so the
-        // drawn glyphs must stay column-for-column identical to `raw`. The copy
-        // affordance comes from the shared button component — this pins the
-        // coupling that its padding and the row's gap have to keep.
+        // The row is clickable through `raw` byte offsets, so the drawn glyphs
+        // must stay column-for-column identical to `raw`. The copy affordance
+        // comes from the shared button component — this pins the coupling that
+        // its padding and the row's gap have to keep.
+        //
+        // The centering pad is *not* part of this: it is baked into the wrapped
+        // line by the render pass (`stats_line::stats_row_pad`) and subtracted
+        // again by the click path, so `raw` keeps its own shape. The row takes
+        // no selection, which is why nothing re-wraps `raw` to draw an overlay.
         let mut app = make_app();
         app.last_prompt_elapsed_secs = Some(5);
         app.add_task_stats_block();

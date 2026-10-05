@@ -171,10 +171,22 @@ impl App {
         let vis_start = self.log_scroll.visual_start.get(logical_idx).copied()?;
         let visual_line_in_row = visual_row.saturating_sub(vis_start);
         let indent = self.nested_log_indent(phys_idx) as usize;
-        let text_col = col.saturating_sub(indent);
+        // A task-stats row carries a centering pad inside its line (baked by the
+        // wrap pass, never into `raw`). The column has to step over it too, or
+        // the `⎘` hit test lands `pad` columns left of the glyphs it means.
+        let pad = if crate::widgets::state::is_task_stats_line(raw_text) {
+            agent_tui_kit::render::stats_line::stats_row_pad(
+                wrap_width,
+                indent as u16,
+                unicode_width::UnicodeWidthStr::width(raw_text.as_str()),
+            ) as usize
+        } else {
+            0
+        };
+        let text_col = col.saturating_sub(indent + pad);
         // Render wraps at (panel width - indent); the hit-test must use the
         // same width or clicks near the right edge of indented rows drift.
-        let wrap_width = wrap_width.saturating_sub(indent).max(1);
+        let wrap_width = wrap_width.saturating_sub(indent + pad).max(1);
         let byte_offset =
             visual_pos_to_byte_offset(raw_text, wrap_width, visual_line_in_row, text_col);
         Some((phys_idx, byte_offset))
