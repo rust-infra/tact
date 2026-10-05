@@ -474,6 +474,8 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `LogItem::raw` | `String` | 纯文本：复制、hit test 与结构查找 |
 | `LogItem::kind` | `LogItemKind` | 显式来源、渲染模式、缩进与类别 metadata |
 | `LogItem::markdown_cell` | `Option<MarkdownCell>` | 整段 Markdown notice 的缓存 renderer |
+| `LogItem::popup_source` | `Option<String>` | 双击要打开的只读全文；带它的行在鼠标层是**控件**（双击开 popup、单击不产生选区），因此超长块不必在 log 里留第二份正文 |
+| `LogItem::gutter` | `Option<Gutter>` | 该行左缘要戴的竖条。是**行属性**而非 `line` 里的前缀：竖条属于该行折出的**每一个**视觉行，而写进文本的 `▎` 只标记第一个——窄面板一折行就在容器左轨上开一个洞 |
 
 `LogItemKind` 在行进入 TUI 时分配（`widgets/state/mod.rs`）；renderer 不再从 raw 前缀或缩进推断归属：
 
@@ -485,6 +487,10 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `SystemMarkdown` | `/skill list` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
 | `SystemTool` | tool placeholder 与显式标记的 tool 行 | `LOG_TOOL_INDENT` |
 | `Thinking` | 为一个 direct Thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
+| `HookStatus(u64)` | hook 的进度行，id 由 `AgentUpdate::HookStatus` 发放、回来时按 id 原地改写 | `LOG_TOOL_BLOCK_INDENT` |
+| `HookContext` | hook 注入上下文的 header / 竖条正文 / "还有 N 行"尾巴（整块共用一个 kind） | `LOG_TOOL_BLOCK_INDENT` |
+
+hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者属于被工具卡覆盖掉的空白占位行，屏幕上根本没有这一列，按它对齐会让竖条停在每条工具行左边 4 列（详见 [第 9 章 §10](./09_chapter_hook_zh.md)）。
 
 `SystemMsgStyle` 是独立的视觉 metadata（`Default`、`Success`、`Error`、`Warning`、`Accent`）。只有调用方已经确认该行是 system 后，显式可见前缀才会用于选择颜色。
 
