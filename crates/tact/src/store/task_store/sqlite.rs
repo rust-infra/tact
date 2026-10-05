@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sqlx::Row;
 
-use crate::store::sqlite::{PoolRef, open_pool};
+use crate::store::sqlite::{PoolRef, now_millis, open_pool};
 use crate::task::{TaskRecord, TaskStatus, TaskUpdate};
 
 use super::TaskStore;
@@ -303,13 +303,6 @@ fn row_to_task(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord> {
         started_at: row.try_get("started_at")?,
         completed_at: row.try_get("completed_at")?,
     })
-}
-
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 #[cfg(test)]

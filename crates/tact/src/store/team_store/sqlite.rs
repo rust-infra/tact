@@ -2,10 +2,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::Row;
 
-use crate::store::sqlite::{PoolRef, open_pool};
+use crate::store::sqlite::{PoolRef, from_millis, open_pool};
 use crate::team::{InboxMessage, TeammateRecord};
 
 use super::TeamStore;
@@ -67,10 +66,6 @@ impl SqliteTeamStore {
 
         Ok(Self { pool })
     }
-}
-
-fn from_millis(millis: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp_millis(millis).unwrap_or_else(Utc::now)
 }
 
 fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> Result<InboxMessage> {
@@ -148,6 +143,7 @@ impl TeamStore for SqliteTeamStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     fn temp_db(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("tact-teamstore-test-{name}"));

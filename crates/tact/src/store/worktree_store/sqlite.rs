@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sqlx::Row;
 
-use crate::store::sqlite::{PoolRef, open_pool};
+use crate::store::sqlite::{PoolRef, now_millis, open_pool};
 use crate::worktree::WorktreeRecord;
 
 use super::WorktreeStore;
@@ -147,13 +147,6 @@ impl WorktreeStore for SqliteWorktreeStore {
         events.reverse();
         Ok(events)
     }
-}
-
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 #[cfg(test)]

@@ -17,8 +17,32 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::utils::LockExt;
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+
+/// Now, in the milliseconds every domain store persists time in.
+///
+/// The stores share one database and, in places, one row's timestamp — a store
+/// that encoded time differently would be writable but unreadable by the
+/// others, so the unit is stated once, here.
+pub fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// A persisted millisecond timestamp as a `DateTime`.
+///
+/// This is also the one place that decides what an *unrepresentable* value
+/// means: `Utc::now()` rather than an error, because the column is a display
+/// field and a row whose timestamp cannot be read is still a row the panel has
+/// to show. Three stores read timestamps back, so the alternative was three
+/// answers to that question.
+pub fn from_millis(millis: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp_millis(millis).unwrap_or_else(Utc::now)
+}
 
 /// One shared pool per database file, keyed by absolute path, together
 /// with the number of live [`PoolRef`] handles handed out for it.
@@ -254,5 +278,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(level, 1);
+    }
+
+    #[test]
+    fn a_persisted_timestamp_round_trips() {
+        let millis = 1_700_000_000_000;
+        assert_eq!(from_millis(millis).timestamp_millis(), millis);
+        assert!(now_millis() > millis, "the clock is past 2023");
+    }
+
+    /// The one policy in this pair: a value that is not a representable instant
+    /// becomes "now" rather than failing, because the column is a display field
+    /// and a row nobody can date is still a row the panel has to show.
+    #[test]
+    fn an_unrepresentable_timestamp_becomes_now() {
+        let before = Utc::now();
+        let fallback = from_millis(i64::MAX);
+        assert!(
+            fallback >= before && fallback <= Utc::now(),
+            "{fallback} is not between {before} and now"
+        );
     }
 }
