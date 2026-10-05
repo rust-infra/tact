@@ -9,11 +9,20 @@ use tact::hook::{hook_context_body, is_hook_context_text};
 
 use agent_tui_kit::widgets::button::{Button, ButtonTheme, ButtonVariant};
 
+use agent_tui_kit::render::cells::markdown::Gutter;
+
 use crate::{
     i18n::{Language, Messages},
     render::cells::separator::is_task_end_separator,
     widgets::state::*,
 };
+
+/// The bar down the left edge of a hook-injected block: the glyph plus the
+/// space that separates it from the content it marks.
+const HOOK_CONTEXT_GUTTER: &str = "▎ ";
+
+/// Prefixes a hook block's header row. A provenance marker, not a status glyph.
+const HOOK_CONTEXT_MARK: &str = "⌁";
 
 /// True for a cell carrying hook-injected context (`<hook-context>`) instead
 /// of a user turn.
@@ -278,25 +287,47 @@ impl App {
         }
     }
 
-    /// Append hook-injected context, labelled with where it came from.
+    /// Append hook-injected context: a labelled header row, then the body
+    /// behind a left bar.
     ///
-    /// The body renders exactly as [`Self::append_system_markdown`] does — the
-    /// caller has already stripped the `<hook-context>` framing — which is why
-    /// the label exists: without it a hook's stdout and a markdown notice Tact
-    /// wrote itself are the same row. One dim row is the whole difference.
+    /// The body renders through the same Markdown pipeline as
+    /// [`Self::append_system_markdown`] — the caller has already stripped the
+    /// `<hook-context>` framing — which is exactly why the block needs a shape
+    /// of its own: without it a hook's stdout and a markdown notice Tact wrote
+    /// itself are the same rows. The header names the source, the bar holds the
+    /// whole block together (blank rows included), and the line count tells the
+    /// reader how much they are scrolling past.
     pub(crate) fn append_hook_context_markdown(&mut self, body: &str) {
-        let label = self.msgs().hook_context_label.to_string();
+        let label = self.msgs().hook_context_label;
+        let bar = HOOK_CONTEXT_GUTTER;
+        let lines = body.lines().count();
+        let header = format!("{bar}{HOOK_CONTEXT_MARK} {label} · {lines} lines");
         self.append_msg(
-            Line::from(Span::styled(
-                label.clone(),
-                Style::default()
-                    .fg(self.theme.muted_fg())
-                    .add_modifier(Modifier::ITALIC),
-            )),
-            label,
+            Line::from(vec![
+                Span::styled(bar, Style::default().fg(self.theme.accent)),
+                Span::styled(
+                    format!("{HOOK_CONTEXT_MARK} {label}"),
+                    Style::default()
+                        .fg(self.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" · {lines} lines"),
+                    Style::default().fg(self.theme.muted_fg()),
+                ),
+            ]),
+            header,
             LogItemKind::SystemPlain(SystemMsgStyle::Default),
         );
-        self.append_system_markdown(body.to_string());
+        self.log.append_markdown_with_gutter(
+            body.to_string(),
+            &self.theme,
+            LogItemKind::SystemMarkdown,
+            Gutter {
+                glyph: bar,
+                color: self.theme.accent,
+            },
+        );
     }
 
     /// Append a task-completion stats block right after the task-end separator.
@@ -544,6 +575,54 @@ mod tests {
         assert!(
             label_at < body_at,
             "the label leads the body it names: {raws:?}"
+        );
+    }
+
+    /// The hook block is a container: a labelled header row, then every body row
+    /// behind the bar — and the row tails beside the bar still carry the theme
+    /// background (a gutter that leaves unpainted cells behind is how residue
+    /// starts).
+    #[test]
+    fn hook_context_renders_a_labelled_barred_block() {
+        use crate::render::test_harness::{
+            buffer_first_char_x, render_log_panel_terminal, render_log_panel_text,
+        };
+
+        let mut app = make_app();
+        app.append_hook_context_markdown("first paragraph\n\nsecond paragraph");
+
+        let text = render_log_panel_text(&mut app, 80, 24);
+        assert!(
+            text.contains(app.msgs().hook_context_label),
+            "the header names the block: {text}"
+        );
+        assert!(
+            text.contains("3 lines"),
+            "the header counts the body it heads: {text}"
+        );
+        assert!(
+            text.contains("first paragraph") && text.contains("second paragraph"),
+            "the body is rendered, not swallowed: {text}"
+        );
+
+        let terminal = render_log_panel_terminal(&mut app, 80, 24);
+        let buf = terminal.backend().buffer();
+        let bar_x = buffer_first_char_x(buf, '▎').expect("a bar on screen");
+        let mut barred_rows = 0;
+        for y in 0..buf.area.height {
+            if buf[(bar_x, y)].symbol() != "▎" {
+                continue;
+            }
+            barred_rows += 1;
+            assert_eq!(
+                buf[(buf.area.width - 1, y)].style().bg,
+                Some(app.theme.bg),
+                "row {y} tail must carry the theme background"
+            );
+        }
+        assert!(
+            barred_rows >= 3,
+            "header plus every body row wears the bar, got {barred_rows}: {text}"
         );
     }
 

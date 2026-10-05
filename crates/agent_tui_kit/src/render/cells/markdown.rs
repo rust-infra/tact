@@ -21,8 +21,8 @@ use std::cell::RefCell;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Style,
-    text::Line,
+    style::{Color, Style},
+    text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
 
@@ -30,6 +30,25 @@ use crate::{
     render::{render_md::render_markdown_with_tables, renderable::Renderable, util::wrap_line},
     theme::Theme,
 };
+
+/// A glyph painted at the start of every rendered line of a cell.
+///
+/// The log's way of saying "this whole block is one thing": a hook's injected
+/// context wears a `▎` bar so it reads as a container rather than as another
+/// paragraph of whatever surrounds it. Blank lines get the gutter too, so the
+/// bar is continuous down the block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gutter {
+    pub glyph: &'static str,
+    pub color: Color,
+}
+
+impl Gutter {
+    /// Columns the gutter costs the content it precedes.
+    fn cols(self) -> u16 {
+        self.glyph.chars().count() as u16
+    }
+}
 
 /// A rendered Markdown document at one specific content width.
 #[allow(dead_code)] // used by `MarkdownCell::cached_lines` (dead until a caller wires the cell in)
@@ -50,6 +69,8 @@ pub struct MarkdownCell {
     theme: Theme,
     /// Left gutter columns applied before rendering (log-panel indents).
     indent_cols: u16,
+    /// Glyph painted at the start of every rendered line, if any.
+    gutter: Option<Gutter>,
     /// Width-keyed render cache; `None` until the first `height`/render call.
     cache: RefCell<Option<RenderedMarkdown>>,
 }
@@ -91,6 +112,7 @@ impl MarkdownCell {
             source,
             theme: *theme,
             indent_cols: 0,
+            gutter: None,
             cache: RefCell::new(None),
         }
     }
@@ -104,6 +126,17 @@ impl MarkdownCell {
         self
     }
 
+    /// Paint `gutter` at the start of every rendered line.
+    ///
+    /// The gutter costs its own columns: content is laid out `gutter.cols()`
+    /// narrower, so a wrapped line plus its bar still fits the panel. Blank
+    /// lines inside the document keep the bar, which is what makes the block
+    /// read as one container.
+    pub fn with_gutter(mut self, gutter: Gutter) -> Self {
+        self.gutter = Some(gutter);
+        self
+    }
+
     /// Render (and cache) the Markdown at the given content width.
     ///
     /// The pipeline is width-aware: pipe tables are laid out against
@@ -111,7 +144,11 @@ impl MarkdownCell {
     /// and every other line that still exceeds the width is wrapped with
     /// `wrap_line`, so the returned line count is the exact visual height.
     fn render_if_needed(&self, width: u16) {
-        let content_width = width.saturating_sub(self.indent_cols).max(1);
+        let gutter_cols = self.gutter.map_or(0, Gutter::cols);
+        let content_width = width
+            .saturating_sub(self.indent_cols)
+            .saturating_sub(gutter_cols)
+            .max(1);
         if self
             .cache
             .borrow()
@@ -122,10 +159,19 @@ impl MarkdownCell {
         }
         let (styled, _raw) =
             render_markdown_with_tables(&self.source, &self.theme, Some(content_width as usize));
-        let lines = styled
+        let mut lines = styled
             .into_iter()
             .flat_map(|line| wrap_line(&line, content_width as usize))
             .collect::<Vec<_>>();
+        if let Some(gutter) = self.gutter {
+            let bar = Span::styled(
+                gutter.glyph,
+                Style::default().fg(gutter.color).bg(self.theme.bg),
+            );
+            for line in &mut lines {
+                line.spans.insert(0, bar.clone());
+            }
+        }
         *self.cache.borrow_mut() = Some(RenderedMarkdown {
             width: content_width,
             lines,
@@ -276,6 +322,42 @@ mod tests {
             .expect("heading text row");
         let bold = (0..buf.area.width).any(|x| buf[(x, y)].modifier.contains(Modifier::BOLD));
         assert!(bold, "heading row should be bold");
+    }
+
+    /// The gutter is a container, not a prefix: every rendered row wears it,
+    /// and the content beside it is laid out `gutter.cols()` narrower so a
+    /// wrapped line plus its bar still fits the width it was given.
+    #[test]
+    fn gutter_marks_every_rendered_row() {
+        let theme = dark();
+        let cell =
+            MarkdownCell::new("first paragraph\n\nsecond paragraph", &theme).with_gutter(Gutter {
+                glyph: "▎ ",
+                color: theme.accent,
+            });
+
+        let width = 24;
+        let text = render_text(&cell, width);
+        let rows: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            rows.len() as u16,
+            cell.height(width),
+            "the bar costs no extra rows: {text}"
+        );
+        for row in &rows {
+            assert!(row.starts_with('▎'), "every row is marked: {text}");
+        }
+        assert!(text.contains("first") && text.contains("second"), "{text}");
+
+        let longest = rows
+            .iter()
+            .map(|row| row.chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            longest <= width as usize,
+            "the gutter narrows the content instead of overflowing: {text}"
+        );
     }
 
     #[test]

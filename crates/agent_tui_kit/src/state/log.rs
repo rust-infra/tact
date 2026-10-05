@@ -7,7 +7,7 @@
 use ratatui::{style::Color, text::Line};
 
 use crate::{
-    render::cells::markdown::MarkdownCell,
+    render::cells::markdown::{Gutter, MarkdownCell},
     render::util::{LOG_THINKING_INDENT, LOG_TOOL_INDENT},
     theme::Theme,
 };
@@ -126,6 +126,28 @@ impl LogItem {
             markdown_cell: Some(markdown_cell),
         }
     }
+
+    /// A whole-Markdown row wearing `gutter` down its left edge.
+    ///
+    /// The indent matches [`Self::markdown`] — the gutter is drawn *at* the
+    /// content column, not left of it, so a bared block lines up with the
+    /// plain markdown around it.
+    pub fn markdown_with_gutter(
+        raw: String,
+        theme: &Theme,
+        kind: LogItemKind,
+        gutter: Gutter,
+    ) -> Self {
+        let markdown_cell = MarkdownCell::new(&raw, theme)
+            .with_indent(LOG_THINKING_INDENT + 1)
+            .with_gutter(gutter);
+        Self {
+            line: Line::from(""),
+            raw,
+            kind,
+            markdown_cell: Some(markdown_cell),
+        }
+    }
 }
 
 /// Owns the shared log rows and all primitive row operations.
@@ -144,6 +166,18 @@ impl LogCoordinator {
     /// Append a whole-Markdown notice as a single log item.
     pub fn append_markdown(&mut self, content: String, theme: &Theme, kind: LogItemKind) {
         self.items.push(LogItem::markdown(content, theme, kind));
+    }
+
+    /// Append a whole-Markdown notice that wears a left gutter.
+    pub fn append_markdown_with_gutter(
+        &mut self,
+        content: String,
+        theme: &Theme,
+        kind: LogItemKind,
+        gutter: Gutter,
+    ) {
+        self.items
+            .push(LogItem::markdown_with_gutter(content, theme, kind, gutter));
     }
 
     /// Append a blank row of the given kind.
