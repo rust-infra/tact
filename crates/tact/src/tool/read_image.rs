@@ -168,6 +168,7 @@ mod tests {
                     max_edge: crate::config::VisionImageSettings::DEFAULT_MAX_EDGE,
                     jpeg_quality: crate::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
                 },
+                hook_output: crate::config::UiSettings::DEFAULT_HOOK_OUTPUT,
             },
             tools: crate::config::ToolSettings {
                 bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

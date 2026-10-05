@@ -15,6 +15,7 @@
 | 权限模式字符串 | `permission_mode: Option<String>` | 仅 headless — 见 [§6 缺口](#6-当前缺口) |
 | UI 主题 | `ui.theme` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
 | UI 语言 | `ui.language` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
+| hook 输出的显示开关 | `ui.hook_output` | [Ch 9 Hook](./09_chapter_hook_zh.md)、[Ch 23 TUI](./23_chapter_tui_zh.md) |
 | 调试 | `tokio_console` | `tact-ui` 的 `main()` |
 
 每个二进制入口在启动时应**调用一次** `tact::config::init()`（或 `init_config()`）。
@@ -285,6 +286,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `tools.sandbox` | `false` | `true` / `false`（Linux：bubblewrap） |
 | `ui.theme` | `"ink"` | — |
 | `ui.language` | `"en"` | —（`en` / `zh`；无 CLI flag，见 §6） |
+| `ui.hook_output` | `true` | —（是否在日志里画 hook 的进度行与注入的上下文块；**只影响显示**，见下） |
 | `ui.vision_image.compress` | `true` | —（仅 token 体积；不启用 vision） |
 | `ui.vision_image.max_edge` | `1280`（钳制 256–4096） | — |
 | `ui.vision_image.jpeg_quality` | `80`（钳制 1–100） | — |
@@ -295,6 +297,14 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `voice.language` | `zh` | Google 示例：`zh-CN`、`en-US` |
 | `voice.max_duration_secs` | `300`（openai/whisper_cpp，有效 `1..=600`）/ `60`（google，有效 `1..=60`） | — |
 | `voice.voice_keybind` | 未设置（仅鼠标） | `ctrl+<char>`（如 `ctrl+g`），不可与内置全局键 `Ctrl+C/H/T/L/?` 重合 |
+
+### `[ui]` — 主题、语言、hook 输出的显示开关
+
+`ui.theme` / `ui.language` 见 [Ch 23](./23_chapter_tui_zh.md)；两者都能在运行时改（`/theme`、`Ctrl+T`、`/lang`、`Ctrl+L`），写回同一个 `[ui]` 表。
+
+`ui.hook_output`（默认 `true`）决定 TUI 是否在日志里画 hook 相关内容——**一条进度行**（`LogItemKind::HookStatus`）和**注入的上下文块**（`LogItemKind::HookContext`）。它由 `/hook-output` 翻转（与 `/theme` 不同，布尔没有列表可选，所以走 `Ctrl+T` 那种"翻转 + 写盘 + 一条消息说清两半"的形状），也可直接写文件。
+
+**只影响显示。** hook 照常运行，stdout 照常作为 `<hook-context>` 消息进入对话——关掉它改的是读者看到的东西，不是模型拿到的东西；要停掉 hook 用 `/hooks`（或 `[hooks]`），不是这个键。门设在**行进入日志的那一刻**（`App::append_hook_context_markdown` / `App::apply_hook_status`），不是在渲染层：日志的物理索引是选区、卡片、滚动锚点的键，一行"画的时候跳过"仍会占掉一个索引。同一原因，进度行的**完成**那一半也必须先看这个开关——否则它会给开头被跳过的行补上一行孤儿。
 
 ### `[agent]` — skill 根目录、指令文件、全文注入
 

@@ -64,6 +64,10 @@ pub(crate) enum SlashCommand {
     Mcp,
     #[strum(serialize = "hooks")]
     Hooks,
+    /// Display switch, not a hook-management verb: `/hooks` reviews and trusts
+    /// hooks, this one only decides whether the log draws what they produce.
+    #[strum(serialize = "hook-output")]
+    HookOutput,
     #[strum(serialize = "balance")]
     Balance,
     #[strum(serialize = "lang")]
@@ -100,6 +104,7 @@ impl SlashCommand {
         Self::Plugin,
         Self::Mcp,
         Self::Hooks,
+        Self::HookOutput,
         Self::Balance,
         Self::Lang,
         Self::Stats,
@@ -182,6 +187,7 @@ impl SlashCommand {
             Self::Plugin => msgs.cmd_plugin,
             Self::Mcp => msgs.cmd_mcp,
             Self::Hooks => msgs.cmd_hooks,
+            Self::HookOutput => msgs.cmd_hook_output,
             Self::Balance => msgs.cmd_balance,
             Self::Lang => msgs.cmd_lang,
             Self::Stats => msgs.cmd_stats,

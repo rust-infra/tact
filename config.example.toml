@@ -288,6 +288,15 @@ theme = "ink"     # ink | ink-light | retro | brutal | nord | dark | auto
 # vision_image.max_edge = 1280       # longest edge in px (256–4096)
 # vision_image.jpeg_quality = 80     # JPEG quality 1–100 (when compress = true)
 
+# Draw hook-injected content in the log: a hook's progress line and the block of
+# context it injects (default: true). Written by `/hook-output` when you accept
+# its persist step; readable here like any other [ui] preference.
+#
+# Display only. A hook still runs, and its stdout still reaches the model as a
+# `<hook-context>` message — this decides whether the TUI draws it. To stop a
+# hook from running, use `/hooks` (or `[hooks]`), not this.
+# hook_output = false
+
 # ---------------------------------------------------------------------------
 # Voice input (macOS-first; independent of LLM providers)
 # ---------------------------------------------------------------------------

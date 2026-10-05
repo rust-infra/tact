@@ -459,9 +459,11 @@ Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overl
 
 UI 字符串集中在 `crates/agent_tui_kit/src/i18n.rs`（`Language::English` / `Language::Chinese`，每种语言一份 `Messages`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言，与 `Ctrl+T` 完全对称：走 `App::toggle_language`（静默应用 + 直接写 `[ui] language` + 一条消息）。`/lang` 则与 `/theme` 对称：先经 `App::apply_language` **静默**翻转，再打开「保存到配置？」第二步（`SelectKind::PersistLang`，默认选 `No`），由这一步负责说话——一次动作只该播报一次。接受保存时写 `[ui] language`，写进去的是 `Language::as_str()` 的 locale 标签（`en` / `zh`）而**不是**界面标签（`中文`）：后者是画给人看的，解析器读不回来。启动时 `App::set_configured_language` 读回 `[ui] language`，未知取值告警并回落英文。
 
-**「有没有配置文件可写」是启动时捕获的状态，不是每次按键都去读全局设置。** `App::ui_config_path` 由 `run_tui` 在 `App::new` 之后经 `App::set_ui_config_path` 写入（`TuiConfig::ui_config_path` 由 `interactive.rs` 从已解析的 `settings().config_path` 传入，和 `theme` / `language` 同一条路）；`App::ui_config_available()` 是 `/theme`、`/lang`、`Ctrl+T`、`Ctrl+L` 四条路共用的唯一判据。为 `None` 时四者都报「仅本次会话」且不碰磁盘。之所以不在按键处理里现场读 `try_settings()`：那是进程级全局，单测里会被别的测试装上又拆掉，于是主题测试会去写别人的临时配置文件——既不确定，也真的会写盘。
+**「有没有配置文件可写」是启动时捕获的状态，不是每次按键都去读全局设置。** `App::ui_config_path` 由 `run_tui` 在 `App::new` 之后经 `App::set_ui_config_path` 写入（`TuiConfig::ui_config_path` 由 `interactive.rs` 从已解析的 `settings().config_path` 传入，和 `theme` / `language` 同一条路）；`App::ui_config_available()` 是 `/theme`、`/lang`、`/hook-output`、`Ctrl+T`、`Ctrl+L` 五条路共用的唯一判据。为 `None` 时五者都报「仅本次会话」且不碰磁盘。之所以不在按键处理里现场读 `try_settings()`：那是进程级全局，单测里会被别的测试装上又拆掉，于是主题测试会去写别人的临时配置文件——既不确定，也真的会写盘。
 
 `apply_language` 与 `toggle_language` 的分工不是风格问题：`self.language` 是**渲染**路径读的，而持有 `Messages` 快照的组件（thinking / stream / tools）在构造时就冻结了语言，所以两者都必须经 `apply_language` 把新快照推下去，否则日志里已存在的行会在旧语言的外壳里被重绘。`/lang` 之所以要拆出静默版，正是因为它的持久化步骤承担了播报。
+
+第三个 `[ui]` 偏好是 `/hook-output`（`[ui] hook_output`，布尔，默认 `true`；语义见 [Ch 21 §5](./21_chapter_config_zh.md)）：它走 `Ctrl+T` 那种形状——翻转 → 写盘 → **一条**消息说清「现在是开还是关」和「存了没存」——而不是 `/theme` 那种「先静默应用、再问要不要保存」。差别是信息结构上的：布尔没有列表可选，就没有 picker step 可以挂那个问题。`App::toggle_hook_output` 只改 `self.hook_output`（**不**回收日志里已经画出来的行，它管的是之后进日志的东西），再经 `App::persist_hook_output_choice` 落盘并播报。
 
 ### 6.11 Log 消息模型
 
@@ -491,6 +493,8 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `HookContext` | hook 注入上下文的 header / 竖条正文 / "还有 N 行"尾巴（整块共用一个 kind） | `LOG_TOOL_BLOCK_INDENT` |
 
 hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者属于被工具卡覆盖掉的空白占位行，屏幕上根本没有这一列，按它对齐会让竖条停在每条工具行左边 4 列（详见 [第 9 章 §10](./09_chapter_hook_zh.md)）。
+
+这两个 hook kind 还受 `[ui] hook_output`（默认 `true`，`/hook-output` 翻转）门控——关掉就**一行都不进**日志。门设在行被 append 的那一刻（`App::append_hook_context_markdown` / `App::apply_hook_status`），而不是渲染层：上面这张表的 physical 索引是选区、卡片与滚动锚点的键，一行「画的时候跳过」仍然会占掉一个索引。参见 [Ch 21 §5](./21_chapter_config_zh.md)。
 
 `SystemMsgStyle` 是独立的视觉 metadata（`Default`、`Success`、`Error`、`Warning`、`Accent`）。只有调用方已经确认该行是 system 后，显式可见前缀才会用于选择颜色。
 

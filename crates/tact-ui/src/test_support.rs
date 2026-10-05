@@ -60,6 +60,7 @@ fn default_test_config() -> tact::config::ResolvedConfig {
                 max_edge: tact::config::VisionImageSettings::DEFAULT_MAX_EDGE,
                 jpeg_quality: tact::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
             },
+            hook_output: tact::config::UiSettings::DEFAULT_HOOK_OUTPUT,
         },
         tools: tact::config::ToolSettings {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

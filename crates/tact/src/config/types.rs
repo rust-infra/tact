@@ -215,6 +215,15 @@ pub struct UiTomlConfig {
 
     /// Vision image attachment compression (user `@file` / markdown images).
     pub vision_image: VisionImageTomlConfig,
+
+    /// Render hook-injected content (a hook's progress line and the block of
+    /// context it injects) in the log (default: true).
+    ///
+    /// Display only: a hook still runs, and its stdout still reaches the model
+    /// as a `<hook-context>` message — the switch decides whether the TUI draws
+    /// it. Off is for readers who find a briefing between every turn noisy, not
+    /// for turning hooks off (`[hooks]` / `/hooks` do that).
+    pub hook_output: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -462,6 +471,13 @@ pub struct UiSettings {
     pub theme: String,
     pub language: String,
     pub vision_image: VisionImageSettings,
+    /// Whether the TUI renders hook-injected content (progress lines and the
+    /// context block). Display only — see `UiTomlConfig::hook_output`.
+    pub hook_output: bool,
+}
+
+impl UiSettings {
+    pub const DEFAULT_HOOK_OUTPUT: bool = true;
 }
 
 #[derive(Debug, Clone)]

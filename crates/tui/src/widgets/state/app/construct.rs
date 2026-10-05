@@ -152,6 +152,9 @@ impl App {
             loading_idx: None,
             language: Language::English,
             ui_config_path: None,
+            // Shown by default: the switch exists to silence a noisy hook, so
+            // a fresh install (and every test) behaves as it did before it.
+            hook_output: true,
             flash_msg: None,
             copy_flash_at: None,
             undo_stack: Vec::new(),

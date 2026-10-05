@@ -432,6 +432,12 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
         C::Plugin => plugin::handle_plugin_command(app),
         C::Mcp => mcp::handle_mcp_command(app),
         C::Hooks => hooks::handle_hooks_command(app),
+        C::HookOutput => {
+            // A boolean has no list to pick from, so this is the `Ctrl+T` shape
+            // rather than the `/theme` one: flip, write, report in one message.
+            app.toggle_hook_output();
+            CommandExecOutcome::handled()
+        }
         C::Cancel => {
             // Only cancel an in-flight task; Idle and Done have nothing to
             // abort. Queued (pending) messages are NOT touched — dropping

@@ -8,6 +8,7 @@ use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 use tact::hook::{hook_context_body, hook_context_source, is_hook_context_text};
 
 use agent_tui_kit::widgets::button::{Button, ButtonTheme, ButtonVariant};
+use agent_tui_kit::widgets::tool_widget::collapsed_action_text;
 
 use agent_tui_kit::render::cells::markdown::Gutter;
 
@@ -342,17 +343,41 @@ impl App {
         message: &str,
         elapsed_ms: Option<u64>,
     ) {
+        // Gated here rather than in the renderer: a row that is never appended
+        // cannot take a physical index, and the log's indices are the key for
+        // the selection, the cards and the scroll anchors. Returning before
+        // both halves of the pair is what keeps a *completion* from appending
+        // the row its opening deliberately skipped.
+        if !self.hook_output {
+            return;
+        }
         let (line, raw) = self.hook_status_line(source, message, elapsed_ms);
         let kind = LogItemKind::HookStatus(id);
+        let gutter = self.hook_gutter(elapsed_ms.is_none());
         match self.log.items.iter().position(|item| item.kind == kind) {
             Some(idx) => {
-                self.log.items[idx] = LogItem::new(line, raw, kind);
+                self.log.items[idx] = LogItem::new(line, raw, kind).with_gutter(gutter);
                 // The row count did not change, and the cache's validity token
                 // is the count — so it has to be moved off `items.len()` by
                 // hand or the old text would be reused verbatim.
                 self.log_scroll.visual_cache_ver = usize::MAX;
             }
-            None => self.append_msg(line, raw, kind),
+            None => self.log.append_bared_msg(line, raw, kind, gutter),
+        }
+    }
+
+    /// The bar a hook row wears, in the colour its state calls for.
+    ///
+    /// Running wears the accent the context block will wear; finished drops to
+    /// muted, which is what tells the reader the wait is over.
+    fn hook_gutter(&self, running: bool) -> Gutter {
+        Gutter {
+            glyph: HOOK_CONTEXT_GUTTER,
+            color: if running {
+                self.theme.accent
+            } else {
+                self.theme.muted_fg()
+            },
         }
     }
 
@@ -363,10 +388,10 @@ impl App {
         message: &str,
         elapsed_ms: Option<u64>,
     ) -> (Line<'static>, String) {
-        let bar = HOOK_CONTEXT_GUTTER;
         let label = self.msgs().hook_status_label;
-        // Running wears the accent the hook block will wear; finished drops to
-        // muted, which is what tells the reader the wait is over.
+        // The bar is the row's gutter (see `LogItem::gutter`), so it is not
+        // part of this text: a `▎` typed in here would mark only the first
+        // visual row of a wrapped line.
         let (mark, text) = match elapsed_ms {
             None => (self.theme.accent, self.theme.fg),
             Some(_) => (self.theme.muted_fg(), self.theme.muted_fg()),
@@ -376,14 +401,13 @@ impl App {
             head.push_str(&format!(" · {source}"));
         }
         let mut spans = vec![
-            Span::styled(bar, Style::default().fg(mark)),
             Span::styled(
                 format!("{HOOK_CONTEXT_MARK} {head}"),
                 Style::default().fg(mark),
             ),
             Span::styled(format!(" · {message}"), Style::default().fg(text)),
         ];
-        let mut raw = format!("{bar}{HOOK_CONTEXT_MARK} {head} · {message}");
+        let mut raw = format!("{HOOK_CONTEXT_MARK} {head} · {message}");
         if let Some(ms) = elapsed_ms {
             let elapsed = format_hook_elapsed(ms);
             spans.push(Span::styled(
@@ -415,8 +439,14 @@ impl App {
     /// hid nothing is entirely on screen. Keeping it cost eleven columns and
     /// wrapped the header at 60 columns wide.
     pub(crate) fn append_hook_context_markdown(&mut self, source: Option<&str>, body: &str) {
+        // Display-only switch, applied at the point the rows would enter the
+        // log: the agent has already injected this text into the conversation,
+        // and a row that is never appended cannot take an index. See
+        // `App::hook_output`.
+        if !self.hook_output {
+            return;
+        }
         let label = self.msgs().hook_context_label;
-        let hint = self.msgs().hook_context_expand_hint;
         let bar = HOOK_CONTEXT_GUTTER;
         // The bar is the row's gutter, not the first span of its text: a `▎`
         // typed into the text marks only the first visual row, so a header that
@@ -440,11 +470,10 @@ impl App {
             ));
             header.push_str(&format!(" · {source}"));
         }
-        spans.push(Span::styled(
-            format!(" · {hint}"),
-            Style::default().fg(self.theme.muted_fg()),
-        ));
-        header.push_str(&format!(" · {hint}"));
+        // No expand hint on the header: the tail row below carries the one
+        // affordance, spelled the way the log spells it everywhere else
+        // (`[Open]`, the same glyphs a collapsed tool block's meta row draws).
+        // Two spellings of one gesture on one block read as two gestures.
 
         self.log.append_bared_msg_with_popup(
             Line::from(spans),
@@ -458,11 +487,14 @@ impl App {
         self.log
             .append_markdown_with_gutter(head, &self.theme, LogItemKind::HookContext, gutter);
         if dropped > 0 {
+            // `collapsed_action_text` is the shared definition of the bracketed
+            // action — the tool block's meta row draws the same string through
+            // `ButtonChrome::Brackets`, so the two `[Open]`s cannot drift.
             let more = self
                 .msgs()
                 .hook_context_more_tmpl
                 .replacen("{}", &dropped.to_string(), 1)
-                .replacen("{}", hint, 1);
+                .replacen("{}", &collapsed_action_text(&self.msgs()), 1);
             self.log.append_bared_msg_with_popup(
                 Line::from(Span::styled(
                     more.clone(),
@@ -751,25 +783,36 @@ mod tests {
             text.contains("plugin demo"),
             "the header names the hook that spoke: {text}"
         );
+        // The header carries no expand hint and no size. The hint is the tail
+        // row's job (spelled `[Open]`, the log's one word for "there is a
+        // payload behind this row"), and a block too short to be truncated has
+        // no tail — so a hint here would be either a duplicate or a second
+        // spelling of the same gesture. The size went with it: at the tool
+        // block's indent the header has to hold the block's name and its
+        // source, and the count is the field the reader can already work out.
+        let header_row = text
+            .lines()
+            .find(|row| row.contains(app.msgs().hook_context_label))
+            .expect("the header row");
         assert!(
-            text.contains(app.msgs().hook_context_expand_hint),
-            "the header says how to reach the whole body: {text}"
+            header_row.contains("plugin demo"),
+            "the header names the hook that spoke: {header_row}"
         );
-        // The header carries no size: at the tool block's indent it is the
-        // field that pushes the header onto a second row in a narrow panel,
-        // and it is the one the reader can already work out — the tail row
-        // states what was hidden, and a block that hid nothing is all on
-        // screen. The header must therefore stay on one row at 60 columns.
         assert!(
-            !text.contains("3 lines"),
-            "the header must not spend columns on the count: {text}"
+            !header_row.contains(&collapsed_action_text(&app.msgs())),
+            "the header must not spell the gesture the tail row owns: {header_row}"
         );
+        assert!(
+            !header_row.contains("3 lines"),
+            "the header must not spend columns on the count: {header_row}"
+        );
+        // Both facts on one row, and it has to stay that way in a narrow panel.
         let narrow = render_log_panel_text(&mut app, 60, 24);
         assert!(
             narrow
                 .lines()
                 .any(|row| row.contains(app.msgs().hook_context_label)
-                    && row.contains(app.msgs().hook_context_expand_hint)),
+                    && row.contains("plugin demo")),
             "the header fits one row at 60 columns: {narrow}"
         );
         assert!(
@@ -867,6 +910,38 @@ mod tests {
         );
     }
 
+    /// The switch is display-only, and it is applied where the rows would enter
+    /// the log: with it off the block leaves no rows at all — not a blank row,
+    /// not a collapsed stub — and the *completion* half of a progress line
+    /// cannot append the row its opening deliberately skipped.
+    #[test]
+    fn hook_output_off_keeps_hook_rows_out_of_the_log() {
+        let mut app = make_app();
+        app.set_hook_output(false);
+
+        app.append_hook_context_markdown(Some("plugin codex"), "brief body");
+        app.apply_hook_status(7, Some("plugin codex"), "Loading context", None);
+        app.apply_hook_status(7, Some("plugin codex"), "Loading context", Some(3_400));
+
+        assert!(
+            app.log.items.is_empty(),
+            "a hidden hook leaves no row behind: {:?}",
+            app.log.items
+        );
+
+        // And the switch is a switch, not a one-way latch.
+        app.set_hook_output(true);
+        app.append_hook_context_markdown(Some("plugin codex"), "brief body");
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains(app.msgs().hook_context_label)),
+            "turning it back on restores the block: {:?}",
+            app.log.items
+        );
+    }
+
     /// A briefing longer than the inline budget keeps its head in the log and
     /// puts the rest behind the popup — and a cut inside a fence closes it, so
     /// the rows after the block are not swallowed into the code block.
@@ -898,6 +973,14 @@ mod tests {
             more.popup_source.as_deref(),
             Some(body.as_str()),
             "the tail row opens the same full body"
+        );
+        // The tail spells the gesture the way the log spells it everywhere
+        // else: the bracketed action a collapsed tool block's meta row draws,
+        // from the same definition, so the two `[Open]`s cannot drift.
+        assert!(
+            more.raw.ends_with(&collapsed_action_text(&app.msgs())),
+            "the tail wears the shared bracketed action: {}",
+            more.raw
         );
 
         let shown = app
@@ -939,13 +1022,23 @@ mod tests {
         assert_eq!(running.kind, LogItemKind::HookStatus(7));
         assert_eq!(
             running.raw,
-            format!("▎ ⌁ {label} · plugin codex · Loading Basic Memory context"),
+            format!("⌁ {label} · plugin codex · Loading Basic Memory context"),
             "the running line names the hook and quotes the plugin"
         );
         assert_eq!(
             running.line.spans[0].style.fg,
             Some(app.theme.accent),
             "running wears the accent the block will wear"
+        );
+        // The bar is the row's gutter, not a span in its text, so it survives
+        // a wrap — and it takes the same colour as the row it marks.
+        assert_eq!(
+            running.gutter,
+            Some(Gutter {
+                glyph: HOOK_CONTEXT_GUTTER,
+                color: app.theme.accent,
+            }),
+            "the running row wears the accent bar"
         );
         let idx = app.log.items.len() - 1;
 
@@ -965,12 +1058,20 @@ mod tests {
         assert_eq!(done.kind, LogItemKind::HookStatus(7));
         assert_eq!(
             done.raw,
-            format!("▎ ⌁ {label} · plugin codex · Loading Basic Memory context · 8.2s")
+            format!("⌁ {label} · plugin codex · Loading Basic Memory context · 8.2s")
         );
         assert_eq!(
             done.line.spans[0].style.fg,
             Some(app.theme.muted_fg()),
             "a finished line reads as a record, not as an activity"
+        );
+        assert_eq!(
+            done.gutter,
+            Some(Gutter {
+                glyph: HOOK_CONTEXT_GUTTER,
+                color: app.theme.muted_fg(),
+            }),
+            "and its bar drops to muted with it"
         );
         assert_ne!(
             app.log_scroll.visual_cache_ver,

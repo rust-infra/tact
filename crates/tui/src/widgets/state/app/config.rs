@@ -68,6 +68,50 @@ impl App {
         self.persist_theme_choice(name);
     }
 
+    /// Flip whether hook-injected content is drawn, and say so — `/hook-output`.
+    ///
+    /// Shaped like [`Self::toggle_theme`] rather than like the `/theme` picker:
+    /// a boolean has no list to open, so there is no picker step for the
+    /// "save it?" question to hang on, and the one message names both halves —
+    /// the new state and whether it outlives the session. The rows already in
+    /// the log are left alone: this gates what gets appended, so the switch is
+    /// visible in what follows rather than by a rewind.
+    pub(crate) fn toggle_hook_output(&mut self) {
+        self.hook_output = !self.hook_output;
+        self.persist_hook_output_choice(self.hook_output);
+    }
+
+    /// Report the new state and the write — the same contract as
+    /// [`Self::persist_theme_choice`].
+    fn persist_hook_output_choice(&mut self, enabled: bool) {
+        let msgs = self.msgs();
+        let outcome = if !self.ui_config_available() {
+            msgs.hook_output_session_only
+        } else {
+            match tact::config::persist_hook_output(enabled) {
+                Ok(()) => msgs.hook_output_persisted,
+                Err(error) => {
+                    let message = msgs
+                        .hook_output_persist_failed_tmpl
+                        .replace("{}", &error.to_string());
+                    self.add_system_message(message);
+                    return;
+                }
+            }
+        };
+        let template = if enabled {
+            msgs.hook_output_shown_tmpl
+        } else {
+            msgs.hook_output_hidden_tmpl
+        };
+        self.add_system_message(template.replace("{}", outcome));
+    }
+
+    /// Adopt the configured `[ui] hook_output` at startup.
+    pub(crate) fn set_hook_output(&mut self, enabled: bool) {
+        self.hook_output = enabled;
+    }
+
     /// Switch the theme silently, then report the change and the write in one
     /// message.
     ///
@@ -202,9 +246,9 @@ impl App {
 
     /// Whether there is a config file to write a `[ui]` preference into.
     ///
-    /// Shared by `/theme`, `/lang`, `Ctrl+T` and `Ctrl+L`: all four persist
-    /// through the same `[ui]` table, so all four must agree on whether that
-    /// table has a file to live in.
+    /// Shared by `/theme`, `/lang`, `/hook-output`, `Ctrl+T` and `Ctrl+L`: all
+    /// of them persist through the same `[ui]` table, so all of them must agree
+    /// on whether that table has a file to live in.
     pub(crate) fn ui_config_available(&self) -> bool {
         self.ui_config_path.is_some()
     }
@@ -312,6 +356,42 @@ mod tests {
         assert!(
             !app.log.items.iter().any(|item| item.raw == session_only),
             "a config file means a write is attempted: {:?}",
+            app.log.items
+        );
+    }
+
+    /// `/hook-output` is the `Ctrl+T` shape, not the `/theme` one: a boolean
+    /// has no list to pick from, so there is no picker step to hang the "save
+    /// it?" question on — the one message carries both halves instead.
+    #[test]
+    fn toggle_hook_output_flips_and_says_session_only_without_a_file() {
+        let mut app = make_app();
+        assert!(app.hook_output, "hook output is drawn by default");
+        assert!(!app.ui_config_available(), "the test default is no file");
+
+        app.toggle_hook_output();
+
+        assert!(!app.hook_output);
+        let expected = app
+            .msgs()
+            .hook_output_hidden_tmpl
+            .replace("{}", app.msgs().hook_output_session_only);
+        assert!(
+            app.log.items.iter().any(|item| item.raw == expected),
+            "the toggle must say what it is now and that it did not save: {:?}",
+            app.log.items
+        );
+
+        app.toggle_hook_output();
+
+        assert!(app.hook_output, "and it is a toggle, not a one-way latch");
+        let expected = app
+            .msgs()
+            .hook_output_shown_tmpl
+            .replace("{}", app.msgs().hook_output_session_only);
+        assert!(
+            app.log.items.iter().any(|item| item.raw == expected),
+            "{:?}",
             app.log.items
         );
     }

@@ -299,6 +299,7 @@ pub struct Messages {
     pub cmd_plugin: &'static str,
     pub cmd_mcp: &'static str,
     pub cmd_hooks: &'static str,
+    pub cmd_hook_output: &'static str,
     pub cmd_tasks_dag: &'static str,
     pub cmd_stats: &'static str,
     pub cmd_background: &'static str,
@@ -388,6 +389,15 @@ pub struct Messages {
     pub lang_persisted_tmpl: &'static str,
     pub lang_persist_failed_tmpl: &'static str,
     pub lang_session_only_tmpl: &'static str,
+    /// `/hook-output` report — the same two halves `/theme` carries: what the
+    /// switch is now, and whether it outlives the session. Two templates
+    /// because the state is the half the reader has to be able to see at a
+    /// glance; the outcome is the shared `{}`.
+    pub hook_output_shown_tmpl: &'static str,
+    pub hook_output_hidden_tmpl: &'static str,
+    pub hook_output_persisted: &'static str,
+    pub hook_output_session_only: &'static str,
+    pub hook_output_persist_failed_tmpl: &'static str,
 
     // ---- 输入限制 ----
     pub input_too_long_tmpl: &'static str,
@@ -429,9 +439,12 @@ pub struct Messages {
     /// the `<hook-context>` framing is stripped both render as system markdown.
     /// This label is the only thing that tells the reader which one it is.
     pub hook_context_label: &'static str, // "hook context" / "hook 上下文"
-    /// How the reader opens a hook block's full text (the header's tail).
-    pub hook_context_expand_hint: &'static str, // "double-click" / "双击展开"
     /// Tail of a truncated hook block: `… {} more lines · {}`.
+    ///
+    /// The second `{}` is the bracketed expand action, not a hand-written
+    /// hint: a hook block's tail and a collapsed tool block's meta row spell
+    /// the same gesture with the same glyphs
+    /// ([`crate::widgets::tool_widget::collapsed_action_text`]).
     pub hook_context_more_tmpl: &'static str, // "… {} more lines · {}" / "… 还有 {} 行 · {}"
     /// Names a plugin hook's progress line: `▎ ⌁ {label} · <source> · …`.
     pub hook_status_label: &'static str, // "hook" / "hook"
@@ -647,6 +660,7 @@ impl Messages {
             cmd_plugin: "Manage plugins and marketplaces",
             cmd_mcp: "Manage MCP servers (usage: /mcp auth <server> | /mcp list)",
             cmd_hooks: "Review command hooks (usage: /hooks list | /hooks trust --all | /hooks forget --all)",
+            cmd_hook_output: "Show or hide hook output in the log",
             cmd_tasks_dag: "Show task dependency DAG",
             cmd_stats: "Show session statistics",
             cmd_background: "Check background task status",
@@ -720,6 +734,11 @@ impl Messages {
             lang_persisted_tmpl: "✓ Saved language = \"{}\" to config",
             lang_persist_failed_tmpl: "✗ Failed to save language: {}",
             lang_session_only_tmpl: "🌐 Language: {} (this session only)",
+            hook_output_shown_tmpl: "👁 Hook output: shown in the log ({})",
+            hook_output_hidden_tmpl: "🙈 Hook output: hidden from the log ({})",
+            hook_output_persisted: "saved to config",
+            hook_output_session_only: "this session only",
+            hook_output_persist_failed_tmpl: "✗ Failed to save hook output: {}",
 
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
             skill_task_too_long_tmpl: "⚠ Skill payload too long (max {} characters). Shorten the skill body or args.",
@@ -754,7 +773,6 @@ impl Messages {
             task_stats_prefix: "Task stats:",
             task_stats_copy_btn: "⎘",
             hook_context_label: "hook context",
-            hook_context_expand_hint: "double-click",
             hook_context_more_tmpl: "… {} more lines · {}",
             hook_status_label: "hook",
         }
@@ -956,6 +974,7 @@ impl Messages {
             cmd_plugin: "管理插件和市场",
             cmd_mcp: "管理 MCP server（用法：/mcp auth <server> | /mcp list）",
             cmd_hooks: "审阅 command hook（用法：/hooks list | /hooks trust --all | /hooks forget --all）",
+            cmd_hook_output: "显示或隐藏日志里的 hook 输出",
             cmd_tasks_dag: "显示任务依赖 DAG",
             cmd_stats: "显示会话统计",
             cmd_background: "查看后台任务状态",
@@ -1029,6 +1048,11 @@ impl Messages {
             lang_persisted_tmpl: "✓ 已将 language = \"{}\" 写入配置",
             lang_persist_failed_tmpl: "✗ 保存语言失败: {}",
             lang_session_only_tmpl: "🌐 语言: {}（仅本次会话）",
+            hook_output_shown_tmpl: "👁 hook 输出：在日志中显示（{}）",
+            hook_output_hidden_tmpl: "🙈 hook 输出：不在日志中显示（{}）",
+            hook_output_persisted: "已写入配置",
+            hook_output_session_only: "仅本次会话",
+            hook_output_persist_failed_tmpl: "✗ 保存 hook 输出开关失败: {}",
 
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
             skill_task_too_long_tmpl: "⚠ 技能内容过长（最多 {} 个字符），请缩短技能正文或参数。",
@@ -1062,7 +1086,6 @@ impl Messages {
             task_stats_prefix: "任务统计：",
             task_stats_copy_btn: "⎘",
             hook_context_label: "hook 上下文",
-            hook_context_expand_hint: "双击展开",
             hook_context_more_tmpl: "… 还有 {} 行 · {}",
             hook_status_label: "hook",
         }

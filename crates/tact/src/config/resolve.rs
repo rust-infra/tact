@@ -545,6 +545,7 @@ struct NonLlmSettings {
     theme: String,
     language: String,
     vision_image: VisionImageSettings,
+    hook_output: bool,
     bash_timeout_secs: u64,
     bash_nice: i32,
     rtk_filter: bool,
@@ -617,6 +618,14 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
 
     let vision_image = resolve_vision_image(toml_cfg);
 
+    // Display-only switch, so no CLI flag: `/hook-output` writes it, and the
+    // file is the only other way in. Absent means shown — a fresh install
+    // behaves as it did before the switch existed.
+    let hook_output = toml_cfg
+        .ui
+        .hook_output
+        .unwrap_or(UiSettings::DEFAULT_HOOK_OUTPUT);
+
     let bash_timeout_secs = toml_cfg
         .tools
         .bash_timeout_secs
@@ -649,6 +658,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         theme,
         language,
         vision_image,
+        hook_output,
         bash_timeout_secs,
         bash_nice,
         rtk_filter,
@@ -700,6 +710,7 @@ pub(super) fn resolve_non_llm_settings(
             theme: non_llm.theme,
             language: non_llm.language,
             vision_image: non_llm.vision_image,
+            hook_output: non_llm.hook_output,
         },
         tools: ToolSettings {
             bash_timeout_secs: non_llm.bash_timeout_secs,
@@ -907,6 +918,7 @@ pub(super) fn resolve_config(
             theme: non_llm.theme,
             language: non_llm.language,
             vision_image: non_llm.vision_image,
+            hook_output: non_llm.hook_output,
         },
         tools: ToolSettings {
             bash_timeout_secs: non_llm.bash_timeout_secs,
@@ -1348,6 +1360,10 @@ model = "gpt-4o"
         assert_eq!(resolved.llm.base_url, "https://api.openai.com/v1");
         assert_eq!(resolved.agent.max_tokens, 8000);
         assert_eq!(resolved.ui.theme, "ink");
+        // Absent means shown: the switch exists to silence a noisy hook, so a
+        // config that predates it keeps the behaviour it had.
+        assert_eq!(resolved.ui.hook_output, UiSettings::DEFAULT_HOOK_OUTPUT);
+        assert!(resolved.ui.hook_output);
         assert_eq!(
             resolved.ui.vision_image.compress,
             VisionImageSettings::DEFAULT_COMPRESS

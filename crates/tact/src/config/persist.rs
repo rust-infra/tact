@@ -82,6 +82,18 @@ pub(super) fn update_ui_language_in_toml(path: &Path, language: &str) -> anyhow:
     })
 }
 
+/// Set `ui.hook_output` in `path` and rewrite the file.
+///
+/// `set_scalar` writes a TOML boolean for a `Value::Boolean`, which is what
+/// `TactTomlConfig.ui.hook_output: Option<bool>` reads back — the same
+/// round trip `ui.vision_image.compress` relies on.
+pub(super) fn update_ui_hook_output_in_toml(path: &Path, enabled: bool) -> anyhow::Result<()> {
+    update_toml(path, &["ui"], |t| {
+        set_scalar(t, "hook_output", enabled);
+        Ok(())
+    })
+}
+
 /// Set `llm.providers.<provider>.model` in `path` and rewrite the file.
 pub(super) fn update_provider_model_in_toml(
     path: &Path,
@@ -240,6 +252,44 @@ provider = "kimi"
 
         let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(cfg["ui"]["language"].as_str(), Some("zh"));
+        assert_eq!(cfg["llm"]["provider"].as_str(), Some("kimi"));
+    }
+
+    /// `hook_output` is the `[ui]` table's first boolean, so pin that it lands
+    /// as a TOML boolean rather than a string — `Option<bool>` would read
+    /// `"false"` back as a parse error and silently restore the default.
+    #[test]
+    fn updates_ui_hook_output_keeping_the_other_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[ui]\ntheme = \"nord\"\nlanguage = \"zh\"  # chosen by /lang\n",
+        )
+        .unwrap();
+
+        update_ui_hook_output_in_toml(&path, false).unwrap();
+
+        let updated = std::fs::read_to_string(&path).unwrap();
+        let cfg: toml::Value = updated.parse().unwrap();
+        assert_eq!(cfg["ui"]["hook_output"].as_bool(), Some(false));
+        assert_eq!(cfg["ui"]["theme"].as_str(), Some("nord"));
+        assert_eq!(cfg["ui"]["language"].as_str(), Some("zh"));
+        assert!(updated.contains("# chosen by /lang"), "{updated}");
+    }
+
+    /// The switch is a preference like any other, so a file that predates it
+    /// gets the key added rather than a rebuild of the table.
+    #[test]
+    fn ui_hook_output_is_created_when_the_table_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[llm]\nprovider = \"kimi\"\n").unwrap();
+
+        update_ui_hook_output_in_toml(&path, true).unwrap();
+
+        let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(cfg["ui"]["hook_output"].as_bool(), Some(true));
         assert_eq!(cfg["llm"]["provider"].as_str(), Some("kimi"));
     }
 

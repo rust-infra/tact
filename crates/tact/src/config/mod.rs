@@ -358,6 +358,19 @@ pub fn persist_language(language: &str) -> anyhow::Result<()> {
     persist::update_ui_language_in_toml(path, language)
 }
 
+/// Persist `ui.hook_output` to the loaded config file.
+///
+/// Whether the TUI draws hook-injected content. Without a config file the
+/// choice stays session-only, reported as such by the caller — the same
+/// contract as [`persist_theme`].
+pub fn persist_hook_output(enabled: bool) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings.config_path.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("no config file to update (session-only hook output change)")
+    })?;
+    persist::update_ui_hook_output_in_toml(path, enabled)
+}
+
 /// Persist `model` under the active `[llm.providers.<name>]` in the loaded config file.
 pub fn persist_active_provider_model(model: &str) -> anyhow::Result<()> {
     let settings = settings();
@@ -512,6 +525,7 @@ pub(crate) mod test_support {
                         max_edge: super::types::VisionImageSettings::DEFAULT_MAX_EDGE,
                         jpeg_quality: super::types::VisionImageSettings::DEFAULT_JPEG_QUALITY,
                     },
+                    hook_output: super::types::UiSettings::DEFAULT_HOOK_OUTPUT,
                 },
                 tools: super::types::ToolSettings {
                     bash_timeout_secs: super::types::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

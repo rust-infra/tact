@@ -27,16 +27,40 @@
 
 ---
 
+## 1. 2026-10-05 — hook 输出有了显示开关：`[ui] hook_output` + `/hook-output`
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：新增 `[ui] hook_output`（默认 `true`）与 `/hook-output`，关掉后日志里不再出现 hook 的进度行与注入的上下文块） |
+| **Related** | `crates/tact/src/config/{types,resolve,persist,mod}.rs`、`crates/tui/src/{lib,handlers/mod,handlers/palette,widgets/state/mod}.rs`、`crates/tui/src/widgets/state/app/{config,construct,messages}.rs`、`crates/agent_tui_kit/src/i18n.rs`；`config.example.toml`；Ch 21 §5、Ch 09 §10 |
+
+**Symptom / motivation:** hook 注入的上下文块（2026-10-05 上面那条）与进度行都是**无条件**画进日志的。对 basic-memory 这类每轮都说话的插件，一屏里插一段简报是噪音；而读者能做的只有关掉整个 hook——那会让模型也拿不到上下文。要的是"我不看，但它照旧进模型"。
+
+**Decision:** 新增 `[ui] hook_output`（`Option<bool>`，缺省 `true`），`/hook-output` 翻转并写盘。**门设在行进入日志的那一刻**，不是在渲染层：
+
+- `App::append_hook_context_markdown` 开头直接 `return`；`App::apply_hook_status` 同样——**两半都要看**，因为它是"开/合"一对 update，只看开头会让**完成**那半给一个被跳过的 id 补上一行孤儿。
+- 不在渲染层跳过：日志的物理索引是选区、卡片、滚动锚点的键（`LogItemKind::HookStatus(id)` 就是靠它找行原地改写）。一行"画的时候跳过"仍然占掉一个索引，等于把一个看不见的行塞进所有索引映射里。
+
+**只影响显示。** hook 照常运行，stdout 照常作为 `<hook-context>` 消息进入对话；要停 hook 用 `/hooks`（或 `[hooks]`）。`/hook-output` 的形状是 `Ctrl+T` 那种（翻转 → 写盘 → 一条消息说清"现在是开还是关"+"存了没存"），不是 `/theme` 那种先弹选择器再问"要不要保存"：布尔没有列表可选，没有 picker step 可以挂那个问题。三种结局（写入成功 / 没有配置文件 / 写入失败）各自一条文案，与 theme/lang 一致——"没有文件"和"写不进去"是两种状态，读者必须能分辨。
+
+**Behavior after:** `/hook-output` 打印 `👁 Hook output: shown in the log (saved to config)` / `🙈 Hook output: hidden from the log (this session only)`（中英各自本地化）。`[ui] hook_output = false` 后重启，日志里既没有 `▎ ⌁ hook · …` 进度行，也没有 `▎ ⌁ hook context · …` 块——一行都不进。翻回 `true` 立即恢复（开关不是单向闩）。已有会话里已经画出来的行不会被回收，它管的是之后进日志的东西。
+
+**Verification:** 新增 tui `hook_output_off_keeps_hook_rows_out_of_the_log`（关掉后进度行的**开与合**都不产生行；再打开能恢复）、`toggle_hook_output_flips_and_says_session_only_without_a_file`；tact `updates_ui_hook_output_keeping_the_other_preferences`（落成 TOML **布尔**而不是字符串——`Option<bool>` 读回 `"false"` 会解析失败并静默回到默认）、`ui_hook_output_is_created_when_the_table_is_missing`、resolve 默认值断言。`palette_commands_are_all_handled` 自动覆盖新命令的分派。fmt/clippy 干净；推送门全绿（tact 1183、tui 631、agent_tui_kit 375、tact-ui 272）。
+
+**Pointers:** `crates/tact/src/config/mod.rs::persist_hook_output`、`crates/tact-ui/src/interactive.rs`（`TuiConfig.hook_output`）、`crates/tui/src/widgets/state/app/config.rs::toggle_hook_output`、`crates/tui/src/widgets/state/slash.rs::SlashCommand::HookOutput`；Ch 21 §5、Ch 09 §10、`config.example.toml` 的 `[ui]`。
+
+---
+
 ## 1. 2026-10-05 — hook 注入的上下文变成带标签的竖条块：`AgentUpdate::HookContext`
 
 | Field | Value |
 |-------|-------|
-| **Type** | optimization（用户可见：日志里多出 header 行 `▎ ⌁ hook context · double-click`，正文每行带 `▎` 竖条，超过 8 行折进 popup） |
+| **Type** | optimization（用户可见：日志里多出 header 行 `▎ ⌁ hook context · <来源>`，正文每行带 `▎` 竖条，超过 8 行折进 popup） |
 | **Related** | `crates/protocol/src/agent.rs`（新变体）、`crates/tact/src/agent/mod.rs::record_hook_context`、`crates/tui/src/widgets/state/app/{agent,messages}.rs`、`crates/agent_tui_kit/src/render/cells/markdown.rs`（`Gutter`）、`crates/agent_tui_kit/src/state/log.rs`、`crates/agent_tui_kit/src/i18n.rs`；Ch 09 §10 |
 
 **Symptom / motivation:** hook 的 stdout 被包成 `<hook-context>` 的合成 user 消息（`MessageKind::HookContext`），TUI 渲染时把标签剥掉、转走 `append_system_markdown` → `LogItemKind::SystemMarkdown`。而 `SystemMarkdown` 正是 Tact 自己发 markdown 通知（`AgentUpdate::MdInfo`：`/mcp list`、`/hooks list`、`/background`）用的同一个 kind——**同样的样式、零标识**。于是读者看到一段简报，无法判断它是插件注入的、Tact 自己写的、还是模型说的（2026-10-05 的实际反馈："哪些是 LLM 返回的，哪些是 basic memory 输出的？视觉上看不出来"）。压缩后的那次注入尤其误导：`checkpoint_prompt` 与 brief 由 `_build_brief` 拼成**一条** stdout，渲染出来像两段互不相干的系统输出。第一版只加了一行 dim italic 的 `hook context`，实测仍不可辨——标签没有容器，长文本一滚就脱离了。
 
-**Decision:** 给 hook 注入单开一条 update 通道，而不是复用 `MdInfo`——`MdInfo` 还服务上面那几个读盘命令，改它会把标签带到那些地方。新增 `AgentUpdate::HookContext { source, text }`；`record_hook_context` 改发它（payload 仍是 hook 原文，标签是渲染层的事）。渲染统一走 `App::append_hook_context_markdown`，它做三件事：**(1)** 一行 header——`▎` + `⌁ <label>`（accent、粗体）+ ` · <来源>`（muted）+ ` · <hint>`；**(2)** 正文经 `Log::append_markdown_with_gutter` 渲染，`Gutter { glyph: "▎ ", color: accent }` 让**每一行**（含文档内的空行）都带竖条；**(3)** 正文只留前 `HOOK_CONTEXT_INLINE_LINES`（8）行，其余折进 popup，并在末尾补一行 `▎ … N more lines · double-click`。截断是**源行级**的，所以会切到 code fence 中间——`truncate_hook_body` 数一遍 fence 标记，奇数就补一个收尾 fence，否则渲染器会把块之后的所有行都吞进代码块。
+**Decision:** 给 hook 注入单开一条 update 通道，而不是复用 `MdInfo`——`MdInfo` 还服务上面那几个读盘命令，改它会把标签带到那些地方。新增 `AgentUpdate::HookContext { source, text }`；`record_hook_context` 改发它（payload 仍是 hook 原文，标签是渲染层的事）。渲染统一走 `App::append_hook_context_markdown`，它做三件事：**(1)** 一行 header——`▎` + `⌁ <label>`（accent、粗体）+ ` · <来源>`（muted）；**(2)** 正文经 `Log::append_markdown_with_gutter` 渲染，`Gutter { glyph: "▎ ", color: accent }` 让**每一行**（含文档内的空行）都带竖条；**(3)** 正文只留前 `HOOK_CONTEXT_INLINE_LINES`（8）行，其余折进 popup，并在末尾补一行 `▎ … N more lines · [󰜼 Open]`（手势词归尾巴行所有，用 `collapsed_action_text` 与折叠的工具块 meta 行同一份定义；header 不再重复写一遍）。截断是**源行级**的，所以会切到 code fence 中间——`truncate_hook_body` 数一遍 fence 标记，奇数就补一个收尾 fence，否则渲染器会把块之后的所有行都吞进代码块。
 
 **来源怎么来的**：`HookSource::label`（`plugin codex` / `~/.tact/hooks.json`）在注册侧才有，而注入路径是「注册侧 → `SessionStartContext` / `pending_hook_context` → `AgentUpdate`」。所以新增 `HookContextChunk { source, text }` 顶替原来裸的 `String`（`SessionStartContext.additional_contexts`、`AgentRuntime::pending_session_context`、`pending_hook_context` 三处都换），`push_additional_context` 多收一个 `source` 参数，三个 push 点（SessionStart / PreToolUse / PostToolUse）各自把所在 `HookSource` 的 label 捕获进闭包。**没有**动 `HookCommand`——它进 identity hash，加字段会让所有已批准的 hook 失效。
 
@@ -44,7 +68,7 @@
 
 popup 走一条新的**通用**机制而不是给 hook 特判：`LogItem` 新增 `popup_source: Option<String>`，带它的行在鼠标层是**控件**（`handle_log_click` 里双击开 `open_markdown_popup`、单击不产生选区），所以 header 行和"还有 N 行"行都能一键拿到全文。**竖条是行属性**：`Gutter` 落在 `MarkdownCell` 上（`gutter: Option<Gutter>` + `with_gutter`，`render_if_needed` 里把 `gutter.cols()` 从布局宽度中扣掉），而 header 与尾巴这两行是普通文本行，走的是 `LogItem::gutter` + 宿主折行那一步（`prepare_log_frame` 里同样扣列、并给**每一视觉行**插竖条）。**没有**用 markdown 引用块（`>`）来蹭竖条：`apply_blockquote_indicator` 会把引用正文整体染成 `theme.success`，一整块绿色简报是错的。**live 路径**（`record_hook_context` → update）与 **reload 路径**（`load_history` 靠标记识别）共用这一个入口，两条路不会分叉。
 
-**Behavior after:** hook 注入的上下文在日志里是一块：header 行 `▎ ⌁ hook context · plugin codex · double-click`（来源缺失时该段消失；**不写行数**——与工具块同缩进后，"块名 / 来源 / 行数 / 手势"四个字段在窄面板里放不下，而行数是唯一可推出来的那个：隐藏了多少行由尾巴行给出，没被截断时正文全在屏上。留着它多花 11 列，60 列宽会把 header 折成两行），随后是正文前 8 行（每行前置 accent 的 `▎ `，空行也带），超过 8 行时补 `▎ … N more lines · double-click`。双击 header 或那行尾巴，用只读 popup 看全文；单击不产生选区（它是控件）。**模型看到的文本只有帧上多了 `source` 属性**——截断只发生在渲染层。竖条占用正文宽度（2 列），不影响行数；**左轨不破洞**：header 与尾巴行折行后的续行同样带竖条（它们靠 `LogItem::gutter` 在折行那一步插，不是把 `▎` 写进文本——写进文本只标记第一个视觉行，40 列宽就会在左轨上开一个洞）。`MdInfo` 的其它用途保持无标签无竖条。`AgentUpdate` 的消费方只有 TUI 一处，headless 不做穷举匹配，故无其它适配点。
+**Behavior after:** hook 注入的上下文在日志里是一块：header 行 `▎ ⌁ hook context · plugin codex`（来源缺失时该段消失；**不写行数、也不写手势词**——与工具块同缩进后，"块名 / 来源 / 行数 / 手势"四个字段在窄面板里放不下，而行数是唯一可推出来的那个：隐藏了多少行由尾巴行给出，没被截断时正文全在屏上。留着它多花 11 列，60 列宽会把 header 折成两行），随后是正文前 8 行（每行前置 accent 的 `▎ `，空行也带），超过 8 行时补 `▎ … N more lines · double-click`。双击 header 或那行尾巴，用只读 popup 看全文；单击不产生选区（它是控件）。**模型看到的文本只有帧上多了 `source` 属性**——截断只发生在渲染层。竖条占用正文宽度（2 列），不影响行数；**左轨不破洞**：header 与尾巴行折行后的续行同样带竖条（它们靠 `LogItem::gutter` 在折行那一步插，不是把 `▎` 写进文本——写进文本只标记第一个视觉行，40 列宽就会在左轨上开一个洞）。`MdInfo` 的其它用途保持无标签无竖条。`AgentUpdate` 的消费方只有 TUI 一处，headless 不做穷举匹配，故无其它适配点。
 
 **Verification:** `cargo check --workspace --all-targets`、`cargo fmt -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 干净；推送门测试全绿（tact 1179、tui 626、agent_tui_kit 375、tact-ui 272）。新增：`a_frame_carries_its_source_and_gives_it_back`、`a_frame_without_a_source_is_the_plain_tag`、`an_unspellable_source_is_dropped_not_escaped`、`a_plain_message_is_not_hook_context`（帧的往返与降级）、kit `gutter_marks_every_rendered_row`、tui `hook_context_renders_a_labelled_barred_block`（buffer 级：header 文案 + 来源 + 行数 + hint + 每条带竖条的行**行尾仍是 `theme.bg`**，按 AGENTS.md 的"新渲染单元必须带底色断言"）、`hook_context_truncates_a_long_body_and_keeps_the_rest_reachable`、`double_click_on_a_hook_header_opens_the_full_body`、`hook_context_update_is_labelled_but_md_info_is_not`、`hook_context_rail_has_no_hole_when_rows_wrap`（40 列宽下 header 与尾巴都折行，断言带竖条的行号**连续**——断一个洞就红）；扩展 `load_history_renders_hook_context_as_a_system_notice`（重载后仍认出来源）。
 

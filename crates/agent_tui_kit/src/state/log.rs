@@ -226,6 +226,19 @@ impl LogCoordinator {
         self.items.push(LogItem::new(line, raw, kind));
     }
 
+    /// Append one log row that wears `gutter` down its left edge on every
+    /// visual row it wraps into.
+    pub fn append_bared_msg(
+        &mut self,
+        line: Line<'static>,
+        raw: String,
+        kind: LogItemKind,
+        gutter: Gutter,
+    ) {
+        self.items
+            .push(LogItem::new(line, raw, kind).with_gutter(gutter));
+    }
+
     /// Append one log row that opens `popup_source` on a double-click.
     pub fn append_msg_with_popup(
         &mut self,

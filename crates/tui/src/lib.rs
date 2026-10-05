@@ -169,6 +169,9 @@ pub struct TuiConfig {
     /// Config file `[ui]` preferences are written back to, or `None` when no
     /// config file was loaded — the toggles then report "this session only".
     pub ui_config_path: Option<PathBuf>,
+    /// Configured `[ui] hook_output`: whether the log draws hook-injected
+    /// content. Display only — the agent injects it either way.
+    pub hook_output: bool,
     pub model_context_window: usize,
     /// Configured model name, shown in the bottom bar before the first LLM call.
     pub model_name: String,
@@ -208,6 +211,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         theme,
         language,
         ui_config_path,
+        hook_output,
         model_context_window,
         model_name,
         model_max_tokens,
@@ -258,6 +262,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
 
     app.set_configured_language(&language);
     app.set_ui_config_path(ui_config_path);
+    app.set_hook_output(hook_output);
     app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);

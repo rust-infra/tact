@@ -117,6 +117,7 @@ async fn run_interactive_locked(
             theme,
             language,
             ui_config_path: tact::config::settings().config_path.clone(),
+            hook_output: tact::config::settings().ui.hook_output,
             model_context_window,
             model_name,
             model_max_tokens,

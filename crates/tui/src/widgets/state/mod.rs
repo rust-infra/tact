@@ -280,6 +280,18 @@ pub struct App {
     /// `None` (the test default) means every one of them reports "this session
     /// only" and nothing is written.
     pub(crate) ui_config_path: Option<PathBuf>,
+    /// Whether hook-injected content is drawn in the log — a hook's progress
+    /// line (`LogItemKind::HookStatus`) and the block of context it injects
+    /// (`LogItemKind::HookContext`).
+    ///
+    /// Seeded once at startup from `[ui] hook_output` and flipped by
+    /// `/hook-output`. **Display only**: the agent still runs the hook and still
+    /// injects its stdout as a `<hook-context>` message, so turning this off
+    /// changes what the reader sees, never what the model gets. Gated at the
+    /// point the rows are appended, not in the renderer — a hidden row would
+    /// still take a physical index, and the log's indices are the key for
+    /// selection, cards and scroll anchors.
+    pub(crate) hook_output: bool,
     /// Brief status bar notification (auto-clears after 3s).
     pub(crate) flash_msg: Option<(String, std::time::Instant)>,
     /// When the last copy landed; drives the popup footer's `✓ Copied` flash
