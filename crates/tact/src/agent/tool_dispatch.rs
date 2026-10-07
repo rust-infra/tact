@@ -46,7 +46,7 @@ const PERMISSION_OPTIONS: [&str; 5] = [
     "Deny",
     "Always allow this tool",
     "Allow for this session",
-    "Always allow this program",
+    "Always allow this pattern",
 ];
 
 /// The options to show, dropping the program-level one when no rule for it
@@ -68,6 +68,10 @@ fn permission_options(with_program_choice: bool) -> Vec<String> {
         .collect()
 }
 
+/// One label for both prefix kinds: the preview is what names the rule, and a
+/// second wording ("this program" vs "this folder") would be a second thing to
+/// keep in step with the generator for no gain.
+///
 /// Which decision a popup selection means.
 ///
 /// Anything unexpected denies, which is the only safe default: a cancelled
@@ -989,7 +993,7 @@ impl Agent {
                                     let choice = if let Some(tx) = &self.runtime.ui_tx {
                                         if let Some(rule) = &prefix_rule {
                                             prompt.push_str(&format!(
-                                                "\n\n\"Always allow this program\" would \
+                                                "\n\n\"Always allow this pattern\" would \
                                                  record: {}",
                                                 rule.to_rule_string()
                                             ));
@@ -1041,7 +1045,7 @@ impl Agent {
                                         }
                                         PermissionChoice::AlwaysAllowProgram => {
                                             permission_label =
-                                                Some("Always allow this program".to_string());
+                                                Some("Always allow this pattern".to_string());
                                             let outcome = self
                                                 .runtime
                                                 .permission_manager
@@ -1667,7 +1671,7 @@ mod tests {
     /// The program-level choice is appended, never inserted, so gating it out
     /// cannot move any index a user has learned.
     #[test]
-    fn the_program_choice_is_appended_and_can_be_withheld() {
+    fn the_pattern_choice_is_appended_and_can_be_withheld() {
         let offered = permission_options(true);
         let withheld = permission_options(false);
 
@@ -1676,7 +1680,7 @@ mod tests {
         assert_eq!(withheld, offered[..withheld.len()].to_vec());
         assert_eq!(
             offered.last().map(String::as_str),
-            Some("Always allow this program")
+            Some("Always allow this pattern")
         );
 
         // With the option withheld, no index the popup can produce reaches it —
