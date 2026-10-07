@@ -27,6 +27,46 @@
 
 ---
 
+## 1. 2026-10-07 — Responses 的 4xx 现在带上请求形状
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix / diagnostics（用户可见：`/responses` 被端点拒绝时，错误里多一段 `[request: …]`，指明刚发出去的那次请求是什么形状） |
+| **Related** | `crates/tact_llm/src/openai/responses/mod.rs`（`describe_request_shape`、`with_request_shape`、`stream_message` / `create_message` 的错误映射） |
+
+**现象 / 动机：** 一次 TUI 回合直接失败在 `openai responses error: 400 Bad Request invalid_request_error: {"type":"invalid_request_error","code":"","message":"invalid request error trace_id: 70a5949d…"}`——**除了一个 trace_id，端点什么都没说**。SDK 的 `ApiErrorResponse` 只带 status + `ApiError{type, message, param, code}`，这个 relay 把整段 body 塞进 `message`、`type` 填 `invalid_request_error`、`code` 空，于是错误里既没有字段名也没有参数名，无法判断它到底拒绝了什么。
+
+**排查（结论：不是请求形状的问题，但当时无法证明）：** 从会话库（`.tact/tact.db`）取出该会话最后一条**成功**请求的 body（`token_usages.request_body`，失败的那次不会入库）与 `responses_states` 里持久化的协议基线，按 `convert.rs::create_response_with_policy` 的规则重建出失败那次请求：17 个 input item（message 2 / reasoning 3 / function_call 6 / function_call_output 6），与成功那次（12 item）同形；同端点两小时前刚接受过一个 292 KB、67 item、106 tools 的请求；再用 `tact-ui headless` 复现同形状的回合（bash 工具调用 + 第二次调用）成功。也就是说形状、体积、item 类型都不是原因，400 来自 relay 侧。**因此本次不改行为，只补可诊断性。**
+
+**决策：** 在把 SDK 的 API-status 错误转成 `LlmError` 时，往 `api_error.message` 追加一段 `[request: <n> bytes, model=…, input=<n> items (<类型 计数>…), tools=<n>, instructions=<n> chars, max_output_tokens=…]`（`describe_request_shape`）。**只带形状，不带内容**——body 里是整段会话。只有 `OpenAIError::ApiError` 会被改写（传输/解析失败本身已经说明问题）；错误仍是 `LlmError::OpenAiResponses`，所以前缀照旧是 `openai responses error:`。`/responses/compact` 走自己的直连 POST，本来就把原始 body 放进 `LlmError::HttpError`，不动。
+
+**改后行为：** 端点再次返回“无信息 400”时，错误里能直接读到这次请求的体积、input 各类 item 数量、工具数、instructions 长度与 `max_output_tokens`——足以把「形状/体积被拒」与「relay 侧故障」区分开，也够和 relay 的 trace_id 一起提工单。
+
+**Verification:** 新增 `describes_the_request_shape_for_an_opaque_rejection`（逐字段断言形状串，含体积前缀）、`an_opaque_api_error_keeps_its_text_and_gains_the_shape`（构造 commandcode 那种 `ApiErrorResponse`，断言 `openai responses error: 400` 前缀与 trace_id 都还在、且追加了 `[request: … input=1 items (message 1)]`）。fmt / clippy `--all-targets -D warnings` / 推送门全绿。
+
+**Pointers:** `crates/tact_llm/src/openai/responses/mod.rs`；`crates/tact_llm/src/openai/responses/convert.rs`（重建请求用的基线规则）、`crates/tact_llm/src/openai/responses/normalize.rs`（`provider_state_update` 持久化 `logical_message_count` / `logical_context_hash`）；同族条目：本日「兼容端点省略的必填字段不再中断 Responses 流」。
+
+---
+
+## 1. 2026-10-07 — 兼容端点省略的必填字段不再中断 Responses 流
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix（用户可见：回合不再以 `stream error: deserialize OpenAI Responses stream event: missing field \`text\`` / `… \`arguments\`` 中止） |
+| **Related** | `crates/tact_llm/src/openai/responses/mod.rs`（`fill_missing_wire_fields`、`normalize_stream_event_json`）、`crates/tact_llm/src/openai/responses/wire.rs`（`parse_response_envelope`）；fixtures `…/fixtures/commandcode_deepseek_stream.jsonl`、`…/fixtures/commandcode_deepseek_tool_call_stream.jsonl` |
+
+**现象 / 动机：** 在 `api.commandcode.ai`（`deepseek/deepseek-v4.1-flash`，protocol = `responses`）上整轮硬失败。抓取该端点原始 SSE 后定位到三处 SDK 认为必填、而端点省略的字段：`response.reasoning_summary_part.added` 送 `"part": {"type": "summary_text"}`（尚无 `text`，文本要到 `reasoning_summary_text.done` 才出现），`response.content_part.added` / `.done` 送 `"part": {"type": "output_text", "text": ""}`（没有 `annotations`），`response.output_item.added` 宣布 `function_call` 时只带 `call_id` + `name`、**没有 `arguments`**（参数随后经 `function_call_arguments.delta` 流入，只有 `output_item.done` / 终态才带）。SDK 的 `SummaryTextContent.text`、`OutputTextContent.annotations`、`FunctionToolCall.arguments` 都是必填，于是 `parse_stream_event_with_raw` 的强类型反序列化把整条流判死——前两组事件 `apply_with_raw` 本来就落到 `Vec::new()`；`function_call` 那一组虽然被读，但 `added` 分支只看 `Compaction` / `WebSearchCall`，`arguments` 只在 `done` 与终态被消费。
+
+**决策：** 在强类型反序列化之前补齐缺失字段，而不是放宽错误：`fill_missing_wire_fields` **递归**遍历整个事件，`summary_text` 缺 `text` 补 `""`、`output_text` 缺 `annotations` 补 `[]`、`function_call` 缺 `arguments` 补 `""`；**只补缺失，不覆盖已有值**（包括 `""`）。补的是类型的空值：宣布阶段的 `arguments` 本就无内容，而真正被消费的是 `done` / 终态里的那一份（该端点会填）。递归使所有携带位置一次覆盖：`*.part.*`、`content_part.*`、reasoning item 的 `summary` 数组、宣布的 `function_call` item、终态 `response.output`。原先只针对终态 message 的 annotations 补丁被它取代（单一来源），`sdk_knows_event` 的"未知事件类型"前向兼容逻辑不动——这里修的是**已知类型的不完整载荷**，不是丢弃新事件。非流式路径（`create_message` → `parse_response_envelope`）有同样的缺口——该端点的终态 `response.output` 同样不带 `annotations`——因此 `parse_response_envelope` 逐项补在**类型化替身**上；`output_items` 保持原样回放，与既有的 `queries` / `query` 处理一致。
+
+**改后行为：** 兼容端点在部件 / item 上省略 `text` / `annotations` / `arguments` 不再影响回合，流式与非流式两条路径都是；只有 Tact 真正消费的事件（delta、`output_item.*`、终态）的载荷问题才会硬失败。补齐对 OpenAI 官方端点无影响——字段本来就在，`fill` 不写入。
+
+**Verification:** 新增 `fills_fields_a_compatible_endpoint_omits`（5 个事件类型逐个解析，并断言宣布的 `function_call` 得到 `arguments == ""`）、`commandcode_stream_fixture_keeps_reasoning_and_answer`（抓取的 22 事件真实 SSE 走 `stream_message`，断言 reasoning 摘要与 `Hi` 都在）、`commandcode_tool_call_stream_fixture_keeps_the_call`（抓取的工具调用 SSE：断言 `stop_reason == ToolUse`、`ping` 调用带 `{}` 参数——即参数来自 `done` 而非宣布）、`part_fields_omitted_by_a_compatible_endpoint_are_filled_for_the_typed_parse`（非流式；同时断言 `output_items` 仍原样）；原 `fills_missing_output_text_annotations_for_terminal_events` 与 `web_search_call_with_queries_is_normalized_for_typed_parse` 仍绿。**先验证测试是承重的**：临时禁用 `function_call` 分支后，两个测试都以用户原报错串失败（`missing field \`arguments\``）。对 `api.commandcode.ai` 实跑 `tact-ui headless` 各一次（纯文本 / 触发 `read_file` 工具调用）均成功（改前必失败）。
+
+**Pointers:** `crates/tact_llm/src/openai/responses/mod.rs`（`fill_missing_wire_fields` / `normalize_stream_event_json`）、`crates/tact_llm/src/openai/responses/wire.rs`（`parse_response_envelope`）、`crates/tact_llm/src/openai/responses/stream.rs`（`apply_with_raw`；`ResponseOutputItemAdded` 只读 `Compaction` / `WebSearchCall`）、`crates/tact_llm/src/openai/responses/normalize.rs`（`FunctionCall` → `ToolUse`，只认 `status == completed`）；同族的既有条目：2026-09-30「`queries` vs `query`」、无终态事件恢复。
+
+---
+
 ## 1. 2026-10-06 — 底栏不再外显实时耗时
 
 | Field | Value |

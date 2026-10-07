@@ -11,7 +11,9 @@ pub use request_options::ResponsesRequestOptions;
 
 use std::sync::Arc;
 
-use async_openai_responses::{Client, config::Config, types::responses::ResponseStreamEvent};
+use async_openai_responses::{
+    Client, config::Config, error::OpenAIError, types::responses::ResponseStreamEvent,
+};
 use futures_util::StreamExt;
 use reqwest13::header::{AUTHORIZATION, HeaderMap};
 use secrecy::ExposeSecret as LegacyExposeSecret;
@@ -107,8 +109,122 @@ fn set_default_id(value: &mut Value, default_id: String) {
     }
 }
 
+/// Fills the fields a compatible endpoint omits on a part or an item.
+///
+/// Some payloads are announced before their content exists, and some endpoints
+/// never populate a field the vendored SDK's types mark required. Measured on
+/// commandcode.ai (DeepSeek over `/responses`):
+///
+/// - `reasoning_summary_part.added` carries `"part": {"type": "summary_text"}`
+///   with no `text` (the text arrives at `reasoning_summary_text.done`);
+/// - the `content_part.*` events carry `{"type": "output_text", "text": …}`
+///   with no `annotations`;
+/// - `output_item.added` announces a `function_call` item with `call_id` and
+///   `name` but **no `arguments`** — the arguments only stream in afterwards,
+///   via `function_call_arguments.delta`.
+///
+/// Each of those fields is required by the SDK (`SummaryTextContent`,
+/// `OutputTextContent`, `FunctionToolCall`), so the strict deserialize below
+/// would kill the whole stream with `missing field …`. Only absent fields are
+/// filled, with the type's empty value; a present value (including `""`) is
+/// kept. An empty `arguments` on an announced call is exactly right — Tact
+/// reads the field from `output_item.done` / the terminal response, where the
+/// endpoint does populate it.
+///
+/// Runs over the whole event, so every carrier is covered: the `*.part.*` and
+/// `content_part.*` events, a reasoning item's `summary` array, an announced
+/// `function_call` item, and the terminal `response.output`.
+fn fill_missing_wire_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            match object.get("type").and_then(Value::as_str) {
+                Some("summary_text") if !object.get("text").is_some_and(Value::is_string) => {
+                    object.insert("text".to_string(), Value::String(String::new()));
+                }
+                Some("output_text") if !object.get("annotations").is_some_and(Value::is_array) => {
+                    object.insert("annotations".to_string(), Value::Array(Vec::new()));
+                }
+                Some("function_call") if !object.get("arguments").is_some_and(Value::is_string) => {
+                    object.insert("arguments".to_string(), Value::String(String::new()));
+                }
+                _ => {}
+            }
+            for nested in object.values_mut() {
+                fill_missing_wire_fields(nested);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                fill_missing_wire_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Describes the shape of the request Tact just sent.
+///
+/// A compatible endpoint can answer a request it dislikes with a bare
+/// `invalid_request_error` and no detail at all — measured on commandcode.ai,
+/// whose whole body is `{"type":"invalid_request_error","code":"","message":
+/// "invalid request error trace_id: …"}`. With nothing else to go on, the only
+/// remaining evidence is the request itself, so its **shape** is attached to
+/// the failure. Deliberately not the body: that carries the whole conversation.
+fn describe_request_shape(body: &[u8]) -> String {
+    let Ok(request) = serde_json::from_slice::<Value>(body) else {
+        return format!("{} bytes, unparseable", body.len());
+    };
+    let mut parts = vec![format!("{} bytes", body.len())];
+    if let Some(model) = request.get("model").and_then(Value::as_str) {
+        parts.push(format!("model={model}"));
+    }
+    if let Some(input) = request.get("input").and_then(Value::as_array) {
+        let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for item in input {
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or("?");
+            *counts.entry(kind).or_default() += 1;
+        }
+        let kinds = counts
+            .iter()
+            .map(|(kind, count)| format!("{kind} {count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!("input={} items ({kinds})", input.len()));
+    }
+    if let Some(tools) = request.get("tools").and_then(Value::as_array) {
+        parts.push(format!("tools={}", tools.len()));
+    }
+    if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
+        parts.push(format!(
+            "instructions={} chars",
+            instructions.chars().count()
+        ));
+    }
+    if let Some(max) = request.get("max_output_tokens").and_then(Value::as_u64) {
+        parts.push(format!("max_output_tokens={max}"));
+    }
+    parts.join(", ")
+}
+
+/// Attaches [`describe_request_shape`] to an HTTP-status failure.
+///
+/// Only the SDK's API-status error is rewritten; a transport or parse failure
+/// already says what went wrong and gains nothing from the request shape.
+fn with_request_shape(error: LlmError, body: &[u8]) -> LlmError {
+    let LlmError::OpenAiResponses(OpenAIError::ApiError(mut response)) = error else {
+        return error;
+    };
+    response.api_error.message = format!(
+        "{} [request: {}]",
+        response.api_error.message,
+        describe_request_shape(body)
+    );
+    LlmError::from(OpenAIError::ApiError(response))
+}
+
 fn normalize_stream_event_json(mut event: Value) -> Value {
     let event_type = event.get("type").and_then(Value::as_str).map(str::to_owned);
+    fill_missing_wire_fields(&mut event);
     // Compatible endpoints may emit a `web_search_call` search action with a
     // `queries` array instead of the singular `query`; normalize the item
     // before the typed stream parser deserializes it.
@@ -146,19 +262,6 @@ fn normalize_stream_event_json(mut event: Value) -> Value {
                     && !item.get("status").is_some_and(Value::is_string)
                 {
                     item["status"] = Value::String(status.to_string());
-                }
-                if !is_message {
-                    continue;
-                }
-                let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
-                    continue;
-                };
-                for part in content {
-                    if part.get("type").and_then(Value::as_str) == Some("output_text")
-                        && part.get("annotations").is_none()
-                    {
-                        part["annotations"] = Value::Array(Vec::new());
-                    }
                 }
             }
         }
@@ -498,7 +601,7 @@ impl LlmClient for OpenAiResponsesAdapter {
             .responses()
             .create_stream_byot::<_, Value>(wire_request)
             .await
-            .map_err(LlmError::from)?;
+            .map_err(|error| with_request_shape(LlmError::from(error), &request_body))?;
         let mut state = ResponsesStreamState::default();
 
         while let Some(result) = response_stream.next().await {
@@ -565,7 +668,7 @@ impl LlmClient for OpenAiResponsesAdapter {
             .responses()
             .create_byot::<_, Value>(wire_request)
             .await
-            .map_err(LlmError::from)?;
+            .map_err(|error| with_request_shape(LlmError::from(error), &request_body))?;
         let envelope = parse_response_envelope(response)?;
         let wire::RawResponseEnvelope {
             value,
@@ -690,7 +793,7 @@ mod tests {
         ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
         StopReason, Thinking, ThinkingType, Tool,
     };
-    use async_openai_responses::types::responses::OutputItem;
+    use async_openai_responses::types::responses::{OutputItem, ResponseStreamEvent};
 
     #[test]
     fn opencode_config_headers_carry_the_session_id() {
@@ -760,6 +863,139 @@ mod tests {
         assert_eq!(
             event["response"]["output"][0]["content"][0]["annotations"],
             serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn fills_fields_a_compatible_endpoint_omits() {
+        // Measured on commandcode.ai (DeepSeek over `/responses`): a
+        // `summary_text` part is announced with no `text`, an `output_text`
+        // part with no `annotations`, and a `function_call` item with no
+        // `arguments`. All three are required by the SDK types, so without
+        // the fill the whole stream dies.
+        for event_type in [
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+        ] {
+            let event = parse_stream_event(serde_json::json!({
+                "type": event_type,
+                "sequence_number": 3,
+                "item_id": "rs_1",
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {"type": "summary_text"}
+            }))
+            .unwrap_or_else(|error| panic!("{event_type} must parse: {error}"));
+            assert!(event.is_some(), "{event_type} must not be dropped");
+        }
+
+        for event_type in ["response.content_part.added", "response.content_part.done"] {
+            let event = parse_stream_event(serde_json::json!({
+                "type": event_type,
+                "sequence_number": 3,
+                "item_id": "msg_1",
+                "output_index": 1,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "answer"}
+            }))
+            .unwrap_or_else(|error| panic!("{event_type} must parse: {error}"));
+            assert!(event.is_some(), "{event_type} must not be dropped");
+        }
+
+        // The announced call carries `call_id` and `name`; its arguments only
+        // stream in afterwards.
+        let event = parse_stream_event(serde_json::json!({
+            "type": "response.output_item.added",
+            "sequence_number": 10,
+            "output_index": 1,
+            "item": {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "ping",
+                "id": "fc_1",
+                "status": "in_progress"
+            }
+        }))
+        .unwrap_or_else(|error| panic!("an announced function_call must parse: {error}"))
+        .expect("an announced function_call must not be dropped");
+        let ResponseStreamEvent::ResponseOutputItemAdded(event) = event else {
+            panic!("expected an output_item.added event");
+        };
+        let OutputItem::FunctionCall(call) = &event.item else {
+            panic!("expected a function_call item");
+        };
+        assert_eq!(call.name, "ping");
+        assert_eq!(call.arguments, "", "the fill is the type's empty value");
+    }
+
+    #[test]
+    fn describes_the_request_shape_for_an_opaque_rejection() {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "model": "deepseek/deepseek-v4.1-flash",
+            "input": [
+                {"type": "message", "role": "user", "content": "hi"},
+                {"type": "function_call", "call_id": "c1", "name": "bash", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+                {"type": "function_call", "call_id": "c2", "name": "bash", "arguments": "{}"}
+            ],
+            "tools": [{"type": "function"}, {"type": "web_search"}],
+            "instructions": "abc",
+            "max_output_tokens": 256000
+        }))
+        .unwrap();
+        let shape = super::describe_request_shape(&body);
+        for expected in [
+            "model=deepseek/deepseek-v4.1-flash",
+            "input=4 items (function_call 2, function_call_output 1, message 1)",
+            "tools=2",
+            "instructions=3 chars",
+            "max_output_tokens=256000",
+        ] {
+            assert!(
+                shape.contains(expected),
+                "missing {expected:?} in {shape:?}"
+            );
+        }
+        assert!(
+            shape.starts_with(&format!("{} bytes, ", body.len())),
+            "{shape:?} must lead with the body size"
+        );
+    }
+
+    #[test]
+    fn an_opaque_api_error_keeps_its_text_and_gains_the_shape() {
+        // What commandcode.ai answers when it dislikes a request: no field
+        // names, no parameter, just a trace id. The failure must stay the
+        // SDK's API error (so callers still see "openai responses error") and
+        // gain the request shape.
+        let response = async_openai_responses::error::ApiErrorResponse {
+            status_code: reqwest13::StatusCode::BAD_REQUEST,
+            api_error: async_openai_responses::error::ApiError {
+                message: "invalid request error trace_id: 70a5949dc0447f578953eb0bf49804f3"
+                    .to_string(),
+                r#type: Some("invalid_request_error".to_string()),
+                param: None,
+                code: Some(String::new()),
+            },
+        };
+        let error = super::with_request_shape(
+            LlmError::from(async_openai_responses::error::OpenAIError::ApiError(
+                response,
+            )),
+            br#"{"model":"m","input":[{"type":"message"}]}"#,
+        );
+        let message = error.to_string();
+        assert!(
+            message.starts_with("openai responses error: 400"),
+            "{message}"
+        );
+        assert!(
+            message.contains("trace_id: 70a5949dc0447f578953eb0bf49804f3"),
+            "{message}"
+        );
+        assert!(
+            message.contains("[request: ") && message.contains("input=1 items (message 1)"),
+            "{message}"
         );
     }
 
@@ -1749,6 +1985,125 @@ mod tests {
                 .input_items
                 .iter()
                 .any(|item| item["type"] == "future_item")
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn commandcode_stream_fixture_keeps_reasoning_and_answer() {
+        // Captured from commandcode.ai (`deepseek/deepseek-v4.1-flash` over
+        // `/responses`). The stream announces a reasoning summary part with
+        // `{"type": "summary_text"}` and no `text` — the text arrives only at
+        // `reasoning_summary_text.done`. An event Tact never reads must not be
+        // able to abort the turn with `missing field `text``.
+        let server = MockServer::start().await;
+        let sse = include_str!("fixtures/commandcode_deepseek_stream.jsonl");
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
+        let response = adapter
+            .stream_message(&simple_request(), None, None)
+            .await
+            .expect("a text-less reasoning summary part must not abort the stream");
+        assert!(
+            response.blocks.iter().any(|block| {
+                matches!(block, ContentBlock::Thinking { thinking, .. }
+                    if thinking.starts_with("We need answer."))
+            }),
+            "reasoning summary must survive, got: {:?}",
+            response.blocks
+        );
+        assert!(
+            response
+                .blocks
+                .iter()
+                .any(|block| { matches!(block, ContentBlock::Text { text } if text == "Hi") })
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn commandcode_tool_call_stream_fixture_keeps_the_call() {
+        // Captured from commandcode.ai (`deepseek/deepseek-v4.1-flash` over
+        // `/responses`, a tool-calling turn). `output_item.added` announces
+        // the `function_call` with no `arguments` — the arguments stream in
+        // afterwards and only the `output_item.done` / terminal item carries
+        // them. The announced event must not abort the turn, and the call
+        // must arrive with the arguments the provider did send.
+        let server = MockServer::start().await;
+        let sse = include_str!("fixtures/commandcode_deepseek_tool_call_stream.jsonl");
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
+        let response = adapter
+            .stream_message(&simple_request(), None, None)
+            .await
+            .expect("a function_call announced without arguments must not abort the stream");
+        assert_eq!(
+            response.stop_reason,
+            Some(StopReason::ToolUse),
+            "blocks: {:#?}",
+            response.blocks
+        );
+        let call = response
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolUse { name, input, .. } => Some((name.clone(), input.clone())),
+                _ => None,
+            })
+            .expect("the announced call must survive as a tool use block");
+        assert_eq!(call.0, "ping");
+        assert_eq!(
+            call.1,
+            serde_json::json!({}),
+            "the arguments must come from the completed item, not the announcement"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn an_opaque_400_from_the_endpoint_reports_the_request_shape() {
+        // What commandcode.ai sends when it dislikes a request: a status, a
+        // type, a trace id, and nothing else. The turn still fails, but the
+        // error now names the request that was rejected.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": {
+                    "message": "invalid request error trace_id: 70a5949dc0447f578953eb0bf49804f3",
+                    "type": "invalid_request_error"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
+        let error = adapter
+            .stream_message(&simple_request(), None, None)
+            .await
+            .expect_err("a 400 must fail the turn");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("openai responses error: 400"),
+            "{message}"
+        );
+        assert!(
+            message.contains("trace_id: 70a5949dc0447f578953eb0bf49804f3"),
+            "{message}"
+        );
+        assert!(
+            message.contains("[request: ") && message.contains("model=gpt-5"),
+            "{message}"
         );
         server.verify().await;
     }

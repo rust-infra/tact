@@ -1,6 +1,7 @@
 use async_openai_responses::types::responses::{OutputItem, Response};
 use serde_json::Value;
 
+use super::fill_missing_wire_fields;
 use crate::LlmError;
 
 pub(crate) struct RawResponseEnvelope {
@@ -174,6 +175,13 @@ pub(crate) fn parse_response_envelope(value: Value) -> Result<RawResponseEnvelop
                 LlmError::Unsupported("OpenAI Responses output item is missing type".to_string())
             })?;
         normalize_web_search_call_query(&mut item);
+        // A compatible endpoint may omit a required field on a part or an
+        // item (commandcode.ai sends `{"type": "output_text", "text": …}`
+        // with no `annotations`, a text-less `summary_text` part, and an
+        // announced `function_call` with no `arguments`). Fill them for the
+        // typed parse only: `output_items` stays verbatim, like the `queries`
+        // shape above.
+        fill_missing_wire_fields(&mut item);
         match serde_json::from_value::<OutputItem>(item.clone()) {
             Ok(parsed) => {
                 typed_items.push(parsed);
@@ -267,6 +275,46 @@ mod tests {
             })]
         );
         assert!(matches!(parsed.typed.output[0], OutputItem::Message(_)));
+    }
+
+    #[test]
+    fn part_fields_omitted_by_a_compatible_endpoint_are_filled_for_the_typed_parse() {
+        // commandcode.ai (DeepSeek over `/responses`) sends a non-streamed
+        // response whose `output_text` part carries no `annotations` and
+        // whose reasoning summary part carries no `text` — both required by
+        // the SDK types. The typed surrogate must parse; the raw items stay
+        // verbatim so a replay sends the provider's own shape.
+        let parsed = parse_response_envelope(serde_json::json!({
+            "created_at": 1,
+            "completed_at": 2,
+            "id": "resp_compat",
+            "object": "response",
+            "status": "completed",
+            "model": "deepseek-v4.1-flash",
+            "output": [
+                {"type": "reasoning", "id": "rs_1", "status": "completed",
+                 "summary": [{"type": "summary_text"}]},
+                {"type": "message", "id": "msg_1", "status": "completed", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "Hi"}]}
+            ],
+            "usage": {"input_tokens": 1, "input_tokens_details": {"cached_tokens": 0},
+                      "output_tokens": 1, "output_tokens_details": {"reasoning_tokens": 0},
+                      "total_tokens": 2}
+        }))
+        .expect("a part without annotations/text must not fail the typed parse");
+
+        assert_eq!(parsed.typed.output.len(), 2);
+        assert!(parsed.unknown_output_items.is_empty());
+        assert!(
+            parsed.output_items[1]["content"][0]
+                .get("annotations")
+                .is_none(),
+            "the raw item must stay verbatim"
+        );
+        assert!(
+            parsed.output_items[0]["summary"][0].get("text").is_none(),
+            "the raw item must stay verbatim"
+        );
     }
 
     #[test]
